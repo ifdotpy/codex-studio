@@ -1,3 +1,4 @@
+import { hasNativeClient } from "../native/client";
 import { apiOrigin, serverFetch } from "./transport";
 import { serverViewId, isolatedServerView } from "./environment";
 
@@ -70,8 +71,10 @@ export class SignedEventSource
         !response.ok ||
         !response.body ||
         !response.headers.get("Content-Type")?.startsWith("text/event-stream")
-      )
+      ) {
+        await response.body?.cancel().catch(() => {});
         throw new Error("The server event stream is unavailable.");
+      }
       if (this.stopped) {
         await response.body.cancel();
         return;
@@ -104,7 +107,8 @@ export class SignedEventSource
   }
 }
 export function openServerEvents(url: string): ServerEventSource {
-  return serverViewId && (serverViewId !== "local" || isolatedServerView)
+  return hasNativeClient() ||
+    (serverViewId && (serverViewId !== "local" || isolatedServerView))
     ? new SignedEventSource(url)
     : new EventSource(url);
 }

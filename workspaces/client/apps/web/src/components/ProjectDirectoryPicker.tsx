@@ -1,4 +1,6 @@
-import { isRemoteServerView } from "../servers/environment";
+import { useServerApi } from "../servers/ServerServicesContext";
+import { useServerFileDialogs } from "../servers/ServerServicesContext";
+
 import {
   ActionIcon,
   Button,
@@ -8,7 +10,7 @@ import {
 } from "@mantine/core";
 import { ArrowUp, ChevronRight, Folder, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { get, errorText } from "../api";
+import { errorText } from "../api";
 import type { paths } from "../generated/api";
 import {
   readProjectServers,
@@ -36,6 +38,9 @@ export default function ProjectDirectoryPicker({
   showServerSelector?: boolean;
   submitLabel?: string;
 }) {
+  const { canPickDirectory, pickDirectory } = useServerFileDialogs();
+  const { get } = useServerApi();
+
   const [servers, setServers] = useState<ProjectServerChoice[]>(
     serverChoices || [{ id: "local", label: "This computer" }],
   );
@@ -51,7 +56,7 @@ export default function ProjectDirectoryPicker({
       return;
     }
     let active = true;
-    void readProjectServers()
+    void readProjectServers(get)
       .then((rows) => {
         if (active) setServers(rows);
       })
@@ -180,12 +185,11 @@ export default function ProjectDirectoryPicker({
           Open path
         </Button>
       </form>
-      {window.codexDesktop && !isRemoteServerView && server === "local" && (
+      {canPickDirectory() && server === "local" && (
         <Button
           variant="light"
           onClick={() => {
-            void window
-              .codexDesktop!.pickDirectory()
+            void pickDirectory()
               .then((folder) => {
                 if (folder) navigate(folder);
               })

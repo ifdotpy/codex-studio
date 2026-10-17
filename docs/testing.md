@@ -35,20 +35,33 @@ suite durations over 10 seconds measured inside that parallel run. These values
 are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
+Before the server tier, build its Rust HTTP fixture with
+`cargo build --locked --release -p studio-runtime-server`. Hosted server jobs do
+this explicitly. Local `just test-fast` also needs that binary for the historical
+state upgrade contract; building a native desktop package does not produce it.
+
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them
 without maintaining a second suite inventory.
 
-| Tier or purpose     | What it runs                                                                                                                              | Just command                               |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Fast                | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests, browser smoke subset                      | `just test-fast`                           |
-| Fast browser smoke  | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
-| Heavy server        | All suites in the heavy server list                                                                                                       | `just test-server-heavy`                   |
-| Heavy crash matrix  | All 31 account-worker scenarios at every before/after bridge boundary                                                                     | `just test-crash-matrix-full`              |
-| Heavy browser       | Full web browser project, capped at 900 seconds                                                                                           | `just test-browser`                        |
-| All heavy           | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
-| Other server opt-in | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
-| Load-class          | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
+| Tier or purpose          | What it runs                                                                                                                              | Just command                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Fast                     | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests, browser smoke subset                      | `just test-fast`                           |
+| Fast browser smoke       | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
+| Heavy server             | All suites in the heavy server list                                                                                                       | `just test-server-heavy`                   |
+| Heavy crash matrix       | All 31 account-worker scenarios at every before/after bridge boundary                                                                     | `just test-crash-matrix-full`              |
+| Heavy browser            | Full web browser project, capped at 900 seconds                                                                                           | `just test-browser`                        |
+| All heavy                | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
+| Other server opt-in      | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
+| Native profile migration | Isolated Electron profile round trip with hidden windows; manual heavy run                                                                | `just test-native-profile-migration`       |
+| Native file events       | Compiled Swift helper and real macOS FSEvents delivery; manual heavy run                                                                  | `just test-native-file-events`             |
+| Native WebView           | Rust host build and isolated hidden WebView scenarios; manual heavy run                                                                   | `just test-native-webview`                 |
+| Load-class               | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
+
+The native file event check depends on the host FSEvents service and is manual.
+The fast tier covers watcher readiness, path collection, full-rescan requests,
+and scoped scanning with a deterministic helper. A native delivery timeout is
+reported as a failed manual check; it is not converted into a skip or a retry.
 
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Suites that use the
@@ -124,6 +137,13 @@ The load-class suite `workspaces/runtime/apps/server/tests/notification-schedule
 contains a 1,500-notification storm with a live scheduler. Its busy-retry connection
 count depends on runtime contention, so select it only with
 `just test-server-load workspaces/runtime/apps/server/tests/notification-scheduler-contract.py`.
+
+The account transfer latency assertion remains in
+`account-transfer-lazy-load-contract.py`: 300 idle members must rebind within
+one second without native calls. Select it with `just test-server-load
+workspaces/runtime/apps/server/tests/account-transfer-lazy-load-contract.py`.
+The ordinary contract checks the same rebinding behavior with three members
+and no wall-clock performance threshold.
 
 Measure a suite by running it alone through `just test server <exact-suite-path>`.
 If it exceeds 10 seconds, speed it up first; the maintainer decides whether it
@@ -319,6 +339,14 @@ class whose methods create independent data; put restart durability in its own
 class, keep process-owning suites unsliced, and record readiness timings without
 asserting on speed.
 
+The existing per-test Runtime fixture suites `runtime-contract.py` and
+`multi-server-orchestration-contract.py` run in bounded test-ID slices in both
+full and focused runs. `RUNTIME_SUITE_MAX_TESTS_PER_SLICE` in `tests/server/run.py`
+owns their maximum test count per process. Each case still creates and closes
+its own Runtime. The selected worker pool, per-process deadline, exact outcome
+inventory and expected-failure ledger apply unchanged. This does not enable
+slicing for HTTP or shared process fixtures.
+
 The backend requires the native lifecycle module. Build the module, then install
 it before server tests or backend startup. For test runs, keep both the managed
 Python cache and command-bin directory in a dedicated temporary root; never
@@ -468,6 +496,20 @@ operations adapter before discovery, which reports the build instruction for a
 missing or mismatched native module. It keeps run state private.
 
 Use `pnpm --filter codex-agents-web run test:performance` for the browser performance group.
+
+The explicit `just benchmark-client-interactions BASELINE_COMMIT /absolute/output`
+command compares cumulative renderer optimizations in fresh browser contexts.
+It builds five variants outside the checkout, then runs three samples per variant
+with one browser worker. Allow about three minutes, with no competing builds or
+tests during measurement. It adds no synthetic load and does not use a live server
+or profile. The baseline replaces the five measured source modules from the given
+commit; all other sources, dependencies, fixture data, and settings stay identical.
+The output includes source hashes and per-action timing, frame gaps, DOM counts,
+and storage writes. This measures the renderer and a loopback fixture, not native
+application launch, remote server latency, or real account operations. See
+[the performance report](performance/client-interactions-20261016.md) for scope
+and interpretation. The interaction benchmark is skipped in the generic performance
+group unless its explicit baseline/output configuration is supplied.
 To inspect the optional installed-environment group, enable
 `PLAYWRIGHT_INCLUDE_SPECIAL=1` and select the `installed-only` project explicitly.
 
@@ -511,7 +553,10 @@ statically linked executable. All other real-home state stays blocked and
 logged. If no executable resolves, this suite is reported as an environment
 skip with the missing Codex executable named. There is no fake-binary split:
 all 15 tests exercise PTY process creation and the real supervisor/app-server
-lifecycle protocol, so a stub would remove the contract under test.
+lifecycle protocol, so a stub would remove the contract under test. The combined
+cwd/resize/exit witness uses a phase-driven Python child in that real PTY; other
+cases retain actual shell jobs. This separates terminal RPC assertions from
+interactive shell prompt and redraw scheduling.
 `pnpm --filter codex-agents-web run test:rxdb-cache` verifies the runtime patch with an exposed
 garbage collector in a child process. These boundaries are not replaced by
 successful browser discovery or mocked unit tests.

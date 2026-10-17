@@ -70,6 +70,10 @@ export default defineConfig({
           /(?:src|href)="\.\/([^"?#]+)"/g,
         ))
           visit(match[1]);
+        // The shared Rust parser must be available on the first offline load.
+        for (const name of Object.keys(bundle)) {
+          if (name.endsWith(".wasm")) visit(name);
+        }
         // Only content-addressed assets belong to this build.
         // API responses stay on the network.
         const assets = Object.keys(bundle).filter((name) =>

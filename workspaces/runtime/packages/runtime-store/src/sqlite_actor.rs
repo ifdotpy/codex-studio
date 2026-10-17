@@ -164,7 +164,7 @@ impl SqliteActor {
 mod tests {
     use super::*;
     use std::sync::Barrier;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
     use std::{future::Future, future::poll_fn, task::Poll};
 
@@ -249,9 +249,10 @@ mod tests {
         entered.wait();
 
         let second_ran = Arc::new(AtomicBool::new(false));
-        let abandoned_count = Arc::new(AtomicUsize::new(0));
         let second_ran_callback = Arc::clone(&second_ran);
-        let abandoned_counter = Arc::clone(&abandoned_count);
+        // The actor drops the permit when the job returns, then drops the
+        // undeliverable response, so admission can return before the callback.
+        let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
         let permit = actor.acquire().await.expect("second actor admission");
         let second = actor.call_admitted_with_completion(
             permit,
@@ -260,9 +261,7 @@ mod tests {
                 Ok::<(), rusqlite::Error>(())
             },
             move |result, disposition| {
-                if result.is_ok() && disposition == ActorResponseDisposition::Abandoned {
-                    abandoned_counter.fetch_add(1, Ordering::AcqRel);
-                }
+                let _ignored = completion_sender.send((result.is_ok(), disposition));
             },
         );
         let mut second = Box::pin(second);
@@ -291,6 +290,10 @@ mod tests {
         .await
         .expect("both callbacks released admission");
         assert!(second_ran.load(Ordering::Acquire));
-        assert_eq!(abandoned_count.load(Ordering::Acquire), 1);
+        let completion = tokio::time::timeout(Duration::from_secs(2), completion_receiver)
+            .await
+            .expect("abandoned response completion deadline")
+            .expect("abandoned response completion runs once");
+        assert_eq!(completion, (true, ActorResponseDisposition::Abandoned));
     }
 }

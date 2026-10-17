@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Local packaged Studio UI; remote documents receive no native capabilities.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-client-request",
+    "allow-close-ready",
+    "allow-close-response"
+  ]
+}

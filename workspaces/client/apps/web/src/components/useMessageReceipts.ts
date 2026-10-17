@@ -1,12 +1,16 @@
+import {
+  useServerApi,
+  useServerOutbox,
+} from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
-import { get } from "../api";
-import { reconcileOutboxReceipts } from "../sync/send";
+import "../api";
+import "../sync/send";
 import {
   checkedMessageReceipts,
   latestMessageReceipt,
   type MessageReceipt,
 } from "../sync/messageReceipts";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 export function useMessageReceipts(
   room: string | null,
@@ -14,6 +18,10 @@ export function useMessageReceipts(
   workspaceId: string | undefined,
   ids: string[],
 ) {
+  const watchResourceReads = useServerResourceReads();
+  const { get } = useServerApi();
+  const { reconcileOutboxReceipts } = useServerOutbox();
+
   const requested = useRef(ids);
   requested.current = ids;
   const requestedKey = JSON.stringify(ids);
@@ -48,6 +56,15 @@ export function useMessageReceipts(
             batch,
             workspaceId,
           );
+          // Publishing delivery can retire the local message and change the
+          // requested IDs, which aborts this effect. Persist the receipt first.
+          await reconcileOutboxReceipts(
+            room,
+            receipts,
+            workspaceId,
+            controller.signal,
+          );
+          if (!active || controller.signal.aborted) return;
           setState((previous) => {
             const next = new Map(
               previous.scope === scope ? previous.receipts : [],
@@ -73,12 +90,6 @@ export function useMessageReceipts(
               return previous;
             return { scope, receipts: next };
           });
-          await reconcileOutboxReceipts(
-            room,
-            receipts,
-            workspaceId,
-            controller.signal,
-          );
         }
       },
       () => {
@@ -90,7 +101,7 @@ export function useMessageReceipts(
       controller.abort();
       stop();
     };
-  }, [room, scope, workspaceId, requestedKey]);
+  }, [room, scope, workspaceId, requestedKey, watchResourceReads]);
   return state.scope === scope
     ? state.receipts
     : new Map<string, MessageReceipt>();

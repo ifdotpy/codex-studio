@@ -608,6 +608,72 @@ class ContextWait(f.NativeActionRepair):
         self.put('tasks', record)
         return record
 
+    def test_native_background_service_does_not_block_original_input(self):
+        self.server.terminals = [{'itemId':'native-service', 'processId':'84385'}]
+        source = self.path.read_bytes()
+        self.runtime.send(self.a['id'], 'Continue with the running service.', message_id='native-service-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait')
+                   or self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current.get('turnId'), 'resumed-turn', current.get('error'))
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertFalse(current.get('contextRepairWait'))
+        self.assertEqual(self.forks(), [])
+        self.assertEqual(source, self.path.read_bytes())
+        self.assertEqual(self.server.terminals, [{'itemId':'native-service', 'processId':'84385'}])
+        self.runtime.dispatch()
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'native-service-user')
+
+    def test_existing_native_service_wait_resumes_same_attempt_without_fork(self):
+        self.server.terminals = [{'itemId':'native-service', 'processId':'84385'}]
+        self.runtime.send(self.a['id'], 'Keep the original question.', message_id='native-wait-user')
+        with patch.object(repair, '_optional_native_command_repair', return_value=None):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertEqual(waiting['contextRepairWait']['scope'], 'native')
+        attempt_id = waiting['startAttempt']['id']
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['id'], attempt_id)
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertEqual(self.forks(), [])
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'native-wait-user')
+
+    def test_native_service_does_not_bypass_queued_native_input(self):
+        self.server.terminals = [{'itemId':'native-service', 'processId':'84385'}]
+        self.server.queue = [{'id':'existing-native-input'}]
+        self.runtime.send(self.a['id'], 'Preserve the native queue.', message_id='queued-service-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+        self.assertEqual(self.forks(), [])
+        self.server.queue = []
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        self.assertEqual(self.runtime.agent(self.a['id'])['threadId'], self.tid)
+
+    def test_native_service_does_not_bypass_uncertain_input(self):
+        self.server.terminals = [{'itemId':'native-service', 'processId':'84385'}]
+        self.legacy_uncertain()
+        self.runtime.send(self.a['id'], 'Preserve the unknown receipt.', message_id='uncertain-service-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+        self.assertEqual(self.forks(), [])
+
+    def test_native_service_keeps_explicit_repair_blocked(self):
+        self.server.terminals = [{'itemId':'native-service', 'processId':'84385'}]
+        with self.assertRaisesRegex(ValueError, 'native commands'):
+            repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(self.forks(), [])
+
     def test_active_command_does_not_block_normal_input_or_change_its_receipt(self):
         command = self.command()
         source = self.path.read_bytes()

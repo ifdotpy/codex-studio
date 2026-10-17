@@ -7,8 +7,33 @@ type RendererTaskFields = {
   created: number;
   kind: string;
   status: string;
+  processKey?: string;
+  generation?: string;
+  accountKey?: string;
+  epoch?: number;
+  source?: "monitor" | "codex_task" | "claude_task";
+  capabilities?: {
+    readOutput: boolean;
+    sendInput: boolean;
+    resize: boolean;
+    stop: boolean;
+  };
+  tail?: string | null;
+  error?: string | null;
+  stdinError?: string | null;
+  stdinClosed?: boolean | null;
+  stdinCloseRequested?: boolean | string | null;
+  bytes?: number | null;
+  outputTruncated?: boolean | null;
+  log?: string | null;
+  timeout_ms?: number | null;
+  cancelRequested?: boolean | null;
 };
-export type DisplayBackgroundTask = (Task | Monitor) & RendererTaskFields;
+type DisplayTask<T> = Omit<T, keyof RendererTaskFields> & RendererTaskFields;
+export type DisplayBackgroundTask =
+  | DisplayTask<BackgroundTask>
+  | DisplayTask<WorkspaceTask>
+  | DisplayTask<Monitor>;
 
 export const activeTask = (task: DisplayBackgroundTask) =>
   ["running", "starting", "approval", "pending", "stopping"].includes(
@@ -28,14 +53,25 @@ export function projectTaskForRenderer(
 ): DisplayBackgroundTask | null {
   const kind =
     source === "monitor" ? "monitor" : isCommandTask(task) ? "command" : "tool";
+  const claudeTask =
+    "kind" in task &&
+    task.kind === "tool" &&
+    "itemId" in task &&
+    typeof task.itemId === "string" &&
+    task.itemId.startsWith("task:");
   if (task.agent == null || task.created == null || task.status == null)
     return null;
   return {
     ...task,
     agent: task.agent,
     created: task.created,
+    accountKey:
+      "accountKey" in task && typeof task.accountKey === "string"
+        ? task.accountKey
+        : undefined,
     kind,
     status: task.status,
+    ...(source === "task" && claudeTask ? { kind: "backgroundTask" } : {}),
   };
 }
 
@@ -50,7 +86,8 @@ export function backgroundTasks(
     ...data.runtime.tasks
       .map((task) => projectTaskForRenderer(task, "task"))
       .filter(
-        (task): task is DisplayBackgroundTask => task?.kind === "command",
+        (task): task is DisplayBackgroundTask =>
+          task?.kind === "command" || task?.kind === "backgroundTask",
       ),
   ];
 }

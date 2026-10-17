@@ -51,8 +51,15 @@ A lost host owner leaves the slot leased for inspection.
 A failure before the run request (slot preparation, manifest, or transfer)
 releases the Mac slot. The saved status records `sync_failed` and `preRunError`.
 The Mac slot gets a new generation, so failed guest staging is never used again.
-A failure to forget the old guest slot appears in the error. A lost response to
-the run request keeps the lease for inspection.
+A failure to forget the old guest slot appears in the error. An explicit `sync_conflict` response to the run request also releases both leases
+and changes the slot generation: the server checks the manifest before command startup.
+A lost response to the run request keeps the lease for inspection.
+
+Keep a command that uses the slot in the `host_exec` command lifetime. Do not detach
+it into a new session and let `host_exec` finish. The next execute synchronizes the
+source tree, even if its command only reads logs. A detached process can then read
+or change files during that transfer. Use `status` to read output without a new
+source transfer. Keep independent background jobs in separately owned workspaces.
 
 The Mac service is a separate process, so it keeps its code after an app update.
 Its health reports a code build hash fixed at its start. Each VM start compares

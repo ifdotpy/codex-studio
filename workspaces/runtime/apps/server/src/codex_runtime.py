@@ -68,6 +68,13 @@ from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEU
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
+# Skill files appended to the role guidance of a new layr (VM) session, in this order, relative to
+# .agents/skills. The Rust preparation (snapshot.rs VM_ROLE_GUIDANCE) must list the same files.
+VM_ROLE_GUIDANCE = ("codex-workspace/references/layr.md", "layr/SKILL.md")
+# Where the guest keeps the Studio skills; a VM session's guidance names these paths. The Rust
+# preparation (snapshot.rs VM_GUEST_SKILLS_ROOT) uses the same folder.
+VM_GUEST_SKILLS_ROOT = Path("/opt/codex-studio/.agents/skills")
+
 # Bounds for the shared writer admission path; SQLite uses milliseconds.
 _WRITE_ADMISSION_TIMEOUT_SECONDS = 60
 _WRITE_ADMISSION_BUSY_TIMEOUT_MS = 50
@@ -192,6 +199,11 @@ class ComplaintConflict(ValueError):
     """The user response targets an older complaint version."""
 
 
+from codex_shared_values import (
+    MONITOR_OUTPUT_MAX_PATTERNS, MONITOR_OUTPUT_MAX_PATTERN_BYTES,
+    MONITOR_WAIT_MAX_MILLISECONDS, MONITOR_WAIT_SLOTS,
+)
+
 DEFAULT_LEAD_MODEL = "gpt-6-astra"
 LIVE_AGENT_SQL = """(json_type(record,'$.deletedAt') IS NULL
     OR json_type(record,'$.deletedAt')='null'
@@ -260,18 +272,24 @@ TOOLS = [
          "Use for a decision, not repeated waiting: completion events arrive automatically.",
          {"since_revision": TEXT, "include_finished": {"type": "boolean"},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
-    tool("orchestration_monitor", "Run a command under this thread's sandbox and wait "
-         "outside the model. Returns a watch id immediately. At process exit you receive "
-         "one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. "
+    tool("orchestration_monitor", "Run a command under this thread's sandbox. Use command to launch once, or monitor_id to observe an existing command without launching it. "
+         "wait_timeout_ms bounds this call only (default 0, maximum 10000); timeout_ms remains the command execution limit. "
+         "A wait expiry returns the same active monitor id. Reuse monitor_id for a later wait. "
+         "At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. "
+         "Literal output_patterns use OR matching and wake at most once per second, with repeated matches coalesced and counted. "
          "wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). "
          "Finish your turn while waiting. "
          "success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. "
          "The thread's approval policy applies; a required approval appears in the canvas.",
-         {"command": TEXT, "wake_on": {"type": "string", "enum": ["exit", "failure"]},
+         {"command": {"type": "string", "minLength": 1, "maxLength": 12000}, "monitor_id": {"type": "string", "minLength": 1, "maxLength": 200},
+          "wait_timeout_ms": {"type": "integer", "minimum": 0, "maximum": MONITOR_WAIT_MAX_MILLISECONDS},
+          "output_patterns": {"type": "array", "minItems": 1, "maxItems": MONITOR_OUTPUT_MAX_PATTERNS, "uniqueItems": True,
+                              "items": {"type": "string", "minLength": 1, "maxLength": MONITOR_OUTPUT_MAX_PATTERN_BYTES}},
+          "wake_on": {"type": "string", "enum": ["exit", "failure"]},
           "success_exit_codes": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": True,
                                  "items": {"type": "integer", "minimum": 0, "maximum": 255}},
           "timeout_ms": {"type": "integer", "minimum": 1000,
-                                           "maximum": 86400000}}, ["command"]),
+                                           "maximum": 86400000}}, []),
     tool("orchestration_cancel_monitor", "Cancel one of your command watches.",
          {"monitor_id": TEXT}, ["monitor_id"]),
 ]
@@ -304,6 +322,10 @@ for definition in TOOLS:
         definition["inputSchema"]["properties"]["interactive"] = {"type": "boolean"}
         definition["inputSchema"]["properties"]["stall_timeout_seconds"] = {"type": "integer", "minimum": 0, "maximum": 31536000}
         definition["inputSchema"]["properties"]["liveness_command"] = {"type": "string", "maxLength": 12000}
+        definition["inputSchema"]["oneOf"] = [
+            {"required": ["command"], "not": {"required": ["monitor_id"]}},
+            {"required": ["monitor_id"], "not": {"required": ["command"]}},
+        ]
     if definition["name"] == "orchestration_spawn":
         definition["inputSchema"]["properties"]["server"] = TEXT
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"]["server"] = TEXT
@@ -1438,6 +1460,8 @@ class AppServer:
                     sequence = getattr(self.proc.stdout, "current_sequence", None)
                     if sequence is not None:
                         message["_studioSupervisorSequence"] = sequence
+                        if self.supervisor_handle is not None:
+                            message["_studioSupervisorHandle"] = self.supervisor_handle
                     if "method" in message:
                         message.setdefault("_studioReceivedAt", time.time())
                         if "id" in message:
@@ -1577,6 +1601,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.analytics_db_path = self.root / "analytics.sqlite3"
         self.lock = runtime_lock()
         self.ui_condition = threading.Condition(self.lock)
+        self.monitor_condition = threading.Condition(self.lock)
         self.ui_revisions = {}
         self._agent_records_cache_lock = threading.RLock()
         self._agent_record_revision = 0
@@ -1614,6 +1639,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
         self._image_base_callback_agents = set()
         self.tool_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="studio-tool")
+        self.monitor_wait_pool = concurrent.futures.ThreadPoolExecutor(max_workers=MONITOR_WAIT_SLOTS, thread_name_prefix="studio-monitor-wait")
+        self.monitor_wait_slots = threading.BoundedSemaphore(MONITOR_WAIT_SLOTS)
         self.coordination_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="studio-coordinate")
         self.recovery_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-recover")
         self.lease = (self.root / "runtime.lock").open("a+")
@@ -1623,6 +1650,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.lease.close()
             self.pool.shutdown(wait=False)
             self.tool_pool.shutdown(wait=False)
+            self.monitor_wait_pool.shutdown(wait=False)
             self.coordination_pool.shutdown(wait=False)
             self.recovery_pool.shutdown(wait=False)
             raise RuntimeError("Another canvas runtime owns this state directory")
@@ -1634,6 +1662,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.lease.close()
             self.pool.shutdown(wait=False)
             self.tool_pool.shutdown(wait=False)
+            self.monitor_wait_pool.shutdown(wait=False)
             self.coordination_pool.shutdown(wait=False)
             self.recovery_pool.shutdown(wait=False)
             raise
@@ -2006,7 +2035,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             except BaseException as error:
                 errors.append(error)
             self._wal_keeper = None
-        for executor_name in ("pool", "tool_pool", "coordination_pool", "recovery_pool"):
+        for executor_name in ("pool", "tool_pool", "monitor_wait_pool", "coordination_pool", "recovery_pool"):
             executor = getattr(self, executor_name, None)
             if executor is not None:
                 try:
@@ -5858,12 +5887,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except OSError as error:
             raise ValueError(f"Studio role skill {name} is missing. Update the installed Studio workspace") from error
         if actor.get("executionMode") == "vm":
-            content += "\n" + (path.parent.parent / "codex-workspace/references/layr.md").read_text()
+            for guide in VM_ROLE_GUIDANCE:
+                content += "\n" + (path.parent.parent / guide).read_text()
         if not content:
             raise ValueError(f"Studio role skill {name} is empty. Update the installed Studio workspace")
         shared = path.parent.parent / "codex-workspace" / "SKILL.md"
         if actor.get("executionMode") == "vm":
-            path = Path("/opt/codex-studio/.agents/skills") / name / "SKILL.md"
+            path = VM_GUEST_SKILLS_ROOT / name / "SKILL.md"
             shared = path.parent.parent / "codex-workspace" / "SKILL.md"
         return f"[Studio role skill: {name}]\nSource: {path}\nShared tool guidance: {shared}\n{content}\n[End Studio role skill]"
 
@@ -7946,7 +7976,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 or (restart.get("stage") == "pending" and restart.get("autoWake")
                     and restart.get("epoch") == a.get("epoch")))
 
-    def record_task(self, db, a, method, p, stale):
+    def record_task(self, db, a, method, p, stale, *, account_key="default", connection_id=None, thread_id=None):
         """Keep process lifetimes separate from model turns, including late exits."""
         item = p.get("item") or {}
         if method in {"item/started", "item/completed"}:
@@ -7978,9 +8008,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             if task and task["status"] != "running":
                 return task
-            task = task or {"id": key, "agent": a["id"], "itemId": item_id,
-                            "turnId": p.get("turnId") or a.get("turnId"), "created": time.time(),
-                            "kind": "command" if kind == "commandExecution" else "tool"}
+            if task is None:
+                source_account = self.accounts.get(account_key)
+                task = {"id": key, "agent": a["id"], "itemId": item_id,
+                        "turnId": p.get("turnId") or a.get("turnId"), "created": time.time(),
+                        "kind": "command" if kind == "commandExecution" else "tool",
+                        "ownerEpoch": a.get("epoch"), "sourceAccountKey": account_key,
+                        "sourceConnectionId": connection_id, "sourceThreadId": thread_id,
+                        "sourceProvider": source_account.get("provider", "codex") if source_account else None}
             task.update(type=kind, name=item.get("tool") or kind, status="running")
             for field in ("command", "cwd", "processId", "durationMs", "exitCode", "query", "server"):
                 if item.get(field) is not None:
@@ -8153,7 +8188,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.usage_resume_limits_changed(account_key, value)
             return
         if method == "command/exec/outputDelta":
-            self.output(p, account_key, connection_id)
+            self.output(p, account_key, connection_id,
+                        supervisor_handle=message.get("_studioSupervisorHandle"),
+                        supervisor_sequence=message.get("_studioSupervisorSequence"))
             return
         tid = p.get("threadId") or p.get("thread", {}).get("id")
         if not tid:
@@ -8275,7 +8312,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 for sample in samples or [p]:
                     captured_tokens = self.analytics_safe(db, self.analytics_event, a, method, sample)
-            recorded_task = self.record_task(db, a, method, p, stale)
+            recorded_task = self.record_task(db, a, method, p, stale, account_key=account_key,
+                             connection_id=connection_id, thread_id=tid)
             if method.startswith("item/") and stale:
                 return
             if method.startswith("item/"):
@@ -8693,6 +8731,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.reply({"id": message["id"], "result": {"currentTimeAt": int(time.time())}}, account_key, connection_id)
             return
         if message["method"] == "item/tool/call":
+            name = message.get("params", {}).get("tool")
+            tool_arguments = message.get("params", {}).get("arguments", {})
+            if isinstance(tool_arguments, str):
+                try:
+                    tool_arguments = json.loads(tool_arguments)
+                except (ValueError, TypeError):
+                    tool_arguments = {}
+            bounded_monitor_wait = (name == "orchestration_monitor"
+                                    and isinstance(tool_arguments, dict)
+                                    and type(tool_arguments.get("wait_timeout_ms", 0)) is int
+                                    and tool_arguments.get("wait_timeout_ms", 0) > 0)
+            if bounded_monitor_wait:
+                message["_studioMonitorWaitDeadline"] = (
+                    time.monotonic() + tool_arguments["wait_timeout_ms"] / 1000)
             try:
                 self.reserve_tool_request(message, account_key, connection_id)
             except Exception as error:
@@ -8701,17 +8753,29 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.reply({"id": message["id"], "result": {"success": False,
                     "contentItems": [{"type": "inputText", "text": str(error)}]}}, account_key, connection_id)
                 return
-            name = message.get("params", {}).get("tool")
-            executor = (self.recovery_pool if name in {"orchestration_request", "orchestration_status", "orchestration_peers"}
+            executor = (self.monitor_wait_pool if bounded_monitor_wait
+                        else self.recovery_pool if name in {"orchestration_request", "orchestration_status", "orchestration_peers"}
                         else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint", "orchestration_task"}
                         else self.tool_pool)
+            wait_slot_acquired = False
             try:
+                if bounded_monitor_wait:
+                    wait_slot_acquired = self.monitor_wait_slots.acquire(blocking=False)
+                if bounded_monitor_wait and not wait_slot_acquired:
+                    message["_studioMonitorWaitRejected"] = True
+                    self.dynamic(message, account_key, connection_id)
+                    return
                 future = executor.submit(self.dynamic, message, account_key, connection_id)
             except Exception as error:
+                if wait_slot_acquired:
+                    self.monitor_wait_slots.release()
                 self.dynamic_response_failure(message, account_key, connection_id, error)
             else:
-                future.add_done_callback(lambda completed: self.dynamic_completion(
-                    message, account_key, connection_id, completed))
+                def completed_monitor_wait(completed):
+                    if bounded_monitor_wait:
+                        self.monitor_wait_slots.release()
+                    self.dynamic_completion(message, account_key, connection_id, completed)
+                future.add_done_callback(completed_monitor_wait)
             return
         if message["method"] not in SUPPORTED_REQUESTS:
             self.reply({"id": message["id"], "error": {"code": -32601,
@@ -9183,6 +9247,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 record = self.tool_request(key, db)
                 a = self.agent(record["agent"], db)
                 result = record.get("result")
+                if (result is None and record.get("stage") == "queued"
+                        and message.get("_studioMonitorWaitRejected")):
+                    result = stamp_tool_result({"success": False, "contentItems": [
+                        {"type": "inputText", "text": "Monitor wait capacity is full. No command was started."}]}, time.time())
+                    self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 if result is None and record.get("stage") == "queued" and native_thread_block(a):
                     result = stamp_tool_result({"success": False, "contentItems": [
                         {"type": "inputText", "text": THREAD_BLOCK_MESSAGE}]}, time.time())
@@ -9375,7 +9444,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             a["id"], target_id, args["text"], key, a["epoch"]
                         )
                 elif name == "orchestration_monitor":
-                    value = self.monitor(a["id"], args, key, approved=self.monitor_auto_approved(a), epoch=a["epoch"])
+                    value = self.monitor(a["id"], args, key, approved=self.monitor_auto_approved(a),
+                                         epoch=a["epoch"], account_key=account_key,
+                                         wait_deadline=message.get("_studioMonitorWaitDeadline"))
                 elif name == "orchestration_cancel_monitor":
                     value = self.cancel_monitor(args["monitor_id"], a["id"])
                 else:
@@ -10240,8 +10311,30 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.sync_room_entity(db, str(room["id"]))
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
 
-    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):
+    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None, account_key=None,
+                wait_deadline=None):
+        wait_timeout_ms = data.get("wait_timeout_ms", 0)
+        if type(wait_timeout_ms) is not int or not 0 <= wait_timeout_ms <= MONITOR_WAIT_MAX_MILLISECONDS:
+            raise ValueError("wait_timeout_ms must be 0 to 10000")
+        monitor_id = data.get("monitor_id")
         command = data.get("command")
+        if (isinstance(command, str)) == (isinstance(monitor_id, str)):
+            raise ValueError("Supply exactly one of command or monitor_id")
+        if monitor_id is not None:
+            if (not isinstance(monitor_id, str) or not 1 <= len(monitor_id) <= 200
+                    or any(field in data for field in (
+                        "command", "output_patterns", "timeout_ms", "wake_on", "success_exit_codes",
+                        "interactive", "stall_timeout_seconds", "liveness_command"))):
+                raise ValueError("monitor_id observation accepts only monitor_id and wait_timeout_ms")
+            if epoch is None:
+                raise ValueError("The caller epoch is required to observe a monitor")
+            return self.observe_monitor(agent_id, monitor_id, epoch=epoch,
+                                        wait_timeout_ms=wait_timeout_ms, account_key=account_key,
+                                        wait_deadline=wait_deadline)
+
+        command = data.get("command")
+        from codex_monitor_output import validate_output_patterns
+        output_patterns = validate_output_patterns(data.get("output_patterns"))
         wake_on = data.get("wake_on", "exit")
         if wake_on not in {"exit", "failure"}:
             raise ValueError("wake_on must be exit or failure")
@@ -10264,70 +10357,167 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Command timeout must be 1 second to 24 hours")
         request_key = key
         key = str(uuid.uuid5(uuid.NAMESPACE_URL, key)) if key else uid()
+        previous = None
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if row:
                 previous = json.loads(row[0])
-                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("wakeOn", "exit"), previous.get("successExitCodes", [0]), previous.get("stallTimeoutSeconds", 1800), previous.get("livenessCommand", "")) != (agent_id, command, timeout, bool(data.get("interactive")), wake_on, success, stall_timeout, liveness_command):
+                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("wakeOn", "exit"), previous.get("successExitCodes", [0]), previous.get("stallTimeoutSeconds", 1800), previous.get("livenessCommand", ""), previous.get("outputPatterns", [])) != (agent_id, command, timeout, bool(data.get("interactive")), wake_on, success, stall_timeout, liveness_command, output_patterns):
                     raise ValueError("This monitor request id has different content")
-                return previous
-            a = self.agent(agent_id, db)
-            if not a["autoWake"]:
-                raise ValueError("Agent is stopped")
-            if epoch is not None and a["epoch"] != epoch:
-                raise ValueError("The agent turn was stopped")
-            self.assert_workspace_available(db, a)
-            if rule:
-                # A rule can race a user permission change between prepare and this lock.
-                approved = self.monitor_auto_approved(a)
-                record = db.execute(
-                    "SELECT record FROM runtime_rules WHERE id=?", (rule["id"],)
-                ).fetchone()
-                current_rule = json.loads(record[0]) if record else None
-                if (
-                    not current_rule
-                    or current_rule["agent"] != agent_id
-                    or current_rule["status"] != "active"
-                    or not current_rule.get("inFlight")
-                    or current_rule["epoch"] != a["epoch"]
-                    or current_rule["checks"] != rule["checks"]
-                ):
-                    raise ValueError("This rule check was paused, deleted, or replaced")
-            if db.execute("SELECT COUNT(*) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval')").fetchone()[0] >= 64:
-                raise ValueError("Maximum 64 active command watches")
-            m = {
-                "id": key,
-                "agent": a["id"],
-                "epoch": a["epoch"],
-                "turnId": a.get("turnId"),
-                "requestId": request_key,
-                "command": command,
-                "cwd": a["cwd"],
-                "timeout_ms": timeout,
-                "stallTimeoutSeconds": stall_timeout,
-                "livenessCommand": liveness_command,
-                "activityAt": time.time(),
-                "activityGeneration": 0,
-                "stallWakeGeneration": -1,
-                "wakeOn": wake_on,
-                "successExitCodes": success,
-                "status": "starting" if approved else "approval",
-                "created": time.time(),
-                "exitCode": None,
-                "tail": "",
-                "bytes": 0,
-                "interactive": bool(data.get("interactive", False)),
-                "ruleId": rule["id"] if rule else None,
-                "log": str(self.root / "monitor-logs" / (key + ".log")),
-            }
-            self.put(db, "monitors", m)
-            if not approved:
-                self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
-                    "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending",
-                    "createdAt": m["created"]})
+            else:
+                if wait_timeout_ms and wait_deadline is not None and time.monotonic() >= wait_deadline:
+                    raise ValueError("wait_timeout_ms expired before launch; command was not started")
+                a = self.agent(agent_id, db)
+                if not a["autoWake"]:
+                    raise ValueError("Agent is stopped")
+                if epoch is not None and a["epoch"] != epoch:
+                    raise ValueError("The agent turn was stopped")
+                self.assert_workspace_available(db, a)
+                if rule:
+                    # A rule can race a user permission change between prepare and this lock.
+                    approved = self.monitor_auto_approved(a)
+                    record = db.execute(
+                        "SELECT record FROM runtime_rules WHERE id=?", (rule["id"],)
+                    ).fetchone()
+                    current_rule = json.loads(record[0]) if record else None
+                    if (
+                        not current_rule
+                        or current_rule["agent"] != agent_id
+                        or current_rule["status"] != "active"
+                        or not current_rule.get("inFlight")
+                        or current_rule["epoch"] != a["epoch"]
+                        or current_rule["checks"] != rule["checks"]
+                    ):
+                        raise ValueError("This rule check was paused, deleted, or replaced")
+                if db.execute("SELECT COUNT(*) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval')").fetchone()[0] >= 64:
+                    raise ValueError("Maximum 64 active command watches")
+                m = {
+                    "id": key,
+                    "agent": a["id"],
+                    "epoch": a["epoch"],
+                    "turnId": a.get("turnId"),
+                    "requestId": request_key,
+                    "command": command,
+                    "cwd": a["cwd"],
+                    "timeout_ms": timeout,
+                    "stallTimeoutSeconds": stall_timeout,
+                    "livenessCommand": liveness_command,
+                    "activityAt": time.time(),
+                    "activityGeneration": 0,
+                    "stallWakeGeneration": -1,
+                    "wakeOn": wake_on,
+                    "successExitCodes": success,
+                    "outputPatterns": output_patterns,
+                    "outputEventSequence": 0,
+                    "outputEventCount": 0,
+                    "outputEventIds": [],
+                    "status": "starting" if approved else "approval",
+                    "created": time.time(),
+                    "exitCode": None,
+                    "tail": "",
+                    "bytes": 0,
+                    "interactive": bool(data.get("interactive", False)),
+                    "ruleId": rule["id"] if rule else None,
+                    "log": str(self.root / "monitor-logs" / (key + ".log")),
+                }
+                self.put(db, "monitors", m)
+                if not approved:
+                    self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
+                        "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending",
+                        "createdAt": m["created"]})
+        if previous is not None:
+            if wait_timeout_ms:
+                return self._observe_monitor_after_launch(
+                    agent_id, key,
+                    epoch=epoch if epoch is not None else previous["epoch"],
+                    wait_timeout_ms=wait_timeout_ms, account_key=account_key,
+                    after_sequence=previous.get("outputEventSequence", 0),
+                    wait_deadline=wait_deadline)
+            return previous
         if approved:
             self.launch_monitor(key)
+        if wait_timeout_ms:
+            return self._observe_monitor_after_launch(
+                agent_id, key, epoch=m["epoch"], wait_timeout_ms=wait_timeout_ms,
+                account_key=account_key, after_sequence=0, wait_deadline=wait_deadline)
         return m
+
+    def _observe_monitor_after_launch(
+        self, agent_id: str, monitor_id: str, *, epoch: int,
+        wait_timeout_ms: int, account_key: str | None = None,
+        after_sequence: int | None = None, wait_deadline: float | None = None,
+    ) -> dict[str, Any]:
+        """Keep the durable launch identity when its optional wait cannot finish."""
+        try:
+            return self.observe_monitor(
+                agent_id, monitor_id, epoch=epoch, wait_timeout_ms=wait_timeout_ms,
+                account_key=account_key, after_sequence=after_sequence,
+                wait_deadline=wait_deadline)
+        except Exception as error:
+            return {
+                "id": monitor_id,
+                "status": "unknown",
+                "outcome": "unknown",
+                "observationError": str(error)[:1000],
+            }
+
+    def observe_monitor(self, agent_id, monitor_id, *, epoch, wait_timeout_ms=0,
+                        account_key=None, after_sequence=None, wait_deadline=None):
+        """Read or wait for one monitor without changing its command lease."""
+        if type(wait_timeout_ms) is not int or not 0 <= wait_timeout_ms <= MONITOR_WAIT_MAX_MILLISECONDS:
+            raise ValueError("wait_timeout_ms must be 0 to 10000")
+        deadline = time.monotonic() + wait_timeout_ms / 1000
+        if wait_deadline is not None:
+            deadline = min(deadline, wait_deadline)
+        with self.monitor_condition:
+            initial_sequence = after_sequence
+            while True:
+                with self.db() as db:
+                    row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,)).fetchone()
+                    if not row:
+                        raise ValueError("Unknown command watch")
+                    if self.closed:
+                        raise ConnectionError("The runtime closed during the monitor wait")
+                    monitor = json.loads(row[0])
+                    if monitor.get("agent") != agent_id or monitor.get("epoch") != epoch:
+                        raise ValueError("This monitor belongs to another agent or epoch")
+                    agent = self.agent(agent_id, db)
+                    if (agent.get("deletedAt") or agent.get("epoch") != epoch
+                            or not agent.get("autoWake")):
+                        raise ValueError("The monitor owner epoch is no longer active")
+                    current_account = agent.get("accountKey", "default")
+                    if account_key is not None and current_account != account_key:
+                        raise ValueError("The monitor belongs to another account")
+                    operation = monitor.get("operation") or {}
+                    if operation and operation.get("accountKey", "default") != current_account:
+                        raise ValueError("The monitor account changed")
+                    if initial_sequence is None:
+                        initial_sequence = monitor.get("outputEventSequence", 0)
+                    changed = monitor.get("outputEventSequence", 0) > initial_sequence
+                    terminal = monitor.get("status") not in {"approval", "starting", "running"}
+                    if not wait_timeout_ms or changed or terminal:
+                        response = dict(monitor)
+                        event_ids = monitor.get("outputEventIds", [])
+                        response["outputEvents"] = []
+                        if event_ids:
+                            placeholders = ",".join("?" for _ in event_ids)
+                            rows = db.execute(
+                                "SELECT id,status,text FROM runtime_events WHERE id IN (" + placeholders + ")",
+                                tuple(event_ids),
+                            )
+                            response["outputEvents"] = [
+                                {"id": event["id"], "status": event["status"], **json.loads(event["text"])}
+                                for event in rows
+                            ]
+                        response["waitExpired"] = False
+                        return response
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        response = dict(monitor)
+                        response["outputEvents"] = []
+                        response["waitExpired"] = True
+                        return response
+                self.monitor_condition.wait(remaining)
 
     def launch_monitor(self, key, shell_config=None, preflight=None):
         def run():
@@ -10406,7 +10596,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         raise ValueError("This rule was paused or deleted")
                 # Stop cannot overtake command submission on the same connection.
                 operation = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
-                             "connectionId": self.agent_connection(a)}
+                             "connectionId": self.agent_connection(a), "threadId": a.get("threadId")}
                 current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation,
                     configurationPending=False, activityAt=time.time(), activityGeneration=0,
                     stallWakeGeneration=-1)
@@ -10482,17 +10672,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 self.finish_monitor(key, None, str(error), operation=operation)
 
-    def output(self, p, account_key="default", connection_id=None):
+    def output(self, p, account_key="default", connection_id=None, *,
+               supervisor_handle=None, supervisor_sequence=None):
         key = p.get("processId")
         with self.lock, self.db() as db:
+            if (isinstance(supervisor_handle, str) and supervisor_handle
+                    and type(supervisor_sequence) is int and supervisor_sequence > 0):
+                cursor = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?",
+                                    (supervisor_handle,)).fetchone()
+                if cursor and supervisor_sequence <= cursor[0]:
+                    return
+
+            def commit_output_cursor():
+                if (isinstance(supervisor_handle, str) and supervisor_handle
+                        and type(supervisor_sequence) is int and supervisor_sequence > 0):
+                    db.execute(
+                        "INSERT INTO runtime_supervisor_cursor VALUES (?,?) "
+                        "ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
+                        (supervisor_handle, supervisor_sequence),
+                    )
+
             if not self.connection_current(account_key, connection_id):
+                commit_output_cursor()
                 return
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if not row:
+                commit_output_cursor()
                 return
             m = json.loads(row[0])
-            if (self.agent(m["agent"], db).get("accountKey", "default") != account_key
-                    or m["status"] != "running"):
+            a = self.agent(m["agent"], db)
+            if a.get("accountKey", "default") != account_key or m["status"] != "running":
+                commit_output_cursor()
                 return
             chunk = base64.b64decode(p.get("deltaBase64", ""))
             path = Path(m["log"])
@@ -10508,11 +10718,46 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             with os.fdopen(descriptor, "ab") as log:
                 log.write(chunk)
             m["bytes"] += len(chunk)
-            m["tail"] = (m["tail"] + chunk.decode("utf-8", errors="replace"))[-12000:]
-            if chunk:
+            operation = m.get("operation") or {}
+            live_identity = (
+                m.get("status") == "running" and not a.get("deletedAt")
+                and a.get("autoWake") and a.get("epoch") == m.get("epoch")
+                and operation.get("agent") == a["id"]
+                and operation.get("epoch") == m.get("epoch")
+                and operation.get("accountKey", "default") == account_key
+                and (operation.get("connectionId") == connection_id
+                     or m.get("reattachedConnectionId") == connection_id)
+            )
+            output_event = None
+            if m.get("status") in {"starting", "running"}:
+                from codex_monitor_output import append_output, pending_output_event
+                stream = p.get("stream") if p.get("stream") in {"stdout", "stderr"} else "stdout"
+                append_output(m, stream, chunk, match=live_identity)
+            if chunk and m.get("status") in {"starting", "running"}:
                 m["activityAt"] = time.time()
                 m["activityGeneration"] = m.get("activityGeneration", 0) + 1
+            if live_identity and m.get("outputPatterns") and not m.get("ruleId"):
+                from codex_monitor_output import pending_output_event
+                output_event = pending_output_event(m)
+                if output_event:
+                    self._enqueue_monitor_output_event(db, a, m, output_event)
             self.put(db, "monitors", m, monitor_output=True)
+            commit_output_cursor()
+            if output_event:
+                self.monitor_condition.notify_all()
+
+    def _enqueue_monitor_output_event(self, db, agent, monitor, output_event):
+        event_id = output_event["id"]
+        payload = {"id": event_id, **output_event["payload"]}
+        text = json.dumps(payload, ensure_ascii=False)
+        if (agent.get("deletedAt") or not agent.get("autoWake")
+                or agent.get("epoch") != monitor.get("epoch")):
+            db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                (event_id, agent["id"], "monitor_output", text, "cancelled", time.time(),
+                 monitor.get("epoch", agent.get("epoch", 0)), None, None))
+            self.changed.set()
+            return
+        self.enqueue_recovery_event(db, agent, "monitor_output", text, event_id)
 
     @staticmethod
     def _ensure_private_monitor_log(monitor):
@@ -10526,6 +10771,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         now = time.time()
         probes = []
         with self.lock, self.db() as db:
+            from codex_monitor_output import OUTPUT_WAKE_COOLDOWN_SECONDS, pending_output_event
+            for row in db.execute(
+                    "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running' "
+                    "AND EXISTS (SELECT 1 FROM json_each(record,'$.outputMatchesPending') WHERE value>0) "
+                    "AND COALESCE(json_extract(record,'$.outputWakeAt'),0)+?<=?",
+                    (OUTPUT_WAKE_COOLDOWN_SECONDS, now)):
+                monitor = json.loads(row[0])
+                if (not monitor.get("outputMatchesPending")
+                        or now - monitor.get("outputWakeAt", 0) < OUTPUT_WAKE_COOLDOWN_SECONDS):
+                    continue
+                agent = self.agent(monitor["agent"], db)
+                operation = monitor.get("operation") or {}
+                connection = self.agent_connection(agent)
+                if (monitor.get("ruleId") or agent.get("deletedAt") or not agent.get("autoWake")
+                        or agent.get("epoch") != monitor.get("epoch")
+                        or operation.get("agent") != agent["id"]
+                        or operation.get("epoch") != monitor.get("epoch")
+                        or operation.get("accountKey", "default") != agent.get("accountKey", "default")
+                        or (operation.get("connectionId") != connection
+                            and monitor.get("reattachedConnectionId") != connection)):
+                    continue
+                output_event = pending_output_event(monitor, now=now)
+                if output_event:
+                    self._enqueue_monitor_output_event(db, agent, monitor, output_event)
+                    self.put(db, "monitors", monitor)
+                    self.monitor_condition.notify_all()
             for row in db.execute(
                     "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running' "
                     "AND COALESCE(json_extract(record,'$.activityAt'),json_extract(record,'$.created'),1e99)+"
@@ -10660,7 +10931,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 reattached = True
             if reattached:
                 from codex_monitor_recovery import recover_monitor_results
-                with self.db() as db:
+                with self.monitor_condition, self.db() as db:
                     recovered = recover_monitor_results(self, db, keys=[key])
                     if key not in recovered["acknowledge"]:
                         raise OSError("The reattached monitor result is not committed")
@@ -10950,8 +11221,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def _monitor_exit_event(self, db, a, m, *, wake=True):
         if m.get("ruleId"):
             return
-        text = json.dumps({k: m.get(k) for k in
-            ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")})
+        from codex_monitor_output import output_match_summary
+        payload = {k: m.get(k) for k in
+            ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")}
+        summary = output_match_summary(m)
+        if summary is not None:
+            payload["outputMatchSummary"] = summary
+        text = json.dumps(payload, ensure_ascii=False)
         event_key = "monitor:" + m["id"]
         existing = db.execute("SELECT * FROM runtime_events WHERE id=?", (event_key,)).fetchone()
         monitor_epoch = m.get("epoch")
@@ -11047,25 +11323,46 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.put(db, "rules", rule)
             self.changed.set()
 
-    def _finish_monitor(self, key, code, error, *, finished=None):
-        with self.db() as db:
-            m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
-            if m["status"] in {"cancelled", "completed", "failed"}:
-                self._monitor_exit_event(db, self.agent(m["agent"], db), m)
-                return
-            cancelled = bool(m.get("cancelRequested"))
-            status = ("cancelled" if cancelled else "failed"
-                      if error or code not in m.get("successExitCodes", [0]) else "completed")
-            m.update(status=status, exitCode=code, error=error,
-                     finished=finished if finished is not None else time.time(), configurationPending=False)
-            self.put(db, "monitors", m)
-            a = self.agent(m["agent"], db)
-            if m.get("ruleId"):
-                self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
-            else:
-                self._monitor_exit_event(db, a, m)
+    def _finalize_monitor_terminal(self, db, m, *, code, error, finished=None, notify=True):
+        """Flush stream decoding and output notifications in the terminal transaction."""
+        if m["status"] in {"cancelled", "completed", "failed"}:
+            self._monitor_exit_event(db, self.agent(m["agent"], db), m)
+            with self.monitor_condition:
+                self.monitor_condition.notify_all()
+            return
+        cancelled = bool(m.get("cancelRequested"))
+        status = ("cancelled" if cancelled else "failed"
+                  if error or code not in m.get("successExitCodes", [0]) else "completed")
+        from codex_monitor_output import flush_utf8_tail, pending_output_event
+        flush_utf8_tail(m)
+        output_event = None if m.get("ruleId") else pending_output_event(
+            m, final=True, now=finished if finished is not None else time.time())
+        m.pop("outputMatcherTail", None)
+        m.update(status=status, exitCode=code, error=error,
+                 finished=finished if finished is not None else time.time(), configurationPending=False)
+        self.put(db, "monitors", m)
+        a = self.agent(m["agent"], db)
+        if m.get("ruleId") and notify:
+            self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
+        elif not m.get("ruleId") and notify:
+            if output_event:
+                self._enqueue_monitor_output_event(db, a, m, output_event)
+            self._monitor_exit_event(db, a, m)
+        with self.monitor_condition:
+            self.monitor_condition.notify_all()
 
-    def cancel_monitor(self, key, owner=None):
+    def _finish_monitor(self, key, code, error, *, finished=None):
+        with self.monitor_condition, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+            if row is None:
+                return
+            m = json.loads(row[0])
+            self._finalize_monitor_terminal(db, m, code=code, error=error, finished=finished)
+
+    def cancel_monitor(self, key, owner=None, *, expected_account_key=None,
+                       expected_epoch=None, expected_connection_id=None,
+                       expected_thread_id=None, expected_monitor_epoch=None,
+                       expected_status=None):
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if not row:
@@ -11073,11 +11370,38 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             m = json.loads(row[0])
             if owner and m["agent"] != owner:
                 raise ValueError("This command belongs to another agent")
+            saved_owner = self.agent(m["agent"], db)
+            operation = m.get("operation") or {}
+            if expected_account_key is not None and saved_owner.get("accountKey", "default") != expected_account_key:
+                raise ValueError("The command account changed before it could stop")
+            if expected_epoch is not None and saved_owner.get("epoch") != expected_epoch:
+                raise ValueError("The command owner epoch changed before it could stop")
+            if expected_monitor_epoch is not None and m.get("epoch") != expected_monitor_epoch:
+                raise ValueError("The command generation changed before it could stop")
+            if expected_status is not None and m.get("status") != expected_status:
+                raise ValueError("The command status changed before it could stop")
+            reattached = bool(expected_connection_id and
+                              m.get("reattachedConnectionId") == expected_connection_id)
+            saved_thread_id = (saved_owner.get("threadId") if reattached else
+                               operation.get("threadId", saved_owner.get("threadId")))
+            if expected_thread_id is not None and saved_thread_id != expected_thread_id:
+                raise ValueError("The command thread changed before it could stop")
+            if expected_connection_id is not None:
+                current_connection = self.agent_connection(saved_owner)
+                if current_connection != expected_connection_id:
+                    raise ValueError("The command connection changed before it could stop")
+                saved_server = self.server_for(expected_account_key or saved_owner.get("accountKey", "default"),
+                                               expected_connection_id)
+            else:
+                saved_server = None
             running = m["status"] == "running"
             if m["status"] not in {"running", "starting", "approval"}:
                 return {"id": key, "status": m["status"]}
             if running and m.get("cancelRequested"):
-                return {"id": key, "status": "running", "cancelRequested": True}
+                result = {"id": key, "status": "running", "cancelRequested": True}
+                if m.get("error"):
+                    result["error"] = m["error"]
+                return result
             if running:
                 m.update(cancelRequested=True)
             else:
@@ -11093,8 +11417,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
                     request["status"] = "expired"
                     self.put(db, "requests", request)
-        owner = self.agent(m["agent"])
-        server = self.server_for(owner.get("accountKey", "default"), self.agent_connection(owner))
+            self.monitor_condition.notify_all()
+        owner = saved_owner if expected_connection_id is not None else self.agent(m["agent"])
+        server = (saved_server if expected_connection_id is not None else
+                  self.server_for(owner.get("accountKey", "default"), self.agent_connection(owner)))
         if running and server:
             try:
                 server.call("command/exec/terminate", {"processId": key})
@@ -11109,7 +11435,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
             return {"id": key, "status": current["status"], "cancelRequested": running}
 
-    def interrupt(self, a):
+    def interrupt(self, a, *, preserve_background_tasks=False):
         stream = getattr(self, '_stream_buffer', None)
         if stream and a.get('threadId'):
             with self.lock, self.db() as db:
@@ -11142,7 +11468,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if current.get("turnId") != a["turnId"] or not current.get("inFlight"):
                 return
             try:
-                server.call("turn/interrupt", {"threadId": a["threadId"], "turnId": a["turnId"]})
+                params = {"threadId": a["threadId"], "turnId": a["turnId"]}
+                account = self.accounts.get(a.get("accountKey", "default"))
+                if account and account.get("provider") == "claude":
+                    params["stopBackgroundTasks"] = not preserve_background_tasks
+                server.call("turn/interrupt", params)
             except Exception as error:
                 with self.lock, self.db() as db:
                     latest = self.agent(a["id"], db)
@@ -11159,6 +11489,59 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         latest["error"] = f"Stop requested; interrupt acknowledgement unavailable: {error}"
                     self.put(db, "agents", latest)
 
+    def stop_response(self, key, *, expected_account_key, expected_epoch,
+                      expected_connection_id, expected_thread_id, expected_turn_id):
+        """Interrupt one active response without pausing its owner or its processes."""
+        with self.lock, self.db() as db:
+            current = self.agent(key, db)
+            account_key = current.get("accountKey", "default")
+            if (account_key != expected_account_key or current.get("epoch") != expected_epoch
+                    or self.agent_connection(current) != expected_connection_id
+                    or current.get("threadId") != expected_thread_id
+                    or current.get("turnId") != expected_turn_id):
+                raise ValueError("The response owner changed. Refresh the process list")
+            turn_id = current.get("turnId")
+            thread_id = current.get("threadId")
+            if not current.get("inFlight") or not turn_id or not thread_id:
+                raise ValueError("There is no active response to stop")
+            connection_id = self.agent_connection(current)
+            if not connection_id:
+                return {"status": "uncertain", "error": "The response connection is unavailable"}
+            server = self.server_for(account_key, connection_id)
+            if server is None:
+                return {"status": "uncertain", "error": "The response connection is unavailable"}
+            stream = getattr(self, "_stream_buffer", None)
+            if stream:
+                stream.flush_locked(db, account=account_key, thread_id=thread_id, force=True)
+            account = self.accounts.get(account_key)
+            provider = account.get("provider") if account else None
+        params = {"threadId": thread_id, "turnId": turn_id}
+        if provider == "claude":
+            params["stopBackgroundTasks"] = False
+        with self.lock, self.db() as db:
+            latest = self.agent(key, db)
+            if (latest.get("accountKey", "default") != expected_account_key
+                    or latest.get("epoch") != expected_epoch
+                    or self.agent_connection(latest) != expected_connection_id
+                    or latest.get("threadId") != expected_thread_id
+                    or latest.get("turnId") != expected_turn_id
+                    or not latest.get("inFlight")):
+                return {"status": "stale", "error": "The response changed before stop dispatch"}
+        try:
+            server.call("turn/interrupt", params)
+        except Exception as error:
+            message = "Response stop acknowledgement unavailable: " + str(error)
+            with self.lock, self.db() as db:
+                latest = self.agent(key, db)
+                if (latest.get("accountKey", "default") == account_key
+                        and latest.get("epoch") == expected_epoch
+                        and latest.get("threadId") == thread_id
+                        and latest.get("turnId") == turn_id):
+                    latest["error"] = message
+                    self.put(db, "agents", latest)
+            return {"status": "uncertain", "error": message}
+        return {"status": "requested"}
+
     def stop(  # type: ignore[call-arg]  # typed-update
         self,
         key,
@@ -11167,6 +11550,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         sender=None,
         sender_epoch=None,
         _remote_request=None,
+        cancel_processes=True,
+        expected_account_key=None,
+        expected_epoch=None,
     ):
         with self.lock, self.db() as db:
             if sender:
@@ -11174,6 +11560,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
             target = self.agent(key, db)
+            if expected_account_key is not None and target.get("accountKey", "default") != expected_account_key:
+                raise ValueError("The agent account changed before the response could stop")
+            if expected_epoch is not None and target.get("epoch") != expected_epoch:
+                raise ValueError("The agent epoch changed before the response could stop")
             if _remote_request and target.get('remoteStopRequest') == _remote_request['id']:
                 return {'stopped': [key]}
             if _remote_request and target.get('remoteControlEpoch', 0) > _remote_request['controlEpoch']:
@@ -11216,12 +11606,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if request.get("agent") in ids and request["status"] == "pending" and request["method"] != "monitor/approve":
                     request["status"] = "expired"
                     self.put(db, "requests", request)
-            monitors = [m["id"] for m in active_monitors(db) if m["agent"] in ids and m["status"] in {"running", "approval", "starting"}]
+            monitors = ([m["id"] for m in active_monitors(db)
+                         if m["agent"] in ids and m["status"] in {"running", "approval", "starting"}]
+                        if cancel_processes else [])
         voice = getattr(self, "_voice_store", None)
         for a in stopped:
             if voice:
                 voice.end_active(a["id"])
-            self.interrupt(a)
+            self.interrupt(a, preserve_background_tasks=not cancel_processes)
         for m in monitors:
             self.cancel_monitor(m)
         return {"stopped": sorted(ids)}
@@ -11919,6 +12311,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self._close_event.set()
         with self.ui_condition:
             self.ui_condition.notify_all()
+        with self.monitor_condition:
+            self.monitor_condition.notify_all()
         self.changed.set()
         self.scheduler.join()
         # Let any pre-stop constructor close and register its unpublished server.
@@ -11958,7 +12352,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             executor = getattr(self, name, None)
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
-        for executor in (self.tool_pool, self.coordination_pool, self.recovery_pool):
+        for executor in (self.tool_pool, self.monitor_wait_pool, self.coordination_pool, self.recovery_pool):
             executor.shutdown(wait=True, cancel_futures=True)
         for server in servers:
             if not server.join_callbacks(timeout=30):

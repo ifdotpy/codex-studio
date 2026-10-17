@@ -1199,7 +1199,13 @@ mod tests {
     async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let tmpfs = std::env::var_os("CS_W9_CLEANUP_TEST_TMPFS")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("/dev/shm/cs-w9-cleanup-tmp"));
+            .unwrap_or_else(|| {
+                if cfg!(target_os = "linux") {
+                    std::path::PathBuf::from("/dev/shm/cs-w9-cleanup-tmp")
+                } else {
+                    std::env::temp_dir()
+                }
+            });
         std::fs::create_dir_all(&tmpfs).expect("tmpfs test parent exists");
         let directory = tempfile::Builder::new()
             .prefix("workspace-cleanup-")

@@ -1,3 +1,4 @@
+import { serverStoragePrefix } from "../servers/storage";
 import {
   defaultStudioPreferences,
   parseStudioPreferences,
@@ -214,7 +215,7 @@ export function watchPreferenceWrites(listener: () => void) {
 export function preferenceStorageForServer(id: string) {
   return scopedStorage(
     () => globalThis.localStorage,
-    id === "local" ? "" : `:server:${id}:`,
+    serverStoragePrefix(id),
     new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
   );
 }

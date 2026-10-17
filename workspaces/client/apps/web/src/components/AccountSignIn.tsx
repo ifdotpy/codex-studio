@@ -1,16 +1,9 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import {
-  clearStableRequestId,
-  errorText,
-  post,
-  save,
-  saved,
-  stableRequestId,
-  type PostResult,
-} from "../api";
+import { errorText, type PostResult } from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
 
@@ -44,6 +37,9 @@ export default function AccountSignIn({
   label?: string;
   onConnected?: (account: Account) => void;
 }) {
+  const { clearStableRequestId, post, save, saved, stableRequestId } =
+    useServerApi();
+
   const storageKey = `account-sign-in:${state.scope || "local"}${targetAccount ? `:${targetAccount.id}` : ""}`;
   const [requestId, setRequestId] = useState(() =>
     saved<string>(storageKey, ""),

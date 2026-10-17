@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => ({
   syncPost: vi.fn(),
 }));
 vi.mock("./client", () => ({ syncDatabase: mocks.syncDatabase }));
-vi.mock("../api", () => ({
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api")>()),
   syncGet: mocks.syncGet,
   syncPost: mocks.syncPost,
   ApiError: class extends Error {},

@@ -1,3 +1,4 @@
+import { useServerApi } from "./ServerServicesContext";
 import {
   capturePreferenceWrite,
   readPreferenceFields,
@@ -5,7 +6,7 @@ import {
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { ServerManagementRequests } from "./managementRequests";
 import { useEffect, useRef, useState } from "react";
-import { errorText, refreshSession, serverAccess } from "../api";
+import { errorText } from "../api";
 import {
   discoverySnapshot,
   effectiveDiscoveryAliases,
@@ -35,6 +36,8 @@ export function useServerDiscovery(
   add: (server: StudioServer) => void,
   localAvailable = true,
 ) {
+  const { refreshSession, serverAccess } = useServerApi();
+
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
   const [, setPreferenceRevision] = useState(0);
   const [error, setError] = useState("");

@@ -154,7 +154,10 @@ impl StdioProviderTaskFactory {
                 let reaped = reap_with_deadline(pid, child.wait()).await;
                 let cleanup = killed
                     .or_else(|error| {
-                        if error.raw_os_error() == Some(NO_SUCH_PROCESS) {
+                        if error.raw_os_error() == Some(NO_SUCH_PROCESS)
+                            || (reaped.is_ok()
+                                && crate::owned_process_group::vanished_after_reap(pid, &error))
+                        {
                             Ok(())
                         } else {
                             Err(error)

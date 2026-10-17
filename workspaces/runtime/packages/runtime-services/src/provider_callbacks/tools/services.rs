@@ -586,17 +586,21 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
     }
 }
 pub(super) fn read_only(name: &str, args: &Value) -> bool {
-    matches!(
-        name,
-        "orchestration_read"
-            | "orchestration_peers"
-            | "orchestration_search"
-            | "orchestration_chat_read"
-    ) || name == "orchestration_task"
-        && matches!(
-            args["action"].as_str().unwrap_or("list"),
-            "list" | "get" | "read" | "history"
+    (name == "orchestration_monitor"
+        && args["monitor_id"].is_string()
+        && args.get("command").is_none())
+        || matches!(
+            name,
+            "orchestration_read"
+                | "orchestration_peers"
+                | "orchestration_search"
+                | "orchestration_chat_read"
         )
+        || name == "orchestration_task"
+            && matches!(
+                args["action"].as_str().unwrap_or("list"),
+                "list" | "get" | "read" | "history"
+            )
         || name == "orchestration_request"
             && matches!(args["action"].as_str().unwrap_or("list"), "list" | "get")
 }

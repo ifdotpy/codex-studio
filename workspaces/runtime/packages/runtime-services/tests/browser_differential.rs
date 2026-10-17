@@ -95,14 +95,10 @@ fn input() -> ForwardInput {
 }
 
 fn local_request(port: u16, method: &str, target: &str, headers: &str) -> String {
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
-    write!(stream, "{method} {target} HTTP/1.1\r\n{headers}\r\n")
-        .expect("valid browser differential fixture");
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .expect("valid browser differential fixture");
-    response
+    local_raw_request(
+        port,
+        format!("{method} {target} HTTP/1.1\r\n{headers}\r\n").as_bytes(),
+    )
 }
 
 fn local_raw_request(port: u16, raw: &[u8]) -> String {

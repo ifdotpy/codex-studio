@@ -1,3 +1,5 @@
+import { hasNativeClient } from "../native/client";
+import { nativeFetch } from "../native/http";
 import { serverViewId, isolatedServerView } from "./environment";
 import { viewServer, type StudioServer } from "./registry";
 
@@ -52,16 +54,20 @@ export function serverCredentialAdapter() {
   return credentials;
 }
 export function apiOrigin() {
+  if (hasNativeClient() && !serverViewId) return "http://localhost";
   return serverViewId
     ? viewServer(serverViewId).origin
     : (globalThis.location?.origin ?? "http://localhost");
 }
 export function serverFetch(request: Request) {
+  if (hasNativeClient() && !serverViewId)
+    return nativeFetch(request, apiOrigin());
   // In a browser the backend also serves the local frame origin and takes
   // these account requests there. In the desktop a separate UI host serves the
   // frames and owns no API, so the desktop bridge carries them to the local
   // server with the session token, like every other local frame request.
   if (
+    globalThis.location?.protocol !== "studio-view:" &&
     serverViewId === "local" &&
     isolatedServerView &&
     !(

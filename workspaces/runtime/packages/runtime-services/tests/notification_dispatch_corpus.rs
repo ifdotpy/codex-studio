@@ -259,6 +259,16 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
             generation: step["generation"].as_u64().unwrap_or(7),
             cursor: step["cursor"].as_u64().unwrap_or(index as u64 + 1),
         };
+        // Both adapters receive the same fixture-native session identity. The
+        // production account worker supplies its actual UUID instead.
+        let publication = publication.clone().with_native_source(Some(
+            studio_runtime_services::notification_dispatch::NativeProcessSource {
+                account: "default".into(),
+                connection: "connection-7".into(),
+                generation: Some(7),
+                provider: "codex".into(),
+            },
+        ));
         if let Some(service) = step["required_service"].as_str() {
             assert_eq!(case["requires_service"], service);
             assert_eq!(index + 1, case["steps"].as_array().expect("steps").len());

@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
 const root = path.dirname(fileURLToPath(import.meta.url));
-const temp = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-test-"));
+// macOS's per-user temporary directory can exceed the Unix socket path limit
+// once the backend appends its state-relative socket name.
+const temp = await mkdtemp(
+  path.join(process.platform === "darwin" ? "/tmp" : tmpdir(), "studio-pkg-"),
+);
 const state = path.join(temp, "state");
 const port = await new Promise((resolve) => {
   const server = createServer();
@@ -34,6 +38,9 @@ try {
       CODEX_AGENTS_STATE_DIR: state,
       CODEX_DESKTOP_PORT: String(port),
       CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
+      // This fixture owns a fresh state and no supervisor service. Do not
+      // inherit the running Studio installation's supervisor mode.
+      CODEX_AGENTS_SUPERVISOR_MODE: "0",
     },
   });
   const page = await desktop.firstWindow();

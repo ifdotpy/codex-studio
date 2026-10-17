@@ -1,3 +1,16 @@
+import { useScreenEnvironment } from "./servers/ScreenContext";
+import {
+  useServerApi,
+  useServerStorage,
+  useServerStorageEventKey,
+  useServerChatCreations,
+  useServerResources,
+  useServerAccountLimits,
+  useServerOutbox,
+  useServerActivityScope,
+} from "./servers/ServerServicesContext";
+import { useServerFileDialogs } from "./servers/ServerServicesContext";
+import { onDesktopNavigate } from "./native/notifications";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
@@ -7,21 +20,10 @@ import StudioSettingsTabs, {
   type StudioSettingsTab,
 } from "./components/StudioSettingsTabs";
 import { useServerSettings } from "./servers/ServerSettingsContext";
-import {
-  useServerActivity,
-  serverActivityActive,
-  subscribeServerActivity,
-} from "./servers/activity";
+import "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
-import {
-  serverViewId,
-  isServerView,
-  isClassicServerView,
-  isRemoteServerView,
-  serverParentOrigin,
-} from "./servers/environment";
-import { serverStorageEventKey } from "./servers/storage";
+import { serverParentOrigin } from "./servers/environment";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
 import { localServer, viewServer } from "./servers/registry";
@@ -46,10 +48,6 @@ import {
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
-  configureLimitsCache,
-  cachedLimitsByAccount,
-  cacheAccountLimits,
-  subscribeLimitsCache,
   limitsReadSucceeded,
   limitsSnapshotIsFresh,
   shouldReplaceLimitsSnapshot,
@@ -59,11 +57,7 @@ import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
-import {
-  pendingChatCreations,
-  saveChatCreation,
-  confirmChatCreationResponse,
-} from "./chatCreation";
+
 import {
   ActionIcon,
   Button,
@@ -111,28 +105,14 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import {
-  get,
-  post,
-  ApiError,
-  errorText,
-  save,
-  saved,
-  type PostBody,
-  isApiSchemaMismatch,
-  onApiSchemaMismatch,
-  schemaUpdateFailedAfterReload,
-  updateRendererAndReload,
-  automaticallyUpdateRenderer,
-  untilAnswered,
-} from "./api";
+import { ApiError, errorText, type PostBody, untilAnswered } from "./api";
 import {
   useSnapshot,
   useChatSnapshot,
   useCommittedCallback,
   useRetainedArray,
 } from "./hooks";
-import { removeAllSendingMessages } from "./components/removeSendingMessages";
+import { useSendingMessageRemoval } from "./components/useSendingMessageRemoval";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
@@ -146,14 +126,8 @@ import {
   applyStudioPreferences,
   type StudioPreferences,
 } from "./studioPreferences";
-import {
-  acknowledgeOutbox,
-  editOutboxDisplay,
-  durableSend,
-  useOutbox,
-  type OutgoingMessage,
-} from "./sync/send";
-import { useSyncedDrafts } from "./sync/drafts";
+import { type OutgoingMessage } from "./sync/send";
+import { useServerDrafts as useSyncedDrafts } from "./servers/ServerServicesContext";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
 import {
   busy,
@@ -220,7 +194,7 @@ import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyC
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
-import { watchResourceReads } from "./components/watchResourceReads";
+import { useServerResourceReads } from "./servers/ServerServicesContext";
 import {
   limitsBaselineReader,
   type LimitsBaselineHydration,
@@ -250,18 +224,64 @@ import {
   TeamModels,
 } from "./components/agents/WorkerOverview";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
-import { watchResourceChanges } from "./sync/resourceEvents";
 const ClaudeSettings = lazy(() =>
   import("./components/ClaudeSettings").then((module) => ({
     default: module.ClaudeSettings,
   })),
 );
 const TerminalDock = lazy(() => import("./components/TerminalDock"));
-const Workspace = lazy(() => import("./components/shell/Workspace"));
+import Workspace from "./components/shell/DeferredWorkspace";
 const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
-export default function App() {
+export default function App({ active = true }: { active?: boolean }) {
+  const activeScreen = useRef(active);
+  activeScreen.current = active;
+  const {
+    screen,
+    postToShell,
+    hasShell,
+    serverViewId,
+    isServerView,
+    isClassicServerView,
+    isRemoteServerView,
+  } = useScreenEnvironment();
+  const { removeAllSendingMessages } = useSendingMessageRemoval();
+  const {
+    pendingChatCreations,
+    saveChatCreation,
+    confirmChatCreationResponse,
+    rejectChatCreation,
+  } = useServerChatCreations();
+  const { canRevealPath, revealPath } = useServerFileDialogs();
+  const { watchResourceChanges } = useServerResources();
+  const watchResourceReads = useServerResourceReads();
+  const {
+    configureLimitsCache,
+    cachedLimitsByAccount,
+    cacheAccountLimits,
+    subscribeLimitsCache,
+  } = useServerAccountLimits();
+  const { useServerActivity, serverActivityActive, subscribeServerActivity } =
+    useServerActivityScope();
+  const { acknowledgeOutbox, editOutboxDisplay, durableSend, useOutbox } =
+    useServerOutbox();
+  const {
+    get,
+    post,
+    save,
+    saved,
+    isApiSchemaMismatch,
+    onApiSchemaMismatch,
+    schemaUpdateFailedAfterReload,
+    updateRendererAndReload,
+    automaticallyUpdateRenderer,
+  } = useServerApi();
+
+  const serverStorageEventKey = useServerStorageEventKey();
+  const projectStorage = useServerStorage();
+  const projectApi = useServerApi();
+  const projectServices = { ...projectApi, storage: projectStorage };
   reportPromptComposerRender("app");
   const [schemaMismatch, setSchemaMismatch] = useState(false);
   const [schemaMismatchNeedsRebuild, setSchemaMismatchNeedsRebuild] =
@@ -342,12 +362,12 @@ export default function App() {
     if (!studioSettingsOpen) return;
     if (
       serverViewId &&
-      window.parent !== window &&
+      hasShell &&
       (studioSettingsTab === "accounts" || studioSettingsTab === "servers") &&
       !externalFrameAccountDialog.current
     ) {
       setStudioSettingsOpen(false);
-      window.parent.postMessage(
+      postToShell(
         {
           kind: "studio-server-open-settings",
           serverId: serverViewId,
@@ -369,8 +389,8 @@ export default function App() {
     const changed = accountModalOpenRef.current !== opened;
     accountModalOpenRef.current = opened;
     setAccountModalOpen(opened);
-    if (changed && serverViewId && window.parent !== window)
-      window.parent.postMessage(
+    if (changed && serverViewId && hasShell)
+      postToShell(
         {
           kind: "studio-server-account-dialog",
           serverId: serverViewId,
@@ -420,7 +440,10 @@ export default function App() {
     }
   }, []);
   const preferenceBridge = useMemo(
-    () => (isServerView ? createUiPreferenceBridge(localStorage) : undefined),
+    () =>
+      isServerView && !screen
+        ? createUiPreferenceBridge(localStorage)
+        : undefined,
     [],
   );
   const receiveUiPreferences = useCallback(
@@ -458,7 +481,7 @@ export default function App() {
         if (value.theme !== colorScheme) setColorScheme(value.theme);
         window.dispatchEvent(new Event("studio-preferences-change"));
         if (isServerView)
-          window.parent.postMessage(
+          postToShell(
             { kind: "studio-server-preferences", preferences: value },
             serverParentOrigin,
           );
@@ -475,30 +498,40 @@ export default function App() {
     saved("codex-sidebar-collapsed", false),
   );
   useEffect(() => {
-    if (studioPreferences.theme !== colorScheme)
+    if (active && studioPreferences.theme !== colorScheme)
       setColorScheme(studioPreferences.theme);
-  }, [studioPreferences.theme, colorScheme, setColorScheme]);
+  }, [studioPreferences.theme, colorScheme, setColorScheme, active]);
   useEffect(() => {
-    applyStudioPreferences(studioPreferences, document.documentElement);
-  }, [studioPreferences]);
+    if (active)
+      applyStudioPreferences(studioPreferences, document.documentElement);
+  }, [studioPreferences, active]);
   useEffect(() => {
-    const preferences = (event: StorageEvent) => {
-      if (event.key !== studioPreferencesStorageKey || !event.newValue) return;
+    const preferences = (event: Event) => {
+      if (
+        event instanceof StorageEvent &&
+        (event.key !== studioPreferencesStorageKey || !event.newValue)
+      )
+        return;
       try {
-        const next = parseStudioPreferences(event.newValue);
+        const next = parseStudioPreferences(
+          event instanceof StorageEvent
+            ? event.newValue!
+            : JSON.stringify((event as CustomEvent).detail),
+        );
         setStudioPreferences(next);
         setColorScheme(next.theme);
       } catch {}
     };
     window.addEventListener("storage", preferences);
-    return () => window.removeEventListener("storage", preferences);
+    window.addEventListener("studio-shell-preferences", preferences);
+    return () => {
+      window.removeEventListener("storage", preferences);
+      window.removeEventListener("studio-shell-preferences", preferences);
+    };
   }, []);
   const toggleSidebar = useCallback(() => {
     if (isServerView && !isClassicServerView) {
-      window.parent.postMessage(
-        { kind: "studio-server-toggle-sidebar" },
-        serverParentOrigin,
-      );
+      postToShell({ kind: "studio-server-toggle-sidebar" }, serverParentOrigin);
       return;
     }
     if (mobileClient) {
@@ -514,6 +547,7 @@ export default function App() {
     const shortcut = parseSidebarShortcut(studioPreferences.sidebarShortcut);
     if (!shortcut) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeScreen.current || screen) return;
       const target = event.target;
       if (
         target instanceof HTMLElement &&
@@ -559,7 +593,7 @@ export default function App() {
   const selectionScope = useRef("");
   const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
-  useMobileViewport(mobileClient);
+  useMobileViewport(active && mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const {
       data,
@@ -625,7 +659,7 @@ export default function App() {
         typeof update === "function" ? update(cachedLimitsByAccount()) : update;
       for (const snapshot of Object.values(next)) cacheAccountLimits(snapshot);
     },
-    [],
+    [cachedLimitsByAccount, cacheAccountLimits],
   );
   useEffect(() => {
     if (mobileClient || !data?.stateDir) return;
@@ -716,7 +750,8 @@ export default function App() {
   const rendererUpdateSafe = useRef(canUpdateRenderer);
   rendererUpdateSafe.current = canUpdateRenderer;
   useEffect(() => {
-    if (!schemaMismatch || rendererBusy || !canUpdateRenderer) return;
+    if (!active || !schemaMismatch || rendererBusy || !canUpdateRenderer)
+      return;
     const controller = new AbortController();
     void automaticallyUpdateRenderer(
       () =>
@@ -733,7 +768,7 @@ export default function App() {
       if (!controller.signal.aborted) setSchemaUpdateError(errorText(error));
     });
     return () => controller.abort();
-  }, [schemaMismatch, rendererBusy, canUpdateRenderer]);
+  }, [schemaMismatch, rendererBusy, canUpdateRenderer, active]);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<LeadCreateRequest | null>(null),
@@ -780,7 +815,7 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(""), 5000);
   }, []);
   const nativeActions = useNativeAction(data?.stateDir, workspaceId, notify);
-  useDesktopNotifications(data, opened);
+  useDesktopNotifications(data, opened, !isServerView);
   const submitNativeAction = async (
     target: Agent,
     action: "compact" | "review",
@@ -994,8 +1029,9 @@ export default function App() {
     else save(key, opened);
   }, [data, opened, agent, room, legacy, mobileClient]);
   useEffect(() => {
-    const onError = (event: Event) =>
-      notify((event as CustomEvent<string>).detail);
+    const onError = (event: Event) => {
+      if (activeScreen.current) notify((event as CustomEvent<string>).detail);
+    };
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
@@ -1013,7 +1049,8 @@ export default function App() {
     }) => {
       setNavigationTarget({ ...target, requestId: crypto.randomUUID() });
     };
-    const unsubscribe = window.codexDesktop?.onNavigate?.(navigate);
+    if (screen) return;
+    const unsubscribe = onDesktopNavigate(navigate);
     const onNavigate = (event: Event) =>
       navigate((event as CustomEvent<Parameters<typeof navigate>[0]>).detail);
     window.addEventListener("studio-navigate", onNavigate);
@@ -1344,7 +1381,7 @@ export default function App() {
       };
       limitsWatchers.current.set(key, stop);
     }
-  }, [data?.stateDir, accountKey, usageAccountKeys]);
+  }, [data?.stateDir, accountKey, usageAccountKeys, watchResourceReads]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -1363,13 +1400,11 @@ export default function App() {
   }, [data?.runtime?.rateLimits, data?.runtime?.rateLimitsByAccount]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (!activeScreen.current) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         if (isServerView) {
-          window.parent.postMessage(
-            { kind: "studio-server-search" },
-            serverParentOrigin,
-          );
+          postToShell({ kind: "studio-server-search" }, serverParentOrigin);
           return;
         }
         setSidebar(false);
@@ -1411,8 +1446,8 @@ export default function App() {
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
-    if (!retryId && !settings && isServerView && window.parent !== window) {
-      window.parent.postMessage(
+    if (!retryId && !settings && isServerView && hasShell) {
+      postToShell(
         {
           kind: "studio-open-new-chat",
           serverId: serverViewId,
@@ -1436,7 +1471,7 @@ export default function App() {
       if (project.path || !mobileClient) {
         let servers: ProjectServerChoice[];
         try {
-          servers = await readProjectServers();
+          servers = await readProjectServers(get);
         } catch (failure) {
           notify(errorText(failure));
           return null;
@@ -1485,8 +1520,8 @@ export default function App() {
                     binding,
                     chosenSettings,
                   );
-                else if (window.parent !== window)
-                  window.parent.postMessage(
+                else if (hasShell)
+                  postToShell(
                     {
                       kind: "studio-project-new-chat",
                       settings: chosenSettings,
@@ -1561,6 +1596,7 @@ export default function App() {
                   path,
                   server,
                   crypto.randomUUID(),
+                  projectServices,
                 );
                 setModal(null);
                 await refresh();
@@ -1644,6 +1680,11 @@ export default function App() {
       void refresh();
       return a.id;
     } catch (e) {
+      if (e instanceof ApiError && e.outcome === "not_applied") {
+        rejectChatCreation(creationKey, creationRequest.id, errorText(e));
+        setPendingCreations(pendingChatCreations(creationKey));
+        creation.current = null;
+      }
       notify(errorText(e));
       return null;
     } finally {
@@ -2135,7 +2176,12 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           onSelect={async (path, server) => {
-            await registerProject(path, server, crypto.randomUUID());
+            await registerProject(
+              path,
+              server,
+              crypto.randomUUID(),
+              projectServices,
+            );
             setModal(null);
             await refresh();
           }}
@@ -2197,27 +2243,16 @@ export default function App() {
         body: (
           <ProjectFolderDialog
             agent={agent}
-            canReveal={!!window.codexDesktop && !isRemoteServerView}
+            canReveal={canRevealPath() && !isRemoteServerView}
             onReveal={(path) =>
-              void window.codexDesktop
-                ?.revealPath(path)
-                .catch((error) => notify(errorText(error)))
+              void revealPath(path).catch((error) => notify(errorText(error)))
             }
           />
         ),
       });
   };
-  const schemaMismatchDialog = (
-    <Modal
-      opened={schemaMismatch}
-      onClose={() => {}}
-      title="Studio update required"
-      closeOnEscape={false}
-      closeOnClickOutside={false}
-      withCloseButton={false}
-      role="alertdialog"
-      aria-label="Studio update required"
-    >
+  const schemaMismatchContent = (
+    <>
       <p>
         {schemaMismatchNeedsRebuild
           ? "The installed renderer build does not match the server. Rebuild Studio before continuing."
@@ -2242,6 +2277,20 @@ export default function App() {
           {schemaUpdateError && <p role="alert">{schemaUpdateError}</p>}
         </>
       )}
+    </>
+  );
+  const schemaMismatchDialog = (
+    <Modal
+      opened={schemaMismatch}
+      onClose={() => {}}
+      title="Studio update required"
+      closeOnEscape={false}
+      closeOnClickOutside={false}
+      withCloseButton={false}
+      role="alertdialog"
+      aria-label="Studio update required"
+    >
+      {schemaMismatchContent}
     </Modal>
   );
   const openSidebarProjectAccount = (path: string) => {
@@ -2333,9 +2382,11 @@ export default function App() {
         document.getElementById("message")?.focus();
         window.dispatchEvent(new Event("focus"));
       } else if (command.action === "notifications")
-        window.dispatchEvent(
-          new CustomEvent("studio-navigate", { detail: command }),
-        );
+        setNavigationTarget({
+          ...command,
+          section: "messages",
+          requestId: crypto.randomUUID(),
+        });
       else if (command.action === "projects") {
         document.documentElement.dataset.serverProjects = "true";
         setSidebarCollapsed(false);
@@ -2350,6 +2401,15 @@ export default function App() {
     publicAccounts,
     creating,
   );
+  if (!active) return null;
+  // A server contract gate must not cover navigation to other server owners.
+  if (screen && schemaMismatch)
+    return (
+      <main className="startup" aria-label="Server update required">
+        <h2>{serverSettings?.server?.alias || "Server"}: update required</h2>
+        {schemaMismatchContent}
+      </main>
+    );
   if (!data)
     return schemaMismatch ? (
       schemaMismatchDialog
@@ -2581,10 +2641,7 @@ export default function App() {
           collapsed={sidebarCollapsed}
           onSearch={() => {
             if (isServerView) {
-              window.parent.postMessage(
-                { kind: "studio-server-search" },
-                serverParentOrigin,
-              );
+              postToShell({ kind: "studio-server-search" }, serverParentOrigin);
               return;
             }
             setSidebar(false);
@@ -2754,7 +2811,7 @@ export default function App() {
                     onClick={() => {
                       if (section === "search") {
                         if (isServerView)
-                          window.parent.postMessage(
+                          postToShell(
                             { kind: "studio-server-search" },
                             serverParentOrigin,
                           );
@@ -3186,8 +3243,17 @@ export default function App() {
           />
         </Suspense>
       )}
+      <Accounts
+        managerOnly
+        dialogsOnly
+        onModalOpenChange={updateAccountModalOpen}
+        state={accounts}
+        onError={notify}
+        externalCommand={serverAccountCommand}
+        onExternalCommandHandled={() => setServerAccountCommand(null)}
+      />
       <Modal
-        opened={studioSettingsOpen}
+        opened={studioSettingsOpen && !accountModalOpen}
         transitionProps={{ duration: 0 }}
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
@@ -3222,15 +3288,6 @@ export default function App() {
                       .then(accounts.setData)
                       .catch((failure: unknown) => notify(errorText(failure)));
                   }}
-                />
-                <Accounts
-                  managerOnly
-                  dialogsOnly
-                  onModalOpenChange={updateAccountModalOpen}
-                  state={accounts}
-                  onError={notify}
-                  externalCommand={serverAccountCommand}
-                  onExternalCommandHandled={() => setServerAccountCommand(null)}
                 />
               </section>
             </Tabs.Panel>

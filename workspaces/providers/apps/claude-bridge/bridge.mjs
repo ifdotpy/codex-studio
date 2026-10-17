@@ -1100,6 +1100,7 @@ async function startSession(s, active, p) {
           studio: studioTools(s, () => active.turn),
         },
         supportedDialogKinds: ["resume_return"],
+        perTaskStopAffordance: true,
         onUserDialog: async (value, options) => {
           if (value.dialogKind !== "resume_return" || !active.turn)
             return { behavior: "cancelled" };
@@ -2374,8 +2375,26 @@ async function handle(method, p) {
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
     active.turn.interrupted = true;
-    active.input.close();
-    active.q?.close();
+    if (active.reservingInput) {
+      // An interrupt can race the durable pre-input receipt. Invalidate only
+      // that reservation so the queued background work and query stay open.
+      active.turn = null;
+      active.reservingInput = false;
+      active.idleSince = active.tasks.size ? null : Date.now();
+      catalogCache.activityChanged();
+    }
+    if (p.stopBackgroundTasks !== false && active.tasks.size) {
+      if (typeof active.q?.stopTask !== "function")
+        throw new Error("Claude does not support stopping background tasks");
+      const results = await Promise.allSettled(
+        [...active.tasks.keys()].map((taskId) => active.q.stopTask(taskId)),
+      );
+      await active.q.interrupt();
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+      return {};
+    }
+    await active.q?.interrupt();
     return {};
   }
   if (method === "thread/name/set") {

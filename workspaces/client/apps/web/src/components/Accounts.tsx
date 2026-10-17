@@ -1,3 +1,8 @@
+import {
+  useServerApi,
+  useServerResources,
+  useServerStorage,
+} from "../servers/ServerServicesContext";
 import { accountDisplayName, accountCanStart } from "../accountName";
 import { ProviderMark, remainingLimit } from "./AccountTiles";
 import { ActionButton } from "./ui/primitives";
@@ -38,7 +43,7 @@ import {
   type SetStateAction,
   type ReactNode,
 } from "react";
-import { errorText, get, post, type GetResult } from "../api";
+import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
@@ -60,6 +65,9 @@ import {
 export type AccountsState = GetResult<"/api/accounts">;
 export type Account = AccountsState["accounts"][number];
 export function useAccounts(stateDir?: string) {
+  const { get } = useServerApi();
+  const events = useServerResources();
+
   const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
     archivedAccounts: [],
@@ -91,7 +99,7 @@ export function useAccounts(stateDir?: string) {
         setError(errorText(e));
       return null;
     }
-  }, [stateDir]);
+  }, [stateDir, get]);
   useEffect(() => {
     if (!stateDir) return;
     const stop = watchResourceReads(
@@ -100,13 +108,13 @@ export function useAccounts(stateDir?: string) {
         await refresh();
       },
       (failure) => setError(errorText(failure)),
-      { waitForBaseline: true },
+      { waitForBaseline: true, events },
     );
     return () => {
       latestRead.current++;
       stop();
     };
-  }, [stateDir, refresh]);
+  }, [stateDir, refresh, events]);
   return useMemo(
     () => ({ data, setData, error, refresh, scope: stateDir }),
     [data, setData, error, refresh, stateDir],
@@ -122,6 +130,8 @@ function AccountNameEditor({
   onSaved: (data: AccountsState) => void;
   disabled: boolean;
 }) {
+  const { post } = useServerApi();
+
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(account.label);
   const [busy, setBusy] = useState(false);
@@ -630,6 +640,9 @@ export default function Accounts({
   onExternalCommandHandled?: () => void;
   dialogsOnly?: boolean;
 }) {
+  const { post } = useServerApi();
+  const storage = useServerStorage();
+
   const [opened, setOpened] = useState(false);
   const [openActionMenuAccountId, setOpenActionMenuAccountId] = useState<
     string | null
@@ -815,6 +828,7 @@ export default function Accounts({
         const requestId = getOrCreateAccountDeleteRequest(
           state.scope,
           account.id,
+          storage,
         );
         setDeleteRequestId(requestId);
         setDeleteChoice(account);
@@ -1140,6 +1154,7 @@ export default function Accounts({
                                           getOrCreateAccountDeleteRequest(
                                             state.scope,
                                             account.id,
+                                            storage,
                                           );
                                         setDeleteRequestId(requestId);
                                         setDeleteChoice(account);
@@ -1469,6 +1484,7 @@ export default function Accounts({
                       account_key: deleteChoice.id,
                       request_id: requestId,
                     }),
+                  storage,
                 ),
               );
               setDeleteChoice(null);

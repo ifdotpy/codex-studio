@@ -1,3 +1,4 @@
+import { hasNativeClient } from "../native/client";
 import { isolatedServerView, serverParentOrigin } from "./environment";
 import {
   defaultServerAlias,
@@ -123,7 +124,7 @@ export function localServer(): StudioServer {
   return {
     id: "local",
     label: localStorage.getItem(LOCAL_NAME_KEY) || "This computer",
-    origin: location.origin,
+    origin: hasNativeClient() ? "http://localhost" : location.origin,
     alias: localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
   };
 }
@@ -148,7 +149,12 @@ export function viewServer(id: string): StudioServer {
     return {
       id,
       label: id,
-      origin: id === "local" ? serverParentOrigin : serveOrigin(origin),
+      origin:
+        id === "local"
+          ? location.protocol === "studio-view:"
+            ? "http://localhost"
+            : serverParentOrigin
+          : serveOrigin(origin),
       ...(params.get("studio-credential")
         ? { credentialId: params.get("studio-credential")! }
         : {}),

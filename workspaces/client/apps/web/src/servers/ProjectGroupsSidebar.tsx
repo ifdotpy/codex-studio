@@ -1,9 +1,10 @@
+import { useServerApi } from "./ServerServicesContext";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { ActionIcon, Button, Menu, Modal } from "@mantine/core";
 import { FolderOpen, MoreHorizontal, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
-import { saved, save } from "../api";
+import "../api";
 import ProjectServerCards from "../components/ProjectServerCards";
 import ProjectChatRows from "./ProjectChatRows";
 import { logicalProjects, type LogicalProject } from "./logicalProjects";
@@ -34,6 +35,8 @@ export default function ProjectGroupsSidebar({
   send: (server: string, command: ServerCommand) => void;
   hideOldChatsThreshold: number;
 }) {
+  const { saved, save } = useServerApi();
+
   const groups = useMemo(() => logicalProjects(navigation), [navigation]);
   const [choosing, setChoosing] = useState<LogicalProject | null>(null);
   const [compact, setCompact] = useSyncedVisualState<Record<string, boolean>>(

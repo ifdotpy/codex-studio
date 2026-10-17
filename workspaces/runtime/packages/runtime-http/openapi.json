@@ -29611,6 +29611,204 @@
         "title": "ManagedMessageBody",
         "type": "object"
       },
+      "ManagedProcessRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "accountKey": {
+            "title": "Accountkey",
+            "type": "string"
+          },
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "bytes": {
+            "default": 0,
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "cancelRequested": {
+            "default": false,
+            "title": "Cancelrequested",
+            "type": "boolean"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/ProcessCapabilities"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "created": {
+            "title": "Created",
+            "type": "number"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "log": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Log"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Output"
+          },
+          "outputTruncated": {
+            "default": false,
+            "title": "Outputtruncated",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "monitor",
+              "codex_task",
+              "claude_task"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "stdinCloseRequested": {
+            "default": false,
+            "title": "Stdincloserequested",
+            "type": "boolean"
+          },
+          "stdinClosed": {
+            "default": false,
+            "title": "Stdinclosed",
+            "type": "boolean"
+          },
+          "stdinError": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Stdinerror"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "generation",
+          "agent",
+          "accountKey",
+          "epoch",
+          "source",
+          "status",
+          "created",
+          "name",
+          "capabilities"
+        ],
+        "title": "ManagedProcessRecord",
+        "type": "object"
+      },
       "MessageHistory": {
         "items": {
           "$ref": "#/components/schemas/MessageRecord"
@@ -36719,6 +36917,282 @@
         "title": "PreparedContextRecordResponse",
         "type": "object"
       },
+      "ProcessActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "processes": {
+            "default": [],
+            "items": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Processes",
+            "type": "array"
+          },
+          "requestId": {
+            "title": "Requestid",
+            "type": "string"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "partial",
+              "uncertain"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "status"
+        ],
+        "title": "ProcessActionResult",
+        "type": "object"
+      },
+      "ProcessCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "readOutput": {
+            "title": "Readoutput",
+            "type": "boolean"
+          },
+          "resize": {
+            "title": "Resize",
+            "type": "boolean"
+          },
+          "sendInput": {
+            "title": "Sendinput",
+            "type": "boolean"
+          },
+          "stop": {
+            "title": "Stop",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "readOutput",
+          "sendInput",
+          "resize",
+          "stop"
+        ],
+        "title": "ProcessCapabilities",
+        "type": "object"
+      },
+      "ProcessControlRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Accountkey",
+            "type": "string"
+          },
+          "action": {
+            "enum": [
+              "stop_selected",
+              "stop_owned",
+              "stop_response"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "agent": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Agent",
+            "type": "string"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "includeDescendants": {
+            "default": false,
+            "title": "Includedescendants",
+            "type": "boolean"
+          },
+          "process": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "processes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProcessIdentity"
+            },
+            "maxItems": 500,
+            "title": "Processes",
+            "type": "array"
+          },
+          "requestId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Requestid",
+            "type": "string"
+          },
+          "responseTarget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessResponseTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "action",
+          "requestId",
+          "agent",
+          "accountKey",
+          "epoch"
+        ],
+        "title": "ProcessControlRequest",
+        "type": "object"
+      },
+      "ProcessIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Accountkey",
+            "type": "string"
+          },
+          "agent": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Agent",
+            "type": "string"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "generation": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Generation",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "generation",
+          "agent",
+          "accountKey",
+          "epoch"
+        ],
+        "title": "ProcessIdentity",
+        "type": "object"
+      },
       "ProcessKind": {
         "enum": [
           "claude_bridge",
@@ -36763,6 +37237,117 @@
         "title": "ProcessKindTotals",
         "type": "object"
       },
+      "ProcessList": {
+        "additionalProperties": false,
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "processes": {
+            "items": {
+              "$ref": "#/components/schemas/ManagedProcessRecord"
+            },
+            "title": "Processes",
+            "type": "array"
+          },
+          "responseTarget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessResponseTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "processes"
+        ],
+        "title": "ProcessList",
+        "type": "object"
+      },
+      "ProcessReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "found": {
+            "title": "Found",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessActionResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "found"
+        ],
+        "title": "ProcessReceipt",
+        "type": "object"
+      },
       "ProcessRecord": {
         "additionalProperties": false,
         "properties": {
@@ -36798,6 +37383,57 @@
           "cpuPercent"
         ],
         "title": "ProcessRecord",
+        "type": "object"
+      },
+      "ProcessResponseTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Accountkey",
+            "type": "string"
+          },
+          "agent": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Agent",
+            "type": "string"
+          },
+          "connectionId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Connectionid",
+            "type": "string"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "threadId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Threadid",
+            "type": "string"
+          },
+          "turnId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Turnid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "accountKey",
+          "epoch",
+          "connectionId",
+          "threadId",
+          "turnId"
+        ],
+        "title": "ProcessResponseTarget",
         "type": "object"
       },
       "ProcessTree": {
@@ -72048,6 +72684,350 @@
           }
         },
         "summary": "Save Plan"
+      }
+    },
+    "/api/processes": {
+      "get": {
+        "operationId": "processes_api_processes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Agent",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessList"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Processes"
+      }
+    },
+    "/api/processes/action": {
+      "get": {
+        "operationId": "process_receipt_api_processes_action_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "requestId",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Requestid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Agent",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accountKey",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Accountkey",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "epoch",
+            "required": true,
+            "schema": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "title": "Epoch",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessReceipt"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Process Receipt"
+      },
+      "post": {
+        "operationId": "process_action_api_processes_action_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessActionResult"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Process Action"
       }
     },
     "/api/profiles": {

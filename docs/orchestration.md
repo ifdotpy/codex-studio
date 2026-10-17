@@ -281,7 +281,7 @@ The lead receives these additional tools:
 | `orchestration_spawn`          | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
 | `orchestration_send`           | Send a follow-up to a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery.    |
 | `orchestration_status`         | Read team status and command watches for a decision.                                                                         |
-| `orchestration_monitor`        | Start a command watch. Deliver one result when the command exits.                                                            |
+| `orchestration_monitor`        | Start or observe a command watch. Optional literal output patterns wake the owner.                                           |
 | `orchestration_cancel_monitor` | Cancel a command watch.                                                                                                      |
 | `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
 
@@ -895,6 +895,22 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   `orchestration_context` reads the current full context on demand.
 - `orchestration_monitor` wakes its owner for every command exit, including success,
   failure, signal, and a lost process. `wake_on` cannot suppress an exit event.
+  Pass `command` to start one process. Pass `monitor_id` to observe that process
+  again; the observation form never starts a process and requires the same owner
+  and epoch. These forms are exclusive. `wait_timeout_ms` defaults to `0` and
+  accepts at most `10000`. It limits only this call. On expiry, the response has
+  the same monitor ID and active status. Use a new observation call to wait again.
+  `timeout_ms` remains the process execution limit. A repeated native call keeps
+  its original receipt. A new observation call reads the current saved monitor.
+  `output_patterns` accepts up to 16 distinct literal strings, each at most 256
+  UTF-8 bytes. A match on stdout or stderr wakes the owner. Matching is OR-based,
+  independent per stream, and supports matches across output chunks. The default
+  empty list creates no output wakes. Output wakes have a renewable one-second
+  cooldown. Repeated matches during the cooldown are coalesced into counted
+  summaries. The monitor retains only the last 32 output event IDs. Final counts
+  appear with the exit result. The complete output log remains available.
+  The command, execution settings, and `output_patterns` define launch identity.
+  `wait_timeout_ms` is observation metadata and can change between observation calls.
   A monitor wakes after no output for 30 minutes by default. Set
   `stall_timeout_seconds` to change the limit or `0` to disable stall wakes.
   Set `liveness_command` to run a sandboxed check at the stall point. The stall

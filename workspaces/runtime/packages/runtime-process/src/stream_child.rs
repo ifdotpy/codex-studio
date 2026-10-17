@@ -405,8 +405,8 @@ mod tests {
     #[tokio::test]
     async fn closing_empty_stdin_after_fast_child_exit_is_successful() {
         let mut child = StreamChild::spawn(ChildSpec {
-            program: PathBuf::from("/bin/true"),
-            args: Vec::new(),
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "exit 0".into()],
             cwd: std::env::current_dir().expect("test working directory is available"),
             environment: BTreeMap::new(),
             timeout: Duration::from_secs(2),

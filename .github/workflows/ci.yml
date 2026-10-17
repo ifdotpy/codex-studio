@@ -19,25 +19,50 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Read the pinned Rust toolchain
-        id: rust-toolchain
-        run: |
-          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-          components="$(sed -n 's/^components = \[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' "')"
-          test -n "$channel"
-          test -n "$components"
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-          echo "components=$components" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: ./.github/actions/fast-tier-setup
+      - uses: ./.github/actions/client-build-setup
         with:
-          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
-          components: ${{ steps.rust-toolchain.outputs.components }}
+          native: "true"
       - name: Rust formatting
         run: cargo fmt --check
       - name: Rust Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Rust documentation tests
         run: cargo test --doc --workspace --locked
+
+  rust-macos:
+    name: Rust macOS build
+    # Every other job runs on Linux; macOS-only code, such as image workspaces, is
+    # compiled only here.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install locked JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/client-build-setup
+        with:
+          native: "true"
+      - name: Build every Rust target for macOS
+        run: cargo check --workspace --all-targets --locked
 
   python:
     name: Python checks
@@ -123,6 +148,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
+      - uses: ./.github/actions/client-build-setup
       - name: List facade recipes
         run: just --list
       - name: Run non-Rust fast-tier checks
@@ -165,6 +191,9 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
+      - uses: ./.github/actions/client-build-setup
+        with:
+          native: "true"
       - name: Run Rust workspace partition
         run: just test-fast-rust-partition ${{ matrix.partition }} 4
       - name: Upload Rust nextest report
@@ -184,6 +213,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
+      - uses: ./.github/actions/client-build-setup
       - name: Select the isolated Python environment and browser cache
         run: |
           echo "CODEX_AGENTS_PYTHON=$(python3 workspaces/runtime/apps/server/src/codex_python.py)" >> "$GITHUB_ENV"

@@ -8,6 +8,22 @@ use std::thread;
 mod fsevents_ffi;
 use fsevents_ffi::{FSEventError, ROOT_CHANGED_FLAG, read_events};
 
+// Match os.path.ismount for the ASIF volume boundary. Inspection failures must
+// propagate: treating an unreadable mount as detached could delete live files.
+fn is_mount(path: &Path) -> Result<bool, ImageWorkspaceError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let absolute = fs::canonicalize(path)?;
+    let parent = fs::metadata(absolute.parent().unwrap_or(&absolute))?;
+    Ok(metadata.dev() != parent.dev() || metadata.ino() == parent.ino())
+}
+
 fn is_excluded(path: &Path, excludes: &[String]) -> bool {
     excludes
         .iter()
@@ -244,7 +260,7 @@ impl WorkspaceBackend for MacAsifBackend {
         _base_image: Option<&Path>,
     ) -> Result<WorkspaceMount, ImageWorkspaceError> {
         fs::create_dir_all(mount)?;
-        if !mount.is_mount() {
+        if !is_mount(mount)? {
             attach(layer, mount)?;
         }
         Ok(WorkspaceMount {
@@ -360,7 +376,7 @@ impl WorkspaceBackend for MacAsifBackend {
     }
 
     fn unmount_workspace(&self, mount: &Path, force: bool) -> Result<Value, ImageWorkspaceError> {
-        if !mount.is_mount() {
+        if !is_mount(mount)? {
             return Ok(json!({"method":"already-unmounted","terminatedPids":0}));
         }
         let mount_arg = path_arg(mount)?;
@@ -369,7 +385,8 @@ impl WorkspaceBackend for MacAsifBackend {
             &["info", mount_arg],
             Duration::from_secs(10),
         )?;
-        let device = String::from_utf8_lossy(&info.stdout)
+        let info_text = String::from_utf8_lossy(&info.stdout);
+        let device = info_text
             .lines()
             .find_map(|line| line.trim().strip_prefix("Device Node:").map(str::trim))
             .filter(|value| value.starts_with("/dev/disk"))
@@ -381,7 +398,7 @@ impl WorkspaceBackend for MacAsifBackend {
             &["eject", device],
             Duration::from_secs(20),
         );
-        if first_eject.is_ok() && !mount.is_mount() {
+        if first_eject.is_ok() && !is_mount(mount)? {
             return Ok(json!({"method":"eject","terminatedPids":0}));
         }
         if !force {
@@ -431,7 +448,7 @@ impl WorkspaceBackend for MacAsifBackend {
             Duration::from_secs(4),
         )
         .is_ok()
-            && !mount.is_mount()
+            && !is_mount(mount)?
         {
             return Ok(
                 json!({"method":"eject-after-terminating-holders","holdersFound":holders.len(),"signaledPids":signaled,"lsofTimedOut":lsof_timed_out}),
@@ -447,7 +464,7 @@ impl WorkspaceBackend for MacAsifBackend {
             &["eject", device],
             Duration::from_secs(4),
         )?;
-        if mount.is_mount() {
+        if is_mount(mount)? {
             return Err(ImageWorkspaceError::Backend(
                 "ASIF mount remained attached after forced unmount and eject".into(),
             ));
@@ -473,7 +490,7 @@ impl WorkspaceBackend for MacAsifBackend {
         } else {
             path.parent().unwrap_or(path).join("mount")
         };
-        if mount.is_mount() {
+        if is_mount(&mount)? {
             detach(&mount, false)?;
         }
         if path.is_dir() {
@@ -676,6 +693,17 @@ fn copy_tree(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mount_inspection_distinguishes_root_directory_missing_path_and_symlink() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        assert!(super::is_mount(std::path::Path::new("/")).expect("root metadata"));
+        assert!(!super::is_mount(root.path()).expect("ordinary directory"));
+        assert!(!super::is_mount(&root.path().join("missing")).expect("absent path"));
+        let alias = root.path().join("root-link");
+        std::os::unix::fs::symlink("/", &alias).expect("isolated symlink");
+        assert!(!super::is_mount(&alias).expect("symlink metadata"));
+    }
+
     use super::*;
 
     #[test]

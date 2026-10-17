@@ -1,3 +1,4 @@
+import { useServerApi, useServerSync } from "../servers/ServerServicesContext";
 import {
   useCallback,
   useMemo,
@@ -7,8 +8,8 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { post, ApiError, errorText } from "../api";
-import { refreshProjection } from "../sync/client";
+import { ApiError, errorText } from "../api";
+import "../sync/client";
 import type { Agent, Message, Snapshot } from "../types";
 
 export type ChatReadState = NonNullable<Agent["readState"]>;
@@ -58,6 +59,9 @@ export function useChatReadState(
   refresh: () => Promise<void>,
   workspaceId?: string,
 ) {
+  const { post } = useServerApi();
+  const { refreshProjection } = useServerSync();
+
   const [, redraw] = useState(0);
   const [metadataVersion, changedMetadata] = useState(0);
   const mounted = useRef(true);

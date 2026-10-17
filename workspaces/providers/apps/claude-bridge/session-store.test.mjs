@@ -381,6 +381,11 @@ test("ephemeral title session stays live without writing durable session files",
     await store.persist(ephemeral);
     assert.equal(await store.get(id), ephemeral);
     assert.equal((await store.metadata(id)).revision, `ephemeral:${id}`);
+    // Listing waits for store initialization; ephemeral persistence does not.
+    assert.deepEqual(await store.listMetadata(), {
+      data: [],
+      nextCursor: null,
+    });
     assert.deepEqual(await fs.readdir(path.join(root, "sessions")), []);
     await store.evict(id);
     await assert.rejects(store.get(id), { code: "ENOENT" });

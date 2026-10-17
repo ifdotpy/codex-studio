@@ -12,6 +12,10 @@ Use `layr add` and `layr commit` to save the task result.
 Submit the full state ID from `layr rev-parse HEAD` as the task revision.
 Use Git only for the remote bridge and tools that call Git themselves.
 Use `layr push --squash -m <task title>` to export one task commit to the remote when authorized.
+In a project synced with the Mac, Git lives on the Mac: `layr push` from the VM is off and
+agents may not add remotes. Accepted work reaches the Mac folder as uncommitted changes.
+If a tool in the VM needs git HEAD at the current layr state, commit it locally in the
+line's `.git` and do not push.
 
 The lead owns the main line and may commit in it.
 Each worker has its own line and Linux user.
@@ -48,3 +52,16 @@ A disconnect does not prove that the operation failed.
 
 Existing sessions keep their saved tools and role guidance.
 This guidance applies only to new layr sessions.
+
+## Vault backups
+
+A vault push saves the VM main state. It does not include the separate Mac source folder.
+For a full Mac backup, import the approved files into btrfs before the vault push.
+Use the source manifest to check both the saved state and restored cloud files.
+
+Use a layr-desk writer with multipart support for objects above S3's single-request limit.
+Update the vault stack from that release before the first multipart push.
+Keep conditional object creation enabled. Multipart setup and upload parts need the
+`s3:ObjectCreationOperation` policy exception, but completion must require `If-None-Match`.
+The writer still holds a complete file and its encoded forms in memory.
+Size the temporary VM for the largest file, then remove its resources after verified restoration.

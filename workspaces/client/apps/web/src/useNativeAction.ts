@@ -1,6 +1,9 @@
-import { serverLocalStorage as localStorage } from "./servers/storage";
+import {
+  useServerApi,
+  useServerStorage,
+} from "./servers/ServerServicesContext";
 import { useState } from "react";
-import { post, ApiError } from "./api";
+import { ApiError } from "./api";
 import type { PostBody } from "./api";
 import type { Agent } from "./types";
 type Request = Omit<PostBody<"/api/action">, "action"> & {
@@ -48,6 +51,9 @@ export function useNativeAction(
   workspaceId: string | undefined,
   notify: (text: string) => void,
 ) {
+  const { post } = useServerApi();
+  const localStorage = useServerStorage();
+
   const [, changed] = useState(0);
   const [active, setActive] = useState(false);
   const key = (id: string) => `studio-native-action:${workspace}:${id}`;

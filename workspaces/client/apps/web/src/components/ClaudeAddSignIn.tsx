@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { errorText, get, post, save, saved, type PostResult } from "../api";
+import { errorText, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import { ClaudeAuthorizationCodeForm } from "./ClaudeAuthorizationCodeForm";
 import {
@@ -9,7 +10,7 @@ import {
   codeVerificationPending,
   currentClaudeLoginReadMatches,
 } from "./claudeCodeSubmission";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type SavedFlow = {
@@ -28,7 +29,10 @@ const terminal = (status?: string) =>
   ["ready", "error", "cancelled"].includes(status || "");
 const attemptKey = (key: string, id: string) => `${key}:${id}`;
 
-function readSavedFlow(key: string): SavedFlow | null {
+function readSavedFlow(
+  key: string,
+  { save, saved }: Pick<ReturnType<typeof useServerApi>, "save" | "saved">,
+): SavedFlow | null {
   const normalize = (flow: SavedFlow): SavedFlow => ({
     ...flow,
     createdAt: flow.createdAt || Date.now(),
@@ -100,9 +104,12 @@ export default function ClaudeAddSignIn({
   onClose: () => void;
   onReady: () => unknown;
 }) {
+  const watchResourceReads = useServerResourceReads();
+  const { get, post, save, saved } = useServerApi();
+
   const storageKey = `claude-add-sign-in:${scope}`;
   const [flow, setFlow] = useState<SavedFlow | null>(() =>
-    readSavedFlow(storageKey),
+    readSavedFlow(storageKey, { save, saved }),
   );
   const requestId = flow?.requestId || "";
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -287,7 +294,14 @@ export default function ClaudeAddSignIn({
       stop();
       if (refreshStatus.current === refresh) refreshStatus.current = () => {};
     };
-  }, [busy, flow?.unknownSince, onReady, receipt?.status, requestId]);
+  }, [
+    busy,
+    flow?.unknownSince,
+    onReady,
+    receipt?.status,
+    requestId,
+    watchResourceReads,
+  ]);
   useEffect(() => {
     if (!flow?.unknownSince || !requestId || receipt) return;
     const remaining =

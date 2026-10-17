@@ -46,8 +46,10 @@ export function projectServerChoices(
       ),
   }));
 }
-export async function readProjectServers(): Promise<ProjectServerChoice[]> {
-  const snapshot = await get("/api/multi-server");
+export async function readProjectServers(
+  read: typeof get = get,
+): Promise<ProjectServerChoice[]> {
+  const snapshot = await read("/api/multi-server");
   const connections = globalThis.localStorage ? readServers() : [];
   return [
     {
@@ -96,24 +98,38 @@ export function durableProjectRequest(
 }
 export class ProjectReceiptRefused extends Error {}
 
-export async function saveProjectLocation(body: {
-  action: "add_location" | "remove_location";
-  project: string;
-  server: string;
-  path?: string;
-  request_id: string;
-}) {
-  const session = await refreshSession();
+type ProjectMutationServices = {
+  post: typeof post<"/api/projects">;
+  refreshSession: typeof refreshSession;
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+};
+export async function saveProjectLocation(
+  body: {
+    action: "add_location" | "remove_location";
+    project: string;
+    server: string;
+    path?: string;
+    request_id: string;
+  },
+  services: ProjectMutationServices = {
+    post,
+    refreshSession,
+    storage: serverLocalStorage,
+  },
+) {
+  const session = await services.refreshSession();
   const { request_id: proposed, ...content } = body;
-  const request = durableProjectRequest(content, proposed);
-  const result = await post(
-    "/api/projects",
-    { ...content, request_id: request.id },
-    { sessionToken: session.token },
-  ).catch((error: unknown) => {
-    request.reject(error);
-    throw error;
-  });
+  const request = durableProjectRequest(content, proposed, services.storage);
+  const result = await services
+    .post(
+      "/api/projects",
+      { ...content, request_id: request.id },
+      { sessionToken: session.token },
+    )
+    .catch((error: unknown) => {
+      request.reject(error);
+      throw error;
+    });
   if ("outcome" in result && result.outcome === "not_applied") {
     request.finish();
     throw new ProjectReceiptRefused(
@@ -132,21 +148,28 @@ export async function registerProject(
   path: string,
   server: string,
   requestId: string,
+  services: ProjectMutationServices = {
+    post,
+    refreshSession,
+    storage: serverLocalStorage,
+  },
 ) {
-  const session = await refreshSession();
+  const session = await services.refreshSession();
   const content = { path, ...(server !== "local" ? { server } : {}) };
-  const request = durableProjectRequest(content, requestId);
-  const result = await post(
-    "/api/projects",
-    {
-      ...content,
-      ...(server !== "local" ? { request_id: request.id } : {}),
-    },
-    { sessionToken: session.token },
-  ).catch((error: unknown) => {
-    request.reject(error);
-    throw error;
-  });
+  const request = durableProjectRequest(content, requestId, services.storage);
+  const result = await services
+    .post(
+      "/api/projects",
+      {
+        ...content,
+        ...(server !== "local" ? { request_id: request.id } : {}),
+      },
+      { sessionToken: session.token },
+    )
+    .catch((error: unknown) => {
+      request.reject(error);
+      throw error;
+    });
   if ("outcome" in result && result.outcome === "not_applied") {
     request.finish();
     throw new ProjectReceiptRefused(

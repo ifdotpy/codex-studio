@@ -998,6 +998,7 @@ pub(super) async fn journal_batch(
     entries: Vec<JournalEntry>,
     claude_account_pin: &Value,
     expected_vm_actor: Option<(&str, i64)>,
+    native_source: Option<crate::notification_dispatch::NativeProcessSource>,
 ) -> Result<JournalBatchResult, WorkerError> {
     if entries.is_empty() {
         return Ok(Some((streams.clone(), Vec::new(), Vec::new())));
@@ -1016,7 +1017,7 @@ pub(super) async fn journal_batch(
             "runtime-services/account_worker_journal_snapshot",
             move || {
                 let publication =
-                    crate::notification_dispatch::PublicationContext::load(&read_store)?;
+                    crate::notification_dispatch::PublicationContext::load(&read_store)?.with_native_source(native_source);
                 let limits_observation = if needs_limits {
                     let reader = read_store.read()?;
                     let limits = studio_runtime_store::account_state::limits_snapshots(&reader)?

@@ -1,3 +1,7 @@
+import {
+  hasDesktopNotifications,
+  notifyDesktop,
+} from "../native/notifications";
 import { isServerView } from "../servers/environment";
 import { useEffect, useRef } from "react";
 import { alertsSince, desktopAlerts } from "../desktop/desktopAlerts";
@@ -6,6 +10,7 @@ import type { Snapshot } from "../types";
 export function useDesktopNotifications(
   data: Snapshot | null,
   opened: string | null,
+  enabled = true,
 ) {
   const state = useRef({
     scope: "",
@@ -15,7 +20,7 @@ export function useDesktopNotifications(
     started: Date.now(),
   });
   useEffect(() => {
-    if (!data || isServerView) return;
+    if (!enabled || !data || isServerView) return;
     const scope = data.stateDir;
     if (state.current.scope !== scope)
       state.current = {
@@ -50,8 +55,8 @@ export function useDesktopNotifications(
       )
         continue;
       const { id, ...notification } = alert;
-      if (window.codexDesktop) {
-        void window.codexDesktop.notify(notification).catch((error) => {
+      if (hasDesktopNotifications()) {
+        void notifyDesktop(notification).catch((error) => {
           const message =
             error instanceof Error ? error.message : String(error);
           const denied =
@@ -88,5 +93,5 @@ export function useDesktopNotifications(
         };
       }
     }
-  }, [data, opened]);
+  }, [data, opened, enabled]);
 }

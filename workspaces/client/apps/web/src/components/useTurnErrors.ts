@@ -1,5 +1,6 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
-import { get } from "../api";
+import "../api";
 import type { Agent, JsonValue, Message } from "../types";
 
 const cachedErrors = new Map<string, Record<string, JsonValue>>();
@@ -26,6 +27,8 @@ export function failedTurnsNeedingLookup(
 // Old servers saved terminal errors in analytics without transcript notices.
 // The compact view also works with their full analytics response.
 export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
+  const { get } = useServerApi();
+
   const scope = `${workspace}:${agent?.id}:${agent?.threadId}`;
   const [result, setResult] = useState<{
     scope: string;

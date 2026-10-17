@@ -187,7 +187,7 @@ async fn invalid_launch_refused_before_socket_open() {
         let listener = UnixListener::bind(state.socket()).unwrap();
         let factory = SupervisorProviderTaskFactory::new(state.identity());
         let mut invalid = options(&state);
-        invalid.launch.command = vec!["x".repeat(1024 * 1024)];
+        invalid.launch.command = vec!["x".repeat(MAX_SUPERVISOR_FRAME_BYTES)];
         assert!(matches!(
             factory
                 .open(

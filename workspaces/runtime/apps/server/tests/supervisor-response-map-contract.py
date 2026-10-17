@@ -82,6 +82,7 @@ class ResponseMap(unittest.TestCase):
         self.server.proc = self.proxy
         self.server.closed = False
         self.server.supervisor_mode = True
+        self.server.supervisor_handle = self.handle
         self.server.lock = threading.RLock()
         self.server.write_lock = threading.RLock()
         self.server.sequence = 0

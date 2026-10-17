@@ -49,6 +49,8 @@ export async function fixture(
   const writes = [];
   const accountWrites = [];
   const accountLogins = new Map();
+  // Claude login receipts have their own server store and are not Codex logins.
+  const claudeLogins = new Map();
   const savedAccounts = accountRows || [
     {
       id: "default",
@@ -405,12 +407,12 @@ export async function fixture(
         status: "pending",
         verificationUrl: "https://claude.com/cai/oauth/authorize?state=fake",
       };
-      accountLogins.set(id, receipt);
+      claudeLogins.set(id, receipt);
       json(receipt);
       return;
     }
     if (url.pathname === "/api/accounts/claude/login") {
-      const receipt = accountLogins.get(url.searchParams.get("request_id"));
+      const receipt = claudeLogins.get(url.searchParams.get("request_id"));
       json(
         receipt || { error: "Unknown Claude sign-in request" },
         receipt ? 200 : 404,
@@ -418,14 +420,14 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/login/code") {
-      const previous = accountLogins.get(body.login_id);
+      const previous = claudeLogins.get(body.login_id);
       const receipt = {
         ...previous,
         status: "ready",
         email: previous?.email || "new@example.test",
         plan: "Max",
       };
-      accountLogins.set(body.login_id, receipt);
+      claudeLogins.set(body.login_id, receipt);
       savedAccounts.push({
         id: body.login_id,
         label: "New Claude",
@@ -439,9 +441,9 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/login/cancel") {
-      const previous = accountLogins.get(body.login_id);
+      const previous = claudeLogins.get(body.login_id);
       const receipt = { ...previous, status: "cancelled" };
-      accountLogins.set(body.login_id, receipt);
+      claudeLogins.set(body.login_id, receipt);
       json(receipt);
       return;
     }
@@ -535,8 +537,7 @@ export async function fixture(
     }
     try {
       const filename = path.join(
-        root,
-        "workspaces/client/apps/web/dist",
+        options.dist || path.join(root, "workspaces/client/apps/web/dist"),
         url.pathname === "/" ? "index.html" : url.pathname,
       );
       const file = await readFile(filename);
@@ -614,6 +615,14 @@ export async function fixture(
         tail: `${label} reply`,
       });
       notify.forEach((send) => send([{ kind: "state" }]));
+    },
+    mismatchSchema() {
+      for (const stream of streams)
+        stream.write(
+          'event: api-schema\ndata: {"hash":"' +
+            "f".repeat(64) +
+            '","mismatch":true}\n\n',
+        );
     },
     offline(value) {
       offline = value;

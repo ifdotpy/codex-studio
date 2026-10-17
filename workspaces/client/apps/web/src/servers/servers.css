@@ -253,14 +253,6 @@
   min-width: 0;
   display: flex;
 }
-.server-views iframe {
-  border: 0;
-  width: 100%;
-  height: 100%;
-}
-.server-views iframe[hidden] {
-  display: none;
-}
 .server-mobile-toggle {
   display: none;
 }
@@ -319,26 +311,6 @@ html[data-server-view] .workspace {
 .server-sidebar {
   font-size: var(--studio-sidebar-font-size);
   font-family: var(--studio-font-family);
-}
-
-.multi-server-shell[data-navigation="classic"] {
-  flex-direction: column;
-  padding-top: 0;
-}
-.server-switcher {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
-  flex-shrink: 0;
-  background: var(--sidebar);
-  border-bottom: 1px solid var(--line);
-}
-.server-switcher .mantine-NativeSelect-root {
-  width: min(260px, calc(100% - 40px));
-}
-.multi-server-shell[data-navigation="classic"] .server-views {
-  min-height: 0;
 }
 
 /* Terminal under the sidebar. The selected server view reports its terminal

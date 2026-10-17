@@ -3,14 +3,11 @@ import { errorText } from "../api";
 import { onResume } from "../sync/resume";
 import { retryableReadError } from "../sync/readRetry";
 import {
-  deliverUpload,
-  pendingUploads,
-  removeUpload,
-  finishUpload,
-  uploadCancelled,
   onUploadsChanged,
+  type deliverUpload,
   type PendingUpload,
 } from "../sync/uploads";
+import { useServerUploads } from "../servers/ServerServicesContext";
 import type { useAttachmentDrafts } from "./useAttachmentDrafts";
 
 const UPLOAD_RETRY_BASE_DELAY_MS = 1_000;
@@ -85,8 +82,11 @@ export async function attemptUploadDelivery(
   }
 }
 
-export function subscribeUploadRecoveryWakeups(refresh: () => void) {
-  const stopUploadsChanged = onUploadsChanged(refresh);
+export function subscribeUploadRecoveryWakeups(
+  refresh: () => void,
+  subscribe = onUploadsChanged,
+) {
+  const stopUploadsChanged = subscribe(refresh);
   const stopResume = onResume(refresh);
   return () => {
     stopResume();
@@ -99,6 +99,15 @@ export function useUploadRecovery(
   workspaceId: string,
   attach: ReturnType<typeof useAttachmentDrafts>[1],
 ) {
+  const uploads = useServerUploads();
+  const {
+    deliverUpload,
+    pendingUploads,
+    removeUpload,
+    finishUpload,
+    uploadCancelled,
+    onUploadsChanged,
+  } = uploads;
   const [pending, setPending] = useState<PendingUpload[]>([]);
   const [error, setError] = useState("");
   const wake = useRef(() => {});
@@ -272,7 +281,10 @@ export function useUploadRecovery(
     };
     scheduler = createUploadRecoveryRetryScheduler((ids) => void run(ids));
     wake.current = retry;
-    const stopWakeups = subscribeUploadRecoveryWakeups(refresh);
+    const stopWakeups = subscribeUploadRecoveryWakeups(
+      refresh,
+      onUploadsChanged,
+    );
     setPending([]);
     setError("");
     void run(null);
@@ -281,7 +293,7 @@ export function useUploadRecovery(
       scheduler.stop();
       stopWakeups();
     };
-  }, [stateDir, workspaceId]);
+  }, [stateDir, workspaceId, uploads]);
   return {
     pending,
     error,

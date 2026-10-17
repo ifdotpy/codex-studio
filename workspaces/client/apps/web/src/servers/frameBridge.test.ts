@@ -9,6 +9,7 @@ vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
   useEffect: (effect: () => void | (() => void)) => hooks.effects.push(effect),
   useRef: (current: unknown) => ({ current }),
+  useContext: () => null,
 }));
 vi.mock("./environment", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./environment")>()),
@@ -371,7 +372,7 @@ it("forwards typed operational diagnostics and only documented validation detail
       correlation: "validation-error",
       result: undefined,
       error: {
-        message: "Invalid request",
+        message: "Invalid request (body.name).",
         status: 422,
         location: ["body", "name"],
       },

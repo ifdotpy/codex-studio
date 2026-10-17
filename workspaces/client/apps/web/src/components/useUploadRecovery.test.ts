@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
-import { uploadsChanged } from "../sync/uploads";
+import { serverLocalStorage } from "../servers/storage";
+import { createUploads, uploadsChanged } from "../sync/uploads";
 import {
   attemptUploadDelivery,
   createUploadRecoveryRetryScheduler,
@@ -203,5 +204,43 @@ describe("upload recovery scheduling", () => {
     expect(localWake).toHaveBeenCalledTimes(1);
     expect(remoteWake).toHaveBeenCalledTimes(1);
     remote.close();
+
+    const owner = (databaseName: string) =>
+      createUploads({
+        databaseName,
+        storage: serverLocalStorage,
+        syncGet: vi.fn(),
+        syncPost: vi.fn(),
+        refreshSession: vi.fn(),
+        writeLocalDraft: vi.fn(),
+        syncDatabase: vi.fn(),
+      });
+    const first = owner("uploads-server-one");
+    const second = owner("uploads-server-two");
+    const firstWake = vi.fn();
+    const secondWake = vi.fn();
+    const stopFirst = subscribeUploadRecoveryWakeups(
+      firstWake,
+      first.onUploadsChanged,
+    );
+    const stopSecond = subscribeUploadRecoveryWakeups(
+      secondWake,
+      second.onUploadsChanged,
+    );
+    const otherTab = new TestBroadcastChannel(
+      "studio-uploads-changed:uploads-server-one",
+    );
+    otherTab.postMessage({ type: "changed" });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(firstWake).toHaveBeenCalledTimes(1);
+    expect(secondWake).not.toHaveBeenCalled();
+    second.uploadsChanged();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(firstWake).toHaveBeenCalledTimes(1);
+    expect(secondWake).toHaveBeenCalledTimes(1);
+    stopFirst();
+    stopSecond();
+    otherTab.close();
+    expect(TestBroadcastChannel.channels.size).toBe(0);
   });
 });

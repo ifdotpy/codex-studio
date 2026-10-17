@@ -200,7 +200,7 @@ test("project folders, remote browse, and New chat server choice", async ({
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click({ timeout: 5000 });
-    const frame = page.frameLocator('iframe[title="Studio on Local"]');
+    const frame = page;
     const dialog = page.getByRole("dialog", {
       name: "New chat",
       exact: true,
@@ -244,7 +244,7 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const foldersFrame = page.frameLocator('iframe[title="Studio on Local"]');
+    const foldersFrame = page;
     const folders = foldersFrame.getByRole("dialog", {
       name: "Project settings",
       exact: true,
@@ -278,9 +278,7 @@ test("project folders, remote browse, and New chat server choice", async ({
     const footer = await add
       .getByRole("button", { name: "Add project", exact: true })
       .boundingBox();
-    const frameBounds = await page
-      .locator('iframe[title="Studio on Local"]')
-      .boundingBox();
+    const frameBounds = await page.locator(".server-views").boundingBox();
     expect(footer.y + footer.height).toBeLessThanOrEqual(
       frameBounds.y + frameBounds.height,
     );
@@ -364,7 +362,7 @@ test("project folder menu keeps the SidebarRow icon size", async ({
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const frame = page.frameLocator('iframe[title="Studio on Local"]');
+    const frame = page;
     const button = frame.getByRole("button", {
       name: "Options for folder /Projects/chrompile",
       exact: true,
@@ -394,7 +392,7 @@ test("offline paired server is disabled in all project choices", async ({
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click();
-    const frame = page.frameLocator('iframe[title="Studio on Local"]');
+    const frame = page;
     const dialog = page.getByRole("dialog", {
       name: "New chat",
       exact: true,

@@ -836,6 +836,16 @@ pub fn apply_with_rule(
     )?;
     for effect in &decision.effects {
         match effect {
+            Effect::OutputEvent { id, payload } => {
+                event_write::enqueue_recovery_event(
+                    tx,
+                    actor,
+                    id.clone(),
+                    "monitor_output",
+                    python_json(payload),
+                    now,
+                )?;
+            }
             Effect::RuleFinished => rules.finish(tx, before.record(), &decision.record, now)?,
             Effect::ExitEvent { wake } => exit_event(tx, actor, &decision.record, *wake, now)?,
             Effect::StallEvent {
@@ -893,7 +903,10 @@ fn exit_event(
     .into_iter()
     .map(|key| (key.into(), monitor.get(key).cloned().unwrap_or(Value::Null)))
     .collect();
-    let payload = Value::Object(payload);
+    let mut payload = Value::Object(payload);
+    if let Some(summary) = crate::monitor_matches::summary(monitor) {
+        payload["outputMatchSummary"] = summary;
+    }
     let event_id = format!("monitor:{id}");
     let monitor_epoch = monitor
         .get("epoch")

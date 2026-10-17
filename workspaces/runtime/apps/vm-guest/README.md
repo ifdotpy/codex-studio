@@ -53,6 +53,13 @@ non-optional production dependency set from the frozen lockfile, while
 
 Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,
 and lsof.
+On Ubuntu, provisioning also installs AppArmor and the `studio-codex` profile.
+The profile permits user namespaces for the installed Codex executable only.
+Ubuntu's global user namespace restriction stays enabled. Codex still enforces
+its read-only filesystem and network policies. The installer repairs ownership
+of older release archives before it loads the profile. It does not restart any
+provider. Check the installer with `python3 -B -m unittest discover -s
+workspaces/runtime/apps/server/src -p test_codex_sandbox_install.py`.
 Mount the btrfs data disk at `/var/lib/codex-studio`. Use the
 `user_subvol_rm_allowed` and `compress=zstd:3` mount options. Run `install.sh` as root.
 

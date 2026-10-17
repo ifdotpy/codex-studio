@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  errorText,
   NetworkTimeoutError,
   READ_DEADLINE_MS,
   apiDownload,
@@ -660,4 +661,18 @@ describe("OpenAPI transport facade", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 400, message: "Rejected" });
   });
+});
+
+it("shows rejected field paths without echoing submitted values", () => {
+  expect(
+    errorText(
+      new ApiError("Invalid request", 400, { outcome: "not_applied" }, [
+        "body",
+        "model",
+      ]),
+    ),
+  ).toBe("Invalid request (body.model).");
+  expect(errorText(new ApiError("Invalid request", 400, {}))).toBe(
+    "Invalid request",
+  );
 });

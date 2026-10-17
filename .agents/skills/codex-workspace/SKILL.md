@@ -144,6 +144,23 @@ signal, or a lost process. `wake_on` cannot suppress an exit event. Read the exi
 code, status, and output before claiming success. Inspect an uncertain command
 result before attempting a rerun. Set `success_exit_codes` when a nonzero code
 means success, for example `[0, 1]` for `grep` or `diff`.
+Pass `command` to start a command. Pass `monitor_id` to read or wait on the same
+command. These fields are exclusive. An observation never starts a command and
+checks the owner and epoch. `wait_timeout_ms` defaults to 0 and has a 10000 ms
+maximum. It only limits the current call. On expiry, the response keeps the same
+monitor ID and active status. Call again with `monitor_id` to wait again.
+`timeout_ms` remains the command execution deadline. A replay of the same native
+call keeps its saved response; a new observation call reads current state.
+`output_patterns` accepts up to 16 distinct literal strings of at most 256 UTF-8
+bytes each. A match on stdout or stderr wakes the owner. Matching is OR-based,
+independent per stream, and works across output chunks. The default has no output
+wakes. Output wakes have a renewable one-second cooldown.
+Repeated matches during the cooldown coalesce into counted summaries. The
+cooldown renews after each wake, so long commands keep sending later matches.
+The monitor retains only the last 32 output event IDs. The final summary is included
+with the exit result. The complete output log stays available. Command settings
+and `output_patterns` define launch identity. `wait_timeout_ms` can change on each
+observation call.
 Monitors wake after no output for `stall_timeout_seconds` (default 1800 seconds).
 Set it to `0` to disable stall wakes. `orchestration_watch` file rules wake
 after no file change for `stallTimeoutSeconds` (default 1800 seconds); set it

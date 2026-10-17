@@ -1,3 +1,4 @@
+import { serverLocalStorage } from "../servers/storage";
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
 
@@ -75,7 +76,13 @@ it("reuses the saved queue request identity and bounded typed write", async () =
     ["/api/queue", request, { workspaceId: "workspace" }],
   ]);
   assert.deepEqual(mocks.removeMessageFromDevice.mock.calls, [
-    ["state", "agent", "chat", { ...message, deliveryStatus: "cancelled" }],
+    [
+      "state",
+      "agent",
+      "chat",
+      { ...message, deliveryStatus: "cancelled" },
+      serverLocalStorage,
+    ],
   ]);
   assert.equal(JSON.parse(storage.get(key)).request_id, "request-fixed");
 });

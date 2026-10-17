@@ -66,6 +66,18 @@ test("only the installed Studio bundle can configure background recovery", async
   try {
     assert.equal(isInstalledApplication(data.applicationPath), true);
     assert.equal(
+      isInstalledApplication(
+        "/Applications/Codex Studio.app/Contents/MacOS/studio-native-client",
+      ),
+      true,
+    );
+    assert.equal(
+      isInstalledApplication(
+        "/tmp/Codex Studio.app/Contents/MacOS/studio-native-client",
+      ),
+      false,
+    );
+    assert.equal(
       isInstalledApplication(path.join(data.root, "Codex Studio.app/app.asar")),
       false,
     );
@@ -537,6 +549,53 @@ test("a Finder launch cannot turn off the persisted supervisor setting", async (
         ...data.env,
         CODEX_AGENTS_SUPERVISOR_MODE: "0",
       }),
+      false,
+    );
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("a desktop launch keeps the service-owned Rust selection and its supervisor job", async () => {
+  const data = fixture();
+  try {
+    const files = recoveryPaths(data.env, data.home);
+    mkdirSync(path.dirname(files.config), { recursive: true });
+    const selection = {
+      backend: "rust",
+      runtimeServer: path.join(data.root, "bin/studio-runtime-server"),
+      processSupervisor: path.join(data.root, "bin/codex-process-supervisor"),
+    };
+    writeFileSync(
+      files.config,
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        supervisorEnabled: true,
+        ...selection,
+      }),
+    );
+    const calls = [];
+    await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async (_file, args) => {
+        calls.push(args);
+      },
+    });
+    const saved = JSON.parse(readFileSync(files.config));
+    assert.deepEqual(
+      {
+        backend: saved.backend,
+        runtimeServer: saved.runtimeServer,
+        processSupervisor: saved.processSupervisor,
+      },
+      selection,
+    );
+    assert.equal(saved.supervisorEnabled, true);
+    assert.equal(existsSync(files.supervisorPlist), false);
+    assert.equal(
+      calls.some((args) => args.join(" ").includes(files.supervisorLabel)),
       false,
     );
   } finally {

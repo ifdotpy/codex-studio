@@ -1,10 +1,16 @@
+import {
+  useServerApi,
+  useServerLocalDrafts,
+  useServerServices,
+  useServerStorage,
+} from "../../servers/ServerServicesContext";
 import MessageDate from "../conversation/transcript/MessageDate";
 import ErrorDescription from "../ErrorDescription";
 import { Button } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { post as apiPost, errorText, saved } from "../../api";
-import { writeLocalDraft } from "../../sync/localDraft";
+import { errorText } from "../../api";
+import { requestDraftsForStorage } from "./requestDrafts";
 import type { components } from "../../generated/api";
 import type { Json, JsonValue, Agent } from "../../types";
 import "./request-questions.css";
@@ -101,8 +107,9 @@ function permissionRows(
   ];
 }
 
-// Secret answers remain in memory. Other answers survive a reload.
-const answerDrafts = new Map<string, AnswerValues>();
+function useAnswerDrafts() {
+  return requestDraftsForStorage(useServerStorage());
+}
 // Show a command as the shell line the user would type, not as JSON.
 function commandText(command: unknown): string {
   if (typeof command === "string") return command;
@@ -153,6 +160,10 @@ function AnswerForm({
   close: () => void;
   notify: Props["notify"];
 }) {
+  const { saved } = useServerApi();
+  const { writeLocalDraft } = useServerLocalDrafts();
+  const answerDrafts = useAnswerDrafts();
+
   const [values, setValues] = useState<AnswerValues>(
     () =>
       answerDrafts.get(draftKey) ||
@@ -291,6 +302,11 @@ function RequestCard({
   notify,
   scope,
 }: Omit<Props, "requests" | "allRequests"> & { request: RequestDto }) {
+  const { post: apiPost } = useServerApi();
+  const services = useServerServices();
+  const { writeLocalDraft } = useServerLocalDrafts();
+  const answerDrafts = useAnswerDrafts();
+
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
   const params = objectValue(r.params);
@@ -366,7 +382,11 @@ function RequestCard({
       // loopback forward on this Mac. Open it now; nothing opened before the approval.
       if (browserOpen && result.openUrl) {
         try {
-          await openSignInPage(result.openUrl, result.forward);
+          await openSignInPage(
+            result.openUrl,
+            result.forward,
+            services?.owner.id,
+          );
         } catch (error) {
           notify(
             `Studio approved the link, but the browser did not open: ${errorText(error)}`,
@@ -666,6 +686,7 @@ export default function Requests({
   mainAgentId,
   ...props
 }: Props) {
+  const answerDrafts = useAnswerDrafts();
   useEffect(() => {
     const active = new Set(
       allRequests.map((request) => answerKey(props.scope, request)),
@@ -673,7 +694,7 @@ export default function Requests({
     for (const key of answerDrafts.keys())
       if (JSON.parse(key)[0] === props.scope && !active.has(key))
         answerDrafts.delete(key);
-  }, [allRequests, props.scope]);
+  }, [allRequests, props.scope, answerDrafts]);
   const group = (items: RequestDto[]) => {
     const deferred = items.filter((r) => r.deferred);
     return (

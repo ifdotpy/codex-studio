@@ -46,13 +46,18 @@ def read_text_if_present(path):
 
 class TerminalsContract(unittest.TestCase):
     def setUp(self):
+        # The generic Runtime fixture selects a replay provider. PTY contracts
+        # require the real executable admitted by the suite runner instead.
+        terminal_codex = os.environ.get("CODEX_BIN")
+        if not terminal_codex:
+            self.skipTest("A runner-admitted Codex executable is required for real PTY checks")
         self.fixture = f.WorkspaceContract()
         self.fixture.setUp()
         self.root = self.fixture.root
         self.runtime = self.fixture.runtime
         self.agent = self.fixture.lead()
         self.manager = TerminalManager(self.fixture.state)
-        self.env = patch.dict("os.environ", {"SHELL": "/bin/sh", "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost"})
+        self.env = patch.dict("os.environ", {"CODEX_BIN": terminal_codex, "CODEX_AGENTS_NATIVE_RUNTIME_PIN": terminal_codex, "SHELL": "/bin/sh", "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost"})
         self.env.start()
 
     def tearDown(self):
@@ -80,9 +85,26 @@ class TerminalsContract(unittest.TestCase):
         )
 
     def test_real_pty_cwd_output_resize_exit_and_no_model(self):
-        task = self.create()
+        # Exercise the real provider PTY with explicit input phases. Interactive
+        # shell prompt/redraw handling is not part of the terminal RPC contract.
+        program = r"""import os, pathlib, sys
+assert sys.stdin.readline() == 'initial\n'
+size = os.get_terminal_size(0)
+pathlib.Path('terminal-proof').write_text(f'{os.getcwd()}\n{size.lines} {size.columns}\n')
+assert sys.stdin.readline() == 'resized\n'
+size = os.get_terminal_size(0)
+pathlib.Path('resized-proof').write_text(f'{size.lines} {size.columns}\n')
+print('PTY-OUTPUT', flush=True)
+sys.exit(7)
+"""
+        probe = self.root / 'pty-probe'
+        probe.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable)
+                         + ' -c ' + shlex.quote(program) + '\n')
+        probe.chmod(0o700)
+        with patch.dict(os.environ, {'SHELL': str(probe)}):
+            task = self.create()
         marker = self.fixture.project / "terminal-proof"
-        self.send(task, "pwd > terminal-proof; stty size >> terminal-proof\n")
+        self.send(task, "initial\n")
         wait_for_condition(
             lambda: (contents if (contents := read_text_if_present(marker))
                      and len(contents.splitlines()) == 2 else None),
@@ -93,10 +115,16 @@ class TerminalsContract(unittest.TestCase):
             [str(self.fixture.project.resolve()), "24 80"],
         )
         self.manager.action("resize", {"id": task["id"], "cols": 120, "rows": 36})
-        self.send(
-            task, 'stty size > resized-proof; printf "\\nPTY-OUTPUT\\n"; exit 7\n'
-        )
-        f.eventually(lambda: self.manager.output(task["id"])["status"] == "exited")
+        self.send(task, "resized\n")
+        try:
+            f.eventually(lambda: self.manager.output(task["id"])["status"] == "exited")
+        except AssertionError as error:
+            output = self.manager.output(task["id"])
+            resized = read_text_if_present(self.fixture.project / "resized-proof")
+            server = self.manager.server
+            self.fail(f"{error}; terminal={output!r}; resized={resized!r}; "
+                      f"native_exit={server.proc.poll()!r}; "
+                      f"transport_error={server.transport_error!r}")
         self.assertEqual(
             (self.fixture.project / "resized-proof").read_text().strip(), "36 120"
         )
@@ -193,7 +221,10 @@ class TerminalsContract(unittest.TestCase):
         script.write_text(
             "import os,pathlib,signal,sys,time\n"
             "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
-            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "marker = pathlib.Path(sys.argv[1])\n"
+            "pending = marker.with_suffix('.pending')\n"
+            "pending.write_text(str(os.getpid()))\n"
+            "pending.replace(marker)\n"
             "time.sleep(60)\n"
         )
         children = []
@@ -245,7 +276,10 @@ class TerminalsContract(unittest.TestCase):
         script.write_text(
             "import os,pathlib,signal,time\n"
             "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
-            f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+            f"marker = pathlib.Path({str(marker)!r})\n"
+            "pending = marker.with_suffix('.pending')\n"
+            "pending.write_text(str(os.getpid()))\n"
+            "pending.replace(marker)\n"
             "time.sleep(60)\n"
         )
         pid = None
@@ -278,9 +312,11 @@ class TerminalsContract(unittest.TestCase):
         f.eventually(lambda: "retained-before-loss" in self.manager.output(first["id"])["text"])
         old_connection = self.manager.connection
         server = self.manager.server
-        server.proc.kill()
-        server.proc.wait(5)
-        f.eventually(lambda: not self.manager.processes)
+        with patch("codex_terminals.subprocess.check_output", side_effect=
+                   subprocess.TimeoutExpired(["/bin/ps"], 5)):
+            server.proc.kill()
+            server.proc.wait(5)
+            f.eventually(lambda: not self.manager.processes)
         output = self.manager.output(first["id"])
         self.assertEqual(output["status"], "exited")
         self.assertIsNone(output["exitCode"])

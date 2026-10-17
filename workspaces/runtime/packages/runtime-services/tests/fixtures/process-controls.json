@@ -1,0 +1,771 @@
+{
+  "processes": [
+    {
+      "source": "monitor",
+      "raw": {
+        "id": "watch",
+        "agent": "owner",
+        "epoch": 3,
+        "status": "running",
+        "command": "echo ready",
+        "interactive": true,
+        "created": 1,
+        "operation": {
+          "accountKey": "acct",
+          "connectionId": "connection-7",
+          "threadId": "thread"
+        },
+        "tail": "ready",
+        "bytes": 5
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": "connection-7",
+      "expected": {
+        "id": "watch",
+        "key": "WyJtb25pdG9yIiwib3duZXIiLCJ3YXRjaCJd",
+        "generation": "68a37091d9c88428af8e6dbdfea69b1369f10b9b0a5917757930a6f53c04a1c0",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "monitor",
+        "status": "running",
+        "cancelRequested": false,
+        "created": 1.0,
+        "name": "echo ready",
+        "command": "echo ready",
+        "cwd": null,
+        "log": null,
+        "output": "ready",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 5,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": true,
+          "sendInput": true,
+          "resize": true,
+          "stop": true
+        },
+        "_raw": {
+          "id": "watch",
+          "agent": "owner",
+          "epoch": 3,
+          "status": "running",
+          "command": "echo ready",
+          "interactive": true,
+          "created": 1,
+          "operation": {
+            "accountKey": "acct",
+            "connectionId": "connection-7",
+            "threadId": "thread"
+          },
+          "tail": "ready",
+          "bytes": 5
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": "connection-7",
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 3
+      }
+    },
+    {
+      "source": "monitor",
+      "raw": {
+        "id": "watch",
+        "agent": "owner",
+        "epoch": 3,
+        "status": "running",
+        "command": "echo ready",
+        "interactive": true,
+        "created": 1,
+        "operation": {
+          "accountKey": "acct",
+          "connectionId": "connection-7",
+          "threadId": "thread"
+        },
+        "tail": "ready",
+        "bytes": 5
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": "connection-8",
+      "expected": {
+        "id": "watch",
+        "key": "WyJtb25pdG9yIiwib3duZXIiLCJ3YXRjaCJd",
+        "generation": "68a37091d9c88428af8e6dbdfea69b1369f10b9b0a5917757930a6f53c04a1c0",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "monitor",
+        "status": "running",
+        "cancelRequested": false,
+        "created": 1.0,
+        "name": "echo ready",
+        "command": "echo ready",
+        "cwd": null,
+        "log": null,
+        "output": "ready",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 5,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": true,
+          "sendInput": false,
+          "resize": false,
+          "stop": false
+        },
+        "_raw": {
+          "id": "watch",
+          "agent": "owner",
+          "epoch": 3,
+          "status": "running",
+          "command": "echo ready",
+          "interactive": true,
+          "created": 1,
+          "operation": {
+            "accountKey": "acct",
+            "connectionId": "connection-7",
+            "threadId": "thread"
+          },
+          "tail": "ready",
+          "bytes": 5
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": "connection-7",
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 3
+      }
+    },
+    {
+      "source": "monitor",
+      "raw": {
+        "id": "watch",
+        "agent": "owner",
+        "epoch": 3,
+        "status": "approval",
+        "command": "echo ready",
+        "interactive": true,
+        "created": 1,
+        "operation": null,
+        "tail": "ready",
+        "bytes": 5
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": null,
+      "expected": {
+        "id": "watch",
+        "key": "WyJtb25pdG9yIiwib3duZXIiLCJ3YXRjaCJd",
+        "generation": "2d40c3885af50953ff7347c4c22e7c52d5b3c97456f12154d241bb1fb1bd61dd",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "monitor",
+        "status": "approval",
+        "cancelRequested": false,
+        "created": 1.0,
+        "name": "echo ready",
+        "command": "echo ready",
+        "cwd": null,
+        "log": null,
+        "output": "ready",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 5,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": true,
+          "sendInput": false,
+          "resize": false,
+          "stop": true
+        },
+        "_raw": {
+          "id": "watch",
+          "agent": "owner",
+          "epoch": 3,
+          "status": "approval",
+          "command": "echo ready",
+          "interactive": true,
+          "created": 1,
+          "operation": null,
+          "tail": "ready",
+          "bytes": 5
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": null,
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 3
+      }
+    },
+    {
+      "source": "monitor",
+      "raw": {
+        "id": "watch",
+        "agent": "owner",
+        "epoch": 3,
+        "status": "running",
+        "command": "echo ready",
+        "interactive": true,
+        "created": 1,
+        "operation": {
+          "accountKey": "acct",
+          "connectionId": "connection-7",
+          "threadId": "thread"
+        },
+        "tail": "ready",
+        "bytes": 5,
+        "reattachedConnectionId": "connection-8"
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": "connection-8",
+      "expected": {
+        "id": "watch",
+        "key": "WyJtb25pdG9yIiwib3duZXIiLCJ3YXRjaCJd",
+        "generation": "a3cf5dd8d4123e60e097eb66e327446882ec912c83a513d96d246113414ae41a",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "monitor",
+        "status": "running",
+        "cancelRequested": false,
+        "created": 1.0,
+        "name": "echo ready",
+        "command": "echo ready",
+        "cwd": null,
+        "log": null,
+        "output": "ready",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 5,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": true,
+          "sendInput": true,
+          "resize": true,
+          "stop": true
+        },
+        "_raw": {
+          "id": "watch",
+          "agent": "owner",
+          "epoch": 3,
+          "status": "running",
+          "command": "echo ready",
+          "interactive": true,
+          "created": 1,
+          "operation": {
+            "accountKey": "acct",
+            "connectionId": "connection-7",
+            "threadId": "thread"
+          },
+          "tail": "ready",
+          "bytes": 5,
+          "reattachedConnectionId": "connection-8"
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": "connection-8",
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 3
+      }
+    },
+    {
+      "source": "codex_task",
+      "raw": {
+        "id": "owner:command",
+        "agent": "owner",
+        "itemId": "command",
+        "turnId": "turn",
+        "processId": "42",
+        "ownerEpoch": 3,
+        "sourceAccountKey": "acct",
+        "sourceConnectionId": "connection-7",
+        "sourceThreadId": "thread",
+        "status": "running",
+        "created": 2,
+        "command": "test"
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": "connection-7",
+      "expected": {
+        "id": "owner:command",
+        "key": "WyJjb2RleF90YXNrIiwib3duZXIiLCI0MiJd",
+        "generation": "941a98e6ba2b03cc576e77f85fec3ec40eec9cea293ff0362495fdaee218878a",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "codex_task",
+        "status": "running",
+        "cancelRequested": false,
+        "created": 2.0,
+        "name": "test",
+        "command": "test",
+        "cwd": null,
+        "log": null,
+        "output": "",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 0,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": true,
+          "sendInput": true,
+          "resize": false,
+          "stop": true
+        },
+        "_raw": {
+          "id": "owner:command",
+          "agent": "owner",
+          "itemId": "command",
+          "turnId": "turn",
+          "processId": "42",
+          "ownerEpoch": 3,
+          "sourceAccountKey": "acct",
+          "sourceConnectionId": "connection-7",
+          "sourceThreadId": "thread",
+          "status": "running",
+          "created": 2,
+          "command": "test"
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": "connection-7",
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 3
+      }
+    },
+    {
+      "source": "codex_task",
+      "raw": {
+        "id": "owner:command",
+        "agent": "owner",
+        "itemId": "command",
+        "turnId": "turn",
+        "processId": "42",
+        "ownerEpoch": 2,
+        "sourceAccountKey": "acct",
+        "sourceConnectionId": "connection-7",
+        "sourceThreadId": "thread",
+        "status": "running",
+        "created": 2,
+        "command": "test"
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": "connection-7",
+      "expected": {
+        "id": "owner:command",
+        "key": "WyJjb2RleF90YXNrIiwib3duZXIiLCI0MiJd",
+        "generation": "edaf279c2545001f91177e2e144f7410499781a2b13a1d28323be289f7868b9b",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "codex_task",
+        "status": "running",
+        "cancelRequested": false,
+        "created": 2.0,
+        "name": "test",
+        "command": "test",
+        "cwd": null,
+        "log": null,
+        "output": "",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 0,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": true,
+          "sendInput": false,
+          "resize": false,
+          "stop": false
+        },
+        "_raw": {
+          "id": "owner:command",
+          "agent": "owner",
+          "itemId": "command",
+          "turnId": "turn",
+          "processId": "42",
+          "ownerEpoch": 2,
+          "sourceAccountKey": "acct",
+          "sourceConnectionId": "connection-7",
+          "sourceThreadId": "thread",
+          "status": "running",
+          "created": 2,
+          "command": "test"
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": "connection-7",
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 2
+      }
+    },
+    {
+      "source": "claude_task",
+      "raw": {
+        "id": "owner:command",
+        "agent": "owner",
+        "itemId": "task:task-1",
+        "turnId": "turn",
+        "processId": "42",
+        "ownerEpoch": 3,
+        "sourceAccountKey": "acct",
+        "sourceConnectionId": "connection-7",
+        "sourceThreadId": "thread",
+        "status": "running",
+        "created": 2,
+        "command": "test",
+        "sourceProvider": "claude",
+        "kind": "tool"
+      },
+      "owner": {
+        "id": "owner",
+        "rootId": "owner",
+        "epoch": 3,
+        "accountKey": "acct",
+        "threadId": "thread",
+        "autoWake": true,
+        "provider": "codex"
+      },
+      "connection": "connection-7",
+      "expected": {
+        "id": "owner:command",
+        "key": "WyJjbGF1ZGVfdGFzayIsIm93bmVyIiwidGFzay0xIl0",
+        "generation": "f92c917e2a40509858a87ef2ba6193202e3901a85e246590805edcf4f57cc749",
+        "agent": "owner",
+        "accountKey": "acct",
+        "epoch": 3,
+        "source": "claude_task",
+        "status": "running",
+        "cancelRequested": false,
+        "created": 2.0,
+        "name": "test",
+        "command": "test",
+        "cwd": null,
+        "log": null,
+        "output": "",
+        "error": null,
+        "stdinError": null,
+        "stdinClosed": false,
+        "stdinCloseRequested": false,
+        "bytes": 0,
+        "outputTruncated": false,
+        "capabilities": {
+          "readOutput": false,
+          "sendInput": false,
+          "resize": false,
+          "stop": true
+        },
+        "_raw": {
+          "id": "owner:command",
+          "agent": "owner",
+          "itemId": "task:task-1",
+          "turnId": "turn",
+          "processId": "42",
+          "ownerEpoch": 3,
+          "sourceAccountKey": "acct",
+          "sourceConnectionId": "connection-7",
+          "sourceThreadId": "thread",
+          "status": "running",
+          "created": 2,
+          "command": "test",
+          "sourceProvider": "claude",
+          "kind": "tool"
+        },
+        "_sourceAccountKey": "acct",
+        "_sourceConnectionId": "connection-7",
+        "_sourceThreadId": "thread",
+        "_sourceEpoch": 3
+      }
+    }
+  ],
+  "output": {
+    "initial": {
+      "id": "monitor",
+      "epoch": 3,
+      "outputPatterns": ["READY", "aaa", "猫"]
+    },
+    "steps": [
+      {
+        "stream": "stdout",
+        "bytes": [82, 69],
+        "now": 10.0,
+        "event": null,
+        "record": {
+          "id": "monitor",
+          "epoch": 3,
+          "outputPatterns": ["READY", "aaa", "猫"],
+          "outputUtf8Pending": {},
+          "tail": "RE",
+          "outputMatcherTail": {
+            "stdout": "UkU="
+          },
+          "outputMatchesPending": {},
+          "outputMatchesTotal": {}
+        }
+      },
+      {
+        "stream": "stderr",
+        "bytes": [65, 68, 89],
+        "now": 10.1,
+        "event": null,
+        "record": {
+          "id": "monitor",
+          "epoch": 3,
+          "outputPatterns": ["READY", "aaa", "猫"],
+          "outputUtf8Pending": {},
+          "tail": "READY",
+          "outputMatcherTail": {
+            "stdout": "UkU=",
+            "stderr": "QURZ"
+          },
+          "outputMatchesPending": {},
+          "outputMatchesTotal": {}
+        }
+      },
+      {
+        "stream": "stdout",
+        "bytes": [65, 68, 89, 32, 97, 97, 97],
+        "now": 10.2,
+        "event": {
+          "id": "monitor-output:monitor:3:1",
+          "payload": {
+            "monitorId": "monitor",
+            "epoch": 3,
+            "sequence": 1,
+            "matches": [
+              {
+                "stream": "stdout",
+                "pattern": "READY",
+                "count": 1
+              },
+              {
+                "stream": "stdout",
+                "pattern": "aaa",
+                "count": 1
+              }
+            ],
+            "final": false
+          }
+        },
+        "record": {
+          "id": "monitor",
+          "epoch": 3,
+          "outputPatterns": ["READY", "aaa", "猫"],
+          "outputUtf8Pending": {},
+          "tail": "READYADY aaa",
+          "outputMatcherTail": {
+            "stdout": "IGFhYQ==",
+            "stderr": "QURZ"
+          },
+          "outputMatchesPending": {},
+          "outputMatchesTotal": {
+            "stdout:0": 1,
+            "stdout:1": 1
+          },
+          "outputEventSequence": 1,
+          "outputEventCount": 1,
+          "outputWakeAt": 10.2,
+          "outputEventIds": ["monitor-output:monitor:3:1"]
+        }
+      },
+      {
+        "stream": "stdout",
+        "bytes": [97, 32, 231, 140],
+        "now": 10.3,
+        "event": null,
+        "record": {
+          "id": "monitor",
+          "epoch": 3,
+          "outputPatterns": ["READY", "aaa", "猫"],
+          "outputUtf8Pending": {
+            "stdout": "54w="
+          },
+          "tail": "READYADY aaaa ",
+          "outputMatcherTail": {
+            "stdout": "YSDnjA==",
+            "stderr": "QURZ"
+          },
+          "outputMatchesPending": {
+            "stdout:1": 1
+          },
+          "outputMatchesTotal": {
+            "stdout:0": 1,
+            "stdout:1": 2
+          },
+          "outputEventSequence": 1,
+          "outputEventCount": 1,
+          "outputWakeAt": 10.2,
+          "outputEventIds": ["monitor-output:monitor:3:1"]
+        }
+      },
+      {
+        "stream": "stdout",
+        "bytes": [171],
+        "now": 10.4,
+        "event": null,
+        "record": {
+          "id": "monitor",
+          "epoch": 3,
+          "outputPatterns": ["READY", "aaa", "猫"],
+          "outputUtf8Pending": {},
+          "tail": "READYADY aaaa 猫",
+          "outputMatcherTail": {
+            "stdout": "IOeMqw==",
+            "stderr": "QURZ"
+          },
+          "outputMatchesPending": {
+            "stdout:1": 1,
+            "stdout:2": 1
+          },
+          "outputMatchesTotal": {
+            "stdout:0": 1,
+            "stdout:1": 2,
+            "stdout:2": 1
+          },
+          "outputEventSequence": 1,
+          "outputEventCount": 1,
+          "outputWakeAt": 10.2,
+          "outputEventIds": ["monitor-output:monitor:3:1"]
+        }
+      },
+      {
+        "stream": "stderr",
+        "bytes": [82, 69, 65, 68, 89, 255],
+        "now": 11.3,
+        "event": {
+          "id": "monitor-output:monitor:3:2",
+          "payload": {
+            "monitorId": "monitor",
+            "epoch": 3,
+            "sequence": 2,
+            "matches": [
+              {
+                "stream": "stderr",
+                "pattern": "READY",
+                "count": 1
+              },
+              {
+                "stream": "stdout",
+                "pattern": "aaa",
+                "count": 1
+              },
+              {
+                "stream": "stdout",
+                "pattern": "猫",
+                "count": 1
+              }
+            ],
+            "final": false
+          }
+        },
+        "record": {
+          "id": "monitor",
+          "epoch": 3,
+          "outputPatterns": ["READY", "aaa", "猫"],
+          "outputUtf8Pending": {},
+          "tail": "READYADY aaaa 猫READY�",
+          "outputMatcherTail": {
+            "stdout": "IOeMqw==",
+            "stderr": "QURZ/w=="
+          },
+          "outputMatchesPending": {},
+          "outputMatchesTotal": {
+            "stdout:0": 1,
+            "stdout:1": 2,
+            "stdout:2": 1,
+            "stderr:0": 1
+          },
+          "outputEventSequence": 2,
+          "outputEventCount": 2,
+          "outputWakeAt": 11.3,
+          "outputEventIds": [
+            "monitor-output:monitor:3:1",
+            "monitor-output:monitor:3:2"
+          ]
+        }
+      }
+    ],
+    "final": null,
+    "summary": {
+      "events": 2,
+      "matches": [
+        {
+          "stream": "stderr",
+          "pattern": "READY",
+          "count": 1
+        },
+        {
+          "stream": "stdout",
+          "pattern": "READY",
+          "count": 1
+        },
+        {
+          "stream": "stdout",
+          "pattern": "aaa",
+          "count": 2
+        },
+        {
+          "stream": "stdout",
+          "pattern": "猫",
+          "count": 1
+        }
+      ],
+      "pending": []
+    }
+  }
+}

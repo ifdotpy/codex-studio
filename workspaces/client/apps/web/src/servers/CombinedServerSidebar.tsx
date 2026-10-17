@@ -7,7 +7,6 @@ import type {
 } from "../components/sidebar/services";
 import type { MergedSidebar } from "./mergedSidebar";
 import { createMergedSidebarServices, sidebarOwner } from "./sidebarServices";
-import type { createSidebarRpcClient } from "./sidebarRpc";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import { createSidebarVisualSession } from "./sidebarVisualSession";
 
@@ -15,7 +14,8 @@ export default function CombinedServerSidebar({
   model,
   backends,
   online,
-  rpc,
+  refreshOwner,
+  executeCommand,
   aliases,
   current,
   navigation,
@@ -33,7 +33,8 @@ export default function CombinedServerSidebar({
   model: MergedSidebar;
   backends: ReadonlyMap<string, SidebarBackend>;
   online: (owner: string) => boolean;
-  rpc: ReturnType<typeof createSidebarRpcClient>;
+  refreshOwner: (owner: string) => Promise<ServerNavigation>;
+  executeCommand: (owner: string, command: ServerCommand) => Promise<void>;
   aliases: Record<string, string>;
   current: string;
   navigation: Record<string, ServerNavigation>;
@@ -80,9 +81,7 @@ export default function CombinedServerSidebar({
       model.sources
         .filter((source) => online(source.id))
         .map(async (source) => {
-          const value = (await rpc.request(source.id, {
-            action: "refresh",
-          })) as ServerNavigation;
+          const value = await refreshOwner(source.id);
           applyNavigation(source.id, value);
         }),
     );
@@ -125,12 +124,10 @@ export default function CombinedServerSidebar({
       prepareChat={(id) => {
         const reference = model.chatReferences.get(id);
         if (!reference || !online(reference.owner)) return;
-        void rpc
-          .request(reference.owner, {
-            action: "command",
-            command: { action: "prepare-chat", id: reference.id },
-          })
-          .catch(() => {});
+        void executeCommand(reference.owner, {
+          action: "prepare-chat",
+          id: reference.id,
+        }).catch(() => {});
       }}
       newChat={(path, folder) => {
         if (!path) {
@@ -249,16 +246,12 @@ export default function CombinedServerSidebar({
         )
           return;
         setMarking((old) => new Set([...old, agent.id]));
-        void rpc
-          .request(reference.owner, {
-            action: "command",
-            command: {
-              action: "mark-unread",
-              id: reference.id,
-              threadId: agent.threadId,
-              turnId: agent.lastCompletedTurn,
-            },
-          })
+        void executeCommand(reference.owner, {
+          action: "mark-unread",
+          id: reference.id,
+          threadId: agent.threadId,
+          turnId: agent.lastCompletedTurn,
+        })
           .then(refresh)
           .catch((failure) => notify(errorText(failure)))
           .finally(() =>

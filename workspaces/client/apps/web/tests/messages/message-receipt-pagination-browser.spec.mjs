@@ -570,7 +570,7 @@ async function runMessageReceiptScenario(
     } catch (error) {
       const status = await bubble(text).getByRole("status").allTextContents();
       throw new Error(
-        `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts })}`,
+        `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts, appReceipt: await readAppReceipt(id), durable: await storage.evaluate(async (key) => (await window.receiptFixtureDb.outbox.storageInstance.findDocumentsById([key], false)).map((doc) => JSON.parse(doc.payload)), id) })}`,
       );
     }
 

@@ -1830,6 +1830,37 @@ mod tests {
     }
 
     #[test]
+    fn low_space_refuses_before_starting_a_base_build() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = fixture.path().join("store");
+        let manager = WorkspaceLifecycle::with_backend(
+            &store,
+            FakeBackend {
+                store: store.clone(),
+                available_bytes: Some(0),
+                ..FakeBackend::default()
+            },
+        );
+        let error = manager
+            .start_base_build(fixture.path())
+            .expect_err("no capacity");
+        assert!(matches!(
+            error,
+            ImageWorkspaceError::FreeSpace { free: 0, .. }
+        ));
+        let key = repo_key(&fixture.path().canonicalize().expect("canonical project"));
+        assert!(
+            !manager.base_state(&key).exists(),
+            "no pending build may be published"
+        );
+        assert!(
+            !manager.base_dir(&key).join("versions").exists(),
+            "no image staging may start"
+        );
+        assert!(!build_worker_active(&key), "no background copy may start");
+    }
+
+    #[test]
     fn low_space_preflight_uses_the_injected_host_probe() {
         let fixture = tempfile::tempdir().expect("fixture");
         let manager = WorkspaceLifecycle::with_backend(

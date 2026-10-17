@@ -370,9 +370,7 @@ test("peer teams retain members and allow create, edit, dissolve and shared chat
         fixture.calls.remote.some((call) => call.body.action === "radio"),
       )
       .toBe(true);
-    await expect(
-      page.locator('iframe[title="Studio on Remote"]'),
-    ).toBeVisible();
+    await expect(page.locator(".server-views .workspace")).toBeVisible();
     await teamMenu(page, sidebar, "Remote Team renamed", "Dissolve team");
     await page
       .getByRole("form", { name: "Dissolve team", exact: true })
@@ -441,9 +439,7 @@ test("conversion from a peer team to a subagent keeps the owner and asks for con
         .isLead,
     ).toBe(true);
     await chat(sidebar, "Remote Root A").locator("[data-chat]").click();
-    await expect(
-      page.locator('iframe[title="Studio on Remote"]'),
-    ).toBeVisible();
+    await expect(page.locator(".server-views .workspace")).toBeVisible();
   } finally {
     await fixture.close();
   }
@@ -471,7 +467,7 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
     await button(sidebar, "Home Renamed").hover();
     await button(sidebar, "Options for project Home Renamed").click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const local = page.frameLocator('iframe[title="Studio on Local"]');
+    const local = page;
     await expect(
       local.getByRole("dialog", { name: "Project settings", exact: true }),
     ).toBeVisible();
@@ -521,11 +517,9 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
     expect(
       fixture.calls.remote.find((call) => call.path === "/api/leads").body,
     ).toMatchObject({ cwd: sourcePath("remote"), project_folder: "empty" });
-    await expect(
-      page.locator('iframe[title="Studio on Remote"]'),
-    ).toBeVisible();
+    await expect(page.locator(".server-views .workspace")).toBeVisible();
     await menu(page, sidebar, "Remote Root B", "Change project directory");
-    const remote = page.frameLocator('iframe[title="Studio on Remote"]');
+    const remote = page;
     const picker = remote.getByRole("dialog", {
       name: "Choose project folder",
       exact: true,
@@ -602,7 +596,7 @@ test("chat pin, rename, archive, restore, delete, mark unread and prefetch use t
     await listMenu(page, sidebar, "Show active chats");
     await expect(chat(sidebar, "Remote Renamed")).toBeVisible();
     await menu(page, sidebar, "Remote Renamed", "Delete");
-    const remote = page.frameLocator('iframe[title="Studio on Remote"]');
+    const remote = page;
     await remote
       .getByRole("button", { name: "Delete chat", exact: true })
       .click();
@@ -888,7 +882,7 @@ test("global search opens its source chat, and toolbar actions use the active se
       .locator(".server-search-result")
       .filter({ hasText: "Remote: saved history" })
       .click();
-    const remote = page.frameLocator('iframe[title="Studio on Remote"]');
+    const remote = page;
     await expect(
       remote.getByRole("heading", { name: "Remote Saved pin", exact: true }),
     ).toBeVisible();
