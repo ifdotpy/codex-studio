@@ -188,7 +188,7 @@ pub mod mac {
                 capture_format.channelCount() as usize,
             )
         };
-        if !(rate >= 8000.0) || channels == 0 {
+        if rate.is_nan() || rate < 8000.0 || channels == 0 {
             return Err("No microphone input is available.".into());
         }
 

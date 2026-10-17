@@ -166,10 +166,10 @@ impl Progress {
             }
         };
         let _guard = lock.lock().await;
-        if let Some((value, Some(fetched))) = self.memory.lock().await.get(scope) {
-            if fetched >= started {
-                return Ok(value);
-            }
+        if let Some((value, Some(fetched))) = self.memory.lock().await.get(scope)
+            && fetched >= started
+        {
+            return Ok(value);
         }
         let mut url = reqwest::Url::parse("http://localhost/api/panel").unwrap();
         url.query_pairs_mut().append_pair("agent", agent);
