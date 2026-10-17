@@ -1410,8 +1410,7 @@ mod tests {
             .unwrap()
     }
 
-    #[tokio::test]
-    async fn vault_setup_facts_route_uses_the_host_command_and_cached_project() {
+    async fn check_vault_setup_facts_with_private_home() {
         let state = tempfile::tempdir().unwrap();
         let project = state.path().join("linux-vm/layr-projects/p1");
         std::fs::create_dir_all(&project).unwrap();
@@ -1489,6 +1488,8 @@ mod tests {
             token,
             "child must use the parent-created private HOME"
         );
+
+        check_vault_setup_facts_with_private_home().await;
 
         let state = tempfile::tempdir().unwrap();
         let prefix = test_request_id("fixture");

@@ -1,14 +1,46 @@
 import { useEffect } from "react";
 import { serverViewId, serverParentOrigin } from "./environment";
-const active = new Set<symbol>();
-const listeners = new Set<() => void>();
-export const serverActivityActive = () => active.size > 0;
-export function subscribeServerActivity(listener: () => void) {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+export function createServerActivity(changed?: (busy: boolean) => void) {
+  const active = new Set<symbol>();
+  const listeners = new Set<() => void>();
+  const serverActivityActive = () => active.size > 0;
+  function subscribeServerActivity(listener: () => void) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+  function publish() {
+    for (const listener of listeners) listener();
+    changed?.(active.size > 0);
+  }
+  function beginServerActivity() {
+    const token = Symbol();
+    active.add(token);
+    publish();
+    return () => {
+      active.delete(token);
+      publish();
+    };
+  }
+  function useServerActivity(busy: boolean) {
+    useEffect(() => {
+      if (busy) return beginServerActivity();
+      publish();
+    }, [busy]);
+  }
+  return {
+    serverActivityActive,
+    subscribeServerActivity,
+    beginServerActivity,
+    useServerActivity,
+  };
 }
-function publish() {
-  for (const listener of listeners) listener();
+
+export const {
+  serverActivityActive,
+  subscribeServerActivity,
+  beginServerActivity,
+  useServerActivity,
+} = createServerActivity((busy) => {
   if (
     serverViewId &&
     typeof window !== "undefined" &&
@@ -19,23 +51,8 @@ function publish() {
       {
         kind: "studio-server-activity",
         serverId: serverViewId,
-        busy: active.size > 0,
+        busy: busy,
       },
       serverParentOrigin,
     );
-}
-export function beginServerActivity() {
-  const token = Symbol();
-  active.add(token);
-  publish();
-  return () => {
-    active.delete(token);
-    publish();
-  };
-}
-export function useServerActivity(busy: boolean) {
-  useEffect(() => {
-    if (busy) return beginServerActivity();
-    publish();
-  }, [busy]);
-}
+});

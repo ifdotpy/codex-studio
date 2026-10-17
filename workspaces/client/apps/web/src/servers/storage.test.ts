@@ -1,5 +1,11 @@
+import { createChatCreationStore } from "../chatCreation";
+import { createLocalDraftStorage } from "../sync/localDraft";
 import { expect, it } from "vitest";
-import { scopedStorage } from "./storage";
+import {
+  scopedStorage,
+  serverStoragePrefix,
+  createStorageEventKey,
+} from "./storage";
 function memoryStorage(): Storage {
   const rows = new Map<string, string>();
   return {
@@ -41,4 +47,83 @@ it("preserves the local installation's existing storage identity", () => {
   expect(local.getItem("codex-sync-workspace")).toBe("cached-workspace");
   local.setItem("draft", "text");
   expect(raw.getItem("draft")).toBe("text");
+});
+
+it("keeps requests and synchronous drafts with their owner despite matching keys and request IDs", () => {
+  const raw = memoryStorage();
+  const storage = (owner: string) =>
+    scopedStorage(() => raw, serverStoragePrefix(owner));
+  const a = createChatCreationStore(storage("a"));
+  const b = createChatCreationStore(storage("b"));
+  a.saveChatCreation("same-key", { id: "same-request", project: "a" });
+  b.saveChatCreation("same-key", { id: "same-request", project: "b" });
+  expect(
+    b.confirmChatCreationResponse("same-key", "same-request", "other"),
+  ).toBe(false);
+  expect(b.pendingChatCreations("same-key")).toEqual([
+    { id: "same-request", project: "b" },
+  ]);
+  expect(
+    b.confirmChatCreationResponse("same-key", "same-request", "same-request"),
+  ).toBe(true);
+  expect(a.pendingChatCreations("same-key")).toEqual([
+    { id: "same-request", project: "a" },
+  ]);
+  expect(b.pendingChatCreations("same-key")).toEqual([]);
+  const draftsA = createLocalDraftStorage(storage("a"), "db-a");
+  const draftsB = createLocalDraftStorage(storage("b"), "db-b");
+  draftsA.writeLocalDraft("same-key", { request_id: "a" });
+  draftsB.writeLocalDraft("same-key", { request_id: "b" });
+  draftsB.writeLocalDraft("same-key", null);
+  expect(storage("a").getItem("same-key")).toBe('{"request_id":"a"}');
+  expect(storage("b").getItem("same-key")).toBeNull();
+});
+
+it("routes storage events only to the matching server namespace", () => {
+  const a = createStorageEventKey(serverStoragePrefix("a"));
+  const b = createStorageEventKey(serverStoragePrefix("b"));
+  const event = { key: serverStoragePrefix("a") + "request" };
+  expect(a(event)).toBe("request");
+  expect(b(event)).toBeUndefined();
+  expect(a({ key: null })).toBeNull();
+  expect(serverStoragePrefix("local")).toBe("");
+});
+
+it("retains rejected request evidence and preserves pending requests if archiving fails", () => {
+  const raw = memoryStorage();
+  const store = createChatCreationStore(raw);
+  const request = { id: "rejected", cwd: "/project" };
+  store.saveChatCreation("creation", request);
+  store.saveChatCreation("creation", { id: "unknown" });
+  store.rejectChatCreation(
+    "creation",
+    "rejected",
+    "Invalid request (body.model).",
+  );
+  expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
+  expect(JSON.parse(raw.getItem("creation:rejected:rejected")!)).toEqual({
+    request,
+    outcome: "not_applied",
+    reason: "Invalid request (body.model).",
+  });
+  raw.setItem = () => {
+    throw new Error("disk full");
+  };
+  expect(() =>
+    store.rejectChatCreation("creation", "unknown", "refused"),
+  ).toThrow("disk full");
+  expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
+});
+
+it("observes raw storage replacement and same-size external key changes", () => {
+  let raw = memoryStorage();
+  const scoped = scopedStorage(() => raw, "owner:");
+  raw.setItem("owner:first", "1");
+  expect(scoped.key(0)).toBe("first");
+  raw.removeItem("owner:first");
+  raw.setItem("owner:second", "2");
+  expect(scoped.key(0)).toBe("second");
+  raw = memoryStorage();
+  raw.setItem("owner:third", "3");
+  expect(scoped.key(0)).toBe("third");
 });

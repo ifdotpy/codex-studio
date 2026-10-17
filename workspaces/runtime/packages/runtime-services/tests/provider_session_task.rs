@@ -9,7 +9,8 @@ use std::{
     time::Duration,
 };
 use studio_runtime_process::{
-    EventCursor, Generation, OperationId, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
+    EventCursor, Generation, MAX_SUPERVISOR_FRAME_BYTES, OperationId, ProviderHandle,
+    ProviderLaunchSpec, provider_seam::*,
 };
 use studio_runtime_providers::{Frame, Method, RequestId, RequestOutcome, ResponseBody};
 use studio_runtime_services::provider_session_task::*;
@@ -430,7 +431,7 @@ async fn constructor_validates_recovered_and_initialize_before_factory_open() {
         let mut cfg = config();
         let mut opts = options();
         if case == 0 {
-            cfg.initialize_params = json!({"large":"x".repeat(1024*1024)});
+            cfg.initialize_params = json!({"large":"x".repeat(MAX_SUPERVISOR_FRAME_BYTES)});
         } else if case == 1 {
             cfg.recovered = vec![recovered(RequestId::Number(8), Method::ModelList, 10); 2];
         } else if case == 2 {
@@ -1139,6 +1140,8 @@ async fn review_full_callback_queue_retains_taken_response_and_resolution() {
     );
 }
 
+// Retained child environment verification is implemented only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn review_numeric_request_recovery_needs_hidden_receipt_mapping() {
     use support::*;
@@ -1438,6 +1441,8 @@ async fn written_correlation_survives_reply_resolving_before_receipt() {
     assert_eq!(recovery.deadline_ms, 100);
     session.checked_shutdown().await;
 }
+// Retained child environment verification is implemented only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn closure_crash_before_written_persistence_keeps_unknown_without_resend() {
     use support::*;

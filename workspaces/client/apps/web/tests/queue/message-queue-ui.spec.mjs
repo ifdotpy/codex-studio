@@ -168,18 +168,22 @@ test("message-queue-ui", async ({ browser }) => {
         name: "Edit queued message",
         exact: true,
       });
-    const attach = async (name) => {
-      await page.getByLabel("Choose attachments").setInputFiles({
-        name,
-        mimeType: "text/plain",
-        buffer: Buffer.from("Queue attachment fixture"),
-      });
-      await page
-        .getByRole("button", { name: `Remove ${name}`, exact: true })
-        .waitFor();
-    };
     await composer.fill("First input");
-    await attach("queued-evidence.txt");
+    // Exercise the composer's file-drop path, not only the file picker.
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.items.add(
+        new File(["Queue attachment fixture"], "queued-evidence.txt", {
+          type: "text/plain",
+        }),
+      );
+      return data;
+    });
+    await composer.dispatchEvent("drop", { dataTransfer: transfer });
+    await transfer.dispose();
+    await page
+      .getByRole("button", { name: "Remove queued-evidence.txt", exact: true })
+      .waitFor();
     await composer.press("Tab");
     await wait(
       async () => (await queue()).items.length === 1,
@@ -248,6 +252,13 @@ test("message-queue-ui", async ({ browser }) => {
       "Reorder persists",
     );
     await waitForQueueMutationToSettle("Reorder acknowledgement completes");
+    const grip = list.locator("li").nth(2).locator(".message-queue-grip");
+    await grip.dragTo(list.locator("li").nth(1));
+    await wait(
+      async () => (await queue()).items[1].text === "Second input",
+      "Pointer drag reorders the durable queue",
+    );
+    await waitForQueueMutationToSettle("Drag acknowledgement completes");
     const order = (await queue()).items.map((item) => item.id);
     await page.reload();
     await panel.waitFor();

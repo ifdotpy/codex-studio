@@ -658,7 +658,7 @@ mod tests {
         }
         std::fs::create_dir_all(&root).expect("fixture directory created");
         let executable = root.join("git-fake");
-        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$PATH\" \"$@\" >&2\nhead -c 2400 /dev/zero | tr '\\000' x >&2\nexit 1\n")
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" \"$PATH\" >&2\nhead -c 2400 /dev/zero | tr '\\000' x >&2\nexit 1\n")
             .expect("fake Git command written");
         let mut permissions = std::fs::metadata(&executable)
             .expect("fake command metadata")
@@ -676,7 +676,15 @@ mod tests {
             panic!("unexpected Git error")
         };
         assert_eq!(message.chars().count(), 1200);
-        assert!(message.starts_with(&std::env::var("PATH").expect("test PATH exists")));
+        let expected = format!(
+            "-C\n/tmp/workspace\nstatus\n--porcelain=v1\n-z\n{}\n",
+            std::env::var("PATH").expect("test PATH exists")
+        );
+        let prefix: String = expected.chars().take(1200).collect();
+        assert!(
+            message.starts_with(&prefix),
+            "unexpected Git stderr: {message:?}"
+        );
         assert!(message.contains("--porcelain=v1"));
         std::fs::remove_dir_all(root).expect("Git fixture removed");
     }

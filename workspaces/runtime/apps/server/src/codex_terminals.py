@@ -21,6 +21,32 @@ HISTORY_LIMIT = 1024 * 1024
 ARCHIVE_CHUNK = 65536
 
 
+def native_process_ids():
+    """Read candidate PIDs without spawning ps; ownership is checked separately."""
+    if sys.platform.startswith("linux"):
+        return [int(path.name) for path in Path("/proc").iterdir() if path.name.isdigit()]
+    if sys.platform != "darwin":
+        raise RuntimeError("Native terminal process enumeration is unavailable")
+    import ctypes
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    library.proc_listallpids.restype = ctypes.c_int
+    count = library.proc_listallpids(None, 0)
+    if count <= 0:
+        raise OSError(ctypes.get_errno(), "Cannot enumerate terminal processes")
+    # Allow growth between the size query and read, but never accept truncation.
+    capacity = count * 2
+    for _ in range(3):
+        buffer = (ctypes.c_int * capacity)()
+        count = library.proc_listallpids(buffer, ctypes.sizeof(buffer))
+        if count <= 0:
+            raise OSError(ctypes.get_errno(), "Cannot enumerate terminal processes")
+        if count < capacity:
+            return [pid for pid in buffer[:count] if pid > 0]
+        capacity *= 2
+    raise RuntimeError("Terminal process enumeration kept growing")
+
+
 def terminal_environment_overlay():
     """Return the exact environment overlay submitted for a terminal shell."""
     env = {name: os.environ.get(name) for name in ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY")}
@@ -664,15 +690,19 @@ class TerminalManager:
     def session_groups(session):
         # macOS ps does not expose the numeric POSIX session ID. Use getsid
         # against each live PID, never a command-name or parent-name match.
-        rows = subprocess.check_output(
-            ["/bin/ps", "-axo", "pid=,stat="], text=True, timeout=5
-        )
+        try:
+            rows = subprocess.check_output(
+                ["/bin/ps", "-axo", "pid=,stat="], text=True, timeout=5
+            )
+            pids = [int(fields[0]) for line in rows.splitlines()
+                    if len(fields := line.split()) == 2 and "Z" not in fields[1]]
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            # A busy host must not strand disconnect cleanup when ps times out.
+            # Native enumeration can include zombies; the bounded termination
+            # wait tolerates them, and every signal still rechecks ownership.
+            pids = native_process_ids()
         groups = {}
-        for line in rows.splitlines():
-            fields = line.split()
-            if len(fields) != 2 or "Z" in fields[1]:
-                continue
-            pid = int(fields[0])
+        for pid in pids:
             try:
                 if os.getsid(pid) == session:
                     group = os.getpgid(pid)

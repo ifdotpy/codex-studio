@@ -1,3 +1,4 @@
+import { frameMessageOrigin } from "./frameOrigin";
 import { expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { frameURL, serverFrameHost } from "./frameOrigin";
@@ -70,3 +71,31 @@ it.each(["", "?studio-navigation=combined", "?studio-navigation=invalid"])(
     expect(new URL(url).searchParams.get("studio-navigation")).toBe("combined");
   },
 );
+
+it("gives native server views separate bundled origins", () => {
+  const url = new URL(
+    frameURL(
+      { id: "local", label: "Local", origin: "http://localhost" },
+      "tauri://localhost/index.html",
+      "",
+    ),
+  );
+  expect(url.protocol).toBe("studio-view:");
+  expect(url.hostname).toBe(serverFrameHost("local"));
+  expect(url.searchParams.get("studio-server")).toBe("local");
+});
+
+it("uses exact WebKit origins without collapsing native hosts to null", () => {
+  expect(frameMessageOrigin("studio-view://studio-one.localhost/?q=x")).toBe(
+    "studio-view://studio-one.localhost",
+  );
+  expect(frameMessageOrigin("studio-view://studio-two.localhost/")).not.toBe(
+    frameMessageOrigin("studio-view://studio-one.localhost/"),
+  );
+  expect(frameMessageOrigin("tauri://localhost/index.html")).toBe(
+    "tauri://localhost",
+  );
+  expect(frameMessageOrigin("http://localhost:4621/")).toBe(
+    "http://localhost:4621",
+  );
+});

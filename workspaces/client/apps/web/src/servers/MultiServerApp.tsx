@@ -1,3 +1,16 @@
+import { ScreenContext } from "./ScreenContext";
+import {
+  createScreenChannel,
+  type ScreenChannel,
+  type ScreenMessage,
+} from "./screenChannel";
+import { ServerServicesProvider } from "./ServerServicesContext";
+import { createServerServices, type ServerServices } from "./serverServices";
+import {
+  hasDesktopNotifications,
+  notifyDesktop,
+  onDesktopNavigate,
+} from "../native/notifications";
 import { orderPreferenceServers } from "./preferenceServerOrder";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useUiPreferenceSync } from "./useUiPreferenceSync";
@@ -14,15 +27,9 @@ import {
   Modal,
   useMantineColorScheme,
   Tabs,
-  NativeSelect,
   ActionIcon,
 } from "@mantine/core";
-import {
-  ChevronUp,
-  Plus,
-  Settings,
-  Terminal as TerminalIcon,
-} from "lucide-react";
+import { ChevronUp, Plus, Terminal as TerminalIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -39,16 +46,11 @@ import {
   selectCombinedSidebar,
   createSidebarSourceStore,
 } from "./mergedSidebar";
-import { createSidebarRpcClient } from "./sidebarRpc";
-import { frameSidebarBackend } from "./frameSidebarBackend";
+import { serverSidebarBackend } from "./serverSidebarBackend";
 import ProjectServerCards from "../components/ProjectServerCards";
 import { projectServerChoices, type LocationProject } from "./projectLocations";
 import { projectChatCommand } from "./projectChatCommand";
-import { frameURL } from "./frameOrigin";
-import { canUnloadFrame } from "./idleFrames";
 import { fetchServerSummary, summaryFailure } from "./summary";
-import { bindShellTransport } from "./shellTransport";
-import { serverCredentialAdapter } from "./transport";
 import {
   localServer,
   readServers,
@@ -76,8 +78,6 @@ import { alertsSince } from "../desktop/desktopAlerts";
 import "./servers.css";
 const uiOnly =
   new URLSearchParams(location.search).get("studio-ui-only") === "1";
-const combinedNavigation =
-  new URLSearchParams(location.search).get("studio-navigation") !== "classic";
 export default function MultiServerApp() {
   const [failure, setFailure] = useState("");
   const [newChatDialog, setNewChatDialog] = useState<{
@@ -124,7 +124,7 @@ export default function MultiServerApp() {
     setManagerTab("servers");
     setManager(true);
   };
-  const restoreManagerAfterFrameDialog = useRef(false);
+  const restoreManagerAfterAccountDialog = useRef(false);
   const restoreAccountActionFocus = useRef<string | null>(null);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
@@ -177,8 +177,6 @@ export default function MultiServerApp() {
     >
   >({});
   const [shellSidebarWidth, setShellSidebarWidth] = useState(0);
-  const shellSidebarWidthRef = useRef(0);
-  shellSidebarWidthRef.current = shellSidebarWidth;
   const toggleSidebar = useCallback(() => {
     if (window.matchMedia("(max-width: 760px)").matches)
       setMobileOpen((old) => !old);
@@ -197,101 +195,40 @@ export default function MultiServerApp() {
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
   const [mobileOpen, setMobileOpen] = useState(false);
-  const frames = useRef(new Map<string, HTMLIFrameElement>());
+  const screens = useRef(new Map<string, ScreenChannel>());
+  const screenEvents = useRef<
+    (owner: string, data: ScreenMessage, channel: ScreenChannel) => void
+  >(() => {});
   const pending = useRef(new Map<string, ServerCommand>());
-  const [unloaded, setUnloaded] = useState(new Set<string>());
-  const unloadedRef = useRef(unloaded);
-  unloadedRef.current = unloaded;
   const currentRef = useRef(current);
   currentRef.current = current;
   const serversRef = useRef(servers);
   serversRef.current = servers;
-  const lastSelected = useRef(current);
-  const readyFrames = useRef(new Set<string>());
+  const readyScreens = useRef(new Set<string>());
   const readyWaiters = useRef(new Map<string, Set<() => void>>());
-  const lifecycle = useRef(
-    new Map<
-      string,
-      {
-        idleSince: number;
-        busy: boolean;
-        activity: boolean;
-        known: boolean;
-        ready: boolean;
-      }
-    >(),
-  );
-  const life = (id: string) => {
-    if (!lifecycle.current.has(id))
-      lifecycle.current.set(id, {
-        idleSince: Date.now(),
-        busy: false,
-        activity: false,
-        known: false,
-        ready: false,
-      });
-    return lifecycle.current.get(id)!;
-  };
-  useEffect(() => {
-    life(lastSelected.current).idleSince = Date.now();
-    life(current).idleSince = Date.now();
-    lastSelected.current = current;
-  }, [current]);
-  const mount = (id: string) => {
-    if (unloadedRef.current.has(id)) {
-      readyFrames.current.delete(id);
-      Object.assign(life(id), {
-        idleSince: Date.now(),
-        known: false,
-        ready: false,
-      });
-    }
-    setUnloaded((old) => {
-      if (!old.has(id)) return old;
-      const next = new Set(old);
-      next.delete(id);
-      return next;
-    });
-  };
-  const targetOrigin = (id: string) =>
-    new URL(frames.current.get(id)?.src || location.href).origin;
-  useEffect(() => bindShellTransport(frames.current), []);
   const publishPreferences = (value: unknown) => {
-    for (const [id, frame] of frames.current)
-      frame.contentWindow?.postMessage(
-        { kind: "studio-server-preferences", serverId: id, preferences: value },
-        new URL(frame.src).origin,
-      );
+    window.dispatchEvent(
+      new CustomEvent("studio-shell-preferences", { detail: value }),
+    );
   };
   const select = useCallback((id: string) => {
-    mount(id);
-    life(id).idleSince = Date.now();
     setSelected(id);
     localStorage.setItem("studio-selected-server", id);
     setMobileOpen(false);
     requestAnimationFrame(() => {
-      const frame = frames.current.get(id);
-      frame?.focus();
-      frame?.contentWindow?.postMessage(
-        {
-          kind: "studio-server-command",
-          serverId: id,
-          command: { action: "focus" },
-        },
-        targetOrigin(id),
-      );
+      if (currentRef.current !== id) return;
+      const screen = screens.current.get(id);
+      if (screen?.ready)
+        void screen.execute({ action: "focus" }).catch(() => {});
     });
   }, []);
   const send = (id: string, command: ServerCommand) => {
     select(id);
-    const frame = frames.current.get(id);
-    if (!frame || !readyFrames.current.has(id))
+    const screen = screens.current.get(id);
+    if (!screen?.ready || !readyScreens.current.has(id))
       pending.current.set(id, command);
     else
-      frame.contentWindow?.postMessage(
-        { kind: "studio-server-command", serverId: id, command },
-        targetOrigin(id),
-      );
+      void screen.execute(command).catch((error) => setFailure(String(error)));
   };
   const applyNavigation = (id: string, value: ServerNavigation) => {
     sidebarSources.current.update(id, value.sidebar);
@@ -316,14 +253,12 @@ export default function MultiServerApp() {
         const server =
           readServers().find((row) => row.id === id) || localServer();
         const title = `${server.label}: ${alert.title}`.slice(0, 160);
-        if (window.codexDesktop)
-          void window.codexDesktop
-            .notify({
-              title,
-              body: alert.body,
-              target: { ...alert.target, serverId: id },
-            })
-            .catch(() => {});
+        if (hasDesktopNotifications())
+          void notifyDesktop({
+            title,
+            body: alert.body,
+            target: { ...alert.target, serverId: id },
+          }).catch(() => {});
         else if (
           "Notification" in window &&
           Notification.permission === "granted"
@@ -339,73 +274,143 @@ export default function MultiServerApp() {
         }
       }
     }
-    if (pending.current.has(id) && value.ready && frames.current.has(id)) {
+    const screen = screens.current.get(id);
+    if (pending.current.has(id) && value.ready && screen?.ready) {
       const command = pending.current.get(id)!;
       pending.current.delete(id);
-      frames.current
-        .get(id)
-        ?.contentWindow?.postMessage(
-          { kind: "studio-server-command", serverId: id, command },
-          targetOrigin(id),
-        );
+      void screen.execute(command).catch((error) => setFailure(String(error)));
     }
   };
   const applyNavigationRef = useRef(applyNavigation);
   applyNavigationRef.current = applyNavigation;
-  const ensureReady = useCallback(async (owner: string) => {
-    if (!serversRef.current.some((server) => server.id === owner))
-      throw new Error("The sidebar server is no longer paired.");
-    if (
-      frames.current.get(owner)?.isConnected &&
-      readyFrames.current.has(owner)
-    )
-      return;
-    mount(owner);
-    await new Promise<void>((resolve, reject) => {
-      const waiters = readyWaiters.current.get(owner) || new Set<() => void>();
-      const done = () => {
-        clearTimeout(timer);
-        waiters.delete(done);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        waiters.delete(done);
-        reject(new Error("The sidebar server is unavailable."));
-      }, 15000);
-      waiters.add(done);
-      readyWaiters.current.set(owner, waiters);
-    });
-  }, []);
-  const sidebarRpc = useMemo(
-    () => createSidebarRpcClient(window, frames.current, ensureReady),
-    [ensureReady],
+  const executeCommand = useCallback(
+    async (owner: string, command: ServerCommand) => {
+      const screen = screens.current.get(owner);
+      if (!screen) throw new Error("The server is no longer paired.");
+      if (!readyScreens.current.has(owner) || !screen.ready) {
+        await new Promise<void>((resolve, reject) => {
+          const waiters =
+            readyWaiters.current.get(owner) || new Set<() => void>();
+          const done = () => {
+            clearTimeout(timer);
+            waiters.delete(done);
+            resolve();
+          };
+          const timer = setTimeout(() => {
+            waiters.delete(done);
+            reject(new Error("The server screen is unavailable."));
+          }, 15000);
+          waiters.add(done);
+          readyWaiters.current.set(owner, waiters);
+        });
+      }
+      if (screens.current.get(owner) !== screen)
+        throw new Error(
+          "The server connection changed. The action was not sent.",
+        );
+      await screen.execute(command);
+    },
+    [],
   );
-  useEffect(() => {
-    sidebarRpc.start();
-    return () => sidebarRpc.dispose();
-  }, [sidebarRpc]);
   const sidebarOnline = useCallback(
     (owner: string) =>
       serversRef.current.some((server) => server.id === owner) &&
       statusRef.current[owner] === "live",
     [],
   );
+  const serviceInstances = useRef(new Map<string, ServerServices>());
+  const services = useMemo(
+    () =>
+      new Map(
+        servers.map((server) => {
+          const previous = serviceInstances.current.get(server.id);
+          const instance =
+            previous &&
+            previous.owner.origin === server.origin &&
+            previous.owner.credentialId === server.credentialId
+              ? previous
+              : createServerServices(server);
+          return [server.id, instance] as const;
+        }),
+      ),
+    [servers],
+  );
+  const screenOwners = useRef(
+    new Map<string, { service: ServerServices; channel: ScreenChannel }>(),
+  );
+  const channels = useMemo(
+    () =>
+      new Map(
+        [...services].map(([id, service]) => {
+          const previous = screenOwners.current.get(id);
+          if (previous?.service === service)
+            return [id, previous.channel] as const;
+          readyScreens.current.delete(id);
+          const channel = createScreenChannel(id, (message) =>
+            screenEvents.current(id, message, channel),
+          );
+          return [id, channel] as const;
+        }),
+      ),
+    [services],
+  );
+  screens.current = channels;
+  useEffect(() => {
+    for (const [id, previous] of screenOwners.current) {
+      if (channels.get(id) !== previous.channel) previous.channel.close();
+    }
+    screenOwners.current = new Map(
+      [...services].map(([id, service]) => [
+        id,
+        { service, channel: channels.get(id)! },
+      ]),
+    );
+  }, [services, channels]);
+  useEffect(
+    () => () => {
+      for (const screen of screens.current.values()) screen.close();
+    },
+    [],
+  );
+  useEffect(() => {
+    for (const [id, instance] of serviceInstances.current) {
+      if (services.get(id) !== instance) instance.close();
+    }
+    serviceInstances.current = services;
+  }, [services]);
+  useEffect(
+    () => () => {
+      for (const instance of serviceInstances.current.values())
+        instance.close();
+      serviceInstances.current.clear();
+    },
+    [],
+  );
   const sidebarBackends = useMemo(
     () =>
       new Map(
-        servers.map((server) => [
-          server.id,
-          frameSidebarBackend(server.id, sidebarRpc, () =>
-            sidebarOnline(server.id),
-          ),
+        [...services].map(([id, service]) => [
+          id,
+          serverSidebarBackend(service, () => sidebarOnline(id)),
         ]),
       ),
-    [servers, sidebarRpc, sidebarOnline],
+    [services, sidebarOnline],
   );
+  const refreshSidebarOwner = async (owner: string) => {
+    const service = serviceInstances.current.get(owner);
+    if (!service) throw new Error("The sidebar server is no longer paired.");
+    const value = await fetchServerSummary(
+      service.owner,
+      new AbortController().signal,
+    );
+    if (serviceInstances.current.get(owner) !== service)
+      throw new Error("The sidebar server connection changed.");
+    return { ...value, opened: navigationRef.current[owner]?.opened || null };
+  };
   const mergedSelector = useMemo(() => createMergedSidebarSelector(), []);
   const mergedSidebar = useMemo(
     () =>
-      selectCombinedSidebar(combinedNavigation, mergedSelector, () =>
+      selectCombinedSidebar(true, mergedSelector, () =>
         sidebarSources.current.sources(
           servers.map((server) => server.id),
           new Set(
@@ -434,86 +439,6 @@ export default function MultiServerApp() {
       ),
     [servers, discovery.snapshot?.aliases],
   );
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const remove: string[] = [];
-      for (const [id, state] of lifecycle.current) {
-        if (id === currentRef.current || state.busy || state.activity)
-          state.idleSince = Date.now();
-        if (
-          frames.current.has(id) &&
-          canUnloadFrame(
-            id === currentRef.current,
-            state.ready && state.known,
-            state.busy || state.activity,
-            state.idleSince,
-            Date.now(),
-          )
-        ) {
-          remove.push(id);
-          readyFrames.current.delete(id);
-        }
-      }
-      if (remove.length) setUnloaded((old) => new Set([...old, ...remove]));
-    }, 15000);
-    return () => clearInterval(timer);
-  }, []);
-  useEffect(() => {
-    const timers = new Set<ReturnType<typeof setTimeout>>();
-    const controllers = new Set<AbortController>();
-    let stopped = false;
-    for (const server of serversRef.current.filter((row) =>
-      unloaded.has(row.id),
-    )) {
-      let delay = 30000;
-      const poll = async () => {
-        const controller = new AbortController();
-        controllers.add(controller);
-        const deadline = setTimeout(() => controller.abort(), 15000);
-        try {
-          const value = await fetchServerSummary(server, controller.signal);
-          if (
-            stopped ||
-            controller.signal.aborted ||
-            !unloadedRef.current.has(server.id)
-          )
-            return;
-          const opened = navigation[server.id]?.opened || null;
-          applyNavigationRef.current(server.id, { ...value, opened });
-          setAccountsByServer((old) => ({
-            ...old,
-            [server.id]: value.accounts,
-          }));
-          setStatus((old) => ({ ...old, [server.id]: "live" }));
-          setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
-          delay = 30000;
-        } catch (error) {
-          if (!stopped)
-            setStatus((old) => ({
-              ...old,
-              [server.id]: summaryFailure(error),
-            }));
-          delay = Math.min(delay * 2, 120000);
-        } finally {
-          clearTimeout(deadline);
-          controllers.delete(controller);
-          if (!stopped) {
-            const timer = setTimeout(() => {
-              timers.delete(timer);
-              void poll();
-            }, delay);
-            timers.add(timer);
-          }
-        }
-      };
-      void poll();
-    }
-    return () => {
-      stopped = true;
-      for (const timer of timers) clearTimeout(timer);
-      for (const controller of controllers) controller.abort();
-    };
-  }, [unloaded, paired]);
   useEffect(() => {
     if (!manager || (managerTab !== "servers" && managerTab !== "accounts"))
       return;
@@ -618,252 +543,167 @@ export default function MultiServerApp() {
       preferences.sidebarFontSize + "px",
     );
   }, [preferences, setColorScheme]);
-  useEffect(() => {
-    const receive = async (event: MessageEvent) => {
-      const id =
-        event.data?.serverId ||
-        [...frames.current].find(
-          ([, frame]) => frame.contentWindow === event.source,
-        )?.[0];
+  screenEvents.current = (id, data: any, channel) => {
+    if (screens.current.get(id) !== channel) return;
+    if (
+      data.kind === "studio-server-activity" &&
+      typeof data.busy === "boolean"
+    ) {
+      // Activity stays with the service; screen controllers remain mounted.
+    } else if (data.kind === "studio-open-new-chat") {
+      setMobileOpen(false);
+      const view = navigationRef.current[id];
+      const project = view?.projects.find(
+        (row) => row.id === data.projectId || row.path === data.path,
+      );
+      const directory =
+        project?.path ||
+        view?.chats.find((row) => row.id === view.opened)?.path ||
+        data.path ||
+        "";
+      setNewChatDialog({
+        server: id,
+        project: {
+          ...project,
+          id: project?.id || directory,
+          path: directory,
+          name: project?.name || directory || "Current folder",
+          locations: project?.locations?.length
+            ? project.locations
+            : [
+                {
+                  serverId: id,
+                  path: directory,
+                  projectId: project?.id || directory,
+                },
+              ],
+        },
+        folder:
+          typeof data.projectFolder === "string"
+            ? data.projectFolder
+            : undefined,
+        // Keep the screen owner's project binding. A folder belongs to that project.
+        binding:
+          typeof data.projectId === "string" &&
+          typeof data.projectServerId === "string"
+            ? {
+                projectId: data.projectId,
+                projectServerId: data.projectServerId,
+              }
+            : undefined,
+      });
+    } else if (data.kind === "studio-project-new-chat") {
+      const target = serversRef.current.find(
+        (server) => server.id === data.target,
+      );
+      const command =
+        target && projectChatCommand(navigationRef.current[id], data);
+      if (target && command) send(target.id, command);
+    } else if (data.kind === "studio-server-account-dialog") {
+      if (typeof data.opened !== "boolean") return;
+      if (data.opened) {
+        if (managerRef.current) {
+          restoreManagerAfterAccountDialog.current = true;
+          setManager(false);
+        }
+      } else if (restoreManagerAfterAccountDialog.current) {
+        restoreManagerAfterAccountDialog.current = false;
+        setManager(true);
+      }
+    } else if (data.kind === "studio-server-open-settings") {
+      setManagerTab(data.tab === "accounts" ? "accounts" : "servers");
+      setManager(true);
+    } else if (data.kind === "studio-server-preferences") {
+      try {
+        const value = parseStudioPreferences(JSON.stringify(data.preferences));
+        const next = writePreferenceEdit(
+          studioPreferencesStorageKey,
+          { ...preferences },
+          { ...value },
+        );
+        setPreferences(next);
+        publishPreferences(next);
+      } catch {}
+    } else if (data.kind === "studio-server-terminal") {
+      const value = data;
       if (
-        event.origin !== targetOrigin(id) ||
-        typeof id !== "string" ||
-        !frames.current.get(id)?.contentWindow ||
-        event.source !== frames.current.get(id)?.contentWindow
+        typeof value.opened !== "boolean" ||
+        !Number.isFinite(value.height) ||
+        !Number.isInteger(value.count) ||
+        !Number.isInteger(value.active) ||
+        typeof value.canCreate !== "boolean"
       )
         return;
-      if (event.data.kind === "studio-server-frame-credential-request") {
+      setTerminals((old) => ({
+        ...old,
+        [id]: {
+          opened: value.opened,
+          height: Math.max(0, Math.min(4000, value.height)),
+          count: value.count,
+          active: value.active,
+          canCreate: value.canCreate,
+        },
+      }));
+    } else if (data.kind === "studio-server-toggle-sidebar") {
+      toggleSidebar();
+    } else if (data.kind === "studio-server-search") setSearchOpen(true);
+    else if (
+      data.kind === "studio-server-search-results" &&
+      data.requestId === searchRequest.current
+    ) {
+      setSearchResults((old) => ({
+        ...old,
+        [id]: { results: data.results || [], error: data.error },
+      }));
+    } else if (data.kind === "studio-server-navigation") {
+      const value = data.navigation as ServerNavigation;
+      publishPreferences(preferencesRef.current);
+      if (
+        !value ||
+        !Array.isArray(value.projects) ||
+        !Array.isArray(value.chats)
+      )
+        return;
+      if (value.ready) readyScreens.current.add(id);
+      applyNavigationRef.current(id, value);
+    } else if (data.kind === "studio-server-accounts") {
+      if (!Array.isArray(data.accounts) || data.accounts.length > 500) return;
+      const accounts: ServerAccount[] = [];
+      for (const row of data.accounts) {
         if (
-          event.data.serverId !== id ||
-          typeof event.data.correlation !== "string"
+          !row ||
+          (row.provider !== "codex" && row.provider !== "claude") ||
+          (row.email !== null && typeof row.email !== "string") ||
+          (row.plan !== null && typeof row.plan !== "string") ||
+          typeof row.status !== "string" ||
+          typeof row.label !== "string" ||
+          typeof row.isDefault !== "boolean"
         )
           return;
-        try {
-          const frame = frames.current.get(id);
-          if (!frame?.isConnected || frame.contentWindow !== event.source)
-            return;
-          const server =
-            id === "local"
-              ? localServer()
-              : serversRef.current.find((row) => row.id === id);
-          if (!server) throw new Error("The server is no longer paired.");
-          const adapter = serverCredentialAdapter();
-          if (!adapter.frameSigningCredential)
-            throw new Error("Frame signing is unavailable.");
-          const credential = await adapter.frameSigningCredential(server);
-          if (frames.current.get(id) !== frame || !frame.isConnected) return;
-          frame.contentWindow?.postMessage(
-            {
-              kind: "studio-server-frame-credential-result",
-              serverId: id,
-              correlation: event.data.correlation,
-              credential: { serverId: id, ...credential },
-            },
-            event.origin,
-          );
-        } catch (error) {
-          const frame = frames.current.get(id);
-          if (frame?.contentWindow !== event.source || !frame.isConnected)
-            return;
-          frame.contentWindow?.postMessage(
-            {
-              kind: "studio-server-frame-credential-result",
-              serverId: id,
-              correlation: event.data.correlation,
-              error: (error as Error).message,
-            },
-            event.origin,
-          );
-        }
-      } else if (
-        event.data.kind === "studio-server-activity" &&
-        typeof event.data.busy === "boolean"
-      ) {
-        const state = life(id);
-        state.known = true;
-        if (state.activity !== event.data.busy) state.idleSince = Date.now();
-        state.activity = event.data.busy;
-      } else if (event.data.kind === "studio-open-new-chat") {
-        setMobileOpen(false);
-        const view = navigationRef.current[id];
-        const project = view?.projects.find(
-          (row) =>
-            row.id === event.data.projectId || row.path === event.data.path,
-        );
-        const directory =
-          project?.path ||
-          view?.chats.find((row) => row.id === view.opened)?.path ||
-          event.data.path ||
-          "";
-        setNewChatDialog({
-          server: id,
-          project: {
-            ...project,
-            id: project?.id || directory,
-            path: directory,
-            name: project?.name || directory || "Current folder",
-            locations: project?.locations?.length
-              ? project.locations
-              : [
-                  {
-                    serverId: id,
-                    path: directory,
-                    projectId: project?.id || directory,
-                  },
-                ],
-          },
-          folder:
-            typeof event.data.projectFolder === "string"
-              ? event.data.projectFolder
-              : undefined,
-          // Keep the frame's project binding. A folder belongs to that project.
-          binding:
-            typeof event.data.projectId === "string" &&
-            typeof event.data.projectServerId === "string"
-              ? {
-                  projectId: event.data.projectId,
-                  projectServerId: event.data.projectServerId,
-                }
-              : undefined,
+        accounts.push({
+          provider: row.provider,
+          email: row.email,
+          plan: row.plan,
+          status: row.status,
+          label: row.label,
+          isDefault: row.isDefault,
         });
-      } else if (event.data.kind === "studio-project-new-chat") {
-        const target = serversRef.current.find(
-          (server) => server.id === event.data.target,
-        );
-        const command =
-          target && projectChatCommand(navigationRef.current[id], event.data);
-        if (target && command) send(target.id, command);
-      } else if (event.data.kind === "studio-server-account-dialog") {
-        if (typeof event.data.opened !== "boolean") return;
-        if (event.data.opened) {
-          if (managerRef.current) {
-            restoreManagerAfterFrameDialog.current = true;
-            setManager(false);
-          }
-        } else if (restoreManagerAfterFrameDialog.current) {
-          restoreManagerAfterFrameDialog.current = false;
-          setManager(true);
-        }
-      } else if (event.data.kind === "studio-server-open-settings") {
-        setManagerTab(event.data.tab === "accounts" ? "accounts" : "servers");
-        setManager(true);
-      } else if (event.data.kind === "studio-server-preferences") {
-        try {
-          const value = parseStudioPreferences(
-            JSON.stringify(event.data.preferences),
-          );
-          const next = writePreferenceEdit(
-            studioPreferencesStorageKey,
-            { ...preferences },
-            { ...value },
-          );
-          setPreferences(next);
-          publishPreferences(next);
-        } catch {}
-      } else if (event.data.kind === "studio-server-terminal") {
-        const value = event.data;
-        if (
-          typeof value.opened !== "boolean" ||
-          !Number.isFinite(value.height) ||
-          !Number.isInteger(value.count) ||
-          !Number.isInteger(value.active) ||
-          typeof value.canCreate !== "boolean"
-        )
-          return;
-        setTerminals((old) => ({
-          ...old,
-          [id]: {
-            opened: value.opened,
-            height: Math.max(0, Math.min(4000, value.height)),
-            count: value.count,
-            active: value.active,
-            canCreate: value.canCreate,
-          },
-        }));
-        frames.current.get(id)?.contentWindow?.postMessage(
-          {
-            kind: "studio-server-shell-layout",
-            serverId: id,
-            sidebarWidth: shellSidebarWidthRef.current,
-          },
-          targetOrigin(id),
-        );
-      } else if (event.data.kind === "studio-server-toggle-sidebar") {
-        toggleSidebar();
-      } else if (event.data.kind === "studio-server-search")
-        setSearchOpen(true);
-      else if (
-        event.data.kind === "studio-server-search-results" &&
-        event.data.requestId === searchRequest.current
-      ) {
-        setSearchResults((old) => ({
-          ...old,
-          [id]: { results: event.data.results || [], error: event.data.error },
-        }));
-      } else if (event.data.kind === "studio-server-navigation") {
-        const value = event.data.navigation as ServerNavigation;
-        publishPreferences(preferencesRef.current);
-        if (
-          !value ||
-          !Array.isArray(value.projects) ||
-          !Array.isArray(value.chats)
-        )
-          return;
-        const state = life(id);
-        if (state.busy !== !!value.busy) state.idleSince = Date.now();
-        state.busy = !!value.busy;
-        state.ready = value.ready;
-        if (value.ready) readyFrames.current.add(id);
-        applyNavigationRef.current(id, value);
-      } else if (event.data.kind === "studio-server-accounts") {
-        if (
-          !Array.isArray(event.data.accounts) ||
-          event.data.accounts.length > 500
-        )
-          return;
-        const accounts: ServerAccount[] = [];
-        for (const row of event.data.accounts) {
-          if (
-            !row ||
-            (row.provider !== "codex" && row.provider !== "claude") ||
-            (row.email !== null && typeof row.email !== "string") ||
-            (row.plan !== null && typeof row.plan !== "string") ||
-            typeof row.status !== "string" ||
-            typeof row.label !== "string" ||
-            typeof row.isDefault !== "boolean"
-          )
-            return;
-          accounts.push({
-            provider: row.provider,
-            email: row.email,
-            plan: row.plan,
-            status: row.status,
-            label: row.label,
-            isDefault: row.isDefault,
-          });
-        }
-        setAccountsByServer((old) => ({ ...old, [id]: accounts }));
-      } else if (
-        event.data.kind === "studio-server-status" &&
-        [
-          "connecting",
-          "live",
-          "offline",
-          "degraded",
-          "schema-mismatch",
-        ].includes(event.data.status)
-      ) {
-        setStatus((old) => ({ ...old, [id]: event.data.status }));
-        if (event.data.status === "live")
-          setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
       }
-    };
-    window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [toggleSidebar]);
+      setAccountsByServer((old) => ({ ...old, [id]: accounts }));
+    } else if (
+      data.kind === "studio-server-status" &&
+      ["connecting", "live", "offline", "degraded", "schema-mismatch"].includes(
+        data.status,
+      )
+    ) {
+      setStatus((old) => ({ ...old, [id]: data.status }));
+      if (data.status === "live")
+        setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
+    }
+  };
   useEffect(
     () =>
-      window.codexDesktop?.onNavigate((target) => {
+      onDesktopNavigate((target) => {
         if (!target.serverId) return;
         send(target.serverId, { action: "notifications", ...target });
       }),
@@ -920,6 +760,7 @@ export default function MultiServerApp() {
   const settings = (
     <Modal
       opened={manager}
+      transitionProps={{ duration: 0 }}
       onClose={() => setManager(false)}
       size={modalSizes.settings}
       title="Studio settings"
@@ -957,7 +798,7 @@ export default function MultiServerApp() {
                 ...status,
               }}
               startAccount={(id, command) => {
-                restoreManagerAfterFrameDialog.current = manager;
+                restoreManagerAfterAccountDialog.current = manager;
                 restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
                 if (servers.some((server) => server.id === id))
                   setManager(false);
@@ -965,7 +806,7 @@ export default function MultiServerApp() {
                 send(id, command);
               }}
               accountAction={(id, command) => {
-                restoreManagerAfterFrameDialog.current = manager;
+                restoreManagerAfterAccountDialog.current = manager;
                 restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
                 setManager(false);
                 send(id, command);
@@ -980,7 +821,6 @@ export default function MultiServerApp() {
     </Modal>
   );
   useEffect(() => {
-    if (!combinedNavigation) return;
     const narrow = window.matchMedia("(max-width: 760px)");
     let observed: Element | null = null;
     const measure = () => {
@@ -995,15 +835,12 @@ export default function MultiServerApp() {
           ? 0
           : Math.round(sidebar.getBoundingClientRect().width);
       setShellSidebarWidth(width);
-      for (const [id, frame] of frames.current)
-        frame.contentWindow?.postMessage(
-          {
-            kind: "studio-server-shell-layout",
-            serverId: id,
-            sidebarWidth: width,
-          },
-          targetOrigin(id),
-        );
+      document.documentElement.style.setProperty(
+        "--shell-sidebar-width",
+        `${width}px`,
+      );
+      if (width > 0) document.documentElement.dataset.shellSidebar = "true";
+      else delete document.documentElement.dataset.shellSidebar;
     };
     const observer = new ResizeObserver(measure);
     measure();
@@ -1030,7 +867,7 @@ export default function MultiServerApp() {
         <App />
       </ServerSettingsContext.Provider>
     );
-  const terminal = combinedNavigation ? terminals[current] : undefined;
+  const terminal = terminals[current];
   const terminalLayout =
     terminal && shellSidebarWidth > 0
       ? terminal.opened
@@ -1040,7 +877,7 @@ export default function MultiServerApp() {
   return (
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
-      data-navigation={combinedNavigation ? "combined" : "classic"}
+      data-navigation="combined"
       data-shell-terminal={terminalLayout}
       style={
         {
@@ -1049,82 +886,61 @@ export default function MultiServerApp() {
         } as CSSProperties
       }
     >
-      {!combinedNavigation && (
-        <div className="server-switcher">
-          <NativeSelect
-            aria-label="Studio server"
-            value={current}
-            data={servers.map((server) => ({
-              value: server.id,
-              label: server.label,
-            }))}
-            onChange={(event) => select(event.currentTarget.value)}
+      <>
+        <Button
+          className="server-mobile-toggle"
+          onClick={() => setMobileOpen(!mobileOpen)}
+          aria-expanded={mobileOpen}
+        >
+          Servers and chats
+        </Button>
+        {mergedSidebar?.sources.length ? (
+          <CombinedServerSidebar
+            model={mergedSidebar}
+            backends={sidebarBackends}
+            online={sidebarOnline}
+            refreshOwner={refreshSidebarOwner}
+            executeCommand={executeCommand}
+            aliases={sidebarAliases}
+            current={current}
+            navigation={navigation}
+            send={send}
+            applyNavigation={(owner, value) =>
+              applyNavigationRef.current(owner, value)
+            }
+            mobile={mobileOpen}
+            hidden={sidebarHidden}
+            close={() => {
+              setMobileOpen(false);
+              setSidebarHidden(true);
+            }}
+            settings={openManager}
+            search={() => setSearchOpen(true)}
+            notify={setFailure}
+            notice={failure}
+            hideOldChatsThreshold={preferences.hideOldChatsThreshold}
           />
-          <ActionIcon
-            aria-label="Studio settings"
-            variant="subtle"
-            onClick={openManager}
-          >
-            <Settings size={18} />
-          </ActionIcon>
-        </div>
-      )}
-      {combinedNavigation && (
-        <>
-          <Button
-            className="server-mobile-toggle"
-            onClick={() => setMobileOpen(!mobileOpen)}
-            aria-expanded={mobileOpen}
-          >
-            Servers and chats
-          </Button>
-          {mergedSidebar?.sources.length ? (
-            <CombinedServerSidebar
-              model={mergedSidebar}
-              backends={sidebarBackends}
-              online={sidebarOnline}
-              rpc={sidebarRpc}
-              aliases={sidebarAliases}
-              current={current}
-              navigation={navigation}
-              send={send}
-              applyNavigation={(owner, value) =>
-                applyNavigationRef.current(owner, value)
-              }
-              mobile={mobileOpen}
-              hidden={sidebarHidden}
-              close={() => {
-                setMobileOpen(false);
-                setSidebarHidden(true);
-              }}
-              settings={openManager}
-              search={() => setSearchOpen(true)}
-              notify={setFailure}
-              notice={failure}
-              hideOldChatsThreshold={preferences.hideOldChatsThreshold}
-            />
-          ) : (
-            <aside className="server-sidebar" aria-label="Servers and projects">
-              <header>
-                <strong>LAYR Studio</strong>
-                <Button
-                  variant="subtle"
-                  aria-label="Studio settings"
-                  onClick={openManager}
-                >
-                  Settings
-                </Button>
-              </header>
-              <p role="status">
-                {servers.length
-                  ? "Loading chats..."
-                  : "Pair a server to open its projects and chats."}
-              </p>
-              {failure && <p role="alert">{failure}</p>}
-            </aside>
-          )}
-        </>
-      )}
+        ) : (
+          <aside className="server-sidebar" aria-label="Servers and projects">
+            <header>
+              <strong>LAYR Studio</strong>
+              <Button
+                variant="subtle"
+                aria-label="Studio settings"
+                onClick={openManager}
+              >
+                Settings
+              </Button>
+            </header>
+            <p role="status">
+              {servers.length
+                ? "Loading chats..."
+                : "Pair a server to open its projects and chats."}
+            </p>
+            {failure && <p role="alert">{failure}</p>}
+          </aside>
+        )}
+      </>
       {terminalLayout === "closed" && terminal && (
         <div className="shell-terminal-bar">
           <button
@@ -1164,21 +980,24 @@ export default function MultiServerApp() {
             <Button onClick={openManager}>Open Settings</Button>
           </div>
         )}
-        {servers
-          .filter((server) => !unloaded.has(server.id))
-          .map((server) => (
-            <iframe
-              key={`${server.id}:${server.credentialId || "local"}`}
-              title={`Studio on ${server.label}`}
-              ref={(frame) => {
-                if (frame) frames.current.set(server.id, frame);
-                else frames.current.delete(server.id);
-              }}
-              src={frameURL(server)}
-              hidden={current !== server.id}
-              allow="microphone; clipboard-read; clipboard-write"
-            />
-          ))}
+        {servers.map((server) => {
+          const service = services.get(server.id)!;
+          const channel = channels.get(server.id)!;
+          return (
+            <ServerServicesProvider
+              key={JSON.stringify([
+                server.id,
+                server.origin,
+                server.credentialId,
+              ])}
+              services={service}
+            >
+              <ScreenContext.Provider value={channel}>
+                <App active={current === server.id} />
+              </ScreenContext.Provider>
+            </ServerServicesProvider>
+          );
+        })}
       </main>
       {settings}
       <Modal
@@ -1252,33 +1071,31 @@ export default function MultiServerApp() {
             const requestId = crypto.randomUUID();
             searchRequest.current = requestId;
             setSearchResults({});
-            for (const server of servers) {
-              mount(server.id);
-              life(server.id).idleSince = Date.now();
-              const command: ServerCommand = {
-                action: "search",
-                requestId,
-                query: searchQuery.trim(),
-              };
-              if (
-                !frames.current.has(server.id) ||
-                !readyFrames.current.has(server.id)
-              ) {
-                pending.current.set(server.id, command);
-                continue;
-              }
-              frames.current.get(server.id)?.contentWindow?.postMessage(
-                {
-                  kind: "studio-server-command",
-                  serverId: server.id,
-                  command: {
-                    action: "search",
-                    requestId,
-                    query: searchQuery.trim(),
+            for (const [id, service] of services) {
+              void service.api
+                .get("/api/search", { query: { q: searchQuery.trim() } })
+                .then(
+                  (value) => {
+                    if (
+                      searchRequest.current === requestId &&
+                      serviceInstances.current.get(id) === service
+                    )
+                      setSearchResults((old) => ({
+                        ...old,
+                        [id]: { results: value.results },
+                      }));
                   },
-                },
-                targetOrigin(server.id),
-              );
+                  (error) => {
+                    if (
+                      searchRequest.current === requestId &&
+                      serviceInstances.current.get(id) === service
+                    )
+                      setSearchResults((old) => ({
+                        ...old,
+                        [id]: { results: [], error: String(error) },
+                      }));
+                  },
+                );
             }
           }}
         >

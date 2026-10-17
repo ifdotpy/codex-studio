@@ -107,3 +107,59 @@ it("clears the stored identity only after the server confirms deletion", async (
     ),
   ).toEqual({});
 });
+
+it("keeps same-account deletion identities and acknowledgements within their owner storage", async () => {
+  const otherValues = new Map<string, string>();
+  const otherStorage = {
+    getItem: (key: string) => otherValues.get(key) ?? null,
+    setItem: (key: string, value: string) => otherValues.set(key, value),
+  };
+  const a = getOrCreateAccountDeleteRequest(
+    "same",
+    "account",
+    storage,
+    () => "request-a",
+  );
+  const b = getOrCreateAccountDeleteRequest(
+    "same",
+    "account",
+    otherStorage,
+    () => "request-b",
+  );
+  await expect(
+    confirmAccountDeleteRequest(
+      "same",
+      "account",
+      a,
+      async () => {
+        throw new Error("lost reply");
+      },
+      storage,
+    ),
+  ).rejects.toThrow("lost reply");
+  await confirmAccountDeleteRequest(
+    "same",
+    "account",
+    b,
+    async (id) => {
+      expect(id).toBe("request-b");
+    },
+    otherStorage,
+  );
+  expect(
+    getOrCreateAccountDeleteRequest(
+      "same",
+      "account",
+      storage,
+      () => "wrong-retry",
+    ),
+  ).toBe("request-a");
+  expect(
+    getOrCreateAccountDeleteRequest(
+      "same",
+      "account",
+      otherStorage,
+      () => "next-b",
+    ),
+  ).toBe("next-b");
+});

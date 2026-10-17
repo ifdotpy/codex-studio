@@ -1,3 +1,4 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -15,13 +16,7 @@ import {
   ChevronRight,
   RefreshCw,
 } from "lucide-react";
-import {
-  apiDownload,
-  get,
-  errorText,
-  type GetOptions,
-  type GetResult,
-} from "../api";
+import { errorText, type GetOptions, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./Analytics.css";
 
@@ -433,6 +428,8 @@ export default function Analytics({
   agent: Agent;
   onClose: () => void;
 }) {
+  const { apiDownload, get } = useServerApi();
+
   const [scope, setScope] = useState<AnalyticsScope>("agent");
   const [period, setPeriod] = useState("all");
   const [tool, setTool] = useState("");

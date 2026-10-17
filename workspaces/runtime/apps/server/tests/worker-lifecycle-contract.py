@@ -237,6 +237,7 @@ class LifecycleContract(unittest.TestCase):
         self.assertFalse(states[open_task['id']]['result_submitted'])
 
     def test_recovery_events_survive_lead_restart_and_deliver_once(self):
+        wait_for_starts = fixture.fixture.RuntimeContract.track_delivery_starts(self)
         lead = self.lead()
         self.runtime.accounts.data['accounts']['secondary-fixture'] = {
             'id': 'secondary-fixture', 'provider': 'codex', 'status': 'ready',
@@ -264,7 +265,11 @@ class LifecycleContract(unittest.TestCase):
         result_worker = self.start(result_agent)
         self.runtime.servers['secondary-fixture'].complete(
             result_worker['threadId'], result_worker['turnId'], 'Saved child result')
+        task_worker = self.start(task_worker, 'Prepare the recovery fixture')
+        wait_for_starts()
         self.action(task_worker, task, 'submit', result='Task result', checks='Passed', revision='rev')
+        # Recovery must capture a settled native identity, not race the thread
+        # preparation that dispatch() also started for this assigned worker.
         task_worker = self.runtime.agent(task_worker['id'])
         task_worker = self.agent_update(task_worker, status='interrupted', autoWake=False,
             restartRecovery={'stage': 'pending', 'autoWake': True, 'epoch': task_worker['epoch'],
@@ -302,7 +307,10 @@ class LifecycleContract(unittest.TestCase):
         lead = self.runtime.agent(lead['id'])
         self.action(lead, task, 'reject', result='Revise the result')
         task_worker = self.runtime.agent(task_worker['id'])
-        self.assertEqual(self.events(task_worker, 'work_decision')[0]['status'], 'pending')
+        self.assertEqual(self.events(task_worker, 'work_decision')[0]['status'], 'pending',
+                         {key: task_worker.get(key) for key in
+                          ('status', 'autoWake', 'epoch', 'accountKey', 'threadId',
+                           'turnId', 'inFlight', 'restartRecovery')})
         self.agent_update(task_worker, status='idle', autoWake=True, restartRecovery=None, threadId=None)
         self.runtime.send(task_worker['id'], 'Resume the revised assignment')
         self.runtime.dispatch(task_worker['id'])

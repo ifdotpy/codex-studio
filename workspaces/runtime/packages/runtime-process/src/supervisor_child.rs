@@ -403,7 +403,8 @@ impl OwnedChild {
     }
 }
 
-#[cfg(test)]
+// Retained child identity is currently implemented by the Rust supervisor on Linux.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     #![allow(clippy::unwrap_used)]
 

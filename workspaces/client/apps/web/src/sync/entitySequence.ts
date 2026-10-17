@@ -199,52 +199,66 @@ export class EntitySequenceCheckpoint {
   }
 }
 
-const entitySequenceCheckpoint = new EntitySequenceCheckpoint();
-let openWorkspaceId: string | undefined;
-let openSchemaHash: string | undefined;
+/** Checkpoints from different servers never share sequence coverage. */
+export function createEntitySequenceScope() {
+  const entitySequenceCheckpoint = new EntitySequenceCheckpoint();
+  let openWorkspaceId: string | undefined;
+  let openSchemaHash: string | undefined;
 
-/** Reset the shared object when the open projection database changes identity. */
-export function setEntitySequenceProjection(
-  workspaceId: string,
-  schemaHash: string,
-): EntitySequenceCheckpoint {
-  if (openSchemaHash !== undefined && openSchemaHash !== schemaHash) {
-    openWorkspaceId = undefined;
-    entitySequenceCheckpoint.reset();
+  /** Reset the shared object when the open projection database changes identity. */
+  function setEntitySequenceProjection(
+    workspaceId: string,
+    schemaHash: string,
+  ): EntitySequenceCheckpoint {
+    if (openSchemaHash !== undefined && openSchemaHash !== schemaHash) {
+      openWorkspaceId = undefined;
+      entitySequenceCheckpoint.reset();
+    }
+    openSchemaHash = schemaHash;
+    openWorkspaceId = workspaceId;
+    entitySequenceCheckpoint.observeWorkspace(workspaceId);
+    return entitySequenceCheckpoint;
   }
-  openSchemaHash = schemaHash;
-  openWorkspaceId = workspaceId;
-  entitySequenceCheckpoint.observeWorkspace(workspaceId);
-  return entitySequenceCheckpoint;
-}
 
-/** Look up the active projection without letting a mutation change its identity. */
-export function getEntitySequenceCheckpoint(
-  scope: string,
-  schemaHash: string,
-): EntitySequenceCheckpoint {
-  if (
-    scope !== ENTITY_SCOPE ||
-    openWorkspaceId === undefined ||
-    schemaHash !== openSchemaHash
-  )
-    throw new Error("Entity projection checkpoint is not open");
-  return entitySequenceCheckpoint;
-}
+  /** Look up the active projection without letting a mutation change its identity. */
+  function getEntitySequenceCheckpoint(
+    scope: string,
+    schemaHash: string,
+  ): EntitySequenceCheckpoint {
+    if (
+      scope !== ENTITY_SCOPE ||
+      openWorkspaceId === undefined ||
+      schemaHash !== openSchemaHash
+    )
+      throw new Error("Entity projection checkpoint is not open");
+    return entitySequenceCheckpoint;
+  }
 
-export function getEntitySequenceCheckpointForWorkspace(
-  workspaceId: string,
-  scope: string,
-  schemaHash: string,
-): EntitySequenceCheckpoint | undefined {
-  if (
-    scope !== ENTITY_SCOPE ||
-    workspaceId !== openWorkspaceId ||
-    schemaHash !== openSchemaHash
-  )
-    return undefined;
-  return getEntitySequenceCheckpoint(scope, schemaHash);
+  function getEntitySequenceCheckpointForWorkspace(
+    workspaceId: string,
+    scope: string,
+    schemaHash: string,
+  ): EntitySequenceCheckpoint | undefined {
+    if (
+      scope !== ENTITY_SCOPE ||
+      workspaceId !== openWorkspaceId ||
+      schemaHash !== openSchemaHash
+    )
+      return undefined;
+    return getEntitySequenceCheckpoint(scope, schemaHash);
+  }
+
+  return {
+    setEntitySequenceProjection,
+    getEntitySequenceCheckpoint,
+    getEntitySequenceCheckpointForWorkspace,
+  };
 }
+export const {
+  setEntitySequenceProjection,
+  getEntitySequenceCheckpoint,
+  getEntitySequenceCheckpointForWorkspace,
+} = createEntitySequenceScope();
 
 export function canAcknowledgeEntitySequenceBatch(
   checkpoint: number,

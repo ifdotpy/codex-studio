@@ -142,11 +142,43 @@ pub async fn cancel(
     owner: Option<&str>,
     now: f64,
 ) -> Result<Value, MonitorError> {
+    cancel_checked(store, port, id, owner, now, None).await
+}
+
+pub async fn cancel_checked(
+    store: &RuntimeStore,
+    port: &(impl MonitorNative + ?Sized),
+    id: &str,
+    owner: Option<&str>,
+    now: f64,
+    expected: Option<Value>,
+) -> Result<Value, MonitorError> {
     let _sequence = native_sequence(store, id)?;
     let id_for_reservation = id.to_owned();
     let owner_for_reservation = owner.map(str::to_owned);
     let (mut response, operation) = store
         .transaction_with(move |tx| {
+            if let Some(expected) = &expected {
+                let (snapshot, owner) = monitor_runtime::snapshot(tx, &id_for_reservation)?;
+                let owner =
+                    serde_json::to_value(owner).map_err(studio_runtime_store::StoreError::from)?;
+                let process = crate::process_controls::project(
+                    "monitor",
+                    snapshot.record(),
+                    &owner,
+                    expected["_sourceConnectionId"].as_str(),
+                );
+                if !crate::process_controls::matches(&process, expected)
+                    || process["capabilities"]["stop"] != true
+                    || snapshot.record()["status"] != expected["_raw"]["status"]
+                    || snapshot.record()["reattachedConnectionId"]
+                        != expected["_raw"]["reattachedConnectionId"]
+                {
+                    return Err(MonitorError::Refused(
+                        "The process owner changed. Refresh the process list",
+                    ));
+                }
+            }
             reserve_cancel(
                 tx,
                 &id_for_reservation,

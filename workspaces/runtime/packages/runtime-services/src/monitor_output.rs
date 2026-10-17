@@ -36,6 +36,21 @@ impl MonitorOutput {
         bytes: &[u8],
         now: f64,
     ) -> Result<(), MonitorError> {
+        self.append_stream(store, id, operation, offset, "stdout", bytes, now)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_stream(
+        &self,
+        store: &RuntimeStore,
+        id: &str,
+        operation: &Operation,
+        offset: u64,
+        stream: &str,
+        bytes: &[u8],
+        now: f64,
+    ) -> Result<(), MonitorError> {
         if bytes.len() > monitor_policy::CHUNK_BYTES {
             return Err(MonitorError::InvalidOutputReceipt("chunk exceeds bound"));
         }
@@ -164,6 +179,7 @@ impl MonitorOutput {
         let id = id.to_owned();
         let operation = operation.clone();
         let bytes = bytes.to_vec();
+        let stream = stream.to_owned();
         store
             .transaction_with(move |tx| {
                 let (current, actor) = monitor_runtime::snapshot(tx, &id)?;
@@ -172,7 +188,8 @@ impl MonitorOutput {
                         "Monitor changed during log delivery; reconcile exact receipt",
                     ));
                 }
-                let decision = monitor_policy::output(&current, &operation, &bytes, now)?;
+                let decision =
+                    monitor_policy::output_stream(&current, &operation, &stream, &bytes, now)?;
                 monitor_runtime::apply(tx, &current, &actor, &decision, now)
             })
             .await

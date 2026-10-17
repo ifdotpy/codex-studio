@@ -1,7 +1,8 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { errorText, post, type PostResult } from "../api";
+import { errorText, type PostResult } from "../api";
 import type { CapacityRetry as CapacityRetryRecord } from "../capacityRetry";
 
 export default function CapacityRetry({
@@ -11,6 +12,8 @@ export default function CapacityRetry({
   agentId: string;
   retry: CapacityRetryRecord;
 }) {
+  const { post } = useServerApi();
+
   const [confirmed, setConfirmed] =
     useState<PostResult<"/api/capacity-retry"> | null>(null);
   const [pending, setPending] = useState(false);

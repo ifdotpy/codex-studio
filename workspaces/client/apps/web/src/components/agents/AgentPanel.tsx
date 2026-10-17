@@ -1,5 +1,7 @@
+import { useServerProgress } from "../../servers/ServerServicesContext";
+import { useServerStorage } from "../../servers/ServerServicesContext";
+import { useServerResources } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
-import { serverLocalStorage as localStorage } from "../../servers/storage";
 import {
   useEffect,
   useId,
@@ -10,11 +12,7 @@ import {
 } from "react";
 import { Button } from "@mantine/core";
 import { NetworkTimeoutError } from "../../api";
-import {
-  watchResourceChanges,
-  watchResourceConnection,
-  type ResourceConnectionState,
-} from "../../sync/client";
+import { type ResourceConnectionState } from "../../sync/client";
 import ErrorDescription from "../ErrorDescription";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import PreviewModal from "../PreviewModal";
@@ -22,12 +20,7 @@ import { localFileLink } from "../fileLinks";
 import { relativeToDocument } from "../filePreviewFormats";
 import { progressMarkdown } from "./ProgressMarkdown";
 import { useProgressLayoutReport, type ProgressLayout } from "./progressLayout";
-import {
-  peekProgress,
-  progressScope,
-  readProgress,
-  type CachedProgress,
-} from "./progressCache";
+import { progressScope, type CachedProgress } from "./progressCache";
 import "./agent-panel.css";
 
 interface ProgressState extends CachedProgress {
@@ -44,6 +37,10 @@ export default function AgentPanel({
   agentId: string;
   stateDir?: string;
 }) {
+  const { peekProgress, readProgress } = useServerProgress();
+  const { watchResourceChanges, watchResourceConnection } =
+    useServerResources();
+
   const scope = progressScope(stateDir, agentId);
   const [state, setState] = useState<ProgressState | null>(() => {
     const cached = peekProgress(stateDir, agentId);
@@ -215,6 +212,7 @@ function ProgressDisplay({
   stateDir: string;
   retry: () => void;
 }) {
+  const localStorage = useServerStorage();
   const parsed = useMemo(
     () => progressMarkdown(current.markdown),
     [current.markdown],

@@ -5,7 +5,7 @@ import base64
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, BinaryIO, Iterator, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Iterator, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -21,6 +21,12 @@ from studio_api.io.models import (
     MonitorInput,
     MonitorActionResult,
     MonitorLogQuery,
+    ProcessActionResult,
+    ProcessControlRequest,
+    ProcessList,
+    ProcessListQuery,
+    ProcessReceipt,
+    ProcessReceiptQuery,
     TerminalClose,
     TerminalCreate,
     TerminalInput,
@@ -247,6 +253,27 @@ def create_router(context: ApiContext) -> APIRouter:
     ) -> Response:
         monitor_id = query.id
         return _monitor_log_response(io_context, request, monitor_id, range_header)
+
+    @router.get("/api/processes", response_model=ProcessList, responses=api_read_responses(errors=(400,)))
+    def processes(request: Request, query: Annotated[ProcessListQuery, Query()]) -> Response:
+        scope = query.agent
+        from codex_process_controls import listing
+
+        return io_context.send(request, listing(cast(Any, _runtime(io_context.runtime)), scope))
+
+    @router.post("/api/processes/action", response_model=ProcessActionResult,
+                 responses=api_write_responses(errors=(400,)))
+    def process_action(request: Request, body: ProcessControlRequest) -> Response:
+        from codex_process_controls import action
+
+        return io_context.send(request, action(cast(Any, _runtime(io_context.runtime)), body_data(body)))
+
+    @router.get("/api/processes/action", response_model=ProcessReceipt,
+                responses=api_read_responses(errors=(400,)))
+    def process_receipt(request: Request, query: Annotated[ProcessReceiptQuery, Query()]) -> Response:
+        from codex_process_controls import receipt
+
+        return io_context.send(request, receipt(cast(Any, _runtime(io_context.runtime)), query.model_dump()))
 
     @router.get("/api/file-info", response_model=FileInfo, responses=api_read_responses(errors=(400, 404)))
     def file_info(request: Request, query: Annotated[FileQuery, Query()]) -> Response:

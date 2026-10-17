@@ -1396,6 +1396,41 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/processes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Processes */
+    get: operations["processes_api_processes_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/processes/action": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Process Receipt */
+    get: operations["process_receipt_api_processes_action_get"];
+    put?: never;
+    /** Process Action */
+    post: operations["process_action_api_processes_action_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/profiles": {
     parameters: {
       query?: never;
@@ -13806,6 +13841,98 @@ export interface components {
       /** Text */
       text: string;
     };
+    /** ManagedProcessRecord */
+    ManagedProcessRecord: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey: string;
+      /** Agent */
+      agent: string;
+      /**
+       * Bytes
+       * @default 0
+       */
+      bytes?: number;
+      /**
+       * Cancelrequested
+       * @default false
+       */
+      cancelRequested?: boolean;
+      capabilities: components["schemas"]["ProcessCapabilities"];
+      /**
+       * Command
+       * @default null
+       */
+      command?: null | string;
+      /** Created */
+      created: number;
+      /**
+       * Cwd
+       * @default null
+       */
+      cwd?: null | string;
+      /** Epoch */
+      epoch: number;
+      /**
+       * Error
+       * @default null
+       */
+      error?: null | string;
+      /** Generation */
+      generation: string;
+      /** Id */
+      id: string;
+      /** Key */
+      key: string;
+      /**
+       * Log
+       * @default null
+       */
+      log?: null | string;
+      /** Name */
+      name: string;
+      /**
+       * Output
+       * @default null
+       */
+      output?: null | string;
+      /**
+       * Outputtruncated
+       * @default false
+       */
+      outputTruncated?: boolean;
+      /**
+       * Source
+       * @enum {string}
+       */
+      source: "monitor" | "codex_task" | "claude_task";
+      /** Status */
+      status: string;
+      /**
+       * Stdinclosed
+       * @default false
+       */
+      stdinClosed?: boolean;
+      /**
+       * Stdincloserequested
+       * @default false
+       */
+      stdinCloseRequested?: boolean;
+      /**
+       * Stdinerror
+       * @default null
+       */
+      stdinError?: null | string;
+    };
     /** MessageHistory */
     MessageHistory: components["schemas"]["MessageRecord"][];
     /**
@@ -16818,6 +16945,109 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** ProcessActionResult */
+    ProcessActionResult: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /**
+       * Error
+       * @default null
+       */
+      error?: null | string;
+      /**
+       * Processes
+       * @default []
+       */
+      processes?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      }[];
+      /** Requestid */
+      requestId: string;
+      /**
+       * Response
+       * @default null
+       */
+      response?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "completed" | "partial" | "uncertain";
+    };
+    /** ProcessCapabilities */
+    ProcessCapabilities: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Readoutput */
+      readOutput: boolean;
+      /** Resize */
+      resize: boolean;
+      /** Sendinput */
+      sendInput: boolean;
+      /** Stop */
+      stop: boolean;
+    };
+    /** ProcessControlRequest */
+    ProcessControlRequest: {
+      /** Accountkey */
+      accountKey: string;
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: "stop_selected" | "stop_owned" | "stop_response";
+      /** Agent */
+      agent: string;
+      /** Epoch */
+      epoch: number;
+      /**
+       * Includedescendants
+       * @default false
+       */
+      includeDescendants?: boolean;
+      /** @default null */
+      process?: components["schemas"]["ProcessIdentity"] | null;
+      /**
+       * Processes
+       * @default []
+       */
+      processes?: components["schemas"]["ProcessIdentity"][];
+      /** Requestid */
+      requestId: string;
+      /** @default null */
+      responseTarget?: components["schemas"]["ProcessResponseTarget"] | null;
+    };
+    /** ProcessIdentity */
+    ProcessIdentity: {
+      /** Accountkey */
+      accountKey: string;
+      /** Agent */
+      agent: string;
+      /** Epoch */
+      epoch: number;
+      /** Generation */
+      generation: string;
+      /** Key */
+      key: string;
+    };
     /**
      * ProcessKind
      * @enum {string}
@@ -16844,6 +17074,40 @@ export interface components {
       /** Rssmib */
       rssMiB: number;
     };
+    /** ProcessList */
+    ProcessList: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Processes */
+      processes: components["schemas"]["ManagedProcessRecord"][];
+      /** @default null */
+      responseTarget?: components["schemas"]["ProcessResponseTarget"] | null;
+    };
+    /** ProcessReceipt */
+    ProcessReceipt: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Found */
+      found: boolean;
+      /** @default null */
+      result?: components["schemas"]["ProcessActionResult"] | null;
+    };
     /** ProcessRecord */
     ProcessRecord: {
       /** Cpupercent */
@@ -16855,6 +17119,21 @@ export interface components {
       pid: number;
       /** Rssmib */
       rssMiB: number;
+    };
+    /** ProcessResponseTarget */
+    ProcessResponseTarget: {
+      /** Accountkey */
+      accountKey: string;
+      /** Agent */
+      agent: string;
+      /** Connectionid */
+      connectionId: string;
+      /** Epoch */
+      epoch: number;
+      /** Threadid */
+      threadId: string;
+      /** Turnid */
+      turnId: string;
     };
     /** ProcessTree */
     ProcessTree: {
@@ -32581,6 +32860,166 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["PlanView"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  processes_api_processes_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProcessList"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  process_receipt_api_processes_action_get: {
+    parameters: {
+      query: {
+        accountKey: string;
+        agent: string;
+        epoch: number;
+        requestId: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProcessReceipt"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  process_action_api_processes_action_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProcessControlRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProcessActionResult"];
         };
       };
       /** @description Bad Request */

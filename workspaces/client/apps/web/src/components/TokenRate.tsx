@@ -1,13 +1,10 @@
+import { useServerTokenRates } from "../servers/ServerServicesContext";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Agent } from "../types";
 import {
   formatTokenRate,
-  getTokenRate,
-  getWorkspaceTeamTokenRate,
-  subscribeTokenRate,
   tweenTokenRate,
   workerRateKey,
-  watchTokenRateInterest,
 } from "../usage/tokenRate";
 import type { TokenRate as Rate } from "../usage/tokenRate";
 import { useVisualActivity } from "../hooks/useVisualActivity";
@@ -21,6 +18,13 @@ export default function TokenRate({
   agent: Agent;
   variant?: "footer" | "worker";
 }) {
+  const {
+    getTokenRate,
+    getWorkspaceTeamTokenRate,
+    subscribeTokenRate,
+    watchTokenRateInterest,
+  } = useServerTokenRates();
+
   const [visualRef, visualActive] = useVisualActivity<HTMLElement>();
   const observeRate = useCallback(
     (element: HTMLSpanElement | null) => {

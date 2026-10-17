@@ -64,7 +64,7 @@ type NativeActionPorts = (
     Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
 );
 
-fn native_action_provider(
+pub(super) fn native_action_provider(
     store: &RuntimeStore,
     agent: &AgentRecord,
     host_port: Option<

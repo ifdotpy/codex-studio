@@ -225,6 +225,157 @@ for state in ("waiting","running","complete"):
     with runtime.db() as db:
         db.execute("UPDATE runtime_server_inbox SET state=?,result=?,completed_at=? WHERE id=?",(saved["state"],saved["result"],saved["completed_at"],saved["id"]))
 
+# Cross-server command receipts. The real sender rewrites an exec row into its
+# receipt form after the first attempt and later sends only exec_receipt
+# probes. The real receiver answers each probe from its stored receipt.
+del driver._receive
+real_receive=driver._receive
+EXEC_ACTOR="fixture-lead"
+PEER_ACTOR="peer-lead"
+exec_payload={"actor":EXEC_ACTOR,"command":["true"],"cwd":"/fixture","timeout":30}
+def outbox_row(key):
+    with runtime.db() as db:
+        return dict(db.execute("SELECT * FROM runtime_server_outbox WHERE id=?",(key,)).fetchone())
+def inbox_row(key):
+    with runtime.db() as db:
+        row=db.execute("SELECT signature,state,result,principal,actor FROM runtime_server_inbox WHERE id=?",(key,)).fetchone()
+        return dict(row) if row else None
+class WireTransport(Transport):
+    def __init__(self,reply): self.sent=[]; self.reply=reply
+    def request(self,server,envelope,*,timeout):
+        assert server=="peer-server"
+        self.sent.append(copy.deepcopy(envelope))
+        if self.reply is None: raise TimeoutError("fixture lost reply")
+        return copy.deepcopy(self.reply)
+def deliver_with(key,reply=None):
+    driver.transport=WireTransport(reply)
+    try:
+        with patch.object(orchestration.time,"time",return_value=NOW):
+            result=driver.deliver(key)
+        return result,driver.transport.sent
+    finally:
+        driver.transport=Transport()
+with patch.object(orchestration.time,"time",return_value=NOW),runtime.db() as db:
+    driver.queue(db,"peer-server","exec",exec_payload,"fresh-exec")
+    driver.queue(db,"peer-server","exec",exec_payload,"python-exec")
+_,fresh_sent=deliver_with("fresh-exec")
+fresh_row=outbox_row("fresh-exec")
+with runtime.db() as db:
+    db.execute("DELETE FROM runtime_server_outbox WHERE id='fresh-exec'")
+deliver_with("python-exec")
+_,probe_sent=deliver_with("python-exec")
+pending=outbox_row("python-exec")
+assert json.loads(pending["body"])["payload"].keys()=={"actor","receiptDigest"}, pending
+probe_id=orchestration.identity("exec-receipt","python-exec")
+replies={
+    "applied":{"requestId":probe_id,"outcome":"applied","value":{"requestId":"python-exec","outcome":"applied","value":{"handle":"python-exec","status":"exited","exitCode":0}}},
+    "commandNotApplied":{"requestId":probe_id,"outcome":"applied","value":{"requestId":"python-exec","outcome":"not_applied","error":"The command directory is unavailable"}},
+    "commandUnknown":{"requestId":probe_id,"outcome":"applied","value":{"requestId":"python-exec","outcome":"unknown"}},
+    "probeUnknown":{"requestId":probe_id,"outcome":"unknown"},
+    "probeRefused":{"requestId":probe_id,"outcome":"not_applied","error":"The receipt fingerprint belongs to another request"},
+}
+reply_cases={}
+for name,reply in replies.items():
+    result,sent=deliver_with("python-exec",reply)
+    reply_cases[name]={"reply":reply,"result":result,"sent":sent,"row":outbox_row("python-exec")}
+    with runtime.db() as db:
+        db.execute("UPDATE runtime_server_outbox SET body=?,state=?,result=?,attempts=?,next_at=?,error=?,completed_at=?,fingerprint=? WHERE id=?",
+            (pending["body"],pending["state"],pending["result"],pending["attempts"],pending["next_at"],pending["error"],pending["completed_at"],pending["fingerprint"],pending["id"]))
+inbound_payload={"actor":PEER_ACTOR,"command":["true"],"cwd":"/fixture"}
+def inbound(key,outcome):
+    def fake(principal,action,p,request_key):
+        if action!="exec": return real_receive(principal,action,p,request_key)
+        if isinstance(outcome,Exception): raise outcome
+        return outcome
+    driver._receive=fake
+    try:
+        with patch.object(orchestration.time,"time",return_value=NOW):
+            driver.receive("peer-server",{"requestId":key,"action":"exec","payload":inbound_payload})
+    finally:
+        del driver._receive
+with runtime.db() as db:
+    # codex_server_exec.ServerExec creates this table when it starts.
+    db.execute("CREATE TABLE IF NOT EXISTS runtime_server_exec (id TEXT PRIMARY KEY, owner TEXT NOT NULL, actor TEXT NOT NULL, record TEXT NOT NULL)")
+def exec_record(key,status,**fields):
+    with runtime.db() as db:
+        db.execute("INSERT INTO runtime_server_exec(id,owner,actor,record) VALUES(?,?,?,?)",
+            (key,"peer-server",PEER_ACTOR,orchestration.encoded({"handle":key,"status":status,**fields})))
+inbound("inbound-applied",{"handle":"inbound-applied","status":"exited","exitCode":0,"outputExpiresAt":NOW+100})
+for key in ("inbound-running","inbound-starting","inbound-late"):
+    inbound(key,RuntimeError("fixture uncertain start"))
+exec_record("inbound-running","exited",exitCode=3)
+exec_record("inbound-starting","starting")
+legacy_signature=orchestration.hashlib.sha256(orchestration.encoded(["peer-server","exec",inbound_payload]).encode()).hexdigest()
+with runtime.db() as db:
+    for key in ("inbound-legacy","inbound-legacy-orphan"):
+        db.execute("INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,completed_at,principal,actor) VALUES(?,?,?,?,?,?,NULL,NULL)",
+            (key,legacy_signature,"complete",orchestration.encoded({"requestId":key,"outcome":"applied","value":{"handle":key,"status":"exited"}}),NOW,NOW))
+exec_record("inbound-legacy","exited")
+late_record={"handle":"inbound-late","status":"exited","exitCode":1}
+probe_cases=[]
+def receipt_probe(name,handle,principal="peer-server",actor=PEER_ACTOR,digest=None,at=NOW,keep=False,before=None):
+    if before: before()
+    original=inbox_row(handle)
+    envelope={"requestId":orchestration.identity("exec-receipt",handle),"action":"exec_receipt",
+              "payload":{"handle":handle,"actor":actor,"digest":digest or (original["signature"] if original else "0"*64)}}
+    with patch.object(orchestration.time,"time",return_value=at):
+        try:
+            result=driver.receive(principal,envelope)
+        except (ValueError,PermissionError) as error:
+            result={"refused":type(error).__name__,"message":str(error)}
+    row=inbox_row(envelope["requestId"])
+    if not keep:
+        with runtime.db() as db:
+            db.execute("DELETE FROM runtime_server_inbox WHERE id=?",(envelope["requestId"],))
+    probe_cases.append({"name":name,"principal":principal,"at":at,"envelope":envelope,"result":result,"row":row,"keep":keep,"insertExec":name=="lateAfter"})
+receipt_probe("applied","inbound-applied")
+receipt_probe("expired","inbound-applied",at=NOW+200)
+receipt_probe("wrongActor","inbound-applied",actor="other-lead")
+receipt_probe("localPrincipal","inbound-applied",principal="local-server")
+receipt_probe("wrongDigest","inbound-applied",digest="0"*64)
+receipt_probe("unknownHandle","inbound-missing")
+receipt_probe("runningEvidence","inbound-running")
+receipt_probe("startingEvidence","inbound-starting")
+receipt_probe("legacy","inbound-legacy")
+receipt_probe("legacyOrphan","inbound-legacy-orphan")
+receipt_probe("lateBefore","inbound-late",keep=True)
+receipt_probe("lateAfter","inbound-late",keep=True,before=lambda:exec_record("inbound-late",late_record["status"],exitCode=late_record["exitCode"]))
+receipt_probe("conflict","inbound-late",digest="0"*64)
+with runtime.db() as db:
+    db.execute("DELETE FROM runtime_server_exec WHERE id='inbound-late'")
+# The owner side of exec_event checks the outbox row through _exec_owner, which
+# must accept the receipt form of the python-exec row.
+events=[]
+runtime.agent=lambda agent_id,db: json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?",(agent_id,)).fetchone()[0])
+def enqueue_recovery_event(db,actor,kind,text,key):
+    events.append({"agent":actor["id"],"kind":kind,"text":text,"key":key})
+runtime.enqueue_recovery_event=enqueue_recovery_event
+exit_record={"handle":"python-exec","status":"exited","exitCode":0,"duration":1.25,"error":None}
+event_cases=[]
+def exec_event(name,key,principal="peer-server",actor=EXEC_ACTOR,handle="python-exec",lead=None):
+    with runtime.db() as db:
+        db.execute("DELETE FROM runtime_agents WHERE id=?",(EXEC_ACTOR,))
+        if lead is not None:
+            db.execute("INSERT INTO runtime_agents(id,record) VALUES(?,?)",(EXEC_ACTOR,json.dumps({"id":EXEC_ACTOR,"epoch":1,**lead})))
+    envelope={"requestId":key,"action":"exec_event","payload":{"actor":actor,"handle":handle,"record":exit_record}}
+    with patch.object(orchestration.time,"time",return_value=NOW):
+        result=driver.receive(principal,envelope)
+    event_cases.append({"name":name,"principal":principal,"lead":lead,"envelope":envelope,"result":result})
+exec_event("missingLead","exec-exit-missing")
+exec_event("deletedLead","exec-exit-deleted",lead={"deletedAt":NOW})
+exec_event("stored","exec-exit-stored",lead={})
+exec_event("replay","exec-exit-stored",lead={})
+exec_event("wrongActor","exec-exit-actor",actor="other-lead",lead={})
+exec_event("wrongServer","exec-exit-server",principal="local-server",lead={})
+exec_event("notExec","exec-exit-event",handle="python-event",lead={})
+assert len(events)==1, events
+with runtime.db() as db:
+    db.execute("DELETE FROM runtime_agents WHERE id=?",(EXEC_ACTOR,))
+    db.execute("DELETE FROM runtime_server_inbox WHERE id LIKE 'exec-exit-%'")
+del runtime.agent,runtime.enqueue_recovery_event
+exec_receipt={"payload":exec_payload,"freshSent":fresh_sent,"freshRow":fresh_row,"probeSent":probe_sent,
+    "pending":pending,"replies":reply_cases,"probes":probe_cases,"lateRecord":late_record,"events":event_cases,"event":events[0]}
+
 candidates=[]
 with patch.object(access,"_tailscale_json",return_value=status), patch.object(access.RemoteAccess,"origin",return_value=service.public_origin), patch.object(service.discovery(),"_candidate",side_effect=lambda origin,owner,deadline:candidates.append(origin)):
     service.discovery().discover()
@@ -253,6 +404,6 @@ for label,payload in (("wrongToken",{"bridgeId":browser_bridge_id,"token":"wrong
     except (PermissionError,ValueError) as error:
         browser_cases[label]={"refused":type(error).__name__,"message":str(error)}
 browser_service.stop()
-output={"browserCallback":browser_cases,"deliveryStates":delivery_states,"discoveryIdentity":discovery_identity,"discoveryProbe":discovery_probe,"discovered":json.loads(discovered),"freshPair":fresh,"candidates":sorted(candidates),"now":NOW,"identity":service.identity(),"invitation":invitation,"client":client_raw,"invite":invite_raw,"status":status,"whois":whois,"auth":cases,"queued":queued,"eventQueued":event_queued,"eventRequest":{"method":"POST","target":"/api/servers/orchestration","raw":event_raw.decode(),"headers":event_headers,"address":"100.64.0.2","logins":[OWNER]},"pairReply":peer_reply}
+output={"browserCallback":browser_cases,"deliveryStates":delivery_states,"execReceipt":exec_receipt,"discoveryIdentity":discovery_identity,"discoveryProbe":discovery_probe,"discovered":json.loads(discovered),"freshPair":fresh,"candidates":sorted(candidates),"now":NOW,"identity":service.identity(),"invitation":invitation,"client":client_raw,"invite":invite_raw,"status":status,"whois":whois,"auth":cases,"queued":queued,"eventQueued":event_queued,"eventRequest":{"method":"POST","target":"/api/servers/orchestration","raw":event_raw.decode(),"headers":event_headers,"address":"100.64.0.2","logins":[OWNER]},"pairReply":peer_reply}
 service.close();crypto.shutdown()
 print(json.dumps(output,ensure_ascii=False))

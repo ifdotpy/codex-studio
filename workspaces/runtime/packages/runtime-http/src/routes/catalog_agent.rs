@@ -1,4 +1,7 @@
 //! Skills, capabilities, finder and native command operations backed by saved agent state.
+use studio_runtime_schema::shared_values::{
+    NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES,
+};
 
 use axum::Json;
 use axum::extract::State;
@@ -235,7 +238,7 @@ async fn capabilities(
                     },
                     ProviderRequest {
                         method: "mcpServerStatus/list".to_owned(),
-                        params: json!({"threadId":thread_id,"limit":100}),
+                        params: json!({"threadId":thread_id,"limit":NATIVE_TERMINAL_ITEMS_PER_PAGE}),
                     },
                 ],
                 DISCOVERY_TIMEOUT,
@@ -437,11 +440,11 @@ async fn native_command_cancel(
         generation: scope.generation,
         request: request_id.clone(),
     };
-    let mut params = json!({"threadId":ticket.thread,"limit":100});
+    let mut params = json!({"threadId":ticket.thread,"limit":NATIVE_TERMINAL_ITEMS_PER_PAGE});
     let mut pages = Vec::new();
     let mut cursor_seen = std::collections::HashSet::new();
     let mut list_key = format!("{}:list", request_id);
-    for page_number in 0..100 {
+    for page_number in 0..NATIVE_TERMINAL_MAX_PAGES {
         let page = provider_call(
             &port,
             &scope,
@@ -457,7 +460,7 @@ async fn native_command_cancel(
                 "Invalid native terminal list",
             ));
         };
-        if entries.len() > 100 {
+        if entries.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Invalid native terminal list",
@@ -471,7 +474,7 @@ async fn native_command_cancel(
         else {
             break;
         };
-        if page_number == 99 || !cursor_seen.insert(cursor.to_owned()) {
+        if page_number + 1 == NATIVE_TERMINAL_MAX_PAGES || !cursor_seen.insert(cursor.to_owned()) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Native terminal listing did not advance",
@@ -539,7 +542,7 @@ async fn native_command_cancel(
         .map_err(|_| ApiError::internal())
 }
 
-async fn provider_call(
+pub(super) async fn provider_call(
     port: &std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
     ticket: &studio_runtime_services::workspace_operations::ProviderTicket,

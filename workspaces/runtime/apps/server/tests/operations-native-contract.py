@@ -52,6 +52,54 @@ def _record(stage="queued", outcome="pending", cancelled=False):
 
 
 class OperationsNativeContract(unittest.TestCase):
+    def test_packaged_adapter_uses_its_extension_and_refuses_missing_or_preloaded_copies(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            binary = root / "bin"
+            stale = root / "stale"
+            for folder in (scripts, binary, stale):
+                folder.mkdir()
+            for name in ("codex_operations_adapter.py", "codex_shared_values.py"):
+                shutil.copy2(SERVER_SOURCE_ROOT / name, scripts / name)
+            extension = binary / ("studio_operations_native.pyd" if sys.platform == "win32"
+                                  else "studio_operations_native.abi3.so")
+            shutil.copy2(native.__file__, extension)
+            (stale / "studio_operations_native.py").write_text(
+                "raise AssertionError('stale environment module was imported')\n"
+            )
+            code = (
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import codex_operations_adapter as adapter; "
+                "assert adapter.native.PROTOCOL_VERSION == adapter.PROTOCOL_VERSION"
+            )
+            env = {**os.environ, "PYTHONPATH": str(stale)}
+
+            def run(program):
+                return subprocess.run(
+                    [sys.executable, "-B", "-c", program, str(scripts)],
+                    cwd=root, env=env, capture_output=True, text=True, timeout=15,
+                )
+
+            loaded = run(code)
+            self.assertEqual(loaded.returncode, 0, loaded.stderr)
+            preloaded = run(
+                "import sys, types; module = types.ModuleType('studio_operations_native'); "
+                "module.__file__ = '/stale/native.so'; "
+                "sys.modules['studio_operations_native'] = module; " + code
+            )
+            self.assertNotEqual(preloaded.returncode, 0)
+            self.assertIn("does not belong", preloaded.stderr)
+            extension.unlink()
+            missing = run(code)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("missing its native operations module", missing.stderr)
+
     def test_reservation_bridge_returns_typed_decision_fields_and_aliases(self):
         record = _record()
         record["request_id"] = "request-a"

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeQueryInt, SafeInt, SignedSafeInt, UInt64
 
@@ -72,6 +72,128 @@ class MonitorActionResult(ResponseModel):
     status: MonitorState
     cancelRequested: bool | None = None
     error: str | None = None
+
+
+class ProcessCapabilities(ResponseModel):
+    readOutput: bool
+    sendInput: bool
+    resize: bool
+    stop: bool
+
+
+class ManagedProcessRecord(ResponseModel):
+    id: str
+    key: str
+    generation: str
+    agent: str
+    accountKey: str
+    epoch: SafeInt
+    source: Literal["monitor", "codex_task", "claude_task"]
+    status: str
+    cancelRequested: bool = False
+    created: float
+    name: str
+    command: str | None = None
+    cwd: str | None = None
+    output: str | None = None
+    log: str | None = None
+    error: str | None = None
+    stdinError: str | None = None
+    stdinClosed: bool = False
+    stdinCloseRequested: bool = False
+    bytes: SafeInt = 0
+    outputTruncated: bool = False
+    capabilities: ProcessCapabilities
+
+
+class ProcessList(ResponseModel):
+    processes: list[ManagedProcessRecord]
+    responseTarget: "ProcessResponseTarget | None" = None
+
+
+class ProcessListQuery(ContractModel):
+    agent: str = Field(min_length=1, max_length=200)
+
+
+class ProcessIdentity(ContractModel):
+    key: str = Field(min_length=1, max_length=2048)
+    generation: str = Field(min_length=1, max_length=256)
+    agent: str = Field(min_length=1, max_length=200)
+    accountKey: str = Field(min_length=1, max_length=200)
+    epoch: SafeInt
+
+
+class ProcessResponseTarget(ContractModel):
+    agent: str = Field(min_length=1, max_length=200)
+    accountKey: str = Field(min_length=1, max_length=200)
+    epoch: SafeInt
+    connectionId: str = Field(min_length=1, max_length=200)
+    threadId: str = Field(min_length=1, max_length=200)
+    turnId: str = Field(min_length=1, max_length=200)
+
+
+class ProcessControlRequest(ContractModel):
+    action: Literal["stop_selected", "stop_owned", "stop_response"]
+    requestId: str = Field(min_length=1, max_length=200)
+    agent: str = Field(min_length=1, max_length=200)
+    accountKey: str = Field(min_length=1, max_length=200)
+    epoch: SafeInt
+    process: ProcessIdentity | None = None
+    processes: list[ProcessIdentity] = Field(default_factory=list, max_length=500)
+    includeDescendants: bool = False
+    responseTarget: ProcessResponseTarget | None = None
+
+    @model_validator(mode="after")
+    def validate_action_scope(self) -> "ProcessControlRequest":
+        if self.action == "stop_selected" and (self.process is None or self.processes):
+            raise ValueError("Select exactly one process to stop")
+        if self.action == "stop_owned" and self.process is not None:
+            raise ValueError("Owned process stop accepts a process snapshot")
+        if self.action == "stop_owned" and not self.processes:
+            raise ValueError("No owned process identities were supplied")
+        if self.action == "stop_response":
+            if self.process is not None or self.processes:
+                raise ValueError("Response stop does not accept process identities")
+            if self.responseTarget is None:
+                raise ValueError("Response stop requires the current response identity")
+            if (self.responseTarget.agent != self.agent
+                    or self.responseTarget.accountKey != self.accountKey
+                    or self.responseTarget.epoch != self.epoch):
+                raise ValueError("Response identity does not match the process owner")
+        elif self.responseTarget is not None:
+            raise ValueError("Response identity applies only to response stop")
+        if self.action not in {"stop_owned", "stop_selected"} and self.includeDescendants:
+            raise ValueError("Descendant scope applies only to process stop")
+        return self
+
+
+class ProcessActionStatus(ContractStrEnum):
+    STOPPED = "stopped"
+    REQUESTED = "requested"
+    ALREADY_FINISHED = "already_finished"
+    UNCERTAIN = "uncertain"
+    FAILED = "failed"
+    STALE = "stale"
+
+
+class ProcessActionResult(ResponseModel):
+    requestId: str
+    status: Literal["completed", "partial", "uncertain"]
+    processes: list[dict[str, JsonValue]] = Field(default_factory=list)
+    response: dict[str, JsonValue] | None = None
+    error: str | None = None
+
+
+class ProcessReceiptQuery(ContractModel):
+    requestId: str = Field(min_length=1, max_length=200)
+    agent: str = Field(min_length=1, max_length=200)
+    accountKey: str = Field(min_length=1, max_length=200)
+    epoch: SafeQueryInt
+
+
+class ProcessReceipt(ResponseModel):
+    found: bool
+    result: ProcessActionResult | None = None
 
 
 class TerminalCreate(ContractModel):

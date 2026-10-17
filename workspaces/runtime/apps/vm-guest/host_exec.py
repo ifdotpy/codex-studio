@@ -103,7 +103,7 @@ class HostExec:
             if op is None or steps.get("run"):
                 # A run request can have started the Mac command: its lease stays.
                 raise
-            # No run request exists yet, so no Mac command started. Release the Mac slot.
+            # The command did not start. Release the Mac slot.
             common = {"operationId": op["operationId"], "agentId": op["agentId"]}
             await self.call("release", {**common, "preRunError": exc.object()}, "sync-failed-release")
             try:
@@ -240,9 +240,16 @@ class HostExec:
         await flush_modes()
         relative_cwd = cwd.relative_to(line).as_posix()
         steps["run"] = True
-        await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
-            "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
-            "caches": caches}, "run", LONG_CALL)
+        try:
+            await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
+                "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
+                "caches": caches}, "run", LONG_CALL)
+        except HostExecError as exc:
+            # The run handler checks the manifest before it schedules a command. Only this
+            # explicit rejection proves that no command started; a lost reply keeps the lease.
+            if exc.code == "sync_conflict":
+                steps["run"] = False
+            raise
         after_seq = 0
         while True:
             attached = await self.call("attach", {**common, "afterSeq": after_seq, "waitSeconds": 10}, "attach:" + str(after_seq))

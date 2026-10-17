@@ -32,6 +32,7 @@ if [ -f /etc/sysctl.d/90-codex-studio-userns.conf ]; then
 fi
 chown root:root "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
 chmod 0755 "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
+sh "$script_dir/install-codex-sandbox.sh"
 for file in "$script_dir"/*.py "$script_dir"/*.service "$repo_dir/scripts/codex_process_supervisor.py" "$repo_dir/scripts/codex_open_file_limit.py" "$repo_dir/scripts/codex_records.py" "$repo_dir/scripts/codex_shared_values.py"; do
     chown root:root "$file"
     chmod 0644 "$file"

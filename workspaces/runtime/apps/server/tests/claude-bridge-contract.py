@@ -31,6 +31,7 @@ import fsp from 'node:fs/promises';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 let beginRace,releaseRace;
 const raceStarted=new Promise(resolve=>beginRace=resolve);
+const stoppedTasks=new Set();
 const originalRead=fsp.readFile.bind(fsp);
 fsp.readFile=async(file,...args)=>{
  if(String(file).endsWith('/race.png')){
@@ -72,7 +73,10 @@ export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222
 export const getSessionMessages=async()=>[];
 export function query({prompt,options}){
  if(options.systemPrompt&&!(options.disallowedTools||[]).includes('Agent'))throw new Error('Native subagents must stay disabled');
+ if(options.systemPrompt&&options.perTaskStopAffordance!==true)throw new Error('Per-task stop control must preserve other background tasks');
  let abort=new AbortController();
+ let turnAbort;
+ let backgroundTasks=new Map();
  let outputTotal=0;
  if(options.env?.TMPDIR)fs.writeFileSync(options.cwd+'/.probe-options',JSON.stringify({permissionMode:options.permissionMode,tmpdir:options.env.TMPDIR}));
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode,systemPrompt:options.systemPrompt,tools:options.tools,settingSources:options.settingSources,strictMcpConfig:options.strictMcpConfig,mcpServers:Object.keys(options.mcpServers||{}),effort:options.effort,settings:options.settings})+'\n');
@@ -88,14 +92,33 @@ export function query({prompt,options}){
   accountInfo:async()=>{if(fs.existsSync(options.cwd+'/.hang-account'))return new Promise(()=>{});return {email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'};},
   initializationResult:async()=>({commands:[{name:'compact',description:'Compact history'}]}),
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>({rate_limits_available:true,subscription_type:'max',rate_limits:{five_hour:{utilization:11,resets_at:'2026-09-22T08:00:00Z'},seven_day:{utilization:4},model_scoped:[{display_name:'Fable',utilization:7}]}}),
-  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');if(fs.existsSync(options.cwd+'/.dead-query'))throw new Error('Claude Code process aborted by user');if(fs.existsSync(options.cwd+'/.hang-preparation')){fs.writeFileSync(options.cwd+'/.preparation-entered','yes');await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));}},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');if(!Object.keys(servers).length&&fs.existsSync(options.cwd+'/.hang-mcp'))return new Promise(()=>{});return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
-  close(){if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.query-closes','closed\n');abort.abort();},interrupt:async()=>abort.abort(),
+  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');if(fs.existsSync(options.cwd+'/.dead-query'))throw new Error('Claude Code process aborted by user');if(fs.existsSync(options.cwd+'/.hang-preparation')){fs.writeFileSync(options.cwd+'/.preparation-entered','yes');await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));}},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');if(!Object.keys(servers).length&&fs.existsSync(options.cwd+'/.hang-mcp'))return new Promise(()=>{});return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async taskId=>{stoppedTasks.add(taskId);fs.appendFileSync(options.cwd+'/.stopped-tasks',taskId+'\n');},
+  close(){if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.query-closes','closed\n');abort.abort();turnAbort?.abort();},interrupt:async()=>{turnAbort?.abort();},
   async *[Symbol.asyncIterator](){
+   let pendingPrompt=prompt.next().then(result=>({kind:'prompt',result}));
+   let pendingBackground=null;
    while(!abort.signal.aborted){
-   const input=await prompt.next();
+   if(backgroundTasks.size&&!pendingBackground){
+    const [taskId]=backgroundTasks.keys();
+    pendingBackground=(async()=>{
+     while(!abort.signal.aborted&&!stoppedTasks.has(taskId)&&!fs.existsSync(options.cwd+'/.release-background'))await new Promise(r=>setTimeout(r,5));
+     return {kind:'background',taskId,status:stoppedTasks.has(taskId)?'killed':'completed'};
+    })();
+   }
+   const event=await Promise.race(pendingBackground?[pendingPrompt,pendingBackground]:[pendingPrompt]);
+   if(event.kind==='background'){
+    pendingBackground=null;backgroundTasks.delete(event.taskId);
+    yield {type:'system',subtype:'task_notification',task_id:event.taskId,status:event.status};
+    continue;
+   }
+   const input=event.result;
+   pendingPrompt=null;
    if(input.done)return;
+   pendingPrompt=prompt.next().then(result=>({kind:'prompt',result}));
    if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(input.value.uuid))throw new Error('Native input requires UUID');
    let text=input.value.message.content[0].text;
+   turnAbort=new AbortController();
+   const turnSignal=turnAbort.signal;
    yield {type:'user',isReplay:true,uuid:input.value.uuid};
    yield {type:'system',subtype:'init'};
    if(text==='steer-race'){
@@ -106,32 +129,36 @@ export function query({prompt,options}){
    if(text==='steer'){
     yield {type:'stream_event',event:{type:'message_start',message:{id:'waiting'}}};
     yield {type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'Waiting for steer'}}};
-    const next=await prompt.next();
-    if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(next.value.uuid))throw new Error('Native steer requires UUID');
-    yield {type:'user',isReplay:true,uuid:next.value.uuid};
-    text=next.value.message.content[0].text;
+    const next=await pendingPrompt;
+    pendingPrompt=null;
+    pendingPrompt=prompt.next().then(result=>({kind:'prompt',result}));
+    if(next.kind!=='prompt')throw new Error('Expected a steer input');
+    const nextInput=next.result;
+    if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(nextInput.value.uuid))throw new Error('Native steer requires UUID');
+    yield {type:'user',isReplay:true,uuid:nextInput.value.uuid};
+    text=nextInput.value.message.content[0].text;
     if(text!=='replacement')throw new Error('Wrong steer');
     while(!fs.existsSync(options.cwd+'/.release-steer')&&!abort.signal.aborted)await new Promise(r=>setTimeout(r,5));
    }
    if(text==='plan'){
-    const decision=await options.canUseTool('ExitPlanMode',{plan:'A visible plan'},{toolUseID:'plan',signal:abort.signal});
+    const decision=await options.canUseTool('ExitPlanMode',{plan:'A visible plan'},{toolUseID:'plan',signal:turnSignal});
     if(decision.behavior!=='deny')throw new Error('Plan executed without a separate user turn');
    }
    if(text==='permission'){
-    const decision=await options.canUseTool('Bash',{command:'echo hello'},{toolUseID:'tool-1',signal:abort.signal});
+    const decision=await options.canUseTool('Bash',{command:'echo hello'},{toolUseID:'tool-1',signal:turnSignal});
     if(decision.behavior!=='deny')throw new Error('Expected denial');
    }
    if(text==='question'){
-    const decision=await options.canUseTool('AskUserQuestion',{questions:[{question:'Choose?',header:'Choice',options:[{label:'A',description:'First'}]}]},{toolUseID:'ask',signal:abort.signal});
+    const decision=await options.canUseTool('AskUserQuestion',{questions:[{question:'Choose?',header:'Choice',options:[{label:'A',description:'First'}]}]},{toolUseID:'ask',signal:turnSignal});
     if(decision.updatedInput.answers['Choose?']!=='A')throw new Error('Missing answer');
    }
    if(text==='question-multi'){
-    const decision=await options.canUseTool('AskUserQuestion',{questions:[{question:'Features?',header:'Features',multiSelect:true,options:[{label:'A',description:'First'},{label:'B',description:'Second'}]}]},{toolUseID:'ask-multi',signal:abort.signal});
+    const decision=await options.canUseTool('AskUserQuestion',{questions:[{question:'Features?',header:'Features',multiSelect:true,options:[{label:'A',description:'First'},{label:'B',description:'Second'}]}]},{toolUseID:'ask-multi',signal:turnSignal});
     if(decision.updatedInput.answers['Features?']!=='A, B')throw new Error('Missing multi answer');
    }
    if(text==='tool'){
     const tool=options.mcpServers.studio.tools[0];
-    const result=await tool.call({text:'hello'},{signal:abort.signal});
+    const result=await tool.call({text:'hello'},{signal:turnSignal});
     if(result.content[0].text!=='tool-ok')throw new Error('Tool result lost');
    }
    if(text==='tool-pre-aborted'){
@@ -139,10 +166,23 @@ export function query({prompt,options}){
     const cancelled=new AbortController();cancelled.abort();
     await tool.call({text:'hello'},{signal:cancelled.signal});
    }
-   if(text==='wait')await new Promise(resolve=>abort.signal.aborted?resolve():abort.signal.addEventListener('abort',resolve,{once:true}));
+   if(text==='wait')await new Promise(resolve=>{if(turnSignal.aborted)resolve();else turnSignal.addEventListener('abort',resolve,{once:true});});
    if(text==='fail')throw new Error('Native failure');
    if(text==='/compact')yield {type:'system',subtype:'local_command_output',uuid:'compact-result',content:'Native compact received'};
-   if(text==='background'||text==='background-hold')yield {type:'system',subtype:'task_started',task_id:'worker-1',description:'Worker',task_type:'agent'};
+   if(text==='background'||text==='background-hold'||text==='background-stop-hold'){
+    backgroundTasks.set('worker-1',true);
+    yield {type:'system',subtype:'task_started',task_id:'worker-1',description:'Worker',task_type:'agent'};
+   }
+   if(text==='background-stop-hold'){
+    fs.writeFileSync(options.cwd+'/.background-waiting','yes');
+    await new Promise(resolve=>{if(turnSignal.aborted)resolve();else turnSignal.addEventListener('abort',resolve,{once:true});});
+    if(stoppedTasks.has('worker-1')){
+     backgroundTasks.delete('worker-1');
+     yield {type:'system',subtype:'task_notification',task_id:'worker-1',status:'killed'};
+    }
+    yield {type:'result',subtype:'success',usage:{input_tokens:1,output_tokens:0},result:''};
+    continue;
+   }
    if(text==='claude-limit'){
     const resetsAt=Math.floor(Date.now()/1000)+3600;
     yield {type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt,utilization:1}};
@@ -198,10 +238,7 @@ export function query({prompt,options}){
    if(text==='background'){
     yield {type:'assistant',parent_tool_use_id:'agent-tool',uuid:'late-worker',message:{id:'late-answer',content:[{type:'text',text:'Late worker text'}]}};
     yield {type:'system',subtype:'task_notification',task_id:'worker-1',status:'completed',summary:'Worker finished'};
-   }
-   if(text==='background-hold'){
-    while(!fs.existsSync(options.cwd+'/.release-background')&&!abort.signal.aborted)await new Promise(r=>setTimeout(r,5));
-    if(!abort.signal.aborted)yield {type:'system',subtype:'task_notification',task_id:'worker-1',status:'completed'};
+    backgroundTasks.delete('worker-1');
    }
    }
   }
@@ -802,6 +839,63 @@ class Bridge(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'^no active turn to interrupt$'):
             self.call('turn/interrupt',{'threadId':self.thread,'turnId':result['id']})
 
+    def test_interrupt_keeps_background_task_query_open(self):
+        started = self.turn('background-stop-hold', 'background-hold-stop')
+        task = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and task is None:
+            tasks = self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data']
+            task = next((item for item in tasks if item.get('task_id') == 'worker-1'), None)
+            if task is None:
+                time.sleep(.01)
+        self.assertIsNotNone(
+            task,
+            f'The background task must be active before interrupt; events={self.notifications!r}',
+        )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (self.root / '.background-waiting').exists():
+            time.sleep(.01)
+        self.assertTrue((self.root / '.background-waiting').exists(), 'The turn must be waiting before interrupt')
+        self.call('turn/interrupt', {'threadId': self.thread, 'turnId': started['turn']['id'], 'stopBackgroundTasks': False})
+        completed = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and completed is None:
+            row = self.read()
+            if (row.get('method') == 'turn/completed'
+                    and row['params']['turn']['id'] == started['turn']['id']):
+                completed = row['params']['turn']
+        self.assertEqual(completed['status'], 'interrupted')
+        tasks = self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data']
+        self.assertEqual([item['task_id'] for item in tasks], ['worker-1'])
+        self.assertFalse((self.root / '.query-closes').exists(), 'Turn interrupt must not close the query')
+
+    def test_global_stop_interrupt_stops_each_claude_background_task(self):
+        started = self.turn('background-stop-hold', 'background-hold-global-stop')
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            tasks = self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data']
+            if any(item.get('task_id') == 'worker-1' for item in tasks):
+                break
+            time.sleep(.01)
+        self.assertTrue(tasks, 'The background task must be active before global Stop')
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (self.root / '.background-waiting').exists():
+            time.sleep(.01)
+        self.assertTrue((self.root / '.background-waiting').exists(), 'The turn must be waiting before global Stop')
+        self.call('turn/interrupt', {
+            'threadId': self.thread, 'turnId': started['turn']['id'],
+        })
+        completed = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and completed is None:
+            row = self.read()
+            if (row.get('method') == 'turn/completed'
+                    and row['params']['turn']['id'] == started['turn']['id']):
+                completed = row['params']['turn']
+        self.assertEqual(completed['status'], 'interrupted')
+        self.assertEqual((self.root / '.stopped-tasks').read_text(), 'worker-1\n')
+        self.assertEqual(self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data'], [])
+
     def test_interrupt_cancels_a_pending_studio_tool_request(self):
         self.sequence += 1
         start_id = self.sequence
@@ -1120,6 +1214,15 @@ class Bridge(unittest.TestCase):
         self.assertEqual(state['backgroundQueries'], 1)
         turns = self.call('thread/turns/list', {'threadId': self.thread})['data']
         self.assertEqual([t['clientUserMessageId'] for t in turns], ['first'])
+        (self.root / '.hang-preparation').unlink()
+        pending = self.pending_persist('gate-persist')
+        self.call('turn/interrupt', {'threadId': self.thread, 'stopBackgroundTasks': False})
+        (self.root / 'state' / 'release-persist').touch()
+        reply = self.persist_reply(pending)
+        self.assertEqual(reply['error']['data']['turnStartOutcome'], 'not_applied')
+        time.sleep(1.5)
+        state = self.call('claude/diagnostics', {})
+        self.assertEqual((state['liveQueries'], state['backgroundQueries']), (1, 1))
         (self.root / '.release-background').write_text('done')
 
     def test_preparation_probe_timeout_does_not_depend_on_sdk_abort(self):
@@ -1180,10 +1283,17 @@ class Bridge(unittest.TestCase):
         self.turn('first', 'first')
         self.completed()
         pending = self.pending_persist('gate-persist')
-        self.call('turn/interrupt', {'threadId': self.thread})
+        self.call('turn/interrupt', {'threadId': self.thread, 'stopBackgroundTasks': False})
         (self.root / 'state' / 'release-persist').touch()
         reply = self.persist_reply(pending)
         self.assertEqual(reply['error']['data']['turnStartOutcome'], 'not_applied')
+        deadline = time.monotonic() + 4
+        while (self.call('claude/diagnostics', {})['liveQueries']
+               and time.monotonic() < deadline):
+            time.sleep(.1)
+        state = self.call('claude/diagnostics', {})
+        self.assertEqual(state['liveQueries'], 0)
+        self.assertEqual(state['sessionCache']['cachedSessions'], 0)
         rejected = self.call('thread/turns/list', {'threadId': self.thread})['data'][0]
         self.assertEqual(rejected['startOutcome'], 'not_applied')
         self.restart_bridge()

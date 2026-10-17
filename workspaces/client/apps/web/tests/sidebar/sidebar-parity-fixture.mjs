@@ -543,22 +543,21 @@ export async function sidebarParityFixture(
   if (paired) local.discoverPeer(remote);
   await context.addInitScript(
     ({ origin, destination, prefs, scope }) => {
-      const owner =
-        new URLSearchParams(location.search).get("studio-server") === "remote"
-          ? "remote"
-          : "local";
-      const prefix = owner === "remote" ? ":server:remote:" : "";
-      for (const [kind, value] of [
-        ["compact", prefs[owner].compact],
-        ["tree", prefs[owner].collapsed],
-        ["sidebar-order", prefs[owner].order],
-      ]) {
-        const key =
-          kind === "sidebar-order"
-            ? `codex-sidebar-order:${scope}`
-            : `codex-project-${kind}:${scope}`;
-        if (!localStorage.getItem(prefix + key))
-          localStorage.setItem(prefix + key, JSON.stringify(value));
+      // Both owner scopes now share the shell document instead of iframes.
+      for (const owner of ["local", "remote"]) {
+        const prefix = owner === "remote" ? ":server:remote:" : "";
+        for (const [kind, value] of [
+          ["compact", prefs[owner].compact],
+          ["tree", prefs[owner].collapsed],
+          ["sidebar-order", prefs[owner].order],
+        ]) {
+          const key =
+            kind === "sidebar-order"
+              ? `codex-sidebar-order:${scope}`
+              : `codex-project-${kind}:${scope}`;
+          if (!localStorage.getItem(prefix + key))
+            localStorage.setItem(prefix + key, JSON.stringify(value));
+        }
       }
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (input, init) => {

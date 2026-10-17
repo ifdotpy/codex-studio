@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
-  prefetchTranscript,
-  TRANSCRIPT_PREFETCH_LIMIT,
-  watchResourceChanges,
-  watchSyncInvalidations,
-} from "../sync/client";
+  useServerSync,
+  useServerResources,
+  useServerTranscripts,
+  useServerProgress,
+} from "../servers/ServerServicesContext";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import "../sync/client";
 import type { ResourceVersion } from "../sync/resourceEvents";
-import { peekTranscript, subscribeTranscript } from "../sync/transcriptCache";
-import { readProgress } from "../components/agents/progressCache";
+import "../sync/transcriptCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
 import {
@@ -22,6 +22,16 @@ export function useChatPrefetch(
   opened: string | null,
   workspaceId: string,
 ) {
+  const {
+    prefetchTranscript,
+    TRANSCRIPT_PREFETCH_LIMIT,
+    watchSyncInvalidations,
+  } = useServerSync();
+  const { watchResourceChanges } = useServerResources();
+  const { peekTranscript, subscribeTranscript } = useServerTranscripts();
+
+  const { readProgress } = useServerProgress();
+
   const current = useRef({ data, opened });
   current.current = { data, opened };
   const control = useRef<{

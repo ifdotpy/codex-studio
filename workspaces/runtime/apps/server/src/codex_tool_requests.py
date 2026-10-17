@@ -119,6 +119,8 @@ def request_read_only(tool: str, args: "JsonObject") -> bool:
     if not isinstance(args, dict):
         return False
     return (tool in _READ_TOOLS
+            or tool == "orchestration_monitor" and isinstance(args.get("monitor_id"), str)
+            and "command" not in args
             or tool == "orchestration_task" and args.get("action", "list") in {"list", "get", "read", "history"}
             or tool == "orchestration_request" and args.get("action", "list") in {"list", "get"})
 

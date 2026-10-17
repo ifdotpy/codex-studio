@@ -14,6 +14,8 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[6]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "turn_lifecycle"))
@@ -136,7 +138,11 @@ def batch_cases():
                 journal.execute("PRAGMA synchronous=OFF")
                 journal.execute("CREATE TABLE operations(handle TEXT,operation_id TEXT,digest TEXT,native_id INTEGER,accepted REAL)")
                 journal.executemany("INSERT INTO operations VALUES(:handle,:operation_id,:digest,:native_id,:accepted)",operations)
-            expected=historical.accepted_batches(dict(stateDir=root,handle=handle),captures,turns)
+            # This corpus compares receipt evidence, not deadline scheduling. Keep
+            # its clock deterministic so host contention cannot turn a positive
+            # receipt into an empty oracle result. Production retains its deadline.
+            with patch.object(historical, "time", SimpleNamespace(monotonic=lambda: 0.0)):
+                expected=historical.accepted_batches(dict(stateDir=root,handle=handle),captures,turns)
         cases.append(dict(name=name,agent=agent,source=dict(item=item,row=dict(db.execute("SELECT * FROM runtime_items WHERE id=?",(item["id"],)).fetchone()),fulltext=None,members=members),turns=turns,operations=operations,handle=handle,expected=expected,capture=capture,params=capture["params"],digest=capture["digest"]))
         db.close()
     return cases

@@ -70,7 +70,9 @@ export function ChatServerLine({
       aria-label={`${provider === "claude" ? "Claude" : "Codex"}, ${alias}`}
     >
       <ProviderMark provider={provider || "codex"} />
-      <span className="chat-server-alias">{alias}</span>
+      <span className="chat-server-alias" title={alias}>
+        {alias}
+      </span>
       {offline && (
         <span className="chat-server-offline-wrap">
           <Tooltip

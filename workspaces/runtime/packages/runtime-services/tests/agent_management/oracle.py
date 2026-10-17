@@ -95,7 +95,8 @@ class MemoryRuntime:
     def usage_resume_cancel(self, db, agent, reason):
         assert not agent.get("usageResume")
 
-    def interrupt(self, agent):
+    def interrupt(self, agent, *, preserve_background_tasks=False):
+        assert not preserve_background_tasks
         assert not agent.get("threadId") and not agent.get("inFlight")
 
     def child_stopped_event(self, db, agent, *args, **kwargs):

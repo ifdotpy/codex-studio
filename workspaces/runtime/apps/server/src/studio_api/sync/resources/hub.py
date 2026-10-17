@@ -775,8 +775,8 @@ class EntityPublicationScheduler:
         for root, pending in due:
             try:
                 self._publish(root, *pending)
-            except Exception:
-                self._retry_failed(root, pending)
+            except Exception as error:
+                self._retry_failed(root, pending, error)
             else:
                 self._failure_attempts.pop(root, None)
         return len(due)
@@ -785,10 +785,19 @@ class EntityPublicationScheduler:
         self,
         root: str,
         pending: tuple[Path, float, float, int, set[int], bool],
+        error: Exception,
     ) -> None:
         attempts = self._failure_attempts.get(root, 0) + 1
         self._failure_attempts[root] = attempts
-        if attempts == 1:
+        code = getattr(error, "sqlite_errorcode", None)
+        busy = (isinstance(error, sqlite3.OperationalError)
+                and isinstance(code, int)
+                and (code & 0xff) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+        if busy:
+            _LOGGER.warning(
+                "Committed entity publication is waiting for SQLite (attempt %s)", attempts
+            )
+        elif attempts == 1:
             _LOGGER.exception("Unable to publish committed entity sequence")
         else:
             _LOGGER.warning(
@@ -825,8 +834,8 @@ class EntityPublicationScheduler:
                 del self._pending[root]
             try:
                 self._publish(root, *pending)
-            except Exception:
-                self._retry_failed(root, pending)
+            except Exception as error:
+                self._retry_failed(root, pending, error)
             else:
                 self._failure_attempts.pop(root, None)
 

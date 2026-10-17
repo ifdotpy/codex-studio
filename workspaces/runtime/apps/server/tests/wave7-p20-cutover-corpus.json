@@ -1,11 +1,11 @@
 {
   "blockers_ordered_by_operations_unblocked": [],
   "counts": {
-    "implemented": 154,
+    "implemented": 157,
     "named_dependencies": 0,
     "not_registered": 0,
     "partial": 0,
-    "total": 154
+    "total": 157
   },
   "lifecycle_dependencies": {
     "direct provider launch": {
@@ -153,6 +153,16 @@
     {
       "dependencies": [],
       "operation": "GET /api/plan",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/processes",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/processes/action",
       "status": "implemented"
     },
     {
@@ -583,6 +593,11 @@
     {
       "dependencies": [],
       "operation": "POST /api/plan",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/processes/action",
       "status": "implemented"
     },
     {

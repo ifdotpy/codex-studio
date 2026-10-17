@@ -11,7 +11,7 @@ it("cleans up audio resources after construction, worklet and flush failures", a
   );
   const source = (
     await readFile(new URL("./capture.ts", import.meta.url), "utf8")
-  ).replace(/^import workletURL[^\n]+/, 'const workletURL="fixture.js";');
+  ).replace(/^import workletURL[^\n]+/m, 'const workletURL="fixture.js";');
   const code = ts.transpileModule(source, {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
@@ -64,6 +64,17 @@ it("cleans up audio resources after construction, worklet and flush failures", a
     }
     const context = {
       exports: {},
+      require(name) {
+        if (name === "../native/client")
+          return { hasNativeClient: () => false };
+        if (name === "../native/dictation")
+          return {
+            captureNativeAudio() {
+              throw Error("Unexpected native capture in browser fixture");
+            },
+          };
+        throw Error(`Unexpected capture dependency: ${name}`);
+      },
       navigator: {
         mediaDevices: {
           getUserMedia: async () => ({

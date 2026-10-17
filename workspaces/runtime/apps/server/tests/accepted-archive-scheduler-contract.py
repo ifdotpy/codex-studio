@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -364,6 +365,16 @@ class AcceptedArchiveScheduler(unittest.TestCase):
 
     def test_active_old_wait_frame_is_invalidated_before_replacement(self):
         rt = self.runtime
+        # Deadline assertions must not depend on the host completing this test
+        # before the legacy two-second retry expires.
+        clock = patch.object(codex_work.time, 'time', return_value=time.time())
+        clock.start()
+        self.addCleanup(clock.stop)
+        wait = rt.changed.event.wait
+        wait_patch = patch.object(rt.changed.event, 'wait',
+                                  side_effect=lambda _delay: wait(HANG_GUARD_SECONDS))
+        wait_patch.start()
+        self.addCleanup(wait_patch.stop)
         live, code, worker = self.start_legacy()
         try:
             self.assertTrue(rt.changed.entered.wait(HANG_GUARD_SECONDS))

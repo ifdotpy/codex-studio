@@ -271,3 +271,49 @@ describe("project locations", () => {
     ).toBeNull();
   });
 });
+
+it("keeps project mutation tokens and uncertain receipt IDs with the captured owner", async () => {
+  const owner = (token: string) => {
+    const entries = new Map<string, string>();
+    return {
+      storage: {
+        getItem: (key: string) => entries.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          entries.set(key, value);
+        },
+        removeItem: (key: string) => {
+          entries.delete(key);
+        },
+      },
+      refreshSession: vi.fn(async () => ({
+        token,
+      })) as unknown as typeof api.refreshSession,
+      post: vi
+        .fn<typeof api.post<"/api/projects">>()
+        .mockResolvedValue({ outcome: "applied" } as never),
+    };
+  };
+  const a = owner("owner-a");
+  const b = owner("owner-b");
+  const body = {
+    action: "add_location" as const,
+    project: "same",
+    server: "peer",
+    path: "/same",
+    request_id: "a-original",
+  };
+  a.post.mockRejectedValueOnce(new TypeError("Reply lost"));
+  await expect(saveProjectLocation(body, a)).rejects.toThrow("Reply lost");
+  await saveProjectLocation({ ...body, request_id: "b-original" }, b);
+  await saveProjectLocation({ ...body, request_id: "a-new-attempt" }, a);
+  expect(a.post.mock.calls[1]).toEqual([
+    "/api/projects",
+    expect.objectContaining({ request_id: "a-original" }),
+    { sessionToken: "owner-a" },
+  ]);
+  expect(b.post.mock.calls[0]).toEqual([
+    "/api/projects",
+    expect.objectContaining({ request_id: "b-original" }),
+    { sessionToken: "owner-b" },
+  ]);
+});

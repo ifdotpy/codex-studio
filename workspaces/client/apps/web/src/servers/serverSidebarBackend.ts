@@ -1,20 +1,19 @@
 import type { SidebarBackend } from "../components/sidebar/services";
 import type { ApiPostPath, PostBody, PostOptions, PostResult } from "../api";
 import {
-  preferenceStorageForServer,
   readPreferenceFields,
   receivePreferenceFields,
   writePreferenceEdit,
 } from "../sync/uiPreferenceStore";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
-import type { createSidebarRpcClient, SidebarPostPath } from "./sidebarRpc";
+import type { ServerServices } from "./serverServices";
 
-export function frameSidebarBackend(
-  ownerId: string,
-  rpc: ReturnType<typeof createSidebarRpcClient>,
+export function serverSidebarBackend(
+  services: ServerServices,
   online: () => boolean,
 ): SidebarBackend {
-  const storage = preferenceStorageForServer(ownerId);
+  const ownerId = services.owner.id;
+  const storage = services.storage;
   return {
     ownerId,
     storage,
@@ -24,15 +23,8 @@ export function frameSidebarBackend(
       options?: PostOptions,
     ): Promise<PostResult<Path>> {
       if (!online()) throw new Error("The sidebar server is offline.");
-      return (await rpc.request(ownerId, {
-        action: "post",
-        path: path as SidebarPostPath,
-        body: body as unknown as PostBody<SidebarPostPath>,
-        options: {
-          timeoutMs: options?.timeoutMs,
-          requestId: options?.requestId,
-        },
-      })) as PostResult<Path>;
+      await services.ready();
+      return services.api.post(path, body, options);
     },
     saved<T>(key: string, fallback: T): T {
       try {

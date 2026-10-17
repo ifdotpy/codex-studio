@@ -98,7 +98,13 @@ pub fn enqueue_output_with_scope_in_transaction(
         scope.cursor_scope, scope.generation, scope.cursor
     );
     if let Some(existing) = queue.iter().find(|item| item["cursor"] == key) {
-        if existing["deltaBase64"] == encoded {
+        if existing["deltaBase64"] == encoded
+            && existing["stream"].as_str().unwrap_or("stdout")
+                == params["stream"]
+                    .as_str()
+                    .filter(|s| *s == "stderr")
+                    .unwrap_or("stdout")
+        {
             return Ok(true);
         }
         return Err(NotificationDispatchError::ConflictingDelivery);
@@ -132,6 +138,7 @@ pub fn enqueue_output_with_scope_in_transaction(
         "offset": offset,
         "byteLength": bytes.len(),
         "deltaBase64": encoded,
+        "stream": params["stream"].as_str().filter(|s| *s == "stderr").unwrap_or("stdout"),
         "operation": operation,
     }));
     record["streamQueue"] = Value::Array(queue);
@@ -222,7 +229,15 @@ pub fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
         id,
         operation,
         cursor,
-        event: MonitorEvent::Output { offset, bytes },
+        event: MonitorEvent::OutputStream {
+            offset,
+            stream: item["stream"]
+                .as_str()
+                .filter(|s| *s == "stderr")
+                .unwrap_or("stdout")
+                .to_owned(),
+            bytes,
+        },
     }))
 }
 

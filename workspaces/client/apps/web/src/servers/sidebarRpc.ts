@@ -1,3 +1,4 @@
+import { frameMessageOrigin } from "./frameOrigin";
 import { sidebarAgent } from "./sidebarSnapshot";
 import type { Agent } from "../types";
 import {
@@ -160,7 +161,7 @@ export function createSidebarRpcClient(
       const frame = frames.get(owner);
       if (!frame?.isConnected || !frame.contentWindow)
         throw new Error("The sidebar server is unavailable.");
-      const origin = new URL(frame.src).origin;
+      const origin = frameMessageOrigin(frame.src);
       const correlation = crypto.randomUUID();
       return new Promise((resolve, reject) => {
         const timer = setTimeout(

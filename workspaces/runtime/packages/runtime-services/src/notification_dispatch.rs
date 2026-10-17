@@ -52,14 +52,30 @@ pub enum DispatchOutcome {
 }
 
 /// Immutable server identity, resolved before entering a writer transaction.
+/// Native session identity supplied by the account worker, never reconstructed
+/// from a journal generation. Replayed generations cannot acquire current controls.
+#[derive(Clone)]
+pub struct NativeProcessSource {
+    pub account: String,
+    pub connection: String,
+    pub generation: Option<u64>,
+    pub provider: String,
+}
+
 #[derive(Clone, Default)]
 pub struct PublicationContext {
     server_id: Option<String>,
+    native_source: Option<NativeProcessSource>,
 }
 impl PublicationContext {
+    pub fn with_native_source(mut self, source: Option<NativeProcessSource>) -> Self {
+        self.native_source = source;
+        self
+    }
     pub fn load(store: &RuntimeStore) -> Result<Self, NotificationDispatchError> {
         Ok(Self {
             server_id: store.local_server_id()?,
+            native_source: None,
         })
     }
 }
@@ -1841,6 +1857,7 @@ fn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use rusqlite::{Connection, params};
     use serde_json::{Value, json};
@@ -1975,6 +1992,44 @@ mod tests {
             &frame(value),
             observed_at,
         )
+    }
+
+    #[tokio::test]
+    async fn process_task_retains_the_actual_connection_only_for_its_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .unwrap();
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[json!({
+                "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
+                "accountKey":"default","provider":"codex","turnId":"turn","inFlight":true,"autoWake":true,
+                "activeTools":[],"events":0
+            }).to_string()]).map_err(studio_runtime_store::StoreError::from)?;
+            let publication=PublicationContext::default().with_native_source(Some(super::NativeProcessSource { account:"default".into(), connection:"actual-connection-uuid".into(), generation:Some(7), provider:"codex".into() }));
+            for (cursor,item,generation) in [(1,"command",7),(2,"old-command",6)] {
+                let mut identity=identity(cursor);identity.generation=generation;
+                super::dispatch_notification(tx,"agent",&publication,&NotificationStreamBuffer::default(),&identity,
+                    &frame(&json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":item,"type":"commandExecution","command":"sleep 60","processId":"42"}}})),100.0)?;
+            }
+            Ok::<_,super::NotificationDispatchError>(())
+        }).await.unwrap();
+        let connection = store.read().unwrap();
+        for (item, expected) in [
+            ("command", json!("actual-connection-uuid")),
+            ("old-command", Value::Null),
+        ] {
+            let raw: String = connection
+                .query_row(
+                    "SELECT record FROM runtime_tasks WHERE id=?",
+                    [format!("agent:{item}")],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let record: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(record["sourceConnectionId"], expected);
+            assert_eq!(record["ownerEpoch"], 1);
+        }
     }
 
     #[test]

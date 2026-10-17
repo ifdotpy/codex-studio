@@ -658,6 +658,8 @@ mod tests {
         );
     }
 
+    // Native thread IDs, required by slow-history entries, are Linux-only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn actual_writer_transactions_fill_only_bounded_slow_history() {
         let mut state = SqliteState::default();

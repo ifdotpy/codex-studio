@@ -3,6 +3,7 @@ import type { Agent } from "../types";
 
 // Execute the real effects and read callbacks without rendering unrelated UI.
 const {
+  contexts,
   effects,
   cleanups,
   states,
@@ -19,6 +20,7 @@ const {
   syncPost,
   reconcile,
 } = vi.hoisted(() => ({
+  contexts: new Map<unknown, unknown>(),
   effects: [] as Array<() => void | (() => void)>,
   cleanups: [] as Array<() => void>,
   states: [] as Array<{ value: unknown }>,
@@ -53,7 +55,8 @@ vi.mock("react", async (importOriginal) => {
     ...original,
     useCallback: (callback: unknown) => callback,
     // No provider is mounted, so a context read returns its default value.
-    useContext: (context: { _currentValue: unknown }) => context._currentValue,
+    useContext: (context: { _currentValue: unknown }) =>
+      contexts.has(context) ? contexts.get(context) : context._currentValue,
     useMemo: (compute: () => unknown, dependencies?: readonly unknown[]) => {
       const index = cursor.memo++;
       const previous = memos[index];
@@ -111,7 +114,8 @@ vi.mock("../api", async (importOriginal) => ({
   post,
   syncPost,
 }));
-vi.mock("../sync/localDraft", () => ({
+vi.mock("../sync/localDraft", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sync/localDraft")>()),
   updateLocalDraft: async (
     key: string,
     fallback: unknown,
@@ -156,7 +160,10 @@ vi.mock("../sync/resourceEvents", () => ({
 
 import { useMessageReceipts } from "./useMessageReceipts";
 import { useMessageQueue } from "./useMessageQueue";
-import { useWorkerModels } from "./agents/WorkerModelPicker";
+import {
+  useWorkerModels,
+  ModelCatalogReader,
+} from "./agents/WorkerModelPicker";
 import { useAccounts } from "./Accounts";
 import Usage from "./Usage";
 import { ApiError } from "../api";
@@ -185,6 +192,7 @@ describe("resource read callers", () => {
     post.mockReset();
     syncPost.mockReset();
     reconcile.mockClear();
+    contexts.clear();
     effects.length = 0;
     states.length = 0;
     refs.length = 0;
@@ -253,6 +261,38 @@ describe("resource read callers", () => {
     expect(value.receipts.get("message-one")).toEqual(receipt);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("persists delivery before publishing a receipt that can retire its reader", async () => {
+    const receipt = { id: "message-one", status: "delivered" };
+    get.mockResolvedValue({
+      agent: "lead",
+      workspaceId: "workspace",
+      items: [receipt],
+    });
+    let finishWrite: (() => void) | undefined;
+    reconcile.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    mount(() =>
+      useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
+    );
+    notify({ kind: "receipts", agentId: "lead" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    const currentReceipts = () =>
+      (states[0]!.value as { receipts: Map<string, unknown> }).receipts;
+    expect(currentReceipts().has("message-one")).toBe(false);
+    finishWrite!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(currentReceipts().get("message-one")).toEqual(receipt);
+    cleanups.pop()?.();
+    const signal = reconcile.mock.calls[0]?.[3] as AbortSignal;
+    expect(signal.aborted).toBe(true);
   });
 
   it("aborts an unmounted receipt read before it can start another batch", async () => {
@@ -515,6 +555,53 @@ describe("resource read callers", () => {
       error: "",
       pending: false,
     });
+  });
+
+  it("keeps overlapping model catalogs and late responses with their connection owner", async () => {
+    let finishA!: (value: { data: { model: string }[] }) => void;
+    const readA = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finishA = resolve;
+        }),
+    );
+    const readB = vi.fn(async () => ({ data: [{ model: "server-b" }] }));
+    const callbacks = new Map<string, () => Promise<void>>();
+    const stops = new Map<string, ReturnType<typeof vi.fn>>();
+    const reader = (owner: string, read: unknown) => ({
+      scope: "same-server-identity",
+      cacheOwner: {},
+      read,
+      watchResourceReads: (
+        _resource: unknown,
+        refresh: () => Promise<void>,
+      ) => {
+        callbacks.set(owner, refresh);
+        const stop = vi.fn();
+        stops.set(owner, stop);
+        return Object.assign(stop, { refresh });
+      },
+    });
+    contexts.set(ModelCatalogReader, reader("a", readA));
+    mount(() => useWorkerModels("default", true));
+    const stateA = states[0]!;
+    states.length = 0;
+    memos.length = 0;
+    contexts.set(ModelCatalogReader, reader("b", readB));
+    mount(() => useWorkerModels("default", true));
+    const stateB = states[0]!;
+    const pendingA = callbacks.get("a")!();
+    await callbacks.get("b")!();
+    expect(stateB.value).toMatchObject({ models: [{ model: "server-b" }] });
+    finishA({ data: [{ model: "server-a" }] });
+    await pendingA;
+    expect(stateA.value).toMatchObject({ models: [{ model: "server-a" }] });
+    expect(stateB.value).toMatchObject({ models: [{ model: "server-b" }] });
+    expect(readA).toHaveBeenCalledTimes(1);
+    expect(readB).toHaveBeenCalledTimes(1);
+    for (const cleanup of cleanups.splice(0)) cleanup();
+    expect(stops.get("a")).toHaveBeenCalledTimes(1);
+    expect(stops.get("b")).toHaveBeenCalledTimes(1);
   });
 
   it("shares a catalog read and refreshes it after a models resource event", async () => {

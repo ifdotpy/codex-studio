@@ -1,0 +1,38 @@
+name: Client build setup
+description: Prepare the shared Rust parser and, when requested, the native desktop build.
+inputs:
+  native:
+    description: Install Linux WebView libraries and build the renderer embedded by Tauri.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install native Linux build dependencies
+      if: inputs.native == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+    - name: Read the binding generator version from its Rust owner
+      id: bindings
+      shell: bash
+      run: |
+        version="$(python3 -c 'import tomllib; print(tomllib.load(open("workspaces/client/packages/client-wasm/Cargo.toml", "rb"))["dependencies"]["wasm-bindgen"].removeprefix("="))')"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/wasm-bindgen*
+        key: wasm-bindgen-${{ runner.os }}-${{ runner.arch }}-${{ steps.bindings.outputs.version }}
+    - name: Install matching WASM tools
+      shell: bash
+      env:
+        BINDINGS_VERSION: ${{ steps.bindings.outputs.version }}
+      run: |
+        rustup target add wasm32-unknown-unknown
+        if ! command -v wasm-bindgen >/dev/null || [ "$(wasm-bindgen --version)" != "wasm-bindgen $BINDINGS_VERSION" ]; then
+          cargo install wasm-bindgen-cli --version "$BINDINGS_VERSION" --locked
+        fi
+    - name: Build the renderer for native Rust checks
+      if: inputs.native == 'true'
+      shell: bash
+      run: pnpm --filter codex-agents-web run build

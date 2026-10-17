@@ -104,7 +104,8 @@ class QuietRuntime(Runtime):
         Runtime.model_turn_context(self, db, seeded_actor, event_id)
         return ""
 
-    def interrupt(self, agent):
+    def interrupt(self, agent, *, preserve_background_tasks=False):
+        assert not preserve_background_tasks
         self.interrupted = agent["id"]
 
     def connect(self, *args, **kwargs):

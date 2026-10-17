@@ -1,0 +1,2 @@
+# Tauri regenerates these schemas when it builds the native host.
+/gen/schemas/

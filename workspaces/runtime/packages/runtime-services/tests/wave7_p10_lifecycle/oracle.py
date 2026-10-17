@@ -48,7 +48,8 @@ class LifecycleRuntime(MemoryRuntime):
         # background dispatcher in this deterministic corpus process.
         self.closed = False
 
-    def interrupt(self, agent):
+    def interrupt(self, agent, *, preserve_background_tasks=False):
+        assert not preserve_background_tasks
         # Only the provider boundary is injected; stop and every stored write
         # execute the actual Runtime implementation.
         self.interrupted.append(copy.deepcopy(agent))

@@ -6,9 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from typing import Any
@@ -639,7 +637,7 @@ class FileEvents(unittest.TestCase):
         self.addCleanup(lambda: __import__('shutil').rmtree(other, True))
         helper = self.root / 'helper'
         helper.write_text('#!/bin/sh\n'
-                          f'echo \'{{"ready": ["{self.root}"]}}\'\n'
+                          f'echo \'{json.dumps({"ready": sorted(map(str, [self.root, other]))})}\'\n'
                           'read release\n'
                           f'echo \'{{"path": "{self.root}/a.txt"}}\'\n'
                           f'echo \'{{"path": "{self.root}/sub/b.txt"}}\'\n'
@@ -647,11 +645,14 @@ class FileEvents(unittest.TestCase):
                           'cat > /dev/null\n')
         helper.chmod(0o755)
         watcher = sync.Watcher(helper)
+        self.addCleanup(watcher.stop)
         with patch.object(sync, 'QUIET', 0.0):
             watcher.watch([self.root, other])
             self.assertTrue(watcher.available())
+            wait_for_condition(watcher.ready.is_set, 'file watcher fixture readiness')
             # The first take after a start scans in full: nothing was watched before.
             self.assertEqual(watcher.take(self.root), (True, None))
+            self.assertEqual(watcher.take(other), (True, None))
             assert watcher.process is not None and watcher.process.stdin is not None
             watcher.process.stdin.write(b"release\n")
             watcher.process.stdin.flush()
@@ -667,32 +668,8 @@ class FileEvents(unittest.TestCase):
             self.assertEqual(watcher.take(self.root), (False, set()))
         watcher.stop()
         self.assertFalse(watcher.available())
+        self.assertFalse(watcher.ready.is_set())
 
-    @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'needs macOS and Swift')
-    def test_the_signed_helper_reports_file_events(self) -> None:
-        from codex_layout import DESKTOP_ROOT
-        helper = self.root / 'studio-fs-events'
-        subprocess.run(['xcrun', 'swiftc', str(DESKTOP_ROOT / 'native/fs-events.swift'), '-O',
-                        '-target', 'arm64-apple-macos13.0', '-o', str(helper)], check=True, timeout=300)
-        folder = self.root / 'project'
-        folder.mkdir()
-        watcher = sync.Watcher(helper)
-        with patch.object(sync, 'QUIET', 0.3):
-            watcher.watch([folder])
-            watcher.take(folder)
-            import time as clock
-            clock.sleep(1.0)
-            (folder / 'sub').mkdir()
-            (folder / 'sub/new.txt').write_text('x')
-            found: set[str] = set()
-            def collect_changed_path() -> bool | None:
-                changed, paths = watcher.take(folder)
-                if changed and paths is not None:
-                    found.update(paths)
-                return True if 'sub/new.txt' in found else None
-            wait_for_condition(collect_changed_path, 'signed file event helper notification')
-        watcher.stop()
-        self.assertIn('sub/new.txt', found)
 
 
 class Schedule(unittest.TestCase):

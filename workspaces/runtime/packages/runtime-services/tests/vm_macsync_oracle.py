@@ -106,9 +106,11 @@ def main(state_dir, choice):
                         raise AssertionError(f"Python accepted {method} below its free-space floor")
         return {"preflights": preflights}
     settings_read = vm.get_settings()
-    settings_set = vm.set_settings({"cpus": 1, "memoryBytes": 4294967296,
-                                    "systemDiskBytes": 17179869184,
-                                    "dataDiskBytes": 137438953472})
+    # Host memory is an input, not a subprocess allowed by the guarded oracle.
+    with patch("codex_linux_vm._run", return_value=str(16 * 1024 ** 3)):
+        settings_set = vm.set_settings({"cpus": 1, "memoryBytes": 4294967296,
+                                       "systemDiskBytes": 17179869184,
+                                       "dataDiskBytes": 137438953472})
     client = FakeClient(state_dir)
     runtime, database = make_runtime(state_dir, client)
     codex_linux_workspaces.client = lambda _runtime: client

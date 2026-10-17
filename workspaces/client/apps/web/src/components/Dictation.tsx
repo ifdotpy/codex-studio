@@ -1,3 +1,6 @@
+import { hasNativeClient } from "../native/client";
+import { saveFile } from "../fileActions";
+import { useServerAudio } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
 import { localTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
@@ -5,20 +8,8 @@ import { errorDetails } from "../errorPresentation";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Download, Mic, Square, Trash2 } from "lucide-react";
-import { captureAudio } from "../dictation/capture";
-import {
-  deleteRecording,
-  listRecordings,
-  recordingAudio,
-  saveChunk,
-  saveRecording,
-  updateRecording,
-  beginTranscription,
-  trashRecording,
-  restoreRecording,
-  deletedRecordings,
-  type Recording,
-} from "../dictation/storage";
+import type { Recording } from "../dictation/storage";
+import { useServerRecordings } from "../servers/ServerServicesContext";
 import "./Dictation.css";
 import { BrowserDictation } from "./BrowserDictation";
 // Older recordings store plain text. New structured diagnostics retain JSON
@@ -40,7 +31,8 @@ type DictationProps = {
   disabled?: boolean;
 };
 export function Dictation(props: DictationProps) {
-  return window.codexDesktop ? (
+  const { dictationBridge } = useServerAudio();
+  return dictationBridge() ? (
     <NativeDictation {...props} />
   ) : (
     <BrowserDictation {...props} />
@@ -55,6 +47,20 @@ function NativeDictation({
   onInsert: (text: string) => void;
   disabled?: boolean;
 }) {
+  const {
+    deleteRecording,
+    listRecordings,
+    recordingAudio,
+    saveChunk,
+    saveRecording,
+    updateRecording,
+    beginTranscription,
+    trashRecording,
+    restoreRecording,
+    deletedRecordings,
+  } = useServerRecordings();
+  const { dictationBridge, captureAudio } = useServerAudio();
+  const desktop = dictationBridge();
   const [open, setOpen] = useState(false),
     [rows, setRows] = useState<Recording[]>([]),
     [error, setError] = useState<unknown>(null),
@@ -65,9 +71,9 @@ function NativeDictation({
   const attemptRef = useRef("");
   const cancelledAttempt = useRef("");
   const supported =
-    !!window.codexDesktop?.requestMicrophone &&
-    !!window.codexDesktop?.prepareTranscription &&
-    !!window.codexDesktop?.transcribeAudio;
+    !!desktop?.requestMicrophone &&
+    !!desktop?.prepareTranscription &&
+    !!desktop?.transcribeAudio;
   const [elapsed, setElapsed] = useState(0),
     [recording, setRecording] = useState(false);
   const capture = useRef<Awaited<ReturnType<typeof captureAudio>> | null>(null);
@@ -153,7 +159,7 @@ function NativeDictation({
   }, [chatId]);
   useEffect(
     () =>
-      window.codexDesktop?.onTranscriptionProgress?.((value) => {
+      desktop?.onTranscriptionProgress?.((value) => {
         if (value.id === attemptRef.current)
           setProgress(`${value.completed} of ${value.total} parts`);
       }),
@@ -178,12 +184,11 @@ function NativeDictation({
     let index = 0;
     try {
       // Call the native permission bridge synchronously within the button gesture.
-      if (window.codexDesktop && !window.codexDesktop.requestMicrophone)
+      if (desktop && !desktop.requestMicrophone)
         throw Error(
           "Install the updated desktop app to enable microphone access.",
         );
-      if (window.codexDesktop?.requestMicrophone)
-        await window.codexDesktop.requestMicrophone();
+      if (desktop?.requestMicrophone) await desktop.requestMicrophone();
       if (!mounted.current || scope.current !== owner) return;
       const row: Recording = {
         id: crypto.randomUUID(),
@@ -255,8 +260,8 @@ function NativeDictation({
       // Reserve the native gesture synchronously, then claim this saved recording.
       const prepared =
         reservation ||
-        (window.codexDesktop?.transcribeAudio
-          ? window.codexDesktop.prepareTranscription().then(
+        (desktop?.transcribeAudio
+          ? desktop.prepareTranscription().then(
               (permit) => ({ permit, error: undefined }),
               (error) => ({ permit: undefined, error }),
             )
@@ -275,7 +280,7 @@ function NativeDictation({
       const audio = await recordingAudio(row);
       if (cancelledAttempt.current === attempt)
         throw Error("Transcription cancelled. Your recording is saved.");
-      const result = await window.codexDesktop!.transcribeAudio({
+      const result = await desktop!.transcribeAudio({
         id: attempt,
         permit: authorization.permit!,
         audio: await audio.arrayBuffer(),
@@ -314,7 +319,7 @@ function NativeDictation({
     }
   };
   function prepare() {
-    return window.codexDesktop!.prepareTranscription().then(
+    return desktop!.prepareTranscription().then(
       (permit) => ({ permit, error: undefined }),
       (error) => ({ permit: undefined, error }),
     );
@@ -405,7 +410,7 @@ function NativeDictation({
               type="button"
               onClick={() => {
                 cancelledAttempt.current = attemptRef.current;
-                void window.codexDesktop
+                void desktop
                   ?.cancelTranscription?.(attemptRef.current)
                   .catch(fail);
               }}
@@ -479,7 +484,10 @@ function RecordingItem({
   onInsert: (text: string) => void;
   onReview: (text: string) => void;
 }) {
+  const { recordingAudio } = useServerRecordings();
   const [url, setUrl] = useState("");
+  const audioBytes = useRef<ArrayBuffer | null>(null);
+  const [downloadError, setDownloadError] = useState("");
   const [review, setReview] = useState(
     row.reviewedText ?? row.transcript ?? "",
   );
@@ -490,11 +498,20 @@ function RecordingItem({
   useEffect(() => {
     let alive = true,
       objectURL = "";
-    void recordingAudio(row).then((blob) => {
-      objectURL = URL.createObjectURL(blob);
-      if (alive) setUrl(objectURL);
-      else URL.revokeObjectURL(objectURL);
-    });
+    audioBytes.current = null;
+    void recordingAudio(row)
+      .then(async (blob) => {
+        if (hasNativeClient()) {
+          const bytes = await blob.arrayBuffer();
+          if (alive) audioBytes.current = bytes;
+        }
+        objectURL = URL.createObjectURL(blob);
+        if (alive) setUrl(objectURL);
+        else URL.revokeObjectURL(objectURL);
+      })
+      .catch((error) => {
+        if (alive) setDownloadError(String(error));
+      });
     return () => {
       alive = false;
       if (objectURL) URL.revokeObjectURL(objectURL);
@@ -502,6 +519,11 @@ function RecordingItem({
   }, [row.id, row.samples]);
   return (
     <section className="dictation-item">
+      {downloadError && (
+        <p role="alert" className="dictation-error">
+          {downloadError}
+        </p>
+      )}
       <div className="dictation-item-heading">
         <span>
           {localTime(new Date(row.created), {
@@ -515,6 +537,20 @@ function RecordingItem({
           href={url || undefined}
           download={`dictation-${row.id}.wav`}
           aria-label="Download recording"
+          onClick={(event) => {
+            if (!hasNativeClient()) return;
+            event.preventDefault();
+            if (!audioBytes.current) {
+              setDownloadError("The saved recording is still loading.");
+              return;
+            }
+            setDownloadError("");
+            void saveFile({
+              name: `dictation-${row.id}.wav`,
+              data: audioBytes.current,
+              mime: "audio/wav",
+            }).catch((error) => setDownloadError(String(error)));
+          }}
         >
           <Download size={14} />
         </a>

@@ -9,10 +9,10 @@ export const isClassicServerView =
   isServerView &&
   new URLSearchParams(location.search).get("studio-navigation") === "classic";
 export const isRemoteServerView = !!serverViewId && serverViewId !== "local";
+export const storageNameForServer = (owner: string | null, name: string) =>
+  owner && owner !== "local" ? `${name}:server:${owner}` : name;
 export const serverStorageName = (name: string) =>
-  serverViewId && serverViewId !== "local"
-    ? `${name}:server:${serverViewId}`
-    : name;
+  storageNameForServer(serverViewId, name);
 
 export const serverDatabaseSuffix =
   serverViewId && serverViewId !== "local"

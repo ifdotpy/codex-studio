@@ -267,10 +267,12 @@ class UpgradeContract(unittest.TestCase):
                     self.assertEqual(failure_diagnostics["migrations"]["search"]["error"],
                                      "Details redacted")
                     runtime.search_migration_error = None
-                    upgrade_check = json.loads(subprocess.run(
-                        [str(SERVER_SOURCE_ROOT / "codex-upgrade-check"), "--repo", str(ROOT),
+                    upgrade_process = subprocess.run(
+                        [sys.executable, str(SERVER_SOURCE_ROOT / "codex-upgrade-check"), "--repo", str(ROOT),
                          "--state-dir", str(state), "--diagnostics-url", origin + "/api/diagnostics"],
-                        check=True, capture_output=True, text=True, cwd=ROOT).stdout)
+                        check=False, capture_output=True, text=True, cwd=ROOT)
+                    self.assertEqual(upgrade_process.returncode, 0, upgrade_process.stderr)
+                    upgrade_check = json.loads(upgrade_process.stdout)
                     self.assertTrue(upgrade_check["prechecks"]["stateDatabase"]["readable"],
                                     json.dumps(upgrade_check, sort_keys=True))
                     self.assertEqual(upgrade_check["runningAgentCount"], 1)
