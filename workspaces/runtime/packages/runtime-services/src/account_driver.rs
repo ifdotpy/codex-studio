@@ -39,6 +39,9 @@ const CLAUDE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(8);
 const CLAUDE_BIN_OVERRIDE: &str = "STUDIO_CLAUDE_BIN";
 const AUTH_ERROR: &str = "Cannot read this profile's authentication";
+/// Error text of Python `codex_accounts.auth_metadata` for an unreadable,
+/// malformed or oversized Codex `auth.json`.
+const CODEX_AUTH_ERROR: &str = "Cannot read this Codex profile's authentication";
 const CHANGED_ERROR: &str =
     "This profile's account changed. Restore its original login or add a separate profile.";
 const UNVERIFIED_ERROR: &str =
@@ -100,6 +103,13 @@ impl AuthMetadata {
         }
     }
 
+    fn codex_error() -> Self {
+        Self {
+            error: Some(CODEX_AUTH_ERROR),
+            ..Self::error(None)
+        }
+    }
+
     #[cfg(target_os = "macos")]
     fn unchanged(reason: &'static str) -> Self {
         Self {
@@ -137,13 +147,28 @@ impl ProviderAuthReader for SystemProviderAuthReader {
 /// Codex auth metadata is derived from `<home>/auth.json`; the file is never
 /// copied, returned or included in an error.
 pub fn codex_auth_metadata(home: &Path) -> AuthMetadata {
+    match read_codex_auth(home) {
+        CodexAuth::Missing => AuthMetadata::signed_out(),
+        CodexAuth::Unreadable => AuthMetadata::codex_error(),
+        CodexAuth::Parsed(metadata) => metadata,
+    }
+}
+
+/// Python `auth_metadata` writes a different field set for each of these cases.
+enum CodexAuth {
+    Missing,
+    Unreadable,
+    Parsed(AuthMetadata),
+}
+
+fn read_codex_auth(home: &Path) -> CodexAuth {
     let path = home.join("auth.json");
     let file = match File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return AuthMetadata::signed_out();
+            return CodexAuth::Missing;
         }
-        Err(_) => return AuthMetadata::error(None),
+        Err(_) => return CodexAuth::Unreadable,
     };
     let auth = (|| -> Result<Value, ()> {
         if file.metadata().map_err(|_| ())?.len() > AUTH_FILE_LIMIT {
@@ -161,9 +186,9 @@ pub fn codex_auth_metadata(home: &Path) -> AuthMetadata {
         Ok(value)
     })();
     let Ok(auth) = auth else {
-        return AuthMetadata::error(None);
+        return CodexAuth::Unreadable;
     };
-    codex_metadata_from_value(&auth).unwrap_or_else(|_| AuthMetadata::error(None))
+    codex_metadata_from_value(&auth).map_or(CodexAuth::Unreadable, CodexAuth::Parsed)
 }
 
 fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
@@ -1585,12 +1610,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
 
     pub fn discover_codex(&self) -> Result<AccountsSnapshot, AccountDriverError> {
         let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        let codex_home = env::var_os("CODEX_HOME")
-            .map(|value| {
-                let configured = PathBuf::from(value);
-                resolve_configured_home(&configured.to_string_lossy(), &home)
-            })
-            .unwrap_or_else(|| home.join(".codex"));
+        let codex_home = resolve_codex_home(env::var_os("CODEX_HOME").as_deref(), &home)
+            .map_err(|_| AccountDriverError::InvalidCodexProfile)?;
         let mut candidates = vec![codex_home.clone(), home.join(".codex")];
         for (base, pattern) in [
             (home.join("Projects"), "*/.codex-profile"),
@@ -2077,11 +2098,6 @@ fn expanded_profile_path(home: &str) -> PathBuf {
     expand_user_path(home, &root)
 }
 
-fn resolve_configured_home(configured: &str, home: &Path) -> PathBuf {
-    let expanded = expand_user_path(configured, home);
-    expanded.canonicalize().unwrap_or(expanded)
-}
-
 fn expand_user_path(configured: &str, home: &Path) -> PathBuf {
     if configured == "~" {
         return home.to_path_buf();
@@ -2090,6 +2106,213 @@ fn expand_user_path(configured: &str, home: &Path) -> PathBuf {
         return home.join(suffix);
     }
     PathBuf::from(configured)
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum CodexHomeError {
+    #[error("Codex agent data must be outside .claude: {}", .0.display())]
+    InsideClaude(PathBuf),
+    #[error("Cannot resolve a relative CODEX_HOME without a working directory")]
+    WorkingDirectory,
+}
+
+/// The base Codex home, as Python `codex_state.codex_home()` computes it: a
+/// non-empty `CODEX_HOME`, else `<home>/.codex`, with `~` expanded, made
+/// absolute and resolved like `Path.resolve()`. A path inside `.claude` is
+/// refused.
+pub fn resolve_codex_home(
+    configured: Option<&OsStr>,
+    home: &Path,
+) -> Result<PathBuf, CodexHomeError> {
+    let selected = match configured.filter(|value| !value.is_empty()) {
+        Some(value) => expand_user_path(&value.to_string_lossy(), home),
+        None => home.join(".codex"),
+    };
+    let resolved = resolve_like_python(&selected)?;
+    if resolved
+        .components()
+        .any(|component| component.as_os_str() == ".claude")
+    {
+        return Err(CodexHomeError::InsideClaude(resolved));
+    }
+    Ok(resolved)
+}
+
+/// Python `Path.resolve()` (non-strict): resolve each existing component's
+/// symlinks and keep missing components as written.
+#[cfg(unix)]
+fn resolve_like_python(path: &Path) -> Result<PathBuf, CodexHomeError> {
+    use std::path::Component;
+
+    fn walk(path: &Path, depth: usize) -> PathBuf {
+        let mut resolved = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir => resolved.push(component),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::Normal(name) => {
+                    let candidate = resolved.join(name);
+                    let is_link = fs::symlink_metadata(&candidate)
+                        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+                    resolved = if !is_link {
+                        candidate
+                    } else if let Ok(target) = candidate.canonicalize() {
+                        target
+                    } else {
+                        // A dangling link resolves through its target text.
+                        match fs::read_link(&candidate) {
+                            Ok(target) if depth < 40 => walk(&resolved.join(target), depth + 1),
+                            _ => candidate,
+                        }
+                    };
+                }
+            }
+        }
+        resolved
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|_| CodexHomeError::WorkingDirectory)?
+            .join(path)
+    };
+    Ok(walk(&absolute, 0))
+}
+
+#[cfg(not(unix))]
+fn resolve_like_python(path: &Path) -> Result<PathBuf, CodexHomeError> {
+    std::path::absolute(path).map_err(|_| CodexHomeError::WorkingDirectory)
+}
+
+/// Create Python `AccountStore`'s first-start registry when `path` has no
+/// entry. Returns whether this call created the file. An existing entry is
+/// never replaced, also when another process creates it during this call.
+///
+/// Python writes `json.dump` output (ASCII, `", "` and `": "` separators, no
+/// trailing newline) in insertion order to a `mkstemp` file (mode 0600) in a
+/// directory made with mode 0700. These bytes are the same.
+pub fn create_default_registry(path: &Path, codex_home: &Path) -> Result<bool, AccountDriverError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(AccountDriverError::ReadRegistry),
+    }
+    let bytes = default_registry_bytes(codex_home)?;
+    decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let parent = path.parent().ok_or(AccountDriverError::WriteRegistry)?;
+    let mut directory = fs::DirBuilder::new();
+    directory.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    directory
+        .create(parent)
+        .map_err(|_| AccountDriverError::WriteRegistry)?;
+    let mut temp = tempfile::Builder::new()
+        .prefix("registry-")
+        .tempfile_in(parent)
+        .map_err(|_| AccountDriverError::WriteRegistry)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| AccountDriverError::WriteRegistry)?;
+    }
+    temp.write_all(&bytes)
+        .and_then(|()| temp.as_file().sync_all())
+        .map_err(|_| AccountDriverError::WriteRegistry)?;
+    match temp.persist_noclobber(path) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(false);
+        }
+        Err(_) => return Err(AccountDriverError::WriteRegistry),
+    }
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| AccountDriverError::DurabilityUnconfirmed)?;
+    Ok(true)
+}
+
+/// Python `AccountStore.__init__` default document with `auth_metadata(home)`.
+fn default_registry_bytes(codex_home: &Path) -> Result<Vec<u8>, AccountDriverError> {
+    let home = codex_home
+        .to_str()
+        .ok_or(AccountDriverError::InvalidRegistry)?;
+    let text = |value: &str| studio_runtime_store::python_json(&Value::String(value.to_owned()));
+    let optional = |value: Option<&String>| value.map_or_else(|| "null".to_owned(), |v| text(v));
+    let mut row = vec![
+        ("id", text("default")),
+        ("home", text(home)),
+        ("label", text("Codex")),
+        ("source", text("Codex CLI")),
+    ];
+    match read_codex_auth(codex_home) {
+        CodexAuth::Missing => row.extend([
+            ("accountId", "null".to_owned()),
+            ("email", "null".to_owned()),
+            ("plan", "null".to_owned()),
+            ("status", text("signedOut")),
+        ]),
+        CodexAuth::Unreadable => row.extend([
+            ("accountId", "null".to_owned()),
+            ("email", "null".to_owned()),
+            ("plan", "null".to_owned()),
+            ("status", text("error")),
+            ("error", text(CODEX_AUTH_ERROR)),
+        ]),
+        CodexAuth::Parsed(metadata) => row.extend([
+            ("accountId", optional(metadata.account_id.as_ref())),
+            ("email", optional(metadata.email.as_ref())),
+            ("plan", optional(metadata.plan.as_ref())),
+            (
+                "status",
+                text(if metadata.status == AuthStatus::Ready {
+                    "ready"
+                } else {
+                    "signedOut"
+                }),
+            ),
+            (
+                "_credentialIdentity",
+                optional(metadata.credential_identity.as_ref()),
+            ),
+        ]),
+    }
+    let document = python_object(&[
+        ("version", "1".to_owned()),
+        ("defaultAccountKey", text("default")),
+        (
+            "accounts",
+            python_object(&[("default", python_object(&row))]),
+        ),
+        ("logins", "{}".to_owned()),
+        ("deleteReceipts", "{}".to_owned()),
+    ]);
+    Ok(document.into_bytes())
+}
+
+/// `json.dumps` of a dict whose values are already encoded, in entry order.
+fn python_object(entries: &[(&str, String)]) -> String {
+    let body = entries
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}: {value}",
+                studio_runtime_store::python_json(&Value::String((*key).to_owned()))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{body}}}")
 }
 
 fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetadata) {
@@ -3114,9 +3337,98 @@ print(store.path)
         let selected = home.join("selected-profile");
         fs::create_dir_all(&selected).expect("create selected profile");
         assert_eq!(
-            resolve_configured_home("~/selected-profile", &home),
-            selected.canonicalize().expect("resolve selected profile")
+            resolve_codex_home(Some(OsStr::new("~/selected-profile")), &home),
+            Ok(selected.canonicalize().expect("resolve selected profile"))
         );
+        let canonical_home = home.canonicalize().expect("resolve fixture home");
+        // An empty CODEX_HOME falls back like Python's `or`; a missing
+        // directory keeps its written name below the resolved parent.
+        assert_eq!(
+            resolve_codex_home(Some(OsStr::new("")), &home),
+            Ok(canonical_home.join(".codex"))
+        );
+        assert_eq!(
+            resolve_codex_home(None, &home.join("missing/../selected-profile/x/..")),
+            Ok(canonical_home.join("selected-profile/.codex"))
+        );
+        assert!(matches!(
+            resolve_codex_home(Some(OsStr::new("~/.claude/codex")), &home),
+            Err(CodexHomeError::InsideClaude(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_home_resolves_existing_and_dangling_symlinks_like_python() {
+        let fixture = TestDir::new();
+        let real = fixture.path.join("real");
+        fs::create_dir_all(&real).expect("create link target");
+        std::os::unix::fs::symlink(&real, fixture.path.join("link")).expect("create link");
+        std::os::unix::fs::symlink(fixture.path.join("absent"), fixture.path.join("dangling"))
+            .expect("create dangling link");
+        let base = fixture.path.canonicalize().expect("resolve fixture");
+        assert_eq!(
+            resolve_codex_home(Some(fixture.path.join("link/profile").as_os_str()), &real),
+            Ok(base.join("real/profile"))
+        );
+        assert_eq!(
+            resolve_codex_home(Some(fixture.path.join("dangling").as_os_str()), &real),
+            Ok(base.join("absent"))
+        );
+    }
+
+    #[test]
+    fn default_registry_matches_python_bytes_and_is_never_replaced() {
+        let fixture = TestDir::new();
+        let home = fixture.path.join("codex-\u{e9}");
+        let path = fixture.path.join("state/accounts/registry.json");
+        assert_eq!(create_default_registry(&path, &home), Ok(true));
+        let expected = format!(
+            "{{\"version\": 1, \"defaultAccountKey\": \"default\", \"accounts\": {{\"default\": \
+             {{\"id\": \"default\", \"home\": \"{}\", \"label\": \"Codex\", \"source\": \
+             \"Codex CLI\", \"accountId\": null, \"email\": null, \"plan\": null, \"status\": \
+             \"signedOut\"}}}}, \"logins\": {{}}, \"deleteReceipts\": {{}}}}",
+            fixture.path.join("codex-\\u00e9").display()
+        );
+        let written = fs::read(&path).expect("read created registry");
+        assert_eq!(String::from_utf8_lossy(&written), expected);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(path.parent().expect("registry directory")), 0o700);
+        }
+
+        fs::write(&path, b"{\"keep\": true}").expect("replace with sentinel");
+        fs::create_dir_all(&home).expect("create auth home");
+        fs::write(home.join("auth.json"), br#"{"OPENAI_API_KEY":"fixture"}"#)
+            .expect("write auth fixture");
+        assert_eq!(create_default_registry(&path, &home), Ok(false));
+        assert_eq!(
+            fs::read(&path).expect("read kept file"),
+            b"{\"keep\": true}"
+        );
+        let entries = fs::read_dir(path.parent().expect("registry directory"))
+            .expect("list registry directory")
+            .count();
+        assert_eq!(entries, 1, "no temporary registry file remains");
+    }
+
+    #[test]
+    fn default_registry_records_unreadable_auth_with_python_error_text() {
+        let fixture = TestDir::new();
+        let home = fixture.path.join("codex-home");
+        fs::create_dir_all(&home).expect("create auth home");
+        fs::write(home.join("auth.json"), b"not json").expect("write malformed auth");
+        let bytes = default_registry_bytes(&home).expect("default registry encodes");
+        let value: Value = serde_json::from_slice(&bytes).expect("registry is JSON");
+        let row = &value["accounts"]["default"];
+        assert_eq!(row["status"], "error");
+        assert_eq!(row["error"], CODEX_AUTH_ERROR);
+        assert!(row.get("_credentialIdentity").is_none());
+        assert_eq!(codex_auth_metadata(&home).error, Some(CODEX_AUTH_ERROR));
     }
 
     #[test]

@@ -33,7 +33,9 @@ use std::time::Duration;
 use axum::Extension;
 use rusqlite::OptionalExtension;
 use studio_runtime_http::{HttpState, VaultJobOwner, router};
-use studio_runtime_services::account_driver::AccountDriver;
+use studio_runtime_services::account_driver::{
+    AccountDriver, create_default_registry, resolve_codex_home,
+};
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{ObservedTable, RuntimeStore, account_state};
 use tokio::net::TcpListener;
@@ -158,6 +160,54 @@ fn clear_owned_canvas_pid(state_dir: &Path, pid: u32) -> std::io::Result<bool> {
     }
     fs::remove_file(path)?;
     Ok(true)
+}
+
+/// The registry path and its bounded startup bytes (`None` when absent).
+struct StartupRegistry {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+}
+
+/// Read the account registry for startup. Like Python `AccountStore`, a state
+/// without a registry first gets the default Codex registry for `codex_home`.
+fn startup_registry(
+    state_root: &Path,
+    codex_home: &Path,
+) -> Result<StartupRegistry, Box<dyn std::error::Error>> {
+    let registry_path = state_root.join("accounts/registry.json");
+    create_default_registry(&registry_path, codex_home).map_err(|error| {
+        format!(
+            "Cannot create the account registry at {}: {error}",
+            registry_path.display()
+        )
+    })?;
+    let registry_file = match registry_path.canonicalize() {
+        Ok(path) if !path.starts_with(state_root) => {
+            return Err("Cannot read the account registry outside the state directory".into());
+        }
+        Ok(path) => Some(File::open(path)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => {
+            return Err(format!(
+                "Cannot read the account registry at {}",
+                registry_path.display()
+            )
+            .into());
+        }
+    };
+    let registry_bytes = match registry_file {
+        Some(file) => {
+            let mut bytes = Vec::new();
+            file.take((account_state::MAX_PERSISTED_DOCUMENT_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            Some(bytes)
+        }
+        None => None,
+    };
+    Ok(StartupRegistry {
+        path: registry_path,
+        bytes: registry_bytes,
+    })
 }
 
 struct CanvasPidCleanup {
@@ -330,30 +380,14 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
     let state_root = store.root().canonicalize()?;
     let state_dir = state_root.to_string_lossy().into_owned();
-    let registry_path = state_root.join("accounts/registry.json");
-    let registry_file = match registry_path.canonicalize() {
-        Ok(path) if !path.starts_with(&state_root) => {
-            return Err("Cannot read the account registry outside the state directory".into());
-        }
-        Ok(path) => Some(File::open(path)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => {
-            return Err(format!(
-                "Cannot read the account registry at {}",
-                registry_path.display()
-            )
-            .into());
-        }
-    };
-    let registry_bytes = match registry_file {
-        Some(file) => {
-            let mut bytes = Vec::new();
-            file.take((account_state::MAX_PERSISTED_DOCUMENT_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)?;
-            Some(bytes)
-        }
-        None => None,
-    };
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&state_dir));
+    let base_home = resolve_codex_home(env::var_os("CODEX_HOME").as_deref(), &home)?;
+    let StartupRegistry {
+        path: registry_path,
+        bytes: registry_bytes,
+    } = startup_registry(&state_root, &base_home)?;
     let limits_read = account_state::limits_snapshots(&*store.read()?)?;
     let account_policy = Arc::new(
         AccountPolicyState::from_store(registry_bytes.as_deref(), limits_read).map_err(
@@ -412,12 +446,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         eprintln!("native runtime compatibility check skipped: unsupported platform");
     }
     startup_trace("native-runtime-check-completed");
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&state_dir));
-    let base_home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"));
     let account_change_signal = account_driver.change_signal();
     let account_session_broker =
         account_registry::AccountSessionBroker::new_with_change_signal(account_change_signal);
@@ -2189,5 +2217,67 @@ mod canvas_pid_tests {
         fs::write(&pid_file, "5678\n").expect("owned PID fixture written");
         assert!(clear_owned_canvas_pid(state.path(), 5678).expect("owned PID removed"));
         assert!(!pid_file.exists());
+    }
+}
+
+#[cfg(test)]
+mod startup_registry_tests {
+    use super::startup_registry;
+    use std::fs;
+    use std::path::Path;
+    use studio_runtime_services::account_driver::{
+        AccountDriver, AccountStatus, resolve_codex_home,
+    };
+    use studio_runtime_services::account_policy::AccountPolicyState;
+    use studio_runtime_store::RuntimeStore;
+    use studio_runtime_store::supervisor_journal::SupervisorJournal;
+
+    /// The fresh-state path of the rehearsal: the supervisor creates its
+    /// journal first, then the server opens the store and the registry.
+    #[tokio::test]
+    async fn fresh_state_startup_creates_the_default_registry_and_reads_it() {
+        let state = tempfile::tempdir().expect("isolated state directory");
+        let codex = tempfile::tempdir().expect("isolated CODEX_HOME");
+        fs::write(
+            codex.path().join("auth.json"),
+            br#"{"OPENAI_API_KEY":"placeholder-not-a-credential"}"#,
+        )
+        .expect("auth fixture writes");
+        let supervisor = SupervisorJournal::open(state.path()).expect("supervisor starts first");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("store opens beside the supervisor journal");
+        let state_root = store.root().canonicalize().expect("state root resolves");
+        let codex_home = resolve_codex_home(Some(codex.path().as_os_str()), Path::new("/"))
+            .expect("CODEX_HOME resolves");
+
+        let registry =
+            startup_registry(&state_root, &codex_home).expect("startup creates the registry");
+        let path = registry.path;
+        assert_eq!(path, state_root.join("accounts/registry.json"));
+        let bytes = registry.bytes.expect("startup reads the created registry");
+        let policy =
+            AccountPolicyState::from_startup(Some(&bytes), []).expect("startup validates it");
+        let accounts = policy.accounts();
+        assert_eq!(accounts.default_account_key, "default");
+        assert_eq!(accounts.accounts.len(), 1);
+        assert_eq!(accounts.accounts[0]["status"], "ready");
+        assert_eq!(accounts.accounts[0]["plan"], "API key");
+        assert_eq!(
+            accounts.accounts[0]["home"],
+            codex_home.to_str().expect("UTF-8 fixture path")
+        );
+        let driver = AccountDriver::open(&path).expect("the account driver opens it");
+        assert_eq!(driver.get("default"), Ok(AccountStatus::Ready));
+
+        let refreshed = fs::read(&path).expect("refreshed registry reads");
+        let again = startup_registry(&state_root, &codex_home).expect("second startup");
+        assert_eq!(
+            again.bytes,
+            Some(refreshed),
+            "an existing registry is never replaced"
+        );
+        drop(store);
+        drop(supervisor);
     }
 }
