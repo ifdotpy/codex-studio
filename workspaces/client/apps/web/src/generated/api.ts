@@ -6481,7 +6481,7 @@ export interface components {
        * Command
        * @default null
        */
-      command?: null | string;
+      command?: string[] | null | string;
       /** @default null */
       compactionMetadata?: components["schemas"]["JsonValue"] | null;
       /**
@@ -20848,7 +20848,12 @@ export interface components {
        * Turnerror
        * @default null
        */
-      turnError?: null | string;
+      turnError?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null
+        | string;
       /**
        * Turnerrorresolved
        * @default null
@@ -23784,7 +23789,12 @@ export interface components {
        * Turnerror
        * @default null
        */
-      turnError?: null | string;
+      turnError?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null
+        | string;
       /**
        * Turnerrorresolved
        * @default null
@@ -23984,7 +23994,12 @@ export interface components {
        * Turnerror
        * @default null
        */
-      turnError?: null | string;
+      turnError?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null
+        | string;
       /**
        * Turnerrorresolved
        * @default null
@@ -26160,7 +26175,7 @@ export interface components {
       /** Layrstateid */
       layrStateId?: string;
       /** Resultfile */
-      resultFile: string;
+      resultFile?: string;
       /** Revision */
       revision: string;
       /** Runid */
@@ -26212,8 +26227,11 @@ export interface components {
        * @default null
        */
       layrStateId?: string;
-      /** Resultfile */
-      resultFile: string;
+      /**
+       * Resultfile
+       * @default null
+       */
+      resultFile?: string;
       /** Revision */
       revision: string;
       /**

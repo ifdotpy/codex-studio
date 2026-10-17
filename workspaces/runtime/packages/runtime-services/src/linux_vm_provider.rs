@@ -328,8 +328,8 @@ async fn run_guest_attachment(
                     {
                         initialize_id = message.get("id").cloned();
                         let _sent = reply.send(CommandReceipt::CachedInitialize(cached));
-                        if observed.await.is_err() {
-                            result = Err(AdapterError::ConsumerClosed);
+                        if let Err(error) = observed_or_stopped(observed, &mut stop).await {
+                            result = Err(error);
                             break;
                         }
                         continue;
@@ -361,8 +361,8 @@ async fn run_guest_attachment(
                     };
                     let observe = matches!(receipt, CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_));
                     let _sent = reply.send(receipt);
-                    if observe && observed.await.is_err() {
-                        result = Err(AdapterError::ConsumerClosed);
+                    if observe && let Err(error) = observed_or_stopped(observed, &mut stop).await {
+                        result = Err(error);
                         break;
                     }
                 }
@@ -427,12 +427,20 @@ async fn run_guest_attachment(
                         "exit" => JournalPayload::Exit(event.payload),
                         kind => JournalPayload::Other { kind: kind.to_owned(), payload: event.payload },
                     };
-                    if journal.send(JournalEntry {
+                    let entry = JournalEntry {
                         received_at_ms: context.clock.now_ms(),
                         cursor: EventCursor(event.sequence),
                         generation: context.session_generation,
                         payload,
-                    }).await.is_err() {
+                    };
+                    // The session task stops reading the journal before it joins
+                    // this attachment. The unacknowledged event replays later.
+                    let sent = tokio::select! {
+                        biased;
+                        _ = Shutdown::cancelled(&mut stop) => break,
+                        sent = journal.send(entry) => sent,
+                    };
+                    if sent.is_err() {
                         result = Err(AdapterError::ConsumerClosed);
                         break;
                     }
@@ -451,6 +459,21 @@ async fn run_guest_attachment(
         result,
         cleanup_error: None,
         recovery_needed: None,
+    }
+}
+
+/// Wait until the session task observes a buffered receipt, or until shutdown.
+/// On shutdown the session task joins this attachment before it reads the
+/// receipt, so a wait for the observation alone cannot end. The receipt stays
+/// buffered in its channel and keeps its evidence.
+async fn observed_or_stopped(
+    observed: tokio::sync::oneshot::Receiver<()>,
+    stop: &mut tokio::sync::watch::Receiver<bool>,
+) -> std::result::Result<(), AdapterError> {
+    tokio::select! {
+        biased;
+        () = Shutdown::cancelled(stop) => Ok(()),
+        seen = observed => seen.map_err(|_| AdapterError::ConsumerClosed),
     }
 }
 
@@ -1218,6 +1241,10 @@ mod tests {
         malformed_write_once: Mutex<bool>,
         committed_internal_write_once: Mutex<bool>,
         start_ids: Mutex<Vec<Option<String>>>,
+        held_write: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        write_entered: tokio::sync::Notify,
+        endless_events: Mutex<bool>,
+        next_calls: Mutex<usize>,
     }
 
     impl FakeGuest {
@@ -1233,6 +1260,10 @@ mod tests {
                 malformed_write_once: Mutex::new(false),
                 committed_internal_write_once: Mutex::new(false),
                 start_ids: Mutex::new(Vec::new()),
+                held_write: Mutex::new(None),
+                write_entered: tokio::sync::Notify::new(),
+                endless_events: Mutex::new(false),
+                next_calls: Mutex::new(0),
             }
         }
 
@@ -1281,6 +1312,15 @@ mod tests {
                 }
                 "provider.rpc" => match params["action"].as_str().unwrap() {
                     "info" => Ok(Self::info()),
+                    "next" if *self.endless_events.lock().unwrap() => {
+                        *self.next_calls.lock().unwrap() += 1;
+                        let sequence = params["cursor"].as_u64().unwrap() + 1;
+                        let payload = json!({"method":"item/started","params":{}});
+                        Ok(
+                            json!({"event":{"sequence":sequence,"generation":3,"kind":"stdout",
+                            "payload":payload.to_string()}}),
+                        )
+                    }
                     "next" if params["cursor"] == 0 => {
                         let payload = json!({"id":1,"method":"initialize","params":{}});
                         Ok(json!({"event":{"sequence":1,"generation":3,"kind":"stdout",
@@ -1289,6 +1329,11 @@ mod tests {
                     "next" => Ok(json!({"event":null})),
                     "write" => {
                         *self.writes.lock().unwrap() += 1;
+                        let held = self.held_write.lock().unwrap().take();
+                        if let Some(release) = held {
+                            self.write_entered.notify_one();
+                            release.recv().unwrap();
+                        }
                         let mut internal = self.committed_internal_write_once.lock().unwrap();
                         if *internal {
                             *internal = false;
@@ -1696,5 +1741,105 @@ mod tests {
         ));
         assert_eq!(*guest.writes.lock().unwrap(), 1);
         let _exit = attachment.shutdown().await;
+    }
+
+    async fn open_attachment(
+        store: Arc<RuntimeStore>,
+        guest: Arc<FakeGuest>,
+        shutdown: Shutdown,
+    ) -> ProviderAttachment {
+        GuestProviderTaskFactory::new(
+            store,
+            guest,
+            GuestProviderIdentity {
+                agent_id: "agent-1".into(),
+                epoch: 9,
+                generation: 3,
+                account_key: "default".into(),
+                provider: "codex".into(),
+            },
+            "profiles/default",
+        )
+        .open(
+            ProviderHandle::for_account("agent-1"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                launch: launch(),
+                expected_generation: Some(Generation(3)),
+            },
+            shutdown,
+        )
+        .await
+        .unwrap()
+    }
+
+    // The session task stops serving at shutdown and reads a pending receipt
+    // only after this attachment completes. A wait for that observation after
+    // shutdown hung the account worker while it joined the VM event forwarder.
+    #[tokio::test]
+    async fn shutdown_during_guest_write_does_not_wait_for_receipt_observation() {
+        let (_directory, store) = open_store().await;
+        let guest = Arc::new(FakeGuest::new(false));
+        let (release, held) = std::sync::mpsc::channel();
+        *guest.held_write.lock().unwrap() = Some(held);
+        let shutdown = Shutdown::default();
+        let mut attachment = open_attachment(store, guest.clone(), shutdown.clone()).await;
+        let turn = Frame::Request(RequestFrame {
+            id: RequestId::Number(2),
+            method: Method::ThreadStart,
+            params: Some(json!({})),
+            fields: Default::default(),
+        });
+        let write = PreparedWrite::new(OperationId("thread-start-op".into()), &turn).unwrap();
+        let (command, receipt) = AdapterCommand::write(write);
+        attachment.commands.send(command).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), guest.write_entered.notified())
+            .await
+            .expect("guest write starts");
+        shutdown.cancel();
+        release.send(()).unwrap();
+
+        let exit = tokio::time::timeout(Duration::from_secs(3), attachment.shutdown())
+            .await
+            .expect("attachment shutdown does not wait for the consumer to observe a receipt");
+        assert!(exit.result.is_ok());
+        assert!(matches!(
+            receipt.receive().await,
+            CommandReceipt::Written { .. }
+        ));
+        assert_eq!(*guest.writes.lock().unwrap(), 1);
+    }
+
+    // The session task stops reading the journal before it joins this
+    // attachment, so a full journal lane must not hold shutdown.
+    #[tokio::test]
+    async fn shutdown_with_full_journal_lane_does_not_wait_for_the_consumer() {
+        let (_directory, store) = open_store().await;
+        let guest = Arc::new(FakeGuest::new(false));
+        *guest.endless_events.lock().unwrap() = true;
+        let mut attachment = open_attachment(store, guest.clone(), Shutdown::default()).await;
+        // The reader asks for an event only after the attachment took the
+        // previous one. Read LANE_CAPACITY + 3 thus proves that the lane is
+        // full and the attachment waits to send entry LANE_CAPACITY + 1.
+        let blocked_reads = LANE_CAPACITY + 3;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while *guest.next_calls.lock().unwrap() < blocked_reads {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the attachment fills its journal lane");
+
+        let exit = tokio::time::timeout(Duration::from_secs(3), attachment.shutdown())
+            .await
+            .expect("attachment shutdown does not wait for journal capacity");
+        assert!(exit.result.is_ok());
+        assert_eq!(*guest.next_calls.lock().unwrap(), blocked_reads);
+        let mut delivered = 0;
+        while attachment.journal.try_recv().is_ok() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, LANE_CAPACITY);
+        assert!(guest.acks.lock().unwrap().is_empty());
     }
 }

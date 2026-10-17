@@ -613,6 +613,10 @@ pub(crate) fn settle_terminal_in_transaction(
         error.clone(),
         native_status,
         params["turn"].get("error"),
+        &params["turn"]["unappliedSteers"]
+            .as_array()
+            .map(|ids| ids.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default(),
     )?;
     if result {
         if let Some(agent) = agent.as_ref() {

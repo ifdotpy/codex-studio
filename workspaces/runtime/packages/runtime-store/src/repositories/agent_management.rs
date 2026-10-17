@@ -20,7 +20,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
     read_for_agents(connection, None)
 }
 
-/// Read and validate the complete agent directory before a delete scopes its
+/// Read and validate the complete agent directory before a lifecycle action scopes its
 /// descendant-owned history. Agent topology determines the exact owner set.
 pub fn read_agent_directory(connection: &Connection) -> StoreResult<Vec<Value>> {
     let exists: bool = connection.query_row(
@@ -44,10 +44,9 @@ pub fn read_agent_directory(connection: &Connection) -> StoreResult<Vec<Value>> 
 }
 
 /// Read the full agent directory and only lifecycle-owned history for the
-/// supplied owners. This is used by delete, whose decision touches the complete
-/// descendant tree but does not inspect unrelated task/monitor/event history.
-/// `None` retains the historical full snapshot contract for other actions and
-/// repository callers.
+/// supplied owners. Lifecycle actions pass their target's descendant tree;
+/// their decisions never inspect unrelated task/monitor/event/voice history.
+/// `None` reads the complete snapshot for repository callers.
 pub fn read_for_agents(
     connection: &Connection,
     owners: Option<&BTreeSet<String>>,
@@ -139,12 +138,6 @@ pub fn read_for_agents(
         "voice_deliveries",
         "voice_approvals",
     ] {
-        // Delete skips live-voice checks and removes all saved voice state by
-        // owner in the same transaction, so this decision does not consume a
-        // voice snapshot. The full reader remains unchanged for stop/archive.
-        if owners.is_some() {
-            continue;
-        }
         let exists: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
             [table],
@@ -158,10 +151,25 @@ pub fn read_for_agents(
         } else {
             "id,agent"
         };
-        let mut statement = connection.prepare_cached(&format!("SELECT {columns} FROM {table}"))?;
-        let rows = statement
-            .query_map([], |r| voice_row(table, r))?
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = if let Some(owners) = owners {
+            let mut statement = connection
+                .prepare_cached(&format!("SELECT {columns} FROM {table} WHERE agent=?1"))?;
+            let mut rows = Vec::new();
+            for owner in owners {
+                rows.extend(
+                    statement
+                        .query_map([owner], |r| voice_row(table, r))?
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+            rows
+        } else {
+            let mut statement =
+                connection.prepare_cached(&format!("SELECT {columns} FROM {table}"))?;
+            statement
+                .query_map([], |r| voice_row(table, r))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         tables.insert(table.to_owned(), rows);
     }
     Ok(tables)

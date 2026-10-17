@@ -88,7 +88,7 @@ pub fn select_worker_account(
                 return Ok((candidate.account_key.clone(), candidate.identity.clone()));
             }
             Ok(false) => saw_catalog = true,
-            Err(CreationError::Unavailable("provider-session/model-list")) => {}
+            Err(CreationError::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY)) => {}
             Err(error) => return Err(error),
         }
     }
@@ -97,7 +97,9 @@ pub fn select_worker_account(
             "This model is not available for the selected worker accounts",
         ));
     }
-    Err(CreationError::Unavailable("provider-session/model-list"))
+    Err(CreationError::Unavailable(
+        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+    ))
 }
 
 /// Apply Python's explicit subagent model-provider and cached-price limits.
@@ -113,9 +115,13 @@ pub fn validate_worker_model_choice(
     }
     let provider = worker_model_provider(default);
     if provider.is_some() && worker_model_provider(requested) != provider {
-        return Err(CreationError::Invalid(
-            "Choose a model from the provider selected in chat settings",
-        ));
+        // The worker provider follows the chat's default subagent model, not
+        // the lead's provider; tell the caller which family is allowed.
+        return Err(CreationError::Invalid(if provider == Some("codex") {
+            "Choose a gpt-* (Codex) model: chat settings fix the worker provider to Codex"
+        } else {
+            "Choose default, sonnet, opus, haiku or a claude-* model: chat settings fix the worker provider to Claude"
+        }));
     }
     let Some((Some(requested), Some(default))) = prices else {
         if prices.is_some() {
@@ -399,11 +405,14 @@ pub(super) async fn dispatch(
                 ))));
             };
             let result = if tool == "orchestration_spawn" {
-                port.spawn(store_ref, actor, args, request_id, now).await?
+                port.spawn(store_ref, actor, args, request_id, now).await
             } else {
-                port.review(store_ref, actor, args, request_id, now).await?
+                port.review(store_ref, actor, args, request_id, now).await
             };
-            child_creation_result(result)
+            match result {
+                Ok(result) => child_creation_result(result),
+                Err(error) => child_creation_refusal(store_ref, tool, request_id, error)?,
+            }
         }
         "orchestration_interrupt" => {
             let Some(port) = ports.interrupt.as_ref() else {
@@ -411,14 +420,16 @@ pub(super) async fn dispatch(
                     "agent-lifecycle/production-ports",
                 ))));
             };
-            let target = args
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .ok_or(Error::Invalid(
+            let Some(target) = args.get("agent_id").and_then(Value::as_str) else {
+                return Ok(Some(not_sent(Error::Invalid(
                     "Supply agent_id for orchestration_interrupt",
-                ))?;
+                ))));
+            };
             let target =
-                super::services::resolve_interrupt_target(store_ref, context, target).await?;
+                match super::services::resolve_interrupt_target(store_ref, context, target).await {
+                    Ok(target) => target,
+                    Err(error) => return refused_before_write(error),
+                };
             port.stop_by_agent(
                 std::sync::Arc::clone(&store),
                 actor,
@@ -445,13 +456,13 @@ pub(super) async fn dispatch(
                     "monitor-runtime/managed-input",
                 ))));
             };
-            let monitor_id = args
-                .get("monitor_id")
-                .and_then(Value::as_str)
-                .ok_or(Error::Invalid("Missing monitor_id"))?;
-            let input: Value = serde_json::from_value(args.clone())
-                .map_err(|_| Error::Invalid("Invalid monitor input"))?;
-            authorize_monitor_input(store_ref, actor, monitor_id)?;
+            let Some(monitor_id) = args.get("monitor_id").and_then(Value::as_str) else {
+                return Ok(Some(not_sent(Error::Invalid("Missing monitor_id"))));
+            };
+            let input = args.clone();
+            if let Err(error) = authorize_monitor_input(store_ref, actor, monitor_id) {
+                return refused_before_write(error);
+            }
             match port
                 .input(MonitorInputRequest {
                     caller_id: actor_id,
@@ -577,10 +588,57 @@ pub(crate) fn managed_input_receipt(
     })
 }
 
+/// A store failure may hide a committed write; every other refusal raised by a
+/// read-only check before the operation's first write proves it was not applied.
+fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Error> {
+    match error {
+        Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
+        error => Ok(Some(not_sent(error))),
+    }
+}
+
+/// Child creation commits every child row and its initial intent in one
+/// transaction; image provisioning is the only work after that commit. A
+/// non-store refusal therefore proves no effect when the first deterministic
+/// child row is absent. Review creation has no work after its commit.
+fn child_creation_refusal(
+    store: &RuntimeStore,
+    tool: &str,
+    request_id: &str,
+    error: Error,
+) -> Result<DispatchedOperation, Error> {
+    if matches!(error, Error::Store(_) | Error::Sqlite(_) | Error::Work(_)) {
+        return Err(error);
+    }
+    if tool == "orchestration_spawn" {
+        let first = crate::managed_child_create::child_id(request_id, 0);
+        let read = store.read()?;
+        let committed = studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from(first.as_str()),
+        )?;
+        if committed.is_some() {
+            return Err(error);
+        }
+    }
+    Ok(not_sent(error))
+}
+
+/// Refusal text saved for a request that a transient model-catalog outage
+/// stopped before any write. The not-applied receipt is final for this request
+/// identity, so the caller must retry under a new one.
+const MODEL_CATALOG_RETRY: &str = "The model catalog was temporarily unavailable, so nothing was created. Retry with a new request_id; replaying this request_id returns this refusal.";
+
 fn not_sent(error: Error) -> DispatchedOperation {
+    let value = match error {
+        Error::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY) => {
+            json!(MODEL_CATALOG_RETRY)
+        }
+        error => json!(error.to_string()),
+    };
     DispatchedOperation {
         result: OperationResult {
-            value: json!(error.to_string()),
+            value,
             signals: Vec::new(),
         },
         certainty: DeliveryCertainty::NotSent,
@@ -621,9 +679,30 @@ fn child_creation_result(result: OperationResult) -> DispatchedOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::{child_creation_result, managed_input_receipt, validate_worker_model_choice};
+    use super::{
+        CreationError, child_creation_result, managed_input_receipt, validate_worker_model_choice,
+    };
     use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
     use serde_json::json;
+
+    #[test]
+    fn transient_catalog_refusal_tells_the_caller_to_retry_with_a_new_request_id() {
+        let refusal = super::not_sent(crate::managed_host_tools::Error::Unavailable(
+            crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+        ));
+        assert_eq!(refusal.certainty, DeliveryCertainty::NotSent);
+        assert_eq!(refusal.applied, Some(false));
+        let text = refusal.result.value.as_str().expect("refusal text");
+        assert!(text.contains("temporarily unavailable"), "{text}");
+        assert!(text.contains("new request_id"), "{text}");
+        let other = super::not_sent(crate::managed_host_tools::Error::Unavailable(
+            "agent-create/managed-environment",
+        ));
+        assert_eq!(
+            other.result.value,
+            json!("Not implemented: requires agent-create/managed-environment")
+        );
+    }
 
     #[test]
     fn uncertain_guest_save_remains_unknown_at_the_tool_boundary() {
@@ -660,7 +739,19 @@ mod tests {
 
     #[test]
     fn managed_spawn_refuses_cross_provider_and_more_expensive_model_choices() {
-        assert!(validate_worker_model_choice("claude-sonnet-4", "gpt-6", None).is_err());
+        assert_eq!(
+            validate_worker_model_choice("claude-opus-5-5", "gpt-6-luna", None),
+            Err(CreationError::Invalid(
+                "Choose a gpt-* (Codex) model: chat settings fix the worker provider to Codex"
+            ))
+        );
+        assert!(
+            matches!(
+                validate_worker_model_choice("gpt-6-luna", "claude-opus-5-5", None),
+                Err(CreationError::Invalid(message)) if message.contains("claude-*")
+            ),
+            "a Claude chat default names the Claude family"
+        );
         assert!(
             validate_worker_model_choice(
                 "gpt-6-expensive",

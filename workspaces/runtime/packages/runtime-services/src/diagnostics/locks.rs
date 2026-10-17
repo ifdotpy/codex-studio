@@ -34,7 +34,11 @@ fn state() -> &'static Mutex<WriterSamples> {
 
 /// Record the Rust equivalent of Python's interpreter lock metric: time waiting
 /// for and holding the serialized SQLite writer transaction.
-pub fn record_store_writer_transaction(wait: Duration, hold: Duration) {
+pub fn record_store_writer_transaction(
+    wait: Duration,
+    hold: Duration,
+    origin: &'static std::panic::Location<'static>,
+) {
     let _ = try_with_state(state(), |samples| {
         samples.count = samples.count.saturating_add(1);
         samples.total_wait_ns = samples.total_wait_ns.saturating_add(wait.as_nanos());
@@ -46,7 +50,7 @@ pub fn record_store_writer_transaction(wait: Duration, hold: Duration) {
             .hold_ns
             .record(hold.as_nanos().min(u128::from(u64::MAX)) as u64);
     });
-    super::sqlite::record_store_transaction(wait, hold);
+    super::sqlite::record_store_transaction(wait, hold, origin);
 }
 
 /// Return the store writer series using the existing Python diagnostics keys.

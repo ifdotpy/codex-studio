@@ -89,8 +89,10 @@ pub struct SchedulerRepository;
 
 mod lifecycle;
 mod selection;
+mod steer;
 use lifecycle::*;
 use selection::*;
+pub use steer::{AcknowledgedSteer, ClaimedSteer, STEER_UNCONFIRMED_ERROR};
 
 #[cfg(test)]
 mod tests {

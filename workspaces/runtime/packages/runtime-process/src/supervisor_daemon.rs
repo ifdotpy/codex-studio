@@ -679,7 +679,15 @@ fn read_frame(
                     ))
             })
             .transpose()?;
-        reader.get_ref().set_read_timeout(remaining)?;
+        match reader.get_ref().set_read_timeout(remaining) {
+            Ok(()) => {}
+            // macOS refuses socket options with EINVAL once both directions
+            // are shut down; a read then returns buffered bytes or EOF without
+            // blocking, so the buffered frame is still read as on Linux.
+            Err(e) if cfg!(target_os = "macos") && e.kind() == std::io::ErrorKind::InvalidInput => {
+            }
+            Err(e) => return Err(e.into()),
+        }
         let chunk = match reader.fill_buf() {
             Ok(chunk) => chunk,
             Err(e)
@@ -1027,7 +1035,7 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
 
 /// Serve only the explicitly selected directory. Does not install or connect to another service.
 pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(Error::Refused(
             "Not implemented: requires native supervisor process identity for this platform",
         ));

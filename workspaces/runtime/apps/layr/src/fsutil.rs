@@ -319,14 +319,23 @@ pub fn copy_entry(src_root: &Path, src_rel: &str, dst_root: &Path, dst_rel: &str
     let s = open_ro(&src)?;
     // Keep the inode of a file that is there: btrfs then reports an in-place change with byte
     // ranges, and running tools keep their file handles.
-    let d = match t.open_write(dst_rel)? {
+    let (d, cloned) = match t.open_write(dst_rel)? {
         Some(d) => {
             d.set_len(0)?;
-            d
+            (d, false)
         }
-        None => t.create(dst_rel, m.mode() & 0o7777)?,
+        None => {
+            #[cfg(target_os = "macos")]
+            let cloned = t.clone_new_file(&s, dst_rel)?;
+            #[cfg(target_os = "linux")]
+            let cloned: Option<File> = None;
+            match cloned {
+                Some(d) => (d, true),
+                None => (t.create(dst_rel, m.mode() & 0o7777)?, false),
+            }
+        }
     };
-    if crate::btrfs::clone_file(&s, &d).is_err() {
+    if !cloned && crate::storage::clone_file(&s, &d).is_err() {
         let mut s2 = open_ro(&src)?;
         let mut d2 = d.try_clone()?;
         std::io::copy(&mut s2, &mut d2)?;
@@ -391,7 +400,11 @@ pub fn walk(root: &Path, rel: &str, f: &mut dyn FnMut(&str, &Meta) -> Result<boo
                 Err(_) => continue,
             };
             let meta = meta_of(&m);
-            if meta.is_dir() && m.dev() != dev {
+            if meta.is_dir()
+                && (m.dev() != dev
+                    || ((cfg!(target_os = "macos") || cfg!(feature = "overlayfs"))
+                        && crate::storage::is_subvolume(&root.join(&child))))
+            {
                 continue;
             }
             let descend = f(&child, &meta)?;
@@ -530,4 +543,25 @@ pub fn replace_at(dir: &File, name: &str, content: &mut dyn FnMut(&File) -> Resu
 /// Remove `name` from an open folder (a link is removed, not followed).
 pub fn unlink_at(dir: &File, name: &str) {
     let _ = rustix::fs::unlinkat(dir, name, rustix::fs::AtFlags::empty());
+}
+
+/// Whether a known directory is a nested storage root.
+pub fn is_layer(root: &Path, rel: &str, m: &Meta) -> bool {
+    #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
+    {
+        let _ = (root, rel);
+        m.is_dir() && m.ino == 256
+    }
+    #[cfg(any(target_os = "macos", feature = "overlayfs"))]
+    {
+        m.is_dir() && crate::storage::is_subvolume(&root.join(rel))
+    }
+}
+
+/// Move a managed tree, including its mount when the backend requires it.
+pub fn rename_tree(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    #[cfg(feature = "overlayfs")]
+    return crate::storage::rename_tree(from.as_ref(), to.as_ref());
+    #[cfg(not(feature = "overlayfs"))]
+    Ok(fs::rename(from, to)?)
 }

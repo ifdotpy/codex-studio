@@ -1,3 +1,3 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../../../packages/runtime-process/tests/supervisor_receipt_loss.rs"]
 mod receipt_loss;

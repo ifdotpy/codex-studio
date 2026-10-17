@@ -316,6 +316,8 @@ impl CompletionWriter for RestartInputCompletion {
                 error,
                 native_status,
                 turn.get("error"),
+                // A thread read cannot prove input unread: open steers become unconfirmed.
+                &[],
             )?;
             if !settled {
                 return Err(RecoveryError::CommitFailed);

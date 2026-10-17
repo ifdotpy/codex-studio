@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { createHash, randomUUID } = require("node:crypto");
+const { createHash } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const { savedLaunchEnvironment } = require("./restart-environment.cjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -14,8 +14,6 @@ function backendExitStatus(child) {
 
 const backendIdentityTimeoutMs = 10000;
 const backendSelectionEnv = "CODEX_DESKTOP_BACKEND";
-const rustStateOwnerFile = "rust-state-owner.json";
-const rustStateFormatVersion = 1;
 
 function backendSelection(env = process.env) {
   const selected = env[backendSelectionEnv] || "python";
@@ -80,63 +78,6 @@ function runtimeServerBuild(resources, env = process.env) {
     return hash.digest("hex");
   } finally {
     fs.closeSync(descriptor);
-  }
-}
-
-function claimRustState(state, backendBuild) {
-  const marker = path.join(state, rustStateOwnerFile);
-  let prior;
-  try {
-    prior = JSON.parse(fs.readFileSync(marker, "utf8"));
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw new Error(
-        `Cannot verify Rust state ownership marker: ${error.message}`,
-      );
-  }
-  if (prior) {
-    if (
-      prior.runtime !== "rust" ||
-      prior.formatVersion !== rustStateFormatVersion ||
-      prior.backendBuild !== backendBuild
-    )
-      throw new Error(
-        "The state directory has a different or unknown Rust owner. Restore a verified backup or use a compatible Rust build.",
-      );
-    return;
-  }
-  const temporary = path.join(state, `.rust-state-owner.${randomUUID()}.tmp`);
-  const fd = fs.openSync(temporary, "wx", 0o600);
-  try {
-    fs.writeFileSync(
-      fd,
-      `${JSON.stringify({ runtime: "rust", formatVersion: rustStateFormatVersion, backendBuild })}\n`,
-    );
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    fs.linkSync(temporary, marker);
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
-    const raced = JSON.parse(fs.readFileSync(marker, "utf8"));
-    if (
-      raced.runtime !== "rust" ||
-      raced.formatVersion !== rustStateFormatVersion ||
-      raced.backendBuild !== backendBuild
-    )
-      throw new Error("Another backend claimed this state directory.");
-  } finally {
-    fs.unlinkSync(temporary);
-  }
-  if (process.platform !== "win32") {
-    const directoryFd = fs.openSync(state, fs.constants.O_RDONLY);
-    try {
-      fs.fsyncSync(directoryFd);
-    } finally {
-      fs.closeSync(directoryFd);
-    }
   }
 }
 
@@ -477,7 +418,8 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     selectedBackend === "rust"
       ? runtimeServerBuild(resources, launchEnv)
       : undefined;
-  if (backendBuildId) claimRustState(canonicalState, backendBuildId);
+  // The Rust server records itself as the state owner (rust-state-owner.json)
+  // after it holds runtime.lock and before its first write.
   const fd = fs.openSync(log, "a", 0o600);
   let child;
   try {

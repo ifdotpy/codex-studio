@@ -735,6 +735,31 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("process", "responseTarget"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # Work results submitted before result files existed keep their text
+        # inline and have no resultFile, wherever a work result is embedded.
+        for pointer in (
+            "/components/schemas/WorkInboxEntry/properties/work/properties/results/items",
+            "/components/schemas/WorkItem/properties/results/items",
+            "/components/schemas/WorkList/properties/items/items/properties/results/items",
+            "/components/schemas/WorkList/properties/tasks/items/properties/results/items",
+            "/components/schemas/WorkResultRecord",
+            "/components/schemas/WorkResultRecordResponse",
+            "/components/schemas/WorkViewRecordResponse/properties/results/items",
+        ):
+            add(pointer, "required")
+
+        # Stored provider data: an exec call's command can be its argument vector,
+        # and a turn error can be the provider's error object.
+        add("/components/schemas/AnalyticsItemRecord/properties/command", "type")
+        for pointer in (
+            "/components/schemas/SearchItemResponse/properties/turnError",
+            "/components/schemas/TranscriptItemResponse/properties/turnError",
+            "/components/schemas/TranscriptMessageRecord/properties/turnError",
+            "/components/schemas/TranscriptPageResponse/properties/items/items/properties/turnError",
+        ):
+            add(pointer, "type")
+
         # Stored lead messages and user task replies carry their source type.
         add("/components/schemas/ComplaintDetailResponse/properties/sourceType",
             "property", "@nullable", "@nullableBranch")

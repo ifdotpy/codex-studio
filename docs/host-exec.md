@@ -9,6 +9,10 @@ Use these environment variables for output outside the source folder:
 - `HOST_EXEC_PACKAGE_CACHE`: the slot's stable package folder.
 - `HOST_EXEC_ARTIFACTS`: files to return to the agent.
 
+`HOST_EXEC_STATE` is the ID of the layr state that the slot holds: the guest saves the line
+and writes that state into the slot before the command. The `.git` folder of the slot is the
+line's git layer and can name an older commit; use this ID to identify the sources.
+
 For example:
 
 ```json
@@ -224,7 +228,7 @@ python3 -B workspaces/runtime/apps/server/tests/host-exec-contract.py
 python3 -B workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py
 python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime
-xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization desktop/native/linux-vm/main.swift
+xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization workspaces/client/apps/desktop/native/linux-vm/main.swift workspaces/client/apps/desktop/native/linux-vm/shared_values_generated.swift
 ```
 
 The manual benchmark `workspaces/runtime/apps/server/tests/host-exec-transfer-bench.py`

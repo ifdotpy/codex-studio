@@ -628,7 +628,7 @@ async fn real_write(
     receipt.receive().await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn real_supervisor_incomplete_initialization_recovers_same_child_and_replays_after_ack() {
     // Wait for the real startup handshake before arming the scenario hang guard.
@@ -919,7 +919,7 @@ async fn full_unix_connect_backlog_fails_closed_without_reconnect_or_stranded_ta
     }).await;
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[tokio::test]
 async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
     watchdog(async {
@@ -1003,7 +1003,7 @@ async fn python_v1_handshake_is_rejected_without_provider_command_fallback() {
     .await;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn rust_v2_lost_committed_write_reply_is_unknown_and_never_retried() {
     let state = DisposableState::new();
@@ -1114,7 +1114,7 @@ async fn rust_v2_lost_committed_write_reply_is_unknown_and_never_retried() {
     .await;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn initialized_identity_is_scoped_to_real_child_generation() {
     // Wait for the real startup handshake before arming the scenario hang guard.

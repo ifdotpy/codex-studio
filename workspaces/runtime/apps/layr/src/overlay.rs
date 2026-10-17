@@ -22,13 +22,13 @@
 //! line with overlays leave the overlay files out.
 
 use crate::access::{Policy, Who};
-use crate::btrfs;
 use crate::changes::{self, Change};
 use crate::ctx::Ctx;
 use crate::fsutil;
 use crate::ids;
 use crate::model::{Line, LineChange, LineState, Record, StateKind, StateRec};
 use crate::repo::{skip_path, Repo, Temp};
+use crate::storage as btrfs;
 use crate::store::Project;
 use crate::tree::Tree;
 use anyhow::{anyhow, bail, Result};
@@ -473,7 +473,7 @@ impl<'a> Repo<'a> {
         // btrfs renames only a writable subvolume: the view is complete, so it is writable only
         // for the rename.
         btrfs::set_writable(&view.path)?;
-        match std::fs::rename(&view.path, path) {
+        match crate::fsutil::rename_tree(&view.path, path) {
             Ok(()) => btrfs::set_readonly(path),
             // Another request made the same base at the same time.
             Err(_) if path.exists() => Ok(()),

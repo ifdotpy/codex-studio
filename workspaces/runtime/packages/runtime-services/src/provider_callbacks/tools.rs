@@ -6,6 +6,23 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
+fn dispatch_gate_key(state_dir: &std::path::Path, id: &str) -> String {
+    format!("{}:{id}", state_dir.display())
+}
+
+/// Hold the in-process dispatch gate of request `id` if no dispatch owns it.
+/// `None` means a dispatch in this process still owns the request and will
+/// settle it itself; a recovery must leave the row to that owner so the real
+/// outcome and its wake signals are recorded exactly once.
+pub(super) fn unowned_dispatch(
+    state_dir: &std::path::Path,
+    id: &str,
+) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, CallbackError> {
+    Ok(dispatch_gate(dispatch_gate_key(state_dir, id))?
+        .try_lock_owned()
+        .ok())
+}
+
 fn dispatch_gate(key: String) -> Result<Arc<tokio::sync::Mutex<()>>, CallbackError> {
     static GATES: OnceLock<Mutex<std::collections::HashMap<String, Weak<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
@@ -27,6 +44,8 @@ pub(crate) use runtime_dispatch::ManagedToolRuntimePorts;
 pub(crate) use runtime_dispatch::MonitorCreatePort;
 #[cfg(test)]
 pub(crate) use runtime_dispatch::MonitorInputRequest;
+#[cfg(test)]
+pub(crate) use runtime_dispatch::{ChildCreationPort, InterruptPort};
 #[cfg(test)]
 pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
 #[cfg(test)]
@@ -217,7 +236,7 @@ pub(super) async fn dispatch_with_ports(
     // A durable claim prevents duplicate execution across restart. Within one
     // process, serialize the same request so a concurrent replay can observe
     // the first request's committed result instead of racing its service call.
-    let gate = dispatch_gate(format!("{}:{}", store.state_dir().display(), call.id))?;
+    let gate = dispatch_gate(dispatch_gate_key(store.state_dir(), &call.id))?;
     let _gate = gate.lock().await;
     if matches!(call.kind, ToolKind::Unknown) {
         return Ok(CallbackDecision::Unsupported);
@@ -360,104 +379,30 @@ pub(super) async fn dispatch_with_ports(
                 );
                 (result, Vec::new())
             } else {
-                let context_for_actor = context.clone();
-                let actor_id = context.agent.clone();
-                let actor_epoch = context.epoch;
-                let actor = store
-                    .transaction_with(move |tx| {
-                        let snapshot = storage::snapshot(tx, &context_for_actor)?;
-                        snapshot.active()?;
-                        let actor = crate::managed_host_tools::Actor::from_record(
-                            snapshot.actor(),
-                            &actor_id,
-                            actor_epoch,
-                        )
-                        .map_err(services::managed_error)?;
-                        Ok::<_, CallbackError>(actor)
-                    })
-                    .await?;
-                let dispatched = {
-                    ports
-                        .dispatch_managed(
-                            Arc::clone(&store),
-                            &actor,
-                            &call.name,
-                            &call.args,
-                            &call.id,
-                            now,
-                        )
-                        .await
-                        .map_err(services::managed_error)?
+                // From here the claim is durable. Every exit settles it: a
+                // completed dispatch records its result, a failed one records a
+                // terminal refusal or uncertainty, and a dropped future (lost
+                // connection or retired worker) records uncertainty.
+                let guard = ClaimGuard::arm(&store, &call, now);
+                let outcome = run_claimed(&store, context, &call, now, &ports).await;
+                let settled = match outcome {
+                    Ok(done) => Ok(done),
+                    Err(failure) => {
+                        // The caller still receives the original error; the
+                        // settled receipt answers every replay of this request.
+                        // A real operation that ran keeps its wake signals.
+                        let ClaimFailure { error, operation } = *failure;
+                        let signals =
+                            record_settlement(&store, &call.id, &call.signature, now, operation)
+                                .await;
+                        if !signals.is_empty() && ports.release(&signals).is_err() {
+                            eprintln!("Could not wake owners of managed tool request {}", call.id);
+                        }
+                        Err(error)
+                    }
                 };
-                if let Some(dispatched) = dispatched {
-                    let context_for_finish = context.clone();
-                    let call_for_finish = call.clone();
-                    store
-                        .transaction_with(move |tx| {
-                            let context = &context_for_finish;
-                            let call = &call_for_finish;
-                            let snapshot = storage::snapshot(tx, context)?;
-                            snapshot.active()?;
-                            let mut record =
-                                records::get(tx, "runtime_tool_requests", &call.id)?
-                                    .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-                            if record["agent"] != context.agent
-                                || record["epoch"].as_u64() != Some(context.epoch)
-                                || record["connectionId"] != context.connection
-                                || record
-                                    .pointer("/supervisor/generation")
-                                    .and_then(Value::as_u64)
-                                    != Some(context.generation)
-                                || record["signature"] != call.signature
-                            {
-                                return Err(CallbackError::Stale);
-                            }
-                            if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)?
-                            {
-                                return Ok((saved, Vec::new()));
-                            }
-                            finalize_dispatched(tx, call, &mut record, now, dispatched)
-                        })
-                        .await?
-                } else {
-                    let context_for_local = context.clone();
-                    let call_for_local = call.clone();
-                    let ports_for_local = Arc::clone(&ports);
-                    store
-                        .transaction_with(move |tx| {
-                            let context = &context_for_local;
-                            let call = &call_for_local;
-                            let snapshot = storage::snapshot(tx, context)?;
-                            snapshot.active()?;
-                            let mut record =
-                                records::get(tx, "runtime_tool_requests", &call.id)?
-                                    .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-                            if record["agent"] != context.agent
-                                || record["epoch"].as_u64() != Some(context.epoch)
-                                || record["connectionId"] != context.connection
-                                || record
-                                    .pointer("/supervisor/generation")
-                                    .and_then(Value::as_u64)
-                                    != Some(context.generation)
-                                || record["signature"] != call.signature
-                            {
-                                return Err(CallbackError::Stale);
-                            }
-                            if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)?
-                            {
-                                return Ok((saved, Vec::new()));
-                            }
-                            execute_once(
-                                tx,
-                                &snapshot,
-                                call,
-                                &mut record,
-                                now,
-                                ports_for_local.as_ref(),
-                            )
-                        })
-                        .await?
-                }
+                guard.disarm();
+                settled?
             }
         }
         DispatchState::Existing(_) => unreachable!("handled above"),
@@ -538,6 +483,272 @@ pub(super) fn production_ports(
     ))
 }
 
+/// A claimed dispatch that ended without its result. `operation` is the
+/// terminal evidence to record: proven non-execution or preserved uncertainty.
+struct ClaimFailure {
+    error: CallbackError,
+    operation: crate::managed_host_tools::DispatchedOperation,
+}
+
+fn claim_settlement(
+    error: CallbackError,
+    certainty: crate::managed_host_tools::DeliveryCertainty,
+    call: &ToolCall,
+) -> Box<ClaimFailure> {
+    use crate::managed_host_tools::{DeliveryCertainty, DispatchedOperation, OperationResult};
+    let (value, applied) = match certainty {
+        DeliveryCertainty::NotSent => (json!(error.to_string()), Some(false)),
+        _ => (json!(unknown_outcome(&call.name, &call.id, &error)), None),
+    };
+    Box::new(ClaimFailure {
+        error,
+        operation: DispatchedOperation {
+            result: OperationResult {
+                value,
+                signals: Vec::new(),
+            },
+            certainty,
+            applied,
+        },
+    })
+}
+
+fn unknown_outcome(tool: &str, id: &str, cause: &dyn std::fmt::Display) -> String {
+    format!(
+        "{tool} outcome is unknown: {cause}. Read orchestration_request with requestId {id}. Do not repeat the mutation with a new id."
+    )
+}
+
+/// A store failure surfaced by the writer can follow a successful commit; a
+/// failure returned by the transaction body itself always rolls back.
+enum LocalFailure {
+    Body(CallbackError),
+    Writer(studio_runtime_store::StoreError),
+}
+impl From<studio_runtime_store::StoreError> for LocalFailure {
+    fn from(error: studio_runtime_store::StoreError) -> Self {
+        Self::Writer(error)
+    }
+}
+
+fn check_claim_owner(
+    record: &Value,
+    context: &CallbackContext,
+    call: &ToolCall,
+) -> Result<(), CallbackError> {
+    if record["agent"] != context.agent
+        || record["epoch"].as_u64() != Some(context.epoch)
+        || record["connectionId"] != context.connection
+        || record
+            .pointer("/supervisor/generation")
+            .and_then(Value::as_u64)
+            != Some(context.generation)
+        || record["signature"] != call.signature
+    {
+        return Err(CallbackError::Stale);
+    }
+    Ok(())
+}
+
+/// Run one claimed request. Ok carries its recorded result; Err carries the
+/// terminal evidence the caller records instead.
+async fn run_claimed(
+    store: &Arc<RuntimeStore>,
+    context: &CallbackContext,
+    call: &ToolCall,
+    now: f64,
+    ports: &Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>,
+) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), Box<ClaimFailure>> {
+    use crate::managed_host_tools::DeliveryCertainty::{NotSent, Unknown};
+    let context_for_actor = context.clone();
+    // This transaction only reads; no service has been invoked yet.
+    let actor = store
+        .transaction_with(move |tx| {
+            let snapshot = storage::snapshot(tx, &context_for_actor)?;
+            snapshot.active()?;
+            crate::managed_host_tools::Actor::from_record(
+                snapshot.actor(),
+                &context_for_actor.agent,
+                context_for_actor.epoch,
+            )
+            .map_err(services::managed_error)
+        })
+        .await
+        .map_err(|error| claim_settlement(error, NotSent, call))?;
+    // Ports classify their own proven pre-write refusals as `NotSent`; any
+    // error they still return may follow a write and stays uncertain.
+    let dispatched = ports
+        .dispatch_managed(
+            Arc::clone(store),
+            &actor,
+            &call.name,
+            &call.args,
+            &call.id,
+            now,
+        )
+        .await
+        .map_err(|error| claim_settlement(services::managed_error(error), Unknown, call))?;
+    if let Some(dispatched) = dispatched {
+        // The operation already ran, so its receipt is recorded even if the
+        // turn ended meanwhile; the record identity still binds this caller.
+        let context_for_finish = context.clone();
+        let call_for_finish = call.clone();
+        let operation = dispatched.clone();
+        return store
+            .transaction_with(move |tx| {
+                let call = &call_for_finish;
+                let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
+                    .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+                check_claim_owner(&record, &context_for_finish, call)?;
+                if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
+                    return Ok((saved, Vec::new()));
+                }
+                finalize_dispatched(tx, &call.id, &mut record, now, dispatched)
+            })
+            .await
+            .map_err(|error| Box::new(ClaimFailure { error, operation }));
+    }
+    let context_for_local = context.clone();
+    let call_for_local = call.clone();
+    let ports_for_local = Arc::clone(ports);
+    store
+        .transaction_with(move |tx| {
+            let context = &context_for_local;
+            let call = &call_for_local;
+            let body = || {
+                let snapshot = storage::snapshot(tx, context)?;
+                snapshot.active()?;
+                let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
+                    .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+                check_claim_owner(&record, context, call)?;
+                if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
+                    return Ok((saved, Vec::new()));
+                }
+                execute_once(
+                    tx,
+                    &snapshot,
+                    call,
+                    &mut record,
+                    now,
+                    ports_for_local.as_ref(),
+                )
+            };
+            body().map_err(LocalFailure::Body)
+        })
+        .await
+        .map_err(|failure| failure.settlement(call))
+}
+
+impl LocalFailure {
+    /// A rolled-back body proves nothing was applied; a writer failure may
+    /// follow a commit, so its outcome stays unknown.
+    fn settlement(self, call: &ToolCall) -> Box<ClaimFailure> {
+        use crate::managed_host_tools::DeliveryCertainty::{NotSent, Unknown};
+        match self {
+            Self::Body(error) => claim_settlement(error, NotSent, call),
+            Self::Writer(error) => claim_settlement(CallbackError::Store(error), Unknown, call),
+        }
+    }
+}
+
+/// Record terminal evidence for a claim that is still running without a
+/// result. A result recorded first wins, so this never overwrites an outcome.
+fn settle_claim(
+    tx: &Transaction<'_>,
+    id: &str,
+    signature: &str,
+    now: f64,
+    operation: crate::managed_host_tools::DispatchedOperation,
+) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
+    if let Some(saved) = records::get(tx, "runtime_tool_results", id)? {
+        return Ok((saved, Vec::new()));
+    }
+    let mut record = records::get(tx, "runtime_tool_requests", id)?
+        .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+    if record["signature"] != signature {
+        return Err(CallbackError::Stale);
+    }
+    if record["stage"] != "running" || record["outcome"] != "pending" {
+        return record
+            .get("result")
+            .filter(|value| value.is_object())
+            .cloned()
+            .map(|value| (value, Vec::new()))
+            .ok_or(CallbackError::Unknown);
+    }
+    finalize_dispatched(tx, id, &mut record, now, operation)
+}
+
+/// Returns the wake signals of the recorded operation, if it recorded one.
+/// A failed settlement leaves the claim running; startup recovery owns it then.
+async fn record_settlement(
+    store: &RuntimeStore,
+    id: &str,
+    signature: &str,
+    now: f64,
+    operation: crate::managed_host_tools::DispatchedOperation,
+) -> Vec<crate::managed_host_tools::WakeSignal> {
+    let (id_for_tx, signature) = (id.to_owned(), signature.to_owned());
+    match store
+        .transaction_with(move |tx| settle_claim(tx, &id_for_tx, &signature, now, operation))
+        .await
+    {
+        Ok((_, signals)) => signals,
+        Err(error) => {
+            eprintln!("Could not settle managed tool request {id}: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Settles an abandoned claim as uncertain when the dispatch future is dropped
+/// before it records an outcome, for example when its worker is retired after
+/// a lost connection. Startup recovery covers a process that exits instead.
+struct ClaimGuard {
+    armed: Option<(Arc<RuntimeStore>, String, String, String, f64)>,
+}
+impl ClaimGuard {
+    fn arm(store: &Arc<RuntimeStore>, call: &ToolCall, now: f64) -> Self {
+        Self {
+            armed: Some((
+                Arc::clone(store),
+                call.id.clone(),
+                call.signature.clone(),
+                call.name.clone(),
+                now,
+            )),
+        }
+    }
+    fn disarm(mut self) {
+        self.armed = None;
+    }
+}
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        let Some((store, id, signature, tool, now)) = self.armed.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let operation = crate::managed_host_tools::DispatchedOperation {
+                result: crate::managed_host_tools::OperationResult {
+                    value: json!(unknown_outcome(
+                        &tool,
+                        &id,
+                        &"the callback ended before its result was recorded"
+                    )),
+                    signals: Vec::new(),
+                },
+                certainty: crate::managed_host_tools::DeliveryCertainty::Unknown,
+                applied: None,
+            };
+            record_settlement(&store, &id, &signature, now, operation).await;
+        });
+    }
+}
+
 fn execute_once(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
@@ -601,7 +812,7 @@ fn execute_once(
 
 fn finalize_dispatched(
     tx: &Transaction<'_>,
-    call: &ToolCall,
+    id: &str,
     record: &mut Value,
     now: f64,
     dispatched: crate::managed_host_tools::DispatchedOperation,
@@ -640,10 +851,54 @@ fn finalize_dispatched(
     record["updated"] = json!(now);
     record["finished"] = json!(now);
     put(tx, record)?;
-    records::validate("runtime_tool_results", &call.id, value.clone())?;
+    records::validate("runtime_tool_results", id, value.clone())?;
     tx.execute(
         "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
-        params![call.id, value.to_string()],
+        params![id, value.to_string()],
     )?;
     Ok((value, dispatched.result.signals))
+}
+
+#[cfg(test)]
+mod local_failure_tests {
+    use super::{CallbackError, LocalFailure, ToolCall, ToolKind};
+    use crate::managed_host_tools::DeliveryCertainty;
+    use serde_json::json;
+
+    fn call() -> ToolCall {
+        ToolCall {
+            name: "orchestration_search".into(),
+            kind: ToolKind::Search,
+            args: json!({}),
+            id: "thread:call".into(),
+            call: "call".into(),
+            prefix: "thread:".into(),
+            signature: "signature".into(),
+            alias: None,
+        }
+    }
+
+    #[test]
+    fn writer_failure_that_may_hide_a_commit_settles_unknown() {
+        let failure = LocalFailure::Writer(studio_runtime_store::StoreError::RecordContract(
+            "commit outcome unknown",
+        ))
+        .settlement(&call());
+        assert_eq!(failure.operation.certainty, DeliveryCertainty::Unknown);
+        assert_eq!(failure.operation.applied, None);
+        let text = failure
+            .operation
+            .result
+            .value
+            .as_str()
+            .expect("unknown outcome text");
+        assert!(text.contains("outcome is unknown"), "{text}");
+    }
+
+    #[test]
+    fn rolled_back_body_settles_not_applied() {
+        let failure = LocalFailure::Body(CallbackError::Invalid("refused")).settlement(&call());
+        assert_eq!(failure.operation.certainty, DeliveryCertainty::NotSent);
+        assert_eq!(failure.operation.applied, Some(false));
+    }
 }

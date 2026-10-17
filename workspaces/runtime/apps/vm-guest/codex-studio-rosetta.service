@@ -1,0 +1,13 @@
+[Unit]
+Description=Run x86_64 binaries with Rosetta for Linux when the Mac shares it
+After=local-fs.target
+Before=codex-studio-guest.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/codex-studio/vm/guest/rosetta.py activate
+TimeoutStartSec=60
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

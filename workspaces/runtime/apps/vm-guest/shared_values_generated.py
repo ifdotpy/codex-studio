@@ -4,3 +4,4 @@ PROJECT_SECRET_VALUE_LIMIT_LABEL = "16 KiB"
 GUEST_UPDATE_KEY_PATH = "/etc/codex-studio/update-key"
 GUEST_PAYLOAD_RECORD_PATH = "/var/lib/codex-studio/guest-payload.json"
 GUEST_UPDATE_PART_BYTES = 1048576
+LINUX_VM_ROSETTA_TAG = "rosetta"

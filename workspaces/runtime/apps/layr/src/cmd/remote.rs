@@ -1,4 +1,4 @@
-//! The remote bridge commands: remote, fetch, pull, push, clone.
+//! The remote bridge commands: remote, fetch, pull, push, clone, git-sync.
 
 use super::admin::set_config;
 use super::{exit, here, mergecmd};
@@ -43,6 +43,9 @@ pub fn remote(ctx: &Ctx, args: &[String]) -> Result<i32> {
             };
             repo.require(ctx, "remote")?;
             crate::store::check_name("remote", n)?;
+            if n == GIT_SYNC_REMOTE {
+                return Err(exit(128, format!("error: the remote name {n} is reserved for layr git-sync")));
+            }
             if sub == "add" && repo.p.config_value(&format!("remote.{n}.url"))?.is_some() {
                 return Err(exit(3, format!("error: remote {n} already exists.")));
             }
@@ -180,6 +183,58 @@ pub fn pull(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let pa = parse(&Spec::new().flag("--ff-only").flag("--no-ff").flag("-q|--quiet").value("--expect"), &margs[1..])?;
     mergecmd::merge_rev(ctx, &h.repo, &line, &margs[0], &pa)
+}
+
+/// Give the line's `.git` folder a commit of the line's head without a remote, so tools that
+/// read git HEAD see the current state. The commits are the ones `layr push` would send for the
+/// same states; nothing leaves the machine.
+/// The remote name of a `git-sync` export record: no remote exists, so `layr remote add` refuses it.
+const GIT_SYNC_REMOTE: &str = "git-sync";
+
+pub fn git_sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    let spec = Spec::new().flag("-q|--quiet");
+    let a = parse(&spec, args)?;
+    if !a.pos.is_empty() {
+        return Err(exit(128, "usage: layr git-sync [-q]"));
+    }
+    let h = here(ctx)?;
+    let repo = &h.repo;
+    let line = h.line()?.clone();
+    repo.require(ctx, "export").map_err(|e| exit(1, e.to_string()))?;
+    repo.authorize_line(ctx, &line, crate::repo::LineOp::Save)?;
+    let _lock = repo.p.lock()?;
+    let line = repo.line(&line.id)?;
+    let state = repo.state(&line.head)?;
+    if !state.conflicts.is_empty() {
+        return Err(exit(
+            1,
+            format!(
+                "error: state {} has {} open conflict(s); resolve and commit them first",
+                ids::short(&state.id),
+                state.conflicts.len()
+            ),
+        ));
+    }
+    let (commit, made) = gitbridge::export_history(repo, &state.id)?;
+    if !made.is_empty() || repo.p.db.git_commit_of(&state.id)?.is_none() {
+        // An export without a remote: the record keeps the commits of the states, as a push does.
+        let commits: serde_json::Map<String, serde_json::Value> =
+            made.into_iter().map(|(s, c)| (s, serde_json::Value::String(c))).collect();
+        let mut rec = Record::new("export");
+        rec.data = serde_json::json!({"export": ids::new_id(), "state": state.id, "remote": GIT_SYNC_REMOTE, "branch": line.name, "commit": commit, "commits": commits, "status": "local"});
+        repo.commit_record(ctx, rec)?;
+    }
+    if !repo.working(&line).join(".git").is_dir() {
+        return Err(exit(
+            1,
+            format!("error: line '{}' has no .git folder; commit {} is in the project git store", line.name, &commit[..10]),
+        ));
+    }
+    gitbridge::refresh_git_folder(repo, &line)?;
+    if !a.has("-q") {
+        outln!(ctx, "{} (state {})", commit, ids::short(&state.id));
+    }
+    Ok(0)
 }
 
 pub fn push(ctx: &Ctx, args: &[String]) -> Result<i32> {

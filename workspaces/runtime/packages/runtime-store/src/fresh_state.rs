@@ -1,4 +1,5 @@
-//! Creates the committed fresh-state catalog when no runtime databases exist.
+//! Creates the committed fresh-state catalog when the canvas and analytics
+//! databases do not exist. A supervisor journal that already exists is kept.
 //!
 //! `apps/server/tests/fixtures/runtime-state-schema.json` is generated from the
 //! Python startup path by `runtime-state-schema-contract.py`; it is the schema
@@ -18,11 +19,13 @@ use crate::{StoreError, StoreResult};
 const SNAPSHOT: &str =
     include_str!("../../../apps/server/tests/fixtures/runtime-state-schema.json");
 const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
-const DATABASES: [&str; 3] = ["canvas.sqlite3", "analytics.sqlite3", "supervisor.sqlite3"];
+/// The process supervisor's journal (`codex_process_supervisor.Journal` and
+/// `supervisor_journal::SupervisorJournal`). The supervisor owns it once it exists.
+const SUPERVISOR_DATABASE: &str = "supervisor.sqlite3";
 
 /// Validate startup contents without creating the runtime lock or changing files.
 pub(crate) fn validate(root: &Path) -> StoreResult<()> {
-    let databases = DATABASES.map(|name| entry_kind(&root.join(name)));
+    let supervisor = entry_kind(&root.join(SUPERVISOR_DATABASE));
     let core_exists = CORE_DATABASES
         .iter()
         .any(|name| !matches!(entry_kind(&root.join(name)), EntryKind::Missing));
@@ -40,22 +43,17 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
             root.join(present).display()
         )));
     }
-    if core_complete {
-        if matches!(databases[2], EntryKind::Other) {
-            return Err(StoreError::SchemaMismatch(format!(
-                "partial supervisor database at {}",
-                root.join(DATABASES[2]).display()
-            )));
-        }
-        return Ok(());
-    }
-    if !matches!(databases[2], EntryKind::Missing) {
+    if matches!(supervisor, EntryKind::Other) {
         return Err(StoreError::SchemaMismatch(format!(
-            "partial state database at {}: canvas.sqlite3 and analytics.sqlite3 are missing",
-            root.join(DATABASES[2]).display()
+            "partial supervisor database at {}",
+            root.join(SUPERVISOR_DATABASE).display()
         )));
     }
+    if core_complete {
+        return Ok(());
+    }
 
+    let journal_exists = matches!(supervisor, EntryKind::File);
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
@@ -63,13 +61,33 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
         let accepted = match name.to_str() {
             // Python creates this lease before its databases.
             Some("runtime.lock") => matches!(entry_kind(&path), EntryKind::File),
-            // The desktop launcher claims the canonical state before the Rust
-            // server creates its databases, and opens its log before spawn.
-            Some("rust-state-owner.json" | "canvas.log") => accepted_private_file(&path),
+            // The Rust server claims the state (state_owner.rs) before it creates
+            // the databases; a killed claim can leave its temporary file. The
+            // launcher opens the log before spawn.
+            Some(
+                crate::state_owner::STATE_OWNER_FILE
+                | crate::state_owner::STATE_OWNER_TEMPORARY_FILE
+                | "canvas.log",
+            ) => accepted_private_file(&path),
             // Runtime.__init__ creates these private directories and their
             // registry/identity files before it opens the SQLite databases.
             Some("accounts") => accepted_python_directory(&path, "registry.json"),
             Some("multi-server") => accepted_python_directory(&path, "identity.json"),
+            // launchd (macOS) and systemd (Linux) can start the process
+            // supervisor before the first backend. Python and Rust supervisors
+            // create their lease, journal and socket, and the launch agent
+            // sends supervisor output to supervisor.log. Python creates these
+            // with the process umask, so no private mode is required. A
+            // Python backend starts beside them and never writes the journal.
+            Some(SUPERVISOR_DATABASE | "supervisor.lock" | "supervisor.log") => {
+                matches!(entry_kind(&path), EntryKind::File)
+            }
+            // SQLite WAL sidecars are valid only beside their journal. A stray
+            // WAL file could otherwise pair with a newly created journal.
+            Some("supervisor.sqlite3-wal" | "supervisor.sqlite3-shm") => {
+                journal_exists && matches!(entry_kind(&path), EntryKind::File)
+            }
+            Some("supervisor.sock") => is_socket(&path),
             _ => false,
         };
         if !accepted {
@@ -80,6 +98,17 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_socket(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
+#[cfg(not(unix))]
+fn is_socket(_path: &Path) -> bool {
+    false
 }
 
 #[derive(Clone, Copy)]
@@ -377,7 +406,7 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
 
 fn publish(staging: &Path, root: &Path) -> StoreResult<()> {
     let mut published = Vec::<PathBuf>::new();
-    for name in DATABASES {
+    for name in CORE_DATABASES {
         let from = staging.join(name);
         let to = root.join(name);
         if let Err(error) = fs::rename(&from, &to) {
@@ -386,5 +415,18 @@ fn publish(staging: &Path, root: &Path) -> StoreResult<()> {
         }
         published.push(to);
     }
-    Ok(())
+    // A supervisor that started first owns its journal, and it can create one
+    // at any moment. A hard link never replaces an existing journal, so the
+    // staged journal is published only when no supervisor has created one.
+    match fs::hard_link(
+        staging.join(SUPERVISOR_DATABASE),
+        root.join(SUPERVISOR_DATABASE),
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => {
+            published.retain(|path| fs::remove_file(path).is_err());
+            Err(StoreError::StateDirectory(error))
+        }
+    }
 }

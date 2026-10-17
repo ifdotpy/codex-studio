@@ -1,21 +1,35 @@
-//! Linux kernel identity, with legacy comparison only for durable journal upgrades.
+//! Kernel process identity, with legacy comparison only for durable journal upgrades.
+//!
+//! Linux: `linux:<boot_id>:<start ticks>` from `/proc`. Ticks count from boot,
+//! and the boot ID is random per boot.
+//!
+//! macOS: `macos:<kern.bootsessionuuid>:<secs>.<usecs:06>` from libproc
+//! `PROC_PIDTBSDINFO`. The start instant is the calendar time of `fork`.
+//! The kernel creates a new random boot session UUID at each boot, so a token
+//! from an earlier boot never matches a process of this boot. In one boot, the
+//! kernel does not reuse a PID while its process exists, and a later process
+//! with the same PID starts later; a false match needs a backward calendar
+//! step that lands on the same microsecond. `kern.boottime` is not used as a
+//! fallback because the kernel moves it when the calendar clock is set.
 use super::supervisor_daemon::{Error, Result};
 use rustix::process::{Pid, Signal, getpgid, getsid, kill_process_group};
+#[cfg(target_os = "linux")]
+use std::fs;
 use std::{
-    fs,
     io::Read,
     path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
-use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start};
+use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start, is_native_start};
 
 pub(super) const RETRY: Duration = Duration::from_millis(20);
 
 /// Borrowed-field parse of one `/proc/<pid>/stat` record. Linux commands may
 /// contain spaces and closing parentheses, so fields are read only after the
 /// final command-name delimiter.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProcStat {
     pub(crate) state: char,
@@ -24,6 +38,7 @@ pub(crate) struct ProcStat {
     pub(crate) start_ticks: u64,
 }
 
+#[cfg(target_os = "linux")]
 impl ProcStat {
     pub(crate) fn parse(raw: &str) -> Result<Self> {
         let tail = raw
@@ -62,20 +77,90 @@ impl ProcStat {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn boot_id() -> Result<String> {
     Ok(fs::read_to_string("/proc/sys/kernel/random/boot_id")?
         .trim()
         .to_owned())
 }
 
+/// The boot session UUID cannot change while this process runs, so the first
+/// successful read is kept.
+#[cfg(target_os = "macos")]
+pub(crate) fn boot_id() -> Result<String> {
+    static BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(value) = BOOT_ID.get() {
+        return Ok(value.clone());
+    }
+    let value = studio_runtime_proc_sys::boot_session_uuid()?;
+    Ok(BOOT_ID.get_or_init(|| value).clone())
+}
+
+/// Microseconds in one second: the unit split of a macOS start instant.
+#[cfg(target_os = "macos")]
+pub(crate) const MICROS_PER_SECOND: u64 = 1_000_000;
+
+/// The one owner of the macOS native start identity format.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_start_identity(boot_id: &str, seconds: u64, microseconds: u64) -> String {
+    format!("macos:{boot_id}:{seconds}.{microseconds:06}")
+}
+
+/// The Python supervisor's macOS token for the same libproc start instant:
+/// the `<secs>.<usecs:06>` tail of a native macOS identity.
+#[cfg(target_os = "macos")]
+fn python_macos_start(native: &str) -> Option<&str> {
+    native
+        .strip_prefix("macos:")?
+        .rsplit_once(':')
+        .map(|(_, start)| start)
+}
+
+/// `<secs>.<usecs:06>`: the decimal start format of the Python supervisor on
+/// macOS (libproc) and Windows, and the tail of a native macOS identity.
+fn decimal_start(value: &str) -> bool {
+    value.split_once('.').is_some_and(|(seconds, micros)| {
+        seconds.parse::<u64>().is_ok_and(|seconds| seconds > 0)
+            && micros.len() == 6
+            && micros.bytes().all(|c| c.is_ascii_digit())
+    })
+}
+
+/// libproc reports `ESRCH` for a zombie unless asked to include zombies, and
+/// its status is the same kernel `p_stat` that `ps -o stat` shows as `Z`, so
+/// Python's extra `ps` read adds no information.
+#[cfg(target_os = "macos")]
 pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>> {
     if pid == 0 {
         return Ok(None);
     }
-    if !cfg!(target_os = "linux") {
-        return Err(Error::Refused(
-            "Not implemented: requires macOS native process identity",
-        ));
+    let Some(info) = studio_runtime_proc_sys::bsd_info(pid, allow_zombie)? else {
+        return Ok(None);
+    };
+    if !allow_zombie && info.is_zombie() {
+        return Ok(None);
+    }
+    Ok(Some(macos_start_identity(
+        &boot_id()?,
+        info.start_seconds,
+        info.start_microseconds,
+    )))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn start_time(pid: u32, _allow_zombie: bool) -> Result<Option<String>> {
+    if pid == 0 {
+        return Ok(None);
+    }
+    Err(Error::Refused(
+        "Not implemented: requires native process identity for this platform",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>> {
+    if pid == 0 {
+        return Ok(None);
     }
     let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(s) => s,
@@ -97,7 +182,7 @@ pub(super) fn process_gone_error(error: &std::io::Error) -> bool {
 }
 
 /// Signal a process group only while a captured member still has its exact
-/// Linux boot/start identity and remains in the captured group and session.
+/// native boot/start identity and remains in the captured group and session.
 /// Callers capture all group members before starting teardown so leader reap
 /// cannot hide surviving jobs from the later KILL pass.
 /// Verify a session member before signalling; the remaining verify-to-kill
@@ -136,7 +221,14 @@ pub(crate) fn signal_verified_group_member(
 
 pub(super) fn inspect_start(pid: u32, expected: &str) -> Result<(StartMatch, Option<String>)> {
     let actual = start_time(pid, false)?;
-    let legacy = if actual.is_some() && !expected.starts_with("linux:") {
+    #[cfg(target_os = "macos")]
+    if !is_native_start(expected) && decimal_start(expected) {
+        // Python's macOS token is the same libproc instant, taken from this
+        // one read, so no PID replacement can fall between the two values.
+        let legacy = actual.as_deref().and_then(python_macos_start);
+        return Ok((compare_start(expected, actual.as_deref(), legacy), actual));
+    }
+    let legacy = if actual.is_some() && !is_native_start(expected) {
         let value = legacy_start(pid)?;
         // A PID replaced while ps ran cannot authorize an upgrade.
         if start_time(pid, false)? != actual {
@@ -195,7 +287,7 @@ pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
     Ok(())
 }
 pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'static str> {
-    if !expected.starts_with("linux:") {
+    if !is_native_start(expected) {
         return Err(Error::Refused(
             "Legacy child identity requires durable upgrade before signal",
         ));
@@ -271,18 +363,16 @@ pub(super) fn verify_group(pid: u32, pgid: u32) -> Result<Pid> {
 }
 
 pub(super) fn valid_start(value: &str) -> bool {
+    let boot_uuid =
+        |boot: &str| boot.len() == 36 && boot.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-');
     value.strip_prefix("linux:").is_some_and(|rest| {
-        rest.split_once(':').is_some_and(|(boot, ticks)| {
-            boot.len() == 36
-                && boot.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
-                && ticks.parse::<u64>().is_ok()
-        })
+        rest.split_once(':')
+            .is_some_and(|(boot, ticks)| boot_uuid(boot) && ticks.parse::<u64>().is_ok())
+    }) || value.strip_prefix("macos:").is_some_and(|rest| {
+        rest.split_once(':')
+            .is_some_and(|(boot, start)| boot_uuid(boot) && decimal_start(start))
     }) || chrono::NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").is_ok()
-        || value.split_once('.').is_some_and(|(seconds, micros)| {
-            seconds.parse::<u64>().is_ok_and(|seconds| seconds > 0)
-                && micros.len() == 6
-                && micros.bytes().all(|c| c.is_ascii_digit())
-        })
+        || decimal_start(value)
 }
 
 #[cfg(test)]
@@ -291,6 +381,7 @@ mod tests {
     use std::process::Command;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn proc_stat_parses_borrowed_fields_after_the_last_command_delimiter() {
         let mut fields = vec!["1"; 20];
         fields[0] = "S";
@@ -308,7 +399,217 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    fn valid_start_accepts_native_and_python_tokens_only() {
+        let boot = "1CCC2169-B973-447A-B702-3F226EECA807";
+        assert!(valid_start(&format!("macos:{boot}:1790895321.190147")));
+        assert!(valid_start(&format!("linux:{boot}:1234")));
+        assert!(valid_start("1790895321.190147"));
+        assert!(valid_start("Fri Oct  2 00:55:21 2026"));
+        assert!(!valid_start(&format!("macos:{boot}:1790895321.19014")));
+        assert!(!valid_start("macos:short:1790895321.190147"));
+        assert!(!valid_start(&format!("macos:{boot}:1234")));
+    }
+
+    /// A child in its own group that blocks until the test kills it.
+    #[cfg(target_os = "macos")]
+    struct Blocker(std::process::Child);
+
+    #[cfg(target_os = "macos")]
+    impl Blocker {
+        fn start() -> (Self, u32, String) {
+            use std::os::unix::process::CommandExt;
+            let child = Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("blocking child starts");
+            let pid = child.id();
+            let identity = start_time(pid, false)
+                .expect("process identity read")
+                .expect("live child has an identity");
+            (Self(child), pid, identity)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for Blocker {
+        fn drop(&mut self) {
+            let _kill = self.0.kill();
+            let _wait = self.0.wait();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_identity_is_stable_for_a_live_child_and_gone_after_exit() {
+        let (mut blocker, pid, identity) = Blocker::start();
+        let info = studio_runtime_proc_sys::bsd_info(pid, false)
+            .expect("libproc read")
+            .expect("live child");
+        assert_eq!(
+            identity,
+            format!(
+                "macos:{}:{}.{:06}",
+                boot_id().expect("boot id"),
+                info.start_seconds,
+                info.start_microseconds
+            )
+        );
+        assert!(valid_start(&identity));
+        assert_eq!(
+            start_time(pid, false).expect("second read").as_deref(),
+            Some(identity.as_str())
+        );
+        assert_eq!(
+            start_time(pid, true)
+                .expect("zombie-tolerant read")
+                .as_deref(),
+            Some(identity.as_str())
+        );
+        assert_eq!(
+            inspect_start(pid, &identity).expect("inspect"),
+            (StartMatch::Exact, Some(identity.clone()))
+        );
+        blocker.0.kill().expect("stop child");
+        // Before the reap the child is a zombie: gone for signals, still
+        // identifiable for the spawn path that reads it with allow_zombie.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while start_time(pid, false).expect("read").is_some() {
+            assert!(Instant::now() < deadline, "killed child stayed live");
+            thread::sleep(RETRY);
+        }
+        assert_eq!(
+            start_time(pid, true).expect("zombie read").as_deref(),
+            Some(identity.as_str())
+        );
+        blocker.0.wait().expect("reap child");
+        assert_eq!(start_time(pid, false).expect("read after reap"), None);
+        assert_eq!(start_time(pid, true).expect("read after reap"), None);
+        assert_eq!(
+            inspect_start(pid, &identity).expect("inspect").0,
+            StartMatch::Gone
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn python_macos_token_is_adopted_only_for_the_same_live_process() {
+        let (blocker, pid, identity) = Blocker::start();
+        let python = python_macos_start(&identity)
+            .expect("native token has a Python tail")
+            .to_owned();
+        let (seconds, micros) = python.split_once('.').expect("decimal token");
+        assert_eq!(
+            inspect_start(pid, &python).expect("inspect"),
+            (StartMatch::Legacy, Some(identity.clone()))
+        );
+        let micros: u64 = micros.parse().expect("micros");
+        let other = format!("{seconds}.{:06}", (micros + 1) % MICROS_PER_SECOND);
+        assert_eq!(
+            inspect_start(pid, &other).expect("inspect").0,
+            StartMatch::Different
+        );
+        // A legacy token never authorizes a signal, even when it matches.
+        assert!(matches!(
+            stop_verified(pid, pid, &python),
+            Err(Error::Refused(
+                "Legacy child identity requires durable upgrade before signal"
+            ))
+        ));
+        assert_eq!(
+            start_time(pid, false).expect("read").as_deref(),
+            Some(identity.as_str())
+        );
+        drop(blocker);
+        assert_eq!(
+            inspect_start(pid, &python).expect("inspect").0,
+            StartMatch::Gone
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn reused_pid_with_another_start_is_never_signalled() {
+        let (blocker, pid, identity) = Blocker::start();
+        let python = python_macos_start(&identity).expect("tail");
+        let (seconds, micros) = python.split_once('.').expect("decimal token");
+        let micros: u64 = micros.parse().expect("micros");
+        // The same PID and boot with a different start is a reused PID.
+        let stale = macos_start_identity(
+            &boot_id().expect("boot id"),
+            seconds.parse().expect("seconds"),
+            (micros + 1) % MICROS_PER_SECOND,
+        );
+        assert_eq!(
+            inspect_start(pid, &stale).expect("inspect").0,
+            StartMatch::Different
+        );
+        // A token from another boot is a reused PID too.
+        let other_boot = identity.replacen(
+            &boot_id().expect("boot id"),
+            "00000000-0000-0000-0000-000000000000",
+            1,
+        );
+        assert_eq!(
+            inspect_start(pid, &other_boot).expect("inspect").0,
+            StartMatch::Different
+        );
+        assert!(matches!(
+            stop_verified(pid, pid, &stale),
+            Err(Error::Refused("Child identity changed before close"))
+        ));
+        let sid = u32::try_from(
+            getsid(Pid::from_raw(i32::try_from(pid).expect("pid")))
+                .expect("session")
+                .as_raw_nonzero()
+                .get(),
+        )
+        .expect("sid");
+        assert!(
+            !signal_verified_group_member(pid, pid, sid, &stale, Signal::KILL)
+                .expect("verify member")
+        );
+        assert_eq!(
+            start_time(pid, false).expect("read").as_deref(),
+            Some(identity.as_str()),
+            "the refused child must still be alive"
+        );
+        assert!(
+            signal_verified_group_member(pid, pid, sid, &identity, Signal::TERM)
+                .expect("verified signal")
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while start_time(pid, false).expect("read").is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "verified TERM did not stop child"
+            );
+            thread::sleep(RETRY);
+        }
+        drop(blocker);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn verified_close_terminates_a_live_macos_group() {
+        let (blocker, pid, identity) = Blocker::start();
+        assert_eq!(
+            verify_group(pid, pid)
+                .expect("group")
+                .as_raw_nonzero()
+                .get(),
+            i32::try_from(pid).expect("pid")
+        );
+        assert!(matches!(
+            stop_verified(pid, pid, &identity),
+            Ok("terminated" | "killed" | "already-exited")
+        ));
+        drop(blocker);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn close_succeeds_when_the_verified_child_has_already_exited() {
         let mut child = Command::new("sh")
             .args(["-c", "exec sleep 30"])

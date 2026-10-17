@@ -3042,3 +3042,6 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
         assert_eq!(events, 0, "initial event survived {failpoint} failure");
     }
 }
+
+#[path = "ingress_tests/claim_settlement.rs"]
+mod claim_settlement;

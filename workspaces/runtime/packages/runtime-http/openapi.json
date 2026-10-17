@@ -10981,6 +10981,12 @@
           "command": {
             "anyOf": [
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               },
               {
@@ -47318,6 +47324,12 @@
           "turnError": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
                 "type": "null"
               },
               {
@@ -54454,6 +54466,12 @@
           "turnError": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
                 "type": "null"
               },
               {
@@ -54922,6 +54940,12 @@
           },
           "turnError": {
             "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
               {
                 "type": "null"
               },
@@ -60068,8 +60092,7 @@
           "checks",
           "revision",
           "files",
-          "created",
-          "resultFile"
+          "created"
         ],
         "title": "WorkResultRecord",
         "type": "object"
@@ -60159,6 +60182,7 @@
             "type": "string"
           },
           "resultFile": {
+            "default": null,
             "title": "Resultfile",
             "type": "string"
           },
@@ -60183,8 +60207,7 @@
           "checks",
           "revision",
           "files",
-          "created",
-          "resultFile"
+          "created"
         ],
         "title": "WorkResultRecordResponse",
         "type": "object"

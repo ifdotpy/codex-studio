@@ -16,7 +16,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("LAYR_SOCKET").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/run/layr/layr.sock"))
+    std::env::var_os("LAYR_SOCKET").map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from(if cfg!(target_os = "macos") { "/var/run/layr/layr.sock" } else { "/run/layr/layr.sock" })
+    })
 }
 
 const MAX_REQ: usize = 4 << 20;
@@ -28,7 +30,11 @@ fn send_with_fds(sock: &UnixStream, data: &[u8], fds: &[BorrowedFd]) -> Result<(
     if !control.push(SendAncillaryMessage::ScmRights(fds)) {
         bail!("too many descriptors");
     }
-    let n = rustix::net::sendmsg(sock, &[std::io::IoSlice::new(data)], &mut control, SendFlags::NOSIGNAL)?;
+    #[cfg(target_os = "linux")]
+    let flags = SendFlags::NOSIGNAL;
+    #[cfg(target_os = "macos")]
+    let flags = SendFlags::empty();
+    let n = rustix::net::sendmsg(sock, &[std::io::IoSlice::new(data)], &mut control, flags)?;
     if n < data.len() {
         (&*sock).write_all(&data[n..])?;
     }
@@ -39,12 +45,20 @@ fn recv_with_fds(sock: &UnixStream, buf: &mut [u8]) -> Result<(usize, Vec<OwnedF
     use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags};
     let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(8))];
     let mut control = RecvAncillaryBuffer::new(&mut space);
-    let r = rustix::net::recvmsg(sock, &mut [std::io::IoSliceMut::new(buf)], &mut control, RecvFlags::CMSG_CLOEXEC)?;
+    #[cfg(target_os = "linux")]
+    let flags = RecvFlags::CMSG_CLOEXEC;
+    #[cfg(target_os = "macos")]
+    let flags = RecvFlags::empty();
+    let r = rustix::net::recvmsg(sock, &mut [std::io::IoSliceMut::new(buf)], &mut control, flags)?;
     let mut fds = Vec::new();
     for m in control.drain() {
         if let RecvAncillaryMessage::ScmRights(it) = m {
             fds.extend(it);
         }
+    }
+    #[cfg(target_os = "macos")]
+    for fd in &fds {
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
     }
     Ok((r.bytes, fds))
 }
@@ -89,6 +103,7 @@ pub fn forward(argv: &[String]) -> Result<i32> {
     Ok(i32::from_be_bytes(code))
 }
 
+#[cfg(target_os = "linux")]
 fn peer_uid(sock: &UnixStream) -> Result<(u32, u32, i32)> {
     let c = rustix::net::sockopt::socket_peercred(sock)?;
     Ok((c.uid.as_raw(), c.gid.as_raw(), c.pid.as_raw_nonzero().get()))
@@ -276,6 +291,24 @@ pub fn daemon(args: &[String]) -> Result<i32> {
         i += 1;
     }
     let root = crate::store::default_root();
+    #[cfg(target_os = "macos")]
+    {
+        let existing = root.ancestors().find(|p| p.exists()).context("store has no existing parent")?;
+        if !crate::sys::apfs_owners_enabled(existing)? {
+            bail!("the APFS service requires a volume with ownership enabled (diskutil enableOwnership <volume>)");
+        }
+        use std::os::unix::fs::MetadataExt;
+        for path in [&root, &root.join("machine"), &root.join("projects")] {
+            if let Ok(m) = std::fs::symlink_metadata(path) {
+                if !m.is_dir() || m.uid() != 0 || m.mode() & 0o022 != 0 {
+                    bail!(
+                        "the APFS service requires root-owned store directories without group or public write access: {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
     Store::open(&root)?;
     if let Some(d) = sock.parent() {
         std::fs::create_dir_all(d)?;
@@ -360,5 +393,22 @@ pub fn daemon(args: &[String]) -> Result<i32> {
                 Err(e) => eprintln!("layr service: fork failed: {e}"),
             }
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn peer_uid(sock: &UnixStream) -> Result<(u32, u32, i32)> {
+    let (uid, gid) = crate::sys::peer_credentials(sock)?;
+    Ok((uid, gid, 0))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn socket_identity_comes_from_the_kernel() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (uid, gid, _) = super::peer_uid(&a).unwrap();
+        assert_eq!(uid, rustix::process::geteuid().as_raw());
+        assert_eq!(gid, rustix::process::getegid().as_raw());
     }
 }

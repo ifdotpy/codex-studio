@@ -41,6 +41,12 @@
       "candidate": "['archived', 'archiving', 'fallback', 'read_only', 'ready', 'removed']"
     },
     {
+      "pointer": "/components/schemas/AnalyticsItemRecord/properties/command",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
       "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP95Ms",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -845,6 +851,12 @@
       "candidate": "accepted property"
     },
     {
+      "pointer": "/components/schemas/SearchItemResponse/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
       "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
       "constraint": "@nullable",
       "baseline": "None",
@@ -1241,6 +1253,24 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/TranscriptItemResponse/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptMessageRecord/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptPageResponse/properties/items/items/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
       "pointer": "/components/schemas/WalTelemetry/properties/analytics",
       "constraint": "@nullable",
       "baseline": "None",
@@ -1263,6 +1293,48 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
+    },
+    {
+      "pointer": "/components/schemas/WorkInboxEntry/properties/work/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkItem/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkList/properties/items/items/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkList/properties/tasks/items/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkResultRecord",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkResultRecordResponse",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkViewRecordResponse/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
     },
     {
       "pointer": "/paths/~1api~1processes~1action/post/requestBody/content/application~1json/schema/properties/process",

@@ -279,7 +279,7 @@ pub(super) async fn wait_for_managed_catalog(
     runtime
         .wait_for_catalog(&context.account)
         .await
-        .map_err(|_| "provider-session/model-list")
+        .map_err(|_| crate::model_catalog::MODEL_CATALOG_DEPENDENCY)
 }
 
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents

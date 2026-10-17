@@ -98,6 +98,14 @@ The `.git` folder of a line points to the newest state that has a git commit: a 
 was imported from git or exported by `layr push`. `layr commit` does not move git HEAD, so a
 tool that reads git HEAD sees an older commit than the line.
 
+| Task                                                           | Command                       |
+| -------------------------------------------------------------- | ----------------------------- |
+| Give tools that read git HEAD the current head, without a push | `layr git-sync`               |
+| Name the content of a state on every machine (for pins)        | `layr rev-parse <rev>^{tree}` |
+
+A state ID is the same on another machine only when that machine got the state through
+`layr sync` or a backup; the tree hash names the same content everywhere, in layr and in git.
+
 ## Send work to the git remote
 
 `layr push origin <branch>` exports each new commit of the line as a git commit.

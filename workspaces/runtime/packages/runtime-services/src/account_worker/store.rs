@@ -761,6 +761,29 @@ pub(super) async fn outcome(
     let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let i = &context.intent;
+        if context.method()? == Method::TurnSteer {
+            steer::outcome(tx, &context, &outcome)?;
+            if let SessionOutcome::Write {
+                outcome: WriteOutcome::Written,
+                recovery: Some(request),
+                ..
+            } = &outcome
+            {
+                save(tx, &context.operation, "written", record(request))?;
+            }
+            let retired = matches!(
+                outcome,
+                SessionOutcome::Resolved { .. }
+                    | SessionOutcome::Write {
+                        outcome: WriteOutcome::NotSent,
+                        ..
+                    }
+            );
+            if retired {
+                forget_request(tx, &context.operation)?;
+            }
+            return Ok((retired, None));
+        }
         let mut effect = None;
         let retired = match outcome {
             SessionOutcome::Write {
@@ -1160,6 +1183,11 @@ fn journal_one(
             )?;
         }
         if let Some((method, params)) = notice
+            && let Some((agent, epoch)) = steer::acknowledge(tx, account, method, params)?
+        {
+            // Delivered busy-turn input frees the agent for its next queued input.
+            effect = Some(Effect::Wake(agent, epoch));
+        } else if let Some((method, params)) = notice
             && let Some(thread) = params["threadId"].as_str()
         {
             let turn = params["turn"]["id"]

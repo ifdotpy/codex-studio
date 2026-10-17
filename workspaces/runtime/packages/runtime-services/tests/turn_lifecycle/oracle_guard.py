@@ -12,7 +12,9 @@ import socket
 import shutil
 import sys
 import tempfile
-import threading
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "apps/server/tests"))
+from runtime_home_guard import RESOLVING, install_home_guard
 
 
 class IsolationViolation(BaseException):
@@ -38,7 +40,6 @@ class OracleGuard:
         self.forbidden = {real_home / name for name in (".codex", ".claude")}
         self.block_processes = block_processes
         self.allow_loopback = allow_loopback
-        self.local = threading.local()
         self.stat, self.lstat = os.stat, os.lstat
 
     def reject_lexical(self, path):
@@ -70,17 +71,17 @@ class OracleGuard:
             path = args[0] if args else None
             if isinstance(path, (str, bytes, os.PathLike)):
                 self.reject_lexical(path)
-                previous = getattr(self.local, "resolving", False)
-                self.local.resolving = True
+                previous = getattr(RESOLVING, "active", False)
+                RESOLVING.active = True
                 try:
                     resolved = Path(os.fsdecode(path)).resolve()
                 finally:
-                    self.local.resolving = previous
+                    RESOLVING.active = previous
                 self.reject_lexical(resolved)
 
     def metadata(self, original, path, *args, **kwargs):
         self.reject_lexical(path)
-        if not getattr(self.local, "resolving", False):
+        if not getattr(RESOLVING, "active", False):
             self.audit("os.stat", (path,))
         return original(path, *args, **kwargs)
 
@@ -158,9 +159,6 @@ def install_guard(*, block_processes=False, allow_loopback=False):
     _ISOLATED_ORACLE_ENV = isolated
     # Initialize the runtime guard's physical forbidden roots before the oracle
     # rejects even metadata resolution beneath those roots. Later imports reuse it.
-    tests = Path(__file__).resolve().parents[4] / "apps/server/tests"
-    sys.path.insert(0, str(tests))
-    from runtime_home_guard import install_home_guard
     install_home_guard()
     guard = OracleGuard(
         block_processes=block_processes,

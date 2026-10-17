@@ -4,12 +4,12 @@
 use super::{exit, here};
 use crate::access::{parse_principal, show_principal, Policy, Role};
 use crate::args::{parse, Spec};
-use crate::btrfs;
 use crate::ctx::Ctx;
 use crate::ids;
 use crate::model::{Record, StateKind, StateRec};
 use crate::overlay::{Layer, Mode};
 use crate::repo::Repo;
+use crate::storage as btrfs;
 use crate::store::{check_name, Project};
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};

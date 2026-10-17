@@ -91,7 +91,9 @@ class TranscriptRecord(ContractModel):
     deliveryStatus: DeliveryStatus | None = None
     requestedDelivery: DeliveryMode | None = None
     deliveryError: StrictStr | None = None
-    turnError: StrictStr | None = None
+    # A string, or the provider's turn error object (message, codexErrorInfo, additionalDetails,
+    # misalignment) as stored.
+    turnError: StrictStr | dict[str, JsonValue] | None = None
     turnErrorResolved: StrictBool | None = None
     reasoningMs: float | None = None
     reasoningSince: float | None = None
