@@ -326,7 +326,8 @@ class AnalyticsItemRecord(AnalyticsEventMetadata):
     callId: str | None = None
     snapshotItemId: str | None = None
     namespace: str | None = None
-    command: str | None = None
+    # Shell text, or the argument vector a provider reported for an exec call.
+    command: str | list[str] | None = None
     cwd: str | None = None
     server: str | None = None
     exitCode: SignedSafeInt | None = None

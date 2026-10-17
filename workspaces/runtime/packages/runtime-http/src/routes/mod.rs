@@ -220,3 +220,36 @@ mod registration_tests {
         assert_eq!(super::groups().len(), groups.len());
     }
 }
+
+#[cfg(test)]
+mod stored_shape_tests {
+    use serde_json::json;
+
+    #[test]
+    fn a_provider_argument_vector_is_an_analytics_command() {
+        let call = json!({
+            "agentId": "agent-1", "rootId": "agent-1", "accountKey": "default",
+            "accountHistory": [], "id": "call-1", "at": 1.5, "recordedAt": 2,
+            "source": "history", "timestampSource": "record", "type": "exec",
+            "name": "shell", "isTool": true, "status": "completed",
+            "payloadBoundary": "protocol", "command": ["/bin/zsh", "-lc", "ls"]
+        });
+        super::generated_json::<crate::generated::AnalyticsResponse>(json!({"calls": [call]}))
+            .expect("an argument vector command is part of the analytics view");
+    }
+
+    #[test]
+    fn a_provider_turn_error_object_is_part_of_the_transcript() {
+        let item = json!({
+            "id": "item-1", "role": "assistant", "text": "",
+            "turnError": {
+                "message": "The model refused", "codexErrorInfo": "misalignmentPolicyViolation",
+                "additionalDetails": null, "misalignment": null
+            }
+        });
+        super::generated_json::<crate::generated::TranscriptPageResponse>(
+            json!({"items": [item], "truncated": false}),
+        )
+        .expect("a turn error object is part of the transcript page");
+    }
+}
