@@ -2205,3 +2205,84 @@ fn refusal(error: studio_runtime_services::multi_server_auth::AccessError) -> Va
         other => panic!("expected stable refusal, got {other}"),
     }
 }
+
+#[tokio::test]
+async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
+    use std::sync::Mutex;
+    use studio_runtime_services::multi_server_auth::AccessError;
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
+        enqueue_in_transaction,
+    };
+
+    struct Effects;
+    impl OrchestrationEffects for Effects {
+        fn supports(&self, _: &str) -> bool {
+            false
+        }
+        fn execute<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Value,
+        ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+            Box::pin(async { Ok(ExchangeOutcome::Unknown) })
+        }
+    }
+    #[derive(Default)]
+    struct Peer {
+        delivered: Mutex<Vec<String>>,
+    }
+    impl PairedTransport for Peer {
+        fn exchange<'a>(
+            &'a self,
+            _server: &'a str,
+            envelope: &'a Value,
+            _timeout: Duration,
+        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+            Box::pin(async move {
+                let id = envelope["requestId"].as_str().unwrap().to_owned();
+                self.delivered.lock().unwrap().push(id.clone());
+                Ok(json!({"requestId":id,"outcome":"applied","value":{"stored":true}}))
+            })
+        }
+    }
+
+    let (_root, store) = store().await;
+    store
+        .transaction_with(|tx| {
+            for key in ["rewritten-1", "later-2"] {
+                enqueue_in_transaction(
+                    tx,
+                    "peer-server",
+                    "message",
+                    &json!({"link":"link-1","worker":"worker-1","args":{"text":key}}),
+                    key,
+                    100,
+                )
+                .unwrap();
+            }
+            // Python rewrites some stored bodies after queueing (an exec receipt probe), so
+            // the stored body no longer matches the fingerprint of the original request.
+            tx.execute(
+                "UPDATE runtime_server_outbox SET body=json_set(body,'$.payload.args.text','changed') WHERE id='rewritten-1'",
+                [],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let peer = Arc::new(Peer::default());
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&store),
+        Arc::clone(&peer) as _,
+        Arc::new(Effects),
+    );
+    // The Python-written fixture may hold other due rows; only these two matter here.
+    assert!(driver.pump_due(105).await.unwrap() >= 1);
+    let delivered = peer.delivered.lock().unwrap();
+    assert!(delivered.contains(&"later-2".to_owned()), "{delivered:?}");
+    assert!(
+        !delivered.contains(&"rewritten-1".to_owned()),
+        "{delivered:?}"
+    );
+}
