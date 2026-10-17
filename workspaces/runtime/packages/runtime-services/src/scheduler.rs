@@ -619,6 +619,9 @@ pub(crate) fn settle_terminal_in_transaction(
             .unwrap_or_default(),
     )?;
     if result {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
         if let Some(agent) = agent.as_ref() {
             crate::account_worker::history::terminal(
                 transaction,
@@ -630,11 +633,15 @@ pub(crate) fn settle_terminal_in_transaction(
                     _ => "completed",
                 },
                 error.as_ref(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0.0, |d| d.as_secs_f64()),
+                now,
             )?;
         }
+        crate::lifecycle_effects::notify_parent_of_turn(
+            transaction,
+            &identity.agent_id,
+            turn_id,
+            now,
+        )?;
         ExecutionHistoryRepository::save_receipt(
             transaction,
             &identity.attempt_id,
@@ -1054,5 +1061,169 @@ mod invalid_record_recovery_tests {
             serde_json::from_str::<Value>(&healthy).expect("healthy fixture is valid JSON");
         assert_eq!(healthy["inFlight"], true);
         assert_eq!(healthy["startAttempt"]["id"], "live-attempt");
+    }
+}
+
+#[cfg(test)]
+mod child_turn_parent_tests {
+    use super::*;
+    use serde_json::json;
+
+    const TURN: &str = "turn-1";
+
+    async fn seeded(provider: &str) -> (tempfile::TempDir, RuntimeStore, TurnIntent) {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let provider = provider.to_owned();
+        store
+            .transaction(move |tx| {
+                for record in [
+                    json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed",
+                        "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}),
+                    json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,
+                        "status":"queued","autoWake":true,"name":"Worker","cwd":"/work",
+                        "branch":"work","provider":provider,"accountKey":"default",
+                        "threadId":"thread","model":"model","lastAnswer":"done"}),
+                ] {
+                    let record = studio_runtime_store::AgentRecord::from_value(record)
+                        .expect("fixture agent is valid");
+                    AgentRepository::put(tx, &record)?;
+                }
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                     VALUES('child:initial','child','user','go','pending',1,1,NULL,NULL)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agents seed");
+        let intent = claim_intent(&store, "child", 1, "attempt", 1.0)
+            .await
+            .expect("claim runs")
+            .expect("child is claimable");
+        assert!(
+            mark_submitted_for_provider(&store, &intent, "ticket", 1, "connection")
+                .await
+                .expect("submission marks")
+        );
+        assert_eq!(
+            settle_started_provider(&store, &intent, "ticket", 1, TURN)
+                .await
+                .expect("start settles"),
+            Some(false),
+            "the start binds without an interrupt"
+        );
+        (directory, store, intent)
+    }
+
+    async fn finish(store: &RuntimeStore, intent: &TurnIntent, status: &str) -> bool {
+        let identity = TurnAttemptIdentity {
+            agent_id: intent.agent_id.clone(),
+            epoch: intent.epoch,
+            attempt_id: intent.attempt_id.clone(),
+        };
+        settle_terminal_attempt(
+            store,
+            &identity,
+            &json!({"threadId":"thread","turn":{"id":TURN,"status":status}}),
+        )
+        .await
+        .expect("terminal settles")
+    }
+
+    fn parent_events(store: &RuntimeStore) -> Vec<(String, String, Value)> {
+        let connection = store.read().expect("state reader opens");
+        let mut statement = connection
+            .prepare(
+                "SELECT id,status,text FROM runtime_events WHERE agent='lead' AND kind='child_result'",
+            )
+            .expect("query prepares");
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query runs")
+            .map(|row| {
+                let (id, status, text) = row.expect("row decodes");
+                (
+                    id,
+                    status,
+                    serde_json::from_str(&text).expect("payload JSON"),
+                )
+            })
+            .collect()
+    }
+
+    fn status(store: &RuntimeStore, id: &str) -> AgentStatus {
+        AgentRepository::get(&store.read().expect("reader"), &AgentId::from(id))
+            .expect("agent reads")
+            .expect("agent exists")
+            .status
+    }
+
+    #[tokio::test]
+    async fn completed_child_turn_notifies_and_wakes_the_parent_exactly_once() {
+        for provider in ["codex", "claude"] {
+            let (_directory, store, intent) = seeded(provider).await;
+            assert!(finish(&store, &intent, "completed").await);
+            let events = parent_events(&store);
+            assert_eq!(events.len(), 1, "{provider}");
+            let (id, state, payload) = &events[0];
+            assert_eq!(id, "child:child:turn-1");
+            assert_eq!(state, "pending");
+            assert_eq!(payload["agent_id"], "child");
+            assert_eq!(payload["status"], "completed");
+            assert_eq!(payload["result"], "done");
+            assert_eq!(payload["branch"], "work");
+            assert_eq!(payload["workspace"]["mode"], "shared");
+            assert_eq!(status(&store, "lead"), AgentStatus::Queued);
+
+            // A replayed completion and a repeated notification write nothing new.
+            assert!(finish(&store, &intent, "completed").await);
+            store
+                .transaction(|tx| {
+                    crate::lifecycle_effects::notify_parent_of_turn(tx, "child", TURN, 2.0)
+                })
+                .await
+                .expect("repeat notification runs");
+            assert_eq!(parent_events(&store).len(), 1, "{provider}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stopped_turn_pending_input_and_stale_epoch_do_not_notify() {
+        let (_directory, store, intent) = seeded("codex").await;
+        assert!(finish(&store, &intent, "interrupted").await);
+        assert!(parent_events(&store).is_empty(), "interrupted turn");
+
+        let (_directory, store, intent) = seeded("claude").await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                     VALUES('next','child','user','more','pending',2,1,NULL,NULL)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("pending input writes");
+        assert!(finish(&store, &intent, "completed").await);
+        assert!(parent_events(&store).is_empty(), "pending input");
+
+        let (_directory, store, intent) = seeded("codex").await;
+        store
+            .transaction(|tx| SchedulerRepository::stop_agent(tx, "child", "Stopped by user"))
+            .await
+            .expect("stop runs");
+        finish(&store, &intent, "completed").await;
+        assert!(parent_events(&store).is_empty(), "stale epoch");
     }
 }

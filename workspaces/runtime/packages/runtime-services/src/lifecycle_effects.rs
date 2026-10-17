@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, ContinuationRepository, ContinuationTable, RuntimeStore,
-    SchedulerRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, ContinuationRepository, ContinuationTable,
+    RuntimeStore, SchedulerRepository, Transaction,
 };
 use tokio::sync::Notify;
 
@@ -1061,22 +1061,26 @@ fn notify_parent_with_id(
         .or_else(|| agent.get("created"))
         .cloned()
         .unwrap_or(Value::Null);
-    let mut payload = json!({
-        "agent_id": id,
-        "name": agent.get("name").cloned().unwrap_or(Value::Null),
-        "status": agent.get("status").cloned().unwrap_or(json!("paused")),
-        "reason": reason,
-        "result": reason_text,
-        "last_activity": last_activity,
-        "task_id": tasks.first().and_then(|task| task.get("task_id")).cloned().unwrap_or(Value::Null),
-        "result_submitted": tasks.iter().any(|task| task.get("result_submitted").and_then(Value::as_bool) == Some(true)),
-        "tasks": tasks,
-        "next_step": "send",
-        "requested_by_lead": false,
-        "cwd": agent.get("cwd").cloned().unwrap_or(Value::Null),
-        "branch": agent.get("branch").cloned().unwrap_or(Value::Null),
-    });
-    payload["workspace"] = image_workspace_summary(agent);
+    let mut payload = child_result_payload(
+        agent,
+        agent.get("status").cloned().unwrap_or(json!("paused")),
+        json!(reason_text),
+    );
+    payload["reason"] = reason;
+    payload["last_activity"] = last_activity;
+    payload["task_id"] = tasks
+        .first()
+        .and_then(|task| task.get("task_id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    payload["result_submitted"] = json!(
+        tasks
+            .iter()
+            .any(|task| task.get("result_submitted").and_then(Value::as_bool) == Some(true))
+    );
+    payload["tasks"] = json!(tasks);
+    payload["next_step"] = json!("send");
+    payload["requested_by_lead"] = json!(false);
     let stopped_turn = effect
         .before()
         .get("turnId")
@@ -1109,6 +1113,89 @@ fn notify_parent_with_id(
             }
             _ => "Unable to write child stop event",
         })
+    })?;
+    Ok(())
+}
+
+/// The fields every `child_result` payload carries (Python `Runtime.parent_event`).
+fn child_result_payload(agent: &Value, status: Value, result: Value) -> Value {
+    json!({
+        "agent_id": agent.get("id").cloned().unwrap_or(Value::Null),
+        "name": agent.get("name").cloned().unwrap_or(Value::Null),
+        "status": status,
+        "result": result,
+        "cwd": agent.get("cwd").cloned().unwrap_or(Value::Null),
+        "branch": agent.get("branch").cloned().unwrap_or(Value::Null),
+        "workspace": image_workspace_summary(agent),
+    })
+}
+
+/// Report a settled child turn to its parent inside the settling transaction.
+///
+/// Ports the turn-completion branch of Python `Runtime.notification` that calls
+/// `parent_event`. A stopped turn, input that still owns the continuation, a
+/// stale turn epoch, a move, or a safety retry of this turn writes nothing.
+/// The deterministic id `child:{id}:{turn}` makes a replay a no-op; the
+/// enqueue queues an auto-waking parent.
+pub(crate) fn notify_parent_of_turn(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
+        return Ok(());
+    };
+    let Some(parent_id) = agent.extra.get("parentId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let flag = |key: &str| studio_runtime_store::truthy(agent.extra.get(key));
+    let stopped = matches!(
+        agent.status,
+        AgentStatus::Failed | AgentStatus::Interrupted | AgentStatus::Paused
+    ) && agent.extra.get("lastCompletedTurnStatus") != Some(&json!("completed"));
+    let value = agent.value();
+    let safety_retry = value.pointer("/nativeSafetyRetry/turnId") == Some(&json!(turn_id))
+        && crate::safety_buffering::active(&value).unwrap_or(true);
+    if !flag("autoWake")
+        || flag("deletedAt")
+        || flag("agentArchive")
+        || flag("executionMove")
+        || stopped
+        || safety_retry
+        || agent.status == AgentStatus::Waiting
+        || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(agent.epoch)
+        || SchedulerRepository::has_pending_continuation_event(tx, agent_id, agent.epoch)?
+    {
+        return Ok(());
+    }
+    let Some(parent) = AgentRepository::get(tx, &AgentId::from(parent_id))? else {
+        return Ok(());
+    };
+    let result = match agent
+        .extra
+        .get("error")
+        .filter(|error| studio_runtime_store::truthy(Some(error)))
+    {
+        Some(error) => json!(error.to_string()),
+        None => agent
+            .extra
+            .get("lastAnswer")
+            .cloned()
+            .unwrap_or(json!("No final text returned")),
+    };
+    let payload = child_result_payload(&value, json!(agent.status), result);
+    event_write::enqueue_recovery_event(
+        tx,
+        &parent,
+        format!("child:{agent_id}:{turn_id}"),
+        "child_result",
+        payload.to_string(),
+        at,
+    )
+    .map_err(|error| match error {
+        event_write::EventWriteError::Store(error) => error,
+        other => studio_runtime_store::StoreError::SchemaMismatch(other.to_string()),
     })?;
     Ok(())
 }
