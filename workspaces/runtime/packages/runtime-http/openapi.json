@@ -20773,6 +20773,22 @@
             "title": "Responses",
             "type": "array"
           },
+          "sourceType": {
+            "anyOf": [
+              {
+                "enum": [
+                  "message",
+                  "user_task"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sourcetype"
+          },
           "status": {
             "anyOf": [
               {

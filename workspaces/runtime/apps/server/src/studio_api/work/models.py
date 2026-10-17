@@ -764,6 +764,8 @@ class ComplaintDetailResponse(ResponseModel):
     leadStopped: StrictBool | None = None
     leadDeleted: StrictBool | None = None
     recipient: Literal["user", "lead"] | None = None
+    # A lead message to the user and a user task reply are stored as complaints.
+    sourceType: Literal["message", "user_task"] | None = None
     version: SafeInt
     text: StrictStr
     responses: list[ComplaintResponseDto]

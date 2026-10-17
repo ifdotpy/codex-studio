@@ -595,6 +595,23 @@ class WorkRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), complaint)
 
+    def test_complaint_detail_accepts_stored_lead_messages_and_user_tasks(self) -> None:
+        for source_type in ("message", "user_task"):
+            context = FakeContext()
+            complaint = {
+                "id": "complaint-1", "leadId": "agent-1", "author": "agent-1",
+                "recipient": "user", "sourceType": source_type, "text": "Need an action",
+                "version": 1, "status": "open", "created": 1.0, "updated": 2.0,
+                "readAt": None, "responses": [],
+            }
+            context.runtime.complaint_detail = Mock(return_value=complaint)
+
+            with self.subTest(source_type=source_type), \
+                    self.assertNoLogs("studio_api.context", level="ERROR"):
+                response = make_client(context).get("/api/complaint?id=complaint-1")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json(), complaint)
+
     def test_plan_response_preserves_native_report_separately_from_legacy_text(self) -> None:
         context = FakeContext()
         legacy_plan = {
