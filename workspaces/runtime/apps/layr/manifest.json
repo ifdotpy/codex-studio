@@ -1,7 +1,7 @@
 {
-  "revision": "933d7d77da754889afc6f9597a38f2706bdddd1a",
-  "tree": "573efa6633274879b031592308b8efc865a852fe",
-  "sourceSha256": "77b9bf94739baa15940ed8c7c57f9421cfa01d0768b1efd28767f0f15cf6befd",
+  "revision": "5fd8e9b29f15c1acdcb6b5e71aa4021ce4f7340c",
+  "tree": "3a1ae1b3720042f5dc4a5b03440cb42c67853b0b",
+  "sourceSha256": "494dcac6a80fd82f005ff63a325052eb20800271eb1d9d41f2251572e57dfc77",
   "files": {
     "Cargo.lock": "89f40bdf206993990d8e78ab7c7608d2218d16e37a2bcc8446a6c111a28efc1b",
     "Cargo.toml": "5eb0da27092d4635f889bf967666060d3eb7e34cbda2e8e364d6d1b5bfb2047a",
@@ -14,7 +14,7 @@
     "src/changes.rs": "83e51929a811b885bf45a874d775426e89d0c4d047c240db7017a1b637498eac",
     "src/cmd/admin.rs": "5c0b893b06fb80c9c756d2862ad8b4c2fd6199491ee19b5575deb85425f55fb5",
     "src/cmd/branch.rs": "5f2a2eb76b2f28592a9413fa3fb7fbf99f26ba4270fbeb317795f9de7fb016ae",
-    "src/cmd/history.rs": "e91042f85d88e6664223ebfb4a2426f4f8aa3a3f423d5e772e1dfd8462cb16db",
+    "src/cmd/history.rs": "0893e61a8bb027272ac6c41d0be35aa87ee722ea6b9746c9cd854f8884509ab1",
     "src/cmd/mergecmd.rs": "9967fdc02c5e2a69a37858735b0bd8cd69997fcd642455e9b71ec17a133dc3ab",
     "src/cmd/mod.rs": "c8b23fb7fbb5ef17bcbffaefe4316b2dc8525c8c7c0a3929d81a0b584384f27b",
     "src/cmd/overlaycmd.rs": "4ee833dd154c57a2521c7ff88c4c506bae11c291a5874be20a1096fc806b5d5c",
@@ -26,7 +26,7 @@
     "src/db.rs": "ddd9ff608a42c42c626328359a33008bba7e1ff278118f88f1792805839ca6fc",
     "src/diff.rs": "89b2fae13cb950e19109183d6fe705332e599958ee81518cfc5398c95fcc04c7",
     "src/fsutil.rs": "d0b6b7f010d08cc1ba437207bb0c626460cf12d8d587642229764d94bef663bc",
-    "src/gitbridge.rs": "4dfb0cc33682e65e974d40aa9fc737d73c76c283eb3d5d2261460fa3bb554d17",
+    "src/gitbridge.rs": "7d4f267e4f0b1e461bc045122d3167415f1335b483b099fb7f6762b6359381fb",
     "src/ids.rs": "4af057143ae29924bf92f96cd6cf6db00ec74e24e95ceb27b466dceffdd76dd4",
     "src/ignore_rules.rs": "090fab00f0c4cc07fc734164555cace895f36cf48ace2403fbc752b3f4133e7a",
     "src/main.rs": "46c24a07be5cdbd7243ef7d96ee109a524c1a2a1b1c10ce49d55de4a5aacbe4a",

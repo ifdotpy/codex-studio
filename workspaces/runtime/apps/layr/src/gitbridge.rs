@@ -608,11 +608,26 @@ pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Resu
 /// It is the same on every machine and in git, unlike the state ID. A state without a commit
 /// gets one in the git store (an object only; no record, no ref).
 pub fn tree_of(repo: &Repo, state: &str) -> Result<String> {
+    object_of(repo, state, "")?.ok_or_else(|| anyhow!("the commit of state {} has no tree", ids::display(state)))
+}
+
+/// The git object id of a path in a state, as `git rev-parse <commit>:<path>` prints it for the
+/// commit a push exports: a tree for a folder, a blob for a file, the root tree for an empty path.
+/// `None` when the exported tree has no such path (absent, or a path a push does not export).
+pub fn object_of(repo: &Repo, state: &str, path: &str) -> Result<Option<String>> {
     let commit = match commit_of(repo, state)? {
         Some(c) => c,
         None => make_commit(repo, &repo.state(state)?, None)?.0,
     };
-    Ok(git_out(&store(repo), &["rev-parse", &format!("{commit}^{{tree}}")])?.trim().to_string())
+    let spec = format!("{commit}:{path}");
+    let out =
+        base_cmd(&store(repo)).args(["rev-parse", "--verify", "-q", &spec]).stdin(Stdio::null()).output().context("run git")?;
+    match out.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
+        // --verify -q: exit 1 and no message when the name does not resolve.
+        Some(1) if out.stderr.is_empty() => Ok(None),
+        _ => bail!("git rev-parse {spec} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+    }
 }
 
 /// The commit of a state in the git store, if it has one.

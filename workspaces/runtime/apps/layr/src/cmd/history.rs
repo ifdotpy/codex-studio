@@ -948,6 +948,26 @@ pub fn rev_parse(ctx: &Ctx, args: &[String]) -> Result<i32> {
             outln!(ctx, "{r}");
             continue;
         }
+        if let Some((rv, path)) = r.split_once(':').filter(|(rv, _)| !rv.is_empty()) {
+            // <rev>:<path>: the git object id of the path in the commit a push exports for the
+            // state (a tree for a folder, a blob for a file). Relative paths as in `show`.
+            let rv_state = rv.trim_end_matches("^{tree}").trim_end_matches("^{commit}").trim_end_matches("^{}");
+            let obj = revs::resolve(repo, line.as_ref(), rv_state).and_then(|id| {
+                let p = if path.starts_with("./") || path.starts_with("../") {
+                    super::normalize(&h.loc.sub, path)?
+                } else {
+                    path.trim_start_matches('/').to_string()
+                };
+                Ok((crate::gitbridge::object_of(repo, &id, &p)?, p))
+            });
+            match obj {
+                Ok((Some(o), _)) => outln!(ctx, "{}", &o[..short.unwrap_or(o.len()).clamp(4, o.len())]),
+                Ok((None, _)) | Err(_) if a.has("-q") => return Ok(1),
+                Ok((None, p)) => return Err(exit(128, format!("fatal: path '{p}' does not exist in '{rv}'"))),
+                Err(e) => return Err(exit(128, format!("fatal: {e}"))),
+            }
+            continue;
+        }
         if let Some(rr) = r.strip_suffix("^{tree}") {
             // The git tree hash of the state's content: the same on every machine and in git.
             let tree = revs::resolve(repo, line.as_ref(), rr).and_then(|id| crate::gitbridge::tree_of(repo, &id));
