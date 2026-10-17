@@ -263,6 +263,38 @@ describe("resource read callers", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  it("persists delivery before publishing a receipt that can retire its reader", async () => {
+    const receipt = { id: "message-one", status: "delivered" };
+    get.mockResolvedValue({
+      agent: "lead",
+      workspaceId: "workspace",
+      items: [receipt],
+    });
+    let finishWrite: (() => void) | undefined;
+    reconcile.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    mount(() =>
+      useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
+    );
+    notify({ kind: "receipts", agentId: "lead" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    const currentReceipts = () =>
+      (states[0]!.value as { receipts: Map<string, unknown> }).receipts;
+    expect(currentReceipts().has("message-one")).toBe(false);
+    finishWrite!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(currentReceipts().get("message-one")).toEqual(receipt);
+    cleanups.pop()?.();
+    const signal = reconcile.mock.calls[0]?.[3] as AbortSignal;
+    expect(signal.aborted).toBe(true);
+  });
+
   it("aborts an unmounted receipt read before it can start another batch", async () => {
     let resolveRead:
       | ((value: {

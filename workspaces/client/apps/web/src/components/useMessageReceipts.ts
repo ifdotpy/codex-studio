@@ -56,6 +56,15 @@ export function useMessageReceipts(
             batch,
             workspaceId,
           );
+          // Publishing delivery can retire the local message and change the
+          // requested IDs, which aborts this effect. Persist the receipt first.
+          await reconcileOutboxReceipts(
+            room,
+            receipts,
+            workspaceId,
+            controller.signal,
+          );
+          if (!active || controller.signal.aborted) return;
           setState((previous) => {
             const next = new Map(
               previous.scope === scope ? previous.receipts : [],
@@ -81,12 +90,6 @@ export function useMessageReceipts(
               return previous;
             return { scope, receipts: next };
           });
-          await reconcileOutboxReceipts(
-            room,
-            receipts,
-            workspaceId,
-            controller.signal,
-          );
         }
       },
       () => {
