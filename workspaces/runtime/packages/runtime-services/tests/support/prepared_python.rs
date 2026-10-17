@@ -6,6 +6,32 @@ use std::{
 
 pub(crate) const PYTHON_ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Parent directory for disposable SQLite test state and Python oracle scratch.
+/// SQLite syncs every commit, so on a disk-backed TMPDIR these fixtures spend
+/// most of their time in fsync and slow down sharply under shared I/O load.
+/// Prefer a memory filesystem: `STUDIO_RUNTIME_CORPUS_TMP` when set, else the
+/// Linux `/dev/shm` mount, else the process temporary directory.
+#[allow(dead_code)]
+pub(crate) fn disposable_state_parent() -> std::path::PathBuf {
+    if let Some(directory) = std::env::var_os("STUDIO_RUNTIME_CORPUS_TMP") {
+        return directory.into();
+    }
+    let shared_memory = std::path::Path::new("/dev/shm");
+    if cfg!(target_os = "linux") && shared_memory.is_dir() {
+        return shared_memory.to_owned();
+    }
+    std::env::temp_dir()
+}
+
+/// A private disposable directory beneath [`disposable_state_parent`].
+#[allow(dead_code)]
+pub(crate) fn disposable_state_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("runtime-test-")
+        .tempdir_in(disposable_state_parent())
+        .expect("disposable test state directory")
+}
+
 #[allow(dead_code)]
 pub(crate) struct IsolatedTestEnvironment {
     root: tempfile::TempDir,
@@ -15,10 +41,7 @@ pub(crate) struct IsolatedTestEnvironment {
 impl IsolatedTestEnvironment {
     pub(crate) fn new() -> Self {
         Self {
-            root: tempfile::Builder::new()
-                .prefix("runtime-test-")
-                .tempdir()
-                .expect("isolated test tempdir"),
+            root: disposable_state_dir(),
         }
     }
 
