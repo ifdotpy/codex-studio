@@ -293,10 +293,10 @@ async fn pull_legacy(
         .await
         .map_err(|e| error("storage_error", e))?;
     }
-    if remote != scope {
-        if let Some(seq) = result["checkpoint"]["seq"].as_u64() {
-            record_mapped(workspace, remote, seq);
-        }
+    if remote != scope
+        && let Some(seq) = result["checkpoint"]["seq"].as_u64()
+    {
+        record_mapped(workspace, remote, seq);
     }
     state(
         sender,

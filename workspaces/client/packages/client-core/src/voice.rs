@@ -1,6 +1,11 @@
 //! Realtime voice peer. Rust owns WebRTC, Opus and the audio frames.
 //! The UI sends start, answer, mute and end commands and receives events.
 //! The server keeps signaling: the UI posts this offer to /api/voice/start.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_assignments, unused_imports, unused_variables)
+)]
 use bytes::Bytes;
 use rtc::media::Sample;
 use rtc::rtp_transceiver::rtp_sender::{
@@ -111,7 +116,9 @@ impl Decoder {
             return Err(format!("Opus decoding failed ({frames})."));
         }
         Ok(pcm[..frames as usize * 2]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (pair[0] as f32 + pair[1] as f32) / 65_536.0)
             .collect())
     }
@@ -135,7 +142,13 @@ impl Framer {
             }
         }));
         let count = self.0.len() / FRAME;
-        let frames = self.0.chunks_exact(FRAME).map(<[i16]>::to_vec).collect();
+        let frames = self
+            .0
+            .as_chunks::<FRAME>()
+            .0
+            .iter()
+            .map(|frame| frame.to_vec())
+            .collect();
         self.0.drain(..count * FRAME);
         frames
     }

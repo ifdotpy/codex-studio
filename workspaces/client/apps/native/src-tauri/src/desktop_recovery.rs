@@ -168,13 +168,13 @@ fn configure(
     Ok(())
 }
 pub fn close(app: &tauri::AppHandle) {
-    if let Some(intent) = app.try_state::<Intent>() {
-        if let Err(error) = write_intent(&intent, false) {
-            eprintln!("Cannot record desktop close: {error}");
-            // Withdrawing our intent is safer than reopening after explicit Quit.
-            if let Err(error) = std::fs::remove_file(&intent.path) {
-                eprintln!("Cannot withdraw desktop intent: {error}");
-            }
+    if let Some(intent) = app.try_state::<Intent>()
+        && let Err(error) = write_intent(&intent, false)
+    {
+        eprintln!("Cannot record desktop close: {error}");
+        // Withdrawing our intent is safer than reopening after explicit Quit.
+        if let Err(error) = std::fs::remove_file(&intent.path) {
+            eprintln!("Cannot withdraw desktop intent: {error}");
         }
     }
 }
