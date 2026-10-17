@@ -733,6 +733,26 @@ impl State {
             .await
             .unwrap();
     }
+    /// Mark queued input as explicit after-turn delivery, which never steers.
+    async fn deliver_after_turn(&self, id: &str) {
+        let id = format!("annotation:{id}");
+        self.bridge
+            .run(move |store| async move {
+                store
+                    .transaction_with(move |tx| {
+                        tx.execute(
+                            "INSERT INTO runtime_event_meta(id,record) VALUES(?1,'{\"delivery\":\"after_turn\"}') \
+                             ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.delivery','after_turn')",
+                            [id],
+                        )?;
+                        Ok::<_, StoreError>(())
+                    })
+                    .await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
     async fn record(&self) -> Value {
         let agent = self.agent.clone();
         self.bridge
@@ -817,6 +837,7 @@ async fn scenario_normal_turn_commits_transcript_before_ack_and_pending_event_wa
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     state.enqueue("after").await;
+    state.deliver_after_turn("after").await;
     state.wake(&worker).await;
     let marker=peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"done"}}})).await;
     peer.acknowledged(marker).await;
