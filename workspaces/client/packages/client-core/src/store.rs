@@ -437,6 +437,18 @@ pub(crate) fn record(
     Ok(())
 }
 
+/// SQLite integers are signed; reject corrupt negative counters explicitly.
+pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,16 +687,4 @@ mod tests {
         other.params["workspace"] = json!("two");
         assert_eq!(store.dispatch(other).result.unwrap()["revision"], 1);
     }
-}
-
-/// SQLite integers are signed; reject corrupt negative counters explicitly.
-pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
-    let value: i64 = row.get(index)?;
-    u64::try_from(value).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            index,
-            rusqlite::types::Type::Integer,
-            Box::new(error),
-        )
-    })
 }

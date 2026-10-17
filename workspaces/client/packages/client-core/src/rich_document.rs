@@ -1,5 +1,10 @@
 //! Static HTML presentation outside the Attar UI runtime.
 //! The system renderer has no Studio bridge, cookies, file grant or network grant.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 use crate::protocol::{Request, Response};
 use serde_json::Value;
 
@@ -390,9 +395,8 @@ mod mac {
                 let Some(web) = view(id) else {
                     return;
                 };
-                let page_height = ((height - (page * HEIGHT) as f64).ceil() as usize)
-                    .min(HEIGHT)
-                    .max(1);
+                let page_height =
+                    ((height - (page * HEIGHT) as f64).ceil() as usize).clamp(1, HEIGHT);
                 let script = format!(
                     "window.scrollTo(0,{}); String(window.scrollY)",
                     page * HEIGHT

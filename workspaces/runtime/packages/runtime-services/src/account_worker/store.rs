@@ -967,6 +967,7 @@ fn uncertain(
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn journal_batch(
     store: Arc<RuntimeStore>,
     account: &str,

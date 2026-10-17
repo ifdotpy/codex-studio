@@ -15,10 +15,10 @@ fn wire_rows(rows: &[Value]) -> Vec<Value> {
         .cloned()
         .map(|mut row| {
             for field in ["newDocumentState", "assumedMasterState"] {
-                if let Some(document) = row[field].as_object_mut() {
-                    if let Some(deleted) = document.remove("_deleted") {
-                        document.insert("deleted".into(), deleted);
-                    }
+                if let Some(document) = row[field].as_object_mut()
+                    && let Some(deleted) = document.remove("_deleted")
+                {
+                    document.insert("deleted".into(), deleted);
                 }
             }
             row
