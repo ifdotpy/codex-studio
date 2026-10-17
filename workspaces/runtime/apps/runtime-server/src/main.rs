@@ -271,7 +271,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     }
     let port = parse_port(args.into_iter())?;
     startup_trace("backend-identity-started");
-    studio_runtime_process::blocking_pool::spawn_blocking(
+    let backend_build = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/backend-identity",
         studio_runtime_http::initialize_backend_identity,
     )
@@ -285,7 +285,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     startup_trace("store-open-started");
-    let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref()).await?);
+    // Serving claims the state for Rust before the first write, whatever launched this process.
+    let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
+    let store =
+        Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,

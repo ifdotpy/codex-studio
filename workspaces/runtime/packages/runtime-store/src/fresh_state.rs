@@ -63,9 +63,14 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
         let accepted = match name.to_str() {
             // Python creates this lease before its databases.
             Some("runtime.lock") => matches!(entry_kind(&path), EntryKind::File),
-            // The desktop launcher claims the canonical state before the Rust
-            // server creates its databases, and opens its log before spawn.
-            Some("rust-state-owner.json" | "canvas.log") => accepted_private_file(&path),
+            // The Rust server claims the state (state_owner.rs) before it creates
+            // the databases; a killed claim can leave its temporary file. The
+            // launcher opens the log before spawn.
+            Some(
+                crate::state_owner::STATE_OWNER_FILE
+                | crate::state_owner::STATE_OWNER_TEMPORARY_FILE
+                | "canvas.log",
+            ) => accepted_private_file(&path),
             // Runtime.__init__ creates these private directories and their
             // registry/identity files before it opens the SQLite databases.
             Some("accounts") => accepted_python_directory(&path, "registry.json"),

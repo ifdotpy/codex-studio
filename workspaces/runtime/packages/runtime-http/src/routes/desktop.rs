@@ -61,15 +61,16 @@ fn is_sha256_hex(value: &str) -> bool {
 static BACKEND_BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Hash the actual executable before serving so `/api/desktop` never performs
-/// blocking file I/O on the first request.
-pub fn initialize_backend_identity() -> io::Result<()> {
+/// blocking file I/O on the first request. Returns the build, which the server
+/// also records as the owner of its state directory.
+pub fn initialize_backend_identity() -> io::Result<String> {
     let actual_build = executable_build()?;
     let launcher_build = std::env::var("CODEX_BACKEND_BUILD").ok();
     let actual_build = backend_build_from(launcher_build.as_deref(), &actual_build)
         .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
     match BACKEND_BUILD.set(actual_build.clone()) {
-        Ok(()) => Ok(()),
-        Err(_) if BACKEND_BUILD.get() == Some(&actual_build) => Ok(()),
+        Ok(()) => Ok(actual_build),
+        Err(_) if BACKEND_BUILD.get() == Some(&actual_build) => Ok(actual_build),
         Err(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "runtime backend identity was already initialized differently",
