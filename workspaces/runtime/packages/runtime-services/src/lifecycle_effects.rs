@@ -83,7 +83,16 @@ impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
             agent.clone(),
             self.at,
         );
-        notify_parent(tx, &effect).map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
+        // Like Python connection recovery, a completed turn reports its result
+        // under the turn-completion id; any other outcome is a stopped child.
+        if turn["status"] == "completed" {
+            let record = AgentRecord::from_value(agent.clone())
+                .map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
+            let turn_id = turn["id"].as_str().unwrap_or_default();
+            notify_parent_of_settled_turn(tx, &record, turn_id, self.at)?;
+        } else {
+            notify_parent(tx, &effect).map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
+        }
         release_work(tx, &effect).map_err(|_| crate::recovery::RecoveryError::CommitFailed)
     }
 }
@@ -1143,9 +1152,26 @@ pub(crate) fn notify_parent_of_turn(
     turn_id: &str,
     at: f64,
 ) -> studio_runtime_store::StoreResult<()> {
-    let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
-        return Ok(());
-    };
+    match AgentRepository::get(tx, &AgentId::from(agent_id))? {
+        Some(agent) => notify_parent_of_settled_turn(tx, &agent, turn_id, at),
+        None => Ok(()),
+    }
+}
+
+/// [`notify_parent_of_turn`] for a settled record that may not be stored yet.
+///
+/// A provider disconnect clears `autoWake` and records whether the child
+/// auto-woke in `disconnectRecovery`. A turn that this disconnect receipt
+/// covers and that settles `completed` still reports to the parent.
+/// Deliberate divergence: Python's `parent_event` stays silent once autoWake is
+/// false, so the parent of such a child never learned its result.
+fn notify_parent_of_settled_turn(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+    turn_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let agent_id = agent.id.0.as_str();
     let Some(parent_id) = agent.extra.get("parentId").and_then(Value::as_str) else {
         return Ok(());
     };
@@ -1157,7 +1183,10 @@ pub(crate) fn notify_parent_of_turn(
     let value = agent.value();
     let safety_retry = value.pointer("/nativeSafetyRetry/turnId") == Some(&json!(turn_id))
         && crate::safety_buffering::active(&value).unwrap_or(true);
-    if !flag("autoWake")
+    let disconnected_completion = agent.status == AgentStatus::Completed
+        && value.pointer("/disconnectRecovery/turnId") == Some(&json!(turn_id))
+        && value.pointer("/disconnectRecovery/autoWake") == Some(&json!(true));
+    if !(flag("autoWake") || disconnected_completion)
         || flag("deletedAt")
         || flag("agentArchive")
         || flag("executionMove")

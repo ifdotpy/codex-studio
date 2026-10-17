@@ -1226,4 +1226,93 @@ mod child_turn_parent_tests {
         finish(&store, &intent, "completed").await;
         assert!(parent_events(&store).is_empty(), "stale epoch");
     }
+
+    async fn disconnect(store: &RuntimeStore) {
+        store
+            .transaction(|tx| SchedulerRepository::disconnect_account(tx, "default", 1, 5.0, false))
+            .await
+            .expect("disconnect runs");
+        let child = AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+            .expect("child reads")
+            .expect("child exists");
+        assert_eq!(child.extra["autoWake"], false, "disconnect clears autoWake");
+    }
+
+    async fn recover(store: &RuntimeStore, recovered: &Value, status: &str) {
+        use crate::recovery_store::RecoveryDelivery;
+        let mut agent = recovered.clone();
+        let turn = json!({"id":TURN,"status":status,"items":[]});
+        store
+            .transaction(move |tx| {
+                crate::lifecycle_effects::ProductionRecoveryDelivery { at: 6.0 }
+                    .terminal(
+                        tx,
+                        &mut agent,
+                        &turn,
+                        crate::recovery::CompletionMode::AutomaticConnection,
+                    )
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+            })
+            .await
+            .expect("recovery delivery runs");
+    }
+
+    #[tokio::test]
+    async fn connection_recovery_completion_uses_the_turn_event_once() {
+        for provider in ["codex", "claude"] {
+            let (_directory, store, _intent) = seeded(provider).await;
+            disconnect(&store).await;
+            let mut recovered =
+                AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+                    .expect("child reads")
+                    .expect("child exists")
+                    .value();
+            // The non-automatic connection-recovery branch keeps autoWake false.
+            recovered["status"] = json!("completed");
+            recovered["error"] = Value::Null;
+            recovered["lastCompletedTurnStatus"] = json!("completed");
+            recovered["lastAnswer"] = json!("recovered answer");
+            recover(&store, &recovered, "completed").await;
+            recover(&store, &recovered, "completed").await;
+            let events = parent_events(&store);
+            assert_eq!(
+                events.len(),
+                1,
+                "{provider}: no child-stop and no duplicate"
+            );
+            assert_eq!(events[0].0, "child:child:turn-1");
+            assert_eq!(events[0].2["result"], "recovered answer");
+            assert_eq!(events[0].2["status"], "completed");
+            assert_eq!(status(&store, "lead"), AgentStatus::Queued);
+
+            // A child that was not auto-waking before the disconnect stays silent.
+            let (_directory, store, _intent) = seeded(provider).await;
+            disconnect(&store).await;
+            let mut stopped = recovered.clone();
+            stopped["disconnectRecovery"]["autoWake"] = json!(false);
+            recover(&store, &stopped, "completed").await;
+            assert!(parent_events(&store).is_empty(), "{provider}");
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_recovery_failure_still_reports_a_stopped_child() {
+        let (_directory, store, _intent) = seeded("claude").await;
+        disconnect(&store).await;
+        let mut recovered =
+            AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+                .expect("child reads")
+                .expect("child exists")
+                .value();
+        recovered["status"] = json!("failed");
+        recovered["lastCompletedTurnStatus"] = json!("failed");
+        recover(&store, &recovered, "failed").await;
+        let events = parent_events(&store);
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].0.starts_with("child-stop:child:"),
+            "{}",
+            events[0].0
+        );
+    }
 }
