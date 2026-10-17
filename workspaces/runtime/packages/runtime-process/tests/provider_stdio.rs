@@ -10,9 +10,9 @@ const PROVIDER_STDERR_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn child(script: &str) -> ProviderAttachment {
     StdioProviderTaskFactory {
-        deadline: Instant::now() + Duration::from_secs(30),
+        deadline: Some(Instant::now() + Duration::from_secs(30)),
         max_frame_bytes: 1024,
-        max_output_bytes: 4096,
+        max_output_bytes: Some(4096),
         stderr_log: None,
     }
     .open(
@@ -40,9 +40,9 @@ async fn provider_stderr_is_written_to_the_state_directory_app_server_log() {
     let log = OperationalLog::open(root.path().join("app-server.log"), 1024, 4, 16)
         .expect("operational log");
     let mut attachment = StdioProviderTaskFactory {
-        deadline: Instant::now() + Duration::from_secs(30),
+        deadline: Some(Instant::now() + Duration::from_secs(30)),
         max_frame_bytes: 1024,
-        max_output_bytes: 4096,
+        max_output_bytes: Some(4096),
         stderr_log: Some(log.clone()),
     }
     .open(
@@ -224,9 +224,9 @@ async fn cancellation_stops_the_entire_owned_process_group() {
         socket_path
     );
     let factory = StdioProviderTaskFactory {
-        deadline: Instant::now() + Duration::from_secs(30),
+        deadline: Some(Instant::now() + Duration::from_secs(30)),
         max_frame_bytes: 1024,
-        max_output_bytes: 4096,
+        max_output_bytes: Some(4096),
         stderr_log: None,
     };
     let mut attachment = factory

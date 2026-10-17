@@ -597,9 +597,9 @@ fn generation_recovery_unconfirms_steers_before_disconnecting_the_turn() {
         submit(&mut connection, "s1");
         settle(&mut connection, |tx| {
             if disconnect {
-                SchedulerRepository::disconnect_account(tx, "acct", 7, 20.0, false)
+                SchedulerRepository::disconnect_account(tx, "acct", 7, 20.0, false).map(drop)
             } else {
-                SchedulerRepository::reconcile_generation(tx, "acct", 8, 20.0)
+                SchedulerRepository::reconcile_generation(tx, "acct", 8, 20.0, true)
             }
         });
         let (state, _, error) = status(&connection, "u1");

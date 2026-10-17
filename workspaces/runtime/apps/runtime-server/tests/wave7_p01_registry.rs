@@ -3507,8 +3507,10 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
-                && record["restartRecovery"]["stage"] == "held"
+            // A provider crash while the backend runs is a disconnect, not a restart.
+            if record["disconnectRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["error"] == "Codex disconnected. Review the transcript before resuming."
+                && record["restartRecovery"].is_null()
             {
                 break record;
             }

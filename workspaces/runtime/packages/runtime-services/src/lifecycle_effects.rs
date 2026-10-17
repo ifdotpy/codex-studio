@@ -1125,6 +1125,47 @@ fn notify_parent_with_id(
     Ok(())
 }
 
+/// Tell a disconnected child's parent that its turn or start attempt stopped.
+///
+/// The id is the one [`notify_parent`] derives for the same stop, so a later
+/// connection-recovery stop notice for this turn is a no-op. A child without a
+/// stored parent has nobody to tell.
+pub(crate) fn notify_parent_of_disconnect(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let Some(raw) = AgentRepository::get_raw(tx, &AgentId::from(agent_id))? else {
+        return Ok(());
+    };
+    let stopped: Value = serde_json::from_str(&raw).map_err(|_| {
+        studio_runtime_store::StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: agent_id.into(),
+        }
+    })?;
+    let Some(parent) = stopped.get("parentId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if AgentRepository::get(tx, &AgentId::from(parent))?.is_none() {
+        return Ok(());
+    }
+    let mut before = stopped.clone();
+    if !studio_runtime_store::truthy(before.get("turnId")) {
+        before["startAttempt"] = stopped["disconnectRecovery"]["startAttempt"].clone();
+    }
+    let effect = LifecycleEffect::new(LifecycleEffectKind::NotifyParent, before, stopped, at);
+    match notify_parent(tx, &effect) {
+        // A parent that cannot take a local event (a remote proxy) is not told
+        // here; the disconnect itself must still commit.
+        Ok(()) | Err(ManagementError::Invalid(_)) => Ok(()),
+        Err(ManagementError::Store(error)) => Err(error),
+        Err(other) => Err(studio_runtime_store::StoreError::SchemaMismatch(
+            other.to_string(),
+        )),
+    }
+}
+
 /// The fields every `child_result` payload carries (Python `Runtime.parent_event`).
 fn child_result_payload(agent: &Value, status: Value, result: Value) -> Value {
     json!({
