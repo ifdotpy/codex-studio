@@ -256,32 +256,31 @@ pub(super) async fn claim_for_wake(
     let read_store = Arc::clone(&store);
     let read_agent = agent.to_owned();
     let read_account = account.to_owned();
-    let found = blocking_store_read(read_store, move |store| {
-        let connection = store.read()?;
-        // An unreadable record is the ordinary claim's to hold; it is never steered.
-        let Some(record) = AgentRepository::get(&connection, &AgentId::from(read_agent.as_str()))
-            .ok()
-            .flatten()
-            .filter(|record| {
-                record.epoch == epoch
-                    && record.status == studio_runtime_store::AgentStatus::Running
-                    && record
-                        .extra
-                        .get("accountKey")
-                        .and_then(Value::as_str)
-                        .unwrap_or("default")
-                        == read_account
-            })
-        else {
-            return Ok(None);
-        };
-        Ok(Some(SchedulerRepository::steer_claimable(
-            &connection,
-            &record,
-            epoch,
-        )?))
-    })
-    .await?;
+    let found = read_store
+        .read_async("runtime-services/account_worker_read", move |connection| {
+            // An unreadable record is the ordinary claim's to hold; it is never steered.
+            let Some(record) =
+                AgentRepository::get(connection, &AgentId::from(read_agent.as_str()))
+                    .ok()
+                    .flatten()
+                    .filter(|record| {
+                        record.epoch == epoch
+                            && record.status == studio_runtime_store::AgentStatus::Running
+                            && record
+                                .extra
+                                .get("accountKey")
+                                .and_then(Value::as_str)
+                                .unwrap_or("default")
+                                == read_account
+                    })
+            else {
+                return Ok(None);
+            };
+            Ok::<_, WorkerError>(Some(SchedulerRepository::steer_claimable(
+                connection, &record, epoch,
+            )?))
+        })
+        .await?;
     match found {
         None => return Ok(WakeClaim::Idle),
         // A blocked or empty queue needs no write transaction.

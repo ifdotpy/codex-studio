@@ -248,13 +248,12 @@ pub(super) async fn recover(
 /// guest session. Host tickets are handled by `recover` and never cross this
 /// boundary.
 pub(super) fn recover_vm_actor_requests(
-    store: &RuntimeStore,
+    connection: &rusqlite::Connection,
     account: &str,
     agent: &str,
     generation: u64,
 ) -> Result<Vec<(Pending, RecoveredRequest)>, WorkerError> {
-    let connection = store.read()?;
-    let Some(agent_record) = AgentRepository::get(&connection, &AgentId::from(agent))? else {
+    let Some(agent_record) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(Vec::new());
     };
     if agent_record
@@ -1473,11 +1472,11 @@ pub(super) async fn stop(
     .await
 }
 pub(super) fn interrupt_intent(
-    store: &RuntimeStore,
+    connection: &rusqlite::Connection,
     agent: &str,
     thread: &str,
 ) -> Result<Option<(TurnIntent, i64)>, WorkerError> {
-    let Some(a) = AgentRepository::get(&*store.read()?, &AgentId::from(agent))? else {
+    let Some(a) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(None);
     };
     let attempt = &a.extra.get("startAttempt").unwrap_or(&Value::Null);
@@ -1683,10 +1682,9 @@ pub(super) async fn complete_effect(store: &RuntimeStore, key: &str) -> Result<(
         .await
 }
 pub(super) fn recover_effects(
-    store: &RuntimeStore,
+    connection: &rusqlite::Connection,
     account: &str,
 ) -> Result<VecDeque<Effect>, WorkerError> {
-    let connection = store.read()?;
     let prefix = format!("account-worker:effect:{account}:");
     let mut stmt = connection.prepare(
         "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.order'),rowid LIMIT 33",
@@ -2314,10 +2312,9 @@ pub(super) async fn flush_streams(
 
 /// Durable retry registration survives releasing an unsubmitted claim on restart.
 pub(super) fn pending_preparations(
-    store: &RuntimeStore,
+    db: &rusqlite::Connection,
     account: &str,
 ) -> Result<Vec<(String, i64, String, String)>, WorkerError> {
-    let db = store.read()?;
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
     let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id LIMIT 33")?;
@@ -2329,7 +2326,7 @@ pub(super) fn pending_preparations(
     }
     ids.into_iter()
         .map(|id| {
-            let row = AgentRepository::get(&db, &AgentId::from(id.as_str()))?
+            let row = AgentRepository::get(db, &AgentId::from(id.as_str()))?
                 .ok_or_else(|| invalid(&id))?;
             let reason = row
                 .extra
