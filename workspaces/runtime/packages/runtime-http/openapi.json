@@ -10981,6 +10981,12 @@
           "command": {
             "anyOf": [
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               },
               {
@@ -46666,6 +46672,12 @@
           "turnError": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
                 "type": "null"
               },
               {
@@ -53802,6 +53814,12 @@
           "turnError": {
             "anyOf": [
               {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
                 "type": "null"
               },
               {
@@ -54270,6 +54288,12 @@
           },
           "turnError": {
             "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
               {
                 "type": "null"
               },

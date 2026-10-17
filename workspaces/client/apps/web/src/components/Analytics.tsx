@@ -911,7 +911,9 @@ export default function Analytics({
                             </dl>
                             {c.command && (
                               <pre className="analytics-command">
-                                {c.command}
+                                {Array.isArray(c.command)
+                                  ? c.command.join(" ")
+                                  : c.command}
                               </pre>
                             )}
                             {c.error && (
