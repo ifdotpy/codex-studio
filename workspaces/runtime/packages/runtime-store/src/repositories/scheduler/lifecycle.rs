@@ -658,7 +658,9 @@ impl SchedulerRepository {
 
     /// Return only event reservations whose persisted attempt proves no turn was submitted.
     pub fn recover_unsubmitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
-        let mut statement = transaction.prepare_cached("SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents")?;
+        // Only accounts with a reserved event can match the per-account
+        // predicate below; the runtime_event_queue index finds them directly.
+        let mut statement = transaction.prepare_cached("SELECT DISTINCT COALESCE(json_extract(a.record,'$.accountKey'),'default') FROM runtime_agents a WHERE a.id IN (SELECT agent FROM runtime_events WHERE status='reserved')")?;
         let accounts = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;

@@ -4,13 +4,12 @@
 //! `stored_only`; that row claims no delivery and is not resent. The remote owner is not notified
 //! until `cross-server/remote-events` lands.
 
-use serde::de::{IgnoredAny, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
-    QueueEventId, RequestRecord, RuntimeStore, SchedulerRepository, SyncDocumentsRepository, Table,
-    Transaction, monitor_runtime as repository,
+    QueueEventId, RequestRecord, RuntimeStore, SchedulerRepository, StartupRecoveryRepository,
+    SyncDocumentsRepository, Table, Transaction, monitor_runtime as repository,
 };
 
 use crate::event_write::{self, python_json};
@@ -81,37 +80,7 @@ pub async fn recover_on_startup(
 }
 
 fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
-    let mut agent_statement = tx
-        .prepare_cached("SELECT id,record FROM runtime_agents ORDER BY id")
-        .map_err(studio_runtime_store::StoreError::from)?;
-    let agent_rows = agent_statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(studio_runtime_store::StoreError::from)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
-    drop(agent_statement);
-    let mut agents = std::collections::BTreeMap::new();
-    for (id, raw) in agent_rows {
-        match serde_json::from_str::<Value>(&raw) {
-            Ok(agent) if agent.is_object() => {
-                agents.insert(id, agent);
-            }
-            _ => eprintln!("startup request recovery skipped owner row id={id}: invalid record"),
-        }
-    }
-    let mut request_statement = tx
-        .prepare_cached("SELECT id,record FROM runtime_requests ORDER BY id")
-        .map_err(studio_runtime_store::StoreError::from)?;
-    let request_rows = request_statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(studio_runtime_store::StoreError::from)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
-    drop(request_statement);
+    let request_rows = StartupRecoveryRepository::unsettled_requests(tx)?;
     let mut count = 0;
     for (id, raw) in request_rows {
         let mut value = match serde_json::from_str::<Value>(&raw) {
@@ -126,7 +95,7 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
                 value["status"] = json!("uncertain");
                 value["answerError"] = json!("Server restarted before answer delivery completed");
             }
-            Some("pending") if !retained_question(&value, &agents) => {
+            Some("pending") if !retained_question(tx, &value)? => {
                 value["status"] = json!("expired");
             }
             _ => continue,
@@ -171,29 +140,41 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
     Ok(count)
 }
 
-fn retained_question(request: &Value, agents: &std::collections::BTreeMap<String, Value>) -> bool {
+fn retained_question(tx: &Transaction<'_>, request: &Value) -> Result<bool, MonitorError> {
     if request.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
-        return false;
+        return Ok(false);
     }
-    let Some(agent) = request
-        .get("agent")
-        .and_then(Value::as_str)
-        .and_then(|id| agents.get(id))
-    else {
-        return false;
+    let Some(id) = request.get("agent").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let agent = match raw.map(|raw| serde_json::from_str::<Value>(&raw)) {
+        None => return Ok(false),
+        Some(Ok(agent)) if agent.is_object() => agent,
+        Some(_) => {
+            eprintln!("startup request recovery skipped owner row id={id}: invalid record");
+            return Ok(false);
+        }
     };
     let same_epoch = agent.get("epoch") == request.get("epoch");
     if event_write::truthy(agent.get("deletedAt")) || !same_epoch {
-        return false;
+        return Ok(false);
     }
     if event_write::truthy(agent.get("autoWake")) {
-        return true;
+        return Ok(true);
     }
-    agent.get("restartRecovery").is_some_and(|marker| {
+    Ok(agent.get("restartRecovery").is_some_and(|marker| {
         marker.get("stage").and_then(Value::as_str) == Some("pending")
             && event_write::truthy(marker.get("autoWake"))
             && marker.get("epoch") == agent.get("epoch")
-    })
+    }))
 }
 
 fn recover_uncovered_events(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
@@ -272,79 +253,10 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
 }
 
 fn active_monitor_ids(tx: &Transaction<'_>) -> Result<Vec<String>, MonitorError> {
-    let mut statement = tx
-        .prepare_cached("SELECT id,record FROM runtime_monitors ORDER BY id")
-        .map_err(studio_runtime_store::StoreError::from)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(studio_runtime_store::StoreError::from)?;
-    let mut ids = Vec::new();
-    for row in rows {
-        let (id, raw) = row.map_err(studio_runtime_store::StoreError::from)?;
-        match serde_json::from_str::<RecoverySelection>(&raw) {
-            Ok(RecoverySelection {
-                status:
-                    Some(
-                        policy::MonitorStatus::Running
-                        | policy::MonitorStatus::Starting
-                        | policy::MonitorStatus::Approval,
-                    ),
-            }) => ids.push(id),
-            Ok(_) => {}
-            Err(_) => eprintln!("startup monitor recovery skipped row id={id}: invalid record"),
-        }
-    }
-    Ok(ids)
-}
-
-struct RecoverySelectionVisitor;
-
-impl<'de> Visitor<'de> for RecoverySelectionVisitor {
-    type Value = RecoverySelection;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a persisted monitor record")
-    }
-
-    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-    where
-        M: MapAccess<'de>,
-    {
-        let mut status = None;
-        while let Some(key) = map.next_key::<RecoveryField>()? {
-            if matches!(key, RecoveryField::Status) {
-                let raw = map.next_value::<&serde_json::value::RawValue>()?;
-                status = serde_json::from_str::<policy::MonitorStatus>(raw.get()).ok();
-            } else {
-                map.next_value::<IgnoredAny>()?;
-            }
-        }
-        Ok(RecoverySelection { status })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(field_identifier)]
-enum RecoveryField {
-    #[serde(rename = "status")]
-    Status,
-    #[serde(other)]
-    Other,
-}
-
-struct RecoverySelection {
-    status: Option<policy::MonitorStatus>,
-}
-
-impl<'de> Deserialize<'de> for RecoverySelection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(RecoverySelectionVisitor)
-    }
+    Ok(StartupRecoveryRepository::active_monitors(tx)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
 }
 
 fn store_remote_exit_event(
@@ -1325,15 +1237,20 @@ mod recovery_selection_tests {
                     ('malformed', '{invalid json}');",
             )
             .expect("monitor fixture");
+        studio_runtime_store::StartupRecoveryRepository::prepare_indexes(&connection)
+            .expect("startup recovery indexes");
         let tx = connection.transaction().expect("fixture transaction");
 
+        // Selection uses SQLite's JSON reader through the startup partial
+        // index: a duplicated key resolves to its first literal occurrence.
+        // No writer produces duplicate keys; malformed rows stay unselected.
         assert_eq!(
             active_monitor_ids(&tx).expect("active monitor selection"),
             vec![
                 "a-approval",
                 "b-starting",
-                "duplicate-escaped-key",
-                "duplicate-invalid-first",
+                "duplicate-invalid-last",
+                "duplicate-unknown-last",
                 "z-running"
             ]
         );

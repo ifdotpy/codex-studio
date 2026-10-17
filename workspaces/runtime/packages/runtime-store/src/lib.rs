@@ -107,6 +107,7 @@ pub use repositories::scheduler::{
     AccountWakePage, AcknowledgedSteer, ClaimedEvents, ClaimedSteer, STEER_UNCONFIRMED_ERROR,
     SchedulerRepository, TurnAttemptIdentity,
 };
+pub use repositories::startup_recovery::{self, StartupRecoveryRepository};
 pub use repositories::sync_documents::{
     ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH, EntityPage, EntityRow, SyncDocument,
     SyncDocumentsRepository,
@@ -1086,6 +1087,7 @@ impl RuntimeStore {
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
                 AgentRepository::prepare_change_journal(transaction)?;
                 feature_schema::prepare(transaction)?;
+                StartupRecoveryRepository::prepare_indexes(transaction)?;
                 schema::verify_bootstrap(transaction)?;
                 verify_observed_tables_are_rowid(transaction)
             })

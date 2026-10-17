@@ -39,6 +39,7 @@ pub(crate) mod reviewer_archive;
 pub(crate) mod rules;
 pub mod rules_tick;
 pub(crate) mod scheduler;
+pub mod startup_recovery;
 pub(crate) mod sync_documents;
 pub mod system_reads;
 pub(crate) mod tasks;

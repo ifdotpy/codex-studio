@@ -4,7 +4,9 @@ use crate::tool_requests::{admission, lifecycle};
 use serde_json::Value;
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path};
-use studio_runtime_store::{Connection, RuntimeStore, Transaction, system_reads as records};
+use studio_runtime_store::{
+    Connection, RuntimeStore, StartupRecoveryRepository, Transaction, system_reads as records,
+};
 
 /// A read-only snapshot of unresolved tool receipts. Filesystem-backed payloads
 /// are resolved before the caller opens its write transaction; the raw database
@@ -189,14 +191,7 @@ pub async fn recover_tool_requests_on_startup(
     }
     store
         .transaction_with(move |tx| {
-            let ids = {
-                let mut statement = tx.prepare_cached(
-                    "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.stage') IN ('queued','running')",
-                )?;
-                statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
+            let ids = StartupRecoveryRepository::unsettled_tool_request_ids(tx)?;
             for id in &ids {
                 let mut record = records::get(tx, "runtime_tool_requests", id)?
                     .ok_or(CallbackError::Stored("tool request id".into()))?;
@@ -224,16 +219,15 @@ pub async fn recover_connection(
     let state_dir = store.state_dir().to_owned();
     store.transaction_with(move |tx| {
         let mut count = cards;
-        for mut record in records::all(tx, "runtime_tool_requests")? {
+        for id in StartupRecoveryRepository::unsettled_tool_request_ids(tx)? {
+            let mut record = records::get(tx, "runtime_tool_requests", &id)?
+                .ok_or(CallbackError::Stored("tool request id".into()))?;
             if record["accountKey"].as_str().unwrap_or("default") != account
                 || record["connectionId"] != connection
-                || !matches!(record["stage"].as_str(), Some("queued" | "running"))
             {
                 continue;
             }
-            let id = record["id"]
-                .as_str()
-                .ok_or(CallbackError::Stored("tool request id".into()))?;
+            let id = id.as_str();
             // A dispatch still running in this process settles its own claim
             // (result, refusal, or the drop guard); settling it here would hide
             // its real outcome behind a saved unknown result.
