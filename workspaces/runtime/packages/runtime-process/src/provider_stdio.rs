@@ -180,10 +180,13 @@ impl StdioProviderTaskFactory {
                 };
                 // The log writer is a separate thread; completion includes its flush.
                 let stderr_flush = match stderr_log_for_flush {
-                    Some(log) => tokio::task::spawn_blocking(move || log.flush())
-                        .await
-                        .map_err(|_| AdapterError::TaskFailed)
-                        .and_then(|result| result.map_err(process_error)),
+                    Some(log) => crate::blocking_pool::spawn_blocking(
+                        "runtime-process/provider_stdio",
+                        move || log.flush(),
+                    )
+                    .await
+                    .map_err(|_| AdapterError::TaskFailed)
+                    .and_then(|result| result.map_err(process_error)),
                     None => Ok(()),
                 };
                 let cleanup_error = cleanup.as_ref().err().map(ToString::to_string);

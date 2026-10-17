@@ -114,12 +114,15 @@ async fn create_invitation(
             )
         })?;
     let store_for_read = Arc::clone(&store);
-    let enabled = tokio::task::spawn_blocking(move || {
-        store_for_read.read_transaction(|tx| {
-            let snapshot = FederationRepository::snapshot(tx)?;
-            Ok::<_, StoreError>(snapshot["enabled"].as_bool() == Some(true))
-        })
-    })
+    let enabled = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation",
+        move || {
+            store_for_read.read_transaction(|tx| {
+                let snapshot = FederationRepository::snapshot(tx)?;
+                Ok::<_, StoreError>(snapshot["enabled"].as_bool() == Some(true))
+            })
+        },
+    )
     .await
     .map_err(|_| FederationError::Refused("federation settings lookup failed".to_owned()))??;
     if !enabled {
@@ -150,7 +153,7 @@ async fn create_invitation(
     }
     let now = unix_time()?;
     let store_for_read = Arc::clone(&store);
-    let lead_name = tokio::task::spawn_blocking(move || {
+    let lead_name = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/federation", move || {
         store_for_read.read_transaction(|connection| {
             connection
                 .query_row(
@@ -285,7 +288,7 @@ async fn accept_peer(
     uuid::Uuid::parse_str(state_id)
         .map_err(|_| FederationError::Refused("Peer state identity is invalid".to_owned()))?;
     let store_for_read = Arc::clone(&store);
-    let enabled = tokio::task::spawn_blocking(move || {
+    let enabled = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/federation", move || {
         store_for_read.read_transaction(|tx| {
             tx.query_row(
                 "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
@@ -402,7 +405,7 @@ async fn accept_peer(
 }
 
 async fn local_lead_name(store: Arc<RuntimeStore>) -> Result<String, FederationError> {
-    let value = tokio::task::spawn_blocking(move || {
+    let value = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/federation", move || {
         store.read_transaction(|connection| {
             connection
                 .query_row(
@@ -462,16 +465,19 @@ mod tests {
         assert_eq!(result["invitation"]["tailscaleUser"], "owner@example.test");
         assert_eq!(result["invitation"]["tailscaleStatus"], "verified");
         let store_for_read = std::sync::Arc::clone(&store);
-        let identity = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction(|tx| {
-                tx.query_row(
-                    "SELECT record FROM runtime_federation_identity WHERE id='local'",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(studio_runtime_store::StoreError::from)
-            })
-        })
+        let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/federation",
+            move || {
+                store_for_read.read_transaction(|tx| {
+                    tx.query_row(
+                        "SELECT record FROM runtime_federation_identity WHERE id='local'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)
+                })
+            },
+        )
         .await
         .expect("identity read worker completes")
         .expect("identity row reads");

@@ -172,15 +172,18 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
         .expect("writer starts before deadline")
         .expect("writer holds transaction");
     let reader_store = Arc::clone(&store);
-    let reader = tokio::task::spawn_blocking(move || {
-        reader_store.read_transaction(|tx| {
-            Ok(
-                tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
-                    r.get::<_, String>(0)
-                })?,
-            )
-        })
-    });
+    let reader = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/analytics_history_checkpoint",
+        move || {
+            reader_store.read_transaction(|tx| {
+                Ok(
+                    tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
+                        r.get::<_, String>(0)
+                    })?,
+                )
+            })
+        },
+    );
     let result = tokio::time::timeout(Duration::from_secs(5), reader).await;
     release_writer.send(()).expect("release writer");
     writer.await.expect("writer task");

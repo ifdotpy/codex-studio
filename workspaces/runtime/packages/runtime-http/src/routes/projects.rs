@@ -19,8 +19,9 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 
 struct RadioCreationAdapter {
-    service: studio_runtime_services::model_catalog::ModelCatalogService,
-    runtime: tokio::runtime::Handle,
+    /// Model lists fetched before blocking preparation, keyed by account key;
+    /// an account whose list request failed is absent.
+    model_lists: std::collections::BTreeMap<String, Value>,
     rows: Vec<Value>,
     identities: Option<[AccountIdentity; 2]>,
 }
@@ -35,19 +36,14 @@ impl CreationCatalog for RadioCreationAdapter {
         fast_mode: bool,
         daybreak_enabled: bool,
     ) -> Result<ExecutionSettings, CreateError> {
-        let provider = account
+        account
             .provider
             .as_deref()
             .ok_or(CreateError::InvalidCreation("provider"))?;
         let value = self
-            .runtime
-            .block_on(studio_runtime_services::model_catalog::ModelListPort::list(
-                &self.service,
-                account_key,
-                provider,
-                json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
-            ))
-            .map_err(|_| CreateError::Internal)?;
+            .model_lists
+            .get(account_key)
+            .ok_or(CreateError::Internal)?;
         let row = value
             .get("data")
             .and_then(Value::as_array)
@@ -188,6 +184,45 @@ impl studio_runtime_services::radio_runtime::RadioCreation for RadioCreationAdap
         studio_runtime_services::host_worker_create::recheck(tx, drafts, accounts)
             .map_err(radio_create_error)
     }
+}
+
+/// Fetch each available radio participant's model list on the async runtime,
+/// so blocking preparation never waits on a future.
+async fn radio_model_lists(
+    service: &studio_runtime_services::model_catalog::ModelCatalogService,
+    body: &Value,
+    rows: &[Value],
+) -> std::collections::BTreeMap<String, Value> {
+    let mut lists = std::collections::BTreeMap::new();
+    let participants = body.get("participants").and_then(Value::as_array);
+    for key in participants
+        .into_iter()
+        .flatten()
+        .filter_map(|participant| participant.get("account_key").and_then(Value::as_str))
+    {
+        let Some(row) = rows.iter().find(|row| {
+            row.get("id").and_then(Value::as_str) == Some(key)
+                && row.get("deleted").and_then(Value::as_bool) != Some(true)
+                && row.get("disconnected").and_then(Value::as_bool) != Some(true)
+        }) else {
+            continue;
+        };
+        let provider = row
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex");
+        if let Ok(value) = studio_runtime_services::model_catalog::ModelListPort::list(
+            service,
+            key,
+            provider,
+            json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
+        )
+        .await
+        {
+            lists.insert(key.to_owned(), value);
+        }
+    }
+    lists
 }
 
 fn radio_create_error(error: CreateError) -> ProjectsError {
@@ -1102,9 +1137,9 @@ async fn peer_teams(
             .snapshot()
             .map_err(|_| ApiError::internal())?
             .accounts;
+        let model_lists = radio_model_lists(&state.model_catalog, &body, &rows).await;
         let creation = RadioCreationAdapter {
-            service: state.model_catalog.clone(),
-            runtime: tokio::runtime::Handle::current(),
+            model_lists,
             rows,
             identities: None,
         };

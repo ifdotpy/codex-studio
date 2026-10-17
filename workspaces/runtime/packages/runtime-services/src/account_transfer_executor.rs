@@ -218,9 +218,12 @@ pub struct AccountTransferExecutor {
 async fn run_transfer_blocking<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, TransferError> + Send + 'static,
 ) -> Result<T, TransferError> {
-    tokio::task::spawn_blocking(operation)
-        .await
-        .map_err(|_| TransferError::Refused("Account transfer preparation worker stopped"))?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_transfer_executor",
+        operation,
+    )
+    .await
+    .map_err(|_| TransferError::Refused("Account transfer preparation worker stopped"))?
 }
 
 struct ProviderReadContext<'a> {

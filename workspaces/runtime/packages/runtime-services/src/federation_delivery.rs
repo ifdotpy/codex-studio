@@ -86,48 +86,51 @@ impl FederationTransport for HttpsFederationTransport {
             if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
                 return Err(transport::RemoteTransportError::ExchangeUnknown);
             }
-            let response = tokio::task::spawn_blocking(move || {
-                let timeout = deadline
-                    .checked_duration_since(Instant::now())
-                    .filter(|remaining| !remaining.is_zero())
-                    .filter(|_| !cancelled.load(Ordering::Acquire))
-                    .ok_or(transport::RemoteTransportError::ExchangeUnknown)?;
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(transport::RemoteTransportError::ExchangeUnknown);
-                }
-                let headers = headers
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str()))
-                    .collect::<Vec<_>>();
-                let response = transport::exchange_paired_request(
-                    &store,
-                    transport::PairedRequest {
-                        server_id: &server_id,
-                        public_key: &public_key,
-                        method: "POST",
-                        url: &url,
-                        headers: &headers,
-                        body: &body,
-                        timeout,
-                        response_limit: transport::MAX_REQUEST_BYTES,
-                    },
-                )?;
-                if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-                    return Err(transport::RemoteTransportError::ExchangeUnknown);
-                }
-                if response.status != 200 {
-                    return Err(transport::RemoteTransportError::InvalidResponse);
-                }
-                let link_advert = response
-                    .headers
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
-                    .map(|(_, value)| value.clone());
-                Ok(FederationTransportResponse {
-                    body: response.body,
-                    link_advert,
-                })
-            })
+            let response = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/federation_delivery",
+                move || {
+                    let timeout = deadline
+                        .checked_duration_since(Instant::now())
+                        .filter(|remaining| !remaining.is_zero())
+                        .filter(|_| !cancelled.load(Ordering::Acquire))
+                        .ok_or(transport::RemoteTransportError::ExchangeUnknown)?;
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(transport::RemoteTransportError::ExchangeUnknown);
+                    }
+                    let headers = headers
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect::<Vec<_>>();
+                    let response = transport::exchange_paired_request(
+                        &store,
+                        transport::PairedRequest {
+                            server_id: &server_id,
+                            public_key: &public_key,
+                            method: "POST",
+                            url: &url,
+                            headers: &headers,
+                            body: &body,
+                            timeout,
+                            response_limit: transport::MAX_REQUEST_BYTES,
+                        },
+                    )?;
+                    if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                        return Err(transport::RemoteTransportError::ExchangeUnknown);
+                    }
+                    if response.status != 200 {
+                        return Err(transport::RemoteTransportError::InvalidResponse);
+                    }
+                    let link_advert = response
+                        .headers
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+                        .map(|(_, value)| value.clone());
+                    Ok(FederationTransportResponse {
+                        body: response.body,
+                        link_advert,
+                    })
+                },
+            )
             .await
             .map_err(|_| transport::RemoteTransportError::ExchangeUnknown)??;
             Ok(response)
@@ -185,25 +188,28 @@ pub async fn pair_peer(
 ) -> Result<Value> {
     let store_for_read = Arc::clone(&store);
     let peer_id_for_read = peer_id.to_owned();
-    let (identity, record) = tokio::task::spawn_blocking(move || {
-        let identity = transport::load_federation_identity(&store_for_read)?;
-        let record = store_for_read.read_transaction(|connection| {
-            let raw: Option<String> = connection
-                .query_row(
-                    "SELECT record FROM runtime_federation_peers WHERE id=?1",
-                    [&peer_id_for_read],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            raw.map(|raw| serde_json::from_str::<Value>(&raw))
-                .transpose()
-                .map_err(|_| {
-                    StoreError::SchemaMismatch("invalid federation peer record".to_owned())
-                })?
-                .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
-        })?;
-        Ok::<_, Error>((identity, record))
-    })
+    let (identity, record) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || {
+            let identity = transport::load_federation_identity(&store_for_read)?;
+            let record = store_for_read.read_transaction(|connection| {
+                let raw: Option<String> = connection
+                    .query_row(
+                        "SELECT record FROM runtime_federation_peers WHERE id=?1",
+                        [&peer_id_for_read],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                raw.map(|raw| serde_json::from_str::<Value>(&raw))
+                    .transpose()
+                    .map_err(|_| {
+                        StoreError::SchemaMismatch("invalid federation peer record".to_owned())
+                    })?
+                    .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
+            })?;
+            Ok::<_, Error>((identity, record))
+        },
+    )
     .await
     .map_err(|_| Error::Unavailable("federation/peer-read-worker"))??;
     if record["status"] == "revoked"
@@ -390,10 +396,12 @@ pub(crate) async fn pump_peer_until(
         return Ok(0);
     }
     let store_for_read = Arc::clone(&store);
-    let identity =
-        tokio::task::spawn_blocking(move || transport::load_federation_identity(&store_for_read))
-            .await
-            .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || transport::load_federation_identity(&store_for_read),
+    )
+    .await
+    .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
     let identity = Arc::new(identity);
     let peer_id_owned = peer_id.to_owned();
     let identity_for_claim = Arc::clone(&identity);
@@ -574,10 +582,12 @@ pub async fn send_message(
     now: f64,
 ) -> Result<Value> {
     let store_for_read = Arc::clone(&store);
-    let identity =
-        tokio::task::spawn_blocking(move || transport::load_federation_identity(&store_for_read))
-            .await
-            .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || transport::load_federation_identity(&store_for_read),
+    )
+    .await
+    .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
     let identity = Arc::new(identity);
     let sender = sender.to_owned();
     let room_id = room_id.to_owned();
@@ -605,27 +615,30 @@ pub async fn user_message(
     }
     let store_for_read = Arc::clone(&store);
     let room_id_for_read = room_id.to_owned();
-    let sender = tokio::task::spawn_blocking(move || {
-        store_for_read.read_transaction(|connection| {
-            let room = Repo::record(connection, Table::Room, &room_id_for_read, "")?.ok_or(
-                StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
-            )?;
-            let sender = room
-                .get("localParticipants")
-                .and_then(Value::as_array)
-                .and_then(|participants| {
-                    participants.iter().find_map(|person| {
-                        (person.get("role").and_then(Value::as_str) == Some("lead"))
-                            .then(|| person.get("id").and_then(Value::as_str))
-                            .flatten()
+    let sender = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || {
+            store_for_read.read_transaction(|connection| {
+                let room = Repo::record(connection, Table::Room, &room_id_for_read, "")?.ok_or(
+                    StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
+                )?;
+                let sender = room
+                    .get("localParticipants")
+                    .and_then(Value::as_array)
+                    .and_then(|participants| {
+                        participants.iter().find_map(|person| {
+                            (person.get("role").and_then(Value::as_str) == Some("lead"))
+                                .then(|| person.get("id").and_then(Value::as_str))
+                                .flatten()
+                        })
                     })
-                })
-                .ok_or(StoreError::SchemaMismatch(
-                    "the local lead is not a room participant".to_owned(),
-                ))?;
-            Ok::<_, StoreError>(sender.to_owned())
-        })
-    })
+                    .ok_or(StoreError::SchemaMismatch(
+                        "the local lead is not a room participant".to_owned(),
+                    ))?;
+                Ok::<_, StoreError>(sender.to_owned())
+            })
+        },
+    )
     .await
     .map_err(|_| Error::Unavailable("federation/room-read-worker"))??;
     send_message(store, &sender, room_id, text, key, now).await

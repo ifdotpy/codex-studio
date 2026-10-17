@@ -2212,9 +2212,11 @@ mod diagnostics_hook_tests {
                 })
                 .await
         });
-        tokio::task::spawn_blocking(move || entered_rx.recv().expect("slow job entered"))
-            .await
-            .expect("entered wait");
+        crate::blocking_pool::spawn_blocking("runtime-store/lib", move || {
+            entered_rx.recv().expect("slow job entered")
+        })
+        .await
+        .expect("entered wait");
         let queued_store = Arc::clone(&store);
         let queued_line = line!() + 3;
         let queued = tokio::spawn(async move {
@@ -3328,7 +3330,7 @@ mod commit_notification_tests {
         drop(store);
 
         release.wait();
-        let server_id = tokio::task::spawn_blocking(move || {
+        let server_id = crate::blocking_pool::spawn_blocking("runtime-store/lib", move || {
             identity_receiver
                 .recv_timeout(Duration::from_secs(2))
                 .expect("submitted callback completes")

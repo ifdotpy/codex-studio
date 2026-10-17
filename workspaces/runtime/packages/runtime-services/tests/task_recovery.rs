@@ -155,9 +155,12 @@ async fn task_consumer_resolves_local_receipt_without_native_read() {
             })
         }
     }
-    let output = tokio::task::spawn_blocking(|| run_oracle("task_oracle.py"))
-        .await
-        .expect("oracle task");
+    let output = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/task_recovery",
+        || run_oracle("task_oracle.py"),
+    )
+    .await
+    .expect("oracle task");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("valid recovery fixture");
     for name in ["exact", "running-unknown-True"] {
@@ -284,9 +287,12 @@ async fn native_task_consumer_preserves_duplicate_ambiguity() {
             })
         }
     }
-    let output = tokio::task::spawn_blocking(|| run_oracle("task_oracle.py"))
-        .await
-        .expect("oracle task");
+    let output = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/task_recovery",
+        || run_oracle("task_oracle.py"),
+    )
+    .await
+    .expect("oracle task");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
     let case = &cases[0];

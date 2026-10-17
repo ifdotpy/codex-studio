@@ -122,17 +122,20 @@ impl Credentials {
     ) -> Result<RemoteIdentity, CredentialError> {
         validate_federation_label(label)?;
         let store_for_read = Arc::clone(&store);
-        let exists = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction(|connection| {
-                connection
+        let exists = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/federation_credentials",
+            move || {
+                store_for_read.read_transaction(|connection| {
+                    connection
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
                         [],
                         |row| row.get::<_, bool>(0),
                     )
                     .map_err(StoreError::from)
-            })
-        })
+                })
+            },
+        )
         .await
         .map_err(|_| CredentialError::Storage)??;
         if exists {
@@ -291,15 +294,16 @@ impl Credentials {
         drop(saved);
         let root = store.root().to_path_buf();
         let target = target.to_owned();
-        tokio::task::spawn_blocking(move || {
-            match fs::symlink_metadata(root.join("multi-server/identity.json")) {
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/federation_credentials",
+            move || match fs::symlink_metadata(root.join("multi-server/identity.json")) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(_) => Err(CredentialError::Storage),
                 Ok(_) => {
                     Ok(target == remote_transport::read_multi_server_identity(&root)?.server_id)
                 }
-            }
-        })
+            },
+        )
         .await
         .map_err(|_| CredentialError::Storage)?
     }
@@ -317,15 +321,16 @@ impl Credentials {
         }
         let root = store.root().to_path_buf();
         let target = target.to_owned();
-        tokio::task::spawn_blocking(move || {
-            match fs::symlink_metadata(root.join("multi-server/identity.json")) {
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/federation_credentials",
+            move || match fs::symlink_metadata(root.join("multi-server/identity.json")) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(_) => Err(CredentialError::Storage),
                 Ok(_) => {
                     Ok(target == remote_transport::read_multi_server_identity(&root)?.server_id)
                 }
-            }
-        })
+            },
+        )
         .await
         .map_err(|_| CredentialError::Storage)?
     }
@@ -355,23 +360,27 @@ impl Credentials {
             let root = store.root().to_path_buf();
             #[cfg(test)]
             let gate = write_gate.clone();
-            let mut identity = tokio::task::spawn_blocking(move || {
-                let path = root.join("multi-server/identity.json");
-                match fs::symlink_metadata(&path) {
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        private_directory(&root)?;
-                        let identity = generate()?;
-                        #[cfg(test)]
-                        if let Some(gate) = gate {
-                            gate.pause_first_write();
+            let mut identity = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/federation_credentials",
+                move || {
+                    let path = root.join("multi-server/identity.json");
+                    match fs::symlink_metadata(&path) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            private_directory(&root)?;
+                            let identity = generate()?;
+                            #[cfg(test)]
+                            if let Some(gate) = gate {
+                                gate.pause_first_write();
+                            }
+                            write_identity(&root, &identity, true)?;
                         }
-                        write_identity(&root, &identity, true)?;
+                        Err(_) => return Err(CredentialError::Storage),
                     }
-                    Err(_) => return Err(CredentialError::Storage),
-                }
-                remote_transport::read_multi_server_identity(&root).map_err(CredentialError::from)
-            })
+                    remote_transport::read_multi_server_identity(&root)
+                        .map_err(CredentialError::from)
+                },
+            )
             .await
             .map_err(|_| CredentialError::Storage)??;
             Self::recover_with_notification(
@@ -397,9 +406,10 @@ impl Credentials {
         // File access stays outside store transactions; the writer rechecks
         // the journal before marking each recovery complete.
         let store_for_read = Arc::clone(&store);
-        let pending = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction_with_error(Journal::pending_names)
-        })
+        let pending = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/federation_credentials",
+            move || store_for_read.read_transaction_with_error(Journal::pending_names),
+        )
         .await
         .map_err(|_| CredentialError::Storage)??;
         if pending.is_empty() {
@@ -416,13 +426,16 @@ impl Credentials {
             let updated_for_write = updated.clone();
             #[cfg(test)]
             let gate = write_gate.clone();
-            tokio::task::spawn_blocking(move || {
-                #[cfg(test)]
-                if let Some(gate) = gate {
-                    gate.pause_first_write();
-                }
-                write_identity(&root, &updated_for_write, false)
-            })
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/federation_credentials",
+                move || {
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.pause_first_write();
+                    }
+                    write_identity(&root, &updated_for_write, false)
+                },
+            )
             .await
             .map_err(|_| CredentialError::Storage)??;
             after_identity_write(&id);
@@ -527,10 +540,13 @@ async fn load_federation_identity(
     store: &Arc<RuntimeStore>,
 ) -> Result<RemoteIdentity, CredentialError> {
     let store_for_read = Arc::clone(store);
-    tokio::task::spawn_blocking(move || remote_transport::load_federation_identity(&store_for_read))
-        .await
-        .map_err(|_| CredentialError::Storage)?
-        .map_err(CredentialError::Identity)
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_credentials",
+        move || remote_transport::load_federation_identity(&store_for_read),
+    )
+    .await
+    .map_err(|_| CredentialError::Storage)?
+    .map_err(CredentialError::Identity)
 }
 
 fn public_identity(identity: &StoredMultiServerIdentity, origin: Option<&str>) -> Value {
@@ -782,10 +798,13 @@ mod tests {
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                tokio::task::spawn_blocking({
-                    let gate = Arc::clone(&gate);
-                    move || gate.wait_until_reached()
-                }),
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/federation_credentials",
+                    {
+                        let gate = Arc::clone(&gate);
+                        move || gate.wait_until_reached()
+                    }
+                ),
             )
             .await
             .expect("first native write gate timeout")
@@ -843,10 +862,13 @@ mod tests {
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                tokio::task::spawn_blocking({
-                    let gate = Arc::clone(&gate);
-                    move || gate.wait_until_reached()
-                }),
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/federation_credentials",
+                    {
+                        let gate = Arc::clone(&gate);
+                        move || gate.wait_until_reached()
+                    }
+                ),
             )
             .await
             .expect("initial native write gate timeout")

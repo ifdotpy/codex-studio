@@ -159,12 +159,15 @@ mod support;
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() {
-    let (state, mut supervisor, python) = tokio::task::spawn_blocking(|| {
-        let state = support::DisposableState::new();
-        let python = support::python_executable();
-        let supervisor = support::SupervisorProcess::start(&state, &python);
-        (state, supervisor, python)
-    })
+    let (state, mut supervisor, python) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        || {
+            let state = support::DisposableState::new();
+            let python = support::python_executable();
+            let supervisor = support::SupervisorProcess::start(&state, &python);
+            (state, supervisor, python)
+        },
+    )
     .await
     .unwrap();
     let factory = SupervisorProviderTaskFactory::new(state.identity());
@@ -217,7 +220,10 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     assert_eq!(info.pid, pid);
     let _exit = attachment.shutdown().await;
     // Fixture teardown owns the supervisor and its surviving child.
-    tokio::task::spawn_blocking(move || drop(supervisor))
-        .await
-        .unwrap();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
 }

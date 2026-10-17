@@ -908,16 +908,19 @@ pub async fn copy_guest_credentials(
     let dispatch_agent = target.agent_id.to_owned();
     let dispatch_account = target.account_key.to_owned();
     let dispatch_provider = target.provider.to_owned();
-    let still_current = tokio::task::spawn_blocking(move || {
-        let connection = dispatch_store.read()?;
-        vm_actor_matches(
-            &connection,
-            &dispatch_agent,
-            actor_epoch,
-            &dispatch_account,
-            Some(&dispatch_provider),
-        )
-    })
+    let still_current = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/linux_vm_provider",
+        move || {
+            let connection = dispatch_store.read()?;
+            vm_actor_matches(
+                &connection,
+                &dispatch_agent,
+                actor_epoch,
+                &dispatch_account,
+                Some(&dispatch_provider),
+            )
+        },
+    )
     .await
     .map_err(|_| GuestProviderError::Task)??;
     if !still_current {
@@ -1144,12 +1147,15 @@ async fn call_guest(
     request_id: Option<String>,
     timeout: Duration,
 ) -> std::result::Result<Value, GuestError> {
-    tokio::task::spawn_blocking(move || guest.call(method, &params, request_id.as_deref(), timeout))
-        .await
-        .map_err(|_| GuestError::Protocol {
-            message: "guest provider worker task failed",
-            uncertain: true,
-        })?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/linux_vm_provider",
+        move || guest.call(method, &params, request_id.as_deref(), timeout),
+    )
+    .await
+    .map_err(|_| GuestError::Protocol {
+        message: "guest provider worker task failed",
+        uncertain: true,
+    })?
 }
 
 fn parse_info(handle: &str, value: Value) -> Result<ProviderInfo> {

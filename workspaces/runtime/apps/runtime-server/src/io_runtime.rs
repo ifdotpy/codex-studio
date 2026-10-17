@@ -344,9 +344,12 @@ mod tests {
             boot_id: "fixture-boot".into(),
         };
         let bridge_sender = runtime.persistence.clone();
-        tokio::task::spawn_blocking(move || {
-            persist_identity_on_owner(&bridge_sender, "terminal-fixture", Some(bridge_identity))
-        })
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/io_runtime",
+            move || {
+                persist_identity_on_owner(&bridge_sender, "terminal-fixture", Some(bridge_identity))
+            },
+        )
         .await
         .expect("blocking callback bridge")
         .expect("callback persisted identity");

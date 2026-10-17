@@ -92,15 +92,19 @@ async fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>
         .await
 }
 async fn oracle(script: &'static str) -> std::process::Output {
-    tokio::task::spawn_blocking(move || {
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/recovery")
-            .join(script);
-        std::process::Command::new(python_test_support::prepared_python(&source))
-            .arg(path)
-            .output()
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/recovery_history",
+        move || {
+            let source =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/recovery")
+                .join(script);
+            std::process::Command::new(python_test_support::prepared_python(&source))
+                .arg(path)
+                .output()
+        },
+    )
     .await
     .expect("oracle process task")
     .expect("oracle process")

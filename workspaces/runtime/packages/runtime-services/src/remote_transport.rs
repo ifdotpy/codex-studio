@@ -787,25 +787,28 @@ pub async fn exchange_multi_server(
     let body = input.body.to_vec();
     let timeout = input.timeout;
     let store_for_transport = std::sync::Arc::clone(&store);
-    let response = tokio::task::spawn_blocking(move || {
-        let headers = owned_headers
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect::<Vec<_>>();
-        exchange_paired_request(
-            &store_for_transport,
-            PairedRequest {
-                server_id: &server_id,
-                public_key: &public_key,
-                method: &method,
-                url: &url,
-                headers: &headers,
-                body: &body,
-                timeout,
-                response_limit: MAX_RESPONSE_BYTES,
-            },
-        )
-    })
+    let response = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/remote_transport",
+        move || {
+            let headers = owned_headers
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect::<Vec<_>>();
+            exchange_paired_request(
+                &store_for_transport,
+                PairedRequest {
+                    server_id: &server_id,
+                    public_key: &public_key,
+                    method: &method,
+                    url: &url,
+                    headers: &headers,
+                    body: &body,
+                    timeout,
+                    response_limit: MAX_RESPONSE_BYTES,
+                },
+            )
+        },
+    )
     .await
     .map_err(|_| RemoteTransportError::ExchangeUnknown)??;
     if (300..400).contains(&response.status) {

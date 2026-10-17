@@ -245,9 +245,12 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
         Box::pin(async move {
             // Payload IO remains on the blocking pool and completes before the
             // task completion transaction opens.
-            let resolved = tokio::task::spawn_blocking(move || resolver(&receipt))
-                .await
-                .map_err(|_| RecoveryError::EffectsUnavailable)??;
+            let resolved = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/task_recovery_store",
+                move || resolver(&receipt),
+            )
+            .await
+            .map_err(|_| RecoveryError::EffectsUnavailable)??;
             if resolved.to_string().len() > crate::recovery_history::MAX_RESPONSE_BYTES {
                 return Err(crate::recovery_history::HistoryError::Capacity.into());
             }

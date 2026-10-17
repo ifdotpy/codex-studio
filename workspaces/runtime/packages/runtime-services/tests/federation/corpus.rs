@@ -1013,9 +1013,10 @@ impl delivery::FederationTransport for PeerTransport {
             .expect("fixture operation");
             let response = if let Some(kind) = self.bad_receipt {
                 let receiver = std::sync::Arc::clone(&self.receiver);
-                let identity = tokio::task::spawn_blocking(move || {
-                    transport::load_federation_identity(&receiver)
-                })
+                let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/tests/federation/corpus",
+                    move || transport::load_federation_identity(&receiver),
+                )
                 .await
                 .expect("fixture identity worker")
                 .expect("fixture identity");
