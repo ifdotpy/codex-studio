@@ -8,6 +8,19 @@ publish.workspace = true
 name = "studio_client_core"
 crate-type = ["rlib", "cdylib"]
 
+[features]
+# Opt-in macOS system checks (examples/). They link macOS frameworks, so
+# Linux workspace builds skip them; run with `--features macos-checks` on macOS.
+macos-checks = []
+
+[[example]]
+name = "document_check"
+required-features = ["macos-checks"]
+
+[[example]]
+name = "voice_playback_check"
+required-features = ["macos-checks"]
+
 [dependencies]
 studio-client-domain = { path = "../client-domain" }
 libc.workspace = true
