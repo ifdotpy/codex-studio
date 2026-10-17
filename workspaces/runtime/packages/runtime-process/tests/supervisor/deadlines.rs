@@ -473,7 +473,8 @@ fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
         .clone()
         .unwrap();
     child.reap().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Hang guard only: 71 durable appends take well under a second when idle.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let exit_sequence = loop {
         if let Some(sequence) = child.durable_exit_sequence().unwrap() {
             break sequence;
@@ -482,7 +483,7 @@ fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
             Instant::now() < deadline,
             "child exit event did not become durable"
         );
-        thread::yield_now();
+        thread::sleep(Duration::from_millis(10));
     };
     assert_eq!(exit_sequence, 71);
 
