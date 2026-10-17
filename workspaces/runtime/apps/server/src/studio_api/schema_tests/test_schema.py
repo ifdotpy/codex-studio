@@ -705,6 +705,17 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("_syncEntities", "_syncEntitiesAfter"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # Stored provider data: an exec call's command can be its argument vector,
+        # and a turn error can be the provider's error object.
+        add("/components/schemas/AnalyticsItemRecord/properties/command", "type")
+        for pointer in (
+            "/components/schemas/SearchItemResponse/properties/turnError",
+            "/components/schemas/TranscriptItemResponse/properties/turnError",
+            "/components/schemas/TranscriptMessageRecord/properties/turnError",
+            "/components/schemas/TranscriptPageResponse/properties/items/items/properties/turnError",
+        ):
+            add(pointer, "type")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

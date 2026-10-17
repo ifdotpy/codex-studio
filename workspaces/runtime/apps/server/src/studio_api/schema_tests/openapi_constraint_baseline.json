@@ -41,6 +41,12 @@
       "candidate": "['archived', 'archiving', 'fallback', 'read_only', 'ready', 'removed']"
     },
     {
+      "pointer": "/components/schemas/AnalyticsItemRecord/properties/command",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
       "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP95Ms",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -417,6 +423,12 @@
       "constraint": "property",
       "baseline": "absent from closed object",
       "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SearchItemResponse/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
     },
     {
       "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
@@ -813,6 +825,24 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptItemResponse/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptMessageRecord/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptPageResponse/properties/items/items/properties/turnError",
+      "constraint": "type",
+      "baseline": "'string'",
+      "candidate": "None"
     },
     {
       "pointer": "/components/schemas/WalTelemetry/properties/analytics",
