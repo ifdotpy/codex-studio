@@ -635,3 +635,11 @@ fn frame_trimming_cannot_hide_terminal_exit_or_succeed_with_oversized_first_even
     result.return_code = None;
     assert!(batch_response(Some(2), 0, None, result).is_err());
 }
+
+#[test]
+fn an_accept_error_skips_one_connection_and_keeps_listening() {
+    let error = std::io::Error::from(rustix::io::Errno::MFILE);
+    assert!(accepted(Err(error)).is_none());
+    let (left, _right) = UnixStream::pair().unwrap();
+    assert!(accepted(Ok(left)).is_some());
+}
