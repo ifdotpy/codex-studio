@@ -65,7 +65,7 @@ fn account_wake_capacity_candidate(record: &str) -> String {
 /// Index over pending child results by creation time, for the release deadline.
 const CHILD_RESULT_PENDING_INDEX: &str = "runtime_event_child_result_pending";
 /// Index over agents by parent, for the active-sibling check.
-const AGENT_PARENT_INDEX: &str = "runtime_agent_parent";
+const AGENT_PARENT_INDEX: &str = "runtime_agent_valid_parent";
 
 /// The indexed parent key of an agent record; malformed JSON has no parent.
 fn agent_parent_key(record: &str) -> String {
@@ -76,15 +76,26 @@ fn agent_parent_key(record: &str) -> String {
 /// still waits for an active sibling child of the same parent. `held_after`
 /// binds the Unix time before which results are no longer held (now minus the
 /// effective hold), so the comparison stays on the indexed `created` column.
+/// The unary `+` drops the column's text affinity so the parent expression
+/// index can seek on the correlated agent id.
 fn child_result_held(event: &str, held_after: &str) -> String {
     format!(
         "({event}.kind='child_result' AND {event}.created>{held_after} \
-         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE {}={event}.agent \
+         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE {}=+{event}.agent \
            AND CASE WHEN json_valid(c.record) THEN ( \
              json_extract(c.record,'$.deletedAt') IS NULL \
              AND json_extract(c.record,'$.status') IN ('queued','starting','running')) \
            ELSE 0 END))",
         agent_parent_key("c.record")
+    )
+}
+
+/// The earliest `created` of a held child result; `?1` is the `held_after` bound.
+fn child_result_release_query() -> String {
+    format!(
+        "SELECT MIN(e.created) FROM runtime_events e INDEXED BY {CHILD_RESULT_PENDING_INDEX} \
+         WHERE e.kind='child_result' AND e.status='pending' AND {}",
+        child_result_held("e", "?1")
     )
 }
 
@@ -392,11 +403,7 @@ impl SchedulerRepository {
     pub fn child_result_release_at(connection: &Connection, now: f64) -> StoreResult<Option<f64>> {
         let hold = crate::OrchestrationSettingsRepository::child_result_coalesce(connection)?;
         let earliest: Option<f64> = connection.query_row(
-            &format!(
-                "SELECT MIN(e.created) FROM runtime_events e INDEXED BY {CHILD_RESULT_PENDING_INDEX} \
-                 WHERE e.kind='child_result' AND e.status='pending' AND {}",
-                child_result_held("e", "?1")
-            ),
+            &child_result_release_query(),
             [now - hold.as_secs_f64()],
             |row| row.get(0),
         )?;
@@ -1876,6 +1883,39 @@ mod account_wake_index_tests {
             SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 4, 4, 0.0)
                 .expect("guarded candidate selection skips malformed JSON");
         assert_eq!(page.keys().cloned().collect::<Vec<_>>(), vec!["default"]);
+    }
+
+    #[test]
+    fn child_result_hold_queries_use_their_indexes() {
+        let connection = old_schema();
+        for definition in SchedulerRepository::child_result_hold_index_definitions() {
+            connection
+                .execute_batch(&definition.create_sql)
+                .expect("hold index creates");
+        }
+        let plan = |sql: &str| {
+            connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("query prepares")
+                .query_map([0.0], |row| row.get::<_, String>(3))
+                .expect("plan loads")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("plan rows load")
+                .join(" ")
+        };
+        let release = plan(&super::child_result_release_query());
+        assert!(
+            release.contains(&format!(
+                "{} (created>?)",
+                super::CHILD_RESULT_PENDING_INDEX
+            )),
+            "{release}"
+        );
+        assert!(
+            release.contains(&format!("{} (<expr>=?)", super::AGENT_PARENT_INDEX)),
+            "{release}"
+        );
+        assert!(!release.contains("SCAN"), "{release}");
     }
 
     #[test]

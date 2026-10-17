@@ -578,6 +578,7 @@ class SchemaContractTests(unittest.TestCase):
         )
         self.assertEqual(operation_keys(committed_document) - operation_keys(baseline_document), {
             "GET /api/processes", "GET /api/processes/action", "POST /api/processes/action",
+            "GET /api/orchestration/settings", "POST /api/orchestration/settings",
         })
         reviewed_baseline = copy.deepcopy(baseline_document)
         paths = reviewed_baseline["paths"]
@@ -735,6 +736,11 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("process", "responseTarget"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # The orchestration settings response carries the standard sync envelope.
+        for field in ("_syncEntities", "_syncEntitiesAfter"):
+            add(f"/components/schemas/OrchestrationSettingsResponse/properties/{field}",
+                "@nullable", "@nullableBranch")
 
         # Work results submitted before result files existed keep their text
         # inline and have no resultFile, wherever a work result is embedded.

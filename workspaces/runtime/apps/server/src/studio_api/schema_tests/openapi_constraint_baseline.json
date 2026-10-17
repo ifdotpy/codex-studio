@@ -533,6 +533,30 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/OrchestrationSettingsResponse/properties/_syncEntities",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/OrchestrationSettingsResponse/properties/_syncEntities",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"$ref\":\"#/components/schemas/SyncEntity\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/OrchestrationSettingsResponse/properties/_syncEntitiesAfter",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/OrchestrationSettingsResponse/properties/_syncEntitiesAfter",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/ProcessActionResult/properties/_syncEntities",
       "constraint": "@nullable",
       "baseline": "None",

@@ -1,11 +1,11 @@
 {
   "blockers_ordered_by_operations_unblocked": [],
   "counts": {
-    "implemented": 157,
+    "implemented": 159,
     "named_dependencies": 0,
     "not_registered": 0,
     "partial": 0,
-    "total": 157
+    "total": 159
   },
   "lifecycle_dependencies": {
     "direct provider launch": {
@@ -143,6 +143,11 @@
     {
       "dependencies": [],
       "operation": "GET /api/multi-server/v1/status",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/orchestration/settings",
       "status": "implemented"
     },
     {
@@ -573,6 +578,11 @@
     {
       "dependencies": [],
       "operation": "POST /api/native-command",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/orchestration/settings",
       "status": "implemented"
     },
     {
