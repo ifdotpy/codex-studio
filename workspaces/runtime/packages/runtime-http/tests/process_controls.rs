@@ -44,7 +44,20 @@ impl AccountSessionPort for Port {
             let method = request.method.as_str();
             self.calls.lock().unwrap().push(method.into());
             let mut certainty = RequestCertainty::Written;
+            let mut rejected = false;
             let value = match method {
+                "thread/commandExecution/background" => {
+                    assert_eq!(
+                        request.params,
+                        json!({"threadId":"thread","turnId":"turn","itemId":"toolu-1"})
+                    );
+                    match self.behavior {
+                        "claude_lost" => certainty = RequestCertainty::Unknown,
+                        "claude_rejected" => rejected = true,
+                        _ => {}
+                    }
+                    json!({"status":"backgrounded"})
+                }
                 "thread/backgroundTerminals/list" => {
                     if self.behavior == "owner_changed" {
                         self.store.transaction_with(|tx| {
@@ -66,7 +79,7 @@ impl AccountSessionPort for Port {
                 }
                 "turn/interrupt" => {
                     assert_eq!(request.params["turnId"], "turn");
-                    if self.behavior == "claude" {
+                    if self.behavior.starts_with("claude") {
                         assert_eq!(request.params["stopBackgroundTasks"], false);
                     } else {
                         assert!(request.params.get("stopBackgroundTasks").is_none());
@@ -80,7 +93,11 @@ impl AccountSessionPort for Port {
                 operation: request.operation,
                 ticket: None,
                 certainty,
-                result: Some(ProviderResponse::Reply(value)),
+                result: Some(if rejected {
+                    ProviderResponse::Rejected(json!({"message":"cannot move yet"}))
+                } else {
+                    ProviderResponse::Reply(value)
+                }),
                 not_sent_reason: None,
                 replayed: false,
             })
@@ -117,7 +134,7 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     store.transaction_with(move |tx| {
         let owner=json!({"id":"owner","rootId":"owner","epoch":1,"status":"running",
-            "accountKey":"default","provider":if behavior=="claude" {"claude"} else {"codex"},
+            "accountKey":"default","provider":if behavior.starts_with("claude") {"claude"} else {"codex"},
             "threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
         let task=json!({"id":"owner:command","agent":"owner","kind":"command","itemId":"command",
             "processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default",
@@ -203,4 +220,65 @@ async fn response_stop_preserves_background_tasks_and_rejects_old_turns() {
         assert_eq!(result["response"]["status"], "requested", "{result}");
         assert_eq!(*port.calls.lock().unwrap(), vec!["turn/interrupt"]);
     }
+}
+#[tokio::test]
+async fn background_move_targets_one_item_once_and_keeps_uncertainty() {
+    for (behavior, expected, phase, sent) in [
+        ("claude", "backgrounded", "completed", 1),
+        ("claude_lost", "uncertain", "uncertain", 1),
+        ("claude_rejected", "failed", "completed", 1),
+        ("codex", "failed", "completed", 0),
+    ] {
+        let (_root, app, port) = fixture(behavior).await;
+        let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        let body = json!({"action":"background_command","requestId":"move","agent":"owner","accountKey":"default","epoch":1,"responseTarget":list["responseTarget"],"itemId":"toolu-1"});
+        let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
+        assert_eq!(status, 200, "{behavior}: {result}");
+        assert_eq!(result["status"], phase, "{behavior}: {result}");
+        assert_eq!(
+            result["response"]["status"], expected,
+            "{behavior}: {result}"
+        );
+        assert_eq!(result["response"]["itemId"], "toolu-1");
+        let (status, replay) = call(&app, "POST", "/api/processes/action", body).await;
+        assert_eq!(status, 200, "{replay}");
+        assert_eq!(result, replay);
+        let calls = port.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), sent, "{behavior}: {calls:?}");
+        let (_, saved) = call(
+            &app,
+            "GET",
+            "/api/processes/action?requestId=move&agent=owner&accountKey=default&epoch=1",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(saved, json!({"found":true,"result":result}));
+    }
+}
+#[tokio::test]
+async fn background_move_requires_the_current_turn_and_one_item() {
+    let (_root, app, port) = fixture("claude").await;
+    let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+    let mut body = json!({"action":"background_command","requestId":"move","agent":"owner","accountKey":"default","epoch":1,"responseTarget":list["responseTarget"],"itemId":"toolu-1"});
+    body["responseTarget"]["turnId"] = json!("old-turn");
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", body.clone())
+            .await
+            .0,
+        400
+    );
+    body["responseTarget"]["turnId"] = json!("turn");
+    let mut missing = body.clone();
+    missing.as_object_mut().unwrap().remove("itemId");
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", missing).await.0,
+        400
+    );
+    let mut stop = body.clone();
+    stop["action"] = json!("stop_response");
+    assert_eq!(
+        call(&app, "POST", "/api/processes/action", stop).await.0,
+        400
+    );
+    assert!(port.calls.lock().unwrap().is_empty());
 }

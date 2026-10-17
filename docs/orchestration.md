@@ -677,6 +677,34 @@ in the selected agent's account and thread. Stop does not send model input.
 The command completion event supplies its exit code. Terminal input still uses the
 agent's `write_stdin` tool and preserves whitespace, including the submitted newline.
 
+### Move a running command to the background
+
+A running command in the transcript shows **Move to background** when its provider
+can release the turn without stopping the command. A closed tool group shows the
+same control for its latest running command. The control sends
+`POST /api/processes/action` with `action: "background_command"`, the current
+`responseTarget`, and the command `itemId`. The server saves the receipt before it
+calls the provider and checks the account, epoch, connection, thread, and turn again
+just before that call. A repeated request ID returns the saved result. A lost reply
+stays `uncertain`; **Check result** reads the receipt or sends the same request ID
+again. The provider adapter answers `not_running` when the command already ended or
+is already in the background, so no request can move a command twice or run it again.
+
+- Claude: the bridge maps `thread/commandExecution/background` to the Agent SDK
+  `backgroundTasks(toolUseId)` control (the `background_tasks` control request,
+  the same as Ctrl+B in Claude Code). Claude Code registers a foreground Bash call
+  as a `local_bash` task after about two seconds; the bridge then sets
+  `canMoveToBackground` on the command item. After the move, Claude returns its own
+  tool result with the task ID and output file, and the turn continues. The command
+  item completes with `backgroundTaskId` and no exit code. The task stays in
+  **Current activity** with its Stop control, and the task notification wakes the
+  agent with the result when the command ends.
+- Codex: the app-server has no request that ends a running exec wait early. Unified
+  exec already returns control to the model after `yield_time_ms` (at most 30
+  seconds) and keeps the process as a background terminal, which **Current
+  activity** lists. Codex items never get the flag, so Studio does not show the
+  control and the server refuses the action for this provider.
+
 User terminals use `process/spawn`, `process/writeStdin`, `process/resizePty`,
 and `process/kill` on a dedicated local app-server connection. This connection
 starts no model turns and does not follow account switches. Native Codex owns
