@@ -8,6 +8,7 @@ import sqlite3
 import unittest
 from urllib.parse import urlencode
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from studio_api.persisted_models import PersistedAgentRecord, PersistedMonitorRecord
 
 class ProcessControlsHTTP(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
@@ -29,10 +30,12 @@ class ProcessControlsHTTP(TimedHTTPContractTest, unittest.TestCase):
         agent = {'id': self.owner, 'rootId': self.owner, 'epoch': 1, 'status': 'paused',
                  'name': 'Process contract', 'isLead': True, 'role': 'orchestrator',
                  'accountKey': 'default', 'cwd': str(self.backend.cwd), 'autoWake': False,
-                 'approvalPolicy': 'on-request', 'sandbox': 'workspace-write'}
+                 'approvalPolicy': 'on-request', 'sandbox': {'type': 'workspace-write'}}
         monitor = {'id': self.monitor, 'agent': self.owner, 'epoch': 1, 'status': 'approval',
                    'command': 'never-run', 'created': 1.0, 'bytes': 0, 'tail': '',
                    'log': str(self.backend.state / 'monitor-logs' / (self.monitor + '.log'))}
+        PersistedAgentRecord.model_validate(agent)
+        PersistedMonitorRecord.model_validate(monitor)
         with sqlite3.connect(self.backend.state / 'canvas.sqlite3') as db:
             db.execute('INSERT INTO runtime_agents(id,record) VALUES(?,?)', (self.owner, json.dumps(agent)))
             db.execute('INSERT INTO runtime_monitors(id,record) VALUES(?,?)', (self.monitor, json.dumps(monitor)))
