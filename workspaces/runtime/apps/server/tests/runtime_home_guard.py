@@ -21,6 +21,12 @@ except ImportError:  # pragma: no cover - Windows has no descriptor paths
     fcntl = None
 
 _READLINK = os.readlink
+# One resolution flag per thread, shared by every path guard in the process.
+# While any guard canonicalizes a path, realpath presents each absolute,
+# normalized component to the stacked metadata wrappers; each guard then checks
+# that component lexically instead of starting a nested canonicalization, which
+# would repeat the walk for every component prefix (quadratic metadata calls).
+RESOLVING = threading.local()
 # macOS F_GETPATH fills a MAXPATHLEN buffer; CPython accepts 1024 bytes.
 _MAX_DESCRIPTOR_PATH_BYTES = 1024
 
@@ -58,7 +64,6 @@ class HomeAccessGuard:
             os.path.normcase(form) for root in roots
             for form in (os.path.abspath(root), os.path.realpath(root))))
         self.counters = {"file_checks": 0, "exec_checks": 0, "socket_checks": 0, "blocked": 0}
-        self._local = threading.local()
 
     def _blocked(self, path):
         return any(path == root or path.startswith(root + os.sep) for root in self.roots)
@@ -71,7 +76,7 @@ class HomeAccessGuard:
                 return
         if not isinstance(value, (str, bytes, os.PathLike)):
             return
-        if getattr(self._local, "resolving", False):
+        if getattr(RESOLVING, "active", False):
             # realpath calls these wrappers with absolute normalized components.
             # Check each component before its original lstat/readlink executes.
             if self._blocked(os.path.normcase(os.fsdecode(value))):
@@ -83,11 +88,11 @@ class HomeAccessGuard:
         if self._blocked(path):
             self.counters["blocked"] += 1
             raise PermissionError(f"test isolation blocked {event}: {path}")
-        self._local.resolving = True
+        RESOLVING.active = True
         try:
             resolved = os.path.normcase(os.path.realpath(path))
         finally:
-            self._local.resolving = False
+            RESOLVING.active = False
         if self._blocked(resolved):
             self.counters["blocked"] += 1
             raise PermissionError(f"test isolation blocked {event}: {resolved}")
