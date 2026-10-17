@@ -216,6 +216,8 @@ class VmAgents(unittest.TestCase):
                 'preparation/snapshot.rs').read_text()
         listed = rust.split('const VM_ROLE_GUIDANCE', 1)[1].split('= [', 1)[1].split('];', 1)[0]
         self.assertEqual(tuple(ast.literal_eval('[' + listed + ']')), codex_runtime.VM_ROLE_GUIDANCE)
+        guest_root = rust.split('const VM_GUEST_SKILLS_ROOT: &str = ', 1)[1].split(';', 1)[0]
+        self.assertEqual(Path(ast.literal_eval(guest_root)), codex_runtime.VM_GUEST_SKILLS_ROOT)
 
     def test_lead_and_worker_native_processes_use_the_guest(self):
         lead = self.runtime.prepare(self.lead())

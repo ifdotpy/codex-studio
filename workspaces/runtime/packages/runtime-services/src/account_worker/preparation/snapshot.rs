@@ -12,6 +12,9 @@ use studio_runtime_store::{AgentRecord, Transaction};
 /// relative to `.agents/skills`. The Python runtime (`codex_runtime.VM_ROLE_GUIDANCE`) lists
 /// the same files.
 const VM_ROLE_GUIDANCE: [&str; 2] = ["codex-workspace/references/layr.md", "layr/SKILL.md"];
+/// Where the guest keeps the Studio skills; a VM session's guidance names these paths. The
+/// Python runtime (`codex_runtime.VM_GUEST_SKILLS_ROOT`) uses the same folder.
+const VM_GUEST_SKILLS_ROOT: &str = "/opt/codex-studio/.agents/skills";
 
 /// Actor-specific inputs needed to launch a provider inside a Linux VM.
 /// Credentials are deliberately absent: the resolver reads and copies them
@@ -160,8 +163,12 @@ impl PreparationResources {
         }
         // Only VM sessions use these; preparing one without them is refused below.
         for relative in VM_ROLE_GUIDANCE {
-            if let Ok(content) = std::fs::read_to_string(skills_root.join(relative)) {
-                role_guidance.insert(PathBuf::from(relative), content);
+            match std::fs::read_to_string(skills_root.join(relative)) {
+                Ok(content) => {
+                    role_guidance.insert(PathBuf::from(relative), content);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(refusal("thread-preparation/missing-guidance".into())),
             }
         }
         Ok(Self {
@@ -462,8 +469,9 @@ fn guidance_with_python(
         if content.trim().is_empty() {
             return Err(refusal("thread-preparation/missing-guidance".into()));
         }
+        let vm = record["executionMode"] == "vm";
         let mut content = content.trim().to_owned();
-        if record["executionMode"] == "vm" {
+        if vm {
             for relative in VM_ROLE_GUIDANCE {
                 let guide = resources
                     .role_guidance
@@ -473,13 +481,16 @@ fn guidance_with_python(
                 content.push_str(guide);
             }
         }
+        // A VM session reads the skills inside the guest, not on this machine.
+        let shown_root = if vm {
+            Path::new(VM_GUEST_SKILLS_ROOT)
+        } else {
+            resources.skills_root.as_path()
+        };
         format!(
             "[Studio role skill: {name}]\nSource: {}\nShared tool guidance: {}\n{}\n[End Studio role skill]",
-            path.display(),
-            resources
-                .skills_root
-                .join("codex-workspace/SKILL.md")
-                .display(),
+            shown_root.join(name).join("SKILL.md").display(),
+            shown_root.join("codex-workspace/SKILL.md").display(),
             content
         )
     };
@@ -1100,6 +1111,15 @@ mod resource_tests {
                 vm.role
                     .contains(&format!("\n{reference}\n{skill}\n[End Studio role skill]"))
             );
+            let name = if lead {
+                "codex-orchestrator"
+            } else {
+                "codex-subagent"
+            };
+            assert!(vm.role.contains(&format!(
+                "Source: {VM_GUEST_SKILLS_ROOT}/{name}/SKILL.md\nShared tool guidance: \
+                 {VM_GUEST_SKILLS_ROOT}/codex-workspace/SKILL.md\n"
+            )));
             let native = guidance_with_python(
                 &resources,
                 &json!({"id":"agent", "isLead":lead}),
@@ -1108,16 +1128,19 @@ mod resource_tests {
             )
             .expect("native guidance");
             assert!(!native.role.contains("# layr by task"));
+            assert!(!native.role.contains(VM_GUEST_SKILLS_ROOT));
         }
         resources.role_guidance.remove(Path::new("layr/SKILL.md"));
-        assert!(
-            guidance_with_python(
-                &resources,
-                &json!({"id":"agent", "isLead":true, "executionMode":"vm"}),
-                Path::new("/state"),
-                None,
-            )
-            .is_err()
+        let refused = guidance_with_python(
+            &resources,
+            &json!({"id":"agent", "isLead":true, "executionMode":"vm"}),
+            Path::new("/state"),
+            None,
         );
+        assert!(matches!(
+            refused,
+            Err(WorkerError::PreparationRefused(reason))
+                if reason == "thread-preparation/missing-guidance"
+        ));
     }
 }
