@@ -1076,6 +1076,376 @@ async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
     );
 }
 
+/// Records each envelope and answers it with one fixed reply; `None` loses it.
+struct ExecWire {
+    reply: Option<Value>,
+    sent: std::sync::Mutex<Vec<Value>>,
+}
+impl ExecWire {
+    fn new(reply: Option<Value>) -> Arc<Self> {
+        Arc::new(Self {
+            reply,
+            sent: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+    fn sent(&self) -> Vec<Value> {
+        self.sent.lock().unwrap().clone()
+    }
+}
+impl studio_runtime_services::multi_server_orchestration::PairedTransport for ExecWire {
+    fn exchange<'a>(
+        &'a self,
+        server: &'a str,
+        envelope: &'a Value,
+        _timeout: Duration,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<Value, studio_runtime_services::multi_server_auth::AccessError>,
+    > {
+        Box::pin(async move {
+            assert_eq!(server, "peer-server");
+            self.sent.lock().unwrap().push(envelope.clone());
+            self.reply.clone().ok_or_else(|| {
+                studio_runtime_services::multi_server_auth::refused(
+                    503,
+                    "exchange_unknown",
+                    "fixture lost reply",
+                )
+            })
+        })
+    }
+}
+
+fn exec_driver(
+    store: &Arc<RuntimeStore>,
+    wire: Arc<ExecWire>,
+) -> studio_runtime_services::multi_server_orchestration::OrchestrationDriver {
+    studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
+        Arc::clone(store),
+        wire,
+        Arc::new(
+            studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::new(
+                Arc::clone(store),
+            ),
+        ),
+    )
+}
+
+/// One SQL row as JSON, with stored JSON text columns parsed for comparison.
+fn exec_row(store: &RuntimeStore, sql: &str, key: &str) -> Option<Value> {
+    let connection = store.read().unwrap();
+    let raw: Option<String> =
+        rusqlite::OptionalExtension::optional(connection.query_row(sql, [key], |row| row.get(0)))
+            .unwrap();
+    raw.map(|raw| parsed_result(serde_json::from_str(&raw).unwrap()))
+}
+
+fn parsed_result(mut row: Value) -> Value {
+    if let Some(text) = row["result"].as_str() {
+        row["result"] = serde_json::from_str(text).unwrap();
+    }
+    row
+}
+
+const EXEC_OUTBOX_ROW: &str = "SELECT json_object('server',server,'body',body,'state',state,'result',result,'attempts',attempts,'next_at',next_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1";
+const EXEC_INBOX_ROW: &str = "SELECT json_object('signature',signature,'state',state,'result',result,'principal',principal,'actor',actor) FROM runtime_server_inbox WHERE id=?1";
+
+#[tokio::test]
+async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
+    let data = &fixture().data["execReceipt"];
+    let python_now = fixture().data["now"].as_f64().unwrap();
+    let pending = &data["pending"];
+    let replies = data["replies"].as_object().unwrap();
+    assert_eq!(replies.len(), 5, "every Python reply case is checked");
+    for (name, case) in replies {
+        let (_root, store) = store().await;
+        // Keep only the Python-written command row in receipt form.
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "DELETE FROM runtime_server_outbox WHERE id!='python-exec'",
+                    [],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .unwrap();
+        let before = exec_row(&store, EXEC_OUTBOX_ROW, "python-exec").unwrap();
+        assert_eq!(
+            before["body"], pending["body"],
+            "{name}: Python receipt form"
+        );
+        assert_eq!(before["state"], "queued", "{name}");
+        let wire = ExecWire::new(Some(case["reply"].clone()));
+        let driver = exec_driver(&store, Arc::clone(&wire));
+        let now = pending["next_at"].as_f64().unwrap() as i64;
+        assert_eq!(driver.pump_due(now).await.unwrap(), 1, "{name}");
+        assert_eq!(
+            wire.sent(),
+            data["probeSent"].as_array().unwrap().clone(),
+            "{name}: only the Python probe identity crosses the wire, never the command"
+        );
+        assert_eq!(case["sent"], data["probeSent"], "{name}: Python oracle");
+        let expected = parsed_result(case["row"].clone());
+        let after = exec_row(&store, EXEC_OUTBOX_ROW, "python-exec").unwrap();
+        for field in [
+            "server",
+            "body",
+            "state",
+            "result",
+            "attempts",
+            "fingerprint",
+        ] {
+            assert_eq!(
+                after[field], expected[field],
+                "{name}: Python field {field}"
+            );
+        }
+        if expected["state"] == "complete" {
+            assert_eq!(
+                after["next_at"].as_f64(),
+                expected["next_at"].as_f64(),
+                "{name}"
+            );
+        } else {
+            // Python delivered at its fixture time; compare the retry delay.
+            assert_eq!(
+                after["next_at"].as_f64().unwrap() - now as f64,
+                expected["next_at"].as_f64().unwrap() - python_now,
+                "{name}: Python retry delay"
+            );
+        }
+        // A settled or rescheduled row sends nothing more at the same time.
+        assert_eq!(driver.pump_due(now).await.unwrap(), 0, "{name}");
+        assert_eq!(wire.sent().len(), 1, "{name}: no second probe or command");
+    }
+}
+
+#[tokio::test]
+async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
+    use studio_runtime_services::multi_server_orchestration::ExchangeOutcome;
+    let data = &fixture().data["execReceipt"];
+    let python_now = fixture().data["now"].as_i64().unwrap();
+    let expected = &data["freshRow"];
+    let (_root, store) = store().await;
+    store
+        .set_local_server_id(Some("local-server".to_owned()))
+        .unwrap();
+    let lost = ExecWire::new(None);
+    let driver = exec_driver(&store, Arc::clone(&lost));
+    let outcome = driver
+        .exchange(
+            "peer-server",
+            "exec",
+            &data["payload"],
+            "fresh-exec",
+            python_now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, ExchangeOutcome::Unknown);
+    assert_eq!(
+        Value::Array(lost.sent()),
+        data["freshSent"],
+        "original once"
+    );
+    let row = exec_row(&store, EXEC_OUTBOX_ROW, "fresh-exec").unwrap();
+    for field in [
+        "server",
+        "body",
+        "state",
+        "result",
+        "attempts",
+        "fingerprint",
+    ] {
+        assert_eq!(
+            row[field], expected[field],
+            "Python _compact_exec field {field}"
+        );
+    }
+    assert_eq!(row["next_at"].as_f64(), expected["next_at"].as_f64());
+
+    // The same request identity now only probes; the command never repeats.
+    // The first test checks this identity against the Python probe.
+    let probe_id =
+        studio_runtime_services::projects::cross_server_identity(&["exec-receipt", "fresh-exec"]);
+    let receipt = json!({"requestId":"fresh-exec","outcome":"applied","value":{"status":"exited"}});
+    let wire = ExecWire::new(Some(
+        json!({"requestId":probe_id,"outcome":"applied","value":receipt}),
+    ));
+    let driver = exec_driver(&store, Arc::clone(&wire));
+    let outcome = driver
+        .exchange(
+            "peer-server",
+            "exec",
+            &data["payload"],
+            "fresh-exec",
+            python_now + 5,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        ExchangeOutcome::Applied(json!({"status":"exited"}))
+    );
+    let sent = wire.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["action"], "exec_receipt");
+    assert_eq!(sent[0]["requestId"], probe_id.as_str());
+    assert_eq!(
+        sent[0]["payload"],
+        json!({"handle":"fresh-exec","actor":data["payload"]["actor"],"digest":serde_json::from_str::<Value>(expected["body"].as_str().unwrap()).unwrap()["payload"]["receiptDigest"]})
+    );
+    let row = exec_row(&store, EXEC_OUTBOX_ROW, "fresh-exec").unwrap();
+    assert_eq!(row["state"], "complete");
+    assert_eq!(row["result"], receipt);
+    let mut changed = data["payload"].clone();
+    changed["cwd"] = json!("/other");
+    let conflict = driver
+        .exchange(
+            "peer-server",
+            "exec",
+            &changed,
+            "fresh-exec",
+            python_now + 6,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(conflict)["code"], "request_conflict");
+    assert_eq!(wire.sent().len(), 1, "a changed command is never sent");
+}
+
+#[tokio::test]
+async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
+    let data = &fixture().data["execReceipt"];
+    let (_root, store) = store().await;
+    store
+        .set_local_server_id(Some("local-server".to_owned()))
+        .unwrap();
+    let wire = ExecWire::new(None);
+    let driver = exec_driver(&store, Arc::clone(&wire));
+    let cases = data["probes"].as_array().unwrap();
+    assert_eq!(cases.len(), 13, "every Python probe case is checked");
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        if case["insertExec"] == true {
+            let record = data["lateRecord"].clone();
+            store
+                .transaction_with(move |tx| {
+                    tx.execute(
+                        "INSERT INTO runtime_server_exec(id,owner,actor,record) VALUES('inbound-late','peer-server','peer-lead',?1)",
+                        [record.to_string()],
+                    )?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .unwrap();
+        }
+        let envelope = &case["envelope"];
+        let key = envelope["requestId"].as_str().unwrap();
+        let reply = driver
+            .receive(
+                case["principal"].as_str().unwrap(),
+                envelope,
+                case["at"].as_i64().unwrap(),
+            )
+            .await;
+        match reply {
+            Ok(outcome) => assert_eq!(outcome.to_value(key), case["result"], "{name}"),
+            Err(error) => {
+                assert_eq!(case["result"]["refused"], "ValueError", "{name}");
+                assert_eq!(refusal(error)["error"], case["result"]["message"], "{name}");
+            }
+        }
+        assert_eq!(
+            exec_row(&store, EXEC_INBOX_ROW, key),
+            Some(parsed_result(case["row"].clone())),
+            "{name}: Python probe receipt row"
+        );
+        if case["keep"] != true {
+            let key = key.to_owned();
+            store
+                .transaction_with(move |tx| {
+                    tx.execute("DELETE FROM runtime_server_inbox WHERE id=?1", [key])?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .unwrap();
+        }
+    }
+    assert!(
+        wire.sent().is_empty(),
+        "a probe answer never crosses the wire"
+    );
+}
+
+#[tokio::test]
+async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+    let data = &fixture().data["execReceipt"];
+    let now = fixture().data["now"].as_i64().unwrap();
+    let (_root, store) = store().await;
+    store
+        .set_local_server_id(Some("local-server".to_owned()))
+        .unwrap();
+    let driver = exec_driver(&store, ExecWire::new(None));
+    let cases = data["events"].as_array().unwrap();
+    assert_eq!(cases.len(), 7, "every Python exec_event case is checked");
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        if let Some(lead) = case["lead"].as_object() {
+            let mut record = AgentRecord {
+                id: AgentId::from("fixture-lead"),
+                root_id: AgentId::from("fixture-lead"),
+                epoch: 1,
+                status: AgentStatus::Idle,
+                extra: Default::default(),
+            };
+            record.extra.insert("autoWake".into(), json!(true));
+            record.extra.insert(
+                "cwd".into(),
+                json!(std::env::current_dir().unwrap().display().to_string()),
+            );
+            record.extra.insert("concurrency".into(), json!(32));
+            for (field, value) in lead {
+                record.extra.insert(field.clone(), value.clone());
+            }
+            store
+                .transaction_with(move |tx| AgentRepository::put(tx, &record))
+                .await
+                .unwrap();
+        }
+        let envelope = &case["envelope"];
+        let key = envelope["requestId"].as_str().unwrap();
+        let outcome = driver
+            .receive(case["principal"].as_str().unwrap(), envelope, now)
+            .await
+            .unwrap();
+        assert_eq!(outcome.to_value(key), case["result"], "{name}");
+    }
+    let event = &data["event"];
+    let connection = store.read().unwrap();
+    let rows: Vec<(String, String, String, String)> = connection
+        .prepare("SELECT id,agent,kind,text FROM runtime_events WHERE id LIKE 'exec-exit-%'")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![(
+            event["key"].as_str().unwrap().to_owned(),
+            event["agent"].as_str().unwrap().to_owned(),
+            event["kind"].as_str().unwrap().to_owned(),
+            event["text"].as_str().unwrap().to_owned(),
+        )],
+        "one event with the Python text"
+    );
+}
+
 fn full_matrix() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
 }
