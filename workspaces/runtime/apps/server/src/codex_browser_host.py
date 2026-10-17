@@ -197,6 +197,12 @@ class HostGuest:
             raise LinuxVMError("The host browser control socket is unavailable", code="unavailable") from error
 
     async def control_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self.closing.is_set():
+            # close() cancels only the tasks it can see. A connection accepted before the
+            # control server closed can start its handler after that snapshot; without this
+            # check its browser.wait long poll keeps wait_closed() open past the close deadline.
+            writer.close()
+            return
         task = asyncio.current_task()
         if task is not None:
             self.control_tasks.add(task)
