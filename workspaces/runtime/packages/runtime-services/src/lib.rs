@@ -147,6 +147,7 @@ pub mod rules_engine;
 pub mod rules_tick;
 pub mod safety_buffering;
 pub mod scheduler;
+pub mod storage_retention;
 pub mod submit_gates;
 pub mod sync_documents;
 pub mod sync_entity_context;

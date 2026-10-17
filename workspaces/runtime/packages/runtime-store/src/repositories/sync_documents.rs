@@ -7,6 +7,12 @@ use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LI
 use crate::schema::{SchemaRequirements, TableRequirement, TriggerRequirement};
 use crate::{StoreError, StoreResult};
 
+/// Non-transcript entity tombstones retained for incremental sync clients.
+/// Older tombstones are pruned and the tombstone floor is raised. Unit: rows.
+pub const ENTITY_TOMBSTONE_LIMIT: i64 = 10_000;
+/// Tombstones removed by one short writer transaction. Unit: rows.
+pub const ENTITY_TOMBSTONE_PRUNE_BATCH: i64 = 500;
+
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "sync_identity",
@@ -306,6 +312,85 @@ impl SyncDocumentsRepository {
         )?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    /// Whether entity tombstones exceed the retained limit by the prune slack,
+    /// so a pruning run removes a full batch instead of one row per delete.
+    pub fn entity_tombstone_prune_due(connection: &Connection) -> StoreResult<bool> {
+        let count = connection
+            .query_row(
+                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(count) = count else {
+            // A missing counter is rebuilt by the first pruning transaction.
+            return Ok(true);
+        };
+        let count = count
+            .parse::<i64>()
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+        Ok(count
+            > ENTITY_TOMBSTONE_LIMIT
+                + ENTITY_TOMBSTONE_PRUNE_BATCH.min(ENTITY_TOMBSTONE_LIMIT / 20))
+    }
+
+    /// Remove one batch of the oldest non-transcript entity tombstones above
+    /// [`ENTITY_TOMBSTONE_LIMIT`] and raise the tombstone floor to the highest
+    /// removed sequence, so clients behind the floor reset instead of missing a
+    /// deletion. Returns the number of removed rows; zero means nothing is due.
+    pub fn prune_entity_tombstones(transaction: &Transaction<'_>) -> StoreResult<usize> {
+        transaction.execute(
+            "INSERT OR IGNORE INTO sync_entity_meta(key,value) \
+             SELECT 'entity_tombstone_count',CAST(COUNT(*) AS TEXT) FROM sync_entities \
+             WHERE deleted=1 AND collection NOT LIKE 'transcript:%'",
+            [],
+        )?;
+        let count = transaction
+            .query_row(
+                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?
+            .parse::<i64>()
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+        let excess = count - ENTITY_TOMBSTONE_LIMIT;
+        if excess <= 0 {
+            return Ok(0);
+        }
+        let rows = {
+            let mut statement = transaction.prepare_cached(
+                "SELECT collection,id,seq FROM sync_entities \
+                 WHERE deleted=1 AND collection NOT LIKE 'transcript:%' \
+                 ORDER BY seq,collection,id LIMIT ?1",
+            )?;
+            statement
+                .query_map([ENTITY_TOMBSTONE_PRUNE_BATCH.min(excess)], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let Some(highest) = rows.iter().map(|(_, _, seq)| *seq).max() else {
+            return Ok(0);
+        };
+        let floor = Self::entity_tombstone_floor(transaction)?.max(highest);
+        let mut delete = transaction.prepare_cached(
+            "DELETE FROM sync_entities WHERE collection=?1 AND id=?2 AND deleted=1",
+        )?;
+        for (collection, id, _) in &rows {
+            delete.execute(params![collection, id])?;
+        }
+        transaction.execute(
+            "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor',?1) \
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [floor.to_string()],
+        )?;
+        Ok(rows.len())
     }
 
     pub fn entity_tombstone_floor(connection: &Connection) -> StoreResult<i64> {

@@ -805,6 +805,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         monitor_runtime,
         monitor_shutdown.subscribe(),
     );
+    let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    ));
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
@@ -1115,6 +1119,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     history_cleanup.map_err(std::io::Error::other)??;
     shutdown_join("federation delivery task", federation_task).await??;
     shutdown_join("continuation scheduler task", continuation_task).await??;
+    shutdown_join("storage retention task", retention_task).await??;
     if let Some(task) = orchestration_task {
         shutdown_join("orchestration driver task", task).await??;
     }
