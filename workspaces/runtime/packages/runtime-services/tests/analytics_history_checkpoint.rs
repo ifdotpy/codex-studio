@@ -1396,6 +1396,47 @@ async fn changed_consumed_range_is_refused_before_any_effect() {
     }
 }
 
+/// An account that Python `accounts.home` refuses (not active, or its profile
+/// directory is absent) is recorded as `profileUnavailable`. A read error here
+/// kept the actor at the head of the queue and retried it forever.
+#[tokio::test]
+async fn unavailable_account_profile_records_checkpoint_instead_of_read_error() {
+    for absent_directory in [true, false] {
+        let (root, agent) = fixture();
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let absent = root.path().join("removed-login-home");
+        let mut collector = history::HistoryCollector::default();
+        let advanced = collector
+            .step(
+                &store,
+                std::slice::from_ref(&agent),
+                move |_| {
+                    if absent_directory {
+                        Ok(absent)
+                    } else {
+                        Err(HistoryError::ProfileUnavailable)
+                    }
+                },
+                history::HistoryClock {
+                    observed_at: 200.,
+                    monotonic: 10.,
+                },
+                Arc::new(AtomicBool::new(false)),
+                &Budget,
+            )
+            .await
+            .expect("an unavailable profile is not a read failure");
+        assert!(!advanced);
+        let state = checkpoint(&store).expect("checkpoint");
+        assert_eq!(state["status"], "profileUnavailable");
+        assert_eq!(state["error"], "The managed account profile is unavailable");
+        assert!(
+            !collector.schedule.has_pending(),
+            "the actor waits for input"
+        );
+    }
+}
+
 #[test]
 fn discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules() {
     let root = tempfile::tempdir().expect("profile");
