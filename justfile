@@ -78,7 +78,7 @@ test-rust-runtime-corpora-mutations *args:
 test-rust-session-fairness:
     @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 
-[doc("Run all three manually classified heavy server suites.")]
+[doc("Run all manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy
 
@@ -145,6 +145,10 @@ test-rust-usage-resume-corpora:
 [doc("Manual heavy check: migrate an isolated Electron profile with hidden windows.")]
 test-native-profile-migration:
     @pnpm --filter codex-agents-desktop run test:profile-migration
+
+[doc("Manual heavy check: compile the macOS file event helper and verify real FSEvents delivery.")]
+test-native-file-events:
+    @node {{quote(facade)}} test server workspaces/runtime/apps/server/tests/native-fs-events-contract.py
 
 [doc("Manual heavy check: build the Rust desktop host and run isolated hidden WebViews.")]
 test-native-webview:

@@ -54,8 +54,14 @@ without maintaining a second suite inventory.
 | All heavy                | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
 | Other server opt-in      | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
 | Native profile migration | Isolated Electron profile round trip with hidden windows; manual heavy run                                                                | `just test-native-profile-migration`       |
+| Native file events       | Compiled Swift helper and real macOS FSEvents delivery; manual heavy run                                                                  | `just test-native-file-events`             |
 | Native WebView           | Rust host build and isolated hidden WebView scenarios; manual heavy run                                                                   | `just test-native-webview`                 |
 | Load-class               | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
+
+The native file event check depends on the host FSEvents service and is manual.
+The fast tier covers watcher readiness, path collection, full-rescan requests,
+and scoped scanning with a deterministic helper. A native delivery timeout is
+reported as a failed manual check; it is not converted into a skip or a retry.
 
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Default nextest runs

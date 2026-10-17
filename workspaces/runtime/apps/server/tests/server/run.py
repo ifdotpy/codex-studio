@@ -216,6 +216,8 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
 HEAVY_SUITES = {
+    f"{TESTS_REL}/native-fs-events-contract.py":
+        ("host macOS FSEvents delivery; observed service timeout at 62.35 s", 62.35),
     f"{TESTS_REL}/agent-move-signed-integration.py":
         ("signed-in multi-server lifecycle; measured 44.13 s", 44.13),
     f"{TESTS_REL}/server-exec-signed-integration.py":
