@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
 import { EmptyState, PanelHeader } from "../ui/primitives";
 import { localDateTime } from "../../local-time";
@@ -33,7 +34,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  post,
   errorText,
   type ApiPostPath,
   type GetResult,
@@ -44,7 +44,7 @@ import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
-import { watchResourceReads } from "../watchResourceReads";
+import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import "./Workspace.css";
@@ -137,6 +137,9 @@ function Status({ value }: { value: string }) {
 }
 
 export function Workspace(props: Props) {
+  const watchResourceReads = useServerResourceReads();
+  const { post } = useServerApi();
+
   const [section, setSection] = useState(props.initialSection || "messages"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),
@@ -195,7 +198,7 @@ export function Workspace(props: Props) {
         // The current panel remains visible until its next workspace change.
       },
     );
-  }, [props.opened, agentId, reload]);
+  }, [props.opened, agentId, reload, watchResourceReads]);
   const run = useCallback(
     async <Path extends ApiPostPath>(
       path: Path,

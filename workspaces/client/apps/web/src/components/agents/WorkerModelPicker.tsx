@@ -1,3 +1,4 @@
+import { useServerServices } from "../../servers/ServerServicesContext";
 import {
   useCallback,
   createContext,
@@ -120,16 +121,45 @@ export function supportsDaybreakMode(
   );
 }
 
-export const ModelCatalogReader = createContext<{
+type ModelCatalogSource = {
   scope: string;
+  cacheOwner?: object;
   read: (options: {
     query?: { account_key?: string; workers?: "1"; retry?: "1" };
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
-}>({
+  watchResourceReads: typeof watchResourceReads;
+};
+const defaultModelCatalogReader: ModelCatalogSource = {
   scope: serverResourceScope(),
   read: (options) => get("/api/models", options),
-});
+  watchResourceReads,
+};
+export const ModelCatalogReader = createContext(defaultModelCatalogReader);
+
+export function useModelCatalogReader() {
+  const configured = useContext(ModelCatalogReader);
+  const services = useServerServices();
+  const owned = useMemo<ModelCatalogSource | undefined>(
+    () =>
+      services
+        ? {
+            cacheOwner: services,
+            scope: JSON.stringify([
+              services.owner.id,
+              services.owner.origin,
+              services.owner.credentialId,
+            ]),
+            read: (options) => services.api.get("/api/models", options),
+            watchResourceReads: services.watchResourceReads,
+          }
+        : undefined,
+    [services],
+  );
+  return configured === defaultModelCatalogReader
+    ? (owned ?? configured)
+    : configured;
+}
 
 type ModelCatalogRead = NonNullable<
   ContextType<typeof ModelCatalogReader>
@@ -156,9 +186,20 @@ const emptyModelCatalog: ModelCatalogSnapshot = {
   pending: false,
   loaded: false,
 };
-const modelCatalogs = new Map<string, ModelCatalogEntry>();
+const catalogsByOwner = new WeakMap<object, Map<string, ModelCatalogEntry>>();
+function ownerCatalogs(owner: object) {
+  let catalogs = catalogsByOwner.get(owner);
+  if (!catalogs) {
+    catalogs = new Map();
+    catalogsByOwner.set(owner, catalogs);
+  }
+  return catalogs;
+}
 
-function catalogEntry(key: string): ModelCatalogEntry {
+function catalogEntry(
+  modelCatalogs: Map<string, ModelCatalogEntry>,
+  key: string,
+): ModelCatalogEntry {
   let entry = modelCatalogs.get(key);
   if (!entry) {
     entry = {
@@ -284,16 +325,18 @@ function readModelCatalog(
 }
 
 function subscribeModelCatalog(
+  modelCatalogs: Map<string, ModelCatalogEntry>,
   key: string,
   listener: () => void,
   read: ModelCatalogRead,
   accountKey: string,
   workers: boolean,
+  watch: typeof watchResourceReads,
 ) {
-  const entry = catalogEntry(key);
+  const entry = catalogEntry(modelCatalogs, key);
   entry.listeners.add(listener);
   if (!entry.stopWatching) {
-    const stop = watchResourceReads(
+    const stop = watch(
       { kind: "models" },
       (version) => readModelCatalog(entry, read, accountKey, workers, version),
       (error) =>
@@ -336,19 +379,36 @@ export function useWorkerModels(
   enabled: boolean,
   workers = false,
 ) {
-  const reader = useContext(ModelCatalogReader);
+  const reader = useModelCatalogReader();
+  const modelCatalogs = ownerCatalogs(reader.cacheOwner ?? reader);
   const catalogKey = JSON.stringify([reader.scope, accountKey, workers]);
   const read = useMemo<ModelCatalogRead>(() => reader.read, [reader.read]);
   const subscribe = useCallback(
     (listener: () => void) =>
       enabled
-        ? subscribeModelCatalog(catalogKey, listener, read, accountKey, workers)
+        ? subscribeModelCatalog(
+            modelCatalogs,
+            catalogKey,
+            listener,
+            read,
+            accountKey,
+            workers,
+            reader.watchResourceReads,
+          )
         : () => {},
-    [accountKey, catalogKey, enabled, read, workers],
+    [
+      accountKey,
+      catalogKey,
+      enabled,
+      read,
+      workers,
+      reader.watchResourceReads,
+      modelCatalogs,
+    ],
   );
   const getSnapshot = useCallback(
     () => modelCatalogs.get(catalogKey)?.snapshot || emptyModelCatalog,
-    [catalogKey],
+    [catalogKey, modelCatalogs],
   );
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const models = useMemo(
@@ -376,7 +436,7 @@ export function useWorkerModels(
     error: current.error,
     retry: () => {
       if (!enabled) return;
-      const entry = catalogEntry(catalogKey);
+      const entry = catalogEntry(modelCatalogs, catalogKey);
       void readModelCatalog(
         entry,
         read,

@@ -1,5 +1,6 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
-import { post, ApiError } from "../../api";
+import { ApiError } from "../../api";
 import { onResume } from "../../sync/resume";
 import type { components } from "../../generated/api";
 import {
@@ -33,6 +34,8 @@ export function useProgressLayoutReport(
   scope: string,
   layout: ProgressLayout | null,
 ) {
+  const { post } = useServerApi();
+
   const latest = useRef(layout);
   latest.current = layout;
   const wake = useRef<(() => void) | undefined>(undefined);

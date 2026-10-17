@@ -1,4 +1,5 @@
-import { post } from "../../api";
+import { useServerApi } from "../../servers/ServerServicesContext";
+import "../../api";
 import Accounts, { type useAccounts } from "../Accounts";
 import { ExecutionSettings } from "./ExecutionSettings";
 import { AccountExclusionsControl } from "./AccountExclusionsControl";
@@ -19,6 +20,8 @@ export function UnifiedAgentSettings({
   onAccountModalOpenChange?: (opened: boolean) => void;
   showAccountExclusions?: boolean;
 }) {
+  const { post } = useServerApi();
+
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const updateAccountModalOpen = useCallback(
     (opened: boolean) => {

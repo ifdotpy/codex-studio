@@ -31,6 +31,14 @@ class AccountSessionHTTPContract(unittest.TestCase):
             directory = Path(cls.homes.name) / field
             directory.mkdir()
             setattr(cls.backend, field, directory)
+        # macOS passive discovery reads native metadata instead of invoking the CLI.
+        (cls.backend.claude_home / ".credentials.json").write_text(json.dumps({
+            "claudeAiOauth": {"accessToken": "fixture-token", "scopes": ["user:inference"],
+                             "subscriptionType": "max"},
+        }))
+        (cls.backend.claude_home / ".claude.json").write_text(json.dumps({
+            "oauthAccount": {"emailAddress": "fixture@example.invalid"},
+        }))
         native = Path(cls.homes.name) / "fixture-claude"
         native.write_text("#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"fixture@example.invalid\",\"subscriptionType\":\"max\"}'\n")
         native.chmod(0o700)

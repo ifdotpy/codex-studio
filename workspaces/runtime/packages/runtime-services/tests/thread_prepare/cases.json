@@ -7802,7 +7802,7 @@
           "at": 100,
           "error": "inspection failed",
           "supervisorIdentity": {
-            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "stateDir": "/__studio_test__/thread-prepare/supervisor",
             "handle": "retained",
             "generation": 1
           }
@@ -7810,7 +7810,7 @@
       },
       "account": {
         "supervisor_identity": {
-          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "stateDir": "/__studio_test__/thread-prepare/supervisor",
           "handle": "retained",
           "generation": 1
         }
@@ -7855,7 +7855,7 @@
           "at": 100,
           "error": "inspection failed",
           "supervisorIdentity": {
-            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "stateDir": "/__studio_test__/thread-prepare/supervisor",
             "handle": "other",
             "generation": 1
           }
@@ -7863,7 +7863,7 @@
       },
       "account": {
         "supervisor_identity": {
-          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "stateDir": "/__studio_test__/thread-prepare/supervisor",
           "handle": "retained",
           "generation": 1
         }
@@ -7908,7 +7908,7 @@
           "at": 100,
           "error": "inspection failed",
           "supervisorIdentity": {
-            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "stateDir": "/__studio_test__/thread-prepare/supervisor",
             "handle": "retained",
             "generation": 1
           },
@@ -7917,7 +7917,7 @@
       },
       "account": {
         "supervisor_identity": {
-          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "stateDir": "/__studio_test__/thread-prepare/supervisor",
           "handle": "retained",
           "generation": 1
         }

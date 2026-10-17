@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
-import { get } from "../api";
+import {
+  useServerApi,
+  useServerResourceReads,
+} from "../servers/ServerServicesContext";
 import { desktopNotices, type DesktopNotice } from "./desktopNotices";
-import { watchResourceReads } from "./watchResourceReads";
 import "./supervisor-recovery-notice.css";
 
 // Host notices from /api/desktop: supervisor recovery and low disk space.
 export default function SupervisorRecoveryNotice() {
+  const watchResourceReads = useServerResourceReads();
+  const { get } = useServerApi();
   const [notices, setNotices] = useState<DesktopNotice[]>([]);
 
   useEffect(() => {
@@ -28,7 +32,7 @@ export default function SupervisorRecoveryNotice() {
       controller.abort();
       stop();
     };
-  }, []);
+  }, [get, watchResourceReads]);
 
   return notices.map((notice) => (
     <div

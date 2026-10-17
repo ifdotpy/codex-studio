@@ -49,7 +49,13 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
             create_real = engine.create_workspace
             allow_create = threading.Event()
             user_edit_written = threading.Event()
-            rt = make_runtime(fixture.ControlledRuntime, root / 'state', fixture.f.FakeServer)
+            rt = make_runtime(fixture.ControlledRuntime, root / 'state', fixture.f.FakeServer,
+                              environment_overrides={
+                                  'CODEX_WORKSPACE_STORE': str(root / 'store'),
+                                  'CODEX_WORKSPACE_MIN_FREE_BYTES': '0',
+                                  'CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES': '0',
+                                  'PATH': os.pathsep.join([os.defpath, '/usr/sbin', '/sbin']),
+                              })
             rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
             rt.image_workspace_support = lambda path: engine.supported(path)
             lead = rt.new_lead({'cwd': str(repo), 'workspaceMode': 'image'})
@@ -65,7 +71,7 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
 
                 with patch.object(engine, 'create_workspace', side_effect=create_after_first_read_only_turn):
                     worker_id = rt.spawn_agents(rt.agent(lead['id']), {'agents': [{
-                        'name': 'Image E2E', 'prompt': 'Add worker.txt', 'cwd': str(project)}]},
+                        'name': 'Image E2E', 'prompt': 'Add worker.txt', 'cwd': str(project), 'workspace': 'image'}]},
                         'image-runtime-e2e')['agents'][0]['id']
                     rt.prepare(rt.agent(worker_id))
                     rt.dispatch()
@@ -78,7 +84,8 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                     self.assertEqual(first['sandboxPolicy'], {
                         'type': 'workspaceWrite', 'writableRoots': [temp_dir],
                         'networkAccess': False})
-                    self.assertIn('read-only until Studio sends a workspace-ready notice',
+                    self.assertIn('This turn is read-only.', first['input'][0]['text'])
+                    self.assertIn('Studio sends a workspace-ready notice when the copy is ready.',
                                   first['input'][0]['text'])
                     self.assertIn('Read the source folder at ' + str(project)
                                   + ' by its absolute path', first['input'][0]['text'])

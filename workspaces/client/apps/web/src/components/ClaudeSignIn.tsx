@@ -1,15 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, Modal, Stack } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import {
-  clearStableRequestId,
-  errorText,
-  get,
-  post,
-  save,
-  saved,
-  stableRequestId,
-  type PostResult,
-} from "../api";
+import { errorText, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import type { Account } from "./Accounts";
 import { ClaudeAuthorizationCodeForm } from "./ClaudeAuthorizationCodeForm";
@@ -19,7 +11,7 @@ import {
   codeVerificationPending,
   currentClaudeLoginReadMatches,
 } from "./claudeCodeSubmission";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type LoginAction = "start" | "code" | "cancel";
@@ -56,6 +48,10 @@ export default function ClaudeSignIn({
   onReady: () => unknown;
   serverLabel?: string;
 }) {
+  const watchResourceReads = useServerResourceReads();
+  const { clearStableRequestId, get, post, save, saved, stableRequestId } =
+    useServerApi();
+
   const storageKey = `claude-sign-in:${scope || "local"}:${account.id}`;
   const [requestId, setRequestId] = useState(() =>
     saved<string>(storageKey, ""),
@@ -152,7 +148,7 @@ export default function ClaudeSignIn({
       stop();
       if (refreshStatus.current === refresh) refreshStatus.current = () => {};
     };
-  }, [busy, requestId, receipt?.status]);
+  }, [busy, requestId, receipt?.status, watchResourceReads]);
   const run = async (action: LoginAction) => {
     if (lock.current) return;
     statusReadGeneration.current += 1;

@@ -155,6 +155,8 @@ async fn cancelled_prepare_never_returns_a_usable_generation() {
 
 mod support;
 
+// Retained child environment verification is implemented only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() {
     let (state, mut supervisor, python) = tokio::task::spawn_blocking(|| {

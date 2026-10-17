@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { localDateTime } from "../../local-time";
 import ErrorDescription from "../ErrorDescription";
 import { displayError } from "../../errorPresentation";
@@ -29,8 +30,6 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-  get,
-  post,
   apiDownload,
   errorText,
   type ApiPostPath,
@@ -39,7 +38,7 @@ import {
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
-import { watchResourceReads } from "../watchResourceReads";
+import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
@@ -440,6 +439,9 @@ function TaskDetail({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
+  const watchResourceReads = useServerResourceReads();
+  const { get, post } = useServerApi();
+
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {
@@ -462,7 +464,7 @@ function TaskDetail({
       stopped = true;
       stop();
     };
-  }, [opened, summary.id, summary.kind]);
+  }, [opened, summary.id, summary.kind, watchResourceReads]);
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;

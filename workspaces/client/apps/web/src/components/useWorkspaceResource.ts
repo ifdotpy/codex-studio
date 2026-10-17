@@ -1,6 +1,6 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import {
-  get,
   errorText,
   type ApiGetPath,
   type ApiReadMetadata,
@@ -24,6 +24,8 @@ export function useWorkspaceResource<Path extends ApiGetPath>(
   revision: string | number,
   ...resourceArgs: ResourceArgs<Path>
 ) {
+  const { get } = useServerApi();
+
   const options = resourceArgs[0];
   const query = options?.query;
   const queryKey = JSON.stringify(query || {});

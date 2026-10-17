@@ -1,6 +1,11 @@
+import {
+  useServerApi,
+  useServerStorage,
+  useServerLocalDrafts,
+} from "../../../servers/ServerServicesContext";
 import { Button, Textarea } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
-import { get, post, ApiError, errorText, save, saved } from "../../../api";
+import { ApiError, errorText } from "../../../api";
 import type { Complaint, Snapshot } from "../../../types";
 import type { paths } from "../../../generated/api";
 import "./complaint-book.css";
@@ -8,7 +13,7 @@ import ErrorDescription from "../../ErrorDescription";
 import MessageDate from "../../conversation/transcript/MessageDate";
 import StreamingText from "../../conversation/transcript/StreamingText";
 import AgentAvatar from "../../agents/AgentAvatar";
-import { writeLocalDraft } from "../../../sync/localDraft";
+
 import {
   complaintReplyRequest,
   submitComplaintResponse,
@@ -20,9 +25,22 @@ type ComplaintDetailResponse =
   paths["/api/complaint"]["get"]["responses"][200]["content"]["application/json"];
 type ComplaintSummary = Complaint;
 
-const confirmedMessages = new Map<string, ComplaintDetailResponse>();
-// Keep unsent replies separate from immutable delivery attempts.
-const replyDrafts = new Map<string, { text: string; status: string }>();
+const caches = new WeakMap<
+  Storage,
+  {
+    confirmedMessages: Map<string, ComplaintDetailResponse>;
+    replyDrafts: Map<string, { text: string; status: string }>;
+  }
+>();
+function useMessageCache() {
+  const storage = useServerStorage();
+  let cache = caches.get(storage);
+  if (!cache) {
+    cache = { confirmedMessages: new Map(), replyDrafts: new Map() };
+    caches.set(storage, cache);
+  }
+  return cache;
+}
 
 const recipient = (c: ComplaintSummary) => c.recipient;
 
@@ -43,6 +61,10 @@ function MessageResponse({
   notify: (s: string) => void;
   onResponse: (c: ComplaintDetailResponse) => void;
 }) {
+  const { get, post, save, saved } = useServerApi();
+  const { writeLocalDraft } = useServerLocalDrafts();
+  const { replyDrafts } = useMessageCache();
+
   const draftKey = JSON.stringify([pendingKey, detail.id]);
   const storageKey = `studio-reply-draft:${draftKey}`;
   const draft =
@@ -198,6 +220,8 @@ export default function UserMessages({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
+  const { saved } = useServerApi();
+
   const pendingKey = `studio-message-responses:${data.stateDir}`;
   const responseRequests = useMemo(
     () =>
@@ -254,6 +278,9 @@ function UserMessage({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
+  const { get } = useServerApi();
+  const { confirmedMessages } = useMessageCache();
+
   const confirmedKey = JSON.stringify([data.stateDir, message.id]);
   const [detail, setDetail] = useState<
     ComplaintSummary | ComplaintDetailResponse

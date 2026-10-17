@@ -1,7 +1,8 @@
+import { useServerOutbox } from "../servers/ServerServicesContext";
 import { Button } from "@mantine/core";
 import { useState } from "react";
 import { errorText } from "../api";
-import { changeOutbox, type OutgoingMessage } from "../sync/send";
+import { type OutgoingMessage } from "../sync/send";
 
 export default function OutboxControls({
   entry,
@@ -10,6 +11,8 @@ export default function OutboxControls({
   entry?: OutgoingMessage;
   edit: (entry: OutgoingMessage) => Promise<void>;
 }) {
+  const { changeOutbox } = useServerOutbox();
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (!entry || !["queued", "paused"].includes(entry.status)) return null;

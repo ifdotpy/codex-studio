@@ -1,7 +1,8 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Tooltip } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./ui/primitives";
-import { get, type GetResult } from "../api";
+import { type GetResult } from "../api";
 import "./browser-access-notice.css";
 
 type BrowserStatus = NonNullable<GetResult<"/api/desktop">["browser"]>;
@@ -15,6 +16,8 @@ export default function BrowserAccessNotice({
   active: boolean;
   compact?: boolean;
 }) {
+  const { get } = useServerApi();
+
   const [status, setStatus] = useState<BrowserStatus | null>(null);
 
   useEffect(() => {

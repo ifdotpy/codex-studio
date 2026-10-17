@@ -1,3 +1,6 @@
+import { hasNativeClient } from "./native/client";
+import { openNativeLink } from "./native/externalLinks";
+
 /** The redirect port of a sign-in that another server approved for this window. */
 export type SignInForward = {
   server: string;
@@ -92,7 +95,11 @@ if (window.codexDesktop?.platform === "darwin") {
 
 // Preview frames cannot access this main-frame bridge.
 document.addEventListener("click", (event) => {
-  if (!window.codexDesktop || event.defaultPrevented || event.button !== 0)
+  if (
+    (!window.codexDesktop && !hasNativeClient()) ||
+    event.defaultPrevented ||
+    event.button !== 0
+  )
     return;
   const link = (event.target as Element)?.closest?.("a[href]");
   if (!(link instanceof HTMLAnchorElement) || link.hasAttribute("download"))
@@ -104,7 +111,10 @@ document.addEventListener("click", (event) => {
   )
     return;
   event.preventDefault();
-  void window.codexDesktop.openExternal(url.href).catch((error) => {
+  const opened = window.codexDesktop
+    ? window.codexDesktop.openExternal(url.href)
+    : openNativeLink(url.href);
+  void opened.catch((error) => {
     window.dispatchEvent(
       new CustomEvent("desktop-error", {
         detail: String(error.message || error),

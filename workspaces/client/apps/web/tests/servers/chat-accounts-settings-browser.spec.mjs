@@ -80,7 +80,7 @@ test("Accounts includes a backend-paired server before this UI has credentials",
     await accounts
       .getByRole("button", { name: "+ Remote", exact: true })
       .click();
-    const frame = page.frameLocator('iframe[title="Studio on Remote"]');
+    const frame = page;
     const signIn = frame.getByRole("dialog", {
       name: "Sign in to Codex · Work",
     });
@@ -189,34 +189,21 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
     await expect(page.locator('[data-settings-server="remote"]')).toBeVisible();
     await settings.getByRole("button", { name: "Close", exact: true }).click();
 
-    const localFrame = page.frameLocator('iframe[title="Studio on Local"]');
-    const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
-    await page
-      .getByLabel("Studio server", { exact: true })
-      .selectOption("local");
+    const localFrame = page;
+    const remoteFrame = page;
     await localFrame.getByRole("button", { name: /^Local chat/ }).click();
     await localFrame.locator("#message").waitFor();
     await localFrame
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
-    // Before the fix this dialog stays in the frame and has no Remote chip.
-    const localSettings = localFrame.getByRole("dialog", {
-      name: "Studio settings",
-    });
-    await expect
-      .poll(
-        async () =>
-          (await settings.isVisible()) || (await localSettings.isVisible()),
-      )
-      .toBe(true);
-    const openedAccounts = (await settings.isVisible())
-      ? accounts
-      : localSettings.getByRole("region", { name: "Accounts", exact: true });
+    await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
     await expect(
-      openedAccounts.getByRole("button", { name: "+ Remote", exact: true }),
+      accounts.getByRole("button", { name: "+ Remote", exact: true }),
     ).toBeVisible();
     await expect(settings).toBeVisible();
-    await expect(localSettings).toBeHidden();
+    await expect(
+      page.getByRole("dialog", { name: "Studio settings" }),
+    ).toHaveCount(1);
     await expect(
       settings.getByRole("tab", { name: "Accounts", exact: true }),
     ).toHaveAttribute("aria-selected", "true");
@@ -240,8 +227,8 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
     await expect(signIn).toBeVisible();
     await expect(settings).toBeHidden();
     await expect(
-      localFrame.getByRole("dialog", { name: /Sign in to Codex/ }),
-    ).toHaveCount(0);
+      page.getByRole("dialog", { name: /Sign in to Codex/ }),
+    ).toHaveCount(1);
     await signIn.getByLabel("Close", { exact: true }).click();
     await expect(settings).toBeVisible();
     await expect(
@@ -253,6 +240,7 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
     await remoteFrame
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
+    await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
     await expect(settings).toBeVisible();
     await expect(
       accounts.getByRole("button", { name: "+ Remote", exact: true }),
@@ -270,7 +258,9 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
       .getByRole("tab", { name: "Accounts", exact: true })
       .click();
     await expect(settings).toBeVisible();
-    await expect(remoteSettings).toBeHidden();
+    await expect(
+      page.getByRole("dialog", { name: "Studio settings" }),
+    ).toHaveCount(1);
     await expect(
       accounts.getByRole("button", { name: "+ Remote", exact: true }),
     ).toBeVisible();

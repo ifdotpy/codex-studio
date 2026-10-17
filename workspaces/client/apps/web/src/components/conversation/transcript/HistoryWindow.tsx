@@ -1,3 +1,4 @@
+import { useServerApi } from "../../../servers/ServerServicesContext";
 import {
   Fragment,
   useEffect,
@@ -8,7 +9,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { save, saved } from "../../../api";
+import "../../../api";
 import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import type { HistoryGroup } from "../../turnHistoryModel";
 import {
@@ -38,6 +39,8 @@ export default function HistoryWindow({
   rememberScroll?: () => void;
   hasRecentScrollInput?: () => boolean;
 }) {
+  const { save, saved } = useServerApi();
+
   const body = useRef<HTMLDivElement>(null);
   const scheduleUpdate = useRef<() => void>(() => {});
   const heights = useRef(new Map<string, number>());
@@ -198,7 +201,8 @@ export default function HistoryWindow({
         restoringAnchor.current = null;
         viewportAnchor.current = null;
         storedAnchor.current = null;
-        save(`${storageKey}:window-anchor`, null);
+        // persistAnchor below writes the actual position. A provisional null
+        // doubles durable writes and prevents identical-anchor deduplication.
       }
       captureAnchorAfterUpdate.current = true;
       schedule();

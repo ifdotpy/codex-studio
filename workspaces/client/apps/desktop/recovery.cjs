@@ -265,7 +265,10 @@ async function ensureSupervisorAgent({ files, python, resources, uid, run }) {
 function isInstalledApplication(applicationPath) {
   return (
     typeof applicationPath === "string" &&
-    path.resolve(applicationPath) === installedApplicationPath
+    [
+      installedApplicationPath,
+      "/Applications/Codex Studio.app/Contents/MacOS/studio-native-client",
+    ].includes(path.resolve(applicationPath))
   );
 }
 function recoveryStatusLabel(enabled, available = true) {

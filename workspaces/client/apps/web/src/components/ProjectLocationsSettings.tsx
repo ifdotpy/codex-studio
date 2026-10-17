@@ -1,7 +1,11 @@
+import {
+  useServerApi,
+  useServerStorage,
+} from "../servers/ServerServicesContext";
 import { ActionIcon, Button, Menu } from "@mantine/core";
 import { MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText, get } from "../api";
+import { errorText } from "../api";
 import {
   saveProjectLocation,
   ProjectReceiptRefused,
@@ -27,6 +31,9 @@ export default function ProjectLocationsSettings({
   initialServer?: string;
   saved: () => Promise<void>;
 }) {
+  const { get, post, refreshSession } = useServerApi();
+  const storage = useServerStorage();
+
   const [adding, setAdding] = useState(!!initialServer);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -74,13 +81,16 @@ export default function ProjectLocationsSettings({
         "Retry the pending location request before another change.",
       );
     request.current ||= { action, server, path, id: crypto.randomUUID() };
-    await saveProjectLocation({
-      action,
-      server,
-      path,
-      project: project.id,
-      request_id: request.current.id,
-    }).catch((error: unknown) => {
+    await saveProjectLocation(
+      {
+        action,
+        server,
+        path,
+        project: project.id,
+        request_id: request.current.id,
+      },
+      { post, refreshSession, storage },
+    ).catch((error: unknown) => {
       if (error instanceof ProjectReceiptRefused) request.current = null;
       throw error;
     });

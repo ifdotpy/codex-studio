@@ -770,9 +770,14 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 lambda: self.runtime.analytics_capture_status()['active'] > 0,
                 'analytics capture start',
             )
-            start = time.monotonic()
-            self.runtime.close()
-            self.assertLess(time.monotonic() - start, 5)
+            # Keep the writer locked until shutdown completes. This proves the
+            # queue does not require the writer to become available, without
+            # imposing a wall-clock performance target on all runtime teardown.
+            worker, finished, errors = self.run_callback(self.runtime.close)
+            self.assertTrue(finished.wait(HANG_GUARD_SECONDS),
+                'Runtime close waits for the locked analytics writer')
+            worker.join()
+            self.assertEqual(errors, [])
             state = self.runtime.analytics_capture_status()
             self.assertEqual(state['queued'] + state['active'], 0)
             self.assertEqual(state['bytes'], 0)

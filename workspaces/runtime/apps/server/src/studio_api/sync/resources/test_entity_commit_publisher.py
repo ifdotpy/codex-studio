@@ -613,5 +613,29 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_entity_event([6])
 
 
+
+
+class EntityPublicationRetryTests(unittest.TestCase):
+    def test_busy_retry_preserves_sequence_and_unexpected_errors_keep_traceback(self) -> None:
+        for code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_ERROR):
+            with self.subTest(code=code):
+                clock = [0.0]
+                scheduler = EntityPublicationScheduler(clock=lambda: clock[0], start_worker=False)
+                error = sqlite3.OperationalError('injected read failure')
+                error.sqlite_errorcode = code
+                scheduler.schedule(Path('/fixture'), Path('/fixture/canvas.sqlite3'), 7, (6, 7))
+                clock[0] += ENTITY_SEQUENCE_THROTTLE_SECONDS
+                with patch.object(scheduler, '_publish', side_effect=[error, None]) as publish:
+                    with self.assertLogs('studio_api.sync.resources.hub') as captured:
+                        self.assertEqual(scheduler.flush_due(), 1)
+                    self.assertEqual(bool(captured.records[0].exc_info), code == sqlite3.SQLITE_ERROR)
+                    self.assertEqual(scheduler.flush_due(), 0)
+                    clock[0] += 0.25
+                    self.assertEqual(scheduler.flush_due(), 1)
+                    self.assertEqual(publish.call_count, 2)
+                    self.assertEqual(publish.call_args.args[4:7], (7, {6, 7}, False))
+                    self.assertEqual(scheduler.flush_due(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1631,6 +1631,51 @@ def _optional_monitor_repair(rt, db, agent):
         return False
 
 
+def _optional_native_command_repair(rt, agent):
+    """Defer event shortening when only a native background service is running.
+
+    Native terminals need not have a retained Studio task. This is a normal
+    start on the original thread, never permission to rewrite active history.
+    """
+    with rt.lock, rt.db() as db:
+        current = rt.agent(agent['id'], db)
+        attempt = copy.deepcopy(current.get('startAttempt') or {})
+        if (rt.closed or _identity(current) != _identity(agent)
+                or not _unsubmitted(current, attempt.get('id'))
+                or not attempt.get('events') or attempt.get('action')
+                or blocked(current)):
+            return None
+        if (_local_idle(rt, db, current, attempt['id'], allow_background_work=True)
+                or not verified_events(db, current)):
+            return None
+        settings = rt.preparation_settings(current)
+    server = rt.connect_agent(current)
+    native_identity = _source_native_identity(server)
+    _callback_barrier(server)
+    tid = current['threadId']
+    native = _native_read(server, 'thread/read', {'threadId':tid, 'includeTurns':False}, timeout=10)['thread']
+    if native.get('id') != tid or native.get('status', {}).get('type') != 'idle':
+        return None
+    terminals = _native_read(server, 'thread/backgroundTerminals/list', {'threadId':tid}, timeout=10)
+    if not isinstance(terminals.get('data'), list) or not terminals['data']:
+        return None
+    queue = _native_read(server, 'thread/queue/list', {'threadId':tid}, timeout=10)
+    if queue.get('data') != [] or queue.get('nextCursor') or _unresolved_tool_receipts(rt, current):
+        return None
+    _callback_barrier(server)
+    with rt.lock, rt.db() as db:
+        latest = rt.agent(agent['id'], db)
+        if (rt.closed or _identity(latest) != _identity(agent)
+                or latest.get('startAttempt') != attempt or blocked(latest)
+                or rt.preparation_settings(latest) != settings
+                or rt.server_for(latest.get('accountKey', 'default'), rt.agent_connection(latest)) is not server
+                or _source_native_identity(server) != native_identity):
+            return None
+        if _local_idle(rt, db, latest, attempt['id'], allow_background_work=True):
+            return None
+        return latest
+
+
 def _task_check_agent(rt, db, job):
     agent = rt.agent(job['agent'], db)
     wait = agent.get('contextRepairWait') or {}
@@ -1949,6 +1994,9 @@ def repair_before_start(rt, agent):
             if _identity(current) == _identity(agent) and not current.get('contextRepairWait'):
                 if _optional_monitor_repair(rt, db, current):
                     return current
+        optional = _optional_native_command_repair(rt, agent)
+        if optional is not None:
+            return optional
         if (agent.get('contextRepair') or {}).get('phase') in {'unchanged', 'completed'}:
             _callback_barrier(rt.connect(agent.get('accountKey', 'default')))
         return _repair(rt, agent['id'], _attempt(agent))

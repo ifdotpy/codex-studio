@@ -4,6 +4,8 @@ pub mod blocking_pool;
 pub mod child_priority;
 mod client;
 pub mod operational_log;
+#[cfg(unix)]
+mod owned_process_group;
 mod ports;
 mod protocol;
 #[cfg(unix)]
@@ -37,6 +39,7 @@ pub use pty_host::{
     LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
     terminal_environment_from,
 };
+pub use shared_values_generated::MAX_SUPERVISOR_FRAME_BYTES;
 pub use transport::SupervisorTransport;
 
 #[cfg(test)]

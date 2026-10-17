@@ -312,10 +312,12 @@ class ProjectContracts(unittest.TestCase):
             self.assertIsInstance(sync_after, int)
             self.assertEqual(len(entities), 1)
             self.assertEqual(entities[0]["id"], "entity:project:" + project["path"])
-            self.assertEqual(json.loads(entities[0]["payload"])["value"], project)
+            from codex_vm_agents import project_entity_view
+            projected_project = project_entity_view(self.runtime, project)
+            self.assertEqual(json.loads(entities[0]["payload"])["value"], projected_project)
             self.assertEqual(request("/api/projects"), {"items": [project]})
             state = read_test_state(request)
-            self.assertEqual(state.values("project"), [project])
+            self.assertEqual(state.values("project"), [projected_project])
             order = {"action": "reorder", "request_id": str(uuid.uuid4()),
                      "expected_revision": 0, "groups": {"projects": [project["path"]]},
                      "migration": True}

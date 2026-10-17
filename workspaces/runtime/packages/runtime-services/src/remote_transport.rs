@@ -1616,42 +1616,41 @@ fn reject_symlink(path: &Path) -> RemoteTransportResult<()> {
 }
 
 fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
-    #[cfg(target_os = "linux")]
+    // The O_NOFOLLOW value differs between architectures (0x20000 is O_LARGEFILE on arm64
+    // Linux), so it comes from rustix rather than a literal.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x0002_0000); // O_NOFOLLOW
+        let flag = rustix::fs::OFlags::NOFOLLOW.bits();
+        options
+            .custom_flags(i32::try_from(flag).map_err(|_| RemoteTransportError::IdentityStorage)?);
+        Ok(())
     }
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x0000_0100); // O_NOFOLLOW
-    }
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-    )))]
+    #[cfg(not(unix))]
     {
         let _ = options;
-        return Err(RemoteTransportError::IdentityStorage);
+        Err(RemoteTransportError::IdentityStorage)
     }
-    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Arc;
+
+    #[cfg(unix)]
+    #[test]
+    fn no_follow_open_refuses_a_symbolic_link() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join("identity.json");
+        std::fs::write(&target, b"{}").expect("target");
+        let link = root.path().join("link.json");
+        std::os::unix::fs::symlink(&target, &link).expect("link");
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        super::set_no_follow(&mut options).expect("flag");
+        assert!(options.open(&link).is_err());
+        assert!(options.open(&target).is_ok());
+    }
 
     use super::{
         HttpResponse, MultiServerExchangeInput, MultiServerRequest, MultiServerSigningInput,

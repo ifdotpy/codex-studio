@@ -325,6 +325,7 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_options.mjs"], "safe")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/notification-scheduler-contract.py"], "expensive")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/account-transfer-lazy-load-contract.py"], "expensive")
         automated = RUNNER.only_category(RUNNER.inventory(), "automated")
         self.assertEqual(len(automated), 27)
         self.assertEqual({path for path, _kind in automated}, set(RUNNER.AUTOMATED_SUITES))
@@ -551,6 +552,42 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("Sample.test_second", failures[0][1])
         self.assertIn("reproduce:", failures[0][1])
+
+    def test_full_run_runtime_slices_preserve_ids_deadline_and_failures(self):
+        path = f"{RUNNER.TESTS_REL}/runtime-contract.py"
+        limit = RUNNER.RUNTIME_SUITE_MAX_TESTS_PER_SLICE
+        ids = [f"__main__.Sample.test_{index:03}" for index in range(limit * 2 + 1)]
+        commands = []
+
+        def execute(command, _cwd, timeout, environment):
+            self.assertEqual(timeout, 7)
+            selectors = command[command.index("-v") + 1:]
+            commands.append(selectors)
+            outcome = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+            outcome.write_text("".join(json.dumps({
+                "id": f"__main__.{selector}",
+                "outcome": "failed" if selector == "Sample.test_001" else "passed",
+            }) + "\n" for selector in selectors))
+            return (1 if "Sample.test_001" in selectors else 0), None, [], []
+
+        with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "is_unittest_suite", return_value=True),
+              mock.patch.object(RUNNER, "has_module_level_mutable_state", return_value=False),
+              mock.patch.object(RUNNER, "has_custom_unittest_suite", return_value=False),
+              mock.patch.object(RUNNER, "_suite_test_ids", return_value=ids),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"suiteSeconds": {}})):
+            _runnable, _skipped, failures, _elapsed = RUNNER._run_suites_locked(
+                [(path, "safe")], set(), 7, 7, root=ROOT, execute=execute,
+                focused=False, workers=2,
+            )
+        flattened = [selector for group in commands for selector in group]
+        self.assertEqual(sorted(flattened), [test_id.removeprefix("__main__.") for test_id in ids])
+        self.assertEqual(len(flattened), len(set(flattened)))
+        self.assertEqual(len(commands), 3)
+        self.assertTrue(all(0 < len(group) <= limit for group in commands))
+        self.assertEqual(len(failures), 1)
+        self.assertIn("Sample.test_001", failures[0][1])
 
     def test_focused_slice_count_is_capped_and_skips_small_suites(self):
         self.assertEqual(RUNNER._focused_suite_slice_count("suite.py", 4, 4), 1)
@@ -1673,9 +1710,29 @@ class ServerSuiteRunner(unittest.TestCase):
             child = ("import pathlib,time\np=pathlib.Path(" + repr(str(marker)) + ")\n"
                      "while True:\n p.open('a').write('x')\n time.sleep(.01)\n")
             parent = ("import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
-                      repr(child) + "]); time.sleep(10)")
-            returncode, error, _expected, _unexpected = RUNNER.run_process(
-                [sys.executable, "-c", parent], ROOT, .2, os.environ.copy())
+                      repr(child) + f"]); time.sleep({HANG_GUARD_SECONDS * 2})")
+            # Expire only after the grandchild exists. Interpreter startup is
+            # not the deadline contract; actual process-group cleanup is.
+            clock_calls = 0
+            def deadline_clock():
+                nonlocal clock_calls
+                clock_calls += 1
+                if clock_calls == 1:
+                    return 0.0
+                wait_for_condition(marker.exists, "timeout fixture grandchild")
+                return 1.0
+            clock = mock.Mock(wraps=time)
+            clock.monotonic.side_effect = deadline_clock
+            original_wait = subprocess.Popen.wait
+            def wait_after_start(process, timeout=None):
+                if os.name == "nt" and timeout == .2:
+                    wait_for_condition(marker.exists, "timeout fixture grandchild")
+                    raise subprocess.TimeoutExpired(process.args, timeout)
+                return original_wait(process, timeout=timeout)
+            with mock.patch.object(RUNNER, "time", clock), \
+                    mock.patch.object(subprocess.Popen, "wait", wait_after_start):
+                returncode, error, _expected, _unexpected = RUNNER.run_process(
+                    [sys.executable, "-c", parent], ROOT, .2, os.environ.copy())
             self.assertIsNone(returncode)
             self.assertIn("timed out", error)
             self.assertTrue(marker.exists())

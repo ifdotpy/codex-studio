@@ -249,7 +249,12 @@ impl PtyShared {
         )
         .err();
         if already_reaped {
-            if let Some(error) = signal_error {
+            if let Some(error) = signal_error
+                && !crate::owned_process_group::vanished_after_reap(
+                    Some(self.process_group),
+                    &std::io::Error::from_raw_os_error(error.raw_os_error()),
+                )
+            {
                 return Err(PtyHostError::Signal(error));
             }
             wait_for_session_processes(self.session, deadline)?;
@@ -271,7 +276,12 @@ impl PtyShared {
             }
             std::thread::park_timeout(Duration::from_millis(5));
         };
-        if let Some(error) = signal_error {
+        if let Some(error) = signal_error
+            && !crate::owned_process_group::vanished_after_reap(
+                Some(self.process_group),
+                &std::io::Error::from_raw_os_error(error.raw_os_error()),
+            )
+        {
             return Err(PtyHostError::Signal(error));
         }
         wait_for_session_processes(self.session, deadline)?;

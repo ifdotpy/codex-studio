@@ -112,6 +112,7 @@ class DaybreakRuntime(unittest.TestCase):
         self.server = self.runtime.connect()
         self.a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True)
         self.key = self.a['id']
+        self.wait_for_starts = f.RuntimeContract.track_delivery_starts(self)
 
     def tearDown(self):
         self.runtime.close()
@@ -130,6 +131,7 @@ class DaybreakRuntime(unittest.TestCase):
         self.runtime.send(self.key, text, identity)
         self.runtime.dispatch()
         f.eventually(lambda: self.agent().get('turnId'))
+        self.wait_for_starts()
         return self.agent()
 
     def mutate(self, **values):

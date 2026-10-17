@@ -68,6 +68,13 @@ from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEU
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
+# Skill files appended to the role guidance of a new layr (VM) session, in this order, relative to
+# .agents/skills. The Rust preparation (snapshot.rs VM_ROLE_GUIDANCE) must list the same files.
+VM_ROLE_GUIDANCE = ("codex-workspace/references/layr.md", "layr/SKILL.md")
+# Where the guest keeps the Studio skills; a VM session's guidance names these paths. The Rust
+# preparation (snapshot.rs VM_GUEST_SKILLS_ROOT) uses the same folder.
+VM_GUEST_SKILLS_ROOT = Path("/opt/codex-studio/.agents/skills")
+
 # Bounds for the shared writer admission path; SQLite uses milliseconds.
 _WRITE_ADMISSION_TIMEOUT_SECONDS = 60
 _WRITE_ADMISSION_BUSY_TIMEOUT_MS = 50
@@ -5858,12 +5865,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except OSError as error:
             raise ValueError(f"Studio role skill {name} is missing. Update the installed Studio workspace") from error
         if actor.get("executionMode") == "vm":
-            content += "\n" + (path.parent.parent / "codex-workspace/references/layr.md").read_text()
+            for guide in VM_ROLE_GUIDANCE:
+                content += "\n" + (path.parent.parent / guide).read_text()
         if not content:
             raise ValueError(f"Studio role skill {name} is empty. Update the installed Studio workspace")
         shared = path.parent.parent / "codex-workspace" / "SKILL.md"
         if actor.get("executionMode") == "vm":
-            path = Path("/opt/codex-studio/.agents/skills") / name / "SKILL.md"
+            path = VM_GUEST_SKILLS_ROOT / name / "SKILL.md"
             shared = path.parent.parent / "codex-workspace" / "SKILL.md"
         return f"[Studio role skill: {name}]\nSource: {path}\nShared tool guidance: {shared}\n{content}\n[End Studio role skill]"
 

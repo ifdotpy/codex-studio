@@ -16,6 +16,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 studio-operations = { path = "../operations", features = ["serde"] }
 
+[build-dependencies]
+pyo3-build-config.workspace = true
+
 [lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

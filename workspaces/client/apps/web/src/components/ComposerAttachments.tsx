@@ -1,7 +1,9 @@
+import { useServerApi } from "../servers/ServerServicesContext";
+import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import { Button, Loader } from "@mantine/core";
 import { File, Paperclip, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { get, errorText } from "../api";
+import { errorText } from "../api";
 import { IconAction } from "./ui/actions/IconAction";
 import FilePreview from "./FilePreview";
 
@@ -22,6 +24,7 @@ export default function ComposerAttachments(p: {
   add: (files: globalThis.File[]) => Promise<void>;
   remove: (id: string) => void;
 }) {
+  const { canPickFiles, pickFiles } = useServerFileDialogs();
   const input = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const unsavedFiles = useRef<{
@@ -70,28 +73,12 @@ export default function ComposerAttachments(p: {
         title="Attach files"
         disabled={p.disabled || p.uploading || p.assets.length >= 8}
         onClick={() => {
-          if (!window.codexDesktop) {
+          if (!canPickFiles()) {
             input.current?.click();
             return;
           }
-          void window.codexDesktop
-            .pickFiles()
-            .then((files) => {
-              return saveFiles(
-                files.map(
-                  (file) =>
-                    new globalThis.File(
-                      [
-                        Uint8Array.from(atob(file.data), (c) =>
-                          c.charCodeAt(0),
-                        ),
-                      ],
-                      file.name,
-                      { type: file.mime },
-                    ),
-                ),
-              );
-            })
+          void pickFiles()
+            .then((files) => saveFiles(files))
             .catch((error) => p.notify(errorText(error)));
         }}
       >
@@ -149,6 +136,8 @@ export default function ComposerAttachments(p: {
 }
 
 function AttachmentImage(p: { asset: Attachment; onPreview: () => void }) {
+  const { get } = useServerApi();
+
   const [src, setSrc] = useState<string>();
   const [error, setError] = useState("");
   useEffect(() => {

@@ -66,7 +66,8 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     fs::create_dir_all(&state).unwrap();
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-    let fixture_result = StdCommand::new(prepared_python::prepared_python(&source))
+    let prepared = prepared_python::prepared_python(&source);
+    let fixture_result = StdCommand::new(&prepared)
         .arg("-B")
         .arg(fixture)
         .arg(&state)
@@ -135,16 +136,33 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
             .exists()
     );
 
+    // Seed an isolated managed-cache layout with the already prepared venv.
+    // The server must discover it without invoking the poisoned PATH Python.
+    let cache = prefix.path().join("prepared-cache");
+    let managed = StdCommand::new(&prepared)
+        .args(["-c", "from pathlib import Path; from codex_python import managed_python; import sys; print(managed_python(Path(sys.argv[1])))"])
+        .arg(&scripts)
+        .env("PYTHONPATH", &scripts)
+        .env("XDG_CACHE_HOME", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        managed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&managed.stderr)
+    );
+    let managed = PathBuf::from(String::from_utf8(managed.stdout).unwrap().trim());
+    let managed_venv = managed.parent().unwrap().parent().unwrap();
+    fs::create_dir_all(managed_venv.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(prepared.parent().unwrap().parent().unwrap(), managed_venv).unwrap();
+
     let mut child = Command::new(binary)
         .args(["--port", "0"])
         .current_dir(prefix.path())
         .env_clear()
         .env("HOME", &home)
         .env(STARTUP_TRACE_ENV, "1")
-        .env(
-            "XDG_CACHE_HOME",
-            std::env::var_os("XDG_CACHE_HOME").expect("isolated prepared Python cache"),
-        )
+        .env("XDG_CACHE_HOME", &cache)
         .env(
             "PATH",
             std::env::join_paths([
@@ -250,10 +268,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .current_dir(prefix.path())
         .env_clear()
         .env("HOME", &home)
-        .env(
-            "XDG_CACHE_HOME",
-            std::env::var_os("XDG_CACHE_HOME").expect("isolated prepared Python cache"),
-        )
+        .env("XDG_CACHE_HOME", &cache)
         .env(
             "PATH",
             std::env::join_paths([

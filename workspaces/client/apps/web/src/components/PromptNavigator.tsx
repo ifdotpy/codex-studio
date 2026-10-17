@@ -1,9 +1,10 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { syncGet, errorText, type GetResult } from "../api";
+import { errorText, type GetResult } from "../api";
 import type { Message } from "../types";
 import "./prompt-navigation.css";
 
@@ -29,6 +30,8 @@ export default function PromptNavigator({
   storageKey: string;
   jump: (id: string) => void;
 }) {
+  const { syncGet } = useServerApi();
+
   const prompts = useMemo(
     () => messages.filter((item) => item.role === "user" && !item.pending),
     [messages],

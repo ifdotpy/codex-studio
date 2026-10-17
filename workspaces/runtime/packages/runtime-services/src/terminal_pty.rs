@@ -978,6 +978,8 @@ mod tests {
                         raw_key.clone(),
                         OsString::from_vec(b"raw-value-\xfe".to_vec()),
                     );
+                    #[cfg(target_os = "macos")]
+                    base.insert("__CF_USER_TEXT_ENCODING".into(), "0x0:0:0".into());
                     let rust_env =
                         studio_runtime_process::terminal_environment_from(&base, supervisor);
                     let mut python_command = Command::new(python.as_os_str());

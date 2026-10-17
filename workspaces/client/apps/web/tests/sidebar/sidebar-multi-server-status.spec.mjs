@@ -176,7 +176,9 @@ test("combined sidebar marks unreachable server rows until reconnect", async ({
       await expect(line.locator(".chat-server-offline")).toBeVisible();
     for (const line of await localServerLines.all())
       await expect(line.locator(".chat-server-offline")).toHaveCount(0);
-    await expect(remoteTeam.locator(".chat-server-offline")).toBeVisible();
+    await expect(
+      remoteTeam.locator(".peer-team-toggle .chat-server-offline"),
+    ).toBeVisible();
     await expect(remoteFolder.locator(".chat-server-offline")).toBeVisible();
     const offlineRowHeight = await remoteRow.evaluate(
       (element) => element.getBoundingClientRect().height,
@@ -237,6 +239,44 @@ test("combined sidebar marks unreachable server rows until reconnect", async ({
       timeout: 15000,
     });
     await expect(localRow.locator(".chat-server-offline")).toHaveCount(0);
+  } finally {
+    await servers.close();
+  }
+});
+
+test("server labels fit without the former three-character clipping", async ({
+  page,
+  context,
+}) => {
+  const servers = await sidebarParityFixture(context);
+  const label = "MacBook Pro — Development Server";
+  servers.local.aliases.remote = label;
+  try {
+    const sidebar = await servers.open(page);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      if (width === 390)
+        await page.getByRole("button", { name: "Servers and chats" }).click();
+      const name = sidebar
+        .locator(".chat-server-alias")
+        .filter({ hasText: label })
+        .first();
+      await expect(name).toBeVisible();
+      await expect(name).toHaveAttribute("title", label);
+      expect(
+        await name.evaluate((element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const box = element.getBoundingClientRect();
+          return [...range.getClientRects()].every(
+            (rect) =>
+              rect.left >= box.left - 1 &&
+              rect.right <= box.right + 1 &&
+              rect.bottom <= box.bottom + 1,
+          );
+        }),
+      ).toBe(true);
+    }
   } finally {
     await servers.close();
   }

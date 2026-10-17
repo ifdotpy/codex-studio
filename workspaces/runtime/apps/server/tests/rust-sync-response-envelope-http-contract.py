@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import unittest
 from contextlib import closing
 
@@ -108,8 +109,14 @@ class MutationSyncEnvelopeHTTPContract(TimedHTTPContractTest, unittest.TestCase)
             self.assertEqual(entity["_deleted"], bool(deleted))
             relative_sequences.append(sequence - after)
             entity_ids.append(entity["id"])
+            normalized = self._normalize_payload(json.loads(payload), str(self.backend.cwd))
+            if collection == "project" and sys.platform == "darwin":
+                # The portable golden predates macOS-only vault readiness. Check
+                # that contract explicitly before comparing the shared fields.
+                self.assertEqual(normalized["value"].pop("layrReadiness"),
+                                 {"state": "not_imported"})
             normalized_payload = json.dumps(
-                self._normalize_payload(json.loads(payload), str(self.backend.cwd)),
+                normalized,
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -121,7 +128,9 @@ class MutationSyncEnvelopeHTTPContract(TimedHTTPContractTest, unittest.TestCase)
                 }
             )
         self.assertEqual(relative_sequences, sorted(relative_sequences))
-        self.assertEqual(python_comparable, PYTHON_ENVELOPE_GOLDENS[scenario])
+        self.assertEqual(python_comparable, PYTHON_ENVELOPE_GOLDENS[scenario],
+                         [self._normalize_payload(json.loads(row[4]), str(self.backend.cwd))
+                          for row in projected])
         return entity_ids
 
     @classmethod

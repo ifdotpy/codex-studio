@@ -1,3 +1,4 @@
+import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import {
   localSidebarBackend,
   localSidebarServices,
@@ -165,6 +166,8 @@ export default function Sidebar(p: SidebarProps) {
 }
 
 function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
+  const { canPickDirectory, pickDirectory, revealPath } =
+    useServerFileDialogs();
   const services = p.services;
   const canEdit = (target: SidebarTarget) =>
     services.available?.(target) ?? true;
@@ -1403,12 +1406,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               onThisMac:
                 !serverViewId &&
                 vaultBackend(entry).ownerId === localSidebarBackend.ownerId,
-              desktop: !!window.codexDesktop,
+              desktop: canPickDirectory(),
             });
           const pull = async (entry: VaultEntry) => {
             try {
-              const desktop = window.codexDesktop;
-              const to = desktop ? await desktop.pickDirectory() : null;
+              const desktop = canPickDirectory();
+              const to = desktop ? await pickDirectory() : null;
               if (desktop && !to) return;
               p.notify?.(`Pulling ${group.name} from its vault…`);
               p.notify?.(
@@ -1665,11 +1668,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         actions(entry).includes("finder") && (
                           <Menu.Item
                             key={`${key}:finder`}
-                            onClick={() =>
-                              void window.codexDesktop?.revealPath(
-                                entry.vault.disk!,
-                              )
-                            }
+                            onClick={() => void revealPath(entry.vault.disk!)}
                           >
                             {`Show in Finder${suffix}`}
                           </Menu.Item>

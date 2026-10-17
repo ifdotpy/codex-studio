@@ -21,8 +21,12 @@ export function frameURL(
   assets = window.codexDesktop?.serverViewOrigin,
 ): string {
   const root = new URL(shell);
-  const base = new URL(assets || root.origin);
+  const native = root.protocol === "tauri:";
+  const base = new URL(
+    native ? "studio-view://localhost" : assets || root.origin,
+  );
   const isolated =
+    native ||
     !!assets ||
     (base.protocol === "http:" &&
       ["127.0.0.1", "localhost"].includes(base.hostname));
@@ -38,11 +42,20 @@ export function frameURL(
         : "combined",
     ...(isolated
       ? {
-          "studio-parent": root.origin,
+          "studio-parent": native ? "tauri://localhost" : root.origin,
           "studio-origin": server.origin,
           "studio-credential": server.credentialId || "",
         }
       : {}),
   }).toString();
   return base.href;
+}
+
+// WebKit assigns registered native schemes a host origin even though the URL
+// standard reports "null". Message destinations must match MessageEvent.origin.
+export function frameMessageOrigin(value: string): string {
+  const url = new URL(value);
+  return url.protocol === "studio-view:" || url.protocol === "tauri:"
+    ? `${url.protocol}//${url.host}`
+    : url.origin;
 }

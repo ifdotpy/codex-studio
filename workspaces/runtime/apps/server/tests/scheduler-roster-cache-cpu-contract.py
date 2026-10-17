@@ -315,7 +315,8 @@ class RosterCache(unittest.TestCase):
             return original(db)
 
         with ExitStack() as stack:
-            for name in ("codex_claude_auth_wait.tick", "codex_native_runtime.tick", "codex_provider_versions.tick",
+            for name in ("codex_vm_vault.tick", "codex_vm_agents.tick", "codex_vm_mac_sync.tick",
+                         "codex_browser_bridge.tick", "codex_linux_vm_credentials.tick", "codex_claude_auth_wait.tick", "codex_native_runtime.tick", "codex_provider_versions.tick",
                          "codex_native_release.tick", "codex_team_isolation.cancel_pending",
                          "codex_context_repair.tick_restart_input_waits"):
                 stack.enter_context(patch(name, lambda *_args: None))

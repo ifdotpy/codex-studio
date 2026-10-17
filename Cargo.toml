@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
+    "workspaces/client/apps/native/src-tauri",
+    "workspaces/client/packages/client-core",
+    "workspaces/client/packages/client-domain",
+    "workspaces/client/packages/client-wasm",
     "workspaces/runtime/apps/diagnostics",
     "workspaces/runtime/apps/peer-link",
     "workspaces/runtime/apps/process-supervisor",
@@ -36,6 +40,7 @@ let_underscore_must_use = "deny"
 unwrap_used = "warn"
 
 [workspace.dependencies]
+bytes = "=1.12.1"
 base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 data-encoding = "=2.11.1"
 file-rotate = "=0.8.0"
@@ -60,8 +65,9 @@ tokio-rusqlite = "=0.8.0"
 sysinfo = { version = "=0.39.6", default-features = false, features = ["system"] }
 sha2 = "0.11.0"
 strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
-thiserror = "=2.0.17"
+thiserror = "=2.0.20"
 pyo3 = { version = "0.29", features = ["abi3-py311", "extension-module"] }
+pyo3-build-config = "0.29"
 
 axum = "=0.8.9"
 form_urlencoded = "=1.2.2"
@@ -78,3 +84,8 @@ ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-pr
 
 [profile.test.package.sha2]
 opt-level = 3
+
+[patch.crates-io]
+# nix 0.31.3 references macOS-only libc symbols on iOS. Pin upstream fix #2821
+# until it is published: https://github.com/nix-rust/nix/pull/2821
+nix = { git = "https://github.com/nix-rust/nix", rev = "f9ba3ed0698255d93240b07ecbf39ecb05a8a5cd" }

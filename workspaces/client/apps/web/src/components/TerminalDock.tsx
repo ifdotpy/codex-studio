@@ -1,3 +1,5 @@
+import { useScreenEnvironment } from "../servers/ScreenContext";
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, TextInput } from "@mantine/core";
 import {
   ChevronDown,
@@ -11,26 +13,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
-import {
-  get,
-  post,
-  syncPost,
-  errorText,
-  save,
-  saved,
-  type GetResult,
-  type PostBody,
-} from "../api";
+import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
-import { watchResourceReads } from "./watchResourceReads";
-import {
-  isClassicServerView,
-  isServerView,
-  serverParentOrigin,
-  serverViewId,
-} from "../servers/environment";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { serverParentOrigin } from "../servers/environment";
 
 type Shell = GetResult<"/api/terminals">["items"][number];
 type Entry = Shell & { key: string };
@@ -38,11 +26,6 @@ const running = (status: string) =>
   ["running", "starting", "approval"].includes(status);
 // In the combined window the shell draws the closed bar under its sidebar and makes room
 // for the open panel across the whole window (docs: servers.css "Terminal under the sidebar").
-const shellTerminal =
-  isServerView &&
-  !isClassicServerView &&
-  typeof window !== "undefined" &&
-  window.parent !== window;
 const inputUncertaintyNotice =
   "Previous input delivery is uncertain. Check the terminal output before you enter it again. Buffered input was not sent.";
 
@@ -55,6 +38,18 @@ export default function TerminalDock({
   agent?: Agent;
   notify: (message: string) => void;
 }) {
+  const {
+    screen,
+    postToShell,
+    hasShell,
+    isServerView,
+    isClassicServerView,
+    serverViewId,
+  } = useScreenEnvironment();
+  const shellTerminal = isServerView && !isClassicServerView && hasShell;
+  const watchResourceReads = useServerResourceReads();
+  const { get, post, save, saved } = useServerApi();
+
   const [opened, setOpened] = useState(() =>
     saved("codex.terminal.open", false),
   );
@@ -108,7 +103,7 @@ export default function TerminalDock({
       active = false;
       stop();
     };
-  }, [load]);
+  }, [load, watchResourceReads]);
   useEffect(() => {
     if (!opened) setEndTarget(null);
     const update = () =>
@@ -194,7 +189,7 @@ export default function TerminalDock({
     : 38;
   useEffect(() => {
     if (!shellTerminal) return;
-    window.parent.postMessage(
+    postToShell(
       {
         kind: "studio-server-terminal",
         serverId: serverViewId,
@@ -208,6 +203,11 @@ export default function TerminalDock({
     );
   }, [opened, shownHeight, entries.length, activeCount, !!agent]);
   useEffect(() => {
+    if (screen)
+      return screen.bindTerminal((operation) => {
+        if (operation === "toggle") setOpened((value) => !value);
+        else void createRef.current();
+      });
     if (!shellTerminal) return;
     const command = (event: Event) => {
       const operation = (event as CustomEvent<string>).detail;
@@ -216,7 +216,7 @@ export default function TerminalDock({
     };
     window.addEventListener("studio-terminal-command", command);
     return () => window.removeEventListener("studio-terminal-command", command);
-  }, []);
+  }, [screen, shellTerminal]);
   const action = async <
     Path extends "/api/terminals/rename" | "/api/terminals/close",
   >(
@@ -541,6 +541,9 @@ function ShellView({
   shell: Shell;
   notify: (message: string) => void;
 }) {
+  const watchResourceReads = useServerResourceReads();
+  const { get, post, syncPost } = useServerApi();
+
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const [failure, setFailure] = useState("");
@@ -780,7 +783,7 @@ function ShellView({
       instance?.dispose();
       terminal.current = null;
     };
-  }, [shell.id, retry]);
+  }, [shell.id, retry, watchResourceReads]);
   return (
     <div className="terminal-shell-view">
       {truncated && (

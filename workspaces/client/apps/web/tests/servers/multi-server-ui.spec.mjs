@@ -473,9 +473,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
         await expect(settings).toBeHidden();
       }
       await clickServerChat("local");
-      const localComposer = page
-        .frameLocator('iframe[src*="studio-server=local"]')
-        .locator("#message");
+      const localComposer = page.locator("#message");
       await expect(localComposer).toBeVisible();
       await localComposer.fill(`idle draft ${count}`);
       await clickServerChat(count === 2 ? "remote" : "third");
@@ -494,37 +492,22 @@ test("one UI routes overlapping chats to two and three signed servers without re
           ),
         )
         .toBe(true);
-      // Remount each view before the existing caller checks below.
+      // Activate each owner before checking its composer.
       for (const id of count === 2
         ? ["local", "remote"]
         : ["local", "remote", "third"]) {
         await clickServerChat(id);
-        await expect(
-          page
-            .locator(`iframe[src*="studio-server=${id}"]`)
-            .contentFrame()
-            .locator("#message"),
-        ).toBeVisible();
+        await expect(page.locator("#message")).toBeVisible();
         if (id === "local")
-          await expect(
-            page
-              .locator(`iframe[src*="studio-server=${id}"]`)
-              .contentFrame()
-              .locator("#message"),
-          ).toHaveValue(`idle draft ${count}`);
+          await expect(page.locator("#message")).toHaveValue(
+            `idle draft ${count}`,
+          );
       }
     }
     await clickServerChat("local");
-    const localFrame = page.frameLocator('iframe[src*="studio-server=local"]');
-    const remoteFrame = page.frameLocator(
-      'iframe[src*="studio-server=remote"]',
-    );
-    const timeOrigins = await Promise.all(
-      page
-        .frames()
-        .filter((frame) => frame !== page.mainFrame())
-        .map((frame) => frame.evaluate(() => performance.timeOrigin)),
-    );
+    const localFrame = page;
+    const remoteFrame = page;
+    const timeOrigin = await page.evaluate(() => performance.timeOrigin);
     await localFrame.locator("#message").fill("local draft");
     await clickServerChat("remote");
     await remoteFrame.locator("#message").fill("remote draft");
@@ -532,14 +515,8 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await expect(localFrame.locator("#message")).toHaveValue("local draft");
     await clickServerChat("remote");
     await expect(remoteFrame.locator("#message")).toHaveValue("remote draft");
-    expect(
-      await Promise.all(
-        page
-          .frames()
-          .filter((frame) => frame !== page.mainFrame())
-          .map((frame) => frame.evaluate(() => performance.timeOrigin)),
-      ),
-    ).toEqual(timeOrigins);
+    expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin);
+    await expect(page.locator("iframe")).toHaveCount(0);
     await remoteFrame
       .getByRole("button", { name: "Send message", exact: true })
       .click();
@@ -651,139 +628,10 @@ test("one UI routes overlapping chats to two and three signed servers without re
       page.getByRole("complementary", { name: "Conversations" }),
     ).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 720 });
-    const remoteWindow = page
-      .frames()
-      .find(
-        (frame) =>
-          new URL(frame.url()).searchParams.get("studio-server") === "remote",
-      );
-    const frameSecurity = await remoteWindow.evaluate(async () => {
-      let parentBlocked = false,
-        siblingBlocked = false;
-      try {
-        void parent.document;
-      } catch (error) {
-        parentBlocked = error.name === "SecurityError";
-      }
-      try {
-        void parent.frames[0].document;
-      } catch (error) {
-        siblingBlocked = error.name === "SecurityError";
-      }
-      const correlation = crypto.randomUUID();
-      const blocked = await new Promise((resolve) => {
-        const receive = (event) => {
-          if (
-            event.data?.kind === "studio-server-transport-result" &&
-            event.data.correlation === correlation
-          ) {
-            removeEventListener("message", receive);
-            resolve(event.data.error);
-          }
-        };
-        addEventListener("message", receive);
-        parent.postMessage(
-          {
-            kind: "studio-server-transport",
-            correlation,
-            value: {
-              action: "request",
-              serverId: "third",
-              streamId: "attack",
-              url: "https://third.tailnet.ts.net/api/session",
-              method: "GET",
-            },
-          },
-          new URLSearchParams(location.search).get("studio-parent"),
-        );
-      });
-      return { parentBlocked, siblingBlocked, blocked };
-    });
-    expect(frameSecurity.parentBlocked).toBe(true);
-    expect(frameSecurity.siblingBlocked).toBe(true);
-    expect(frameSecurity.blocked).toContain("Invalid server frame owner");
-    for (const frame of [
-      remoteWindow,
-      page
-        .frames()
-        .find(
-          (frame) =>
-            new URL(frame.url()).searchParams.get("studio-server") === "local",
-        ),
-    ]) {
-      const denied = await frame.evaluate(async () => {
-        const id = new URLSearchParams(location.search).get("studio-server");
-        const url =
-          id === "local"
-            ? new URLSearchParams(location.search).get("studio-parent")
-            : "https://remote.tailnet.ts.net";
-        const correlation = crypto.randomUUID();
-        return new Promise((resolve) => {
-          const receive = (event) => {
-            if (
-              event.data?.kind === "studio-server-transport-result" &&
-              event.data.correlation === correlation
-            ) {
-              removeEventListener("message", receive);
-              resolve(event.data.error);
-            }
-          };
-          addEventListener("message", receive);
-          parent.postMessage(
-            {
-              kind: "studio-server-transport",
-              correlation,
-              value: {
-                action: "request",
-                serverId: id,
-                streamId: correlation,
-                url: url + "/api/multi-server",
-                method: "POST",
-                body: new TextEncoder().encode(
-                  '{"action":"unrevoke","clientId":"revoked","requestId":"frame-attack"}',
-                ).buffer,
-              },
-            },
-            new URLSearchParams(location.search).get("studio-parent"),
-          );
-        });
-      });
-      expect(denied).toBe("Use the workspace shell for server management.");
-    }
-    const exportHeaders = await remoteWindow.evaluate(async () => {
-      const correlation = crypto.randomUUID();
-      return new Promise((resolve) => {
-        const receive = (event) => {
-          if (
-            event.data?.kind === "studio-server-transport-result" &&
-            event.data.correlation === correlation
-          ) {
-            removeEventListener("message", receive);
-            resolve(event.data.result?.headers);
-          }
-        };
-        addEventListener("message", receive);
-        parent.postMessage(
-          {
-            kind: "studio-server-transport",
-            correlation,
-            value: {
-              action: "request",
-              serverId: "remote",
-              streamId: "monitor-export",
-              url: "https://remote.tailnet.ts.net/api/monitor/log?id=monitor",
-              method: "GET",
-            },
-          },
-          new URLSearchParams(location.search).get("studio-parent"),
-        );
-      });
-    });
-    const exported = new Headers(exportHeaders);
-    expect(exported.get("Content-Disposition")).toBe(
-      'attachment; filename="remote-monitor.log"',
-    );
-    expect(exported.get("X-Log-Truncated")).toBe("true");
+    const remoteWindow = page;
+    // Direct screens have no window-message transport endpoint. Immutable
+    // owner capabilities are exercised by screenChannel and transport tests.
+    await expect(page.locator("iframe")).toHaveCount(0);
     draftQuotaFault = true;
     await remoteWindow.evaluate(() => {
       const original = Storage.prototype.setItem;
@@ -820,9 +668,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     );
     await clickServerChat("third");
     await page.clock.fastForward(5 * 60 * 1000 + 30000);
-    await expect(page.locator('iframe[title="Studio on Remote"]')).toHaveCount(
-      1,
-    );
+    await expect(page.locator("iframe")).toHaveCount(0);
     await clickServerChat("remote");
     await expect(remoteFrame.locator("#message")).toHaveValue(
       "unsaved draft must stay open",
@@ -853,131 +699,6 @@ test("one UI routes overlapping chats to two and three signed servers without re
   } finally {
     await page.goto("about:blank").catch(() => {});
     await Promise.all([local.close(), remote.close(), third.close()]);
-  }
-});
-
-test("idle inactive server iframe unloads after five minutes", async ({
-  page,
-  context,
-}) => {
-  test.fixme(
-    true,
-    "UNEXPLAINED: two iframe-count failures in 37 runs; retained frame identity was not captured",
-  );
-  test.setTimeout(60000);
-  page.setDefaultTimeout(15000);
-  const local = await fixture("Local");
-  const remote = await fixture("Remote", true);
-  const clickServerChat = async (id) => {
-    const chat = page.locator(`[data-server="${id}"] .server-chat`);
-    await chat.evaluate((element) =>
-      element.scrollIntoView({ block: "center" }),
-    );
-    const position = await chat.evaluate((element) => {
-      const row = element.getBoundingClientRect();
-      const root = document.querySelector("#root").getBoundingClientRect();
-      const visibleHeight = Math.min(row.bottom, root.bottom) - row.top;
-      if (visibleHeight <= 0) throw new Error("server chat row is not visible");
-      return {
-        x: row.width / 2,
-        y: Math.max(1, Math.min(row.height / 2, visibleHeight - 1)),
-      };
-    });
-    await chat.click({ position });
-  };
-  try {
-    await page.clock.install();
-    await context.addInitScript(
-      ({ remoteOrigin, remoteDestination }) => {
-        const nativeFetch = window.fetch.bind(window);
-        window.fetch = async (input, init) => {
-          const request = new Request(input, init);
-          const url = new URL(request.url);
-          if (url.origin !== remoteOrigin) return nativeFetch(request);
-          const bytes = await request.clone().arrayBuffer();
-          return nativeFetch(remoteDestination + url.pathname + url.search, {
-            method: request.method,
-            headers: request.headers,
-            ...(bytes.byteLength ? { body: bytes } : {}),
-            signal: request.signal,
-            redirect: "error",
-            credentials: "omit",
-          });
-        };
-      },
-      {
-        remoteOrigin: remote.invitation.origin,
-        remoteDestination: remote.origin,
-      },
-    );
-    await page.goto(local.origin);
-    await page.locator("#message").waitFor();
-    await page.getByRole("button", { name: "Studio settings" }).click();
-    const settings = page.getByRole("dialog", { name: "Studio settings" });
-    await settings.getByRole("tab", { name: "Servers" }).click();
-    await settings
-      .getByRole("button", { name: "Add with an invitation" })
-      .click();
-    await settings.getByLabel("Server address").fill(remote.invitation.origin);
-    await settings
-      .getByLabel("Pairing invitation")
-      .fill(JSON.stringify(remote.invitation));
-    await settings.getByRole("button", { name: "Pair server" }).click();
-    await expect(
-      page.locator('[data-server="remote"] .server-chat'),
-    ).toContainText("Remote chat");
-    await settings.getByRole("button", { name: "Close" }).click();
-    await expect(settings).toBeHidden();
-    await clickServerChat("local");
-    await expect(
-      page
-        .frameLocator('iframe[src*="studio-server=local"]')
-        .locator("#message"),
-    ).toBeVisible();
-    await clickServerChat("remote");
-    await expect(
-      page.frameLocator('iframe[title="Studio on Remote"]').locator("#message"),
-    ).toBeVisible();
-    await page.clock.fastForward(5 * 60 * 1000 + 30000);
-    await expect(page.locator("iframe"))
-      .toHaveCount(1)
-      .catch(async (error) => {
-        const diagnostic = await page.evaluate(() => {
-          const selectedServer = document
-            .querySelector('.server-title[aria-current="true"]')
-            ?.closest("[data-server]")
-            ?.getAttribute("data-server");
-          return {
-            simulatedClock: Date.now(),
-            selectedServer,
-            iframes: [...document.querySelectorAll("iframe")].map((frame) => {
-              const serverId = new URL(frame.src).searchParams.get(
-                "studio-server",
-              );
-              const server = document.querySelector(
-                `[data-server="${serverId}"]`,
-              );
-              return {
-                serverId,
-                title: frame.title,
-                src: frame.src,
-                selected: serverId === selectedServer,
-                hidden: frame.hidden,
-                status: server?.querySelector('[role="status"]')?.textContent,
-                currentChat: server
-                  ?.querySelector('.server-chat[aria-current="page"]')
-                  ?.getAttribute("data-chat"),
-              };
-            }),
-          };
-        });
-        throw new Error(
-          `${error.message}\nIdle iframe diagnostic: ${JSON.stringify(diagnostic)}`,
-        );
-      });
-  } finally {
-    await page.goto("about:blank").catch(() => {});
-    await Promise.all([local.close(), remote.close()]);
   }
 });
 

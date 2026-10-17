@@ -2317,6 +2317,9 @@ async fn consecutive_journal_events_share_one_store_transaction() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
+    // Native initialization does not finish account restart recovery. Its queued
+    // commands deliberately end a journal batch, so settle them before measuring
+    // consecutive provider events with no intervening account commands.
     worker_barrier(&worker).await;
     state
         .bridge
