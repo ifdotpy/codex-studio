@@ -4,11 +4,11 @@
 use crate::{provider_seam::*, provider_shared::*, *};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
-#[cfg(target_os = "linux")]
-use std::{io, sync::Arc};
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry, decode_journal_value};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::sync::Semaphore;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -22,7 +22,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct SupervisorProviderTaskFactory {
     identity: BackendIdentity,
     endpoint: PathBuf,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     environment_reads: Arc<Semaphore>,
 }
 impl SupervisorProviderTaskFactory {
@@ -31,7 +31,7 @@ impl SupervisorProviderTaskFactory {
         Self {
             identity,
             endpoint,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             environment_reads: Arc::new(Semaphore::new(4)),
         }
     }
@@ -172,7 +172,7 @@ impl SupervisorProviderTaskFactory {
                 open,
                 identity: self.identity.clone(),
                 endpoint: self.endpoint.clone(),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 environment_reads: self.environment_reads.clone(),
                 expected_generation: options.expected_generation,
                 handled_cursor: options.launch.handled_cursor,
@@ -362,7 +362,7 @@ struct AdapterTask {
     open: OpenRequest,
     identity: BackendIdentity,
     endpoint: PathBuf,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     environment_reads: Arc<Semaphore>,
     expected_generation: Option<Generation>,
     handled_cursor: u64,
@@ -550,7 +550,7 @@ impl AdapterTask {
             .await
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn retained_environment(
         &mut self,
         pid: u32,
@@ -569,27 +569,27 @@ impl AdapterTask {
         .await?;
         let job =
             crate::blocking_pool::spawn_blocking("runtime-process/provider_task", move || {
-                use std::io::Read;
                 let _permit = permit;
-                let mut bytes = Vec::new();
-                std::fs::File::open(format!("/proc/{pid}/environ"))?
-                    .take(4 * 1024 * 1024 + 1)
-                    .read_to_end(&mut bytes)?;
-                if bytes.len() > 4 * 1024 * 1024 {
-                    return Err(io::Error::other("environment exceeds limit"));
-                }
-                parse_process_environment(&bytes)
+                read_process_environment(pid)
             });
         // Reap the bounded filesystem job; never detach a started blocking job.
-        let original = reap_environment_job(job, &mut self.stop)
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut original = reap_environment_job(job, &mut self.stop)
             .await?
             .map_err(|_| AdapterError::UnverifiableChild)?;
         verify_environment(&original, &self.open.env)
             .map_err(|_| AdapterError::UnverifiableChild)?;
+        // A macOS Python launcher adds its marker after the script's exec, so
+        // the live environment has it although the accepted launch did not,
+        // as the Python supervisor's native_launch_environment handles.
+        #[cfg(target_os = "macos")]
+        if !self.open.env.contains_key(PYTHON_LAUNCHER_MARKER) {
+            original.remove(PYTHON_LAUNCHER_MARKER);
+        }
         Ok(original)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     async fn retained_environment(
         &mut self,
         _pid: u32,
@@ -1044,7 +1044,7 @@ async fn event_pump(
 
 /// Abort queued blocking work on stop. Once the OS read has started Tokio cannot
 /// cancel it: shutdown retains the socket/permit and joins that bounded read.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn reap_environment_job<T>(
     mut job: tokio::task::JoinHandle<T>,
     stop: &mut watch::Receiver<bool>,

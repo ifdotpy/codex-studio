@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
-#[cfg(not(target_os = "linux"))]
 use std::io;
 use std::{
     pin::Pin,
@@ -290,7 +289,7 @@ fn actor(
             state_dir: "/unused".into(),
         },
         endpoint: "/unused/socket".into(),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         environment_reads: Arc::new(Semaphore::new(1)),
         expected_generation: None,
         handled_cursor: 0,
@@ -586,7 +585,7 @@ async fn abandoned_buffered_write_receipt_or_receive_future_fences_attachment() 
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn shutdown_aborts_queued_environment_work_and_reaps_started_work() {
     let runtime = tokio::runtime::Builder::new_current_thread()

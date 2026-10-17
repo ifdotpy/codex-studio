@@ -37,6 +37,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "OS priority syscall.",
   ],
   [
+    "workspaces/runtime/packages/runtime-proc-sys/src/lib.rs",
+    "Read-only macOS libproc and sysctl process identity queries.",
+  ],
+  [
     "workspaces/runtime/packages/operations-python/src/lib.rs",
     "PyO3 extension.",
   ],
