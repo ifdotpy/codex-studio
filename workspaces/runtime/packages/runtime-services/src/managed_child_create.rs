@@ -631,14 +631,12 @@ pub(crate) async fn spawn_agents(
         };
         let project_worker_base = project_worker_base.as_deref();
         let base_ref_request = requested_base_ref.or(project_worker_base);
-        let (base_ref, base_commit, main_ref, behind_main) = if worktree
-            || (workspace == "image" && base_ref_request.is_some())
-        {
-            crate::host_worker_create::resolve_worker_base(Path::new(host_cwd), base_ref_request)
-                .map_err(map_create_error)?
-        } else {
-            (String::new(), String::new(), None, None)
-        };
+        let (worktree, (base_ref, base_commit, main_ref, behind_main)) = resolve_child_base(
+            worktree,
+            workspace == "image",
+            Path::new(host_cwd),
+            base_ref_request,
+        )?;
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
             "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some(),
             "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
@@ -1207,6 +1205,30 @@ fn project_child(record: &Value, task_id: Option<&str>, worktree: bool) -> Value
     Value::Object(output)
 }
 
+/// Base commit, ref, main ref and main lag of a child, as resolved by the host.
+type WorkerBase = (String, String, Option<String>, Option<i64>);
+
+/// Resolve the child's base commit. A worktree request in a project without a
+/// repository or commits (and no explicit base ref) falls back to the host
+/// folder, as lead creation does; the returned flag is the workspace used.
+fn resolve_child_base(
+    worktree: bool,
+    image: bool,
+    host_cwd: &Path,
+    base_ref_request: Option<&str>,
+) -> Result<(bool, WorkerBase), Error> {
+    if !(worktree || (image && base_ref_request.is_some())) {
+        return Ok((worktree, Default::default()));
+    }
+    match crate::host_worker_create::resolve_worker_base(host_cwd, base_ref_request) {
+        Ok(base) => Ok((worktree, base)),
+        Err(crate::agents_create::CreateError::InvalidCreation(
+            crate::host_worker_create::BASE_UNRESOLVED,
+        )) if worktree && base_ref_request.is_none() => Ok((false, Default::default())),
+        Err(error) => Err(map_create_error(error)),
+    }
+}
+
 fn map_create_error(error: crate::agents_create::CreateError) -> Error {
     match error {
         crate::agents_create::CreateError::CapabilityUnavailable(name) => Error::Unavailable(name),
@@ -1526,8 +1548,8 @@ impl crate::native_review::ReviewCreator for ReviewCreator<'_> {
 #[allow(clippy::unwrap_used)]
 mod vm_review_identity_tests {
     use super::{
-        Error, host_project_cwd, validate_image_workspace_platform, validate_vm_parent_workspace,
-        vm_review_guest_ids,
+        Error, WorkerBase, host_project_cwd, resolve_child_base, validate_image_workspace_platform,
+        validate_vm_parent_workspace, vm_review_guest_ids,
     };
     use serde_json::json;
 
@@ -1587,5 +1609,14 @@ mod vm_review_identity_tests {
         ));
         assert!(validate_image_workspace_platform("image", true).is_ok());
         assert!(validate_image_workspace_platform("worktree", false).is_ok());
+    }
+
+    #[test]
+    fn worktree_without_repository_falls_back_to_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let (worktree, base) = resolve_child_base(true, false, directory.path(), None).unwrap();
+        assert!(!worktree);
+        assert_eq!(base, WorkerBase::default());
+        assert!(resolve_child_base(true, false, directory.path(), Some("HEAD")).is_err());
     }
 }

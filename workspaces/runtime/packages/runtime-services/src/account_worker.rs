@@ -3009,7 +3009,9 @@ impl Worker {
             let account = self.account.clone();
             let generation = self.generation.0;
             let actor = actor_id.map(str::to_owned);
-            let now = entry.received_at_ms as f64 / 1000.0;
+            // Tool records and the time-awareness text carry wall time; `received_at_ms`
+            // is session-relative and only orders and bounds journal entries.
+            let now = crate::event_write::unix_time().map_err(|_| WorkerError::TaskFailed)?;
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
