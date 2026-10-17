@@ -20,7 +20,7 @@ use std::time::Duration;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::Value;
 use studio_runtime_store::{ObservedTable, RuntimeStore};
-use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, SemaphorePermit, watch};
 use tokio::task::JoinHandle;
 
 use crate::monitor_driver::{self, InputRequest, MonitorNative, Submission};
@@ -53,6 +53,11 @@ pub struct Delivery {
 }
 #[derive(Clone)]
 pub enum MonitorEvent {
+    OutputStream {
+        offset: u64,
+        stream: String,
+        bytes: Vec<u8>,
+    },
     Output {
         offset: u64,
         bytes: Vec<u8>,
@@ -136,6 +141,8 @@ pub struct MonitorRuntime {
     output: MonitorOutput,
     scan: AsyncMutex<Scan>,
     dispatch_wake: Arc<Notify>,
+    observation_wake: Arc<Notify>,
+    observation_slots: Semaphore,
     last_tick_error: Mutex<Option<String>>,
     watcher_error: Mutex<Option<String>>,
     #[cfg(test)]
@@ -167,15 +174,22 @@ impl MonitorRuntime {
         _event_wake: Arc<Notify>,
     ) -> Self {
         let dispatch_wake = Arc::new(Notify::new());
+        let observation_wake = Arc::new(Notify::new());
         for table in MONITOR_WAKE_TABLES {
             let table_wake = Arc::clone(&dispatch_wake);
             store.add_table_change_observer(table, move || table_wake.notify_one());
+            let observers = Arc::clone(&observation_wake);
+            store.add_table_change_observer(table, move || observers.notify_waiters());
         }
         Self {
             store,
             port,
             output: MonitorOutput::default(),
             dispatch_wake,
+            observation_wake,
+            observation_slots: Semaphore::new(
+                studio_runtime_schema::shared_values::MONITOR_WAIT_SLOTS,
+            ),
             scan: AsyncMutex::new(Scan {
                 recovering_rules: true,
                 recovering_receipts: true,
@@ -189,6 +203,54 @@ impl MonitorRuntime {
             loop_activity: Arc::new(LoopActivity::default()),
             #[cfg(test)]
             watched_directories: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    pub(crate) fn observation_slot(
+        &self,
+        wait_ms: u64,
+    ) -> Result<Option<SemaphorePermit<'_>>, MonitorError> {
+        if wait_ms == 0 {
+            return Ok(None);
+        }
+        self.observation_slots.try_acquire().map(Some).map_err(|_| {
+            MonitorError::Refused("Monitor wait capacity is full. No command was started.")
+        })
+    }
+
+    pub(crate) async fn observe(
+        &self,
+        owner: &str,
+        epoch: i64,
+        account: &str,
+        id: &str,
+        deadline: Option<tokio::time::Instant>,
+        after_sequence: Option<u64>,
+    ) -> Result<Value, MonitorError> {
+        let mut sequence = after_sequence;
+        loop {
+            // Register before reading so a commit between the read and await
+            // cannot lose its notification. Each waiter owns its own registration.
+            let changed = self.observation_wake.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let (record, current_sequence, terminal) =
+                crate::monitor_observation::read(&self.store, owner, epoch, account, id)?;
+            let initial = *sequence.get_or_insert(current_sequence);
+            if deadline.is_none() || terminal || current_sequence > initial {
+                return Ok(record);
+            }
+            let deadline = deadline.expect("wait deadline");
+            if tokio::time::Instant::now() >= deadline {
+                let mut record = record;
+                record["waitExpired"] = serde_json::json!(true);
+                record["outputEvents"] = serde_json::json!([]);
+                return Ok(record);
+            }
+            tokio::select! {
+                _ = changed => {},
+                _ = tokio::time::sleep_until(deadline) => {},
+            }
         }
     }
 
@@ -329,6 +391,15 @@ impl MonitorRuntime {
                            != json_extract(m.record,'$.activityGeneration')
                            OR json_type(m.record,'$.stallProbeStarted') IN ('integer','real'))
                     UNION ALL
+                    SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
+                    FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                    WHERE json_extract(m.record,'$.status')='running'
+                      AND json_extract(a.record,'$.autoWake')=1
+                      AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
+                      AND json_extract(a.record,'$.epoch')=json_extract(m.record,'$.epoch')
+                      AND json_extract(m.record,'$.ruleId') IS NULL
+                      AND EXISTS(SELECT 1 FROM json_each(m.record,'$.outputMatchesPending') WHERE value>0)
+                    UNION ALL
                     SELECT COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)
                     FROM runtime_monitors
                     WHERE json_extract(record,'$.status')='running'
@@ -338,6 +409,7 @@ impl MonitorRuntime {
                 rusqlite::params![
                     crate::monitor_policy::PROBE_LEASE_SECONDS,
                     crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as i64,
+                    studio_runtime_schema::shared_values::MONITOR_OUTPUT_WAKE_COOLDOWN_SECONDS,
                 ],
                 |row| row.get(0),
             )
@@ -660,6 +732,23 @@ impl MonitorRuntime {
         wake_dispatch: bool,
     ) -> Result<(), MonitorError> {
         match &delivery.event {
+            MonitorEvent::OutputStream {
+                offset,
+                stream,
+                bytes,
+            } => {
+                self.output
+                    .append_stream(
+                        &self.store,
+                        &delivery.id,
+                        &delivery.operation,
+                        *offset,
+                        stream,
+                        bytes,
+                        now,
+                    )
+                    .await?
+            }
             MonitorEvent::Output { offset, bytes } => {
                 self.output
                     .append(
@@ -756,6 +845,28 @@ impl MonitorRuntime {
         let result =
             monitor_driver::cancel(&self.store, self.port.as_ref(), id, owner, now).await?;
         self.dispatch_wake.notify_one();
+        Ok(result)
+    }
+
+    pub async fn cancel_process(&self, process: Value, now: f64) -> Result<Value, MonitorError> {
+        let id = process["_raw"]["id"]
+            .as_str()
+            .ok_or(MonitorError::Refused("Unknown command watch"))?
+            .to_owned();
+        let owner = process["agent"]
+            .as_str()
+            .ok_or(MonitorError::Refused("Unknown agent"))?
+            .to_owned();
+        let result = monitor_driver::cancel_checked(
+            &self.store,
+            self.port.as_ref(),
+            &id,
+            Some(&owner),
+            now,
+            Some(process),
+        )
+        .await?;
+        self.wake_tick();
         Ok(result)
     }
 
@@ -1485,6 +1596,95 @@ mod tests {
             })
             .await
             .expect("persist active owner fixture");
+    }
+
+    #[tokio::test]
+    async fn observation_is_bounded_and_rejects_changed_owners() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running"}).to_string()])?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let runtime = MonitorRuntime::new(Arc::clone(&store), port, Arc::new(Notify::new()));
+        let expired = runtime
+            .observe(
+                "owner",
+                0,
+                "default",
+                "watch",
+                Some(tokio::time::Instant::now()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(expired["waitExpired"], true);
+        let slots: Vec<_> = (0..studio_runtime_schema::shared_values::MONITOR_WAIT_SLOTS)
+            .map(|_| runtime.observation_slot(1).unwrap())
+            .collect();
+        assert!(runtime.observation_slot(1).is_err());
+        assert!(runtime.observation_slot(0).is_ok());
+        drop(slots);
+        assert!(runtime.observation_slot(1).is_ok());
+        assert!(
+            runtime
+                .observe("owner", 1, "default", "watch", None, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            runtime
+                .observe("owner", 0, "other", "watch", None, None)
+                .await
+                .is_err()
+        );
+        let rows: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM runtime_monitors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn observation_returns_committed_match_without_losing_wakeup() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running"}).to_string()])?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let runtime = Arc::new(MonitorRuntime::new(
+            Arc::clone(&store),
+            port,
+            Arc::new(Notify::new()),
+        ));
+        let waiter = Arc::clone(&runtime);
+        let task = tokio::spawn(async move {
+            waiter
+                .observe(
+                    "owner",
+                    0,
+                    "default",
+                    "watch",
+                    Some(tokio::time::Instant::now() + Duration::from_secs(10)),
+                    Some(0),
+                )
+                .await
+        });
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.outputEventSequence',1) WHERE id='watch'",[])?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["outputEventSequence"], 1);
+        assert_eq!(result["waitExpired"], false);
     }
 
     #[tokio::test]

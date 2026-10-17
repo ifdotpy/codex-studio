@@ -1,4 +1,7 @@
-import { useServerApi } from "../../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerServices,
+} from "../../servers/ServerServicesContext";
 import { localDateTime } from "../../local-time";
 import ErrorDescription from "../ErrorDescription";
 import { displayError } from "../../errorPresentation";
@@ -6,6 +9,7 @@ import {
   ActionIcon,
   Badge,
   Button,
+  Checkbox,
   Drawer,
   NativeSelect,
   NumberInput,
@@ -31,9 +35,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 import {
   apiDownload,
+  ApiError,
   errorText,
   type ApiPostPath,
   type PostBody,
+  type PostResult,
 } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
@@ -42,7 +48,6 @@ import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
-  backgroundTasks,
   projectTaskForRenderer,
   type DisplayBackgroundTask,
 } from "../backgroundTaskModel";
@@ -55,6 +60,59 @@ type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
 type MonitorTask = Monitor;
 type PendingRequest = Request;
+type ManagedProcess =
+  paths["/api/processes"]["get"]["responses"][200]["content"]["application/json"]["processes"][number];
+type ProcessResponseTarget = NonNullable<
+  paths["/api/processes"]["get"]["responses"][200]["content"]["application/json"]["responseTarget"]
+>;
+export const backgroundProcessGroups = [
+  ["command", "Commands"],
+  ["monitor", "Monitors"],
+  ["tool", "Other tools"],
+  ["backgroundTask", "Background tasks"],
+] as const;
+export const responseStopIdentity = (
+  target: ProcessResponseTarget | null | undefined,
+) => (target ? { responseTarget: target } : {});
+export const responseOwnerIdentityKey = (
+  owner:
+    | {
+        id?: string;
+        accountKey?: string | null;
+        epoch?: number | null;
+        inFlight?: boolean | null;
+        threadId?: string | null;
+        turnId?: string | null;
+      }
+    | undefined,
+) =>
+  JSON.stringify(
+    owner
+      ? [
+          owner.id,
+          owner.accountKey,
+          owner.epoch,
+          owner.inFlight,
+          owner.threadId,
+          owner.turnId,
+        ]
+      : null,
+  );
+
+function displayProcess(process: ManagedProcess): DisplayBackgroundTask {
+  return {
+    ...process,
+    kind:
+      process.source === "monitor"
+        ? "monitor"
+        : process.source === "codex_task"
+          ? "command"
+          : "backgroundTask",
+    tail: process.output || "",
+    interactive: process.capabilities.sendInput,
+    processKey: process.key,
+  };
+}
 
 export function monitorTask(
   monitor: MonitorTask,
@@ -136,14 +194,15 @@ const iconFor = (task: DisplayBackgroundTask) =>
 const taskKindLabel = (task: DisplayBackgroundTask, owner?: Agent) => {
   if (task.kind === "monitor") return "Monitor";
   if (task.kind !== "command") return "Tool";
-  const outsideTurn =
+  const outsideTurn = Boolean(
     "turnId" in task &&
     task.turnId &&
     owner &&
     (owner.inFlight === false ||
       (owner.inFlight === true &&
         owner.turnId &&
-        owner.turnId !== task.turnId));
+        owner.turnId !== task.turnId)),
+  );
   return outsideTurn ? "Background command" : "Command";
 };
 export default function BackgroundTasks({
@@ -167,6 +226,11 @@ export default function BackgroundTasks({
   notify: (s: string) => void;
   initialFocus?: { id: string; leadId: string; requestId: string };
 }) {
+  const { get, post } = useServerApi();
+  const services = useServerServices();
+  const controlStorageKey = `process-control:${services?.owner.id || "local"}:${leadId}`;
+  const controlScope = useRef(controlStorageKey);
+  controlScope.current = controlStorageKey;
   const [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
     [selection, setSelection] = useState<{
@@ -176,15 +240,90 @@ export default function BackgroundTasks({
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
+  const [processRecords, setProcessRecords] = useState<ManagedProcess[]>([]);
+  const [responseTargetState, setResponseTargetState] = useState<{
+    ownerKey: string;
+    target: ProcessResponseTarget | null;
+  } | null>(null);
+  const [processLoadError, setProcessLoadError] = useState("");
+  const [processLoading, setProcessLoading] = useState(false);
+  const [controlPending, setControlPending] = useState(false);
+  const [includeWorkers, setIncludeWorkers] = useState(false);
+  const [pendingControl, setPendingControl] =
+    useState<PostBody<"/api/processes/action"> | null>(null);
+  const [controlResult, setControlResult] =
+    useState<PostResult<"/api/processes/action"> | null>(null);
   const appliedFocus = useRef<string | undefined>(undefined);
+  const agents = data.threads,
+    owner = (id: string) => agents.find((a) => a.id === id),
+    scopeOwner = owner(leadId || ""),
+    responseOwnerKey = responseOwnerIdentityKey(scopeOwner),
+    responseTarget =
+      responseTargetState?.ownerKey === responseOwnerKey
+        ? responseTargetState.target
+        : null;
   useEffect(() => {
     if (!opened) return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
-  const agents = data.threads,
-    tasks = backgroundTasks(data).filter(activeTask),
-    owner = (id: string) => agents.find((a) => a.id === id);
+  useEffect(() => {
+    if (!opened || !leadId) return;
+    let cancelled = false;
+    setResponseTargetState(null);
+    setProcessRecords([]);
+    setProcessLoading(true);
+    get("/api/processes", { query: { agent: leadId } })
+      .then((result) => {
+        if (cancelled) return;
+        setProcessRecords(result.processes);
+        setResponseTargetState({
+          ownerKey: responseOwnerKey,
+          target: result.responseTarget || null,
+        });
+        setProcessLoadError("");
+      })
+      .catch((error) => {
+        if (!cancelled) setProcessLoadError(errorText(error));
+      })
+      .finally(() => {
+        if (!cancelled) setProcessLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    opened,
+    leadId,
+    controlStorageKey,
+    data.runtime.monitors,
+    data.runtime.tasks,
+    responseOwnerKey,
+  ]);
+  useEffect(() => {
+    if (!leadId) return;
+    setControlResult(null);
+    setControlPending(false);
+    setIncludeWorkers(false);
+    try {
+      const raw = sessionStorage.getItem(controlStorageKey);
+      setPendingControl(
+        raw ? (JSON.parse(raw) as PostBody<"/api/processes/action">) : null,
+      );
+    } catch {
+      setPendingControl(null);
+    }
+  }, [leadId, controlStorageKey]);
+  const processIds = new Set(processRecords.map((process) => process.id));
+  const tasks = [
+    ...processRecords.map(displayProcess),
+    ...data.runtime.tasks
+      .map((task) => projectTaskForRenderer(task))
+      .filter(
+        (task): task is DisplayBackgroundTask =>
+          task != null && !processIds.has(task.id),
+      ),
+  ].filter(activeTask);
   const scoped = tasks.filter(
     (t) =>
       !!leadId &&
@@ -215,6 +354,163 @@ export default function BackgroundTasks({
     : (selection && selection.scope === leadId
         ? scoped.find((task) => task.id === selection.id)
         : undefined) || filtered[0];
+  const submitControl = async (body: PostBody<"/api/processes/action">) => {
+    setControlPending(true);
+    try {
+      const result = await post("/api/processes/action", body, {
+        timeoutMs: 30000,
+      });
+      if (controlScope.current !== controlStorageKey) return;
+      setControlResult(result);
+      if (result.status === "uncertain") {
+        setPendingControl(body);
+        sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
+        notify(
+          "The stop result is unknown. Check its receipt before another stop.",
+        );
+      } else {
+        sessionStorage.removeItem(controlStorageKey);
+        setPendingControl(null);
+        const outcomes = (result.processes || [])
+          .map((item) => item.status)
+          .join(", ");
+        notify(
+          result.status === "partial"
+            ? `Some processes did not stop: ${outcomes || result.error || "see each process result"}`
+            : `Stop result: ${outcomes || result.response?.status || "unknown"}`,
+        );
+      }
+      await refresh();
+    } catch (error) {
+      if (controlScope.current !== controlStorageKey) return;
+      if (
+        error instanceof ApiError &&
+        error.status >= 400 &&
+        error.status < 500
+      ) {
+        sessionStorage.removeItem(controlStorageKey);
+        setPendingControl(null);
+        notify(errorText(error));
+        return;
+      }
+      setPendingControl(body);
+      sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
+      notify(
+        "The stop reply is unknown. Check its receipt before another stop.",
+      );
+      void error;
+    } finally {
+      if (controlScope.current === controlStorageKey) setControlPending(false);
+    }
+  };
+  const checkControlReceipt = async (
+    body: PostBody<"/api/processes/action">,
+  ) => {
+    setControlPending(true);
+    try {
+      const receipt = await get("/api/processes/action", {
+        query: {
+          requestId: body.requestId,
+          agent: body.agent,
+          accountKey: body.accountKey,
+          epoch: body.epoch,
+        },
+      });
+      if (controlScope.current !== controlStorageKey) return;
+      if (
+        !receipt.found ||
+        !receipt.result ||
+        receipt.result.status === "uncertain"
+      ) {
+        notify(
+          "The stop result is still unknown. Check its receipt again later.",
+        );
+        return;
+      }
+      setControlResult(receipt.result);
+      sessionStorage.removeItem(controlStorageKey);
+      setPendingControl(null);
+      const outcomes = (receipt.result.processes || [])
+        .map((item) => item.status)
+        .join(", ");
+      notify(
+        receipt.result.status === "partial"
+          ? `Some processes did not stop: ${outcomes || receipt.result.error || "see each process result"}`
+          : `Stop result: ${outcomes || receipt.result.response?.status || "unknown"}`,
+      );
+      await refresh();
+    } catch {
+      if (controlScope.current !== controlStorageKey) return;
+      notify(
+        "The stop result is still unknown. Check its receipt again later.",
+      );
+    } finally {
+      if (controlScope.current === controlStorageKey) setControlPending(false);
+    }
+  };
+  const runProcessControl = (
+    action: "stop_selected" | "stop_owned" | "stop_response",
+    process?: DisplayBackgroundTask,
+  ) => {
+    if (
+      !leadId ||
+      !scopeOwner ||
+      scopeOwner.epoch == null ||
+      controlPending ||
+      processLoading ||
+      processLoadError
+    )
+      return;
+    if (pendingControl) {
+      notify("Check the earlier stop result before starting another stop.");
+      return;
+    }
+    const processIdentity = (task: DisplayBackgroundTask) => ({
+      key: task.processKey || "",
+      generation: task.generation || "",
+      agent: task.agent,
+      accountKey: task.accountKey || "",
+      epoch: task.epoch ?? -1,
+    });
+    const body: PostBody<"/api/processes/action"> = {
+      action,
+      requestId: crypto.randomUUID(),
+      agent: leadId,
+      accountKey: scopeOwner.accountKey || "default",
+      epoch: scopeOwner.epoch,
+      ...(action === "stop_response"
+        ? responseStopIdentity(responseTarget)
+        : {}),
+      ...(action === "stop_selected" && process
+        ? { process: processIdentity(process) }
+        : {}),
+      ...(action === "stop_owned"
+        ? {
+            processes: tasks
+              .filter(
+                (task) =>
+                  task.capabilities?.stop &&
+                  (task.agent === leadId ||
+                    (includeWorkers && owner(task.agent)?.rootId === leadId)),
+              )
+              .map(processIdentity),
+            includeDescendants: includeWorkers,
+          }
+        : {}),
+      ...(action === "stop_selected" &&
+      process?.agent !== leadId &&
+      includeWorkers
+        ? { includeDescendants: true }
+        : {}),
+    };
+    if (action === "stop_response" && !responseTarget) {
+      notify("Refresh the process list before stopping this response.");
+      return;
+    }
+    sessionStorage.setItem(controlStorageKey, JSON.stringify(body));
+    setPendingControl(body);
+    void submitControl(body);
+  };
   const selectedId = selectedTask?.id;
   useEffect(() => {
     if (explicitId && !selectedId) return;
@@ -285,7 +581,96 @@ export default function BackgroundTasks({
         <span className="tasks-filter-help">
           Commands run in the chat. Monitors run commands in the background.
         </span>
+        <div className="tasks-process-actions" aria-label="Process controls">
+          <Checkbox
+            size="xs"
+            label="Include worker processes"
+            checked={includeWorkers}
+            onChange={(event) => setIncludeWorkers(event.currentTarget.checked)}
+            disabled={controlPending || !!pendingControl}
+          />
+          <Button
+            size="xs"
+            color="red"
+            leftSection={<Square size={12} />}
+            loading={controlPending}
+            disabled={
+              !scopeOwner?.inFlight || !responseTarget || !!pendingControl
+            }
+            onClick={() => runProcessControl("stop_response")}
+          >
+            Stop response
+          </Button>
+          <Button
+            size="xs"
+            color="red"
+            variant="light"
+            leftSection={<Square size={12} />}
+            loading={controlPending}
+            disabled={
+              !processRecords.some(
+                (process) =>
+                  process.capabilities.stop &&
+                  (includeWorkers || process.agent === leadId),
+              ) ||
+              !!pendingControl ||
+              processLoading ||
+              !!processLoadError
+            }
+            onClick={() => runProcessControl("stop_owned")}
+          >
+            Stop owned processes
+          </Button>
+          {pendingControl && (
+            <Button
+              size="xs"
+              variant="light"
+              loading={controlPending}
+              onClick={() => void checkControlReceipt(pendingControl)}
+            >
+              Check stop result
+            </Button>
+          )}
+        </div>
       </div>
+      {processLoadError && (
+        <p role="alert" className="task-error">
+          Process list unavailable: {processLoadError}
+        </p>
+      )}
+      {processLoading && <p role="status">Loading processes…</p>}
+      {controlResult?.response && (
+        <p role={controlResult.status === "uncertain" ? "alert" : "status"}>
+          Response stop: {String(controlResult.response.status)}
+          {typeof controlResult.response.error === "string"
+            ? `, ${controlResult.response.error}`
+            : ""}
+        </p>
+      )}
+      {!!controlResult?.processes?.length && (
+        <ul
+          aria-label="Process stop results"
+          className="process-control-results"
+        >
+          {controlResult.processes.map((item, index) => {
+            const key = typeof item.key === "string" ? item.key : "";
+            const process = processRecords.find(
+              (candidate) => candidate.key === key,
+            );
+            return (
+              <li key={`${key}:${index}`}>
+                {process?.name ||
+                  (typeof item.agent === "string"
+                    ? owner(item.agent)?.name
+                    : null) ||
+                  "Process"}
+                : {String(item.status || "unknown")}
+                {typeof item.error === "string" ? `, ${item.error}` : ""}
+              </li>
+            );
+          })}
+        </ul>
+      )}
       <div
         className={`tasks-content ${mobileDetail && (selectedTask || explicitId) ? "show-task-detail" : ""}`}
       >
@@ -305,13 +690,7 @@ export default function BackgroundTasks({
             />
           </div>
           <div className="tasks-rows">
-            {(
-              [
-                ["command", "Commands"],
-                ["monitor", "Monitors"],
-                ["tool", "Other tools"],
-              ] as const
-            ).map(([groupKind, label]) => {
+            {backgroundProcessGroups.map(([groupKind, label]) => {
               const groupTasks = filtered.filter(
                 (task) => task.kind === groupKind,
               );
@@ -397,6 +776,15 @@ export default function BackgroundTasks({
             }}
             refresh={refresh}
             notify={notify}
+            canStop={
+              !processLoading &&
+              !processLoadError &&
+              !pendingControl &&
+              !!selectedTask.capabilities?.stop &&
+              (includeWorkers || selectedTask.agent === leadId)
+            }
+            onStop={() => runProcessControl("stop_selected", selectedTask)}
+            controlPending={controlPending}
           />
         ) : (
           <div className="task-detail-empty">
@@ -428,6 +816,9 @@ function TaskDetail({
   openAgent,
   refresh,
   notify,
+  canStop,
+  onStop,
+  controlPending,
 }: {
   task: DisplayBackgroundTask;
   opened: boolean;
@@ -438,6 +829,9 @@ function TaskDetail({
   openAgent: () => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
+  canStop: boolean;
+  onStop: () => void;
+  controlPending: boolean;
 }) {
   const watchResourceReads = useServerResourceReads();
   const { get, post } = useServerApi();
@@ -445,7 +839,12 @@ function TaskDetail({
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {
-    if (!opened || summary.kind === "monitor") return;
+    if (
+      !opened ||
+      summary.kind === "monitor" ||
+      summary.capabilities?.readOutput === false
+    )
+      return;
     let stopped = false;
     const stop = watchResourceReads(
       { kind: "task", taskId: summary.id },
@@ -468,7 +867,10 @@ function TaskDetail({
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;
-  const outputTail = resolvedDetail?.tail ?? monitor?.tail;
+  const outputSupported = summary.capabilities?.readOutput !== false;
+  const outputTail = outputSupported
+    ? (resolvedDetail?.tail ?? ("tail" in task ? task.tail : undefined))
+    : undefined;
   const outputError = resolvedDetail?.error ?? monitor?.error;
   const [pending, setPending] = useState(false),
     [follow, setFollow] = useState(true),
@@ -596,39 +998,41 @@ function TaskDetail({
               ) : (
                 <Terminal size={12} />
               )}
-              Output
+              {outputSupported ? "Output" : "Output unavailable"}
             </span>
-            <div>
-              <Button
-                size="compact-xs"
-                aria-pressed={follow}
-                onClick={() => setFollow(!follow)}
-                leftSection={<ChevronDown size={12} />}
-                color={follow ? "indigo" : "gray"}
-              >
-                Follow
-              </Button>
-              <ActionIcon
-                size="sm"
-                aria-label="Download task log"
-                disabled={pending}
-                onClick={() => void downloadLog(task, resolvedDetail, notify)}
-              >
-                <Download size={13} />
-              </ActionIcon>
-              <ActionIcon
-                size="sm"
-                aria-label="Copy task output"
-                disabled={!outputTail}
-                onClick={() => {
-                  void copyText(outputTail || "")
-                    .then(() => setCopied(true))
-                    .catch(() => notify("Could not copy output"));
-                }}
-              >
-                {copied ? <Check size={13} /> : <Copy size={13} />}
-              </ActionIcon>
-            </div>
+            {outputSupported && (
+              <div>
+                <Button
+                  size="compact-xs"
+                  aria-pressed={follow}
+                  onClick={() => setFollow(!follow)}
+                  leftSection={<ChevronDown size={12} />}
+                  color={follow ? "indigo" : "gray"}
+                >
+                  Follow
+                </Button>
+                <ActionIcon
+                  size="sm"
+                  aria-label="Download task log"
+                  disabled={pending}
+                  onClick={() => void downloadLog(task, resolvedDetail, notify)}
+                >
+                  <Download size={13} />
+                </ActionIcon>
+                <ActionIcon
+                  size="sm"
+                  aria-label="Copy task output"
+                  disabled={!outputTail}
+                  onClick={() => {
+                    void copyText(outputTail || "")
+                      .then(() => setCopied(true))
+                      .catch(() => notify("Could not copy output"));
+                  }}
+                >
+                  {copied ? <Check size={13} /> : <Copy size={13} />}
+                </ActionIcon>
+              </div>
+            )}
           </div>
           <pre
             ref={output}
@@ -639,10 +1043,12 @@ function TaskDetail({
                 setFollow(false);
             }}
           >
-            {outputTail ||
-              (activeTask(task)
-                ? "Waiting for output…"
-                : "No output recorded.")}
+            {!outputSupported
+              ? "This provider does not expose process output."
+              : outputTail ||
+                (activeTask(task)
+                  ? "Waiting for output…"
+                  : "No output recorded.")}
           </pre>
           {(task.outputTruncated ||
             (task.bytes || 0) >
@@ -653,11 +1059,9 @@ function TaskDetail({
             </p>
           )}
         </div>
-        {task.status === "running" &&
-          ((task.kind === "monitor" && task.interactive) ||
-            (task.kind === "command" && task.processId)) && (
-            <ProcessInput task={task} pending={pending} act={act} />
-          )}
+        {task.status === "running" && task.capabilities?.sendInput && (
+          <ProcessInput task={task} pending={pending} act={act} />
+        )}
         <dl className="task-record">
           <div>
             <dt>Created</dt>
@@ -690,16 +1094,16 @@ function TaskDetail({
             Approve command
           </Button>
         )}
-        {task.kind === "monitor" && activeTask(task) && (
+        {canStop && activeTask(task) && (
           <Button
             size="xs"
             color="red"
             leftSection={<Square size={12} />}
-            loading={pending}
-            disabled={!!task.cancelRequested}
-            onClick={() => void act("/api/monitor/cancel", { id: task.id })}
+            loading={controlPending}
+            disabled={!!task.cancelRequested || controlPending}
+            onClick={onStop}
           >
-            {task.cancelRequested ? "Stop requested" : "Cancel monitor"}
+            {task.cancelRequested ? "Stop requested" : "Stop selected process"}
           </Button>
         )}
       </div>
@@ -760,18 +1164,7 @@ function ProcessInput({
         </Button>
       </form>
       <div className="process-input-actions">
-        {native ? (
-          <Button
-            size="compact-xs"
-            color="red"
-            disabled={pending}
-            onClick={() =>
-              void act("/api/native-command", { id: task.id, action: "cancel" })
-            }
-          >
-            Stop command
-          </Button>
-        ) : (
+        {!native && (
           <>
             <Button
               size="compact-xs"
@@ -862,7 +1255,9 @@ async function downloadLog(
       if (result.truncated)
         notify("The download contains the retained part of the log.");
     } else {
-      blob = new Blob([detail?.tail || ""], { type: "text/plain" });
+      blob = new Blob([detail?.tail || task.tail || ""], {
+        type: "text/plain",
+      });
       name = `command-${task.id}.log`;
       if (task.outputTruncated)
         notify("The download contains the retained output.");

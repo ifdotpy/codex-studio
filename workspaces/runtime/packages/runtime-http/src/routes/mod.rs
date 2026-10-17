@@ -31,6 +31,7 @@ mod monitor_runtime;
 mod monitors;
 mod multi_server;
 mod panels;
+mod process_controls;
 mod projects;
 mod questions_reads;
 mod questions_write;

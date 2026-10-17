@@ -223,7 +223,26 @@ pub(super) fn apply(
                 .map_err(StoreError::from)?;
             let decision =
                 items::non_text(agent, method, p, snapshot.task(), already_compacted, at)?;
-            if let Some(task) = decision.task {
+            if let Some(mut task) = decision.task {
+                if snapshot.task().is_none() {
+                    task["ownerEpoch"] = agent["epoch"].clone();
+                    let source = publication.native_source.as_ref().filter(|source| {
+                        source.account == account
+                            && source.generation.is_none_or(|g| g == identity.generation)
+                    });
+                    task["sourceAccountKey"] = json!(
+                        source
+                            .map(|source| source.account.as_str())
+                            .unwrap_or(account)
+                    );
+                    task["sourceConnectionId"] = json!(source.map(|source| &source.connection));
+                    task["sourceThreadId"] = if source.is_some() {
+                        agent["threadId"].clone()
+                    } else {
+                        Value::Null
+                    };
+                    task["sourceProvider"] = json!(source.map(|source| source.provider.as_str()));
+                }
                 put_task(tx, &task)?;
             }
             if decision.compacted {

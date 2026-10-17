@@ -143,20 +143,11 @@ def recover_monitor_results(
             # block other recovery, and cannot invent command success.
             result['warnings'].append({'file': str(path), 'error': str(error)})
             continue
-        cancelled = bool(monitor.get('cancelRequested'))
-        status = ('cancelled' if cancelled else 'failed'
-                  if receipt['error'] or receipt['code'] not in monitor.get('successExitCodes', [0])
-                  else 'completed')
-        monitor.update(status=status, exitCode=receipt['code'], error=receipt['error'],
-                       finished=receipt['finished'], configurationPending=False,
-                       resultRecoveredAt=time.time())
-        runtime.put(db, 'monitors', monitor)
-        if monitor.get('ruleId'):
-            if _restore_rule_check(runtime, db, monitor):
-                runtime.rule_finished(monitor['ruleId'], receipt['code'],
-                                      'Monitor cancelled' if cancelled else receipt['error'], monitor['tail'], db)
-        else:
-            runtime._monitor_exit_event(db, runtime.agent(monitor['agent'], db), monitor)
+        monitor['resultRecoveredAt'] = time.time()
+        rule_valid = (not monitor.get('ruleId') or _restore_rule_check(runtime, db, monitor))
+        runtime._finalize_monitor_terminal(
+            db, monitor, code=receipt['code'], error=receipt['error'],
+            finished=receipt['finished'], notify=bool(rule_valid))
         result['restored'].append(key)
         result['acknowledge'].append(key)
     return result

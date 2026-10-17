@@ -2808,6 +2808,21 @@ impl Worker {
         let expected_vm_actor = actor_id
             .zip(actor_epoch)
             .map(|(actor, epoch)| (actor.to_owned(), epoch));
+        let native_source = Some(crate::notification_dispatch::NativeProcessSource {
+            account: self.account.clone(),
+            connection: source
+                .map(|source| format!("vm-guest:{}", source.actor_id))
+                .unwrap_or_else(|| self.connection_id.clone()),
+            generation: if source.is_some() {
+                None
+            } else {
+                Some(self.generation.0)
+            },
+            provider: claude_account_pin["provider"]
+                .as_str()
+                .unwrap_or("codex")
+                .to_owned(),
+        });
         let (previous, committed) = self
             .db("journal", move |store| async move {
                 let result = store::journal_batch(
@@ -2820,6 +2835,7 @@ impl Worker {
                     expected_vm_actor
                         .as_ref()
                         .map(|(actor, epoch)| (actor.as_str(), *epoch)),
+                    native_source,
                 )
                 .await;
                 Ok((streams, result))

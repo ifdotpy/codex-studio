@@ -1,5 +1,53 @@
 import { describe, expect, it } from "vitest";
-import { monitorTask } from "./BackgroundTasks";
+import {
+  backgroundProcessGroups,
+  monitorTask,
+  responseOwnerIdentityKey,
+  responseStopIdentity,
+} from "./BackgroundTasks";
+
+describe("background process groups", () => {
+  it("renders Claude background tasks in the task list", () => {
+    expect(backgroundProcessGroups).toContainEqual([
+      "backgroundTask",
+      "Background tasks",
+    ]);
+  });
+});
+
+describe("response stop identity", () => {
+  it("changes when the owner moves from idle to active or starts a new turn", () => {
+    const idle = {
+      id: "lead",
+      accountKey: "default",
+      epoch: 4,
+      inFlight: false,
+      threadId: "thread-current",
+      turnId: null,
+    };
+    const active = { ...idle, inFlight: true, turnId: "turn-1" };
+    const nextTurn = { ...active, turnId: "turn-2" };
+    expect(responseOwnerIdentityKey(idle)).not.toBe(
+      responseOwnerIdentityKey(active),
+    );
+    expect(responseOwnerIdentityKey(active)).not.toBe(
+      responseOwnerIdentityKey(nextTurn),
+    );
+  });
+
+  it("sends the exact server-listed connection, thread, and turn", () => {
+    const target = {
+      agent: "lead",
+      accountKey: "default",
+      epoch: 4,
+      connectionId: "connection-current",
+      threadId: "thread-current",
+      turnId: "turn-current",
+    };
+    expect(responseStopIdentity(target)).toEqual({ responseTarget: target });
+    expect(responseStopIdentity(null)).toEqual({});
+  });
+});
 
 describe("monitorTask", () => {
   it("narrows a complete API monitor while preserving its task details", () => {

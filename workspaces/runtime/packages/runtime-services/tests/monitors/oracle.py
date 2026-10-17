@@ -26,6 +26,8 @@ class Fixture:
     output = Runtime.output
     monitors_tick = Runtime.monitors_tick
     _finish_monitor = Runtime._finish_monitor
+    _finalize_monitor_terminal = Runtime._finalize_monitor_terminal
+    _enqueue_monitor_output_event = Runtime._enqueue_monitor_output_event
     _monitor_exit_event = Runtime._monitor_exit_event
     _monitor_reattach_notice = Runtime._monitor_reattach_notice
     _recovery_event_pending = Runtime._recovery_event_pending
@@ -33,6 +35,7 @@ class Fixture:
     def __init__(self):
         self.root = ROOT
         self.lock = threading.RLock()
+        self.monitor_condition = threading.Condition(self.lock)
         self.changed = threading.Event()
         self.closed = False
         self.probes = []

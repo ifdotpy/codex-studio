@@ -80,3 +80,17 @@ def workspace_preview_limit_label() -> str:
     if remainder:
         return f"{MAX_WORKSPACE_PREVIEW_BYTES} bytes"
     return f"{mib} MiB"
+
+# Command monitor output matching and bounded observation. Byte limits count UTF-8.
+MONITOR_OUTPUT_MAX_PATTERNS = 16
+MONITOR_OUTPUT_MAX_PATTERN_BYTES = 256
+MONITOR_OUTPUT_MAX_MATCH_COUNT = 2**31 - 1
+MONITOR_OUTPUT_WAKE_COOLDOWN_SECONDS = 1.0
+MONITOR_OUTPUT_RETAINED_EVENT_IDS = 32
+MONITOR_OUTPUT_TAIL_CODEPOINTS = 12_000
+MONITOR_WAIT_MAX_MILLISECONDS = 10_000
+MONITOR_WAIT_SLOTS = 64
+
+# Native terminal discovery before a stop: entries per page and pages per operation.
+NATIVE_TERMINAL_ITEMS_PER_PAGE = 100
+NATIVE_TERMINAL_MAX_PAGES = 100
