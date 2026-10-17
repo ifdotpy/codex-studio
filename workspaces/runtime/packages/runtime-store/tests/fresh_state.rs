@@ -20,8 +20,10 @@ use studio_runtime_store::{
 const RUST_OWNED_FEATURE_SCHEMA_INDEXES: &[&str] = &["runtime_agent_callback_context"];
 const RUST_OWNED_RUNTIME_INDEX_NAMES: &[&str] = &[
     "runtime_agent_account_wake_candidates_v2",
+    "runtime_agent_parent",
     "runtime_agent_reviewer_archive_pending",
     "runtime_agent_reviewer_archive_retry_due",
+    "runtime_event_child_result_pending",
     "runtime_event_reviewer_archive_delivery",
 ];
 
@@ -450,6 +452,7 @@ fn catalog_without_rust_owned_indexes(catalog: &Value) -> Value {
 fn owned_runtime_indexes() -> Vec<studio_runtime_store::OwnedRuntimeIndexDefinition> {
     let mut definitions = vec![SchedulerRepository::account_wake_index_definition()];
     definitions.extend(ReviewerArchiveRepository::index_definitions());
+    definitions.extend(SchedulerRepository::child_result_hold_index_definitions());
     definitions.sort_by_key(|definition| definition.name);
     definitions
 }

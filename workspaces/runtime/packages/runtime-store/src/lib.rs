@@ -90,6 +90,10 @@ pub use repositories::monitor_runtime;
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::notification_dispatch::NotificationDispatchRepository;
+pub use repositories::orchestration_settings::{
+    CHILD_RESULT_COALESCE_DEFAULT, CHILD_RESULT_COALESCE_MAX, CHILD_RESULT_COALESCE_MIN,
+    OrchestrationSettingsRepository,
+};
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::project_locations::{ProjectLocationRecord, ProjectLocationsRepository};
 pub use repositories::projects::ProjectsRepository;
@@ -100,8 +104,8 @@ pub use repositories::reviewer_archive::ReviewerArchiveRepository;
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{
-    AccountWakePage, AcknowledgedSteer, CHILD_RESULT_COALESCE_MAX, ClaimedEvents, ClaimedSteer,
-    STEER_UNCONFIRMED_ERROR, SchedulerRepository, TurnAttemptIdentity,
+    AccountWakePage, AcknowledgedSteer, ClaimedEvents, ClaimedSteer, STEER_UNCONFIRMED_ERROR,
+    SchedulerRepository, TurnAttemptIdentity,
 };
 pub use repositories::sync_documents::{
     ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH, EntityPage, EntityRow, SyncDocument,

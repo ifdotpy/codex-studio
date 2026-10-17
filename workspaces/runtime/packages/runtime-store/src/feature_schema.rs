@@ -116,6 +116,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE INDEX IF NOT EXISTS runtime_execution_effect_run ON runtime_execution_effects(run);
             CREATE TABLE IF NOT EXISTS runtime_execution_nodes (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_execution_node_run ON runtime_execution_nodes(run);
+        CREATE TABLE IF NOT EXISTS runtime_orchestration_settings (id TEXT PRIMARY KEY, record TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS runtime_federation_settings (
           id TEXT PRIMARY KEY, record TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS runtime_federation_identity (

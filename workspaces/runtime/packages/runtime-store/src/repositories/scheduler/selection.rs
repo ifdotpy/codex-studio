@@ -62,31 +62,50 @@ fn account_wake_capacity_candidate(record: &str) -> String {
     )
 }
 
+/// Index over pending child results by creation time, for the release deadline.
+const CHILD_RESULT_PENDING_INDEX: &str = "runtime_event_child_result_pending";
+/// Index over agents by parent, for the active-sibling check.
+const AGENT_PARENT_INDEX: &str = "runtime_agent_parent";
+
+/// The indexed parent key of an agent record; malformed JSON has no parent.
+fn agent_parent_key(record: &str) -> String {
+    format!("CASE WHEN json_valid({record}) THEN json_extract({record},'$.parentId') END")
+}
+
 /// SQL predicate: the pending event aliased `event` is a `child_result` that
-/// still waits, at the bound Unix time `now`, for an active sibling child of
-/// the same parent. [`CHILD_RESULT_COALESCE_MAX`] bounds the wait.
-fn child_result_held(event: &str, now: &str) -> String {
-    let hold = CHILD_RESULT_COALESCE_MAX.as_secs_f64();
+/// still waits for an active sibling child of the same parent. `held_after`
+/// binds the Unix time before which results are no longer held (now minus the
+/// effective hold), so the comparison stays on the indexed `created` column.
+fn child_result_held(event: &str, held_after: &str) -> String {
     format!(
-        "({event}.kind='child_result' AND {event}.created+{hold:.3}>{now} \
-         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE CASE WHEN json_valid(c.record) THEN ( \
-           json_extract(c.record,'$.parentId')={event}.agent \
-           AND json_extract(c.record,'$.deletedAt') IS NULL \
-           AND json_extract(c.record,'$.status') IN ('queued','starting','running')) ELSE 0 END))"
+        "({event}.kind='child_result' AND {event}.created>{held_after} \
+         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE {}={event}.agent \
+           AND CASE WHEN json_valid(c.record) THEN ( \
+             json_extract(c.record,'$.deletedAt') IS NULL \
+             AND json_extract(c.record,'$.status') IN ('queued','starting','running')) \
+           ELSE 0 END))",
+        agent_parent_key("c.record")
     )
+}
+
+/// The `held_after` bound of [`child_result_held`] at Unix time `now`, from
+/// the stored orchestration setting read on every call.
+fn child_result_held_after(connection: &Connection, now: f64) -> StoreResult<f64> {
+    Ok(now
+        - crate::OrchestrationSettingsRepository::child_result_coalesce(connection)?.as_secs_f64())
 }
 
 /// SQL predicate: agent `agent` has a pending event of `epoch` that may start
-/// a turn at the bound Unix time `now`.
-fn deliverable_pending(agent: &str, epoch: &str, now: &str) -> String {
+/// a turn; `held_after` is the bound of [`child_result_held`].
+fn deliverable_pending(agent: &str, epoch: &str, held_after: &str) -> String {
     format!(
         "EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent={agent} \
          AND e.epoch={epoch} AND e.status='pending' AND NOT {})",
-        child_result_held("e", now)
+        child_result_held("e", held_after)
     )
 }
 
-fn account_wake_pending(record: &str, now: &str) -> String {
+fn account_wake_pending(record: &str, held_after: &str) -> String {
     format!(
         "(({} AND {}) \
          OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
@@ -94,7 +113,11 @@ fn account_wake_pending(record: &str, now: &str) -> String {
              AND e.kind='user')) \
          OR {})",
         account_wake_queued_candidate(record),
-        deliverable_pending("a.id", &format!("json_extract({record},'$.epoch')"), now),
+        deliverable_pending(
+            "a.id",
+            &format!("json_extract({record},'$.epoch')"),
+            held_after,
+        ),
         account_wake_steer_candidate(record),
         account_wake_capacity_candidate(record)
     )
@@ -119,9 +142,9 @@ fn account_wake_recovery(record: &str) -> String {
     )
 }
 
-fn account_wake_target_filter(record: &str, now: &str) -> String {
+fn account_wake_target_filter(record: &str, held_after: &str) -> String {
     let eligibility = account_wake_index_eligibility(record);
-    let pending = account_wake_pending(record, now);
+    let pending = account_wake_pending(record, held_after);
     let recovery = account_wake_recovery(record);
     format!(
         "{eligibility} \
@@ -141,14 +164,14 @@ fn account_wake_invalid_target_query() -> String {
     )
 }
 
-fn validate_account_wake_targets(connection: &Connection, now: f64) -> StoreResult<()> {
+fn validate_account_wake_targets(connection: &Connection, held_after: f64) -> StoreResult<()> {
     if let Some(id) = connection
         .query_row(
             &account_wake_invalid_target_query(),
             rusqlite::params![
                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                 crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                now
+                held_after
             ],
             |row| row.get::<_, String>(0),
         )
@@ -224,7 +247,8 @@ impl SchedulerRepository {
         agent_limit: usize,
         now: f64,
     ) -> StoreResult<AccountWakePage> {
-        validate_account_wake_targets(connection, now)?;
+        let held_after = child_result_held_after(connection, now)?;
+        validate_account_wake_targets(connection, held_after)?;
 
         let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
@@ -235,7 +259,7 @@ impl SchedulerRepository {
                         crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                         after,
                         account_limit as i64,
-                        now
+                        held_after
                     ],
                     |row| row.get(0),
                 )?
@@ -261,7 +285,7 @@ impl SchedulerRepository {
                                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                                 crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                                 agent_limit as i64,
-                                now
+                                held_after
                             ],
                             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                         )?
@@ -287,7 +311,8 @@ impl SchedulerRepository {
         agent_limit: usize,
         now: f64,
     ) -> StoreResult<AccountWakePage> {
-        validate_account_wake_targets(connection, now)?;
+        let held_after = child_result_held_after(connection, now)?;
+        validate_account_wake_targets(connection, held_after)?;
 
         let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
         let accounts = account_statement
@@ -297,7 +322,7 @@ impl SchedulerRepository {
                     crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                     after_account,
                     account_limit as i64,
-                    now
+                    held_after
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -318,7 +343,7 @@ impl SchedulerRepository {
                                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                                 crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                                 agent_limit as i64,
-                                now
+                                held_after
                             ],
                             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                         )?
@@ -343,7 +368,8 @@ impl SchedulerRepository {
         agent_limit: usize,
         now: f64,
     ) -> StoreResult<Vec<(String, i64, Option<String>)>> {
-        validate_account_wake_targets(connection, now)?;
+        let held_after = child_result_held_after(connection, now)?;
+        validate_account_wake_targets(connection, held_after)?;
         let mut statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
         let rows = statement
             .query_map(
@@ -353,7 +379,7 @@ impl SchedulerRepository {
                     crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                     crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                     agent_limit as i64,
-                    now
+                    held_after
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?
@@ -364,15 +390,50 @@ impl SchedulerRepository {
     /// The Unix time at which the earliest held `child_result` stops waiting
     /// for its siblings, so a scheduler can wake without a new commit.
     pub fn child_result_release_at(connection: &Connection, now: f64) -> StoreResult<Option<f64>> {
+        let hold = crate::OrchestrationSettingsRepository::child_result_coalesce(connection)?;
         let earliest: Option<f64> = connection.query_row(
             &format!(
-                "SELECT MIN(e.created) FROM runtime_events e WHERE e.status='pending' AND {}",
+                "SELECT MIN(e.created) FROM runtime_events e INDEXED BY {CHILD_RESULT_PENDING_INDEX} \
+                 WHERE e.kind='child_result' AND e.status='pending' AND {}",
                 child_result_held("e", "?1")
             ),
-            [now],
+            [now - hold.as_secs_f64()],
             |row| row.get(0),
         )?;
-        Ok(earliest.map(|created| created + CHILD_RESULT_COALESCE_MAX.as_secs_f64()))
+        Ok(earliest.map(|created| created + hold.as_secs_f64()))
+    }
+
+    /// Install the indexes that keep the child-result hold off full scans.
+    pub(crate) fn prepare_child_result_hold_indexes(
+        transaction: &Transaction<'_>,
+    ) -> StoreResult<()> {
+        for definition in Self::child_result_hold_index_definitions() {
+            transaction.execute_batch(&definition.create_sql)?;
+        }
+        Ok(())
+    }
+
+    /// Canonical DDL for the child-result hold indexes.
+    #[doc(hidden)]
+    pub fn child_result_hold_index_definitions() -> Vec<crate::OwnedRuntimeIndexDefinition> {
+        vec![
+            crate::OwnedRuntimeIndexDefinition {
+                name: CHILD_RESULT_PENDING_INDEX,
+                table: "runtime_events",
+                create_sql: format!(
+                    "CREATE INDEX IF NOT EXISTS {CHILD_RESULT_PENDING_INDEX} \
+                     ON runtime_events(created) WHERE kind='child_result' AND status='pending'"
+                ),
+            },
+            crate::OwnedRuntimeIndexDefinition {
+                name: AGENT_PARENT_INDEX,
+                table: "runtime_agents",
+                create_sql: format!(
+                    "CREATE INDEX IF NOT EXISTS {AGENT_PARENT_INDEX} ON runtime_agents({})",
+                    agent_parent_key("record")
+                ),
+            },
+        ]
     }
 
     /// The same metadata identity used by claim replay and submit authorization.
@@ -529,7 +590,11 @@ impl SchedulerRepository {
         if radio_event.is_none()
             && !transaction.query_row(
                 &format!("SELECT {}", deliverable_pending("?1", "?2", "?3")),
-                params![agent_id, epoch, attempt_created],
+                params![
+                    agent_id,
+                    epoch,
+                    child_result_held_after(transaction, attempt_created)?
+                ],
                 |row| row.get::<_, bool>(0),
             )?
         {

@@ -1353,7 +1353,9 @@ mod child_result_coalesce_tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
-    use studio_runtime_store::CHILD_RESULT_COALESCE_MAX;
+    use studio_runtime_store::{
+        CHILD_RESULT_COALESCE_DEFAULT, CHILD_RESULT_COALESCE_MAX, OrchestrationSettingsRepository,
+    };
 
     const CHILDREN: [&str; 3] = ["w1", "w2", "w3"];
 
@@ -1396,6 +1398,11 @@ mod child_result_coalesce_tests {
                         rusqlite::params![format!("start-{id}"), id],
                     )?;
                 }
+                // The longest hold keeps wall-clock assertions far from expiry.
+                OrchestrationSettingsRepository::set_child_result_coalesce(
+                    tx,
+                    CHILD_RESULT_COALESCE_MAX.as_secs(),
+                )?;
                 Ok(())
             })
             .await
@@ -1564,5 +1571,45 @@ mod child_result_coalesce_tests {
             )
             .expect("count reads");
         assert_eq!(results, CHILDREN.len() as i64);
+    }
+
+    async fn set_hold(store: &RuntimeStore, seconds: u64) {
+        store
+            .transaction(move |tx| {
+                OrchestrationSettingsRepository::set_child_result_coalesce(tx, seconds)
+            })
+            .await
+            .expect("hold setting writes");
+    }
+
+    #[tokio::test]
+    async fn a_changed_hold_applies_to_results_already_waiting() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let (store, intents) = team(directory.path(), "claude").await;
+        finish(&store, &intents, "w1").await;
+        let held = release_at(&store, wall_clock()).expect("result is held");
+        set_hold(&store, CHILD_RESULT_COALESCE_DEFAULT.as_secs()).await;
+        let shorter = release_at(&store, wall_clock()).expect("result is still held");
+        let difference = (CHILD_RESULT_COALESCE_MAX - CHILD_RESULT_COALESCE_DEFAULT).as_secs_f64();
+        assert!(
+            ((held - shorter) - difference).abs() <= 4.0 * f64::EPSILON * held,
+            "the release time follows the stored hold without a restart"
+        );
+        assert!(lead_listed(&store, shorter));
+    }
+
+    #[tokio::test]
+    async fn a_zero_hold_delivers_each_result_immediately() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let (store, intents) = team(directory.path(), "codex").await;
+        set_hold(&store, 0).await;
+        finish(&store, &intents, "w1").await;
+        let now = wall_clock();
+        assert_eq!(release_at(&store, now), None);
+        assert!(lead_listed(&store, now));
+        let intent = claim_lead(&store, "lead-turn", now)
+            .await
+            .expect("nothing is held");
+        assert_eq!(event_ids(&intent), ["child:w1:turn-w1"]);
     }
 }

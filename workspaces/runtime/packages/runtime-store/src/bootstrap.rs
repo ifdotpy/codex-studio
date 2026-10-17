@@ -60,6 +60,7 @@ pub(crate) fn prepare_runtime_event_indexes(transaction: &Transaction<'_>) -> St
          ON runtime_events(agent,epoch,status,created,id)",
     )?;
     crate::SchedulerRepository::prepare_account_wake_index(transaction)?;
+    crate::SchedulerRepository::prepare_child_result_hold_indexes(transaction)?;
     crate::repositories::reviewer_archive::ReviewerArchiveRepository::prepare_indexes(transaction)?;
     if crate::schema::table_exists(transaction, "runtime_tasks")? {
         crate::TaskRepository::prepare_indexes(transaction)?;

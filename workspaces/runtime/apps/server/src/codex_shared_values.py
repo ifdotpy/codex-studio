@@ -52,6 +52,13 @@ ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS = 60
 ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS = 600
 ACCOUNT_LIMITS_ERROR_RETRY_SECONDS = 30
 
+# A lead's pending child result waits at most this many seconds for sibling subagents
+# that are still queued or running, so results that finish close together reach the lead
+# in one turn. The orchestration setting chooses a value in [MIN, MAX]; 0 holds nothing.
+CHILD_RESULT_COALESCE_DEFAULT_SECONDS = 10
+CHILD_RESULT_COALESCE_MIN_SECONDS = 0
+CHILD_RESULT_COALESCE_MAX_SECONDS = 300
+
 
 def user_attachment_limit_label() -> str:
     """Return the display label derived from the byte-valued attachment cap."""

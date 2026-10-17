@@ -69,7 +69,7 @@ fn archive_deadline_read_deferred(
 }
 
 /// Wake when the earliest held child result stops waiting for its siblings
-/// (`CHILD_RESULT_COALESCE_MAX`); a failed read retries after `RETRY_DELAY`.
+/// (the stored child-result hold); a failed read retries after `RETRY_DELAY`.
 async fn child_result_release_at(
     store: Arc<studio_runtime_store::RuntimeStore>,
 ) -> Option<tokio::time::Instant> {
@@ -95,6 +95,22 @@ async fn child_result_release_at(
             Some(tokio::time::Instant::now() + RETRY_DELAY)
         }
     }
+}
+
+/// The registry's next timed wake: the earliest archive, checkpoint, or
+/// worker retry, or the release of the earliest held child result.
+async fn next_registry_wake_at(
+    store: Arc<studio_runtime_store::RuntimeStore>,
+    archive_retry_at: Option<tokio::time::Instant>,
+    checkpoint_retry_at: Option<tokio::time::Instant>,
+    worker_retry_at: &BTreeMap<String, tokio::time::Instant>,
+) -> Option<tokio::time::Instant> {
+    let release_at = child_result_release_at(store).await;
+    next_registry_retry_at(
+        archive_retry_at.into_iter().chain(release_at).min(),
+        checkpoint_retry_at,
+        worker_retry_at,
+    )
 }
 
 async fn checkpoint_maintenance(
@@ -1449,12 +1465,13 @@ impl AccountRegistry {
                             }
                         }
                     };
-                    let release_at = child_result_release_at(self.store.clone()).await;
-                    retry_at = next_registry_retry_at(
-                        archive_retry_at.into_iter().chain(release_at).min(),
+                    retry_at = next_registry_wake_at(
+                        self.store.clone(),
+                        archive_retry_at,
                         checkpoint_retry_at,
                         &self.worker_retry_at,
-                    );
+                    )
+                    .await;
                 }
             }
         }
@@ -1812,6 +1829,61 @@ mod bounded_reconcile_tests {
 
         let page = target_page(&store, "", &BTreeMap::new()).expect("pending target page");
         assert_eq!(page["default"][0].2.as_deref(), Some("image"));
+    }
+
+    #[tokio::test]
+    async fn next_wake_includes_the_earliest_child_result_release() {
+        let directory = tempfile::tempdir().expect("isolated store directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
+        let hold = studio_runtime_store::CHILD_RESULT_COALESCE_MAX;
+        let created = event_time();
+        store
+            .transaction(move |transaction| {
+                for (id, parent, status) in [
+                    ("lead", None, AgentStatus::Queued),
+                    ("worker", Some("lead"), AgentStatus::Running),
+                ] {
+                    let mut extra =
+                        BTreeMap::from([("accountKey".to_owned(), serde_json::json!("default"))]);
+                    if let Some(parent) = parent {
+                        extra.insert("parentId".to_owned(), serde_json::json!(parent));
+                    }
+                    AgentRepository::put(
+                        transaction,
+                        &AgentRecord {
+                            id: AgentId::from(id),
+                            root_id: AgentId::from("lead"),
+                            epoch: 1,
+                            status,
+                            extra,
+                        },
+                    )?;
+                }
+                transaction.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                     VALUES ('child:done:turn','lead','child_result','{}','pending',?1,1)",
+                    [created],
+                )?;
+                studio_runtime_store::OrchestrationSettingsRepository::set_child_result_coalesce(
+                    transaction,
+                    hold.as_secs(),
+                )
+            })
+            .await
+            .expect("held child result stored");
+
+        let before = tokio::time::Instant::now();
+        let wake = next_registry_wake_at(store, None, None, &BTreeMap::new())
+            .await
+            .expect("a held child result schedules a registry wake");
+        assert!(
+            wake > before && wake <= before + hold,
+            "the wake falls at the release of the held result"
+        );
     }
 }
 

@@ -14,12 +14,6 @@ use crate::{
 pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
 const MAX_EVENTS_PER_TURN: usize = 32;
-
-/// Longest wait of a parent's pending `child_result` for still-active sibling
-/// children, so one parent turn receives results that finish close together.
-/// Measured from the event's `created` Unix time; any other pending input
-/// releases the held results at once.
-pub const CHILD_RESULT_COALESCE_MAX: std::time::Duration = std::time::Duration::from_secs(45);
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",
