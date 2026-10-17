@@ -1291,13 +1291,13 @@ mod tests {
         let second_checkpoint_id = format!("{second_agent_id}:default:{second_thread}");
         let invalid_budget_usage_id = usage_key.clone();
         let invalid_budget_id = second_agent_id.clone();
-        wake.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .error = Some("fixture watcher failure".to_owned());
+        // A commit's table hints arrive when its caller resolves the transaction.
+        // Another roster refresh can read the committed actor first and block it
+        // for a budget change; a later budget hint from the same commit would then
+        // give it an extra attempt. Commit the budget rows alone and let the loop
+        // consume their hint before the actor that reads them becomes visible.
         store
             .transaction(move |tx| {
-                Table::<AgentRecord>::new(tx).put(&second_agent)?;
                 tx.execute(
                     "INSERT INTO runtime_budget(id,record) VALUES(?1,?2)",
                     rusqlite::params![
@@ -1328,7 +1328,29 @@ mod tests {
                 Ok(())
             })
             .await
-            .expect("persist recovery fixture and invalid usage identity");
+            .expect("persist invalid usage identity");
+        // The hint is recorded before the transaction returns; the loop clears
+        // it when it takes the batch.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while wake
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .budget_dirty
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("history loop should consume the budget hint before its deadline");
+        wake.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .error = Some("fixture watcher failure".to_owned());
+        store
+            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&second_agent))
+            .await
+            .expect("persist recovery fixture agent");
 
         // The store commit wake releases the coalesced watcher failure. A
         // successful recovery must reread the durable roster before returning idle.
