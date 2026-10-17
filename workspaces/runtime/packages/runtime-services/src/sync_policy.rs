@@ -27,7 +27,7 @@ const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 // caps aligned; the caps have separate meanings despite sharing a value.
 const MONITOR_TERMINAL_WINDOW: usize = 100;
 const MONITOR_FINAL_WINDOW: usize = 100;
-const MONITOR_ACTIVE_STATUSES: [&str; 3] = ["running", "starting", "approval"];
+use studio_runtime_store::startup_recovery::ACTIVE_MONITOR_STATUSES as MONITOR_ACTIVE_STATUSES;
 const MONITOR_TERMINAL_STATUSES: [&str; 4] = ["completed", "failed", "cancelled", "lost"];
 const TASK_RETIRE_BATCH: usize = 100;
 /// Newest finished tasks the renderer task window keeps beside running ones;

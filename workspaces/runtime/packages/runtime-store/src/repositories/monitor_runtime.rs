@@ -7,7 +7,13 @@ pub fn pending_approvals(
     connection: &Connection,
     monitor_id: &str,
 ) -> StoreResult<Vec<RequestRecord>> {
-    let mut query = connection.prepare_cached("SELECT id FROM runtime_requests WHERE json_extract(record,'$.status')='pending' AND json_extract(record,'$.method')='monitor/approve' AND json_extract(record,'$.params.monitorId')=?1")?;
+    // The unsettled-request partial index keeps this lookup off the request history.
+    let mut query = connection.prepare_cached(&format!(
+        "SELECT id FROM runtime_requests WHERE {} AND json_extract(record,'$.status')='pending' \
+         AND json_extract(record,'$.method')='monitor/approve' \
+         AND json_extract(record,'$.params.monitorId')=?1",
+        crate::startup_recovery::unsettled_request_predicate()
+    ))?;
     let ids = query
         .query_map([monitor_id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
