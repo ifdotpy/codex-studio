@@ -2281,5 +2281,8 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
     assert!(driver.pump_due(105).await.unwrap() >= 1);
     let delivered = peer.delivered.lock().unwrap();
     assert!(delivered.contains(&"later-2".to_owned()), "{delivered:?}");
-    assert!(!delivered.contains(&"rewritten-1".to_owned()), "{delivered:?}");
+    assert!(
+        !delivered.contains(&"rewritten-1".to_owned()),
+        "{delivered:?}"
+    );
 }
