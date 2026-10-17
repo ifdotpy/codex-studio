@@ -22,6 +22,7 @@ const GRACE_MS = 300;
 //   keeps queued messages).
 // wedged: as stall, but the CLI ignores the interrupt; it records a steer whose
 //   text contains "recorded" as a queued_command in its native history.
+// deaf: as wedged, and closing the query does not end its stream either.
 // approval: the CLI asks canUseTool first; after an allow it stalls as in
 //   "stall", after a deny it reports the denial and ends the turn.
 // heartbeat: the tool sends progress past its timeout, then returns.
@@ -38,7 +39,7 @@ export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
  const session=options.sessionId||options.resume;
  const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','fake',session+'.jsonl');
- let interrupted=null,wedged=false;
+ let interrupted=null,wedged=false,deaf=false;
  const interrupt=new Promise(r=>(interrupted=r));
  const queued=[];
  let reading=null;
@@ -53,7 +54,7 @@ export function query({prompt,options}){
   initializationResult:async()=>({commands:[]}),
   setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
   setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){abort.abort();},
+  close(){if(!deaf)abort.abort();},
   interrupt(){fs.appendFileSync(cwd+'/.interrupts','x');if(wedged)return new Promise(()=>{});interrupted();return Promise.resolve({still_queued:queued.map(q=>q.uuid)});},
   async *[Symbol.asyncIterator](){
    fs.mkdirSync(path.dirname(history),{recursive:true});
@@ -80,7 +81,8 @@ export function query({prompt,options}){
       continue;
      }
     }
-    wedged=text==='wedged';
+    wedged=text==='wedged'||text==='deaf';
+    deaf=text==='deaf';
     // Hold steers like the CLI queue: read them without an echo.
     for(;;){
      const next=await Promise.race([read(),interrupt.then(()=>null),new Promise(r=>abort.signal.addEventListener('abort',()=>r(null),{once:true}))]);
@@ -315,6 +317,30 @@ test("a CLI that ignores the interrupt is closed and its steers are settled from
     await bridge.call("turn/start", {
       threadId: bridge.thread,
       clientUserMessageId: "start-fresh",
+      input: text("heartbeat"),
+    })
+  ).turn.id;
+  assert.equal((await completed(bridge, next)).params.turn.status, "completed");
+});
+
+test("a CLI whose stream outlives its close still ends the stalled turn once", async () => {
+  const bridge = await startBridge();
+  const turn = await start(bridge, "deaf");
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "interrupted");
+  assert.match(done.params.turn.error.message, /Studio stopped this turn/);
+  await sleep(200);
+  assert.equal(
+    bridge.notes.filter(
+      (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    ).length,
+    1,
+  );
+  // The dropped query is replaced by a fresh CLI for the next turn.
+  const next = (
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "start-replaced",
       input: text("heartbeat"),
     })
   ).turn.id;

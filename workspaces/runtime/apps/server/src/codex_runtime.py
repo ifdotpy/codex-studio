@@ -8542,6 +8542,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if is_vm(a):
                         queue_turn(self, db, a, turn.get("id"))
                         self.put(db, "agents", a)
+                    from codex_claude_input_recovery import release_unapplied_steers
+                    release_unapplied_steers(self, db, a, turn)
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
                     from codex_turn_item_links import update_turn_status
                     update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended")

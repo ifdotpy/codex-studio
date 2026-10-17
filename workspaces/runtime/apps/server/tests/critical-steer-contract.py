@@ -121,6 +121,20 @@ class CriticalDelivery(unittest.TestCase):
         self.runtime.dispatch()
         self.assertEqual(sum(p.get('clientUserMessageId') == 'stalled-steer' for p in self.starts()), 2)
 
+    def test_unapplied_steer_of_a_superseded_turn_returns_to_the_queue(self):
+        a = self.runtime.agent(self.agent)
+        old = a['turnId']
+        self.runtime.send(self.agent, 'Steer the old turn', 'old-steer')
+        fixture.eventually(lambda: self.event('old-steer')['status'] == 'delivered')
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.agent, db)
+            current['turnId'] = 'newer-turn'
+            self.runtime.put(db, 'agents', current)
+        self.server.notify({'method': 'turn/completed', 'params': {'threadId': a['threadId'],
+            'turn': {'id': old, 'status': 'interrupted', 'unappliedSteers': ['old-steer']}}})
+        self.assertEqual(self.runtime.agent(self.agent)['turnId'], 'newer-turn')
+        self.assertNotEqual(self.event('old-steer')['turn_id'], old)
+
     def test_native_started_turn_is_busy_and_receives_input_at_once(self):
         a = self.runtime.agent(self.agent)
         self.server.notify({'method': 'turn/completed', 'params': {'threadId': a['threadId'],

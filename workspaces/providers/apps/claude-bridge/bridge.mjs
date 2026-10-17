@@ -944,13 +944,16 @@ async function flags(s, p = {}, live = false) {
       : {}),
   };
 }
+const finishingTurns = new WeakSet();
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
   const stall = active.stall?.turnId === turn.id ? active.stall : null;
   // A closed CLI can write its history until it exits; read it only then.
   if (stall?.closed) await stall.closed;
-  if (active.turn !== turn) return;
+  // One caller finishes a turn; the stall recovery can race the SDK stream.
+  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  finishingTurns.add(turn);
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true) &&
@@ -1235,13 +1238,31 @@ async function recoverStall(s, active, found) {
     );
   await Promise.race([finished, deadline]);
   clearTimeout(timer);
-  if (active.turn !== turn || queries.get(s.id) !== active) return;
+  if (
+    active.turn !== turn ||
+    finishingTurns.has(turn) ||
+    queries.get(s.id) !== active
+  )
+    return;
   // The CLI did not end the turn. Close it; finishTurn waits for its exit.
-  active.stall.closed = new Promise((resolve) =>
+  const stall = active.stall;
+  stall.closed = new Promise((resolve) =>
     setTimeout(resolve, limits.exitWaitMs),
   );
   active.input.close();
   active.q?.close();
+  await stall.closed;
+  // Closing normally ends the SDK stream, and its owner finishes the turn.
+  // If the stream still has not ended, finish it here and drop the query.
+  await new Promise((resolve) => setImmediate(resolve));
+  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  discardQuery(s, active);
+  await finishTurn(
+    s,
+    active,
+    null,
+    new Error("Claude did not stop after Studio closed it"),
+  );
 }
 const stallSweep = setInterval(
   () => {
