@@ -93,6 +93,16 @@ pub enum Action {
 }
 
 impl Action {
+    /// The agent that issued the action, when it is not the target.
+    pub fn acting_agent(&self) -> Option<&str> {
+        match self {
+            Self::Stop { sender, .. } => sender.as_deref(),
+            Self::Archive { actor, .. }
+            | Self::Restore { actor, .. }
+            | Self::Inspect { actor, .. } => Some(actor),
+            Self::RemoteStop { .. } | Self::Delete { .. } => None,
+        }
+    }
     /// The agent whose descendant tree scopes this action's history reads.
     pub fn target(&self) -> &str {
         match self {
@@ -352,9 +362,8 @@ impl ManagementSnapshot {
             .filter(|a| ids.contains(a.id()))
             .collect())
     }
-    /// Owner scope of every lifecycle decision: the target and its complete
-    /// recursive descendant set. Decisions consult owned history only for
-    /// these agents, so unrelated lifecycle history is never read.
+    /// Descendant tree of `target`, the owner scope of a lifecycle decision.
+    #[cfg(test)]
     pub(crate) fn owner_scope(&self, target: &str) -> Result<BTreeSet<String>, ManagementError> {
         Ok(self
             .descendants(target, true)?

@@ -224,6 +224,123 @@ pub fn authorize_events(snapshot: &AuthorizationSnapshot) -> Result<(), EventDen
         .try_for_each(|event| snapshot.authorize(event))
 }
 
+/// Project one stored event to what authorization reads. Python treats
+/// invalid or non-object event payloads as empty objects.
+fn project_event(event: &StoredEvent, event_meta: &BTreeMap<String, String>) -> EventSnapshot {
+    let payload = serde_json::from_str::<Value>(&event.text)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or(json!({}));
+    let string = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+    match event.kind.as_str() {
+        "agent_message" => EventSnapshot::AgentMessage {
+            sender: string("sender"),
+            room: string("room"),
+        },
+        "followup" => {
+            let metadata = event_meta
+                .get(&event.id)
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .filter(Value::is_object)
+                .unwrap_or(json!({}));
+            EventSnapshot::Followup {
+                sender_present: metadata.get("senderId").is_some(),
+                sender: metadata
+                    .get("senderId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            }
+        }
+        "complaint_response" => EventSnapshot::ComplaintResponse {
+            complaint_id: string("complaint_id"),
+            responder: payload
+                .get("responder")
+                .or_else(|| payload.get("lead"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            response_author: payload
+                .get("response")
+                .and_then(|v| v.get("author"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        },
+        "chat_review" => EventSnapshot::ChatReview,
+        "radio_turn" => EventSnapshot::RadioTurn,
+        _ => EventSnapshot::Other,
+    }
+}
+
+/// Ids of the stored rows an authorization decision reads. Everything else in
+/// the agent, room and complaint tables cannot change the decision, so callers
+/// load only these rows instead of whole tables.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuthorizationScope {
+    pub agents: std::collections::BTreeSet<String>,
+    pub rooms: std::collections::BTreeSet<String>,
+    pub complaints: std::collections::BTreeSet<String>,
+}
+
+impl AuthorizationScope {
+    /// Rows named by the events: the recipient, senders and responders, rooms
+    /// and complaints. `event_meta` holds the metadata of the follow-up events.
+    pub fn of_events(
+        recipient_id: &str,
+        events: &[StoredEvent],
+        event_meta: &BTreeMap<String, String>,
+    ) -> Self {
+        let mut scope = Self::default();
+        scope.agents.insert(recipient_id.to_owned());
+        for event in events {
+            match project_event(event, event_meta) {
+                EventSnapshot::AgentMessage { sender, room } => {
+                    scope.agents.extend(sender);
+                    scope.rooms.extend(room);
+                }
+                EventSnapshot::Followup { sender, .. } => scope.agents.extend(sender),
+                EventSnapshot::ComplaintResponse {
+                    complaint_id,
+                    responder,
+                    ..
+                } => {
+                    scope.complaints.extend(complaint_id);
+                    scope.agents.extend(responder);
+                }
+                EventSnapshot::ChatReview | EventSnapshot::RadioTurn | EventSnapshot::Other => {}
+            }
+        }
+        scope
+    }
+
+    /// Add the members of the private rooms among `rooms`, whose team
+    /// membership the decision checks. Malformed rows are left to
+    /// `from_records`, which refuses them.
+    pub fn add_private_members(&mut self, rooms: &BTreeMap<String, String>) {
+        for raw in rooms.values() {
+            let Ok(row) = serde_json::from_str::<Value>(raw) else {
+                continue;
+            };
+            if row.get("kind").and_then(Value::as_str) == Some("private") {
+                self.agents.extend(
+                    row.get("members")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned),
+                );
+            }
+        }
+    }
+}
+
+/// Ids of the follow-up events, whose metadata names their sender.
+pub fn followup_event_ids(events: &[StoredEvent]) -> impl Iterator<Item = &str> {
+    events
+        .iter()
+        .filter(|event| event.kind == "followup")
+        .map(|event| event.id.as_str())
+}
+
 /// Persisted SQLite JSON text, including malformed rows, crosses this boundary.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AuthorizationRecords {
@@ -413,50 +530,7 @@ impl AuthorizationSnapshot {
             }
         }
         for event in &rows.events {
-            // Python treats invalid/non-object event payloads as empty objects.
-            let payload = serde_json::from_str::<Value>(&event.text)
-                .ok()
-                .filter(Value::is_object)
-                .unwrap_or(json!({}));
-            let string = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
-            let projected = match event.kind.as_str() {
-                "agent_message" => EventSnapshot::AgentMessage {
-                    sender: string("sender"),
-                    room: string("room"),
-                },
-                "followup" => {
-                    let metadata = rows
-                        .event_meta
-                        .get(&event.id)
-                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                        .filter(Value::is_object)
-                        .unwrap_or(json!({}));
-                    EventSnapshot::Followup {
-                        sender_present: metadata.get("senderId").is_some(),
-                        sender: metadata
-                            .get("senderId")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                    }
-                }
-                "complaint_response" => EventSnapshot::ComplaintResponse {
-                    complaint_id: string("complaint_id"),
-                    responder: payload
-                        .get("responder")
-                        .or_else(|| payload.get("lead"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    response_author: payload
-                        .get("response")
-                        .and_then(|v| v.get("author"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                },
-                "chat_review" => EventSnapshot::ChatReview,
-                "radio_turn" => EventSnapshot::RadioTurn,
-                _ => EventSnapshot::Other,
-            };
-            snapshot.events.push(projected);
+            snapshot.events.push(project_event(event, &rows.event_meta));
         }
         for event in &snapshot.events {
             let sender = match event {
@@ -886,6 +960,43 @@ pub fn budget_admission(token_budget: Option<&Value>) -> Result<(), BudgetDenial
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scope_names_only_the_rows_the_events_read() {
+        let event = |id: &str, kind: &str, text: Value| StoredEvent {
+            id: id.into(),
+            kind: kind.into(),
+            text: text.to_string(),
+        };
+        let events = [
+            event("m", "agent_message", json!({"sender":"s1","room":"r1"})),
+            event("f", "followup", json!({})),
+            event(
+                "c",
+                "complaint_response",
+                json!({"complaint_id":"k","responder":"s2"}),
+            ),
+            event("o", "user", json!({"sender":"ignored"})),
+        ];
+        let meta = BTreeMap::from([("f".to_owned(), json!({"senderId":"s3"}).to_string())]);
+        let mut scope = AuthorizationScope::of_events("me", &events, &meta);
+        let set = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect();
+        assert_eq!(scope.agents, set(&["me", "s1", "s2", "s3"]));
+        assert_eq!(scope.rooms, set(&["r1"]));
+        assert_eq!(scope.complaints, set(&["k"]));
+        assert_eq!(followup_event_ids(&events).collect::<Vec<_>>(), ["f"]);
+        scope.add_private_members(&BTreeMap::from([
+            (
+                "r1".to_owned(),
+                json!({"kind":"private","members":["a","b"]}).to_string(),
+            ),
+            (
+                "r2".to_owned(),
+                json!({"kind":"broadcast","members":["z"]}).to_string(),
+            ),
+            ("r3".to_owned(), "{".to_owned()),
+        ]));
+        assert_eq!(scope.agents, set(&["a", "b", "me", "s1", "s2", "s3"]));
+    }
     #[test]
     fn peer_pair_requires_distinct_checked_leads() {
         let records: AuthorizationRecords = serde_json::from_value(json!({

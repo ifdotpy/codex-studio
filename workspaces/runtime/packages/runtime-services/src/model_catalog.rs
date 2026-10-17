@@ -30,6 +30,11 @@ use studio_runtime_schema::shared_values::{
 use tokio::time::Instant;
 
 const CATALOG_TTL: Duration = Duration::from_secs(MODEL_CATALOG_CACHE_TTL_SECONDS);
+/// How long one failed provider refresh answers reads as unavailable before the
+/// next read starts another refresh. Owner: this cache. Unit: seconds. Kept short
+/// so a transient failure (a cold provider start under load, an idle-closed
+/// session) does not hide the catalog for the full success TTL.
+const CATALOG_FAILURE_RETRY: Duration = Duration::from_secs(5);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS);
 const CATALOG_ADMISSION_WAIT: Duration = Duration::from_secs(MODEL_CATALOG_ADMISSION_WAIT_SECONDS);
 const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
@@ -541,8 +546,35 @@ impl ModelCatalogService {
     }
 
     /// Wait for a cold display read to publish, while returning stale display
-    /// data immediately when the cache already has a value.
+    /// data immediately when the cache already has a value. A failed refresh
+    /// serves the last known catalog for display; admission never does.
     pub async fn read_until_ready(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: &str,
+        retry: bool,
+    ) -> CatalogRead {
+        match self
+            .wait_until_ready(account_key, home, provider, retry)
+            .await
+        {
+            CatalogRead::Unavailable => self
+                .last_known(account_key, home, provider)
+                .map_or(CatalogRead::Unavailable, CatalogRead::Ready),
+            read => read,
+        }
+    }
+
+    fn last_known(&self, account_key: &str, home: &str, provider: &str) -> Option<Value> {
+        if !self.account_identity_is_current(account_key, home, provider) {
+            return None;
+        }
+        let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        self.0.cache.lock().ok()?.get(&key)?.value.clone()
+    }
+
+    async fn wait_until_ready(
         &self,
         account_key: &str,
         home: &str,
@@ -780,13 +812,16 @@ fn store_result(
         && entry.pending
     {
         entry.pending = false;
-        entry.expires_at = Some(Instant::now() + CATALOG_TTL);
         match result {
             Ok(value) => {
+                entry.expires_at = Some(Instant::now() + CATALOG_TTL);
                 entry.value = Some(value);
                 entry.error = false;
             }
-            Err(()) => entry.error = true,
+            Err(()) => {
+                entry.expires_at = Some(Instant::now() + CATALOG_FAILURE_RETRY);
+                entry.error = true;
+            }
         }
         true
     } else {
@@ -1415,6 +1450,83 @@ pub(crate) mod tests {
             read.await.expect("catalog waiter"),
             CatalogRead::Unavailable
         );
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_serves_last_known_display_catalog_but_not_admission() {
+        let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let known = json!({"data":[{"model":"known"}],"nextCursor":null});
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: Some(known.clone()),
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+        assert!(store_result(&service.0, &key, 7, Err(())));
+
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, &key.2),
+            super::AdmissionCatalogRead::Unavailable
+        );
+        assert_eq!(
+            service.read("account", "/home", "codex", false).await,
+            CatalogRead::Unavailable
+        );
+        assert_eq!(
+            service
+                .read_until_ready("account", "/home", "codex", false)
+                .await,
+            CatalogRead::Ready(known)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_refresh_is_retried_after_the_failure_backoff_not_the_ttl() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        assert!(CATALOG_FAILURE_RETRY < CATALOG_TTL);
+        let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: None,
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+        assert!(store_result(&service.0, &key, 7, Err(())));
+        let opens = Arc::new(AtomicUsize::new(0));
+        set_refresh_factory(
+            &service,
+            Arc::new(CountingFactory {
+                opens: opens.clone(),
+                script: Script::new(vec![json!({"data":[{"model":"fixture"}]})], 0),
+            }),
+        );
+
+        assert_eq!(
+            service.read("account", "/home", "codex", false).await,
+            CatalogRead::Unavailable
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+
+        tokio::time::advance(CATALOG_FAILURE_RETRY).await;
+        assert_eq!(
+            service
+                .read_until_ready("account", "/home", "codex", false)
+                .await,
+            CatalogRead::Ready(json!({"data":[{"model":"fixture"}],"nextCursor":null}))
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        service.shutdown().await.expect("catalog task shutdown");
     }
 
     #[tokio::test(start_paused = true)]

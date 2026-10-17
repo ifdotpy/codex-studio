@@ -50,7 +50,7 @@ pub async fn migrate_budget(
             move || {
                 let db = AnalyticsRepository::new(&root)
                     .open_read_only()
-                    .map_err(|_| HistoryError::Read)?;
+                    .map_err(|_| HistoryError::read(crate::analytics_history::ANALYTICS_DATABASE))?;
                 let previous = metadata(&db, &metadata_key)?;
                 let mut state = match &previous {
                     Some(v) => v.clone(),
@@ -79,7 +79,7 @@ pub async fn migrate_budget(
             },
         )
         .await
-        .map_err(|_| HistoryError::Read)??;
+        .map_err(|_| HistoryError::read(crate::analytics_history::BLOCKING_TASK))??;
     if records.is_empty() {
         return Ok(false);
     }

@@ -20,9 +20,10 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
     read_for_agents(connection, None)
 }
 
-/// Read and validate the complete agent directory before a lifecycle action scopes its
-/// descendant-owned history. Agent topology determines the exact owner set.
-pub fn read_agent_directory(connection: &Connection) -> StoreResult<Vec<Value>> {
+/// Parent of every agent as `(id, parentId)` in rowid order, without parsing
+/// whole records. The expression matches the `runtime_agent_valid_parent` index.
+/// A malformed record has no parent; its own read fails later if it is in scope.
+pub fn read_agent_topology(connection: &Connection) -> StoreResult<Vec<(String, Option<String>)>> {
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents')",
         [],
@@ -31,20 +32,40 @@ pub fn read_agent_directory(connection: &Connection) -> StoreResult<Vec<Value>> 
     if !exists {
         return Ok(Vec::new());
     }
-    let mut statement =
-        connection.prepare_cached("SELECT id,record FROM runtime_agents ORDER BY rowid")?;
-    let mut records = Vec::new();
-    for row in statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        let (id, raw) = row?;
-        records.push(parse_record("runtime_agents", id, raw)?);
-    }
-    Ok(records)
+    let mut statement = connection.prepare_cached(
+        "SELECT id,CASE WHEN json_valid(record) THEN json_extract(record,'$.parentId') END \
+         FROM runtime_agents ORDER BY rowid",
+    )?;
+    Ok(statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?)
 }
 
-/// Read the full agent directory and only lifecycle-owned history for the
-/// supplied owners. Lifecycle actions pass their target's descendant tree;
+/// Validated agent records for exactly `ids`, in rowid order; absent ids are skipped.
+pub fn read_agents(connection: &Connection, ids: &BTreeSet<String>) -> StoreResult<Vec<Value>> {
+    let mut statement =
+        connection.prepare_cached("SELECT rowid,record FROM runtime_agents WHERE id=?1")?;
+    let mut rows = Vec::with_capacity(ids.len());
+    for id in ids {
+        let found = statement
+            .query_row([id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                error => Err(error),
+            })?;
+        if let Some((rowid, raw)) = found {
+            rows.push((rowid, parse_record("runtime_agents", id.clone(), raw)?));
+        }
+    }
+    rows.sort_by_key(|(rowid, _)| *rowid);
+    Ok(rows.into_iter().map(|(_, record)| record).collect())
+}
+
+/// Read lifecycle-owned history for the supplied owners (the caller loads their
+/// agent rows with `read_agents`). Lifecycle actions pass their target's descendant tree;
 /// their decisions never inspect unrelated task/monitor/event/voice history.
 /// `None` reads the complete snapshot for repository callers.
 pub fn read_for_agents(
@@ -63,6 +84,7 @@ pub fn read_for_agents(
         }
         let mut records = Vec::new();
         let owner_field = match *table {
+            "runtime_agents" if owners.is_some() => continue,
             "runtime_agents" => None,
             "runtime_work" => Some("owner"),
             _ => Some("agent"),
@@ -244,10 +266,14 @@ pub fn settle_orphaned_inputs(transaction: &Transaction<'_>) -> StoreResult<()> 
 }
 
 fn settle_deleted_inputs(transaction: &Transaction<'_>, agent: Option<&str>) -> StoreResult<()> {
-    let deleted = format!(
-        "agent IN (SELECT id FROM runtime_agents WHERE {DELETED_AGENT_SQL}) \
-         AND (?1 IS NULL OR agent=?1)"
-    );
+    // One agent: seek its rows by agent. The sweep (`None`) tests every agent.
+    let deleted = if agent.is_some() {
+        format!(
+            "agent=?1 AND EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1 AND {DELETED_AGENT_SQL})"
+        )
+    } else {
+        format!("agent IN (SELECT id FROM runtime_agents WHERE {DELETED_AGENT_SQL}) AND ?1 IS NULL")
+    };
     transaction.execute(
         &format!(
             "UPDATE runtime_events SET status='cancelled',error='Agent deleted' \
@@ -319,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_snapshot_keeps_full_agent_directory_and_uses_owner_index() {
+    fn scoped_snapshot_skips_agent_rows_and_uses_owner_index() {
         let connection = Connection::open_in_memory().expect("in-memory database");
         connection
             .execute_batch(
@@ -344,7 +370,12 @@ mod tests {
         let owners = BTreeSet::from(["root".to_owned(), "child".to_owned()]);
         let scoped = read_for_agents(&connection, Some(&owners)).expect("scoped snapshot");
 
-        assert_eq!(scoped["runtime_agents"], all["runtime_agents"]);
+        assert!(!scoped.contains_key("runtime_agents"));
+        assert_eq!(all["runtime_agents"].len(), 3);
+        let agents = super::read_agents(&connection, &owners).expect("scoped agents");
+        assert_eq!(agents.len(), 2);
+        let topology = super::read_agent_topology(&connection).expect("topology");
+        assert_eq!(topology.len(), 3);
         assert_eq!(
             scoped["runtime_tasks"]
                 .iter()

@@ -10,7 +10,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event
 use serde_json::Value;
 use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::analytics_history::{
-    HistoryClock, HistoryCollector, HistoryError, HistoryRetryPolicy, StoreHistoryBudgetSink,
+    BLOCKING_TASK, HistoryClock, HistoryCollector, HistoryError, HistoryRetryPolicy,
+    StoreHistoryBudgetSink,
 };
 use studio_runtime_store::{AgentRecord, ObservedTable, RuntimeStore, Table};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -19,6 +20,10 @@ use tokio::task::JoinHandle;
 const HISTORY_ERROR_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const HISTORY_ERROR_BACKOFF_MAX: Duration = Duration::from_secs(5);
 const MAX_PENDING_FILE_EVENTS: usize = 8192;
+/// Read-failure target classes owned by the server history runner.
+const ACCOUNT_REGISTRY: &str = "account registry";
+const AGENT_RECORD: &str = "agent record";
+const WATCH_DIRECTORY: &str = "watch directory";
 
 struct ManualHistoryTick {
     clock: HistoryClock,
@@ -191,7 +196,10 @@ struct HistoryWatcher {
 impl HistoryWatcher {
     fn new(root: &Path, wake: Arc<HistoryWake>) -> Result<Self, HistoryError> {
         let registry_path = root.join("accounts/registry.json");
-        let registry_parent = registry_path.parent().ok_or(HistoryError::Read)?.to_owned();
+        let registry_parent = registry_path
+            .parent()
+            .ok_or(HistoryError::read(ACCOUNT_REGISTRY))?
+            .to_owned();
         let callback_wake = Arc::clone(&wake);
         let callback_parent = registry_parent.clone();
         let mut watcher = notify::recommended_watcher(move |event| {
@@ -301,7 +309,7 @@ fn nearest_existing_directory(path: &Path) -> Result<PathBuf, HistoryError> {
             return Ok(candidate);
         }
         if !candidate.pop() {
-            return Err(HistoryError::Read);
+            return Err(HistoryError::read(WATCH_DIRECTORY));
         }
     }
 }
@@ -332,15 +340,21 @@ impl HistoryRuntime {
     async fn step(&mut self, actors: &[Value], clock: HistoryClock) -> Result<bool, HistoryError> {
         let accounts = Arc::clone(&self.accounts);
         let profile = move |account_key: &str| {
-            let snapshot = accounts.snapshot().map_err(|_| HistoryError::Read)?;
+            let snapshot = accounts
+                .snapshot()
+                .map_err(|_| HistoryError::read(ACCOUNT_REGISTRY))?;
+            // Python `accounts.home` refuses unknown accounts and accounts in
+            // the changed or error state; the importer records that refusal.
+            // The active snapshot omits signed-out logins and deleted accounts.
             snapshot
                 .accounts
                 .iter()
                 .find(|account| account["id"].as_str() == Some(account_key))
+                .filter(|account| !matches!(account["status"].as_str(), Some("changed" | "error")))
                 .and_then(|account| account["home"].as_str())
                 .filter(|home| !home.is_empty())
                 .map(PathBuf::from)
-                .ok_or(HistoryError::Read)
+                .ok_or(HistoryError::ProfileUnavailable)
         };
         let budget = StoreHistoryBudgetSink::new(&self.store);
         self.collector
@@ -378,7 +392,7 @@ impl HistoryRuntime {
             },
         )
         .await
-        .map_err(|_| HistoryError::Read)??;
+        .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         watcher.watch_profiles(homes)
     }
 
@@ -441,7 +455,7 @@ impl HistoryRuntime {
                     move || HistoryRuntime::read_roster(&store),
                 )
                 .await
-                .map_err(|_| HistoryError::Read)?;
+                .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
                 let result = match actors {
                     Ok(actors) => runtime.step(&actors, clock).await,
                     Err(error) => Err(error),
@@ -510,7 +524,7 @@ async fn run_event_driven_with_wake(
         },
     )
     .await
-    .map_err(|_| HistoryError::Read)?;
+    .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
     runtime = next_runtime;
     let mut roster = Arc::new(roster?);
     runtime.collector.schedule.refresh(&roster)?;
@@ -611,7 +625,9 @@ async fn run_event_driven_with_wake(
                         .filter(|actor| actor_matches_rollout(actor, &account, &path))
                     {
                         runtime.collector.schedule.notify_rollout(
-                            actor["id"].as_str().ok_or(HistoryError::Read)?,
+                            actor["id"]
+                                .as_str()
+                                .ok_or(HistoryError::read(AGENT_RECORD))?,
                             event.structural,
                         )?;
                     }
@@ -652,7 +668,7 @@ async fn run_event_driven_with_wake(
                     },
                 )
                 .await
-                .map_err(|_| HistoryError::Read)?;
+                .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
             runtime = next_runtime;
             let next_roster = next_roster?;
             runtime.collector.schedule.refresh(&next_roster)?;
@@ -813,10 +829,11 @@ fn notify_all_agents(runtime: &mut HistoryRuntime, roster: &[Value]) -> Result<(
             .as_str()
             .is_some_and(|thread| !thread.is_empty())
         {
-            runtime
-                .collector
-                .schedule
-                .notify(actor["id"].as_str().ok_or(HistoryError::Read)?)?;
+            runtime.collector.schedule.notify(
+                actor["id"]
+                    .as_str()
+                    .ok_or(HistoryError::read(AGENT_RECORD))?,
+            )?;
         }
     }
     Ok(())
@@ -833,10 +850,11 @@ fn notify_account_agents(
                 .as_str()
                 .is_some_and(|thread| !thread.is_empty())
     }) {
-        runtime
-            .collector
-            .schedule
-            .notify(actor["id"].as_str().ok_or(HistoryError::Read)?)?;
+        runtime.collector.schedule.notify(
+            actor["id"]
+                .as_str()
+                .ok_or(HistoryError::read(AGENT_RECORD))?,
+        )?;
     }
     Ok(())
 }
@@ -1571,6 +1589,76 @@ mod tests {
             .expect("replay composed history step");
         assert_eq!(budget_counts(), (1, 23));
         assert_eq!(analytics_count(), 1);
+
+        shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("history task shutdown deadline")
+            .expect("history task join")
+            .expect("history task clean shutdown");
+    }
+
+    /// Live state keeps agents of signed-out login accounts whose profile
+    /// directory is gone. The active snapshot omits those accounts. Each
+    /// attempt must record `profileUnavailable` like Python, not fail the
+    /// whole step with a read error.
+    #[tokio::test]
+    async fn signed_out_login_account_records_profile_unavailable() {
+        let root = tempdir().expect("temporary fixture root");
+        let state = root.path().join("state");
+        std::fs::create_dir_all(&state).expect("fixture state");
+        let account_path = root.path().join("accounts.json");
+        std::fs::write(
+            &account_path,
+            json!({
+                "version": 1,
+                "defaultAccountKey": "default",
+                "accounts": {
+                    "default": {
+                        "id": "default", "home": root.path(), "label": "Fixture",
+                        "source": "Codex CLI", "status": "signedOut"
+                    },
+                    "login-removed": {
+                        "id": "login-removed", "home": root.path().join("removed-login-home"),
+                        "label": "Removed", "source": "Codex CLI", "status": "signedOut"
+                    }
+                },
+                "logins": {}, "deleteReceipts": {}
+            })
+            .to_string(),
+        )
+        .expect("fixture account registry");
+        let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+        let agent = json!({
+            "id": "history-agent", "rootId": "history-agent", "parentId": null,
+            "name": "History fixture", "epoch": 0, "status": "running",
+            "accountKey": "login-removed", "accountHistory": [], "provider": "codex",
+            "threadId": "history-thread", "turnId": "history-turn", "model": "fixture-model",
+            "effort": "high", "fastMode": false, "daybreakEnabled": false,
+            "cyberAccessProgram": false, "cwd": root.path(), "deletedAt": null
+        });
+        let stored_agent = AgentRecord::from_value(agent).expect("typed fixture agent");
+        store
+            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
+            .await
+            .expect("persist fixture agent");
+
+        let runtime = HistoryRuntime::new(Arc::clone(&store), accounts);
+        let (shutdown, receiver) = watch::channel(false);
+        let (task, trigger) = runtime.spawn_for_test(receiver);
+        let advanced = trigger
+            .step(HistoryClock {
+                observed_at: 200.0,
+                monotonic: 10.0,
+            })
+            .await
+            .expect("an unavailable account profile is not a read failure");
+        assert!(!advanced);
+        let checkpoint =
+            read_history_checkpoint_for(&state, "history-agent:login-removed:history-thread")
+                .expect("profile refusal checkpoint");
+        assert_eq!(checkpoint["status"], "profileUnavailable");
 
         shutdown.send_replace(true);
         tokio::time::timeout(Duration::from_secs(5), task)
