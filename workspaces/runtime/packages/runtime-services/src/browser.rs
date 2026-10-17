@@ -1009,15 +1009,18 @@ async fn serve_connection(
             .and_then(|probe| probe.lock().ok()?.take())
             .map(|probe| {
                 let observed = half_close_observed.clone().expect("half-close observer");
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/browser",
-                    move || {
-                        let mut byte = [0; 1];
-                        if probe.peek(&mut byte).is_ok_and(|count| count == 0) {
-                            observed.send_modify(|count| *count += 1);
-                        }
-                    },
-                )
+                // The duplicate shares the listener socket's nonblocking mode. A
+                // one-shot peek can run before the client's FIN arrives and see
+                // WouldBlock, so wait for read readiness until EOF instead.
+                tokio::spawn(async move {
+                    let Ok(probe) = tokio::net::TcpStream::from_std(probe) else {
+                        return;
+                    };
+                    let mut byte = [0; 1];
+                    if probe.peek(&mut byte).await.is_ok_and(|count| count == 0) {
+                        observed.send_modify(|count| *count += 1);
+                    }
+                })
             });
         async move {
             let (response, should_close) = handle_request(
