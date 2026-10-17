@@ -263,6 +263,91 @@ Data not yet committed before power loss can be absent. A full or unwritable dis
 can prevent both database and journal persistence; Studio must report that failure.
 The journal does not constitute a backup of the complete state directory.
 
+### Rust backend and Rust supervisor on macOS
+
+Python stays the default. An operator selects Rust explicitly. The Rust backend
+starts providers only through supervisor protocol 2, and only the Rust
+supervisor (`codex-process-supervisor`) serves it. The Rust supervisor also
+serves the protocol 1 health and `finishFallback` requests that recovery uses.
+A Rust backend therefore needs the Rust supervisor job, and a switch in either
+direction restarts provider processes.
+
+`background-recovery.json` holds the selection:
+
+| Field               | Meaning                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `backend`           | `python` (default when absent) or `rust`. Owner: `BACKEND_SELECTIONS` in [`recover_backend.py`](../workspaces/client/apps/desktop/recover_backend.py). |
+| `runtimeServer`     | Absolute path of `studio-runtime-server`. Required for `rust`.                                                                                         |
+| `processSupervisor` | Absolute path of `codex-process-supervisor`. Required for `rust` with `supervisorEnabled`.                                                             |
+
+With `rust`, `recover_backend.py` keeps every Python rule:
+
+- It attaches to any backend that `/api/desktop` reports for the state. When
+  `backendKind` differs from the selection, it reports
+  `attached to <kind> backend; <selection> selected` and never replaces it.
+- It starts nothing while `runtime.lock` is held.
+- It starts `<runtimeServer> --port N` only when that file is executable. The
+  Rust server finds its web assets next to its executable. Recovery does not
+  write `rust-state-owner.json`; the Rust server records it after it takes
+  `runtime.lock` (see
+  [Rust backend state compatibility](rust-backend-state-compatibility.md)).
+- Before a fallback signal, the reported PID must run the configured
+  executable (first launch argument), report `backendKind: rust` and a
+  `backendBuild` equal to the SHA-256 of that file, and own the listener.
+- The supervisor probe first sends a protocol 2 handshake with `probe: true` to
+  `supervisor.sock`. A probe takes no ownership. A refused connection reports
+  `supervisor starting`. A supervisor that answers without protocol 2 (the
+  Python supervisor) blocks the start with an error. The protocol 1 health
+  probe then reads the crash-recovery state as before. Recovery never starts or
+  stops the supervisor.
+
+Install the selection with the service command. The Rust binaries come from
+`CODEX_RUNTIME_SERVER` and `CODEX_PROCESS_SUPERVISOR`, else `<resources>/bin`,
+else `<resources>/target/release`:
+
+```sh
+CODEX_DESKTOP_BACKEND=rust codex-supervisor enable --port 4620 --state ~/.local/state/codex-agents
+```
+
+When no job is registered, `enable` writes the selection, installs a supervisor
+job that runs `codex-process-supervisor --state <state> --wait-for-lease`,
+installs the unchanged recovery job (`recover_backend.py --config ...`), and
+waits up to 90 seconds for `/api/desktop` to report `backendKind: rust`. It
+refuses while a Python backend serves the state or another process holds
+`runtime.lock`. Registered jobs of the selected kind stay loaded.
+
+`enable` never unloads or restarts a registered supervisor or recovery job.
+The recovery job reads the selection on every tick, so a selection change is
+also a job change. When a registered supervisor runs the other backend, when a
+registered supervisor has arguments that `enable` cannot identify and Rust is
+selected, or when the recovery job is registered and the saved selection
+differs, `enable` changes nothing. It prints a report with `swapRequired: true`,
+the changed jobs, and the swap steps, and exits with status 75.
+
+Swap at a quiet moment:
+
+1. Confirm that no agent, monitor, terminal, or command runs.
+2. `launchctl bootout gui/<uid>/local.codex.agents.recovery.<state-hash>`.
+3. Send SIGTERM to the backend PID that `/api/desktop` reports for this state.
+4. `launchctl bootout gui/<uid>/local.codex.agents.supervisor.<state-hash>`.
+   This ends provider processes.
+5. Make the state backup that
+   [Rust backend state compatibility](rust-backend-state-compatibility.md)
+   requires before the first Rust start.
+6. Run the same `enable` command again. With no registered job and no backend,
+   it installs and starts both jobs.
+
+Rollback uses the same steps with the Python selection
+(`codex-supervisor enable` without `CODEX_DESKTOP_BACKEND`). In step 5, restore
+the pre-Rust backup instead: Python refuses a state that the Rust server owns.
+The restore itself is outside this command. `enable` then saves
+`backend: python`, removes `runtimeServer` and `processSupervisor`, and installs
+the Python supervisor job (`codex_process_supervisor.py --wait-for-lease`).
+
+The Electron desktop keeps a saved Rust selection when it rewrites the recovery
+configuration, and it does not write a Python supervisor job over it.
+`restart-backend-v2.sh` has no Rust-specific checks and has not been tested with the Rust backend.
+
 ## Verification
 
 Run the isolated recovery checks:

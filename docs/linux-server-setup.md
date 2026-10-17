@@ -76,6 +76,8 @@ codex-studio` is enough.
 `enable` refuses while another process serves the state directory. To retire a
 hand-made unit, stop it at an idle boundary first, for example
 `systemctl --user stop codex-canvas-rust-hotfix.service`, then run `enable`.
+On macOS the same command installs launchd jobs for the Rust backend and the Rust
+supervisor; see [restart recovery](restart-recovery.md#rust-backend-and-rust-supervisor-on-macos).
 Never run two backends on one state directory. A Rust start leaves
 `rust-state-owner.json` in the state directory; Python then refuses that state
 (see [Rust backend state compatibility](rust-backend-state-compatibility.md)).

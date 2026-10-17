@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import signal
 import sqlite3
@@ -59,6 +60,13 @@ BACKEND_SELECTION_ENV = 'CODEX_DESKTOP_BACKEND'
 BACKEND_SELECTIONS = ('python', 'rust')
 # Environment the Rust server reads at startup; services carry it from the operator's shell.
 RUST_SERVICE_ENVIRONMENT = ('CODEX_CANVAS_PUBLIC_ORIGIN', 'CODEX_BIN', 'CODEX_NODE')
+# Values of the `backend` field in background-recovery.json. The owner is
+# recover_backend.py (`BACKEND_SELECTIONS`, validated in `load_config`); the parity test
+# checks this copy against it.
+RECOVERY_BACKEND_SELECTIONS = ('python', 'rust')
+# Exit status of `enable` when registered launchd jobs differ from the selection. The
+# operator swaps them at a quiet moment (docs/restart-recovery.md); nothing was changed.
+SWAP_REQUIRED_EXIT = 75
 
 
 def backend_selection(environment: dict[str, str] | None = None) -> str:
@@ -68,12 +76,26 @@ def backend_selection(environment: dict[str, str] | None = None) -> str:
     return selected
 
 
+def _rust_binary(resources: Path, variable: str, name: str, build: str,
+                 environment: dict[str, str] | None) -> Path:
+    """An explicit path, else the packaged `bin/` copy, else the release build."""
+    configured = (os.environ if environment is None else environment).get(variable)
+    candidates = [Path(configured)] if configured else [resources / 'bin' / name, resources / 'target/release' / name]
+    for binary in candidates:
+        if binary.is_file() and os.access(binary, os.X_OK):
+            return binary.resolve()
+    raise ValueError(build + ' or set ' + variable + ': ' + str(candidates[-1]))
+
+
 def runtime_server(resources: Path, environment: dict[str, str] | None = None) -> Path:
-    configured = (os.environ if environment is None else environment).get('CODEX_RUNTIME_SERVER')
-    server = Path(configured) if configured else resources / 'target/release/studio-runtime-server'
-    if not (server.is_file() and os.access(server, os.X_OK)):
-        raise ValueError('Build the Rust server first (just build-server) or set CODEX_RUNTIME_SERVER: ' + str(server))
-    return server.resolve()
+    return _rust_binary(resources, 'CODEX_RUNTIME_SERVER', 'studio-runtime-server',
+                        'Build the Rust server first (just build-server)', environment)
+
+
+def process_supervisor(resources: Path, environment: dict[str, str] | None = None) -> Path:
+    return _rust_binary(resources, 'CODEX_PROCESS_SUPERVISOR', 'codex-process-supervisor',
+                        'Build the Rust supervisor first (cargo build --release --locked -p studio-process-supervisor)',
+                        environment)
 
 
 def rust_linux_unit(resources: Path, state: Path, server: Path, port: int,
@@ -302,18 +324,85 @@ WantedBy=default.target
     return {'codex-studio-supervisor.service': supervisor.encode(), 'codex-studio.service': backend.encode()}
 
 
-def install_macos(resources: Path, state: Path, python: str, config: dict[str, Any]) -> None:
+def _macos_labels(state: Path) -> dict[str, str]:
     suffix = hashlib.sha256(str(state).encode()).hexdigest()[:16]
-    domain = 'gui/' + str(os.getuid())
-    agents = Path.home() / 'Library/LaunchAgents'
-    jobs = {
-        'supervisor': [python, '-B', str(_supervisor_script(resources)), '--state', str(state), '--wait-for-lease'],
+    return {kind: 'local.codex.agents.' + kind + '.' + suffix for kind in ('supervisor', 'recovery')}
+
+
+def _macos_jobs(resources: Path, state: Path, python: str, config: dict[str, Any]) -> dict[str, list[str]]:
+    """Launch arguments for the selected backend. The recovery job is the same for both."""
+    if config.get('backend') == 'rust':
+        supervisor = [config['processSupervisor'], '--state', str(state), '--wait-for-lease']
+    else:
+        supervisor = [python, '-B', str(_supervisor_script(resources)), '--state', str(state), '--wait-for-lease']
+    return {
+        'supervisor': supervisor,
         'recovery': [python, '-B', str(_recovery_script(resources)), '--config', str(state / 'background-recovery.json')],
     }
+
+
+def _registered_arguments(output: str) -> list[str] | None:
+    """Read ProgramArguments from `launchctl print`; None when the output has no list."""
+    found = re.search(r'^\s*arguments = \{\s*\n(.*?)^\s*\}', output, re.MULTILINE | re.DOTALL)
+    return None if found is None else [line.strip() for line in found.group(1).splitlines() if line.strip()]
+
+
+def _supervisor_kind(arguments: list[str] | None) -> str:
+    if not arguments:
+        return 'unknown'
+    if any(Path(argument).name == 'codex_process_supervisor.py' for argument in arguments):
+        return 'python'
+    if Path(arguments[0]).name == 'codex-process-supervisor':
+        return 'rust'
+    return 'unknown'
+
+
+def macos_swap_plan(state: Path, selected: str, saved: dict[str, Any]) -> dict[str, Any] | None:
+    """Report registered jobs that would run the other backend; never change them.
+
+    A registered supervisor owns live provider processes, and the registered recovery agent
+    reads the saved selection on every tick. Either change restarts work, so it waits for an
+    operator at a quiet moment. Unknown registered arguments never authorize the Rust path.
+    """
+    domain = 'gui/' + str(os.getuid())
+    labels = _macos_labels(state)
+    registered: dict[str, str] = {}
+    for kind, label in labels.items():
+        try:
+            registered[kind] = run(['/bin/launchctl', 'print', domain + '/' + label]).stdout
+        except subprocess.CalledProcessError:
+            continue
+    changes = []
+    if 'supervisor' in registered:
+        current = _supervisor_kind(_registered_arguments(registered['supervisor']))
+        if current != selected and (selected == 'rust' or current == 'rust'):
+            changes.append({'job': 'supervisor', 'registered': current, 'selected': selected})
+    saved_backend = saved.get('backend', 'python')
+    if 'recovery' in registered and saved_backend != selected:
+        changes.append({'job': 'recovery', 'registered': saved_backend, 'selected': selected})
+    if not changes:
+        return None
+    command = ('CODEX_DESKTOP_BACKEND=rust ' if selected == 'rust' else '') + 'codex-supervisor enable'
+    return {'stateDir': str(state), 'backend': selected, 'swapRequired': True, 'changed': False, 'changes': changes,
+            'swap': [
+                'At a quiet moment, confirm that no agent, monitor, terminal, or command runs.',
+                '/bin/launchctl bootout ' + domain + '/' + labels['recovery'],
+                'Stop the backend: send SIGTERM to the PID that GET /api/desktop reports for this state.',
+                '/bin/launchctl bootout ' + domain + '/' + labels['supervisor'] + ' (this ends provider processes)',
+                'Make or restore the state backup (docs/rust-backend-state-compatibility.md).',
+                'Run ' + command + ' again; it installs and starts both jobs.',
+            ]}
+
+
+def install_macos(resources: Path, state: Path, python: str, config: dict[str, Any]) -> None:
+    domain = 'gui/' + str(os.getuid())
+    agents = Path.home() / 'Library/LaunchAgents'
+    jobs = _macos_jobs(resources, state, python, config)
+    labels = _macos_labels(state)
     # Save the next backend's mode without replacing its existing launch paths.
     atomic_write(state / 'background-recovery.json', (json.dumps(config, indent=2) + '\n').encode())
     for kind, arguments in jobs.items():
-        label = 'local.codex.agents.' + kind + '.' + suffix
+        label = labels[kind]
         plist = agents / (label + '.plist')
         try:
             run(['/bin/launchctl', 'print', domain + '/' + label])
@@ -324,17 +413,85 @@ def install_macos(resources: Path, state: Path, python: str, config: dict[str, A
         run(['/bin/launchctl', 'print', domain + '/' + label])
 
 
+def _saved_recovery(state: Path) -> dict[str, Any]:
+    config_path = state / 'background-recovery.json'
+    config = cast(dict[str, Any], json.loads(config_path.read_text())) if config_path.exists() else {}
+    if config and (config.get('version') != 1 or config.get('stateDir') != str(state)):
+        raise ValueError('The recovery configuration uses a different state directory.')
+    return config
+
+
+def enable_rust_macos(resources: Path, state: Path, port: int, config: dict[str, Any]) -> dict[str, Any]:
+    """Install the Rust supervisor and the recovery agent with the Rust selection.
+
+    The caller has proven that no registered job runs the other backend. Registered jobs
+    of the same kind stay as they are; only missing jobs are installed.
+    """
+    import fcntl
+    if config:
+        resources = Path(config['resources']).resolve()
+        python = config['python']
+        if config.get('port') != port:
+            raise ValueError('The selected port differs from the recovery configuration.')
+    else:
+        python = sys.executable
+    server, supervisor = runtime_server(resources), process_supervisor(resources)
+    for script in (_recovery_script(resources), _supervisor_script(resources)):
+        if not script.is_file():
+            raise ValueError('The installed resources are missing ' + str(script))
+    url = 'http://127.0.0.1:' + str(port)
+    before = desktop(url, state)
+    if before and before.get('backendKind') != 'rust':
+        raise RuntimeError('A Python backend serves this state directory. Stop it at a quiet moment first '
+                           '(docs/restart-recovery.md); no service was changed.')
+    if before is None:
+        with (state / 'runtime.lock').open('a+') as lease:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError('Another process holds runtime.lock for this state directory; '
+                                   'no service was changed.') from None
+    if not config:
+        codex = shutil.which('codex')
+        if not codex:
+            raise ValueError('Install Codex and add it to PATH before enabling recovery.')
+        config = {'version': 1, 'stateDir': str(state), 'resources': str(resources),
+                  'python': python, 'codex': codex, 'port': port,
+                  'environment': {'PATH': os.environ.get('PATH', '/usr/bin:/bin')}, 'unsetEnvironment': []}
+    environment = dict(config.get('environment') or {})
+    environment.update({key: os.environ[key] for key in RUST_SERVICE_ENVIRONMENT if os.environ.get(key)})
+    config.update(enabled=True, supervisorEnabled=True, backend='rust', runtimeServer=str(server),
+                  processSupervisor=str(supervisor), environment=environment)
+    install_macos(resources, state, python, config)
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        current = desktop(url, state)
+        if current and current.get('backendKind') == 'rust':
+            return {'stateDir': str(state), 'previousPid': (before or {}).get('pid'), 'pid': current['pid'],
+                    'backend': 'rust', 'supervisorMode': current.get('supervisorMode') is True,
+                    'backendBuild': current.get('backendBuild')}
+        time.sleep(.25)
+    raise RuntimeError('The Rust backend did not become ready before the deadline. Inspect '
+                       + str(state / 'recovery.log') + ' and canvas.log; do not start another backend.')
+
+
 def enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
     if sys.platform not in {'darwin', 'linux'}:
         raise ValueError('Supervisor service installation supports macOS and Linux.')
-    rust = backend_selection() == 'rust'
-    if rust and sys.platform != 'linux':
-        raise ValueError('The Rust server service is installed on Linux; the desktop app selects it on macOS.')
+    selected = backend_selection()
+    rust = selected == 'rust'
     import fcntl
     resources, state = resources.expanduser().resolve(), state.expanduser().resolve()
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (state / 'supervisor-enable.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if sys.platform == 'darwin':
+            saved = _saved_recovery(state)
+            plan = macos_swap_plan(state, selected, saved)
+            if plan:
+                return plan
+            if rust:
+                return enable_rust_macos(resources, state, port, saved)
         return enable_rust_linux(resources, state, port) if rust else _enable(resources, state, port)
 
 
@@ -342,10 +499,7 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
     import fcntl
     url = 'http://127.0.0.1:' + str(port)
     before = desktop(url, state)
-    config_path = state / 'background-recovery.json'
-    config = json.loads(config_path.read_text()) if config_path.exists() else {}
-    if config and (config.get('version') != 1 or config.get('stateDir') != str(state)):
-        raise ValueError('The recovery configuration uses a different state directory.')
+    config = _saved_recovery(state)
     if sys.platform == 'darwin' and config:
         resources = Path(config['resources']).resolve()
         python = config['python']
@@ -386,7 +540,10 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
             config = {'version': 1, 'stateDir': str(state), 'resources': str(resources),
                       'python': python, 'codex': codex, 'port': port,
                       'environment': {'PATH': os.environ.get('PATH', '/usr/bin:/bin')}, 'unsetEnvironment': []}
-        config.update(enabled=True, supervisorEnabled=True)
+        # Selecting Python again restores the Python jobs' recovery configuration.
+        for key in ('runtimeServer', 'processSupervisor'):
+            config.pop(key, None)
+        config.update(enabled=True, supervisorEnabled=True, backend='python')
         install_macos(resources, state, python, config)
     else:
         units = linux_units(resources, state, python, port, (before or {}).get('restartEnvironment', {}))
@@ -443,3 +600,5 @@ def main() -> None:
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, 'codex-supervisor: ' + str(error) + '\n')
     print(json.dumps(result))
+    if result.get('swapRequired') is True:
+        sys.exit(SWAP_REQUIRED_EXIT)
