@@ -390,9 +390,8 @@ mod mac {
                 let Some(web) = view(id) else {
                     return;
                 };
-                let page_height = ((height - (page * HEIGHT) as f64).ceil() as usize)
-                    .min(HEIGHT)
-                    .max(1);
+                let page_height =
+                    ((height - (page * HEIGHT) as f64).ceil() as usize).clamp(1, HEIGHT);
                 let script = format!(
                     "window.scrollTo(0,{}); String(window.scrollY)",
                     page * HEIGHT

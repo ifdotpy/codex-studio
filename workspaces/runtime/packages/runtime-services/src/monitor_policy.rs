@@ -468,12 +468,12 @@ pub fn finish(
 }
 
 fn output_effect(snapshot: &MonitorSnapshot, decision: &mut Decision, now: f64, final_chunk: bool) {
-    if snapshot.fields.rule_id.is_none() && snapshot.active_owner() {
-        if let Some((id, payload)) =
+    if snapshot.fields.rule_id.is_none()
+        && snapshot.active_owner()
+        && let Some((id, payload)) =
             crate::monitor_matches::pending(&mut decision.record, now, final_chunk)
-        {
-            decision.effects.push(Effect::OutputEvent { id, payload });
-        }
+    {
+        decision.effects.push(Effect::OutputEvent { id, payload });
     }
 }
 

@@ -48,6 +48,58 @@ const UNSAFE_RUST_ALLOWLIST = [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],
+  [
+    "workspaces/client/apps/native/src-tauri/src/lib.rs",
+    "Single-instance flock on the native shell lock file.",
+  ],
+  [
+    "workspaces/client/packages/client-core/examples/voice_playback_check/check.rs",
+    "Offline AVAudioEngine render check for the voice playback path.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/desktop.rs",
+    "C ABI entry point, getentropy, and AppKit pasteboard and NSError bindings.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/media.rs",
+    "AVFoundation capture authorization bindings.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/native.rs",
+    "Single-instance flock and SO_NOSIGPIPE on the UI socket.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/notifications.rs",
+    "UserNotifications delegate class and center bindings.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/pdf.rs",
+    "CoreGraphics PDF page render context.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/platform.rs",
+    "getentropy for client random identifiers.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/quick_look.rs",
+    "Quick Look panel through AppKit initializers.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/rich_document.rs",
+    "WebKit rich document renderer delegate and bindings.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/startup.rs",
+    "Process liveness probe, setsid before exec, and fixture process cleanup.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/voice.rs",
+    "libopus encoder and decoder state.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/voice_audio.rs",
+    "CoreAudio and AVAudioEngine realtime render callbacks.",
+  ],
 ];
 const UNSAFE_RUST_ALLOWLIST_BY_FILE = new Map(UNSAFE_RUST_ALLOWLIST);
 const DECLARATION_SECTIONS = [
@@ -112,6 +164,20 @@ const BOUNDARY_ALLOWLIST = [
     specifier: "../../../../../client/apps/web/**",
     reason:
       "Server-owned visual fixtures reuse renderer components and styles for isolated UX validation.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "profile-export-test.mjs",
+    specifier: "../web/src/native/importBrowserProfile.mjs",
+    reason:
+      "The profile export scenario checks its output with the renderer's own browser profile import code.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "profile-export-test.mjs",
+    specifier: "../web/src/native/combineBrowserProfiles.mjs",
+    reason:
+      "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
 ];
 
@@ -1690,7 +1756,11 @@ function globMatches(pattern, value) {
 }
 
 export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
-  const rooted = packages.map((item) => ({ ...item, root }));
+  // JavaScript files belong to pnpm packages. A Cargo crate inside a pnpm app
+  // (such as a Tauri src-tauri crate) has no JavaScript manifest of its own.
+  const rooted = packages
+    .filter((item) => item.ecosystem !== "cargo")
+    .map((item) => ({ ...item, root }));
   const byName = new Map(rooted.map((item) => [item.name, item]));
   const appPackages = rooted.filter((item) => /\/apps\/[^/]+$/.test(item.dir));
   const builtins = new Set(

@@ -302,12 +302,11 @@ pub fn dispatch(connection: &mut Connection, request: &Request) -> Response {
                 | "outbox.acknowledge"
                 | "outbox.acknowledge_many"
         );
-        if durable {
-            if let Some(response) =
+        if durable
+            && let Some(response) =
                 crate::store::replay(&transaction, request).map_err(|e| e.to_string())?
-            {
-                return Ok(response);
-            }
+        {
+            return Ok(response);
         }
         let response = match apply(&transaction, &request.method, &request.params) {
             Ok(value) => Response::success(request.id.clone(), value),

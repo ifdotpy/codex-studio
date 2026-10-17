@@ -129,10 +129,10 @@ pub fn stored(db: &mut Connection, request: &Request) -> Response {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         let durable = request.method == "actions.prepare";
-        if durable {
-            if let Some(replay) = crate::store::replay(&tx, request).map_err(|e| e.to_string())? {
-                return Ok(replay);
-            }
+        if durable
+            && let Some(replay) = crate::store::replay(&tx, request).map_err(|e| e.to_string())?
+        {
+            return Ok(replay);
         }
         let value = apply(&tx, request)?;
         let reply = Response::success(request.id.clone(), value);

@@ -111,7 +111,9 @@ impl Decoder {
             return Err(format!("Opus decoding failed ({frames})."));
         }
         Ok(pcm[..frames as usize * 2]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (pair[0] as f32 + pair[1] as f32) / 65_536.0)
             .collect())
     }
@@ -135,7 +137,13 @@ impl Framer {
             }
         }));
         let count = self.0.len() / FRAME;
-        let frames = self.0.chunks_exact(FRAME).map(<[i16]>::to_vec).collect();
+        let frames = self
+            .0
+            .as_chunks::<FRAME>()
+            .0
+            .iter()
+            .map(|frame| frame.to_vec())
+            .collect();
         self.0.drain(..count * FRAME);
         frames
     }

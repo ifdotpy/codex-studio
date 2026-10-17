@@ -365,7 +365,7 @@ pub(crate) mod mac {
         let input = unsafe { engine.inputNode() };
         let format = unsafe { input.outputFormatForBus(0) };
         let (rate, channels) = unsafe { (format.sampleRate(), format.channelCount() as usize) };
-        if !(rate >= 8000.0) || channels == 0 {
+        if rate.is_nan() || rate < 8000.0 || channels == 0 {
             return Err("No microphone input is available.".into());
         }
         let shared = Arc::new(Mutex::new(Shared {
