@@ -76,8 +76,8 @@ pub fn now_rfc3339() -> String {
 /// Bridge the store-owned optional observer into the nonblocking collectors.
 pub fn observe_store_event(event: studio_runtime_store::StoreDiagnosticsEvent) {
     match event {
-        studio_runtime_store::StoreDiagnosticsEvent::WriterTransaction { wait, hold } => {
-            record_store_writer_transaction(wait, hold);
+        studio_runtime_store::StoreDiagnosticsEvent::WriterTransaction { wait, hold, origin } => {
+            record_store_writer_transaction(wait, hold, origin);
         }
         studio_runtime_store::StoreDiagnosticsEvent::WriterAdmission {
             wait,
