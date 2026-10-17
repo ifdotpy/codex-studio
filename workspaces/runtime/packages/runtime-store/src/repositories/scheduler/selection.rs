@@ -1,14 +1,17 @@
 use super::*;
 
-const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates";
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v2";
+/// The previous index name; its predicate lacked busy Claude steer candidates.
+const RETIRED_ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates";
 
 /// Owns the agent-only superset of all rows the account wake page may return.
 /// Event existence and invalid-agent hold receipts are checked after this
 /// indexed candidate selection because SQLite partial indexes cannot use them.
 fn account_wake_candidate_predicate(record: &str) -> String {
     format!(
-        "({} OR {} OR {})",
+        "({} OR {} OR {} OR {})",
         account_wake_queued_candidate(record),
+        account_wake_steer_candidate(record),
         account_wake_capacity_candidate(record),
         account_wake_recovery(record)
     )
@@ -34,6 +37,21 @@ fn account_wake_queued_candidate(record: &str) -> String {
     )
 }
 
+/// A running Claude turn that may receive queued user input by `turn/steer`.
+/// `SchedulerRepository::claim_steer` owns the exact eligibility check.
+fn account_wake_steer_candidate(record: &str) -> String {
+    format!(
+        "(json_extract({record},'$.provider')='claude' \
+         AND json_extract({record},'$.status')='running' \
+         AND json_extract({record},'$.autoWake')=1 \
+         AND json_extract({record},'$.inFlight')=1 \
+         AND json_type({record},'$.turnId')='text' \
+         AND COALESCE(json_extract({record},'$.steerRejectedTurnId'),'')<>json_extract({record},'$.turnId') \
+         AND COALESCE(json_extract({record},'$.nativeFailureHold'),0)=0 \
+         AND COALESCE(json_extract({record},'$.executionMode'),'')<>'vm')"
+    )
+}
+
 fn account_wake_capacity_candidate(record: &str) -> String {
     format!(
         "(json_extract({record},'$.startAttempt.action')='capacity' \
@@ -48,8 +66,12 @@ fn account_wake_pending(record: &str) -> String {
     format!(
         "(({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
              AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending')) \
+         OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
+             AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending' \
+             AND e.kind='user')) \
          OR {})",
         account_wake_queued_candidate(record),
+        account_wake_steer_candidate(record),
         account_wake_capacity_candidate(record)
     )
 }
@@ -144,6 +166,9 @@ impl SchedulerRepository {
     /// deliberately contains only agent-record predicates; pending-event and
     /// invalid-agent-hold receipt checks remain in the consuming queries.
     pub(crate) fn prepare_account_wake_index(transaction: &Transaction<'_>) -> StoreResult<()> {
+        transaction.execute_batch(&format!(
+            "DROP INDEX IF EXISTS {RETIRED_ACCOUNT_WAKE_INDEX}"
+        ))?;
         transaction.execute_batch(&Self::account_wake_index_definition().create_sql)?;
         Ok(())
     }

@@ -99,7 +99,8 @@ pub use repositories::reviewer_archive::ReviewerArchiveRepository;
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{
-    AccountWakePage, ClaimedEvents, SchedulerRepository, TurnAttemptIdentity,
+    AccountWakePage, AcknowledgedSteer, ClaimedEvents, ClaimedSteer, STEER_UNCONFIRMED_ERROR,
+    SchedulerRepository, TurnAttemptIdentity,
 };
 pub use repositories::sync_documents::{
     EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
