@@ -1793,12 +1793,13 @@ class ServerSuiteRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="server-runner-success-cleanup-") as temp:
             marker = Path(temp) / "child-output"
             child = ("import pathlib,time\np=pathlib.Path(" + repr(str(marker)) + ")\n"
+                     "p.write_text('x'); print('ready', flush=True)\n"
                      "while True:\n p.open('a').write('x')\n time.sleep(.01)\n")
-            parent = ("import pathlib,subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
-                      repr(child) + "]); p=pathlib.Path(" + repr(str(marker)) +
-                      "); deadline=time.monotonic()+2\nwhile not p.exists() and time.monotonic()<deadline: time.sleep(.01)")
+            parent = ("import subprocess,sys; child=subprocess.Popen([sys.executable,'-c'," +
+                      repr(child) + "], stdout=subprocess.PIPE, text=True); "
+                      "assert child.stdout.readline() == 'ready\\n'")
             returncode, error, _expected, _unexpected = RUNNER.run_process(
-                [sys.executable, "-c", parent], ROOT, 3, os.environ.copy())
+                [sys.executable, "-c", parent], ROOT, HANG_GUARD_SECONDS, os.environ.copy())
             self.assertEqual(returncode, 0)
             self.assertIsNone(error)
             self.assertTrue(marker.exists())
@@ -1821,17 +1822,18 @@ class ServerSuiteRunner(unittest.TestCase):
                 "    os.killpg = _record_kill\n",
                 encoding="utf-8")
             child = ("import pathlib,time\np=pathlib.Path(" + repr(str(marker)) + ")\n"
+                     "p.write_text('x'); print('ready', flush=True)\n"
                      "while True:\n p.open('a').write('x')\n time.sleep(.01)\n")
-            parent = ("import pathlib,subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
-                      repr(child) + "]); p=pathlib.Path(" + repr(str(marker)) +
-                      "); deadline=time.monotonic()+2\nwhile not p.exists() and time.monotonic()<deadline: time.sleep(.01)")
+            parent = ("import subprocess,sys; child=subprocess.Popen([sys.executable,'-c'," +
+                      repr(child) + "], stdout=subprocess.PIPE, text=True); "
+                      "assert child.stdout.readline() == 'ready\\n'")
             environment = os.environ.copy()
             environment["CODEX_SERVER_GROUP_KILL_HOOK"] = str(kill_record)
             environment["PYTHONPATH"] = os.pathsep.join(
                 (temp, environment.get("PYTHONPATH", "")))
             with mock.patch.object(RUNNER, "_supports_waitid_nowait", return_value=False):
                 returncode, error, _expected, _unexpected = RUNNER.run_process(
-                    [sys.executable, "-c", parent], ROOT, 3, environment)
+                    [sys.executable, "-c", parent], ROOT, HANG_GUARD_SECONDS, environment)
             self.assertEqual(returncode, 0)
             self.assertIsNone(error)
             self.assertTrue(marker.exists())
