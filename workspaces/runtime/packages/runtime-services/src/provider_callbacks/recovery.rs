@@ -221,6 +221,7 @@ pub async fn recover_connection(
     let cards = cards::expire(store, account, connection).await?;
     let account = account.to_owned();
     let connection = connection.to_owned();
+    let state_dir = store.state_dir().to_owned();
     store.transaction_with(move |tx| {
         let mut count = cards;
         for mut record in records::all(tx, "runtime_tool_requests")? {
@@ -230,6 +231,15 @@ pub async fn recover_connection(
             {
                 continue;
             }
+            let id = record["id"]
+                .as_str()
+                .ok_or(CallbackError::Stored("tool request id".into()))?;
+            // A dispatch still running in this process settles its own claim
+            // (result, refusal, or the drop guard); settling it here would hide
+            // its real outcome behind a saved unknown result.
+            let Some(_unowned) = tools::unowned_dispatch(&state_dir, id)? else {
+                continue;
+            };
             settle_abandoned(tx, &mut record, now)?;
             count += 1;
         }

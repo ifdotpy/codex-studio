@@ -736,7 +736,9 @@ async fn create(
         context
             .catalog
             .as_deref()
-            .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+            .ok_or(OperationError::Unavailable(
+                crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+            ))?
             .resolve(
                 &account,
                 &identity,
@@ -1153,10 +1155,9 @@ async fn create_child(
         .and_then(Value::as_bool)
         .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
         .unwrap_or(false);
-    let catalog = context
-        .catalog
-        .clone()
-        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let catalog = context.catalog.clone().ok_or(OperationError::Unavailable(
+        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+    ))?;
     let body = json!({
         "account_key":account,"name":request.name.as_deref().unwrap_or(model),
         "model":model,"effort":effort,"fast_mode":fast_mode,
@@ -2011,7 +2012,9 @@ pub async fn conversation(
             context
                 .catalog
                 .as_deref()
-                .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+                .ok_or(OperationError::Unavailable(
+                    crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+                ))?
                 .resolve(&account, &identity, model, effort, fast_mode, daybreak)?,
         )
     } else if request.effort_present {
@@ -2680,7 +2683,9 @@ async fn resolve_worker_defaults(
     } else {
         context.catalog.as_deref()
     }
-    .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    .ok_or(OperationError::Unavailable(
+        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+    ))?;
     let settings = catalog.resolve(
         &worker_account_key,
         &worker_account,
@@ -2768,7 +2773,9 @@ async fn resolve_review_defaults(
     } else {
         context.catalog.as_deref()
     }
-    .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    .ok_or(OperationError::Unavailable(
+        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+    ))?;
     let settings = catalog.resolve(
         &catalog_account_key,
         &catalog_account,
