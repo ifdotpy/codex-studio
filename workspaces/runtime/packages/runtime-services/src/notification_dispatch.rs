@@ -1858,6 +1858,7 @@ fn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use rusqlite::{Connection, params};
     use serde_json::{Value, json};
 

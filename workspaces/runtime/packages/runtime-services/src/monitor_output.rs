@@ -40,6 +40,7 @@ impl MonitorOutput {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)] // Each argument is a distinct stream-append input.
     pub async fn append_stream(
         &self,
         store: &RuntimeStore,

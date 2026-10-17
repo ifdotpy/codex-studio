@@ -9,6 +9,7 @@ use std::{
 use tokio::sync::mpsc;
 
 pub const DICTATION_RATE: f64 = 16_000.0;
+#[cfg(any(target_os = "macos", test))]
 const MICROPHONE_GRANT: Duration = Duration::from_secs(15);
 const QUEUE: usize = 256;
 

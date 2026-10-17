@@ -34,9 +34,8 @@ fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
         return Err("The client state directory must be absolute.".into());
     }
     if !state.exists() {
-        fs::create_dir_all(&state).map_err(|e| e.to_string())?;
-        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
+        fs::create_dir_all(state).map_err(|e| e.to_string())?;
+        fs::set_permissions(state, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     }
     // This lock belongs to the native client, not the Python server.
     let lock = OpenOptions::new()
@@ -144,14 +143,13 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                if queue_active.load(Ordering::Relaxed) {
-                    if let Ok(backend) = queue_backend.as_ref() {
+                if queue_active.load(Ordering::Relaxed)
+                    && let Ok(backend) = queue_backend.as_ref() {
                         tokio::join!(
                             crate::delivery::drain(backend, &queue_store),
                             crate::draft_replication::refresh(backend, &queue_store)
                         );
                     }
-                }
             }
         });
         let mut assembler = protocol::Assembler::default();

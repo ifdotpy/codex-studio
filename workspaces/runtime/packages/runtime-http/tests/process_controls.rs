@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Native transport fixtures exercise the real HTTP action and receipt boundary.
 use axum::{
     body::{Body, to_bytes},

@@ -41,12 +41,14 @@ struct Body {
     response: reqwest::Response,
     touched: Instant,
 }
+/// A response body stream keyed by request id: its owner scope and the shared body.
+type BodyEntry = (String, Arc<Mutex<Body>>);
 pub struct RemoteClient {
     vault: Arc<dyn Vault>,
     mutation: Mutex<()>,
     response_slots: Arc<Semaphore>,
     http: reqwest::Client,
-    bodies: Mutex<HashMap<String, (String, Arc<Mutex<Body>>)>>,
+    bodies: Mutex<HashMap<String, BodyEntry>>,
 }
 impl RemoteClient {
     pub fn new(vault: Arc<dyn Vault>) -> Result<Self, String> {
@@ -219,10 +221,7 @@ impl RemoteClient {
                         &id,
                     )
                     .await
-                    .map_err(|error| {
-                        transport_diagnostic(method, &target, 0, "send-error");
-                        error
-                    })?;
+                    .inspect_err(|_| transport_diagnostic(method, &target, 0, "send-error"))?;
                 let status = response.status().as_u16();
                 let kind = match response
                     .headers()
@@ -279,31 +278,32 @@ impl RemoteClient {
                     tokio::time::timeout(Duration::from_secs(25), body.response.chunk()).await;
                 match result {
                     Ok(Ok(Some(bytes))) => {
-                        if body.response.status().is_client_error() && bytes.len() < 4096 {
-                            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                                let code = match value["code"].as_str() {
-                                    Some(
-                                        code @ ("invalid_credentials"
-                                        | "invalid_id"
-                                        | "server_mismatch"
-                                        | "clock_difference"
-                                        | "invalid_nonce"
-                                        | "invalid_signature"
-                                        | "client_revoked"
-                                        | "owner_mismatch"
-                                        | "request_conflict"
-                                        | "replayed_nonce"),
-                                    ) => code,
-                                    _ if value["error"] == "Invalid request" => "invalid-request",
-                                    _ => "other-rejection",
-                                };
-                                transport_diagnostic(
-                                    "READ",
-                                    body.response.url(),
-                                    body.response.status().as_u16(),
-                                    code,
-                                );
-                            }
+                        if body.response.status().is_client_error()
+                            && bytes.len() < 4096
+                            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                        {
+                            let code = match value["code"].as_str() {
+                                Some(
+                                    code @ ("invalid_credentials"
+                                    | "invalid_id"
+                                    | "server_mismatch"
+                                    | "clock_difference"
+                                    | "invalid_nonce"
+                                    | "invalid_signature"
+                                    | "client_revoked"
+                                    | "owner_mismatch"
+                                    | "request_conflict"
+                                    | "replayed_nonce"),
+                                ) => code,
+                                _ if value["error"] == "Invalid request" => "invalid-request",
+                                _ => "other-rejection",
+                            };
+                            transport_diagnostic(
+                                "READ",
+                                body.response.url(),
+                                body.response.status().as_u16(),
+                                code,
+                            );
                         }
                         Ok(json!({"base64":STANDARD.encode(bytes)}))
                     }

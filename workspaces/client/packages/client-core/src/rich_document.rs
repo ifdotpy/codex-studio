@@ -4,7 +4,9 @@ use crate::protocol::{Request, Response};
 use serde_json::Value;
 
 const SOURCE_LIMIT: usize = 2 * 1024 * 1024;
+#[cfg(target_os = "macos")]
 const WIDTH: usize = 960;
+#[cfg(target_os = "macos")]
 const HEIGHT: usize = 600;
 const MAX_PAGES: usize = 80;
 

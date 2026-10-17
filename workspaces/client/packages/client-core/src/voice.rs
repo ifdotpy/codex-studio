@@ -111,7 +111,9 @@ impl Decoder {
             return Err(format!("Opus decoding failed ({frames})."));
         }
         Ok(pcm[..frames as usize * 2]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (pair[0] as f32 + pair[1] as f32) / 65_536.0)
             .collect())
     }
@@ -135,7 +137,13 @@ impl Framer {
             }
         }));
         let count = self.0.len() / FRAME;
-        let frames = self.0.chunks_exact(FRAME).map(<[i16]>::to_vec).collect();
+        let frames = self
+            .0
+            .as_chunks::<FRAME>()
+            .0
+            .iter()
+            .map(|f| f.to_vec())
+            .collect();
         self.0.drain(..count * FRAME);
         frames
     }
@@ -444,11 +452,16 @@ async fn create(params: &Value) -> Result<Value, String> {
     });
     drop(state);
     let result = async {
-        let (microphone, microphone_receiver) = mpsc::channel(64);
-        let playback =
-            crate::voice_audio::Playback::new(crate::voice_audio::VOICE_RATE as usize * 2);
+        #[cfg(not(target_os = "macos"))]
+        {
+            drop(events);
+            Err::<(Peer, String), String>("Voice requires macOS.".into())
+        }
         #[cfg(target_os = "macos")]
         {
+            let (microphone, microphone_receiver) = mpsc::channel(64);
+            let playback =
+                crate::voice_audio::Playback::new(crate::voice_audio::VOICE_RATE as usize * 2);
             let (id, device_playback, device_muted, ended) = (
                 session.clone(),
                 playback.clone(),
@@ -467,21 +480,15 @@ async fn create(params: &Value) -> Result<Value, String> {
                 )
             })
             .await?;
+            Peer::create(
+                "0.0.0.0:0",
+                events,
+                microphone_receiver,
+                Arc::new(move |samples: &[f32]| playback.push(samples)),
+                muted.clone(),
+            )
+            .await
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = microphone;
-            return Err::<(Peer, String), String>("Voice requires macOS.".into());
-        }
-        #[allow(unreachable_code)]
-        Peer::create(
-            "0.0.0.0:0",
-            events,
-            microphone_receiver,
-            Arc::new(move |samples: &[f32]| playback.push(samples)),
-            muted.clone(),
-        )
-        .await
     }
     .await;
     let mut state = service().lock().await;

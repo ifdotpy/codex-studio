@@ -967,6 +967,7 @@ fn uncertain(
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)] // Each argument is a distinct journal input; a bundle struct would only rename them.
 pub(super) async fn journal_batch(
     store: Arc<RuntimeStore>,
     account: &str,

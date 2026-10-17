@@ -1,7 +1,12 @@
 //! Rasterize one PDF page from an immutable file snapshot. No document actions run.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::{Value, json};
-use std::{io::Cursor, sync::Arc};
+use serde_json::Value;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use serde_json::json;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use std::io::Cursor;
+use std::sync::Arc;
 
 pub async fn page(bytes: Arc<Vec<u8>>, page: u64) -> Result<Value, String> {
     // The permit lives in the blocking task even when the caller disconnects.

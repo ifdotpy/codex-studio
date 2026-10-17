@@ -1,20 +1,25 @@
 //! Desktop permissions are issued from a recent native event, never a JS flag.
 use crate::protocol::{Request, Response};
 use serde_json::Value;
+#[cfg(any(target_os = "macos", test))]
+use std::time::Duration;
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
+#[cfg(any(target_os = "macos", test))]
 const ACTION_WINDOW: Duration = Duration::from_millis(1200);
 const DENIED: &str = "Use a desktop button or keyboard action.";
 #[derive(Default)]
 struct Permissions {
+    #[cfg(any(target_os = "macos", test))]
     last_event: Option<(isize, u64)>,
     permits: HashMap<u64, (u32, Instant)>,
 }
 impl Permissions {
+    #[cfg(any(target_os = "macos", test))]
     fn issue(
         &mut self,
         event: (isize, u64),
@@ -333,7 +338,7 @@ pub async fn dispatch(
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = value;
+            let _ = (value, sender, previews);
             Err("Native desktop services require macOS.".into())
         }
     }
@@ -371,6 +376,7 @@ async fn save_snapshot(name: String, bytes: std::sync::Arc<Vec<u8>>) -> Result<V
     Ok(Value::Bool(true))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn read_selected_files(paths: Value) -> Result<Value, String> {
     use base64::Engine;
     use std::{io::Read, os::unix::fs::OpenOptionsExt};

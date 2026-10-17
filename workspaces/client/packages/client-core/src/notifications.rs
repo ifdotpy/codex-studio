@@ -1,15 +1,16 @@
 //! Desktop notifications for new Messages. A click opens the target chat.
 use serde_json::{Value, json};
-use std::{
-    collections::VecDeque,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::OnceLock;
+#[cfg(any(target_os = "macos", test))]
+use std::{collections::VecDeque, sync::Mutex};
 use tokio::sync::broadcast;
 
 pub const DENIED: &str = "STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for Codex Studio in macOS System Settings > Notifications.";
+#[cfg(any(target_os = "macos", test))]
 const TARGETS: usize = 200;
 
 /// Chat targets of shown notifications, oldest first. Clicks after a restart are ignored.
+#[cfg(any(target_os = "macos", test))]
 fn targets() -> &'static Mutex<VecDeque<(String, Value)>> {
     static VALUE: OnceLock<Mutex<VecDeque<(String, Value)>>> = OnceLock::new();
     VALUE.get_or_init(Mutex::default)
@@ -46,6 +47,7 @@ pub fn validate(value: &Value) -> Result<(String, String, Value), String> {
     ))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn remember(id: String, target: Value) {
     if let Ok(mut targets) = targets().lock() {
         if targets.len() >= TARGETS {
@@ -54,6 +56,7 @@ fn remember(id: String, target: Value) {
         targets.push_back((id, target));
     }
 }
+#[cfg(any(target_os = "macos", test))]
 fn clicked(id: &str) {
     let target = targets().lock().ok().and_then(|mut targets| {
         let index = targets.iter().position(|(key, _)| key == id)?;
