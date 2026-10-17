@@ -162,6 +162,11 @@ async fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restar
             serde_json::from_value(case["records"].clone()).expect("rows"),
         )
         .await;
+        // The clones below copy only the database files; the seed must not stay in the WAL.
+        store
+            .checkpoint_wal_passive()
+            .await
+            .expect("seed database checkpoint");
         drop(store);
         let tables = if case_name == "unassign" {
             vec!["runtime_work", "runtime_agents", "sync_entities"]
