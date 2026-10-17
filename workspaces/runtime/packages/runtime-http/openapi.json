@@ -60052,8 +60052,7 @@
           "checks",
           "revision",
           "files",
-          "created",
-          "resultFile"
+          "created"
         ],
         "title": "WorkResultRecord",
         "type": "object"
@@ -60143,6 +60142,7 @@
             "type": "string"
           },
           "resultFile": {
+            "default": null,
             "title": "Resultfile",
             "type": "string"
           },
@@ -60167,8 +60167,7 @@
           "checks",
           "revision",
           "files",
-          "created",
-          "resultFile"
+          "created"
         ],
         "title": "WorkResultRecordResponse",
         "type": "object"
