@@ -400,6 +400,21 @@ struct Scripted {
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
+    initialize_holds: InitializeHolds,
+}
+/// Provider handles whose `initialize` reply waits for the paired release.
+type InitializeHolds = Arc<Mutex<BTreeMap<String, Arc<Notify>>>>;
+impl Scripted {
+    /// Keep this provider uninitialized, so its account worker cannot drain
+    /// queued commands, until the returned notification is released.
+    fn hold_initialize(&self, handle: &str) -> Arc<Notify> {
+        let release = Arc::new(Notify::new());
+        self.initialize_holds
+            .lock()
+            .unwrap()
+            .insert(handle.to_owned(), release.clone());
+        release
+    }
 }
 impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
@@ -423,6 +438,7 @@ impl AccountLauncher for Scripted {
                 stops: self.stops.clone(),
                 opened_notice: self.opened_notice.clone(),
                 ready_notice: self.ready_notice.clone(),
+                initialize_holds: self.initialize_holds.clone(),
             });
             Ok(AccountLaunch {
                 factory,
@@ -465,6 +481,7 @@ struct WireFactory {
     writes: mpsc::UnboundedSender<(String, Value)>,
     unknown_writes: bool,
     record_resumes: bool,
+    initialize_holds: InitializeHolds,
 }
 impl ProviderTaskFactory for WireFactory {
     fn open(&self, handle: ProviderHandle, _: OpenOptions, shutdown: Shutdown) -> OpenFuture<'_> {
@@ -477,6 +494,12 @@ impl ProviderTaskFactory for WireFactory {
         let unknown_writes = self.unknown_writes;
         let record_resumes = self.record_resumes;
         let ready_notice = self.ready_notice.clone();
+        let initialize_hold = self
+            .initialize_holds
+            .lock()
+            .unwrap()
+            .get(handle.as_str())
+            .cloned();
         Box::pin(async move {
             let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
             let (events, journal) = mpsc::channel(16);
@@ -506,6 +529,15 @@ impl ProviderTaskFactory for WireFactory {
                             reply,
                             observed,
                         } => {
+                            if write.message()["method"] == "initialize"
+                                && let Some(release) = &initialize_hold
+                            {
+                                tokio::select! {
+                                    biased;
+                                    _ = Shutdown::cancelled(&mut stop) => break,
+                                    _ = release.notified() => {}
+                                }
+                            }
                             let mut observed_message = None;
                             let receipt = match write.message()["method"].as_str() {
                                 Some("initialize") => CommandReceipt::CachedInitialize(json!({})),
@@ -694,6 +726,7 @@ fn scripted_with_policy(
             stops: Arc::default(),
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
+            initialize_holds: Arc::default(),
         }),
         rx,
     )
@@ -1718,6 +1751,10 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     fixture.enqueue(0, "eligible-after-blocked-prefix").await;
     fixture.enqueue(1, "eligible-other-account").await;
     let (launcher, mut writes) = scripted();
+    // An uninitialized default worker cannot drain its lane, so the registry
+    // sees it full for the whole first pass and must still reach the second
+    // account. Without the hold, the order of the two starts is a race.
+    let release_default = launcher.hold_initialize("account:default");
     let registry = AccountRegistry::new(
         fixture.store.clone(),
         launcher.clone(),
@@ -1741,6 +1778,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
         .unwrap();
     assert_eq!(account, "account:second");
     assert_eq!(request["method"], "turn/start");
+    release_default.notify_one();
     let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
         .await
         .unwrap_or_else(|_| panic!("eligible agent behind saturated queue was not started"))
