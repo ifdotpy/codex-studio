@@ -188,7 +188,7 @@ class HostSlotHandlers:
             atomic(parent / "paths.json", {"caches": caches, "macOnly": mac_only})
             atomic(held, {"state": state})
             return {"path": str(source), "nameConflicts": bad, "syncOutput": output, "caches": caches,
-                    "status": "slot holds state " + state}
+                    "state": state, "status": "slot holds state " + state}
         require(lease.exists() and json.loads(lease.read_text())["operationId"] == operation,
                 "The command does not own its guest slot", "lease_lost")
         manifest_path = parent / (key(operation) + ".manifest.json")
