@@ -1,6 +1,7 @@
 //! Checked projections of stored rows and immutable runtime preparation resources.
 use super::*;
 use crate::{model_catalog::ModelCatalogService, thread_prepare as thread, turn_prepare as turn};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
@@ -227,6 +228,78 @@ pub(super) fn records(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?)
 }
+/// Stored rows for exactly `ids`, keyed by id; absent ids are skipped.
+pub(super) fn records_by_ids(
+    db: &rusqlite::Connection,
+    table: &str,
+    ids: &std::collections::BTreeSet<String>,
+) -> Result<BTreeMap<String, String>, WorkerError> {
+    let mut rows = BTreeMap::new();
+    if ids.is_empty()
+        || !db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1 AND type='table')",
+            [table],
+            |r| r.get::<_, bool>(0),
+        )?
+    {
+        return Ok(rows);
+    }
+    let mut query = db.prepare_cached(&format!("SELECT record FROM {table} WHERE id=?1"))?;
+    for id in ids {
+        if let Some(raw) = query
+            .query_row([id], |r| r.get::<_, String>(0))
+            .optional()?
+        {
+            rows.insert(id.clone(), raw);
+        }
+    }
+    Ok(rows)
+}
+
+/// The events authorization checks: radio turns are checked by the radio
+/// service instead when the intent carries that authority.
+fn authorization_events(intent: &TurnIntent) -> Vec<crate::submit_gates::StoredEvent> {
+    intent
+        .events
+        .iter()
+        .filter(|event| !(intent.radio_authorized && event.kind == "radio_turn"))
+        .map(|e| crate::submit_gates::StoredEvent {
+            id: e.id.clone(),
+            kind: e.kind.clone(),
+            text: e.text.clone(),
+        })
+        .collect()
+}
+
+/// The stored rows one authorization decision reads, without the resolved
+/// paths: the recipient, senders, rooms, complaints and the follow-up
+/// metadata the events name, plus the few projects. Whole agent, room,
+/// complaint and event-metadata tables are never read.
+fn authorization_records(
+    db: &rusqlite::Connection,
+    intent: &TurnIntent,
+) -> Result<crate::submit_gates::AuthorizationRecords, WorkerError> {
+    let events = authorization_events(intent);
+    let meta_ids = crate::submit_gates::followup_event_ids(&events)
+        .map(str::to_owned)
+        .collect();
+    let event_meta = records_by_ids(db, "runtime_event_meta", &meta_ids)?;
+    let mut scope =
+        crate::submit_gates::AuthorizationScope::of_events(&intent.agent_id, &events, &event_meta);
+    let rooms = records_by_ids(db, "runtime_rooms", &scope.rooms)?;
+    scope.add_private_members(&rooms);
+    Ok(crate::submit_gates::AuthorizationRecords {
+        recipient_id: intent.agent_id.clone(),
+        agents: records_by_ids(db, "runtime_agents", &scope.agents)?,
+        projects: records(db, "runtime_projects")?,
+        resolved_paths: BTreeMap::new(),
+        rooms,
+        complaints: records_by_ids(db, "runtime_complaints", &scope.complaints)?,
+        event_meta,
+        events,
+    })
+}
+
 /// Filesystem observations are captured on the preparation executor, before SQL.
 /// Authorization still validates current stored owners in its writer transaction.
 #[derive(Clone)]
@@ -241,13 +314,17 @@ pub(super) struct ThreadFilesystemInputs {
     pub python_tool: Option<PathBuf>,
 }
 impl FilesystemSnapshot {
-    pub fn capture(store: &RuntimeStore, id: &str) -> Result<Self, WorkerError> {
+    /// Capture the observations of one admission: the resolved paths of the
+    /// rows its authorization decision reads, and the progress directory.
+    pub fn capture_for_authorization(
+        store: &RuntimeStore,
+        intent: &TurnIntent,
+    ) -> Result<Self, WorkerError> {
         let db = store.read()?;
-        let agents = records(&db, "runtime_agents")?;
-        let projects = records(&db, "runtime_projects")?;
+        let rows = authorization_records(&db, intent)?;
         drop(db);
         let mut resolved_paths = BTreeMap::new();
-        for (rows, key) in [(&agents, "cwd"), (&projects, "path")] {
+        for (rows, key) in [(&rows.agents, "cwd"), (&rows.projects, "path")] {
             for raw in rows.values() {
                 let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
                 if key == "cwd" && record.get("executionMode").and_then(Value::as_str) == Some("vm")
@@ -280,6 +357,14 @@ impl FilesystemSnapshot {
                 }
             }
         }
+        let mut snapshot = Self::capture(store, &intent.agent_id)?;
+        snapshot.resolved_paths = resolved_paths;
+        Ok(snapshot)
+    }
+
+    /// Capture the progress directory only; no row is read or resolved.
+    pub fn capture(store: &RuntimeStore, id: &str) -> Result<Self, WorkerError> {
+        let resolved_paths = BTreeMap::new();
         let progress = store.root().join("progress").join(id);
         let progress_directory = (progress.is_dir()
             && std::fs::canonicalize(&progress).ok().as_ref() == Some(&progress))
@@ -291,6 +376,16 @@ impl FilesystemSnapshot {
                 python_tool: None,
             },
         })
+    }
+
+    /// [`Self::capture_for_authorization`] plus the thread-snapshot tool paths.
+    pub fn capture_for_authorized_thread_snapshot(
+        store: &RuntimeStore,
+        intent: &TurnIntent,
+    ) -> Result<Self, WorkerError> {
+        let mut snapshot = Self::capture_for_authorization(store, intent)?;
+        snapshot.thread_inputs.python_tool = crate::python_tool::resolve_python_tool();
+        Ok(snapshot)
     }
 
     pub fn capture_for_thread_snapshot(
@@ -370,28 +465,8 @@ pub(super) fn authorize(
             return Err(refusal("radio/turn-selection-changed".into()));
         }
     }
-    let agents = records(tx, "runtime_agents")?;
-    let projects = records(tx, "runtime_projects")?;
-    let resolved_paths = filesystem.resolved_paths.clone();
-    let rows = crate::submit_gates::AuthorizationRecords {
-        recipient_id: intent.agent_id.clone(),
-        agents,
-        projects,
-        resolved_paths,
-        rooms: records(tx, "runtime_rooms")?,
-        complaints: records(tx, "runtime_complaints")?,
-        event_meta: records(tx, "runtime_event_meta")?,
-        events: intent
-            .events
-            .iter()
-            .filter(|event| !(intent.radio_authorized && event.kind == "radio_turn"))
-            .map(|e| crate::submit_gates::StoredEvent {
-                id: e.id.clone(),
-                kind: e.kind.clone(),
-                text: e.text.clone(),
-            })
-            .collect(),
-    };
+    let mut rows = authorization_records(tx, intent)?;
+    rows.resolved_paths = filesystem.resolved_paths.clone();
     let checked = crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
         .map_err(|e| refusal(e.to_string()))?;
     crate::submit_gates::authorize_events(&checked).map_err(|e| refusal(e.to_string()))

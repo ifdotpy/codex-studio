@@ -13,9 +13,86 @@ pub const UNSETTLED_REQUEST_STATUSES: [&str; 2] = ["answering", "pending"];
 /// Tool request stages whose dispatcher a restart has lost.
 pub const UNSETTLED_TOOL_REQUEST_STAGES: [&str; 2] = ["queued", "running"];
 
+/// Agent statuses that mean a turn may still run under the agent.
+pub const ACTIVE_AGENT_STATUSES: [&str; 3] = ["running", "starting", "approval"];
+
 const MONITOR_INDEX: &str = "runtime_monitor_startup_active";
 const REQUEST_INDEX: &str = "runtime_request_startup_unsettled";
 const TOOL_REQUEST_INDEX: &str = "runtime_tool_request_startup_unsettled";
+const CLEANUP_INTENT_INDEX: &str = "runtime_agent_cleanup_intent";
+const DELETED_UNSETTLED_INDEX: &str = "runtime_agent_deleted_unsettled";
+
+/// SQL: the stored value at `path` is neither absent, null, false nor zero.
+/// A superset of the Rust `truthy` test (an empty string or container passes),
+/// so selections through it are refined by the exact Rust test.
+fn nonfalsy(path: &str) -> String {
+    format!("COALESCE(json_extract(record,'{path}'),0)!=0")
+}
+
+/// SQL predicate: an agent record carries a workspace cleanup intent object.
+fn cleanup_intent_predicate() -> String {
+    "CASE WHEN json_valid(record) THEN json_type(record,'$.workspaceCleanupIntent')='object' \
+     ELSE 0 END"
+        .to_owned()
+}
+
+/// SQL predicate: a deleted agent that may still hold an active turn, the
+/// rows whose deletion settlement a restart must finish.
+fn deleted_unsettled_predicate() -> String {
+    let statuses = ACTIVE_AGENT_STATUSES
+        .iter()
+        .map(|status| format!("'{status}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "CASE WHEN json_valid(record) THEN ({} AND ({} OR {} OR {} OR \
+         json_extract(record,'$.status') IN ({statuses}))) ELSE 0 END",
+        nonfalsy("$.deletedAt"),
+        nonfalsy("$.inFlight"),
+        nonfalsy("$.turnId"),
+        nonfalsy("$.startAttempt.activeAtReservation"),
+    )
+}
+
+/// One owner for an agent partial index and the query that must match it.
+struct AgentSelection {
+    index: &'static str,
+    predicate: fn() -> String,
+}
+const CLEANUP_INTENTS: AgentSelection = AgentSelection {
+    index: CLEANUP_INTENT_INDEX,
+    predicate: cleanup_intent_predicate,
+};
+const DELETED_UNSETTLED: AgentSelection = AgentSelection {
+    index: DELETED_UNSETTLED_INDEX,
+    predicate: deleted_unsettled_predicate,
+};
+impl AgentSelection {
+    fn definition(&self) -> OwnedRuntimeIndexDefinition {
+        OwnedRuntimeIndexDefinition {
+            name: self.index,
+            table: "runtime_agents",
+            create_sql: format!(
+                "CREATE INDEX IF NOT EXISTS {} ON runtime_agents(id) WHERE {}",
+                self.index,
+                (self.predicate)()
+            ),
+        }
+    }
+    fn rows(&self, connection: &Connection) -> StoreResult<Vec<(String, String)>> {
+        if !crate::schema::table_exists(connection, "runtime_agents")? {
+            return Ok(Vec::new());
+        }
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT id,record FROM runtime_agents WHERE {} ORDER BY id",
+            (self.predicate)()
+        ))?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+}
 
 /// One owner for each index predicate and the query that must match it.
 struct Selection {
@@ -115,6 +192,11 @@ impl StartupRecoveryRepository {
         [MONITORS, REQUESTS, TOOL_REQUESTS]
             .iter()
             .map(Selection::definition)
+            .chain(
+                [CLEANUP_INTENTS, DELETED_UNSETTLED]
+                    .iter()
+                    .map(AgentSelection::definition),
+            )
             .collect()
     }
 
@@ -125,7 +207,27 @@ impl StartupRecoveryRepository {
                 connection.execute_batch(&selection.definition().create_sql)?;
             }
         }
+        if crate::schema::table_exists(connection, "runtime_agents")? {
+            for selection in [CLEANUP_INTENTS, DELETED_UNSETTLED] {
+                connection.execute_batch(&selection.definition().create_sql)?;
+            }
+        }
         Ok(())
+    }
+
+    /// `(id, record)` of every agent carrying a workspace cleanup intent, ordered by id.
+    pub fn agents_with_cleanup_intent(
+        connection: &Connection,
+    ) -> StoreResult<Vec<(String, String)>> {
+        CLEANUP_INTENTS.rows(connection)
+    }
+
+    /// `(id, record)` of every deleted agent that may still hold an active turn,
+    /// ordered by id. A superset: the caller applies the exact settlement test.
+    pub fn deleted_agents_maybe_unsettled(
+        connection: &Connection,
+    ) -> StoreResult<Vec<(String, String)>> {
+        DELETED_UNSETTLED.rows(connection)
     }
 
     /// `(id, record)` of every monitor in an active status, ordered by id.
@@ -219,5 +321,67 @@ mod tests {
             expected.sort();
             assert_eq!(selection.rows(&connection).expect("rows"), expected);
         }
+    }
+
+    #[test]
+    fn agent_selections_read_only_their_partial_index_and_exact_rows() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .expect("table");
+        StartupRecoveryRepository::prepare_indexes(&connection).expect("indexes");
+        for (selection, index) in [
+            (&super::CLEANUP_INTENTS, "runtime_agent_cleanup_intent"),
+            (&super::DELETED_UNSETTLED, "runtime_agent_deleted_unsettled"),
+        ] {
+            let plan = connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT id,record FROM runtime_agents WHERE {} ORDER BY id",
+                    (selection.predicate)()
+                ))
+                .expect("plan prepares")
+                .query_map([], |row| row.get::<_, String>(3))
+                .expect("plan runs")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("plan rows")
+                .join(" ");
+            assert!(plan.contains(&format!("INDEX {index}")), "{plan}");
+        }
+        for (id, record) in [
+            (
+                "a-intent",
+                r#"{"workspaceCleanupIntent":{"phase":"queued"}}"#,
+            ),
+            ("b-null-intent", r#"{"workspaceCleanupIntent":null}"#),
+            ("c-running", r#"{"deletedAt":5,"status":"running"}"#),
+            ("d-turn", r#"{"deletedAt":5,"turnId":"t"}"#),
+            (
+                "e-reserved",
+                r#"{"deletedAt":5,"startAttempt":{"activeAtReservation":true}}"#,
+            ),
+            (
+                "f-tombstone",
+                r#"{"deletedAt":5,"inFlight":false,"turnId":null,"status":"idle"}"#,
+            ),
+            ("g-live", r#"{"status":"running"}"#),
+            ("h-malformed", "{"),
+        ] {
+            connection
+                .execute("INSERT INTO runtime_agents VALUES(?1,?2)", [id, record])
+                .expect("row");
+        }
+        let ids =
+            |rows: Vec<(String, String)>| rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(StartupRecoveryRepository::agents_with_cleanup_intent(&connection).expect("rows")),
+            ["a-intent"]
+        );
+        assert_eq!(
+            ids(
+                StartupRecoveryRepository::deleted_agents_maybe_unsettled(&connection)
+                    .expect("rows")
+            ),
+            ["c-running", "d-turn", "e-reserved"]
+        );
     }
 }

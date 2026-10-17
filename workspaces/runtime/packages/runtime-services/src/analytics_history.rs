@@ -27,6 +27,12 @@ use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo
 use studio_runtime_store::{AnalyticsRepository, RuntimeStore, sha256_hex};
 use thiserror::Error;
 
+/// Read-failure target classes named in logs; each is a path or resource class.
+pub const BLOCKING_TASK: &str = "blocking task";
+pub const ANALYTICS_DATABASE: &str = "analytics database";
+pub const PROFILE_DIRECTORY: &str = "profile directory";
+pub const ROLLOUT_FILE: &str = "rollout file";
+pub const ROLLOUT_DIRECTORY: &str = "rollout directory";
 pub const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
 pub const MAX_BATCH_RECORDS: usize = 128;
@@ -40,8 +46,11 @@ pub enum HistoryError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error(transparent)]
     Budget(#[from] crate::budget::BudgetError),
-    #[error("analytics history read failed")]
-    Read,
+    #[error("analytics history read failed: {0}")]
+    Read(ReadFailure),
+    /// The account is unknown, not active, or its profile directory is absent.
+    #[error("account profile is unavailable")]
+    ProfileUnavailable,
     #[error("analytics history checkpoint advanced concurrently")]
     StaleCheckpoint,
     #[error("analytics history file changed while reading; checkpoint retained")]
@@ -54,10 +63,86 @@ pub enum HistoryError {
     DiscoveryLimit,
     #[error("analytics history discovery reached the current fairness-round budget")]
     DiscoveryRoundLimit,
-    #[error("analytics history filesystem watcher failed")]
+    #[error("analytics history filesystem watcher failed: {}", watcher_cause(.0))]
     Watcher(#[from] notify::Error),
     #[error("account profile snapshot could not be read")]
     AccountDriver(#[from] crate::account_driver::AccountDriverError),
+}
+
+/// Value-free cause of a history read failure: the class of the path or
+/// resource that failed and, for filesystem errors, the I/O error kind. It
+/// never carries a path, account identity, or record content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadFailure {
+    pub target: &'static str,
+    pub kind: Option<std::io::ErrorKind>,
+}
+
+impl std::fmt::Display for ReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            Some(kind) => write!(f, "{} ({kind})", self.target),
+            None => f.write_str(self.target),
+        }
+    }
+}
+
+/// Name a watcher failure by its kind only; notify errors can carry paths.
+fn watcher_cause(error: &notify::Error) -> String {
+    match &error.kind {
+        notify::ErrorKind::Io(io) => format!("io ({})", io.kind()),
+        // The kqueue backend flattens every error into text that can name a
+        // path. Keep only a fixed class: the OS error kind of an
+        // "(os error N)" suffix, or a fixed notify, kqueue, or walkdir message.
+        notify::ErrorKind::Generic(text) => {
+            if let Some(code) = text
+                .split_once("(os error ")
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .and_then(|(code, _)| code.parse::<i32>().ok())
+            {
+                return format!(
+                    "backend io ({})",
+                    std::io::Error::from_raw_os_error(code).kind()
+                );
+            }
+            [
+                ("No watch was found.", "backend watch not found"),
+                // kqueue `remove_filename` for an entry added after the watch.
+                ("was not being watched", "backend watch not found"),
+                ("No path was found.", "backend path not found"),
+                ("File system loop found", "backend filesystem loop"),
+                (
+                    "OS file watch limit reached.",
+                    "backend watch limit reached",
+                ),
+            ]
+            .iter()
+            .find(|(message, _)| text.contains(message))
+            .map_or("backend error", |(_, class)| class)
+            .to_owned()
+        }
+        notify::ErrorKind::PathNotFound => "path not found".to_owned(),
+        notify::ErrorKind::WatchNotFound => "watch not found".to_owned(),
+        notify::ErrorKind::InvalidConfig(_) => "invalid configuration".to_owned(),
+        notify::ErrorKind::MaxFilesWatch => "watch limit reached".to_owned(),
+    }
+}
+
+impl HistoryError {
+    /// A read failure without an I/O error, named by its target class.
+    pub fn read(target: &'static str) -> Self {
+        Self::Read(ReadFailure { target, kind: None })
+    }
+
+    /// Map an I/O error to a read failure that keeps only its kind.
+    pub fn io(target: &'static str) -> impl FnOnce(std::io::Error) -> Self {
+        move |error| {
+            Self::Read(ReadFailure {
+                target,
+                kind: Some(error.kind()),
+            })
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,8 +188,34 @@ mod retry_policy_tests {
             HistoryRetryPolicy::ContinueAfterRoundBudget
         );
         assert_eq!(
-            HistoryError::Read.retry_policy(),
+            HistoryError::read(super::ROLLOUT_FILE).retry_policy(),
             HistoryRetryPolicy::Backoff
+        );
+    }
+
+    #[test]
+    fn logged_failures_name_the_cause_without_paths() {
+        let read = HistoryError::io(super::PROFILE_DIRECTORY)(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ));
+        assert_eq!(
+            read.to_string(),
+            "analytics history read failed: profile directory (permission denied)"
+        );
+        let watcher = HistoryError::Watcher(notify::Error::generic(
+            "Too many open files (os error 24) about [\"/private/home/sessions\"]",
+        ));
+        let text = watcher.to_string();
+        assert!(text.ends_with("backend io (too many open files)"), "{text}");
+        assert!(!text.contains("private"), "{text}");
+        assert_eq!(
+            HistoryError::Watcher(notify::Error::generic("No watch was found. about [\"/x\"]"))
+                .to_string(),
+            "analytics history filesystem watcher failed: backend watch not found"
+        );
+        assert_eq!(
+            HistoryError::Watcher(notify::Error::generic("/private/path")).to_string(),
+            "analytics history filesystem watcher failed: backend error"
         );
     }
 }
@@ -265,7 +376,7 @@ impl HistoryBatch {
                 move || proof.validate(),
             )
             .await
-            .map_err(|_| HistoryError::Read)??;
+            .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         }
         if !self.budget.is_empty() {
             budget
@@ -331,7 +442,7 @@ pub async fn collect_one(
         },
     )
     .await
-    .map_err(|_| HistoryError::Read)??;
+    .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
     collect_path(store, agent, profile, (path, limits), now, cancel, budget).await
 }
 async fn collect_path(
@@ -369,7 +480,7 @@ async fn collect_path(
         },
     )
     .await
-    .map_err(|_| HistoryError::Read)??;
+    .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
     let advanced = batch.advanced();
     batch.commit(store, budget, now).await?;
     Ok(advanced || budget_advanced)
@@ -394,7 +505,7 @@ async fn read_history_checkpoint(
         move || read_history_checkpoint_stage(&root, &key_owned, &agent),
     )
     .await
-    .map_err(|_| HistoryError::Read)??;
+    .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
     if let Some((key, previous_raw, replacement)) = repair {
         quarantine_history_checkpoint(store, key, previous_raw, replacement.clone()).await?;
         return Ok(Some(replacement));
@@ -412,7 +523,7 @@ fn read_history_checkpoint_stage(
 ) -> Result<HistoryCheckpointRead, HistoryError> {
     let read = AnalyticsRepository::new(root)
         .open_read_only()
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(|_| HistoryError::read(ANALYTICS_DATABASE))?;
     let raw = read
         .query_row(
             "SELECT record FROM analytics_history WHERE id=?1",
@@ -595,6 +706,7 @@ pub enum RolloutPath {
     Ambiguous,
     OutsideProfile,
     Unreadable,
+    ProfileUnavailable,
 }
 /// Discovery is bounded and skips symlink directories. The opened file is
 /// independently checked against its canonical profile and filesystem identity.
@@ -647,9 +759,18 @@ pub fn prepare(
                 Some("Native rollout unreadable"),
             ));
         }
+        // Python `_analytics_history_import` records the same status when
+        // `accounts.home` refuses the account.
+        RolloutPath::ProfileUnavailable => {
+            return Ok(refused(
+                snapshot,
+                "profileUnavailable",
+                Some("The managed account profile is unavailable"),
+            ));
+        }
     };
-    let resolved = fs::canonicalize(&path).map_err(|_| HistoryError::Read)?;
-    let root = fs::canonicalize(profile).map_err(|_| HistoryError::Read)?;
+    let resolved = fs::canonicalize(&path).map_err(HistoryError::io(ROLLOUT_FILE))?;
+    let root = fs::canonicalize(profile).map_err(HistoryError::io(PROFILE_DIRECTORY))?;
     if !resolved.starts_with(root) {
         return Ok(refused(
             snapshot,
@@ -657,11 +778,11 @@ pub fn prepare(
             Some("Native rollout outsideProfile"),
         ));
     }
-    let before = fs::metadata(&resolved).map_err(|_| HistoryError::Read)?;
-    let file = File::open(&resolved).map_err(|_| HistoryError::Read)?;
-    let info = file.metadata().map_err(|_| HistoryError::Read)?;
+    let before = fs::metadata(&resolved).map_err(HistoryError::io(ROLLOUT_FILE))?;
+    let file = File::open(&resolved).map_err(HistoryError::io(ROLLOUT_FILE))?;
+    let info = file.metadata().map_err(HistoryError::io(ROLLOUT_FILE))?;
     if filesystem_identity(&before) != filesystem_identity(&info)
-        || fs::canonicalize(&path).map_err(|_| HistoryError::Read)? != resolved
+        || fs::canonicalize(&path).map_err(HistoryError::io(ROLLOUT_FILE))? != resolved
     {
         return Ok(refused(
             snapshot,
@@ -748,11 +869,11 @@ pub fn prepare(
     let range_start = offset.saturating_sub(ANCHOR_BYTES);
     reader
         .seek(SeekFrom::Start(range_start))
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(HistoryError::io(ROLLOUT_FILE))?;
     let mut prefix = vec![0; (offset - range_start) as usize];
     reader
         .read_exact(&mut prefix)
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(HistoryError::io(ROLLOUT_FILE))?;
     if let Some(anchor) = snapshot.state["anchor"].as_str()
         && sha256_hex(&prefix) != anchor
     {
@@ -762,7 +883,7 @@ pub fn prepare(
     digest.update(&prefix);
     reader
         .seek(SeekFrom::Start(offset))
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(HistoryError::io(ROLLOUT_FILE))?;
     let mut consumed = 0u64;
     let mut count = 0u64;
     let mut partial = false;
@@ -924,17 +1045,17 @@ fn bounded_line(reader: &mut BufReader<File>) -> Result<Vec<u8>, HistoryError> {
     reader
         .take((MAX_LINE_BYTES + 1) as u64)
         .read_until(b'\n', &mut line)
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(HistoryError::io(ROLLOUT_FILE))?;
     Ok(line)
 }
 fn anchor_at(reader: &mut BufReader<File>, offset: u64) -> Result<String, HistoryError> {
     reader
         .seek(SeekFrom::Start(offset.saturating_sub(ANCHOR_BYTES)))
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(HistoryError::io(ROLLOUT_FILE))?;
     let mut bytes = vec![0; offset.min(ANCHOR_BYTES) as usize];
     reader
         .read_exact(&mut bytes)
-        .map_err(|_| HistoryError::Read)?;
+        .map_err(HistoryError::io(ROLLOUT_FILE))?;
     Ok(sha256_hex(&bytes))
 }
 #[cfg(unix)]
@@ -1145,20 +1266,26 @@ impl HistoryCollector {
         let (home, path) = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/analytics_history_discovery",
             move || {
-                let home = profile(&account_key)?;
-                let path = if live_only {
-                    RolloutPath::Missing
-                } else {
-                    discovery
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .resolve(&home, &thread, &cancel_discovery)?
+                // Claude history is live-only and needs no native profile.
+                if live_only {
+                    return Ok((PathBuf::new(), RolloutPath::Missing));
+                }
+                let home = match profile(&account_key) {
+                    Ok(home) if home.is_dir() => home,
+                    Ok(_) | Err(HistoryError::ProfileUnavailable) => {
+                        return Ok((PathBuf::new(), RolloutPath::ProfileUnavailable));
+                    }
+                    Err(error) => return Err(error),
                 };
+                let path = discovery
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .resolve(&home, &thread, &cancel_discovery)?;
                 Ok::<_, HistoryError>((home, path))
             },
         )
         .await
-        .map_err(|_| HistoryError::Read)??;
+        .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         crate::analytics_history_repair::repair_terminal_errors(store).await?;
         let budget_advanced = crate::analytics_history_repair::migrate_budget(
             store,
@@ -1191,7 +1318,7 @@ impl HistoryCollector {
             },
         )
         .await
-        .map_err(|_| HistoryError::Read)??;
+        .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         let advanced = batch.advanced();
         batch.commit(store, budget, clock.observed_at).await?;
         let root = store.root().to_owned();
@@ -1201,12 +1328,12 @@ impl HistoryCollector {
             move || {
                 let db = AnalyticsRepository::new(&root)
                     .open_read_only()
-                    .map_err(|_| HistoryError::Read)?;
+                    .map_err(|_| HistoryError::read(ANALYTICS_DATABASE))?;
                 Repo::read(&db, CaptureTable::History, &checkpoint_key).map_err(HistoryError::from)
             },
         )
         .await
-        .map_err(|_| HistoryError::Read)??;
+        .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         if let Some(checkpoint) = checkpoint {
             self.schedule
                 .completed(&agent, &checkpoint, clock.monotonic)?;

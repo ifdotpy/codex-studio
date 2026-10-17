@@ -1986,7 +1986,7 @@ impl Worker {
         Ok(())
     }
 
-    /// Write one claimed busy-turn input batch to the running Claude turn. The
+    /// Write one claimed busy-turn input batch to the running turn. The
     /// durable `submitted` boundary commits before the write; delivery waits
     /// for the bridge acknowledgement (see `steer`).
     async fn steer(&mut self, intent: TurnIntent, turn: String) -> Result<(), WorkerError> {

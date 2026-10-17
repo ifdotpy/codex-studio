@@ -1,6 +1,7 @@
-//! Busy-turn input for Claude agents.
+//! Busy-turn input for Codex and Claude agents.
 //!
-//! A running Claude turn receives pending user input through `turn/steer`.
+//! A running turn receives pending user input through `turn/steer`; both
+//! providers speak the same request and acknowledge it the same way.
 //! The running turn keeps its `startAttempt`, which still routes the turn's
 //! notifications and terminal outcome. Each steer owns one durable receipt in
 //! `runtime_operation_receipts`; its event rows move through these states:
@@ -10,7 +11,7 @@
 //! | `reserved`    | `reserved`    | Claimed; not yet authorized for transport       |
 //! | `submitted`   | `dispatching` | Request may have been written; awaiting the ack |
 //! | `unconfirmed` | `failed`      | The turn ended without an ack; never resent     |
-//! | (deleted)     | `delivered`   | Claude acknowledged the exact input in the turn |
+//! | (deleted)     | `delivered`   | The provider acknowledged the exact input       |
 //! | (deleted)     | `pending`     | Proven not applied; delivered once, later       |
 //!
 //! Only the provider acknowledgement records delivery. A lost response leaves
@@ -20,10 +21,11 @@
 use super::*;
 
 /// Prefix of the durable per-steer receipt: `claude-steer:{agent}:{steer}`.
+/// The name predates Codex steering; it is kept so stored receipts stay readable.
 const STEER_RECEIPT_PREFIX: &str = "claude-steer:";
 const STEER_RECEIPT_SIGNATURE: &str = "claude-steer";
 /// Visible error of input whose delivery to the running turn is unknown.
-pub const STEER_UNCONFIRMED_ERROR: &str = "Claude did not confirm this message before its turn ended. It may have been read; Studio did not send it again.";
+pub const STEER_UNCONFIRMED_ERROR: &str = "The agent did not confirm this message before its turn ended. It may have been read; Studio did not send it again.";
 
 /// One claimed busy-turn input batch.
 #[derive(Clone, Debug, PartialEq)]
@@ -111,8 +113,7 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     let turn = text("turnId").filter(|turn| !turn.is_empty())?;
     let thread = text("threadId").filter(|thread| !thread.is_empty())?;
     let attempt = agent.extra.get("startAttempt")?;
-    let eligible = text("provider") == Some("claude")
-        && agent.status == AgentStatus::Running
+    let eligible = agent.status == AgentStatus::Running
         && agent.extra.get("autoWake") == Some(&json!(true))
         && agent.extra.get("inFlight") == Some(&json!(true))
         && !flag("remoteWorker")
@@ -146,29 +147,53 @@ fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> bool {
 }
 
 /// Return unresolved input to the queue in its own epoch; stopped input is cancelled.
-fn release(tx: &Transaction<'_>, id: &str, receipt: &Value) -> StoreResult<()> {
+/// When the turn already ended, the idle agent is queued again so the
+/// returned input starts the next turn; returns whether it was, so the caller
+/// wakes it after commit.
+fn release(tx: &Transaction<'_>, id: &str, receipt: &Value) -> StoreResult<bool> {
     let agent_id = receipt["agent"]
         .as_str()
         .ok_or_else(|| invalid_receipt(id))?;
     let epoch = receipt["epoch"]
         .as_i64()
         .ok_or_else(|| invalid_receipt(id))?;
-    let current = load_agent(tx, agent_id)?.is_some_and(|agent| {
-        agent.epoch == epoch && !agent.extra.get("deletedAt").is_some_and(truthy)
-    });
-    tx.execute(
+    let agent = load_agent(tx, agent_id)?
+        .filter(|agent| agent.epoch == epoch && !agent.extra.get("deletedAt").is_some_and(truthy));
+    let returned = tx.execute(
         "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL \
          WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
          AND (status IN ('reserved','dispatching') OR (status='failed' AND error=?5))",
         params![
-            if current { "pending" } else { "cancelled" },
+            if agent.is_some() {
+                "pending"
+            } else {
+                "cancelled"
+            },
             agent_id,
             epoch,
             receipt_events(id, receipt)?,
             STEER_UNCONFIRMED_ERROR
         ],
     )?;
-    delete(tx, id)
+    let requeue = returned > 0
+        && agent.as_ref().is_some_and(|agent| {
+            agent.extra.get("autoWake") == Some(&json!(true))
+                && !agent.extra.get("inFlight").is_some_and(truthy)
+                && !matches!(
+                    agent.status,
+                    AgentStatus::Running
+                        | AgentStatus::Starting
+                        | AgentStatus::Queued
+                        | AgentStatus::Approval
+                )
+                && continuation_allowed(agent)
+        });
+    if requeue && let Some(mut agent) = agent {
+        agent.status = AgentStatus::Queued;
+        publish_agent(tx, &agent)?;
+    }
+    delete(tx, id)?;
+    Ok(requeue)
 }
 
 /// The turn ended or its transport closed without an acknowledgement.
@@ -228,7 +253,7 @@ impl SchedulerRepository {
         Ok(steer_target(connection, agent, epoch)?.is_some())
     }
 
-    /// Reserve the oldest pending user input for the agent's running Claude turn.
+    /// Reserve the oldest pending user input for the agent's running turn.
     /// Input that must wait for the next turn stops the batch, so delivery order
     /// is preserved. A previous steer must be resolved before the next one.
     pub fn claim_steer(
@@ -368,23 +393,33 @@ impl SchedulerRepository {
         Ok(true)
     }
 
-    /// The transport proves it never wrote the request.
-    pub fn steer_not_sent(tx: &Transaction<'_>, agent_id: &str, steer_id: &str) -> StoreResult<()> {
+    /// The transport proves it never wrote the request. Returns whether the
+    /// agent's turn had already ended, so the agent was queued again to wake.
+    pub fn steer_not_sent(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        steer_id: &str,
+    ) -> StoreResult<bool> {
         let id = receipt_id(agent_id, steer_id);
-        if let Some(receipt) = load(tx, &id)? {
-            release(tx, &id, &receipt)?;
+        match load(tx, &id)? {
+            Some(receipt) => release(tx, &id, &receipt),
+            None => Ok(false),
         }
-        Ok(())
     }
 
-    /// Claude definitively refused the input. It returns to the queue once and
+    /// The provider definitively refused the input. It returns to the queue once and
     /// waits for the next turn; this turn is not offered another steer.
-    pub fn steer_rejected(tx: &Transaction<'_>, agent_id: &str, steer_id: &str) -> StoreResult<()> {
+    /// Returns whether the turn had already ended and the agent was queued again.
+    pub fn steer_rejected(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        steer_id: &str,
+    ) -> StoreResult<bool> {
         let id = receipt_id(agent_id, steer_id);
         let Some(receipt) = load(tx, &id)? else {
-            return Ok(());
+            return Ok(false);
         };
-        release(tx, &id, &receipt)?;
+        let requeued = release(tx, &id, &receipt)?;
         if let Some(mut agent) = load_agent(tx, agent_id)?
             && agent.epoch == receipt["epoch"]
             && agent.extra.get("turnId") == Some(&receipt["turnId"])
@@ -394,7 +429,7 @@ impl SchedulerRepository {
                 .insert("steerRejectedTurnId".into(), receipt["turnId"].clone());
             publish_agent(tx, &agent)?;
         }
-        Ok(())
+        Ok(requeued)
     }
 
     /// Record the provider's reply to the steer request. A reply is not a
@@ -500,8 +535,12 @@ impl SchedulerRepository {
             }
             let first = receipt["events"][0].as_str().unwrap_or_default();
             match receipt["stage"].as_str() {
-                Some("reserved") => release(tx, &id, &receipt)?,
-                Some("submitted") if unapplied.contains(&first) => release(tx, &id, &receipt)?,
+                Some("reserved") => {
+                    release(tx, &id, &receipt)?;
+                }
+                Some("submitted") if unapplied.contains(&first) => {
+                    release(tx, &id, &receipt)?;
+                }
                 Some("submitted") => unconfirm(tx, &id, receipt)?,
                 _ => {}
             }
@@ -517,7 +556,9 @@ impl SchedulerRepository {
                 continue;
             }
             match receipt["stage"].as_str() {
-                Some("reserved") => release(tx, &id, &receipt)?,
+                Some("reserved") => {
+                    release(tx, &id, &receipt)?;
+                }
                 Some("submitted") if receipt["generation"].as_u64().is_none_or(|g| g < current) => {
                     unconfirm(tx, &id, receipt)?
                 }

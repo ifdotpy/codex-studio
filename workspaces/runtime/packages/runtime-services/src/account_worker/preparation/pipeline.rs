@@ -346,12 +346,15 @@ async fn admit_for_purpose(
     allow_paused_start: bool,
 ) -> Result<Admission, WorkerError> {
     let preparation_store = store.clone();
-    let agent_id = intent.agent_id.clone();
+    let admission_intent = intent.clone();
     let radio_authorized = intent.radio_authorized;
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_admission_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture(&preparation_store, &agent_id)?;
+            let filesystem = FilesystemSnapshot::capture_for_authorization(
+                &preparation_store,
+                &admission_intent,
+            )?;
             let prepared_host = if radio_authorized {
                 let prepared = crate::host_project_runtime::PreparedHost::load(&preparation_store)
                     .map_err(|error| refusal(error.to_string()))?;
@@ -1067,11 +1070,14 @@ async fn prepare_native_snapshot(
         None
     };
     let filesystem_store = Arc::clone(&store);
-    let filesystem_agent_id = agent_id.to_owned();
+    let filesystem_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_native_snapshot_filesystem",
         move || {
-            FilesystemSnapshot::capture_for_thread_snapshot(&filesystem_store, &filesystem_agent_id)
+            FilesystemSnapshot::capture_for_authorized_thread_snapshot(
+                &filesystem_store,
+                &filesystem_intent,
+            )
         },
     )
     .await
@@ -1274,13 +1280,15 @@ pub(crate) async fn prepare_ready(
     // create the progress directory. Capture all filesystem observations after
     // that work, before the transaction rechecks the current records.
     let snapshot_store = Arc::clone(&store);
-    let snapshot_agent = intent.agent_id.clone();
+    let snapshot_intent = intent.clone();
     let radio_authorized = intent.radio_authorized;
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_ready_snapshot",
         move || {
-            let filesystem =
-                FilesystemSnapshot::capture_for_thread_snapshot(&snapshot_store, &snapshot_agent)?;
+            let filesystem = FilesystemSnapshot::capture_for_authorized_thread_snapshot(
+                &snapshot_store,
+                &snapshot_intent,
+            )?;
             let prepared_host = if radio_authorized {
                 let host = crate::host_project_runtime::PreparedHost::load(&snapshot_store)
                     .map_err(|error| refusal(error.to_string()))?;
