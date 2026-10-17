@@ -12,11 +12,14 @@ use crate::routes::manifest::{OperationStatus, RouteGroup, get};
 use studio_runtime_services::account_policy::AccountsSnapshot;
 use studio_runtime_services::model_catalog::{CatalogRead, ModelCatalogService};
 
-const PENDING_MESSAGE: &str = "Model catalog is pending; no workers were created. The existing metadata request remains available for recovery";
+// Display-read messages. Spawn admission owns its own "no workers were created"
+// wording; a catalog read for the UI creates nothing.
+const PENDING_MESSAGE: &str = "Model catalog is still loading from the provider; retry shortly";
 const WORKER_PENDING_MESSAGE: &str =
     "Model catalog is pending; no worker model catalog is available yet";
-const UNAVAILABLE_MESSAGE: &str =
-    "Model catalog unavailable; no workers were created: provider request failed";
+const UNAVAILABLE_MESSAGE: &str = "Model catalog is temporarily unavailable: the provider did not return its model list; retry shortly";
+/// A failed provider read is transient: the catalog retries it on a later read.
+const UNAVAILABLE_STATUS: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 const ACCOUNT_UNAVAILABLE_MESSAGE: &str = "Account is unavailable";
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![get(
@@ -93,25 +96,20 @@ async fn account_catalog(
             {
                 return catalog_pending();
             }
-            (
-                StatusCode::BAD_REQUEST,
-                json!({"error": UNAVAILABLE_MESSAGE}),
-            )
+            catalog_unavailable()
         })?;
     match catalog
         .read_until_ready(&account.key, &account.home, &account.provider, retry)
         .await
     {
         CatalogRead::Ready(value) => Ok(value),
-        CatalogRead::Pending => Err((
-            StatusCode::BAD_REQUEST,
-            json!({"error": PENDING_MESSAGE, "catalogPending": true}),
-        )),
-        CatalogRead::Unavailable => Err((
-            StatusCode::BAD_REQUEST,
-            json!({"error": UNAVAILABLE_MESSAGE}),
-        )),
+        CatalogRead::Pending => Err(catalog_pending()),
+        CatalogRead::Unavailable => Err(catalog_unavailable()),
     }
+}
+
+fn catalog_unavailable() -> (StatusCode, Value) {
+    (UNAVAILABLE_STATUS, json!({"error": UNAVAILABLE_MESSAGE}))
 }
 
 fn catalog_pending() -> (StatusCode, Value) {
@@ -493,7 +491,7 @@ mod tests {
         .await
         .expect_err("model catalog provider service is absent in this fixture");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(error.1, json!({"error":super::UNAVAILABLE_MESSAGE}));
     }
 
@@ -565,7 +563,7 @@ mod tests {
             .await
             .expect_err("failed provider read stays unavailable");
 
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(error.1, json!({"error":super::UNAVAILABLE_MESSAGE}));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         catalog.shutdown().await.expect("catalog task shutdown");

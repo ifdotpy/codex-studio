@@ -43,10 +43,7 @@ class ModelsHttpContract(unittest.TestCase):
         pending = backend.request("GET", "/api/models")
         assert_status(pending, 400)
         self.assertEqual(pending.json(), {
-            "error": (
-                "Model catalog is pending; no workers were created. "
-                "The existing metadata request remains available for recovery"
-            ),
+            "error": "Model catalog is still loading from the provider; retry shortly",
             "catalogPending": True,
         })
         backend.wait_until(lambda: backend.provider_gate_started(), "model/list pending gate")

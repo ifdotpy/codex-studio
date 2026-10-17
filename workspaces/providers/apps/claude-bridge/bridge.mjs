@@ -36,7 +36,7 @@ import {
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
-import { createCatalogCache } from "./catalog-cache.mjs";
+import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 
 import {
   movePrompt,
@@ -462,56 +462,62 @@ async function probe(cwd, read, phase = "metadata", external = false) {
     q.close();
   }
 }
+// Refresh account metadata on the live query's own process.
+async function refreshLiveCatalog(live, background) {
+  const q = live.q;
+  const prior = live.accountProof;
+  const startedAt = Date.now();
+  const deadline =
+    startedAt +
+    (background
+      ? Math.min(PREPARATION_TIMEOUT_MS, PASSIVE_ACCOUNT_TIMEOUT_MS)
+      : PREPARATION_TIMEOUT_MS);
+  if (typeof q.reinitialize !== "function")
+    throw new Error("Fresh Claude account control is unavailable");
+  const fresh = await boundedPreparation(
+    () => q.reinitialize(),
+    deadline,
+    () => {},
+    "catalog_account_reinitialize",
+    startedAt,
+  );
+  checkAccount(fresh?.account);
+  if (
+    fresh.account.subscriptionType !== prior.subscriptionType ||
+    fresh.account.apiKeySource !== prior.apiKeySource
+  )
+    throw Object.assign(new Error("Claude subscription metadata changed"), {
+      claudeAccountValidationFailed: true,
+    });
+  if (![...queries.values()].includes(live) || live.q !== q)
+    throw new Error("Claude query changed during metadata refresh");
+  if (!Array.isArray(fresh.models))
+    throw new Error("Fresh Claude model metadata is unavailable");
+  live.accountProof = fresh.account;
+  return { models: fresh.models, account: fresh.account };
+}
 const catalogCache = createCatalogCache({
-  load: async (background) => {
-    const live = [...queries.values()].find((active) => active.q);
-    if (live) {
-      const q = live.q;
-      const startedAt = Date.now();
-      const deadline =
-        startedAt +
-        (background
-          ? Math.min(PREPARATION_TIMEOUT_MS, PASSIVE_ACCOUNT_TIMEOUT_MS)
-          : PREPARATION_TIMEOUT_MS);
-      const prior = live.accountProof;
-      if (!prior || live.accountProofQuery !== q)
-        throw new Error("Verified Claude query metadata is pending");
-      if (typeof q.reinitialize !== "function")
-        throw new Error("Fresh Claude account control is unavailable");
-      // Refresh the same process. A metadata timer must not spawn a CLI.
-      const fresh = await boundedPreparation(
-        () => q.reinitialize(),
-        deadline,
-        () => {},
-        "catalog_account_reinitialize",
-        startedAt,
-      );
-      checkAccount(fresh?.account);
-      if (
-        fresh.account.subscriptionType !== prior.subscriptionType ||
-        fresh.account.apiKeySource !== prior.apiKeySource
-      )
-        throw Object.assign(new Error("Claude subscription metadata changed"), {
-          claudeAccountValidationFailed: true,
-        });
-      if (![...queries.values()].includes(live) || live.q !== q)
-        throw new Error("Claude query changed during metadata refresh");
-      if (!Array.isArray(fresh.models))
-        throw new Error("Fresh Claude model metadata is unavailable");
-      live.accountProof = fresh.account;
-      return { models: fresh.models, account: fresh.account };
-    }
-    if (background)
-      throw new Error("No live Claude query can refresh account metadata");
-    return probe(
-      null,
-      async (q, account) => ({
-        models: await q.supportedModels(),
-        account,
-      }),
-      "catalog",
-    );
-  },
+  load: (background) =>
+    loadCatalog({
+      background,
+      // Only a query whose current process proved the account can refresh it.
+      live: [...queries.values()].find(
+        (active) =>
+          active.q &&
+          active.accountProof &&
+          active.accountProofQuery === active.q,
+      ),
+      refreshLive: (live) => refreshLiveCatalog(live, background),
+      probe: () =>
+        probe(
+          null,
+          async (q, account) => ({
+            models: await q.supportedModels(),
+            account,
+          }),
+          "catalog",
+        ),
+    }),
   isActive: () =>
     [...queries.values()].some((active) => active.turn || active.tasks.size),
 });

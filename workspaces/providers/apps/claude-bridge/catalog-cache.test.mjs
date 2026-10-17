@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createCatalogCache } from "./catalog-cache.mjs";
+import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 
 const settle = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
@@ -251,4 +251,74 @@ test("a passive read cannot create its initial proof or accept a rejected accoun
   await assert.rejects(f.cache.readPassive(), /Fresh Claude account proof/);
   assert.equal(f.calls.length, 2);
   f.cache.close();
+});
+
+test("a failed live refresh falls back to a probe for a foreground read", async () => {
+  const live = { id: "live" };
+  const calls = [];
+  const result = await loadCatalog({
+    background: false,
+    live,
+    refreshLive: async (query) => {
+      calls.push(["live", query]);
+      throw new Error(
+        "Claude preparation timed out before input was submitted",
+      );
+    },
+    probe: async () => {
+      calls.push(["probe"]);
+      return { models: ["probed"] };
+    },
+  });
+  assert.deepEqual(result, { models: ["probed"] });
+  assert.deepEqual(calls, [["live", live], ["probe"]]);
+});
+
+test("a proven account change and a background refresh never fall back to a probe", async () => {
+  const probe = async () => assert.fail("probe must not run");
+  await assert.rejects(
+    loadCatalog({
+      background: false,
+      live: {},
+      refreshLive: async () => {
+        throw Object.assign(new Error("Claude subscription metadata changed"), {
+          claudeAccountValidationFailed: true,
+        });
+      },
+      probe,
+    }),
+    /subscription metadata changed/,
+  );
+  await assert.rejects(
+    loadCatalog({
+      background: true,
+      live: {},
+      refreshLive: async () => {
+        throw new Error("busy");
+      },
+      probe,
+    }),
+    /busy/,
+  );
+  await assert.rejects(
+    loadCatalog({
+      background: true,
+      live: undefined,
+      refreshLive: probe,
+      probe,
+    }),
+    /No live Claude query/,
+  );
+});
+
+test("a foreground read without a verified live query probes", async () => {
+  assert.deepEqual(
+    await loadCatalog({
+      background: false,
+      live: undefined,
+      refreshLive: async () => assert.fail("no live query"),
+      probe: async () => ({ models: ["probed"] }),
+    }),
+    { models: ["probed"] },
+  );
 });
