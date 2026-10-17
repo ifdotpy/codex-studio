@@ -1,6 +1,8 @@
 """Supervisor installation checks use private state and fake service managers."""
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -8,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -247,6 +250,7 @@ class Services(unittest.TestCase):
         with patch.object(sys, 'platform', 'darwin'), \
                 patch.object(service, 'desktop', side_effect=[None, current, current]), \
                 patch.object(service, 'install_macos'), patch.object(service, 'wait_ready', return_value={'handles': []}), \
+                patch.object(service, 'run', side_effect=subprocess.CalledProcessError(113, ['print'])), \
                 patch('shutil.which', return_value='/usr/bin/codex'), patch('os.kill') as kill:
             result = service.enable(self.resources, self.state, 4720)
         self.assertTrue(result['supervisorMode'])
@@ -293,6 +297,194 @@ class Services(unittest.TestCase):
                       supervisor['ProgramArguments'])
         self.assertIn(str(self.resources / 'workspaces/client/apps/desktop/recover_backend.py'),
                       recovery['ProgramArguments'])
+
+
+    def rust_binaries(self) -> dict[str, str]:
+        supervisor = self.root / 'bin/codex-process-supervisor'
+        supervisor.parent.mkdir(parents=True, exist_ok=True)
+        supervisor.write_text('#!/bin/sh\n')
+        supervisor.chmod(0o755)
+        return {service.BACKEND_SELECTION_ENV: 'rust', 'CODEX_RUNTIME_SERVER': str(self.rust_server()),
+                'CODEX_PROCESS_SUPERVISOR': str(supervisor)}
+
+    def fake_launchd(self, registered: dict[str, list[str]]) -> tuple[list[list[str]], Any]:
+        """A launchctl stand-in keyed by job kind; registered jobs print their arguments."""
+        commands: list[list[str]] = []
+        labels = service._macos_labels(self.state)
+
+        def run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(arguments)
+            if arguments[1] == 'print':
+                kind = next((kind for kind, label in labels.items() if arguments[2].endswith('/' + label)), None)
+                if kind not in registered:
+                    raise subprocess.CalledProcessError(113, arguments)
+                listed = '\n'.join('\t\t' + item for item in registered[kind])
+                return subprocess.CompletedProcess(arguments, 0, f'{arguments[2]} = {{\n\targuments = {{\n{listed}\n\t}}\n}}\n')
+            if arguments[1] == 'bootstrap':
+                plist = plistlib.loads(Path(arguments[3]).read_bytes())
+                kind = next(kind for kind, label in labels.items() if plist['Label'] == label)
+                registered[kind] = plist['ProgramArguments']
+                return subprocess.CompletedProcess(arguments, 0, '')
+            raise AssertionError('Unexpected launchctl command: ' + ' '.join(arguments))
+        return commands, run
+
+    def python_jobs(self) -> dict[str, list[str]]:
+        source = self.resources / 'workspaces/runtime/apps/server/src'
+        return {'supervisor': [sys.executable, '-B', str(source / 'codex_process_supervisor.py'), '--state',
+                               str(self.state), '--wait-for-lease'],
+                'recovery': [sys.executable, '-B', str(self.resources / 'workspaces/client/apps/desktop/recover_backend.py'),
+                             '--config', str(self.state / 'background-recovery.json')]}
+
+    def save_config(self, **changes: Any) -> bytes:
+        data = (json.dumps(self.config | changes) + '\n').encode()
+        (self.state / 'background-recovery.json').write_bytes(data)
+        return data
+
+    def test_recovery_backend_selection_matches_the_recovery_owner(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            'recover_backend_owner', REPOSITORY_ROOT / 'workspaces/client/apps/desktop/recover_backend.py')
+        assert spec and spec.loader
+        owner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(owner)
+        self.assertEqual(service.RECOVERY_BACKEND_SELECTIONS, owner.BACKEND_SELECTIONS)
+
+    def test_rust_macos_installs_the_rust_supervisor_and_recovery_selection(self) -> None:
+        environment = self.rust_binaries()
+        commands, run = self.fake_launchd({})
+        self.save_config(port=4620)
+        ready = {'pid': 456, 'backendKind': 'rust', 'supervisorMode': True, 'backendBuild': 'b' * 64}
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment | {'CODEX_NODE': '/node'}), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop', side_effect=[None, ready]):
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertEqual((result['backend'], result['pid'], result['supervisorMode']), ('rust', 456, True))
+        saved = json.loads((self.state / 'background-recovery.json').read_text())
+        self.assertEqual((saved['backend'], saved['supervisorEnabled'], saved['enabled']), ('rust', True, True))
+        self.assertEqual(saved['runtimeServer'], environment['CODEX_RUNTIME_SERVER'])
+        self.assertEqual(saved['processSupervisor'], environment['CODEX_PROCESS_SUPERVISOR'])
+        self.assertEqual(saved['environment']['CODEX_NODE'], '/node')
+        self.assertEqual(saved['environment']['CODEX_HOME'], '/private/profile')
+        agents = self.root / 'Library/LaunchAgents'
+        jobs = {plistlib.loads(path.read_bytes())['Label'].split('.')[3]: plistlib.loads(path.read_bytes())
+                for path in agents.glob('*.plist')}
+        self.assertEqual(jobs['supervisor']['ProgramArguments'],
+                         [environment['CODEX_PROCESS_SUPERVISOR'], '--state', str(self.state), '--wait-for-lease'])
+        self.assertEqual(jobs['recovery']['ProgramArguments'], self.python_jobs()['recovery'])
+        self.assertTrue(all(job['KeepAlive'] and job['AbandonProcessGroup'] for job in jobs.values()))
+        self.assertEqual(sorted(command[1] for command in commands), ['bootstrap'] * 2 + ['print'] * 6)
+
+    def test_rust_macos_over_registered_python_jobs_changes_nothing(self) -> None:
+        environment = self.rust_binaries()
+        before = self.save_config(port=4620, supervisorEnabled=True)
+        commands, run = self.fake_launchd(self.python_jobs())
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop') as desktop, patch('os.kill') as kill:
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertTrue(result['swapRequired'])
+        self.assertEqual([change['job'] for change in result['changes']], ['supervisor', 'recovery'])
+        self.assertTrue(any('bootout' in step for step in result['swap']))
+        self.assertEqual((self.state / 'background-recovery.json').read_bytes(), before)
+        self.assertFalse((self.root / 'Library/LaunchAgents').exists())
+        self.assertTrue(all(command[1] == 'print' for command in commands))
+        desktop.assert_not_called()
+        kill.assert_not_called()
+
+    def test_unknown_registered_supervisor_never_authorizes_rust(self) -> None:
+        environment = self.rust_binaries()
+        commands, run = self.fake_launchd({'supervisor': []})
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop') as desktop:
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertEqual(result['changes'], [{'job': 'supervisor', 'registered': 'unknown', 'selected': 'rust'}])
+        self.assertFalse((self.state / 'background-recovery.json').exists())
+        desktop.assert_not_called()
+
+    def test_python_selection_over_registered_rust_jobs_changes_nothing(self) -> None:
+        environment = self.rust_binaries()
+        rust_jobs = self.python_jobs() | {'supervisor': [environment['CODEX_PROCESS_SUPERVISOR'], '--state',
+                                                         str(self.state), '--wait-for-lease']}
+        before = self.save_config(port=4620, supervisorEnabled=True, backend='rust',
+                                  runtimeServer=environment['CODEX_RUNTIME_SERVER'],
+                                  processSupervisor=environment['CODEX_PROCESS_SUPERVISOR'])
+        commands, run = self.fake_launchd(rust_jobs)
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', {service.BACKEND_SELECTION_ENV: ''}), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop') as desktop:
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertEqual([change['job'] for change in result['changes']], ['supervisor', 'recovery'])
+        self.assertEqual((self.state / 'background-recovery.json').read_bytes(), before)
+        self.assertTrue(all(command[1] == 'print' for command in commands))
+        desktop.assert_not_called()
+
+    def test_python_selection_restores_the_python_jobs_after_the_swap(self) -> None:
+        environment = self.rust_binaries()
+        self.save_config(port=4620, supervisorEnabled=True, backend='rust',
+                         runtimeServer=environment['CODEX_RUNTIME_SERVER'],
+                         processSupervisor=environment['CODEX_PROCESS_SUPERVISOR'])
+        commands, run = self.fake_launchd({})
+        current = {'pid': 789, 'supervisorMode': True, 'supervisor': {'protocol': 1}}
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', {service.BACKEND_SELECTION_ENV: 'python'}), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop', side_effect=[None, current, current]), \
+                patch.object(service, 'wait_ready', return_value={'handles': []}), patch('os.kill') as kill:
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertTrue(result['supervisorMode'])
+        saved = json.loads((self.state / 'background-recovery.json').read_text())
+        self.assertEqual(saved['backend'], 'python')
+        self.assertNotIn('runtimeServer', saved)
+        self.assertNotIn('processSupervisor', saved)
+        agents = self.root / 'Library/LaunchAgents'
+        jobs = {plistlib.loads(path.read_bytes())['Label'].split('.')[3]: plistlib.loads(path.read_bytes())['ProgramArguments']
+                for path in agents.glob('*.plist')}
+        self.assertEqual(jobs, self.python_jobs())
+        kill.assert_not_called()
+
+    def test_rust_macos_keeps_registered_rust_jobs(self) -> None:
+        environment = self.rust_binaries()
+        rust_jobs = self.python_jobs() | {'supervisor': [environment['CODEX_PROCESS_SUPERVISOR'], '--state',
+                                                         str(self.state), '--wait-for-lease']}
+        self.save_config(port=4620, supervisorEnabled=True, backend='rust',
+                         runtimeServer=environment['CODEX_RUNTIME_SERVER'],
+                         processSupervisor=environment['CODEX_PROCESS_SUPERVISOR'])
+        commands, run = self.fake_launchd(rust_jobs)
+        current = {'pid': 456, 'backendKind': 'rust', 'supervisorMode': True}
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop', return_value=current), patch('os.kill') as kill:
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertEqual((result['pid'], result['previousPid']), (456, 456))
+        self.assertTrue(all(command[1] == 'print' for command in commands))
+        self.assertFalse((self.root / 'Library/LaunchAgents').exists())
+        kill.assert_not_called()
+
+    def test_rust_macos_refuses_a_python_backend_or_missing_supervisor(self) -> None:
+        environment = self.rust_binaries()
+        for changes, backend, error in (
+            ({}, {'pid': 123}, 'A Python backend serves this state'),
+            ({'CODEX_PROCESS_SUPERVISOR': str(self.root / 'missing')}, None, 'Build the Rust supervisor first'),
+        ):
+            with self.subTest(error=error):
+                commands, run = self.fake_launchd({})
+                with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment | changes), \
+                        patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                        patch.object(service, 'desktop', return_value=backend):
+                    with self.assertRaisesRegex((RuntimeError, ValueError), error):
+                        service.enable(self.resources, self.state, 4720)
+                self.assertTrue(all(command[1] == 'print' for command in commands))
+                self.assertFalse((self.state / 'background-recovery.json').exists())
+                self.assertFalse((self.root / 'Library/LaunchAgents').exists())
+
+    def test_swap_report_exits_with_its_own_status(self) -> None:
+        plan = {'swapRequired': True, 'changed': False, 'changes': [], 'swap': []}
+        with patch.object(service, 'enable', return_value=plan), \
+                patch.object(sys, 'argv', ['codex-supervisor', 'enable', '--state', str(self.state)]), \
+                patch('sys.stdout', io.StringIO()) as output:
+            with self.assertRaises(SystemExit) as stopped:
+                service.main()
+        self.assertEqual(stopped.exception.code, service.SWAP_REQUIRED_EXIT)
+        self.assertTrue(json.loads(output.getvalue())['swapRequired'])
 
 
 if __name__ == '__main__':

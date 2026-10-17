@@ -556,6 +556,53 @@ test("a Finder launch cannot turn off the persisted supervisor setting", async (
   }
 });
 
+test("a desktop launch keeps the service-owned Rust selection and its supervisor job", async () => {
+  const data = fixture();
+  try {
+    const files = recoveryPaths(data.env, data.home);
+    mkdirSync(path.dirname(files.config), { recursive: true });
+    const selection = {
+      backend: "rust",
+      runtimeServer: path.join(data.root, "bin/studio-runtime-server"),
+      processSupervisor: path.join(data.root, "bin/codex-process-supervisor"),
+    };
+    writeFileSync(
+      files.config,
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        supervisorEnabled: true,
+        ...selection,
+      }),
+    );
+    const calls = [];
+    await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async (_file, args) => {
+        calls.push(args);
+      },
+    });
+    const saved = JSON.parse(readFileSync(files.config));
+    assert.deepEqual(
+      {
+        backend: saved.backend,
+        runtimeServer: saved.runtimeServer,
+        processSupervisor: saved.processSupervisor,
+      },
+      selection,
+    );
+    assert.equal(saved.supervisorEnabled, true);
+    assert.equal(existsSync(files.supervisorPlist), false);
+    assert.equal(
+      calls.some((args) => args.join(" ").includes(files.supervisorLabel)),
+      false,
+    );
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
 test("updating registered recovery preserves its live service; disabling removes only supervision", async () => {
   const data = fixture();
   const calls = [];

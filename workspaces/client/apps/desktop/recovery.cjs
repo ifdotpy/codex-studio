@@ -331,7 +331,18 @@ async function configureRecovery({
   const python =
     enabled || supervisorEnabled ? executable("python3", interpreterEnv) : null;
   const safetyPython = python || executable("python3", interpreterEnv);
-  if (supervisorEnabled)
+  // codex_supervisor_service.py owns the Rust selection and its supervisor job
+  // (docs/restart-recovery.md). The desktop keeps both and never writes a Python
+  // supervisor job over them.
+  const rustSelection =
+    saved.backend === "rust"
+      ? {
+          backend: "rust",
+          runtimeServer: saved.runtimeServer,
+          processSupervisor: saved.processSupervisor,
+        }
+      : {};
+  if (supervisorEnabled && !rustSelection.backend)
     await ensureSupervisorAgent({ files, python, resources, uid, run });
   if (!enabled) {
     let serviceInfo;
@@ -395,6 +406,7 @@ async function configureRecovery({
     unsetEnvironment: restartKeys.filter(
       (key) => environment[key] === undefined,
     ),
+    ...rustSelection,
   };
   let previousPlist;
   try {
