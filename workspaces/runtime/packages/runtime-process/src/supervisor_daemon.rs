@@ -1130,8 +1130,11 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         };
         if supervisor.connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
             supervisor.connections.fetch_sub(1, Ordering::AcqRel);
-            // The rejected connection may already have closed; that never stops the listener.
-            let _ = socket.set_write_timeout(Some(Duration::from_secs(1)));
+            if socket
+                .set_write_timeout(Some(Duration::from_secs(1)))
+                .is_err()
+            { /* The rejected connection may already have closed; keep listening. */
+            }
             if write_frame(
                 &mut socket,
                 &json!({"error":"Supervisor connection capacity reached"}),
