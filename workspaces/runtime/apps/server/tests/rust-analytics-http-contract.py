@@ -25,7 +25,14 @@ from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_runtime import Runtime
 from codex_session_names import identity as native_name_identity
-runtime = Runtime(Path(os.environ['CODEX_AGENTS_STATE_DIR']))
+class QuietRuntime(Runtime):
+    def schedule(self):
+        pass
+# A fixture writer only. The AppServer factory and the scheduler start background
+# writers on this database (server discovery, delivery, version check, history
+# import). A seed transaction that has read the main database fails at once with
+# "database is locked" when one of them holds the writer at its first main write.
+runtime = QuietRuntime(Path(os.environ['CODEX_AGENTS_STATE_DIR']), lambda *_args: None)
 try:
     agent = {{'id':'analytics-contract-agent','rootId':'analytics-contract-agent','epoch':0,
         'status':'idle','name':'Analytics contract','role':'orchestrator','cwd':os.environ['CODEX_CANVAS_CWD'],
