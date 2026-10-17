@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![allow(clippy::unwrap_used)]
 #[path = "../../../packages/runtime-process/tests/support/mod.rs"]
 mod support;
@@ -105,10 +105,21 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from codex_process_supervisor import Journal, process_start_time
 root, pid, mode = sys.argv[2], int(sys.argv[3]), sys.argv[4]
-ticks = int(Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19])
-boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-actual = f'linux:{boot}:{ticks}'
-if mode == 'collision':
+if sys.platform == 'darwin':
+    import subprocess
+    boot = subprocess.check_output(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'], text=True).strip()
+    seconds, micros = process_start_time(pid).split('.')
+    actual = f'macos:{boot}:{seconds}.{micros}'
+else:
+    ticks = int(Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19])
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    actual = f'linux:{boot}:{ticks}'
+if mode == 'collision' and sys.platform == 'darwin':
+    # Same PID, boot and second; another microsecond: a reused PID.
+    stale = (int(micros) + 1) % 1_000_000
+    saved = f'macos:{boot}:{seconds}.{stale:06d}'
+    assert saved != actual
+elif mode == 'collision':
     hz = os.sysconf('SC_CLK_TCK')
     stale = ticks + 1 if ticks % hz < hz - 1 else ticks - 1
     assert stale != ticks and stale // hz == ticks // hz

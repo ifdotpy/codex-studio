@@ -26,6 +26,9 @@ rustix.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 studio-runtime-priority-sys = { path = "../runtime-priority-sys" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+studio-runtime-proc-sys = { path = "../runtime-proc-sys" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

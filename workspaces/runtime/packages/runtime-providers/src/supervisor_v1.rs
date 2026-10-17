@@ -328,12 +328,25 @@ pub enum StartMatch {
     Different,
 }
 
+/// Prefixes of the kernel start identities the Rust supervisor records:
+/// `linux:<boot_id>:<start ticks>` and `macos:<boot session uuid>:<secs>.<usecs>`.
+/// Any other recorded value is a legacy Python token.
+pub const NATIVE_START_PREFIXES: [&str; 2] = ["linux:", "macos:"];
+
+/// Whether a recorded start identity is a native kernel identity that may
+/// authorize a signal, as opposed to a legacy token that needs an upgrade first.
+pub fn is_native_start(value: &str) -> bool {
+    NATIVE_START_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+}
+
 /// Legacy equality permits one durable upgrade; only kernel identity authorizes signals.
 pub fn compare_start(expected: &str, actual: Option<&str>, legacy: Option<&str>) -> StartMatch {
     let Some(actual) = actual else {
         return StartMatch::Gone;
     };
-    if expected.starts_with("linux:") {
+    if is_native_start(expected) {
         if expected == actual {
             StartMatch::Exact
         } else {
@@ -343,5 +356,45 @@ pub fn compare_start(expected: &str, actual: Option<&str>, legacy: Option<&str>)
         StartMatch::Legacy
     } else {
         StartMatch::Different
+    }
+}
+
+#[cfg(test)]
+mod start_identity_tests {
+    use super::{StartMatch, compare_start, is_native_start};
+
+    const MAC: &str = "macos:1CCC2169-B973-447A-B702-3F226EECA807:1790895321.190147";
+
+    #[test]
+    fn native_tokens_match_only_exactly() {
+        assert!(is_native_start(MAC));
+        assert!(is_native_start("linux:boot:12"));
+        assert!(!is_native_start("1790895321.190147"));
+        assert_eq!(compare_start(MAC, Some(MAC), None), StartMatch::Exact);
+        let other = "macos:1CCC2169-B973-447A-B702-3F226EECA807:1790895321.190148";
+        assert_eq!(compare_start(MAC, Some(other), None), StartMatch::Different);
+        // A matching legacy value never upgrades a native expectation.
+        assert_eq!(
+            compare_start(MAC, Some(other), Some(MAC)),
+            StartMatch::Different
+        );
+        assert_eq!(compare_start(MAC, None, None), StartMatch::Gone);
+    }
+
+    #[test]
+    fn python_macos_token_is_legacy_only_when_the_live_value_matches() {
+        let python = "1790895321.190147";
+        assert_eq!(
+            compare_start(python, Some(MAC), Some("1790895321.190147")),
+            StartMatch::Legacy
+        );
+        assert_eq!(
+            compare_start(python, Some(MAC), Some("1790895321.190148")),
+            StartMatch::Different
+        );
+        assert_eq!(
+            compare_start(python, Some(MAC), None),
+            StartMatch::Different
+        );
     }
 }
