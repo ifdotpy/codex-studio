@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use serde_json::{Value, json};
 use studio_runtime_services::{monitor_matches, process_controls};
 use studio_runtime_store::{RuntimeStore, StoreError};

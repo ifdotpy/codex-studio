@@ -506,9 +506,8 @@ async fn run(
                 let result=async {
                     let output=backend.read_bounded(&format!("/api/terminals/output?id={id}&offset={}",screen.offset),4*1024*1024).await?;
                     let replies=screen.update(output)?;
-                    if !replies.is_empty() && running(&screen.status) && screen.input_failure.is_empty() {
-                        if let Err(e)=send(&backend,&id,replies).await{screen.input_failure=format!("{e} Input paused. Reconnect before you continue.");}
-                    }
+                    if !replies.is_empty() && running(&screen.status) && screen.input_failure.is_empty()
+                        && let Err(e)=send(&backend,&id,replies).await{screen.input_failure=format!("{e} Input paused. Reconnect before you continue.");}
                     Ok::<_,String>(())
                 }.await;
                 if let Err(e)=result{screen.failure=e;}

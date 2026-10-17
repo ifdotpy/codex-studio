@@ -39,14 +39,13 @@ impl Tree {
         let children = &mut self.stack.last_mut().unwrap().children;
         // Tokenizer chunk boundaries differ between native and WASM builds.
         // Canonicalize text before sentence segmentation and React keys.
-        if node.tag.is_empty() {
-            if let Some(previous) = children
+        if node.tag.is_empty()
+            && let Some(previous) = children
                 .last_mut()
                 .filter(|previous| previous.tag.is_empty())
-            {
-                previous.text.push_str(&node.text);
-                return;
-            }
+        {
+            previous.text.push_str(&node.text);
+            return;
         }
         children.push(node);
     }
@@ -176,11 +175,11 @@ impl TokenSink for Sink {
                 }
                 return TokenSinkResult::Continue;
             }
-            if tag.kind != StartTag {
-                if let Some(index) = tree.blocked.iter().rposition(|n| n == name) {
-                    tree.blocked.truncate(index);
-                    return TokenSinkResult::Continue;
-                }
+            if tag.kind != StartTag
+                && let Some(index) = tree.blocked.iter().rposition(|n| n == name)
+            {
+                tree.blocked.truncate(index);
+                return TokenSinkResult::Continue;
             }
         }
         if !tree.blocked.is_empty() {

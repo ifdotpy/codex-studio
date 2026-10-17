@@ -109,7 +109,7 @@ async fn check() -> Result<(), String> {
     server.join().unwrap();
     result
 }
-fn main() {
+pub(crate) fn main() {
     let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
     app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
     let runtime = tokio::runtime::Builder::new_multi_thread()

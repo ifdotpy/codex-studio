@@ -879,6 +879,45 @@ test("boundary negative: undeclared relative workspace import is rejected", () =
   }
 });
 
+test("boundary: a script inside a nested Cargo crate belongs to the enclosing pnpm app", () => {
+  const fixture = workspaceFixture();
+  try {
+    const app = fixture.add("native-app", "workspaces/demo/apps/native", {
+      dependencies: { declared: "1.0.0" },
+    });
+    const crate = path.join(app, "src-tauri");
+    mkdirSync(path.join(crate, "src"), { recursive: true });
+    writeFileSync(
+      path.join(crate, "Cargo.toml"),
+      '[package]\nname = "native-shell"\n',
+    );
+    fixture.packages.push({
+      name: "native-shell",
+      dir: "workspaces/demo/apps/native/src-tauri",
+      ecosystem: "cargo",
+      manifest: path.join(crate, "Cargo.toml"),
+    });
+    const declared = path.join(crate, "src", "declared.js");
+    writeFileSync(declared, 'import "declared";');
+    const undeclared = path.join(crate, "src", "undeclared.js");
+    writeFileSync(undeclared, 'import "not-declared";');
+    const findings = boundaryFindings(fixture.root, fixture.packages, [
+      declared,
+      undeclared,
+    ]);
+    assert.deepEqual(
+      findings.map((finding) => [
+        finding.rule,
+        finding.importer,
+        finding.specifier,
+      ]),
+      [["undeclared-bare-import", "native-app", "not-declared"]],
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("boundary negative: undeclared bare dependency is rejected", () => {
   const fixture = workspaceFixture();
   try {
