@@ -440,9 +440,34 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                         .unwrap(),
                     1
                 );
+            } else if table != "runtime_tool_results" {
+                // The execution transaction body failed and rolled back, so
+                // the claim was settled as not applied with a saved result.
+                assert_eq!(body(&result)["success"], false);
+                let settled = store
+                    .read()
+                    .unwrap()
+                    .query_row(
+                        "SELECT json_extract(record,'$.stage'),json_extract(record,'$.outcome'),json_extract(record,'$.finished') IS NOT NULL FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='matrix'",
+                        [],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)),
+                    )
+                    .unwrap();
+                assert_eq!(settled, ("failed".into(), "not_applied".into(), true));
+                assert_eq!(
+                    store
+                        .read()
+                        .unwrap()
+                        .query_row("SELECT count(*) FROM runtime_work", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0,
+                    "a rolled-back execution is not repeated"
+                );
             } else {
-                // The durable claim makes the execution outcome unknown, but
-                // the protocol response itself succeeds with recovery data.
+                // The failpoint also blocked the settlement, so the durable
+                // claim stays running until startup recovery; the protocol
+                // response itself succeeds with recovery data.
                 assert_eq!(body(&result)["success"], true);
                 let recovery = tool_value(&result);
                 assert_eq!(recovery["stage"], "running");

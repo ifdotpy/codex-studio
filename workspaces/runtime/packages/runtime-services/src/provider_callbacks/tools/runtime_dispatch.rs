@@ -403,11 +403,14 @@ pub(super) async fn dispatch(
                 ))));
             };
             let result = if tool == "orchestration_spawn" {
-                port.spawn(store_ref, actor, args, request_id, now).await?
+                port.spawn(store_ref, actor, args, request_id, now).await
             } else {
-                port.review(store_ref, actor, args, request_id, now).await?
+                port.review(store_ref, actor, args, request_id, now).await
             };
-            child_creation_result(result)
+            match result {
+                Ok(result) => child_creation_result(result),
+                Err(error) => child_creation_refusal(store_ref, tool, request_id, error)?,
+            }
         }
         "orchestration_interrupt" => {
             let Some(port) = ports.interrupt.as_ref() else {
@@ -415,14 +418,16 @@ pub(super) async fn dispatch(
                     "agent-lifecycle/production-ports",
                 ))));
             };
-            let target = args
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .ok_or(Error::Invalid(
+            let Some(target) = args.get("agent_id").and_then(Value::as_str) else {
+                return Ok(Some(not_sent(Error::Invalid(
                     "Supply agent_id for orchestration_interrupt",
-                ))?;
+                ))));
+            };
             let target =
-                super::services::resolve_interrupt_target(store_ref, context, target).await?;
+                match super::services::resolve_interrupt_target(store_ref, context, target).await {
+                    Ok(target) => target,
+                    Err(error) => return refused_before_write(error),
+                };
             port.stop_by_agent(
                 std::sync::Arc::clone(&store),
                 actor,
@@ -449,13 +454,13 @@ pub(super) async fn dispatch(
                     "monitor-runtime/managed-input",
                 ))));
             };
-            let monitor_id = args
-                .get("monitor_id")
-                .and_then(Value::as_str)
-                .ok_or(Error::Invalid("Missing monitor_id"))?;
-            let input: Value = serde_json::from_value(args.clone())
-                .map_err(|_| Error::Invalid("Invalid monitor input"))?;
-            authorize_monitor_input(store_ref, actor, monitor_id)?;
+            let Some(monitor_id) = args.get("monitor_id").and_then(Value::as_str) else {
+                return Ok(Some(not_sent(Error::Invalid("Missing monitor_id"))));
+            };
+            let input = args.clone();
+            if let Err(error) = authorize_monitor_input(store_ref, actor, monitor_id) {
+                return refused_before_write(error);
+            }
             match port
                 .input(MonitorInputRequest {
                     caller_id: actor_id,
@@ -579,6 +584,42 @@ pub(crate) fn managed_input_receipt(
         certainty,
         applied,
     })
+}
+
+/// A store failure may hide a committed write; every other refusal raised by a
+/// read-only check before the operation's first write proves it was not applied.
+fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Error> {
+    match error {
+        Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
+        error => Ok(Some(not_sent(error))),
+    }
+}
+
+/// Child creation commits every child row and its initial intent in one
+/// transaction; image provisioning is the only work after that commit. A
+/// non-store refusal therefore proves no effect when the first deterministic
+/// child row is absent. Review creation has no work after its commit.
+fn child_creation_refusal(
+    store: &RuntimeStore,
+    tool: &str,
+    request_id: &str,
+    error: Error,
+) -> Result<DispatchedOperation, Error> {
+    if matches!(error, Error::Store(_) | Error::Sqlite(_) | Error::Work(_)) {
+        return Err(error);
+    }
+    if tool == "orchestration_spawn" {
+        let first = crate::managed_child_create::child_id(request_id, 0);
+        let read = store.read()?;
+        let committed = studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from(first.as_str()),
+        )?;
+        if committed.is_some() {
+            return Err(error);
+        }
+    }
+    Ok(not_sent(error))
 }
 
 fn not_sent(error: Error) -> DispatchedOperation {

@@ -24,7 +24,7 @@ pub use model::{
 pub use projection::project_tool_result;
 pub use recovery::{
     ContextToolReceiptSnapshot, prepare_unresolved_context_tool_receipts, recover_connection,
-    revalidate_unresolved_context_tool_receipts,
+    recover_tool_requests_on_startup, revalidate_unresolved_context_tool_receipts,
 };
 use serde_json::{Value, json};
 pub use storage::{
@@ -89,6 +89,10 @@ pub use tools::ManagedToolRuntime;
 pub(crate) use tools::ManagedToolRuntimePorts;
 #[cfg(test)]
 pub(crate) use tools::MonitorInputRequest;
+#[cfg(test)]
+pub(crate) use tools::{
+    ChildCreationPort as RuntimeChildCreationPort, InterruptPort as RuntimeInterruptPort,
+};
 #[cfg(test)]
 pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
 pub use tools::{WorkerAccountSelection, select_worker_account, validate_worker_model_choice};

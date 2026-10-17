@@ -882,7 +882,7 @@ pub(crate) async fn spawn_agents(
     Ok(result)
 }
 
-fn child_id(request_id: &str, index: usize) -> String {
+pub(crate) fn child_id(request_id: &str, index: usize) -> String {
     uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
         format!("{request_id}:{index}").as_bytes(),

@@ -129,6 +129,84 @@ pub fn revalidate_unresolved_context_tool_receipts(
     Ok(snapshot.unresolved.clone())
 }
 
+/// Make one queued or running request terminal after its dispatcher is gone.
+/// A saved result is evidence, never permission to run again. Without one, a
+/// queued request was provably never dispatched and a running one is unknown.
+/// Both get a finished receipt and a saved result, so a replay with the same
+/// identity returns it and context repair no longer waits for the request.
+fn settle_abandoned(
+    tx: &Transaction<'_>,
+    record: &mut Value,
+    now: f64,
+) -> Result<(), CallbackError> {
+    let id = record["id"]
+        .as_str()
+        .ok_or(CallbackError::Stored("tool request id".into()))?
+        .to_owned();
+    if let Some(result) = records::get(tx, "runtime_tool_results", &id)? {
+        lifecycle::settle(record, &result, false)?;
+        record["result"] = result;
+    } else {
+        admission::restart(record)?;
+        let result = if record["stage"] == "cancelled" {
+            record["error"] = json!("Server restarted before execution");
+            json!({
+                "requestId":id, "stage":"cancelled", "outcome":"not_applied",
+                "cancelRequested":record["cancelRequested"], "message":record["error"]
+            })
+        } else {
+            record["stage"] = json!("interrupted");
+            record["error"] = json!("Server restarted before the execution receipt");
+            json!({
+                "requestId":id, "stage":"interrupted", "outcome":"unknown",
+                "message":"The server stopped before this request recorded its result; it may have run. Do not repeat the mutation with a new id."
+            })
+        };
+        let result = super::tool_result(result, false);
+        records::validate("runtime_tool_results", &id, result.clone())?;
+        tx.execute(
+            "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
+            rusqlite::params![id, result.to_string()],
+        )?;
+        record["result"] = result;
+    }
+    record["updated"] = json!(now);
+    if record.get("finished").is_none_or(Value::is_null) {
+        record["finished"] = json!(now);
+    }
+    tools::put(tx, record)
+}
+
+/// Startup owns every request: no dispatcher from an earlier process survives,
+/// so each queued or running request becomes terminal before workers start.
+/// Safe to repeat; a second pass finds nothing.
+pub async fn recover_tool_requests_on_startup(
+    store: &RuntimeStore,
+    now: f64,
+) -> Result<usize, CallbackError> {
+    if !now.is_finite() || now < 0.0 {
+        return Err(CallbackError::Invalid("Invalid callback clock"));
+    }
+    store
+        .transaction_with(move |tx| {
+            let ids = {
+                let mut statement = tx.prepare_cached(
+                    "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.stage') IN ('queued','running')",
+                )?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            for id in &ids {
+                let mut record = records::get(tx, "runtime_tool_requests", id)?
+                    .ok_or(CallbackError::Stored("tool request id".into()))?;
+                settle_abandoned(tx, &mut record, now)?;
+            }
+            Ok(ids.len())
+        })
+        .await
+}
+
 /// Safe to repeat after interruption. A surviving transport still requires its
 /// own generation and write-receipt proof; this never schedules a response.
 pub async fn recover_connection(
@@ -152,25 +230,7 @@ pub async fn recover_connection(
             {
                 continue;
             }
-            if let Some(result) = records::get(tx, "runtime_tool_results", record["id"].as_str().ok_or(CallbackError::Stored("tool request id".into()))?)? {
-                // Existing results are evidence, not permission to run again.
-                lifecycle::settle(&mut record, &result, false)?;
-                record["result"] = result;
-            } else {
-                admission::restart(&mut record)?;
-                if record["stage"] == "cancelled" {
-                    record["error"] = json!("Server restarted before execution");
-                    record["result"] = super::tool_result(json!({
-                        "requestId":record["id"], "stage":"cancelled", "outcome":"not_applied",
-                        "cancelRequested":record["cancelRequested"], "message":record["error"]
-                    }), false);
-                } else {
-                    record["stage"] = json!("interrupted");
-                    record["error"] = json!("Server restarted before the execution receipt");
-                }
-            }
-            record["updated"] = json!(now);
-            tools::put(tx, &record)?;
+            settle_abandoned(tx, &mut record, now)?;
             count += 1;
         }
         let mut statement = tx.prepare_cached("SELECT id FROM runtime_operation_receipts WHERE json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.connection')=?2 AND json_extract(result,'$.delivery')='submitted'")?;
