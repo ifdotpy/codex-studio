@@ -533,7 +533,6 @@ mod tests {
     use super::PtyTerminalSession;
     use crate::agents_create;
     use crate::terminal_driver::{TerminalEvent, TerminalNotification, TerminalSession};
-    use studio_runtime_process::{LocalPtyHost, PtyHost};
 
     fn terminal_cwd() -> TempDir {
         let root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
@@ -1005,24 +1004,24 @@ mod tests {
                         .map(Vec::from)
                         .collect::<BTreeSet<_>>();
 
-                    let host = LocalPtyHost;
-                    let rust_environment = rust_env.into_iter().collect::<Vec<_>>();
-                    let mut session = host
-                        .open(
-                            &["/usr/bin/env".into(), "-0".into()],
-                            cwd.path(),
-                            &rust_environment,
-                        )
-                        .expect("spawn Rust environment probe");
-                    let mut bytes = Vec::new();
-                    let mut chunk = [0; 4096];
-                    while let Ok(count) = host.read(&mut session, &mut chunk) {
-                        if count == 0 {
-                            break;
-                        }
-                        bytes.extend_from_slice(&chunk[..count]);
-                    }
-                    let _exit_code = host.wait(&mut session).expect("wait for env probe");
+                    // This matrix checks child environment semantics, not PTY
+                    // hangup timing. Capture the short-lived probe through pipes,
+                    // as the Python oracle does. The live terminal tests above
+                    // separately require lossless PTY output, input and resize.
+                    let rust_output = Command::new("/usr/bin/env")
+                        .arg("-0")
+                        .current_dir(cwd.path())
+                        .env_clear()
+                        .envs(&rust_env)
+                        .output()
+                        .expect("run Rust environment probe");
+                    assert!(
+                        rust_output.status.success(),
+                        "Rust environment probe failed: {:?}: {}",
+                        rust_output.status,
+                        String::from_utf8_lossy(&rust_output.stderr)
+                    );
+                    let bytes = rust_output.stdout;
                     let rust_keys: BTreeSet<Vec<u8>> = bytes
                         .split(|byte| *byte == 0)
                         .filter(|pair| !pair.is_empty())
