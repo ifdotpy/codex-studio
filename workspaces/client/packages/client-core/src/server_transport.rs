@@ -15,6 +15,10 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 // Maximum concurrent signed requests and response bodies per native client.
 const MAX_OPEN_SERVER_RESPONSES: usize = 32;
+// Maximum of those slots that requests to one server may hold. An unreachable
+// server keeps each request open until its connect or send timeout, and must
+// not take the slots of the other servers.
+const MAX_OPEN_RESPONSES_PER_SERVER: usize = MAX_OPEN_SERVER_RESPONSES / 2;
 
 // Maximum metadata-only transport diagnostic lines per process when opted in.
 const MAX_TRANSPORT_DIAGNOSTIC_LINES: usize = 200;
@@ -37,16 +41,17 @@ fn transport_diagnostic(method: &str, url: &reqwest::Url, status: u16, kind: &st
 }
 
 struct Body {
-    _permit: OwnedSemaphorePermit,
+    _permits: (OwnedSemaphorePermit, OwnedSemaphorePermit),
     response: reqwest::Response,
     touched: Instant,
 }
-/// A streamed response body with the request id that owns it.
+/// A streamed response body with the server id it belongs to.
 type BodyEntry = (String, Arc<Mutex<Body>>);
 pub struct RemoteClient {
     vault: Arc<dyn Vault>,
     mutation: Mutex<()>,
     response_slots: Arc<Semaphore>,
+    server_slots: std::sync::Mutex<HashMap<String, Arc<Semaphore>>>,
     http: reqwest::Client,
     bodies: Mutex<HashMap<String, BodyEntry>>,
 }
@@ -56,6 +61,7 @@ impl RemoteClient {
             vault,
             mutation: Mutex::new(()),
             response_slots: Arc::new(Semaphore::new(MAX_OPEN_SERVER_RESPONSES)),
+            server_slots: std::sync::Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
@@ -183,8 +189,22 @@ impl RemoteClient {
                         .map(|v| v.touched.elapsed() < Duration::from_secs(120))
                         .unwrap_or(true)
                 });
-                let permit = match self.response_slots.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
+                let server_slots = self
+                    .server_slots
+                    .lock()
+                    .map_err(|_| "The server transport stopped.")?
+                    .entry(server.to_owned())
+                    .or_insert_with(|| Arc::new(Semaphore::new(MAX_OPEN_RESPONSES_PER_SERVER)))
+                    .clone();
+                let permits = match server_slots.clone().try_acquire_owned().and_then(
+                    |server_permit| {
+                        Ok((
+                            server_permit,
+                            self.response_slots.clone().try_acquire_owned()?,
+                        ))
+                    },
+                ) {
+                    Ok(permits) => permits,
                     Err(_) => {
                         let bodies = self.bodies.lock().await;
                         let mut idle = 0;
@@ -202,8 +222,12 @@ impl RemoteClient {
                             }
                         }
                         let detail = format!(
-                            "idle={idle}, reading={reading}, pending={}, paths={paths:?}",
-                            MAX_OPEN_SERVER_RESPONSES.saturating_sub(bodies.len())
+                            "idle={idle}, reading={reading}, pending={}, server={}/{MAX_OPEN_RESPONSES_PER_SERVER}, paths={paths:?}",
+                            MAX_OPEN_SERVER_RESPONSES
+                                .saturating_sub(self.response_slots.available_permits())
+                                .saturating_sub(bodies.len()),
+                            MAX_OPEN_RESPONSES_PER_SERVER
+                                .saturating_sub(server_slots.available_permits())
                         );
                         eprintln!("Server response capacity: {detail}");
                         return Err(format!(
@@ -255,7 +279,7 @@ impl RemoteClient {
                     (
                         server.to_owned(),
                         Arc::new(Mutex::new(Body {
-                            _permit: permit,
+                            _permits: permits,
                             response,
                             touched: Instant::now(),
                         })),
@@ -498,6 +522,67 @@ mod tests {
             *self.0.lock().unwrap() = value.clone();
             Ok(())
         }
+    }
+    #[tokio::test]
+    async fn one_server_cannot_hold_the_slots_of_another_server() {
+        // A closed local port: an admitted request fails to connect, and a
+        // rejected request is never sent.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let pair = |server: &str| {
+            let invitation = json!({"protocol":1,"origin":format!("https://{server}.tailnet.ts.net:{port}"),"serverId":server,"inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+            server_keys::new_pair(&invitation, "pair").unwrap()
+        };
+        let (busy, other) = (pair("busy"), pair("other"));
+        let request = |server: &str, credential: &Value| json!({"serverId":server,"credentialId":credential["clientId"],"url":format!("https://{server}.tailnet.ts.net:{port}/api/test"),"method":"GET","base64":"","headers":[]});
+        let vault = Arc::new(Memory(StdMutex::new(
+            json!({"drafts":{},"servers":{"busy":busy.clone(),"other":other.clone()}}),
+        )));
+        let mut client = RemoteClient::new(vault).unwrap();
+        let local = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        client.http = reqwest::Client::builder()
+            .no_proxy()
+            .retry(reqwest::retry::never())
+            .resolve("busy.tailnet.ts.net", local)
+            .resolve("other.tailnet.ts.net", local)
+            .build()
+            .unwrap();
+        // Open requests to the busy server hold its whole share of both limits,
+        // as connects to an unreachable server do until their timeout.
+        let busy_slots = Arc::new(Semaphore::new(MAX_OPEN_RESPONSES_PER_SERVER));
+        client
+            .server_slots
+            .lock()
+            .unwrap()
+            .insert("busy".into(), busy_slots.clone());
+        let _held = (
+            busy_slots
+                .try_acquire_many_owned(MAX_OPEN_RESPONSES_PER_SERVER as u32)
+                .unwrap(),
+            client
+                .response_slots
+                .clone()
+                .try_acquire_many_owned(MAX_OPEN_RESPONSES_PER_SERVER as u32)
+                .unwrap(),
+        );
+        let refused = client
+            .dispatch("servers.request", &request("busy", &busy))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("The request was not sent"), "{refused}");
+        assert!(refused.contains("server=16/16"), "{refused}");
+        let admitted = client
+            .dispatch("servers.request", &request("other", &other))
+            .await
+            .unwrap_err();
+        assert!(!admitted.contains("The request was not sent"), "{admitted}");
+        assert_eq!(
+            client.response_slots.available_permits(),
+            MAX_OPEN_SERVER_RESPONSES - MAX_OPEN_RESPONSES_PER_SERVER
+        );
     }
     #[tokio::test]
     async fn https_transport_signs_exact_bytes_and_streams_without_forwarding_local_auth() {
