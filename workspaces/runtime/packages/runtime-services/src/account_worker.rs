@@ -1980,16 +1980,22 @@ impl Worker {
                 .await
             })
             .await?;
-        if !authorized || self.closing {
+        if !authorized {
             return Ok(());
         }
         self.pending.insert(id.clone(), context);
-        if let Err(error) = self.drive(control.submit(prepared)).await {
-            let outcome = if definite_rejection(&error) {
-                WriteOutcome::NotSent
-            } else {
-                WriteOutcome::Unknown
-            };
+        // A worker that began closing during the durable boundary never writes:
+        // that proves the request not sent, so the input returns to the queue.
+        let outcome = if self.closing {
+            Some(WriteOutcome::NotSent)
+        } else {
+            match self.drive(control.submit(prepared)).await {
+                Ok(_) => None,
+                Err(error) if definite_rejection(&error) => Some(WriteOutcome::NotSent),
+                Err(_) => Some(WriteOutcome::Unknown),
+            }
+        };
+        if let Some(outcome) = outcome {
             self.event(SessionEvent {
                 journal: None,
                 outcomes: vec![SessionOutcome::Write {

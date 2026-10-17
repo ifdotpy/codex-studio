@@ -194,7 +194,40 @@ fn unconfirm(tx: &Transaction<'_>, id: &str, mut receipt: Value) -> StoreResult<
     store(tx, id, &receipt)
 }
 
+/// The running turn that may receive pending input of `epoch` now: the agent is
+/// steerable, no earlier input of the agent is unresolved, and input is pending.
+fn steer_target(
+    connection: &Connection,
+    agent: &AgentRecord,
+    epoch: i64,
+) -> StoreResult<Option<(String, String)>> {
+    if agent.epoch != epoch {
+        return Ok(None);
+    }
+    let Some(target) = steer_turn(agent) else {
+        return Ok(None);
+    };
+    let ready: bool = connection.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 \
+         AND status IN ('reserved','dispatching','uncertain')) \
+         AND EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
+        params![agent.id.0, epoch],
+        |row| row.get(0),
+    )?;
+    Ok(ready.then_some(target))
+}
+
 impl SchedulerRepository {
+    /// Read-only check whether `claim_steer` could reserve input now, so a busy
+    /// turn's wake does not open a write transaction while its queue is blocked.
+    pub fn steer_claimable(
+        connection: &Connection,
+        agent: &AgentRecord,
+        epoch: i64,
+    ) -> StoreResult<bool> {
+        Ok(steer_target(connection, agent, epoch)?.is_some())
+    }
+
     /// Reserve the oldest pending user input for the agent's running Claude turn.
     /// Input that must wait for the next turn stops the batch, so delivery order
     /// is preserved. A previous steer must be resolved before the next one.
@@ -208,21 +241,9 @@ impl SchedulerRepository {
         let Some(agent) = load_agent(tx, agent_id)? else {
             return Ok(None);
         };
-        if agent.epoch != epoch {
-            return Ok(None);
-        }
-        let Some((turn_id, thread_id)) = steer_turn(&agent) else {
+        let Some((turn_id, thread_id)) = steer_target(tx, &agent, epoch)? else {
             return Ok(None);
         };
-        let unresolved: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 \
-             AND status IN ('reserved','dispatching','uncertain'))",
-            [agent_id],
-            |row| row.get(0),
-        )?;
-        if unresolved {
-            return Ok(None);
-        }
         let metadata_column = if table_exists(tx, "runtime_event_meta")? {
             "(SELECT m.record FROM runtime_event_meta m WHERE m.id=e.id)"
         } else {
@@ -458,6 +479,9 @@ impl SchedulerRepository {
 
     /// Resolve every steer still open for a finished turn. Input the provider
     /// proves it never read returns to the queue; other input is unconfirmed.
+    /// Unconfirmed receipts of the agent's earlier turns are dropped: their
+    /// acknowledgement can no longer arrive, and the input stays visibly failed.
+    /// Called by `settle_terminal`, which every terminal path goes through.
     pub fn resolve_steers_at_terminal(
         tx: &Transaction<'_>,
         agent_id: &str,
@@ -465,7 +489,13 @@ impl SchedulerRepository {
         unapplied: &[&str],
     ) -> StoreResult<()> {
         for (id, receipt) in receipts(tx, &receipt_id(agent_id, ""))? {
-            if receipt["agent"] != agent_id || receipt["turnId"] != turn_id {
+            if receipt["agent"] != agent_id {
+                continue;
+            }
+            if receipt["turnId"] != turn_id {
+                if receipt["stage"] == "unconfirmed" {
+                    delete(tx, &id)?;
+                }
                 continue;
             }
             let first = receipt["events"][0].as_str().unwrap_or_default();

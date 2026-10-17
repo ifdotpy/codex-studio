@@ -117,6 +117,8 @@ impl SchedulerRepository {
         at: f64,
         restart: bool,
     ) -> StoreResult<()> {
+        // Decide busy-turn input before its `dispatching` rows become `uncertain`.
+        Self::abandon_steers(transaction, account, generation.saturating_add(1))?;
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             if stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
                 .as_u64()
@@ -162,6 +164,8 @@ impl SchedulerRepository {
         generation: u64,
         at: f64,
     ) -> StoreResult<()> {
+        // Decide busy-turn input before its `dispatching` rows become `uncertain`.
+        Self::abandon_steers(transaction, account, generation)?;
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             let known = stored_attempt(&agent).and_then(|a| a["connectionGeneration"].as_u64());
             if known != Some(generation) {
@@ -1182,6 +1186,9 @@ impl SchedulerRepository {
     }
 
     /// Apply one terminal provider outcome, ignoring stale attempt or epoch callbacks.
+    /// Busy-turn input still open for the turn is decided first, even for a stale
+    /// callback: `unapplied_steers` (first input ids the provider proves it never
+    /// read) return to the queue, the rest becomes unconfirmed.
     #[allow(clippy::too_many_arguments)]
     pub fn settle_terminal(
         transaction: &Transaction<'_>,
@@ -1193,6 +1200,7 @@ impl SchedulerRepository {
         error: Option<Value>,
         native_status: &str,
         native_error: Option<&Value>,
+        unapplied_steers: &[&str],
     ) -> StoreResult<bool> {
         let receipt_input = json!({"agent":agent_id,"epoch":epoch,"turn":turn_id,"status":status,"error":error,"nativeStatus":native_status,"nativeError":native_error});
         if let Some(result) =
@@ -1200,6 +1208,7 @@ impl SchedulerRepository {
         {
             return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
         }
+        Self::resolve_steers_at_terminal(transaction, agent_id, turn_id, unapplied_steers)?;
         let outcome = match status {
             AgentStatus::Completed => "completed",
             AgentStatus::Failed => "failed",

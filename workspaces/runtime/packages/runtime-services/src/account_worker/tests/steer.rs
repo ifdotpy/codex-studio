@@ -251,3 +251,55 @@ async fn transport_close_before_reply_is_unconfirmed_and_never_resent() {
     assert_eq!(input(&state).await.0, "failed");
     worker.shutdown().await.unwrap();
 }
+
+/// A process restart skips the closing worker's `GenerationClosed` path: the
+/// next worker's `recover()` must decide the steer before reconciling the old
+/// turn, which turns `dispatching` rows `uncertain`.
+#[tokio::test]
+async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
+    let (state, mut peer, mut worker) = running_claude_turn().await;
+    let _request = steer(&state, &mut peer, &worker).await;
+    let stage = state
+        .bridge
+        .run(move |store| async move {
+            store::recover(&store, "default", Generation(2)).await?;
+            Ok(store.read()?.query_row(
+                "SELECT json_extract(result,'$.stage') FROM runtime_operation_receipts \
+                 WHERE signature='claude-steer'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(stage, "unconfirmed", "a late acknowledgement can repair it");
+    let (status, _, error) = input(&state).await;
+    assert_eq!(status, "failed");
+    assert_eq!(
+        error.as_deref(),
+        Some(studio_runtime_store::STEER_UNCONFIRMED_ERROR)
+    );
+    worker.shutdown().await.unwrap();
+}
+
+/// A worker that starts closing while the `submitted` boundary commits never
+/// writes the request, so the input returns to the queue instead of becoming
+/// unconfirmed.
+#[tokio::test]
+async fn closing_during_submission_returns_the_input_unsent() {
+    let (state, mut peer, mut worker) = running_claude_turn().await;
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("steer_submitted".into());
+    state.wake(&worker).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("the steer reaches its submission boundary");
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    worker.cancel();
+    state.bridge.faults.release.notify_one();
+    worker.completion().await.unwrap();
+    assert!(peer.writes.try_recv().is_err(), "nothing was written");
+    assert_eq!(input(&state).await, ("pending".into(), None, None));
+}

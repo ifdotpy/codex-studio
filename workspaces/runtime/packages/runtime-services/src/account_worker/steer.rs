@@ -240,7 +240,8 @@ pub(super) enum WakeClaim {
 }
 
 /// Claim busy-turn input when the agent is a running Claude turn. Other agents
-/// return `Idle` after one read, without a write transaction.
+/// return `Idle`, and a running turn with nothing claimable returns `Busy`,
+/// after one read, without a write transaction.
 pub(super) async fn claim_for_wake(
     store: Arc<RuntimeStore>,
     account: &str,
@@ -249,27 +250,39 @@ pub(super) async fn claim_for_wake(
 ) -> Result<WakeClaim, WorkerError> {
     let read_store = Arc::clone(&store);
     let read_agent = agent.to_owned();
-    // An unreadable record is the ordinary claim's to hold; it is never steered.
-    let snapshot = blocking_store_read(read_store, move |store| {
-        Ok(
-            AgentRepository::get(&*store.read()?, &AgentId::from(read_agent.as_str()))
-                .ok()
-                .flatten(),
-        )
+    let read_account = account.to_owned();
+    let found = blocking_store_read(read_store, move |store| {
+        let connection = store.read()?;
+        // An unreadable record is the ordinary claim's to hold; it is never steered.
+        let Some(record) = AgentRepository::get(&connection, &AgentId::from(read_agent.as_str()))
+            .ok()
+            .flatten()
+            .filter(|record| {
+                record.epoch == epoch
+                    && record.status == studio_runtime_store::AgentStatus::Running
+                    && record.extra.get("provider").and_then(Value::as_str) == Some("claude")
+                    && record
+                        .extra
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        == read_account
+            })
+        else {
+            return Ok(None);
+        };
+        Ok(Some(SchedulerRepository::steer_claimable(
+            &connection,
+            &record,
+            epoch,
+        )?))
     })
     .await?;
-    if snapshot.is_none_or(|record| {
-        record.epoch != epoch
-            || record.status != studio_runtime_store::AgentStatus::Running
-            || record.extra.get("provider").and_then(Value::as_str) != Some("claude")
-            || record
-                .extra
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                != account
-    }) {
-        return Ok(WakeClaim::Idle);
+    match found {
+        None => return Ok(WakeClaim::Idle),
+        // A blocked or empty queue needs no write transaction.
+        Some(false) => return Ok(WakeClaim::Busy),
+        Some(true) => {}
     }
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| WorkerError::TaskFailed)?;

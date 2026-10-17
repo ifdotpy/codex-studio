@@ -16,6 +16,11 @@
 //! | unconfirmed; late ack / definite rejection       | `delivered` / `pending`                |
 //! | submitted; stop, then turn ends unread           | `cancelled`                            |
 //! | submitted; transport generation closes           | `failed` unconfirmed                   |
+//! | submitted; restart: `recover()` reconciles turn  | `failed` unconfirmed, before `uncertain` |
+//! | submitted; worker closes during submission       | `pending`, nothing written (worker)    |
+//! | submitted; restart recovery settles the turn     | unconfirmed / `pending` (`settle_terminal`) |
+//! | unconfirmed; a later turn of the agent ends      | receipt dropped, input stays `failed`  |
+//! | any; wake while the queue is blocked or empty    | read only, no write transaction        |
 use super::*;
 use crate::records::{AgentId, AgentRepository};
 use rusqlite::Connection;
@@ -548,4 +553,100 @@ fn wake_page_selects_running_claude_turns_with_queued_user_input() {
         page(&connection).is_empty(),
         "only user input wakes a busy turn"
     );
+}
+
+#[test]
+fn generation_recovery_unconfirms_steers_before_disconnecting_the_turn() {
+    // `reconcile_generation` (account-worker recovery) and `disconnect_account`
+    // (worker finish) turn `dispatching` rows `uncertain`; steers are decided first.
+    for disconnect in [true, false] {
+        let mut connection = database();
+        submit(&mut connection, "s1");
+        settle(&mut connection, |tx| {
+            if disconnect {
+                SchedulerRepository::disconnect_account(tx, "acct", 7, 20.0, false)
+            } else {
+                SchedulerRepository::reconcile_generation(tx, "acct", 8, 20.0)
+            }
+        });
+        let (state, _, error) = status(&connection, "u1");
+        assert_eq!(state, "failed", "disconnect={disconnect}");
+        assert_eq!(error.as_deref(), Some(STEER_UNCONFIRMED_ERROR));
+        assert_eq!(statuses(&connection), UNCONFIRMED);
+        acknowledge(&mut connection).expect("a late ack still repairs it");
+        assert_eq!(status(&connection, "u1").0, "delivered");
+    }
+}
+
+#[test]
+fn every_terminal_settlement_resolves_open_steers() {
+    // Restart recovery settles a turn through `settle_terminal` without the
+    // notification path; even a stale attempt identity resolves the turn's steers.
+    for (unapplied, expected) in [(&[][..], UNCONFIRMED), (&["u1"][..], QUEUED)] {
+        let mut connection = database();
+        submit(&mut connection, "s1");
+        let settled = with(&mut connection, |tx| {
+            SchedulerRepository::settle_terminal(
+                tx,
+                AGENT,
+                4,
+                "unknown-attempt",
+                TURN,
+                AgentStatus::Completed,
+                None,
+                "completed",
+                None,
+                unapplied,
+            )
+            .expect("settlement executes")
+        });
+        assert!(!settled, "the stale attempt itself is not settled");
+        assert_eq!(statuses(&connection), expected);
+        retarget(&connection, "turn-2");
+        assert_eq!(
+            claim(&mut connection, "s2").is_some(),
+            !unapplied.is_empty(),
+            "only requeued input is offered to the next turn"
+        );
+    }
+}
+
+#[test]
+fn a_later_turn_end_drops_earlier_unconfirmed_receipts() {
+    let mut connection = database();
+    submit(&mut connection, "s1");
+    terminal(&mut connection, &[]);
+    assert_eq!(open_receipts(&connection), 1);
+    retarget(&connection, "turn-2");
+    settle(&mut connection, |tx| {
+        SchedulerRepository::resolve_steers_at_terminal(tx, AGENT, "turn-2", &[])
+    });
+    assert_eq!(open_receipts(&connection), 0);
+    assert_eq!(
+        statuses(&connection),
+        UNCONFIRMED,
+        "the input stays visibly failed"
+    );
+}
+
+#[test]
+fn claimable_check_matches_the_claim_without_writing() {
+    let mut connection = database();
+    let ready = |connection: &Connection, epoch| {
+        SchedulerRepository::steer_claimable(connection, &agent(connection), epoch)
+            .expect("check reads")
+    };
+    assert!(ready(&connection, 4));
+    assert!(!ready(&connection, 3), "another epoch");
+    submit(&mut connection, "s1");
+    assert!(
+        !ready(&connection, 4),
+        "an unresolved steer blocks the queue"
+    );
+    terminal(&mut connection, &["u1"]);
+    assert!(ready(&connection, 4));
+    connection
+        .execute("UPDATE runtime_events SET status='cancelled'", [])
+        .expect("queue empties");
+    assert!(!ready(&connection, 4), "nothing pending");
 }

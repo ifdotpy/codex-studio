@@ -121,7 +121,6 @@ pub(super) async fn recover(
         SchedulerRepository::recover_unsubmitted_for_account(tx, &account)?;
         SchedulerRepository::reconcile_generation(tx, &account, generation.0, now())?;
         retire_generations(tx, &account, generation.0)?;
-        SchedulerRepository::abandon_steers(tx, &account, generation.0)?;
         // The repository preserves Python recovery records. Journal delivery needs
         // the scoped attempt restored before notifications can be acknowledged.
         let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
@@ -753,7 +752,6 @@ pub(super) async fn outcome(
     let Some(context) = pending else {
         if let SessionOutcome::GenerationClosed { generation } = outcome {
             scheduler::lifecycle_transaction(&store, move |tx| {
-                SchedulerRepository::abandon_steers(tx, &account, generation.saturating_add(1))?;
                 SchedulerRepository::disconnect_account(tx, &account, generation, now(), false)
             })
             .await?;
