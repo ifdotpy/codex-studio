@@ -52,13 +52,16 @@ fn corpus() -> &'static RadioCorpus {
     CORPUS.get_or_init(|| {
         // Every test consumes the same input-independent cases. Generate once
         // so parallel tests don't launch identical SQLite-heavy Python oracles.
-        let template = tempfile::tempdir().expect("template");
+        let template = python_support::disposable_state_dir();
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let script = manifest.join("tests/wave7_p19/oracle.py");
         let mut command = Command::new(python_support::prepared_python(
             &manifest.join("../../apps/server/src"),
         ));
-        command.arg(&script).arg(template.path());
+        command
+            .env("TMPDIR", python_support::disposable_state_parent())
+            .arg(&script)
+            .arg(template.path());
         if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
             command.arg("--full");
         }
@@ -334,7 +337,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
 async fn python_written_radio_corpus_and_restart_replay() {
     let corpus = corpus();
     for original_case in &corpus.cases {
-        let root = tempfile::tempdir().expect("case");
+        let root = python_support::disposable_state_dir();
         copy_template(corpus, root.path());
         let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
         seed(&store, &original_case["before"]).await;
@@ -473,7 +476,7 @@ async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
             .expect("case");
         for table in tables {
             for boundary in ["BEFORE", "AFTER"] {
-                let root = tempfile::tempdir().expect("case");
+                let root = python_support::disposable_state_dir();
                 copy_template(corpus, root.path());
                 let store =
                     std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
@@ -576,7 +579,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
         .iter()
         .find(|c| c["name"] == "answer")
         .expect("answer");
-    let root = tempfile::tempdir().expect("state");
+    let root = python_support::disposable_state_dir();
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
@@ -645,7 +648,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .iter()
         .find(|case| case["name"] == "interrupt")
         .expect("interrupt");
-    let root = tempfile::tempdir().expect("state");
+    let root = python_support::disposable_state_dir();
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
@@ -709,7 +712,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
 
     // Simulate a crash after the durable claim commits but before transport
     // dispatch: recovery observes Unknown and the transport receives nothing.
-    let crash_root = tempfile::tempdir().expect("crash state");
+    let crash_root = python_support::disposable_state_dir();
     copy_template(corpus, crash_root.path());
     let crash_store = std::sync::Arc::new(
         RuntimeStore::open(Some(crash_root.path()))
@@ -791,7 +794,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         .iter()
         .find(|case| case["name"] == "open")
         .expect("open fixture");
-    let root = tempfile::tempdir().expect("state");
+    let root = python_support::disposable_state_dir();
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
