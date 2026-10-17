@@ -8,6 +8,11 @@ use std::{future::Future, pin::Pin};
 use studio_runtime_process::ProviderLaunchSpec;
 use studio_runtime_store::{AgentRecord, Transaction};
 
+/// Skill files appended to the role guidance of a new layr (VM) session, in this order,
+/// relative to `.agents/skills`. The Python runtime (`codex_runtime.VM_ROLE_GUIDANCE`) lists
+/// the same files.
+const VM_ROLE_GUIDANCE: [&str; 2] = ["codex-workspace/references/layr.md", "layr/SKILL.md"];
+
 /// Actor-specific inputs needed to launch a provider inside a Linux VM.
 /// Credentials are deliberately absent: the resolver reads and copies them
 /// through its private guest boundary and never returns or logs their values.
@@ -152,6 +157,12 @@ impl PreparationResources {
                 std::fs::read_to_string(skills_root.join(relative))
                     .map_err(|_| refusal("thread-preparation/missing-guidance".into()))?,
             );
+        }
+        // Only VM sessions use these; preparing one without them is refused below.
+        for relative in VM_ROLE_GUIDANCE {
+            if let Ok(content) = std::fs::read_to_string(skills_root.join(relative)) {
+                role_guidance.insert(PathBuf::from(relative), content);
+            }
         }
         Ok(Self {
             role_guidance,
@@ -451,6 +462,17 @@ fn guidance_with_python(
         if content.trim().is_empty() {
             return Err(refusal("thread-preparation/missing-guidance".into()));
         }
+        let mut content = content.trim().to_owned();
+        if record["executionMode"] == "vm" {
+            for relative in VM_ROLE_GUIDANCE {
+                let guide = resources
+                    .role_guidance
+                    .get(Path::new(relative))
+                    .ok_or_else(|| refusal("thread-preparation/missing-guidance".into()))?;
+                content.push('\n');
+                content.push_str(guide);
+            }
+        }
         format!(
             "[Studio role skill: {name}]\nSource: {}\nShared tool guidance: {}\n{}\n[End Studio role skill]",
             path.display(),
@@ -458,7 +480,7 @@ fn guidance_with_python(
                 .skills_root
                 .join("codex-workspace/SKILL.md")
                 .display(),
-            content.trim()
+            content
         )
     };
     let progress = if lead && !resources.progress_template.is_empty() {
@@ -1056,5 +1078,46 @@ mod resource_tests {
         .expect("progress guidance without Python");
         assert!(!without_python.progress.contains("--wait 3"));
         assert!(without_python.progress.contains("Do not repeat rewrites"));
+    }
+
+    #[test]
+    fn layr_sessions_get_the_layr_guidance_and_skill() {
+        let mut resources =
+            PreparationResources::bundled(String::new(), ModelCatalogService::new(None))
+                .expect("runtime resources");
+        let skill = resources.role_guidance[Path::new("layr/SKILL.md")].clone();
+        let reference =
+            resources.role_guidance[Path::new("codex-workspace/references/layr.md")].clone();
+        for lead in [true, false] {
+            let vm = guidance_with_python(
+                &resources,
+                &json!({"id":"agent", "isLead":lead, "executionMode":"vm"}),
+                Path::new("/state"),
+                None,
+            )
+            .expect("layr guidance");
+            assert!(
+                vm.role
+                    .contains(&format!("\n{reference}\n{skill}\n[End Studio role skill]"))
+            );
+            let native = guidance_with_python(
+                &resources,
+                &json!({"id":"agent", "isLead":lead}),
+                Path::new("/state"),
+                None,
+            )
+            .expect("native guidance");
+            assert!(!native.role.contains("# layr by task"));
+        }
+        resources.role_guidance.remove(Path::new("layr/SKILL.md"));
+        assert!(
+            guidance_with_python(
+                &resources,
+                &json!({"id":"agent", "isLead":true, "executionMode":"vm"}),
+                Path::new("/state"),
+                None,
+            )
+            .is_err()
+        );
     }
 }

@@ -199,6 +199,24 @@ class VmAgents(unittest.TestCase):
             'spawn:' + str(uuid.uuid4()))
         return self.runtime.agent(result['agents'][0]['id'])
 
+    def test_layr_sessions_get_the_layr_guidance_and_skill(self):
+        import codex_runtime
+        skills = REPOSITORY_ROOT / '.agents/skills'
+        guides = ''.join('\n' + (skills / guide).read_text() for guide in codex_runtime.VM_ROLE_GUIDANCE)
+        lead = self.runtime.prepare(self.lead())
+        worker = self.runtime.prepare(self.worker(lead))
+        for actor in (lead, worker):
+            with self.subTest(lead=actor.get('isLead')):
+                self.assertIn(guides + '\n[End Studio role skill]', self.runtime.role_guidance(actor))
+                # The frozen guidance of a started session is not rebuilt.
+                native = {**actor, 'executionMode': 'native', 'nativeRoleGuidance': None}
+                self.assertNotIn('# layr by task', self.runtime.role_guidance(native))
+        # The Rust preparation appends the same files in the same order.
+        rust = (REPOSITORY_ROOT / 'workspaces/runtime/packages/runtime-services/src/account_worker/'
+                'preparation/snapshot.rs').read_text()
+        listed = rust.split('const VM_ROLE_GUIDANCE', 1)[1].split('= [', 1)[1].split('];', 1)[0]
+        self.assertEqual(tuple(ast.literal_eval('[' + listed + ']')), codex_runtime.VM_ROLE_GUIDANCE)
+
     def test_lead_and_worker_native_processes_use_the_guest(self):
         lead = self.runtime.prepare(self.lead())
         self.assertEqual(lead['executionMode'], 'vm')

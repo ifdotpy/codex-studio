@@ -7,7 +7,6 @@ The Mac project folder remains separate for native chats.
 Export a copy only when the user asks for it.
 
 Use `layr` for all local version control commands.
-Read `/opt/codex-studio/.agents/skills/layr/SKILL.md` for layr commands by task.
 Use `layr status`, `layr diff`, `layr log`, and `layr show` to inspect the work.
 Use `layr add` and `layr commit` to save the task result.
 Submit the full state ID from `layr rev-parse HEAD` as the task revision.
