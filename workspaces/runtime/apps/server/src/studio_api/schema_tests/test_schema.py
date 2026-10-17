@@ -735,6 +735,19 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("process", "responseTarget"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # Work results submitted before result files existed keep their text
+        # inline and have no resultFile, wherever a work result is embedded.
+        for pointer in (
+            "/components/schemas/WorkInboxEntry/properties/work/properties/results/items",
+            "/components/schemas/WorkItem/properties/results/items",
+            "/components/schemas/WorkList/properties/items/items/properties/results/items",
+            "/components/schemas/WorkList/properties/tasks/items/properties/results/items",
+            "/components/schemas/WorkResultRecord",
+            "/components/schemas/WorkResultRecordResponse",
+            "/components/schemas/WorkViewRecordResponse/properties/results/items",
+        ):
+            add(pointer, "required")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
