@@ -666,6 +666,25 @@ mod tests {
             Some(InternalErrorKind::StoreDatabase)
         );
     }
+
+    #[test]
+    fn a_result_from_before_result_files_keeps_the_workspace_view_available() {
+        // Results submitted before result files existed keep their text inline.
+        let legacy = serde_json::json!({
+            "id": "result-1", "agent": "worker-1", "text": "done", "checks": "tests",
+            "revision": "abc", "files": [], "created": 1788712208.47
+        });
+        let view = serde_json::json!({
+            "work": [{
+                "id": "task-1", "rootId": "lead-1", "title": "Task", "status": "accepted",
+                "created": 1.0, "updated": 2.0, "version": 3, "results": [legacy]
+            }],
+            "annotations": [], "checkpoints": [], "plans": [], "rules": [], "inbox": [],
+            "tasks": [], "tasksHistoryLimit": 100, "monitors": []
+        });
+        super::super::generated_json::<crate::generated::WorkspaceView>(view)
+            .expect("a legacy result without resultFile is part of the view");
+    }
 }
 
 inventory::submit! {

@@ -26155,7 +26155,7 @@ export interface components {
       /** Layrstateid */
       layrStateId?: string;
       /** Resultfile */
-      resultFile: string;
+      resultFile?: string;
       /** Revision */
       revision: string;
       /** Runid */
@@ -26207,8 +26207,11 @@ export interface components {
        * @default null
        */
       layrStateId?: string;
-      /** Resultfile */
-      resultFile: string;
+      /**
+       * Resultfile
+       * @default null
+       */
+      resultFile?: string;
       /** Revision */
       revision: string;
       /**
