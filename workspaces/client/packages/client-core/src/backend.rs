@@ -272,16 +272,15 @@ impl Backend {
             ("API schema", request.api_schema.as_deref()),
             ("workspace", request.workspace_id.as_deref()),
         ] {
-            if let Some(value) = value {
-                if value.is_empty()
+            if let Some(value) = value
+                && (value.is_empty()
                     || value.len() > 1024
-                    || reqwest::header::HeaderValue::from_str(value).is_err()
-                {
-                    return Err(error(
-                        "invalid_header",
-                        format!("The {name} header is invalid."),
-                    ));
-                }
+                    || reqwest::header::HeaderValue::from_str(value).is_err())
+            {
+                return Err(error(
+                    "invalid_header",
+                    format!("The {name} header is invalid."),
+                ));
             }
         }
         let method = request

@@ -571,7 +571,7 @@ fn error_fields(error: &Value) -> (Option<String>, Option<String>) {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
     use std::thread;

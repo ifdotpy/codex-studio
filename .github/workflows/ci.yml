@@ -58,6 +58,11 @@ jobs:
           python-version: "3.14"
       - name: Install locked JavaScript dependencies
         run: pnpm install --frozen-lockfile
+      - name: Prepare the repository-managed Python environment for the renderer API check
+        run: |
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          cargo build --release -p studio-operations-python
+          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - uses: ./.github/actions/client-build-setup
         with:
           native: "true"

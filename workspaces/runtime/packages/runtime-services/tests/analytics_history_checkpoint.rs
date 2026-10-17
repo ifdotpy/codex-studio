@@ -983,6 +983,11 @@ async fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
                 .await
                 .expect("ambiguous second turn");
         }
+        // The oracle clone copies only the database files; no row may stay in the WAL.
+        store
+            .checkpoint_wal_passive()
+            .await
+            .expect("fixture database checkpoint");
         drop(store);
         let reference = tempfile::tempdir().expect("oracle clone");
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {

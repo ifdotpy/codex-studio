@@ -1163,7 +1163,8 @@ mod tests {
         // Use the production registry path so the watcher observes accounts,
         // rather than falling back to the parent containing SQLite WAL files.
         let account_path = state.join("accounts/registry.json");
-        std::fs::create_dir_all(account_path.parent().unwrap()).expect("fixture account directory");
+        let account_dir = account_path.parent().expect("fixture account parent");
+        std::fs::create_dir_all(account_dir).expect("fixture account directory");
         std::fs::write(
             &account_path,
             json!({
@@ -1178,6 +1179,15 @@ mod tests {
             .to_string(),
         )
         .expect("fixture account registry");
+        // Python creates the registry private, and the fresh state check
+        // accepts only that shape before the databases exist.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(account_dir, std::fs::Permissions::from_mode(0o700))
+                .expect("private fixture account directory");
+            std::fs::set_permissions(&account_path, std::fs::Permissions::from_mode(0o600))
+                .expect("private fixture account registry");
+        }
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
         let agent = json!({

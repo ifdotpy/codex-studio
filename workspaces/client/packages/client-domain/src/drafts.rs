@@ -243,7 +243,14 @@ mod tests {
     fn an_edit_replaces_only_the_versions_it_has_seen() {
         let first = branch("one", "first", 10);
         let concurrent = branch("two", "unseen", 11);
-        let edit = edit("one", "room", "replacement".into(), &[first.clone()], 9).unwrap();
+        let edit = edit(
+            "one",
+            "room",
+            "replacement".into(),
+            std::slice::from_ref(&first),
+            9,
+        )
+        .unwrap();
         assert_eq!(edit.updated, 11);
         assert!(merge(&first, &edit).unwrap().alternatives.is_empty());
         let view = reconcile(&[edit, concurrent], &BTreeMap::new(), &BTreeSet::new()).unwrap();
