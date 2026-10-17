@@ -1994,12 +1994,20 @@ def repair_before_start(rt, agent):
             if _identity(current) == _identity(agent) and not current.get('contextRepairWait'):
                 if _optional_monitor_repair(rt, db, current):
                     return current
-        optional = _optional_native_command_repair(rt, agent)
-        if optional is not None:
-            return optional
         if (agent.get('contextRepair') or {}).get('phase') in {'unchanged', 'completed'}:
             _callback_barrier(rt.connect(agent.get('accountKey', 'default')))
-        return _repair(rt, agent['id'], _attempt(agent))
+        try:
+            return _repair(rt, agent['id'], _attempt(agent))
+        except ValueError as error:
+            # Probe native services only after ordinary repair proves that they
+            # block shortening. A fresh start and a repair with no eligible
+            # events must not acquire new native reads or local idle guards.
+            if (str(error) == 'Context repair waits for native commands and queued input'
+                    and getattr(error, 'contextRepairWait', {}).get('scope') == 'native'):
+                optional = _optional_native_command_repair(rt, agent)
+                if optional is not None:
+                    return optional
+            raise
     except ValueError as error:
         if isinstance(getattr(error, 'contextRepairWait', None), dict):
             error.contextRepairWait['source'] = _identity(agent)
