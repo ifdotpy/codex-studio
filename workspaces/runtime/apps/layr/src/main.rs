@@ -6,8 +6,13 @@
 #[macro_use]
 mod ctx;
 mod access;
+#[cfg(any(target_os = "macos", feature = "overlayfs"))]
+mod apfs_stream;
+#[cfg(any(target_os = "macos", feature = "overlayfs"))]
+mod stream_fs;
+#[cfg(all(feature = "overlayfs", not(target_os = "linux")))]
+compile_error!("the overlayfs feature requires Linux");
 mod args;
-mod btrfs;
 mod changes;
 mod cmd;
 mod db;
@@ -24,7 +29,18 @@ mod privs;
 mod recv;
 mod repo;
 mod revs;
+#[cfg(target_os = "linux")]
+mod send_cache;
 mod service;
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
+#[path = "btrfs.rs"]
+mod storage;
+#[cfg(feature = "overlayfs")]
+#[path = "overlayfs.rs"]
+mod storage;
+#[cfg(target_os = "macos")]
+#[path = "apfs.rs"]
+mod storage;
 mod store;
 mod stream;
 #[allow(unsafe_code)]
@@ -36,6 +52,20 @@ use std::collections::HashMap;
 
 fn main() {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(any(target_os = "macos", feature = "overlayfs"))]
+    if argv.first().map(String::as_str) == Some("__apfs-send") {
+        let result = (|| -> anyhow::Result<()> {
+            if argv.len() != 2 {
+                anyhow::bail!("invalid internal send arguments");
+            }
+            crate::apfs_stream::send(std::path::Path::new(&argv[1]), &mut std::io::stdout().lock())
+        })();
+        if let Err(e) = result {
+            eprintln!("fatal: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Global options before the command.
     while let Some(first) = argv.first().cloned() {
         match first.as_str() {
@@ -76,7 +106,9 @@ fn main() {
             }
         }
     }
-    let direct = rustix::process::geteuid().is_root() || std::env::var("LAYR_DIRECT").map(|v| v == "1").unwrap_or(false);
+    let direct = (cfg!(target_os = "macos") && std::env::var_os("LAYR_SOCKET").is_none())
+        || rustix::process::geteuid().is_root()
+        || std::env::var("LAYR_DIRECT").map(|v| v == "1").unwrap_or(false);
     let code = if direct {
         let uid = rustix::process::getuid().as_raw();
         let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());

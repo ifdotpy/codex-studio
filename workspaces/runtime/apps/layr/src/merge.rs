@@ -799,7 +799,7 @@ fn block_merge(
             continue;
         }
         let len = len.min(mt.size - off);
-        if crate::btrfs::clone_range(&src, off, len, &dst, off).is_ok() {
+        if crate::storage::clone_range(&src, off, len, &dst, off).is_ok() {
             continue;
         }
         let mut buf = vec![0u8; len as usize];
