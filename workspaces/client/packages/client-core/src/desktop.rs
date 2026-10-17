@@ -1,4 +1,9 @@
 //! Desktop permissions are issued from a recent native event, never a JS flag.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 use crate::protocol::{Request, Response};
 use serde_json::Value;
 use std::{

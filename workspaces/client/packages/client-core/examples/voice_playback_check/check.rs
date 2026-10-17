@@ -104,7 +104,7 @@ fn check() -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
+pub(crate) fn main() {
     if let Err(error) = check() {
         eprintln!("Voice playback render FAILED: {error}");
         std::process::exit(1);

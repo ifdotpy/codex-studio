@@ -215,10 +215,10 @@ pub fn stored(db: &mut Connection, request: &Request) -> Response {
             request.method.as_str(),
             "files.stage_many" | "files.stage" | "files.text" | "uploads.queue"
         );
-        if durable {
-            if let Some(reply) = crate::store::replay(&tx, request).map_err(|e| e.to_string())? {
-                return Ok(reply);
-            }
+        if durable
+            && let Some(reply) = crate::store::replay(&tx, request).map_err(|e| e.to_string())?
+        {
+            return Ok(reply);
         }
         let value = apply(&tx, request)?;
         let response = Response::success(request.id.clone(), value);

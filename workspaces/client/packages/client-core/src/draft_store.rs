@@ -294,10 +294,8 @@ pub fn dispatch(db: &mut Connection, request: &Request) -> Response {
             request.method.as_str(),
             "drafts.edit" | "drafts.dismiss" | "drafts.import"
         );
-        if receipt {
-            if let Some(response) = sql(crate::store::replay(&transaction, request))? {
-                return Ok(response);
-            }
+        if receipt && let Some(response) = sql(crate::store::replay(&transaction, request))? {
+            return Ok(response);
         }
         let value = execute(&transaction, request)?;
         let response = Response::success(request.id.clone(), value);

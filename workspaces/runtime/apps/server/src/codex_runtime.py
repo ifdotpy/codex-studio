@@ -322,10 +322,8 @@ for definition in TOOLS:
         definition["inputSchema"]["properties"]["interactive"] = {"type": "boolean"}
         definition["inputSchema"]["properties"]["stall_timeout_seconds"] = {"type": "integer", "minimum": 0, "maximum": 31536000}
         definition["inputSchema"]["properties"]["liveness_command"] = {"type": "string", "maxLength": 12000}
-        definition["inputSchema"]["oneOf"] = [
-            {"required": ["command"], "not": {"required": ["monitor_id"]}},
-            {"required": ["monitor_id"], "not": {"required": ["command"]}},
-        ]
+        # The handler enforces exactly one of command or monitor_id. Provider
+        # bridges need a plain object schema, without top-level oneOf or not.
     if definition["name"] == "orchestration_spawn":
         definition["inputSchema"]["properties"]["server"] = TEXT
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"]["server"] = TEXT
