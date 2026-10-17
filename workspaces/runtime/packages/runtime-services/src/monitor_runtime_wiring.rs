@@ -1345,6 +1345,7 @@ fn register_rule_directories(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{ERROR_RETRY_MIN, MonitorRuntime, record_tick_failure};
     use crate::monitor_driver::{MonitorNative, Submission};

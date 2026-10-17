@@ -141,7 +141,7 @@ pub fn validate_wav(data: &[u8]) -> Result<(), String> {
         || u32_at(28) != rate * 2
         || u16_at(32) != 2
         || u32_at(4) as usize != data.len() - 8
-        || (data.len() - 44) % 2 != 0
+        || !(data.len() - 44).is_multiple_of(2)
         || (data.len() - 44) as u64 / (rate as u64 * 2) > 1801
     {
         return Err("Invalid WAV recording or duration exceeds 30 minutes.".into());
@@ -176,14 +176,13 @@ fn helper() -> Result<PathBuf, String> {
 struct Running(String);
 impl Drop for Running {
     fn drop(&mut self) {
-        if let Ok(mut service) = service().lock() {
-            if service
+        if let Ok(mut service) = service().lock()
+            && service
                 .running
                 .as_ref()
                 .is_some_and(|(id, _)| *id == self.0)
-            {
-                service.running = None;
-            }
+        {
+            service.running = None;
         }
     }
 }

@@ -1,4 +1,9 @@
 //! Rasterize one PDF page from an immutable file snapshot. No document actions run.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{io::Cursor, sync::Arc};

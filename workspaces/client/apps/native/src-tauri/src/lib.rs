@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 #[derive(Default)]
 struct Clients {
     local: Mutex<Option<Arc<Client>>>,
+    #[cfg(target_os = "macos")]
     remote: Mutex<Option<Arc<studio_client_core::server_transport::RemoteClient>>>,
     backend_verified: Mutex<bool>,
     workspace: Mutex<Option<String>>,
@@ -114,6 +115,7 @@ mod tests {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn approved_peer(
     snapshot: &serde_json::Value,
     params: &serde_json::Value,
@@ -485,11 +487,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             #[cfg(desktop)]
             window_state::event(window, event);
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && close::request(window.app_handle()) {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main" && close::request(window.app_handle()) {
                     api.prevent_close();
                 }
-            }
         })
         .on_page_load(|window, payload| {
             #[cfg(feature = "native-check")]
@@ -609,11 +610,9 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } = event
-            {
-                if close::request(app) {
+                && close::request(app) {
                     api.prevent_exit();
                 }
-            }
         });
 }
 

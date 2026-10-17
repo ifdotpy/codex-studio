@@ -1,5 +1,10 @@
 //! Microphone capture and recording playback for the Attar UI.
 //! Audio stays on native threads. The UI receives 16-bit PCM chunks as data.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -365,7 +370,7 @@ pub(crate) mod mac {
         let input = unsafe { engine.inputNode() };
         let format = unsafe { input.outputFormatForBus(0) };
         let (rate, channels) = unsafe { (format.sampleRate(), format.channelCount() as usize) };
-        if !(rate >= 8000.0) || channels == 0 {
+        if rate.is_nan() || rate < 8000.0 || channels == 0 {
             return Err("No microphone input is available.".into());
         }
         let shared = Arc::new(Mutex::new(Shared {

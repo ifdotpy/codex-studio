@@ -249,10 +249,11 @@ impl Patcher {
             self.last = None;
             return Some(json!({"event":id,"value":value}));
         }
-        if let Some((last_workspace, last_seq, _)) = &self.last {
-            if *last_workspace == workspace && *last_seq == seq {
-                return None;
-            }
+        if let Some((last_workspace, last_seq, _)) = &self.last
+            && *last_workspace == workspace
+            && *last_seq == seq
+        {
+            return None;
         }
         let Ok(parsed) = serde_json::from_str::<Value>(payload) else {
             self.last = None;

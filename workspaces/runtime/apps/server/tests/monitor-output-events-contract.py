@@ -366,10 +366,9 @@ class MonitorOutputEventsContract(unittest.TestCase):
 
     def test_invalid_observation_and_unbounded_patterns_fail(self):
         key = self.monitor(output_patterns=["READY"])
-        with self.assertRaisesRegex(ValueError, "exactly one"):
-            self.runtime.monitor(self.agent["id"],
-                                 {"monitor_id": key, "command": "true"},
-                                 epoch=self.agent["epoch"])
+        for args in ({"monitor_id": key, "command": "true"}, {"wait_timeout_ms": 0}):
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                self.runtime.monitor(self.agent["id"], args, epoch=self.agent["epoch"])
         for args in ({"monitor_id": key, "output_patterns": ["READY"]},
                      {"monitor_id": key, "timeout_ms": 1000}):
             with self.assertRaisesRegex(ValueError, "observation accepts"):
@@ -392,7 +391,29 @@ class MonitorOutputEventsContract(unittest.TestCase):
             "type": "integer", "minimum": 0, "maximum": 10000})
         self.assertEqual(schema["properties"]["output_patterns"]["maxItems"], 16)
         self.assertEqual(schema["properties"]["monitor_id"]["maxLength"], 200)
-        self.assertEqual(len(schema["oneOf"]), 2)
+        self.assertNotIn("oneOf", schema)
+
+    def test_every_tool_schema_stays_a_plain_object_for_provider_bridges(self):
+        # The Claude bridge converts each schema with Zod and registers its
+        # object shape. Zod rejects "not", and a top-level combinator has no shape.
+        from codex_runtime import TOOLS
+
+        def keywords(value):
+            if isinstance(value, dict):
+                yield from value
+                for child in value.values():
+                    yield from keywords(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from keywords(child)
+
+        for tool in TOOLS:
+            schema = tool["inputSchema"]
+            with self.subTest(tool=tool["name"]):
+                self.assertEqual(schema["type"], "object")
+                self.assertLessEqual(
+                    set(schema), {"type", "properties", "required", "additionalProperties"})
+                self.assertNotIn("not", set(keywords(schema["properties"])))
 
     def test_preflight_rejections_are_saved_as_not_applied(self):
         from codex_tool_requests import request_read_only
