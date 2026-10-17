@@ -1665,7 +1665,8 @@ class WorkRecord(TypedDict):
     owner: NotRequired[str | None]
     created: float
     updated: float
-    createdBy: str
+    # Work written before creator tracking has no creator; readers must not invent one.
+    createdBy: NotRequired[str]
     version: SafeInt
     dependencies: list[str]
     decisions: list[WorkDecisionRecord]

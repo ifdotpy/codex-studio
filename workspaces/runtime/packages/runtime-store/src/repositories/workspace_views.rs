@@ -209,11 +209,6 @@ impl WorkspaceViewsRepository {
         Table::<AgentRecord>::new(connection).get(&AgentId::from(id))
     }
 
-    pub fn validate_task_records(connection: &Connection) -> StoreResult<()> {
-        Table::<TaskRecord>::new(connection).list()?;
-        Ok(())
-    }
-
     /// The composite cursor remains specialized because it orders by two JSON timestamps.
     pub fn task_page(
         connection: &Connection,
