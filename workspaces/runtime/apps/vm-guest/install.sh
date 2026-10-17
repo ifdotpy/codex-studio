@@ -47,10 +47,16 @@ unit=/etc/systemd/system/codex-studio-guest.service
 unit_before=$(cat "$unit" 2>/dev/null || true)
 sed "s|@REPO@|$repo_dir|g" "$script_dir/codex-studio-guest.service" >"$unit"
 install -m 0644 "$script_dir/codex-studio-grow.service" /etc/systemd/system/codex-studio-grow.service
+install -m 0644 "$script_dir/codex-studio-rosetta.service" /etc/systemd/system/codex-studio-rosetta.service
 systemctl daemon-reload
 systemctl start codex-studio-grow.service
 bash "$script_dir/install-layr.sh"
 systemctl enable --now codex-studio-grow.service codex-studio-guest.service
+# Rosetta for Linux (docs/linux-vm-workspaces.md, "x86_64 binaries") is optional. Without the
+# Mac's share the unit does nothing. A failed runtime install does not fail the guest install;
+# the next install tries again.
+systemctl enable --now codex-studio-rosetta.service || echo 'STUDIO_ROSETTA: the activation unit failed' >&2
+python3 "$script_dir/rosetta.py" install-runtime || echo 'STUDIO_ROSETTA: the amd64 runtime is not installed' >&2
 # Boot can start the guest service before this script writes its new unit. A running service
 # keeps the unit it started with, so a changed unit (such as the RuntimeDirectory of the
 # browser bridge socket) applies only after a restart. Provider owners survive it (KillMode).

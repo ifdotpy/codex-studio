@@ -167,6 +167,54 @@ operation ID.
 reboot path is the earlier full path: it requires idle providers, makes a disk backup, stops
 the VM, writes a new provision seed and starts the VM.
 
+## x86_64 binaries
+
+The VM can run Linux x86_64 binaries with Rosetta for Linux, for example a prebuilt x64 tool
+from a project's toolchain. This is a platform capability. It has no rules for a tool.
+
+The VM helper (`workspaces/client/apps/desktop/native/linux-vm/main.swift`) checks `VZLinuxRosettaDirectoryShare.availability`
+when it starts the VM:
+
+- `installed`: the helper adds a virtiofs device with the tag `LINUX_VM_ROSETTA_TAG`
+  (`rosetta`, owner `codex_shared_values.py`) and the Rosetta share.
+- `notInstalled` or `notSupported`: the VM starts without the device. The helper does not
+  install Rosetta and does not prompt. To get it, install Rosetta on the Mac
+  (`softwareupdate --install-rosetta`), then restart the VM.
+
+`host.status` (and so `Client.status()` and the `linuxVm` status) has `rosetta`:
+`availability` (now), `attached` (this boot has the share) and `error` (the share failed, and
+the VM started without it). `--check` prints the availability. The helper needs no entitlement
+other than `com.apple.security.virtualization`.
+
+In the guest (`vm-guest/rosetta.py`):
+
+- `codex-studio-rosetta.service` runs `rosetta.py activate` at each boot. It mounts the share
+  read-only at `/media/rosetta` and registers `/media/rosetta/rosetta` as the binfmt_misc
+  handler `rosetta`, with Apple's x86_64 ELF magic and mask. The flag is `F`: the kernel opens
+  the translator at registration, so x86_64 programs also start in the Codex sandbox and in
+  other mount namespaces. Without `C`, a set-user-ID x86_64 file runs with the caller's
+  credentials. Without the share the unit logs `STUDIO_ROSETTA: no virtiofs share` and
+  succeeds, so boot does not change.
+- `install.sh` runs `rosetta.py install-runtime`. It adds the `amd64` architecture, the amd64
+  archive (`/etc/apt/sources.list.d/codex-studio-amd64.sources`) and installs `libc6:amd64`,
+  `libstdc++6:amd64` and `zlib1g:amd64`. It uses the network only when a package is missing.
+  It runs also without Rosetta, so a later install of Rosetta needs only a VM restart. A
+  failure does not fail the guest install. The next install tries again. The image's arm64
+  sources stay unchanged: apt skips the arm64 mirror for amd64 with a notice.
+
+An existing VM gets the capability in two steps, in any order:
+
+1. A guest update (`upgrade-linux-vm-layr.py`). The change is below `vm/guest/`, so it takes
+   the in-place path: it installs the unit and the amd64 runtime, without a reboot.
+2. A VM restart with the new helper (a Studio install, then a VM stop and start). Virtualization
+   adds the device only when the VM starts. After the restart the unit mounts the share.
+
+To check a running VM: `cat /proc/sys/fs/binfmt_misc/rosetta` shows `enabled`, and
+`systemctl status codex-studio-rosetta.service` shows the last `STUDIO_ROSETTA` line.
+A static x86_64 binary needs only the handler. A dynamic glibc binary also needs the amd64
+runtime. A binary that needs another amd64 library needs that package too: the project
+installs it, as for any other guest package.
+
 ## Guest crash watchdog
 
 The guest kernel can panic, for example `Kernel panic - not syncing: corrupted stack end
@@ -304,6 +352,7 @@ python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/run
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_watchdog.py
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_update.py
 python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_guest_update.py
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_rosetta.py
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
 ```
 
@@ -311,6 +360,8 @@ The first suite uses a local native provider fixture. It sends no model request.
 The second suite checks the watchdog with a fake helper. It starts no VM.
 The third and fourth suites check guest updates with the real broker handler and a recorded
 install script and systemctl. They start no VM.
+The fifth suite checks the Rosetta guest module with a recorded mount and apt, the provision
+payload and the helper source. It starts no VM.
 The last suite requires a provisioned isolated VM and explicit authority for live model requests.
 Do not restart a VM or remove a journal that has an active or unknown provider result.
 The watchdog restarts only a guest that is dead or gives no answer: Studio cannot reach its providers.
