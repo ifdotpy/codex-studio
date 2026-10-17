@@ -191,7 +191,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
     assert_eq!(first_delivery.cursor, format!("{account}:7:11"));
     assert!(matches!(
         &first_delivery.event,
-        MonitorEvent::Output { offset: 0, bytes } if bytes == b"one"
+        MonitorEvent::OutputStream { offset: 0, stream, bytes } if stream == "stdout" && bytes == b"one"
     ));
     let replay = monitor_event_queue::next(&store)
         .expect("replay output queue")
@@ -207,7 +207,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
     assert_eq!(second_delivery.cursor, format!("{account}:7:12"));
     assert!(matches!(
         &second_delivery.event,
-        MonitorEvent::Output { offset: 3, bytes } if bytes == b"two"
+        MonitorEvent::OutputStream { offset: 3, stream, bytes } if stream == "stdout" && bytes == b"two"
     ));
     monitor_event_queue::acknowledge(&store, &second_delivery)
         .await

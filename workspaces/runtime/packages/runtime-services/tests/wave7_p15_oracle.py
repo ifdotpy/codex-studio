@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import sys
+import threading
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent / "turn_lifecycle"))
@@ -18,7 +19,12 @@ from codex_runtime import Runtime
 class Host(oracle.Host):
     monitor = Runtime.monitor
     _finish_monitor = Runtime._finish_monitor
+    _finalize_monitor_terminal = Runtime._finalize_monitor_terminal
     monitor_auto_approved = staticmethod(Runtime.monitor_auto_approved)
+    def __init__(self):
+        super().__init__()
+        self.monitor_condition = threading.Condition(self.lock)
+
     def assert_workspace_available(self, *args):
         pass
     def launch_monitor(self, *args):
