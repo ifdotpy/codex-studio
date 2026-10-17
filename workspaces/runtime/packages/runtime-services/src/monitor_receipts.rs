@@ -119,10 +119,22 @@ fn read(path: &Path, id: Option<&str>) -> Result<ResultReceipt, MonitorError> {
     Ok(receipt)
 }
 
+/// Run receipt file I/O on the blocking pool, off the async workers.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, MonitorError> + Send + 'static,
+) -> Result<T, MonitorError> {
+    studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/monitor_receipts", work)
+        .await
+        .map_err(|_| MonitorError::Io(std::io::Error::other("monitor receipt file task failed")))?
+}
+
 pub async fn finish(store: &RuntimeStore, receipt: &ResultReceipt) -> Result<(), MonitorError> {
-    let saved = persist(store.root(), receipt)?;
+    let root = store.root().to_path_buf();
+    let receipt = receipt.clone();
+    let saved = blocking(move || persist(&root, &receipt)).await?;
     restore(store, &saved).await?;
-    acknowledge(store.root(), &saved.key)
+    let root = store.root().to_path_buf();
+    blocking(move || acknowledge(&root, &saved.key)).await
 }
 
 async fn restore(store: &RuntimeStore, receipt: &ResultReceipt) -> Result<(), MonitorError> {
@@ -158,9 +170,15 @@ pub async fn recover(
 ) -> Vec<(String, Result<(), MonitorError>)> {
     let mut results = Vec::new();
     for id in keys.iter().take(64) {
-        let result = match read(&path(store.root(), id), Some(id)) {
+        let root = store.root().to_path_buf();
+        let key = id.clone();
+        let result = match blocking(move || read(&path(&root, &key), Some(&key))).await {
             Ok(receipt) => match restore(store, &receipt).await {
-                Ok(()) => acknowledge(store.root(), id),
+                Ok(()) => {
+                    let root = store.root().to_path_buf();
+                    let key = id.clone();
+                    blocking(move || acknowledge(&root, &key)).await
+                }
                 Err(error) => Err(error),
             },
             Err(error) => Err(error),
@@ -168,6 +186,46 @@ pub async fn recover(
         results.push((id.clone(), result));
     }
     results
+}
+
+/// List the `.json` receipt paths of a recovery directory; `None` when the
+/// directory is absent or unusable (reported, except when absent).
+fn receipt_paths(directory: &Path) -> Option<Vec<PathBuf>> {
+    match fs::symlink_metadata(directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            report_recovery_warning(directory, error);
+            return None;
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            report_recovery_warning(directory, "not a directory");
+            return None;
+        }
+        Ok(_) => {}
+    }
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report_recovery_warning(directory, error);
+            return None;
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+                {
+                    paths.push(path);
+                }
+            }
+            Err(error) => report_recovery_warning(directory, error),
+        }
+    }
+    Some(paths)
 }
 
 /// Recover at most `limit` valid receipts, scanning past invalid entries so they
@@ -178,61 +236,34 @@ pub async fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize
         return Ok(0);
     }
     let directory = store.root().join("monitor-results");
-    match fs::symlink_metadata(&directory) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => {
-            report_recovery_warning(&directory, error);
-            return Ok(0);
-        }
-        Ok(metadata) if !metadata.is_dir() => {
-            report_recovery_warning(&directory, "not a directory");
-            return Ok(0);
-        }
-        Ok(_) => {}
-    }
-    let mut recovered = 0;
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) => {
-            report_recovery_warning(&directory, error);
-            return Ok(0);
-        }
+    let Some(entries) = blocking(move || Ok(receipt_paths(&directory))).await? else {
+        return Ok(0);
     };
+    let mut recovered = 0;
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                report_recovery_warning(&directory, error);
-                continue;
-            }
-        };
-        if entry
-            .path()
-            .extension()
-            .is_none_or(|extension| extension != "json")
-        {
-            continue;
-        }
-        let receipt = match read(&entry.path(), None) {
+        let entry_path = entry.clone();
+        let receipt = match blocking(move || read(&entry_path, None)).await {
             Ok(receipt) => receipt,
             Err(error) => {
-                report_recovery_warning(&entry.path(), error);
+                report_recovery_warning(&entry, error);
                 continue;
             }
         };
-        if entry.path() != path(store.root(), &receipt.key) {
-            report_recovery_warning(&entry.path(), "invalid identity");
+        if entry != path(store.root(), &receipt.key) {
+            report_recovery_warning(&entry, "invalid identity");
             continue;
         }
         if let Err(error) = restore(store, &receipt).await {
             if crate::monitor_runtime::startup_store_failure(&error) {
                 return Err(error);
             }
-            report_recovery_warning(&entry.path(), error);
+            report_recovery_warning(&entry, error);
             continue;
         }
-        if let Err(error) = acknowledge(store.root(), &receipt.key) {
-            report_recovery_warning(&entry.path(), &error);
+        let root = store.root().to_path_buf();
+        let key = receipt.key.clone();
+        if let Err(error) = blocking(move || acknowledge(&root, &key)).await {
+            report_recovery_warning(&entry, &error);
             return Err(error);
         }
         recovered += 1;

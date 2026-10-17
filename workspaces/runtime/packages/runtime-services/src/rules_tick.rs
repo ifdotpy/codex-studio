@@ -151,7 +151,11 @@ pub async fn tick_batch(
     files: &impl RuleFiles,
     monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<TickReport, RulesTickError> {
-    let rows = RulesTickRepository::page(&*store.read()?, after_rowid)?;
+    let rows = store
+        .read_async("runtime-services/rules_tick", move |tx| {
+            RulesTickRepository::page(tx, after_rowid).map_err(RulesTickError::from)
+        })
+        .await?;
     let mut report = TickReport {
         next_rowid: (rows.len() == RULE_BATCH)
             .then(|| rows.last().map(|row| row.rowid))
@@ -159,7 +163,12 @@ pub async fn tick_batch(
         ..TickReport::default()
     };
     for row in rows {
-        let sampled = load_snapshot(&*store.read()?, row.rule)?;
+        let rule = row.rule;
+        let sampled = store
+            .read_async("runtime-services/rules_tick", move |tx| {
+                load_snapshot(tx, rule)
+            })
+            .await?;
         let fingerprint = if let Some(path) = sampled.fingerprint_path(now) {
             files.fingerprint(path).await?
         } else {
@@ -216,7 +225,11 @@ pub async fn recover_batch(
     now: f64,
     monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<TickReport, RulesTickError> {
-    let rows = RulesTickRepository::page(&*store.read()?, after_rowid)?;
+    let rows = store
+        .read_async("runtime-services/rules_tick", move |tx| {
+            RulesTickRepository::page(tx, after_rowid).map_err(RulesTickError::from)
+        })
+        .await?;
     let mut report = TickReport {
         next_rowid: (rows.len() == RULE_BATCH)
             .then(|| rows.last().map(|row| row.rowid))
@@ -224,7 +237,12 @@ pub async fn recover_batch(
         ..TickReport::default()
     };
     for row in rows {
-        let sampled = load_snapshot(&*store.read()?, row.rule)?;
+        let rule = row.rule;
+        let sampled = store
+            .read_async("runtime-services/rules_tick", move |tx| {
+                load_snapshot(tx, rule)
+            })
+            .await?;
         let intent = launch_intent(&sampled)?;
         let state = match &intent {
             Some(check) if sampled.launch_allowed(check) && monitor.available() => {

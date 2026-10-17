@@ -343,19 +343,22 @@ impl ProductionLifecyclePorts {
             }
             // A rollback leaves no durable matching receipt, so discard the
             // in-memory candidate without contacting the provider.
-            let persisted = {
-                let reader = self.store.read()?;
-                let Some(agent) =
-                    AgentRepository::get(&reader, &AgentId::from(request.agent.as_str()))?
-                else {
-                    continue;
-                };
-                let interrupt =
-                    &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
-                interrupt["requestTicket"].as_str() == Some(request.ticket.as_str())
-                    && interrupt["outcome"].as_str() == Some("unknown")
-                    && agent.epoch == request.epoch.saturating_add(1)
-            };
+            let agent_id = AgentId::from(request.agent.as_str());
+            let ticket = request.ticket.clone();
+            let epoch = request.epoch;
+            let persisted = self
+                .store
+                .read_async("runtime-services/lifecycle_effects", move |tx| {
+                    let Some(agent) = AgentRepository::get(tx, &agent_id)? else {
+                        return Ok::<_, studio_runtime_store::StoreError>(false);
+                    };
+                    let interrupt =
+                        &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
+                    Ok(interrupt["requestTicket"].as_str() == Some(ticket.as_str())
+                        && interrupt["outcome"].as_str() == Some("unknown")
+                        && agent.epoch == epoch.saturating_add(1))
+                })
+                .await?;
             if !persisted {
                 continue;
             }
@@ -385,21 +388,24 @@ impl ProductionLifecyclePorts {
     }
 
     async fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
-        let pending = self.store.read_transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT id,server,body FROM runtime_server_outbox \
+        let pending = self
+            .store
+            .read_async("runtime-services/lifecycle_effects", |tx| {
+                let mut statement = tx.prepare(
+                    "SELECT id,server,body FROM runtime_server_outbox \
                  WHERE state IN ('queued','running') ORDER BY rowid",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(studio_runtime_store::StoreError::from)
-        })?;
+                )?;
+                let rows = statement.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -438,17 +444,20 @@ impl ProductionLifecyclePorts {
     }
 
     async fn reconcile_deleted_tombstones(&self) -> Result<(), ManagementError> {
-        let pending = self.store.read_transaction(|tx| {
-            let mut pending = Vec::new();
-            for (id, raw) in sync_policy::stored_records(tx, "runtime_agents")? {
-                let record: Value =
-                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-                if needs_deleted_settlement(&record) {
-                    pending.push(id);
+        let pending = self
+            .store
+            .read_async("runtime-services/lifecycle_effects", |tx| {
+                let mut pending = Vec::new();
+                for (id, raw) in sync_policy::stored_records(tx, "runtime_agents")? {
+                    let record: Value = serde_json::from_str(&raw)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    if needs_deleted_settlement(&record) {
+                        pending.push(id);
+                    }
                 }
-            }
-            Ok::<_, studio_runtime_store::StoreError>(pending)
-        })?;
+                Ok::<_, studio_runtime_store::StoreError>(pending)
+            })
+            .await?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -679,17 +688,20 @@ impl ProductionLifecyclePorts {
 
 impl ProductionLifecyclePorts {
     async fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
-        let intents = self.store.read_transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
+        let intents = self
+            .store
+            .read_async("runtime-services/lifecycle_effects", |tx| {
+                let mut statement = tx.prepare(
+                    "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
                  WHERE signature=?1 AND json_extract(result,'$.status')='pending' ORDER BY id",
-            )?;
-            let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(studio_runtime_store::StoreError::from)
-        })?;
+                )?;
+                let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await?;
         if intents.is_empty() {
             return Ok(());
         }

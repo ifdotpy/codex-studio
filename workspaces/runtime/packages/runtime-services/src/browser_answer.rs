@@ -70,7 +70,14 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         now,
         validate,
     } = context;
-    let Some(record) = store.read_transaction_with_error(|tx| load_optional(tx, id, &validate))?
+    let validate = Arc::new(validate);
+    let validate_for_read = Arc::clone(&validate);
+    let id_for_read = id.to_owned();
+    let Some(record) = store
+        .read_async("runtime-services/browser_answer", move |tx| {
+            load_optional(tx, &id_for_read, validate_for_read.as_ref())
+        })
+        .await?
     else {
         return Ok(None);
     };
@@ -207,7 +214,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
                 drop(forwarder.close(bridge_id).await);
             }
             let id = id.to_owned();
-            let validate = Arc::new(validate);
+            let validate = Arc::clone(&validate);
             store
                 .transaction_with_error(move |tx| expire(tx, &id, validate.as_ref()))
                 .await?;
@@ -279,7 +286,6 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         .as_ref()
         .and_then(|value| value.get("_forwardState"))
         .cloned();
-    let validate = Arc::new(validate);
     let decision_for_write = decision.clone();
     store
         .transaction_with_error(move |tx| {

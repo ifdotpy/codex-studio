@@ -572,7 +572,12 @@ pub async fn execute_provider_prepared(
     effects: Arc<dyn Acceptance>,
     preparation: &impl Preparation,
 ) -> Result<Value> {
-    let existing = store.read_transaction_with_error(|tx| replay(tx, request))?;
+    let replay_request = request.clone();
+    let existing = store
+        .read_async("runtime-services/native_actions", move |tx| {
+            replay(tx, &replay_request)
+        })
+        .await?;
     if let Some(snapshot) = existing.as_ref()
         && (!matches!(snapshot.outcome, Outcome::Pending { .. })
             || snapshot.agent["startAttempt"]["submitted"] == true)
@@ -580,7 +585,12 @@ pub async fn execute_provider_prepared(
         return Ok(response(snapshot, true));
     }
     let resume_reserved = existing.is_some();
-    let agent_snapshot = store.read_transaction_with_error(|tx| agent(tx, &request.agent))?;
+    let agent_id = request.agent.clone();
+    let agent_snapshot = store
+        .read_async("runtime-services/native_actions", move |tx| {
+            agent(tx, &agent_id)
+        })
+        .await?;
     let account = agent_snapshot
         .get("accountKey")
         .and_then(Value::as_str)
@@ -673,7 +683,10 @@ pub async fn execute_provider_prepared(
                 settle_provider(tx, &id, ticket, provider, settle_effects.as_ref())
             })
             .await?;
-        let snapshot = store.read_transaction_with_error(|tx| load(tx, &request.request_id))?;
+        let id = request.request_id.clone();
+        let snapshot = store
+            .read_async("runtime-services/native_actions", move |tx| load(tx, &id))
+            .await?;
         if retryable && retry < MAX_NOT_SENT_RETRIES {
             continue;
         }
