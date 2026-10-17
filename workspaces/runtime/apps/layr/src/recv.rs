@@ -5,18 +5,21 @@
 //! So every stream passes through `check` on its way to `btrfs receive`:
 //! - one subvolume, with the expected name and UUID;
 //! - a parent only from this project (a state whose signed record names that UUID), and clones
-//!   only from the new subvolume or that parent;
+//!   only from the new subvolume, that parent, or explicitly verified project states;
 //! - relative paths without `.` or `..` components;
 //! - known commands of at most 16 MiB each, and nothing after the end command.
 //!
 //! After the receive, the new subvolume must be read-only, carry the expected received UUID and,
 //! for an incremental stream, be a snapshot of the expected local parent.
 
-use crate::btrfs;
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
+use crate::storage as btrfs;
 use anyhow::{anyhow, bail, Result};
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
 use std::process::{Command, Stdio};
 
 const MAGIC: &[u8] = b"btrfs-stream\0";
@@ -48,6 +51,26 @@ pub struct Expect<'a> {
     pub uuid: &'a str,
     /// The local subvolume of a state of this project, by the UUID its signed record names.
     pub parent: &'a dyn Fn(&str) -> Option<PathBuf>,
+    /// Extra immutable sources verified against signed states of this project.
+    /// A local original UUID has no transaction constraint; received UUIDs require the send transaction.
+    pub clones: &'a [(String, Option<u64>, PathBuf)],
+}
+
+/// Extra clone sources are immutable and remain under the project lock during receive.
+/// Check each component because btrfs receive follows links when it opens a clone source.
+fn check_clone_file(root: &Path, path: &[u8]) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut full = root.to_path_buf();
+    for component in path.split(|b| *b == b'/') {
+        full.push(std::ffi::OsStr::from_bytes(component));
+        if std::fs::symlink_metadata(&full)?.file_type().is_symlink() {
+            bail!("clone source path contains a symbolic link");
+        }
+    }
+    if !std::fs::symlink_metadata(full)?.is_file() {
+        bail!("clone source is not a regular file");
+    }
+    Ok(())
 }
 
 fn le16(b: &[u8]) -> u16 {
@@ -77,7 +100,7 @@ fn check_path(p: &[u8]) -> Result<()> {
 
 /// Attributes of one command. In stream version 2 and later the data attribute has no length
 /// and takes the rest of the command.
-fn attrs(body: &[u8], version: u32) -> Result<Vec<(u16, &[u8])>> {
+pub(crate) fn attrs(body: &[u8], version: u32) -> Result<Vec<(u16, &[u8])>> {
     let mut v = Vec::new();
     let mut a = 0;
     while a < body.len() {
@@ -174,7 +197,14 @@ pub fn check(src: &mut dyn Read, out: &mut dyn Write, e: &Expect) -> Result<Opti
                     get(&at, A_CLONE_CTRANSID).unwrap_or_default().to_vec(),
                 );
                 if Some(&source) != own.as_ref() && Some(&source) != parent.as_ref() {
-                    bail!("the stream clones from a subvolume outside this state and its parent");
+                    let uuid = uuid_text(&source.0)?;
+                    let transid =
+                        u64::from_le_bytes(source.1.as_slice().try_into().map_err(|_| anyhow!("bad clone transaction"))?);
+                    let (_, _, root) =
+                        e.clones.iter().find(|(u, t, _)| *u == uuid && t.is_none_or(|t| t == transid)).ok_or_else(|| {
+                            anyhow!("the stream clones from a subvolume outside this state and its allowed sources")
+                        })?;
+                    check_clone_file(root, get(&at, A_CLONE_PATH).ok_or_else(|| anyhow!("clone without a source path"))?)?;
                 }
             }
             _ => {}
@@ -192,11 +222,13 @@ pub fn check(src: &mut dyn Read, out: &mut dyn Write, e: &Expect) -> Result<Opti
     Ok(parent_path)
 }
 
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
 fn names(dir: &Path) -> Result<BTreeSet<String>> {
     Ok(std::fs::read_dir(dir)?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
 }
 
 /// Receive one checked stream into `dir`. On any failure nothing new stays in `dir`.
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
 pub fn receive(src: &mut dyn Read, dir: &Path, e: &Expect) -> Result<()> {
     let before = names(dir)?;
     // `-e`: stop at the end command.
@@ -277,7 +309,7 @@ mod tests {
         let uuid = uuid_text(&U).unwrap();
         let p_text = uuid_text(&P).unwrap();
         let parent = move |u: &str| if u == p_text { Some(PathBuf::from("/parent")) } else { None };
-        let e = Expect { name: "s1", uuid: &uuid, parent: &parent };
+        let e = Expect { name: "s1", uuid: &uuid, parent: &parent, clones: &[] };
         check(&mut &s[..], &mut Vec::new(), &e)
     }
 
@@ -304,4 +336,46 @@ mod tests {
         let two = stream(&[snap.clone(), cmd(SUBVOL, &[(A_PATH, b"s1"), (A_UUID, &U)]), end]);
         assert!(run(&two).is_err(), "two subvolumes");
     }
+    #[test]
+    fn extra_clone_sources_require_exact_identity() {
+        let t = 7u64.to_le_bytes();
+        let uuid = uuid_text(&U).unwrap();
+        let extra = uuid_text(&X).unwrap();
+        let parent = |_: &str| None;
+        let root = std::env::temp_dir().join(format!("layr-clone-test-{}", crate::ids::new_id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("g"), b"data").unwrap();
+        std::os::unix::fs::symlink(root.join("g"), root.join("link")).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("dir-link")).unwrap();
+        let allowed = [(extra.clone(), Some(7), root.clone())];
+        let e = Expect { name: "s1", uuid: &uuid, parent: &parent, clones: &allowed };
+        let subvol = cmd(SUBVOL, &[(A_PATH, b"s1"), (A_UUID, &U), (A_CTRANSID, &t)]);
+        let clone = |transid: &[u8], path: &[u8]| {
+            cmd(CLONE, &[(A_PATH, b"f"), (A_CLONE_UUID, &X), (A_CLONE_CTRANSID, transid), (A_CLONE_PATH, path)])
+        };
+        let valid = stream(&[subvol.clone(), clone(&t, b"g"), cmd(END, &[])]);
+        assert!(check(&mut valid.as_slice(), &mut Vec::new(), &e).is_ok());
+        assert!(run(&valid).is_err(), "the old policy rejects the extra source");
+        let local = [(extra, None, root.clone())];
+        let local_expect = Expect { name: "s1", uuid: &uuid, parent: &parent, clones: &local };
+        let returned = stream(&[subvol.clone(), clone(&8u64.to_le_bytes(), b"g"), cmd(END, &[])]);
+        assert!(check(&mut returned.as_slice(), &mut Vec::new(), &local_expect).is_ok());
+        for bad in [
+            clone(&8u64.to_le_bytes(), b"g"),
+            clone(&t, b"../secret"),
+            clone(&[], b"g"),
+            clone(&t, b"link"),
+            clone(&t, b"dir-link/g"),
+            clone(&t, b"missing"),
+        ] {
+            let data = stream(&[subvol.clone(), bad, cmd(END, &[])]);
+            assert!(check(&mut data.as_slice(), &mut Vec::new(), &e).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(any(target_os = "macos", feature = "overlayfs"))]
+pub fn receive(src: &mut dyn Read, dir: &Path, e: &Expect) -> Result<()> {
+    crate::apfs_stream::receive(src, dir, e)
 }

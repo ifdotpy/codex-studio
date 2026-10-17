@@ -482,7 +482,7 @@ pub fn import_commit(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author
         let mut parents = Vec::new();
         match &prev {
             Some((pst, pc)) => {
-                crate::btrfs::snapshot(&repo.state_root(pst)?, &work, false)?;
+                crate::storage::snapshot(&repo.state_root(pst)?, &work, false)?;
                 let out = base_cmd(&s).args(["diff", "--name-only", "-z", "--no-renames", pc, commit]).output()?;
                 let paths: Vec<String> = out
                     .stdout
@@ -494,7 +494,7 @@ pub fn import_commit(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author
                 parents.push(pst.clone());
             }
             None => {
-                crate::btrfs::create_subvolume(&work)?;
+                crate::storage::create_subvolume(&work)?;
                 materialize(&s, commit, &work, None, None)?;
             }
         }
@@ -514,7 +514,7 @@ pub fn import_commit(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author
         st.time = time.max(1);
         Ok(st)
     })();
-    let _ = crate::btrfs::delete_tree(&work);
+    let _ = crate::storage::delete_tree(&work);
     let st = res?;
     let mut rec = Record::new("import");
     rec.states.push(st.clone());
@@ -602,6 +602,32 @@ pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Resu
     let parents: Vec<String> = anc.iter().map(|(_, c)| c.clone()).collect();
     let c = commit_tree(repo, state, anc.as_ref(), &parents, message)?;
     Ok((c, parents.into_iter().next()))
+}
+
+/// The git tree hash of a state: the content as git stores it, with the paths a push exports.
+/// It is the same on every machine and in git, unlike the state ID. A state without a commit
+/// gets one in the git store (an object only; no record, no ref).
+pub fn tree_of(repo: &Repo, state: &str) -> Result<String> {
+    object_of(repo, state, "")?.ok_or_else(|| anyhow!("the commit of state {} has no tree", ids::display(state)))
+}
+
+/// The git object id of a path in a state, as `git rev-parse <commit>:<path>` prints it for the
+/// commit a push exports: a tree for a folder, a blob for a file, the root tree for an empty path.
+/// `None` when the exported tree has no such path (absent, or a path a push does not export).
+pub fn object_of(repo: &Repo, state: &str, path: &str) -> Result<Option<String>> {
+    let commit = match commit_of(repo, state)? {
+        Some(c) => c,
+        None => make_commit(repo, &repo.state(state)?, None)?.0,
+    };
+    let spec = format!("{commit}:{path}");
+    let out =
+        base_cmd(&store(repo)).args(["rev-parse", "--verify", "-q", &spec]).stdin(Stdio::null()).output().context("run git")?;
+    match out.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
+        // --verify -q: exit 1 and no message when the name does not resolve.
+        Some(1) if out.stderr.is_empty() => Ok(None),
+        _ => bail!("git rev-parse {spec} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+    }
 }
 
 /// The commit of a state in the git store, if it has one.
@@ -819,13 +845,13 @@ pub fn make_git_folder(repo: &Repo, line: &Line, state: &str, w: &Path) -> Resul
     }
     let g = w.join(".git");
     if let Ok(m) = std::fs::symlink_metadata(&g) {
-        if m.is_dir() && !crate::btrfs::is_subvolume(&g) && std::fs::read_dir(&g)?.next().is_none() {
+        if m.is_dir() && !crate::storage::is_subvolume(&g) && std::fs::read_dir(&g)?.next().is_none() {
             std::fs::remove_dir(&g)?;
         } else {
             return Ok(());
         }
     }
-    crate::btrfs::create_subvolume(&g)?;
+    crate::storage::create_subvolume(&g)?;
     let s = store(repo);
     for d in ["objects/info", "refs/heads", "refs/tags", "info"] {
         std::fs::create_dir_all(g.join(d))?;
@@ -854,7 +880,7 @@ pub fn make_git_folder(repo: &Repo, line: &Line, state: &str, w: &Path) -> Resul
         if idx.exists() {
             let src = std::fs::File::open(&idx)?;
             let dst = std::fs::File::create(g.join("index"))?;
-            if crate::btrfs::clone_file(&src, &dst).is_err() {
+            if crate::storage::clone_file(&src, &dst).is_err() {
                 std::fs::copy(&idx, g.join("index"))?;
             }
         }
@@ -883,8 +909,7 @@ pub fn refresh_git_folder(repo: &Repo, line: &Line) -> Result<()> {
     };
     // Only the subvolume layr made; a .git folder the line owner made is its own.
     {
-        use std::os::unix::fs::MetadataExt;
-        if dir.metadata()?.ino() != 256 {
+        if !fsutil::is_layer(&repo.working(line), ".git", &fsutil::meta_of(&dir.metadata()?)) {
             return Ok(());
         }
     }
@@ -905,7 +930,7 @@ pub fn refresh_git_folder(repo: &Repo, line: &Line) -> Result<()> {
                 "index",
                 &mut |f| {
                     let src = std::fs::File::open(&idx)?;
-                    if crate::btrfs::clone_file(&src, f).is_err() {
+                    if crate::storage::clone_file(&src, f).is_err() {
                         std::io::copy(&mut std::fs::File::open(&idx)?, &mut &*f)?;
                     }
                     Ok(())

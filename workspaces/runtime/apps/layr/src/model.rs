@@ -61,14 +61,17 @@ pub struct StateRec {
     pub conflicts: Vec<Conflict>,
     /// Snapshots of regenerable caches: cache path to snapshot name in `states/`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(rename = "layers", alias = "caches")]
     pub caches: BTreeMap<String, String>,
     /// The user who made the cache snapshots (a uid of the state's machine).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "layer_by", alias = "cache_by")]
     pub cache_by: Option<u32>,
     /// The caches may go to lines of other users: they were saved on a protected line by someone
     /// who may save there. Other caches go only to lines of the user who made them, because a
     /// cache holds code that review does not see.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "layer_shared", alias = "cache_shared")]
     pub cache_shared: bool,
 }
 
@@ -271,11 +274,13 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
             uuid("deleted state", v.as_str().unwrap_or(""))?;
         }
     }
-    if let (Some(st), Some(c)) = (d.get("state").and_then(|v| v.as_str()), d.get("caches").and_then(|v| v.as_object())) {
-        for (path, snap) in c {
-            crate::fsutil::check_rel(path)?;
-            if !is_cache_name(snap.as_str().unwrap_or(""), st) {
-                bail!("record {}: bad cache name", r.seq);
+    for field in ["layers", "caches"] {
+        if let (Some(st), Some(c)) = (d.get("state").and_then(|v| v.as_str()), d.get(field).and_then(|v| v.as_object())) {
+            for (path, snap) in c {
+                crate::fsutil::check_rel(path)?;
+                if !is_cache_name(snap.as_str().unwrap_or(""), st) {
+                    bail!("record {}: bad cache name", r.seq);
+                }
             }
         }
     }

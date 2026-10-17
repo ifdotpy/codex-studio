@@ -12,11 +12,11 @@
 
 use super::{exit, here};
 use crate::args::{parse, Spec};
-use crate::btrfs;
 use crate::ctx::Ctx;
 use crate::ids;
 use crate::model::StateKind;
 use crate::repo::Repo;
+use crate::storage as btrfs;
 use crate::store::{Project, Trust};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -27,6 +27,27 @@ use std::process::{Command, Stdio};
 const MAX_FRAME: usize = 16 << 20;
 /// Records travel in messages of at most this many lines.
 const RECORDS_PER_MESSAGE: usize = 1000;
+
+const MAX_CLONE_SOURCES: usize = 8;
+
+#[derive(Clone, Default)]
+struct SendFeatures {
+    compressed: bool,
+    clones: bool,
+    cache_names: bool,
+    identities: BTreeMap<String, (String, Option<u64>)>,
+}
+
+impl SendFeatures {
+    fn from_hello(hello: &Value) -> Self {
+        Self {
+            compressed: hello["compressed_send_v2"].as_bool().unwrap_or(false),
+            identities: serde_json::from_value(hello["clone_identities_v1"].clone()).unwrap_or_default(),
+            cache_names: hello.get("caches").is_some(),
+            clones: hello["clone_sources_v1"].as_bool().unwrap_or(false),
+        }
+    }
+}
 
 struct Wire<R: Read, W: Write> {
     r: R,
@@ -171,6 +192,22 @@ fn recv_records<R: Read, W: Write>(w: &mut Wire<R, W>) -> Result<Vec<String>> {
     }
 }
 
+// Only recent candidates need identities; older states remain available as parents.
+fn clone_identities(p: &Project) -> Result<BTreeMap<String, (String, Option<u64>)>> {
+    let mut out = BTreeMap::new();
+    for id in present(p)?.iter().rev().take(MAX_CLONE_SOURCES * 4) {
+        if let Ok(identity) = btrfs::clone_identity(&p.state_path(id)) {
+            if identity.1.is_none() && !btrfs::supports_local_clone_receive() {
+                continue;
+            }
+            if p.db.state(id)?.is_some_and(|s| s.subvol == identity.0) {
+                out.insert(id.clone(), identity);
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn seqs(p: &Project) -> Result<BTreeMap<String, u64>> {
     Ok(p.db.max_seqs()?.into_iter().collect())
 }
@@ -258,12 +295,13 @@ fn plan(repo: &Repo, mine: &BTreeSet<String>, theirs: &BTreeSet<String>, auto: b
     Ok(out)
 }
 
-fn send_cache<R: Read, W: Write>(w: &mut Wire<R, W>, repo: &Repo, snap: &str) -> Result<u64> {
-    w.json(&json!({"op": "cache", "name": snap}))?;
-    let child = btrfs::send_command(None, &repo.p.cache_path(snap.split('@').next().unwrap_or(""), snap))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+fn send_cache<R: Read, W: Write>(w: &mut Wire<R, W>, repo: &Repo, snap: &str, features: &SendFeatures) -> Result<u64> {
+    w.json(&json!({"op": if features.cache_names { "cache" } else { "layer" }, "name": snap}))?;
+    let child =
+        btrfs::send_optimized(None, &repo.p.cache_path(snap.split('@').next().unwrap_or(""), snap), &[], features.compressed)?
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
     let n = w.send_stream(child)?;
     if w.recv_json()?["op"] != "ok" {
         bail!("peer did not store cache {snap}");
@@ -278,37 +316,69 @@ fn send_states<R: Read, W: Write>(
     caches: bool,
     peer_caches: &BTreeSet<String>,
     peer_states: &BTreeSet<String>,
+    features: SendFeatures,
 ) -> Result<(usize, u64)> {
     let mut bytes = 0;
+    let mut have = peer_states.clone();
+    let mut identities = features.identities.clone();
     // Caches of states the peer has already (sent earlier without --caches).
     if caches {
         for id in peer_states {
             if let Some(s) = repo.p.db.state(id)? {
                 for snap in s.caches.values() {
                     if !peer_caches.contains(snap) && repo.p.cache_path(id, snap).exists() {
-                        bytes += send_cache(w, repo, snap)?;
+                        bytes += send_cache(w, repo, snap, &features)?;
                     }
                 }
             }
         }
     }
     for (id, parent) in list {
-        w.json(&json!({"op": "state", "id": id, "parent": parent}))?;
+        let clones: Vec<String> = if features.clones {
+            have.iter()
+                .rev()
+                .filter(|source| Some(*source) != parent.as_ref() && *source != id)
+                // Bound the search when a peer lists many states absent on this machine.
+                .take(MAX_CLONE_SOURCES * 4)
+                .filter(|source| {
+                    repo.p.db.state(source).ok().flatten().is_some_and(|state| {
+                        btrfs::send_clone_identity(&repo.p.state_path(source)).ok().is_some_and(|(uuid, transid)| {
+                            uuid == state.subvol
+                                && identities.get(*source).is_some_and(|(u, t)| *u == uuid && t.is_none_or(|t| t == transid))
+                        })
+                    })
+                })
+                .take(MAX_CLONE_SOURCES)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        w.json(&json!({"op": "state", "id": id, "parent": parent, "clones": clones}))?;
         let pp = parent.as_ref().map(|p| repo.p.state_path(p));
-        let child =
-            btrfs::send_command(pp.as_deref(), &repo.p.state_path(id)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let sources: Vec<_> = clones.iter().map(|id| repo.p.state_path(id)).collect();
+        let child = btrfs::send_optimized(pp.as_deref(), &repo.p.state_path(id), &sources, features.compressed)?
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
         bytes += w.send_stream(child)?;
         let v = w.recv_json()?;
         if v["op"] != "ok" {
             bail!("peer did not store state {}", ids::short(id));
         }
+        have.insert(id.clone());
+        if let Ok((uuid, transid)) = btrfs::send_clone_identity(&repo.p.state_path(id)) {
+            identities.insert(id.clone(), (uuid, Some(transid)));
+        }
         // Regenerable caches travel only for a live move (warm builds on the peer).
         if caches {
             if let Some(s) = repo.p.db.state(id)? {
                 for snap in s.caches.values() {
-                    if !peer_caches.contains(snap) && repo.p.cache_path(id, snap).exists() {
-                        bytes += send_cache(w, repo, snap)?;
+                    let path = repo.p.cache_path(id, snap);
+                    if !path.exists() || peer_caches.contains(snap) {
+                        continue;
                     }
+                    bytes += send_cache(w, repo, snap, &features)?;
                 }
             }
         }
@@ -319,7 +389,14 @@ fn send_states<R: Read, W: Write>(
 
 /// Receive one subvolume named `name` into `states/`, checked on the way (`recv`): the
 /// subvolume its signed record names, with a parent only from this project.
-fn receive_one<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project, name: &str, uuid: &str, incremental: bool) -> Result<()> {
+fn receive_one<R: Read, W: Write>(
+    w: &mut Wire<R, W>,
+    p: &Project,
+    name: &str,
+    uuid: &str,
+    incremental: bool,
+    clones: &[(String, Option<u64>, std::path::PathBuf)],
+) -> Result<()> {
     let parent = |u: &str| -> Option<std::path::PathBuf> {
         if !incremental {
             return None;
@@ -329,7 +406,7 @@ fn receive_one<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project, name: &str, u
         path.exists().then_some(path)
     };
     let mut frames = Frames { w, buf: Vec::new(), pos: 0, done: false };
-    let res = crate::recv::receive(&mut frames, &p.states_dir(), &crate::recv::Expect { name, uuid, parent: &parent });
+    let res = crate::recv::receive(&mut frames, &p.states_dir(), &crate::recv::Expect { name, uuid, parent: &parent, clones });
     let drained = frames.drain();
     res.and(drained)
 }
@@ -341,7 +418,7 @@ fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usi
         let v = w.recv_json()?;
         let res = match v["op"].as_str() {
             Some("done") => break,
-            Some("cache") => {
+            Some("cache" | "layer") => {
                 // Only a cache that a known state names.
                 let name = v["name"].as_str().unwrap_or("").to_string();
                 let id = name.split('@').next().unwrap_or("").to_string();
@@ -354,7 +431,7 @@ fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usi
                 }
                 // The cache must be the subvolume that the signed save.caches record names.
                 let uuid = p.db.cache_uuid(&id, &name)?.ok_or_else(|| anyhow!("no signed subvolume id for cache {name}"))?;
-                receive_one(w, p, &name, &uuid, false)
+                receive_one(w, p, &name, &uuid, false, &[])
             }
             Some("state") => {
                 // Only a state that a signed record names, as the subvolume that record names.
@@ -366,7 +443,23 @@ fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usi
                 if p.state_path(&id).exists() {
                     bail!("state {} exists here already", ids::short(&id));
                 }
-                receive_one(w, p, &id, &rec.subvol, true).and_then(|_| {
+                let ids: Vec<String> = match v.get("clones") {
+                    None => Vec::new(),
+                    Some(value) => serde_json::from_value(value.clone())?,
+                };
+                if ids.len() > MAX_CLONE_SOURCES {
+                    bail!("too many clone sources");
+                }
+                let mut clones = Vec::new();
+                for source in ids {
+                    let state = p.db.state(&source)?.ok_or_else(|| anyhow!("unknown clone source"))?;
+                    let identity = btrfs::clone_identity(&p.state_path(&source))?;
+                    if identity.0 != state.subvol {
+                        bail!("clone source does not match its signed state");
+                    }
+                    clones.push((identity.0, identity.1, p.state_path(&source)));
+                }
+                receive_one(w, p, &id, &rec.subvol, true, &clones).and_then(|_| {
                     if let Err(e) = p.db.set_present(&id, true) {
                         let _ = btrfs::delete_tree(&p.state_path(&id));
                         return Err(e);
@@ -389,8 +482,13 @@ fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usi
 }
 
 pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec =
-        Spec::new().flag("--auto").flag("--caches").flag("--push-only").flag("--pull-only").flag("-q|--quiet").value("--project");
+    let spec = Spec::new()
+        .flag("--auto")
+        .flag("--caches|--layers")
+        .flag("--push-only")
+        .flag("--pull-only")
+        .flag("-q|--quiet")
+        .value("--project");
     let a = parse(&spec, args)?;
     if a.paths.is_empty() {
         return Err(exit(
@@ -414,7 +512,7 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let auto = a.has("--auto");
     let result = (|| -> Result<(usize, usize, usize, usize, u64)> {
         let mine = present(&repo.p)?;
-        w.json(&json!({"op": "hello", "project": repo.p.name, "project_id": repo.p.id, "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": mine, "caches": present_caches(&repo.p)?}))?;
+        w.json(&json!({"op": "hello", "compressed_send_v2": btrfs::supports_compressed_receive(), "clone_sources_v1": true, "clone_identities_v1": clone_identities(&repo.p)?, "project": repo.p.name, "project_id": repo.p.id, "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": mine, "caches": present_caches(&repo.p)?, "layers": present_caches(&repo.p)?}))?;
         let hello = w.recv_json()?;
         // The peer holds this project, or a new empty copy of it.
         let peer_project = hello["project_id"].as_str().unwrap_or("");
@@ -422,7 +520,9 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
             bail!("the peer holds another project ({peer_project})");
         }
         let peer = (hello["machine"].as_str().unwrap_or("").to_string(), hello["public_key"].as_str().unwrap_or("").to_string());
-        let peer_caches: BTreeSet<String> = serde_json::from_value(hello["caches"].clone()).unwrap_or_default();
+        let peer_caches: BTreeSet<String> =
+            serde_json::from_value(hello.get("caches").or_else(|| hello.get("layers")).cloned().unwrap_or(Value::Null))
+                .unwrap_or_default();
         let peer_seqs: BTreeMap<String, u64> = serde_json::from_value(hello["seqs"].clone())?;
         let peer_present: BTreeSet<String> = serde_json::from_value(hello["present"].clone())?;
         // Records both ways.
@@ -445,7 +545,15 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let (mut sent, mut bytes) = (0, 0);
         if !a.has("--pull-only") {
             let list = plan(repo, &mine, &peer_present, auto)?;
-            let (n, b) = send_states(&mut w, repo, &list, a.has("--caches"), &peer_caches, &peer_present)?;
+            let (n, b) = send_states(
+                &mut w,
+                repo,
+                &list,
+                a.has("--caches"),
+                &peer_caches,
+                &peer_present,
+                SendFeatures::from_hello(&hello),
+            )?;
             sent = n;
             bytes = b;
         } else {
@@ -458,7 +566,7 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
         } else {
             peer_present.iter().filter(|id| !mine_now.contains(*id) && wanted(&repo.p, id, auto)).cloned().collect()
         };
-        w.json(&json!({"op": "want", "ids": want, "have": mine_now, "caches": a.has("--caches"), "have_caches": present_caches(&repo.p)?}))?;
+        w.json(&json!({"op": "want", "clone_identities_v1": clone_identities(&repo.p)?, "ids": want, "have": mine_now, "caches": a.has("--caches"), "have_caches": present_caches(&repo.p)?, "have_layers": present_caches(&repo.p)?, "layers": a.has("--caches")}))?;
         let got = recv_states(&mut w, &repo.p)?;
         w.json(&json!({"op": "bye"}))?;
         Ok((sent_records, got_records, sent, got, bytes))
@@ -483,8 +591,8 @@ pub fn serve(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let spec = Spec::new().flag("--create");
     let a = parse(&spec, args)?;
     let name = a.pos.first().ok_or_else(|| exit(128, "usage: layr serve-peer <project>"))?.clone();
-    if !ctx.caller.is_root() {
-        return Err(exit(1, "error: serve-peer needs root (it receives btrfs streams)"));
+    if !ctx.caller.is_root() && !(cfg!(target_os = "macos") && rustix::process::geteuid().as_raw() == ctx.caller.uid) {
+        return Err(exit(1, "error: serve-peer needs root through the service"));
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -505,7 +613,7 @@ pub fn serve(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let mut repo = Repo { p };
     let peer_seqs: BTreeMap<String, u64> = serde_json::from_value(hello["seqs"].clone())?;
-    w.json(&json!({"op": "hello", "project_id": repo.p.id, "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": present(&repo.p)?, "caches": present_caches(&repo.p)?}))?;
+    w.json(&json!({"op": "hello", "compressed_send_v2": btrfs::supports_compressed_receive(), "clone_sources_v1": true, "clone_identities_v1": clone_identities(&repo.p)?, "project_id": repo.p.id, "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": present(&repo.p)?, "caches": present_caches(&repo.p)?, "layers": present_caches(&repo.p)?}))?;
     let lines = recv_records(&mut w)?;
     let mine = missing_lines(&repo.p, &peer_seqs)?;
     send_records(&mut w, &mine)?;
@@ -564,8 +672,20 @@ pub fn serve(ctx: &Ctx, args: &[String]) -> Result<i32> {
         have2.insert(id.clone());
         list.push((id, parent));
     }
-    let peer_caches: BTreeSet<String> = serde_json::from_value(want["have_caches"].clone()).unwrap_or_default();
-    send_states(&mut w, &repo, &list, want["caches"].as_bool().unwrap_or(false), &peer_caches, &have)?;
+    let peer_caches: BTreeSet<String> =
+        serde_json::from_value(want.get("have_caches").or_else(|| want.get("have_layers")).cloned().unwrap_or(Value::Null))
+            .unwrap_or_default();
+    let mut features = SendFeatures::from_hello(&hello);
+    features.identities = serde_json::from_value(want["clone_identities_v1"].clone()).unwrap_or_default();
+    send_states(
+        &mut w,
+        &repo,
+        &list,
+        want.get("caches").or_else(|| want.get("layers")).and_then(Value::as_bool).unwrap_or(false),
+        &peer_caches,
+        &have,
+        features,
+    )?;
     let _ = w.recv_json();
     let _ = ctx;
     Ok(0)

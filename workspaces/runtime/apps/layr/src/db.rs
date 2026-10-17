@@ -69,31 +69,51 @@ impl Db {
         // so this fsync costs a few milliseconds even right after a snapshot.
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        // One write transaction: another process (the service's periodic pass) may open a
+        // project that `init` is creating. Without it, the other process saw the new tables
+        // before the version and took the database for an old one: it dropped the derived
+        // tables, and `init` failed with "no such table: states".
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let opened = Self::prepare(&conn);
+        match &opened {
+            Ok(_) => conn.execute_batch("COMMIT")?,
+            Err(_) => {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+        }
+        let stale = opened.map_err(|e| e.context(path.display().to_string()))?;
+        Ok(Db { conn, stale })
+    }
+
+    /// Create or upgrade the schema inside the open transaction. Returns whether the derived
+    /// tables must be rebuilt from the records.
+    fn prepare(conn: &Connection) -> Result<bool> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        // Only a database that holds records has derived tables to rebuild. A database that a
+        // concurrent `init` is creating has the tables but no record yet.
         let has_records: bool =
             conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'", [], |r| {
                 r.get::<_, i64>(0)
-            })? > 0;
-        let mut db = Db { conn, stale: false };
+            })? > 0
+                && conn.query_row("SELECT EXISTS(SELECT 1 FROM records)", [], |r| r.get::<_, bool>(0))?;
         if version < SCHEMA_VERSION {
             if has_records {
                 // The project rebuilds the derived tables and only then writes the version
                 // (`mark_current`): a failed rebuild is tried again on the next open.
                 for t in DERIVED.iter().chain(RETIRED) {
-                    db.conn.execute_batch(&format!("DROP TABLE IF EXISTS {t}"))?;
+                    conn.execute_batch(&format!("DROP TABLE IF EXISTS {t}"))?;
                 }
-                db.stale = true;
-                db.conn.execute_batch(SCHEMA)?;
-            } else {
-                db.conn.execute_batch(SCHEMA)?;
-                db.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                conn.execute_batch(SCHEMA)?;
+                return Ok(true);
             }
+            conn.execute_batch(SCHEMA)?;
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else if version > SCHEMA_VERSION {
-            anyhow::bail!("{} was written by a newer layr (schema {version})", path.display());
+            anyhow::bail!("written by a newer layr (schema {version})");
         } else {
-            db.conn.execute_batch(SCHEMA)?;
+            conn.execute_batch(SCHEMA)?;
         }
-        Ok(db)
+        Ok(false)
     }
 
     /// Run `f` in one write transaction (`BEGIN IMMEDIATE`): all or nothing.
@@ -345,7 +365,7 @@ impl Db {
                     }
                 }
             }
-            "save.caches" => {
+            "save.caches" | "save.layers" => {
                 // Only the machine that made the state adds its caches (names and subvolume
                 // UUIDs, which a receiver checks). A record adds to the caches of the state and
                 // never drops one that an earlier record of the state gave it.
@@ -356,15 +376,23 @@ impl Db {
                     if let Some((raw, machine)) = row {
                         if machine == rec.machine {
                             let mut v: serde_json::Value = serde_json::from_str(&raw)?;
-                            for (key, field) in [("caches", "caches"), ("cache_uuids", "uuids")] {
-                                let mut all = v.get(key).and_then(|x| x.as_object()).cloned().unwrap_or_default();
-                                if let Some(new) = d.get(field).and_then(|x| x.as_object()) {
+                            for (key, alias, field) in [("layers", "caches", "caches"), ("layer_uuids", "cache_uuids", "uuids")] {
+                                let mut all =
+                                    v.get(key).or_else(|| v.get(alias)).and_then(|x| x.as_object()).cloned().unwrap_or_default();
+                                if let Some(new) = d
+                                    .get(field)
+                                    .or_else(|| if field == "caches" { d.get("layers") } else { None })
+                                    .and_then(|x| x.as_object())
+                                {
                                     all.extend(new.clone());
                                 }
+                                v.as_object_mut().unwrap().remove(alias);
                                 v[key] = serde_json::Value::Object(all);
                             }
-                            v["cache_by"] = serde_json::json!(rec.actor.uid);
-                            v["cache_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
+                            v.as_object_mut().unwrap().remove("cache_by");
+                            v.as_object_mut().unwrap().remove("cache_shared");
+                            v["layer_by"] = serde_json::json!(rec.actor.uid);
+                            v["layer_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
                             tx.execute("UPDATE states SET rec=?2 WHERE id=?1", params![st, v.to_string()])?;
                         }
                     }
@@ -408,7 +436,7 @@ impl Db {
             self.conn.query_row("SELECT rec FROM states WHERE id=?1", params![state], |r| r.get(0)).optional()?;
         Ok(raw
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
-            .and_then(|v| v["cache_uuids"][name].as_str().map(|s| s.to_string())))
+            .and_then(|v| v["layer_uuids"][name].as_str().or_else(|| v["cache_uuids"][name].as_str()).map(|s| s.to_string())))
     }
 
     pub fn trusted(&self, machine: &str) -> Result<Option<String>> {
@@ -671,6 +699,44 @@ pub fn need<T>(v: Option<T>, what: &str) -> Result<T> {
 mod tests {
     use super::*;
     use crate::model::{Author, StateKind, StateRec};
+
+    #[test]
+    fn opening_a_database_that_init_is_creating_keeps_its_tables() {
+        // The state between the schema and the version of a fresh database: an opener must not
+        // take it for an old database and drop the derived tables under the creating process.
+        let dir = std::env::temp_dir().join(format!("layr-db-creating-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layr.sqlite");
+        let creating = Connection::open(&path).unwrap();
+        creating.execute_batch(SCHEMA).unwrap();
+        creating.execute("INSERT INTO states(id, display, kind) VALUES('s', 's', 'commit')", []).unwrap();
+        let db = Db::open(&path).unwrap();
+        assert!(!db.stale);
+        let kept: i64 = db.conn.query_row("SELECT COUNT(*) FROM states", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1);
+        let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_database_with_records_is_still_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("layr-db-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layr.sqlite");
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(SCHEMA).unwrap();
+        old.execute("INSERT INTO records(id, raw) VALUES('r', '{}')", []).unwrap();
+        old.execute("INSERT INTO states(id, display, kind) VALUES('s', 's', 'commit')", []).unwrap();
+        drop(old);
+        let db = Db::open(&path).unwrap();
+        assert!(db.stale);
+        let kept: i64 = db.conn.query_row("SELECT COUNT(*) FROM states", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 0, "derived rows are rebuilt from the records");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn state_record(seq: u64, state: &str, parents: Vec<String>) -> Record {
         let mut r = Record::new("commit");
