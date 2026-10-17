@@ -322,6 +322,7 @@ impl CompletionWriter for RestartInputCompletion {
             if !settled {
                 return Err(RecoveryError::CommitFailed);
             }
+            crate::lifecycle_effects::notify_parent_of_turn(tx, agent_id, turn_id, unix_seconds())?;
             let Some(settled_agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
                 return Err(RecoveryError::CommitFailed);
             };

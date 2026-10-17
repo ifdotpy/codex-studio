@@ -452,6 +452,65 @@ fn state(store: &RuntimeStore) -> Value {
     json!({"tables":records,"sync":sync})
 }
 
+/// Intentional divergence from the Python corpus (owner compatibility policy allows
+/// tightening): Python leaves reserved/dispatching/uncertain input rows of a deleted
+/// agent unchanged; Rust settles them (reserved -> cancelled, dispatching/uncertain ->
+/// failed, never delivered). Every other row is still compared to Python as-is.
+fn delete_settlement(
+    deleted: &[&str],
+    agent: Option<&str>,
+    status: Option<&str>,
+) -> Option<(&'static str, &'static str)> {
+    if !agent.is_some_and(|a| deleted.contains(&a)) {
+        return None;
+    }
+    match status? {
+        "reserved" => Some(("cancelled", "Agent deleted")),
+        "dispatching" | "uncertain" => Some(("failed", "Agent deleted; delivery outcome unknown")),
+        _ => None,
+    }
+}
+
+fn deleted_agents(tables: &Value) -> Vec<&str> {
+    tables["runtime_agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["deletedAt"].as_f64().is_some_and(|at| at != 0.0))
+        .filter_map(|a| a["id"].as_str())
+        .collect()
+}
+
+fn with_delete_settlement(expected: &Value, tables: &Value) -> Value {
+    let deleted = deleted_agents(tables);
+    let mut rows = expected.clone();
+    for row in rows.as_array_mut().into_iter().flatten() {
+        if let Some((status, _)) =
+            delete_settlement(&deleted, row["agent"].as_str(), row["status"].as_str())
+        {
+            row["status"] = json!(status);
+        }
+    }
+    rows
+}
+
+/// Same divergence in the expected `event` sync projections.
+fn with_delete_settlement_sync(expected: &mut [Value], tables: &Value) {
+    let deleted = deleted_agents(tables);
+    for row in expected.iter_mut().filter(|row| row[0] == "event") {
+        let mut payload: Value =
+            serde_json::from_str(row[2].as_str().expect("payload")).expect("event payload");
+        let value = &payload["value"];
+        if let Some((status, error)) =
+            delete_settlement(&deleted, value["agent"].as_str(), value["status"].as_str())
+        {
+            payload["value"]["status"] = json!(status);
+            payload["value"]["error"] = json!(error);
+            row[2] = json!(payload.to_string());
+        }
+    }
+}
+
 fn parsed_child_event_rows(rows: &Value) -> Value {
     let mut rows = rows.clone();
     for row in rows.as_array_mut().expect("event rows") {
@@ -648,6 +707,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
     {
         let mut actual = saved["tables"][table].clone();
         let mut expected = expected.clone();
+        if table == "runtime_events" {
+            expected = with_delete_settlement(&expected, &case["expected"]["records"]["tables"]);
+        }
         if table == "runtime_agents" {
             for rows in [&mut actual, &mut expected] {
                 if let Some(rows) = rows.as_array_mut() {
@@ -689,6 +751,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             row[1].as_str().unwrap_or_default().to_owned(),
         )
     });
+    with_delete_settlement_sync(&mut expected_sync, &case["expected"]["records"]["tables"]);
     assert_eq!(actual_sync, expected_sync, "{} sync_entities", case["name"]);
 }
 
@@ -1006,7 +1069,12 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                         }
                     }
                 }
-                assert_eq!(actual_rows, *expected, "Python effect corpus rows: {table}");
+                let expected = if table == "runtime_events" {
+                    with_delete_settlement(expected, &case["expected"]["records"]["tables"])
+                } else {
+                    expected.clone()
+                };
+                assert_eq!(actual_rows, expected, "Python effect corpus rows: {table}");
             }
         }
     }
@@ -1055,7 +1123,10 @@ async fn production_child_notification_matches_python_corpus() {
         if table == "runtime_events" {
             assert_eq!(
                 parsed_child_event_rows(&actual["tables"][table]),
-                parsed_child_event_rows(expected),
+                parsed_child_event_rows(&with_delete_settlement(
+                    expected,
+                    &case["expected"]["records"]["tables"]
+                )),
                 "Python child notification event rows"
             );
         } else {
@@ -1078,6 +1149,7 @@ async fn production_child_notification_matches_python_corpus() {
         .iter()
         .map(|row| json!([row[0], row[1], row[2], row[3]]))
         .collect::<Vec<_>>();
+    with_delete_settlement_sync(&mut expected_sync, &case["expected"]["records"]["tables"]);
     expected_sync.sort_by_key(|row| (row[0].to_string(), row[1].to_string()));
     assert_eq!(
         actual_sync, expected_sync,

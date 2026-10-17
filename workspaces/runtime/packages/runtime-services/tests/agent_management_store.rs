@@ -347,29 +347,127 @@ async fn deleted_team_broadcast_projection_survives_repeated_delete() {
     assert_eq!(room(&store), before);
 }
 
-#[test]
-fn cancellation_keeps_reserved_uncertain_and_foreign_events() {
-    let mut connection = Connection::open_in_memory().expect("memory database");
-    connection.execute_batch("CREATE TABLE runtime_events(id TEXT, agent TEXT, status TEXT);
-        INSERT INTO runtime_events VALUES ('pending','worker','pending'),('reserved','worker','reserved'),('uncertain','worker','uncertain'),('foreign','other','pending');").expect("delivery states");
-    let transaction = connection.transaction().expect("transaction");
-    agent_management::cancel_pending(&transaction, "worker").expect("cancellation");
-    transaction.commit().expect("commit");
-    let rows: Vec<(String, String)> = connection
+fn input_states(deleted_worker: bool) -> Connection {
+    let connection = Connection::open_in_memory().expect("memory database");
+    connection
+        .execute_batch(
+            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT);
+        CREATE TABLE runtime_events(id TEXT, agent TEXT, status TEXT, epoch INTEGER, error TEXT);
+        INSERT INTO runtime_events VALUES
+          ('pending','worker','pending',1,NULL),('reserved','worker','reserved',1,NULL),
+          ('dispatching','worker','dispatching',1,NULL),('uncertain','worker','uncertain',1,NULL),
+          ('delivered','worker','delivered',1,NULL),('foreign','other','pending',1,NULL),
+          ('stale','other','pending',0,NULL),('foreign-uncertain','other','uncertain',1,NULL);",
+        )
+        .expect("delivery states");
+    let worker = if deleted_worker {
+        r#"{"epoch":1,"deletedAt":5.0}"#
+    } else {
+        r#"{"epoch":1}"#
+    };
+    connection
+        .execute(
+            "INSERT INTO runtime_agents VALUES('worker',?1),('other','{\"epoch\":1}')",
+            [worker],
+        )
+        .expect("agents");
+    connection
+}
+
+fn input_statuses(connection: &Connection) -> Vec<(String, String)> {
+    connection
         .prepare("SELECT id,status FROM runtime_events ORDER BY id")
         .expect("query")
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .expect("rows")
         .collect::<Result<_, _>>()
-        .expect("states");
+        .expect("states")
+}
+
+fn pairs(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|(a, b)| ((*a).into(), (*b).into()))
+        .collect()
+}
+
+#[test]
+fn stopping_a_live_agent_keeps_reserved_and_uncertain_inputs() {
+    let mut connection = input_states(false);
+    let transaction = connection.transaction().expect("transaction");
+    agent_management::settle_inputs(&transaction, "worker").expect("settlement");
+    transaction.commit().expect("commit");
     assert_eq!(
-        rows,
-        vec![
-            ("foreign".into(), "pending".into()),
-            ("pending".into(), "cancelled".into()),
-            ("reserved".into(), "reserved".into()),
-            ("uncertain".into(), "uncertain".into())
-        ]
+        input_statuses(&connection),
+        pairs(&[
+            ("delivered", "delivered"),
+            ("dispatching", "dispatching"),
+            ("foreign", "pending"),
+            ("foreign-uncertain", "uncertain"),
+            ("pending", "cancelled"),
+            ("reserved", "reserved"),
+            ("stale", "pending"),
+            ("uncertain", "uncertain"),
+        ])
+    );
+}
+
+#[test]
+fn deleting_an_agent_cancels_unsent_inputs_and_abandons_uncertain_ones() {
+    let mut connection = input_states(true);
+    let transaction = connection.transaction().expect("transaction");
+    agent_management::settle_inputs(&transaction, "worker").expect("settlement");
+    transaction.commit().expect("commit");
+    assert_eq!(
+        input_statuses(&connection),
+        pairs(&[
+            ("delivered", "delivered"),
+            ("dispatching", "failed"),
+            ("foreign", "pending"),
+            ("foreign-uncertain", "uncertain"),
+            ("pending", "cancelled"),
+            ("reserved", "cancelled"),
+            ("stale", "pending"),
+            ("uncertain", "failed"),
+        ])
+    );
+    let error: String = connection
+        .query_row(
+            "SELECT error FROM runtime_events WHERE id='uncertain'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("error");
+    assert!(error.contains("outcome unknown"));
+}
+
+#[test]
+fn startup_sweep_settles_deleted_agents_and_stale_epochs_only() {
+    let mut connection = input_states(true);
+    let transaction = connection.transaction().expect("transaction");
+    agent_management::settle_orphaned_inputs(&transaction).expect("sweep");
+    agent_management::settle_orphaned_inputs(&transaction).expect("idempotent sweep");
+    transaction.commit().expect("commit");
+    assert_eq!(
+        input_statuses(&connection),
+        pairs(&[
+            ("delivered", "delivered"),
+            ("dispatching", "failed"),
+            ("foreign", "pending"),
+            ("foreign-uncertain", "uncertain"),
+            ("pending", "cancelled"),
+            ("reserved", "cancelled"),
+            ("stale", "cancelled"),
+            ("uncertain", "failed"),
+        ])
+    );
+}
+
+#[test]
+fn diagnostic_count_excludes_deleted_agents() {
+    let connection = input_states(true);
+    assert_eq!(
+        studio_runtime_services::diagnostics::durable_input_pending(&connection).expect("count"),
+        3
     );
 }
 
