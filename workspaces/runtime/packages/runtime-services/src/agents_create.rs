@@ -36,6 +36,8 @@ pub enum MutationError {
     RequestIdRequired,
     #[error("Invalid host agent creation field: {0}")]
     InvalidCreation(&'static str),
+    #[error("Invalid host agent creation field: base commit could not be resolved")]
+    BaseUnresolved,
     #[error("The selected model is not available for the selected account")]
     ModelUnavailable,
     #[error("Not implemented: requires {0}")]

@@ -1757,6 +1757,15 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
     let tool_result: Value = serde_json::from_str(tool_result_text)
         .unwrap_or_else(|error| panic!("managed tool result JSON {tool_result_text:?}: {error}"));
     assert_eq!(tool_result["providerRequest"], "written");
+    // The finalization time is wall-clock, not the session-relative journal clock.
+    let awareness = callback.value["result"]["contentItems"][1]["text"]
+        .as_str()
+        .and_then(|text| text.strip_prefix("[Time awareness] Tool result finalized at "))
+        .expect("time-awareness text");
+    assert!(
+        awareness[..4].parse::<u32>().unwrap() >= 2026,
+        "{awareness}"
+    );
     let (reply_journal_committed, checkpoint) = state
         .bridge
         .run(move |runtime_store| async move {

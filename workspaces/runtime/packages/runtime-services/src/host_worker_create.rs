@@ -94,7 +94,7 @@ fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
         stderr_limit: 256,
         timeout: Duration::from_secs(10),
     })
-    .map_err(|_| CreateError::InvalidCreation("base commit could not be resolved"))?;
+    .map_err(|_| CreateError::BaseUnresolved)?;
     let value = String::from_utf8(output.stdout.bytes)
         .map_err(|_| CreateError::InvalidCreation("base commit is invalid"))?
         .trim()

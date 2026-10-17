@@ -270,6 +270,7 @@ pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, Scheduler
     .await
     .map_err(|_| SchedulerError::PreparationWorker)?;
     Ok(lifecycle_transaction(store, move |transaction| {
+        studio_runtime_store::agent_management::settle_orphaned_inputs(transaction)?;
         let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
