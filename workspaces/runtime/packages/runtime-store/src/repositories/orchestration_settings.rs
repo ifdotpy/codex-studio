@@ -1,19 +1,52 @@
-//! Server-wide orchestration settings that the scheduler reads on every use.
+//! Server-wide orchestration settings that the scheduler and the account
+//! workers read on every use.
 
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::time::Duration;
 use studio_runtime_schema::shared_values::{
     CHILD_RESULT_COALESCE_DEFAULT_SECONDS, CHILD_RESULT_COALESCE_MAX_SECONDS,
-    CHILD_RESULT_COALESCE_MIN_SECONDS,
+    CHILD_RESULT_COALESCE_MIN_SECONDS, IDLE_SESSION_UNLOAD_DEFAULT_MINUTES,
+    IDLE_SESSION_UNLOAD_MAX_MINUTES, IDLE_SESSION_UNLOAD_MIN_MINUTES,
 };
 
 const TABLE: &str = "runtime_orchestration_settings";
 const ROW: &str = "global";
-/// The record field that stores the hold in whole seconds.
-const CHILD_RESULT_COALESCE_FIELD: &str = "childResultCoalesceSeconds";
+const SECONDS_PER_MINUTE: u64 = 60;
+
+/// One whole-number field of the settings record, with its unset value and
+/// accepted range; the shared values own the numbers and their unit.
+#[derive(Clone, Copy, Debug)]
+pub struct Setting {
+    pub field: &'static str,
+    pub default: u64,
+    pub min: u64,
+    pub max: u64,
+}
+
+impl Setting {
+    pub fn valid(&self, value: u64) -> bool {
+        (self.min..=self.max).contains(&value)
+    }
+}
+
+/// Seconds a lead's child result waits for sibling subagents that are still
+/// queued or running; zero delivers every child result at once.
+pub const CHILD_RESULT_COALESCE_SETTING: Setting = Setting {
+    field: "childResultCoalesceSeconds",
+    default: CHILD_RESULT_COALESCE_DEFAULT_SECONDS,
+    min: CHILD_RESULT_COALESCE_MIN_SECONDS,
+    max: CHILD_RESULT_COALESCE_MAX_SECONDS,
+};
+/// Minutes an idle provider thread stays loaded; zero never unloads.
+pub const IDLE_SESSION_UNLOAD_SETTING: Setting = Setting {
+    field: "idleSessionUnloadMinutes",
+    default: IDLE_SESSION_UNLOAD_DEFAULT_MINUTES,
+    min: IDLE_SESSION_UNLOAD_MIN_MINUTES,
+    max: IDLE_SESSION_UNLOAD_MAX_MINUTES,
+};
 
 /// How long a lead's child result waits for sibling subagents that are still
 /// queued or running, until the setting is changed.
@@ -45,16 +78,11 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 pub struct OrchestrationSettingsRepository;
 
 impl OrchestrationSettingsRepository {
-    /// Whether `seconds` is an accepted child-result hold.
-    pub fn valid_child_result_coalesce(seconds: u64) -> bool {
-        (CHILD_RESULT_COALESCE_MIN_SECONDS..=CHILD_RESULT_COALESCE_MAX_SECONDS).contains(&seconds)
-    }
-
-    /// The effective child-result hold. A state without the table or the row
-    /// uses [`CHILD_RESULT_COALESCE_DEFAULT`]; a stored value out of range is refused.
-    pub fn child_result_coalesce(connection: &Connection) -> StoreResult<Duration> {
+    /// The stored value of `setting`. A state without the table, the row, or
+    /// the field uses the setting's default; a stored value out of range is refused.
+    pub fn value(connection: &Connection, setting: Setting) -> StoreResult<u64> {
         if !crate::schema::table_exists(connection, TABLE)? {
-            return Ok(CHILD_RESULT_COALESCE_DEFAULT);
+            return Ok(setting.default);
         }
         let raw: Option<String> = connection
             .query_row(
@@ -64,39 +92,59 @@ impl OrchestrationSettingsRepository {
             )
             .optional()?;
         let Some(raw) = raw else {
-            return Ok(CHILD_RESULT_COALESCE_DEFAULT);
+            return Ok(setting.default);
         };
-        serde_json::from_str::<Value>(&raw)
+        let invalid = || {
+            StoreError::SchemaMismatch(format!(
+                "invalid stored object {TABLE}/{ROW}: {}",
+                setting.field
+            ))
+        };
+        let record = serde_json::from_str::<Value>(&raw).map_err(|_| invalid())?;
+        match record.get(setting.field) {
+            None => Ok(setting.default),
+            Some(value) => value
+                .as_u64()
+                .filter(|value| setting.valid(*value))
+                .ok_or_else(invalid),
+        }
+    }
+
+    /// Store a validated value of `setting`, keeping the record's other fields.
+    pub fn set(connection: &Connection, setting: Setting, value: u64) -> StoreResult<()> {
+        let value = i64::try_from(value)
             .ok()
-            .and_then(|record| record.get(CHILD_RESULT_COALESCE_FIELD)?.as_u64())
-            .filter(|seconds| Self::valid_child_result_coalesce(*seconds))
-            .map(Duration::from_secs)
+            .filter(|_| setting.valid(value))
             .ok_or_else(|| {
                 StoreError::SchemaMismatch(format!(
-                    "invalid stored object {TABLE}/{ROW}: {CHILD_RESULT_COALESCE_FIELD}"
+                    "{} must be between {} and {}",
+                    setting.field, setting.min, setting.max
                 ))
-            })
+            })?;
+        connection.execute(
+            &format!(
+                "INSERT INTO {TABLE}(id,record) VALUES(?1,json_object(?2,?3)) \
+                 ON CONFLICT(id) DO UPDATE SET record=json_set(record,?4,?3)"
+            ),
+            params![ROW, setting.field, value, format!("$.{}", setting.field)],
+        )?;
+        Ok(())
+    }
+
+    /// The effective child-result hold.
+    pub fn child_result_coalesce(connection: &Connection) -> StoreResult<Duration> {
+        Self::value(connection, CHILD_RESULT_COALESCE_SETTING).map(Duration::from_secs)
     }
 
     /// Store a validated child-result hold in whole seconds.
     pub fn set_child_result_coalesce(connection: &Connection, seconds: u64) -> StoreResult<()> {
-        if !Self::valid_child_result_coalesce(seconds) {
-            return Err(StoreError::SchemaMismatch(format!(
-                "{CHILD_RESULT_COALESCE_FIELD} must be between \
-                 {CHILD_RESULT_COALESCE_MIN_SECONDS} and {CHILD_RESULT_COALESCE_MAX_SECONDS} seconds"
-            )));
-        }
-        connection.execute(
-            &format!(
-                "INSERT INTO {TABLE}(id,record) VALUES(?1,?2) \
-                 ON CONFLICT(id) DO UPDATE SET record=excluded.record"
-            ),
-            params![
-                ROW,
-                json!({ CHILD_RESULT_COALESCE_FIELD: seconds }).to_string()
-            ],
-        )?;
-        Ok(())
+        Self::set(connection, CHILD_RESULT_COALESCE_SETTING, seconds)
+    }
+
+    /// How long an idle provider thread stays loaded; `None` never unloads.
+    pub fn idle_session_unload(connection: &Connection) -> StoreResult<Option<Duration>> {
+        let minutes = Self::value(connection, IDLE_SESSION_UNLOAD_SETTING)?;
+        Ok((minutes > 0).then(|| Duration::from_secs(minutes * SECONDS_PER_MINUTE)))
     }
 }
 
@@ -119,6 +167,10 @@ mod tests {
             )
             .expect("table creates");
         connection
+    }
+
+    fn unload(connection: &Connection) -> Option<Duration> {
+        OrchestrationSettingsRepository::idle_session_unload(connection).expect("reads")
     }
 
     #[test]
@@ -157,5 +209,41 @@ mod tests {
             CHILD_RESULT_COALESCE_MAX,
             "a refused write keeps the stored value"
         );
+    }
+
+    #[test]
+    fn idle_unload_persists_beside_the_hold_and_zero_never_unloads() {
+        let connection = database();
+        let default = Duration::from_secs(IDLE_SESSION_UNLOAD_DEFAULT_MINUTES * SECONDS_PER_MINUTE);
+        assert_eq!(unload(&connection), Some(default));
+        OrchestrationSettingsRepository::set_child_result_coalesce(&connection, 0).expect("hold");
+        assert_eq!(
+            unload(&connection),
+            Some(default),
+            "a row written before the field existed uses the default"
+        );
+        let max = IDLE_SESSION_UNLOAD_SETTING.max;
+        OrchestrationSettingsRepository::set(&connection, IDLE_SESSION_UNLOAD_SETTING, max)
+            .expect("bound is accepted");
+        assert_eq!(
+            unload(&connection),
+            Some(Duration::from_secs(max * SECONDS_PER_MINUTE))
+        );
+        assert_eq!(
+            OrchestrationSettingsRepository::child_result_coalesce(&connection).expect("reads"),
+            Duration::ZERO,
+            "writing one field keeps the other"
+        );
+        assert!(
+            OrchestrationSettingsRepository::set(&connection, IDLE_SESSION_UNLOAD_SETTING, max + 1)
+                .is_err()
+        );
+        OrchestrationSettingsRepository::set(
+            &connection,
+            IDLE_SESSION_UNLOAD_SETTING,
+            IDLE_SESSION_UNLOAD_SETTING.min,
+        )
+        .expect("zero is accepted");
+        assert_eq!(unload(&connection), None);
     }
 }

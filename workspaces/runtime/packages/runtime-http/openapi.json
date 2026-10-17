@@ -33944,10 +33944,18 @@
             "minimum": 0.0,
             "title": "Childresultcoalesceseconds",
             "type": "integer"
+          },
+          "idleSessionUnloadMinutes": {
+            "description": "Minutes an idle Codex thread or Claude session stays loaded without a running turn, pending input, or active monitor; the next message resumes it. 0 never unloads.",
+            "maximum": 1440.0,
+            "minimum": 0.0,
+            "title": "Idlesessionunloadminutes",
+            "type": "integer"
           }
         },
         "required": [
-          "childResultCoalesceSeconds"
+          "childResultCoalesceSeconds",
+          "idleSessionUnloadMinutes"
         ],
         "title": "OrchestrationSettings",
         "type": "object"

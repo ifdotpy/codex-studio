@@ -5,7 +5,12 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field
 
-from codex_shared_values import CHILD_RESULT_COALESCE_MAX_SECONDS, CHILD_RESULT_COALESCE_MIN_SECONDS
+from codex_shared_values import (
+    CHILD_RESULT_COALESCE_MAX_SECONDS,
+    CHILD_RESULT_COALESCE_MIN_SECONDS,
+    IDLE_SESSION_UNLOAD_MAX_MINUTES,
+    IDLE_SESSION_UNLOAD_MIN_MINUTES,
+)
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
 from studio_api.models import SupervisorIdentity as SupervisorIdentity
 from studio_api.sync.models import AgentStatus, ReviewTargetDto, SnapshotModelSettingsDto
@@ -1023,6 +1028,15 @@ class OrchestrationSettings(ContractModel):
         description=(
             "Seconds a lead's finished-subagent result waits for sibling subagents that are "
             "still running, so close results arrive in one turn; 0 delivers each at once."
+        ),
+    )
+    idleSessionUnloadMinutes: SafeInt = Field(
+        ge=IDLE_SESSION_UNLOAD_MIN_MINUTES,
+        le=IDLE_SESSION_UNLOAD_MAX_MINUTES,
+        strict=True,
+        description=(
+            "Minutes an idle Codex thread or Claude session stays loaded without a running turn, "
+            "pending input, or active monitor; the next message resumes it. 0 never unloads."
         ),
     )
 

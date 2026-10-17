@@ -1,4 +1,4 @@
-//! The child-result hold setting round-trips through HTTP and is validated.
+//! The orchestration settings round-trip through HTTP and are validated.
 #![allow(clippy::unwrap_used)]
 use axum::{
     body::{Body, to_bytes},
@@ -9,12 +9,14 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_store::{
-    CHILD_RESULT_COALESCE_DEFAULT, CHILD_RESULT_COALESCE_MAX, OrchestrationSettingsRepository,
-    RuntimeStore,
+    CHILD_RESULT_COALESCE_DEFAULT, CHILD_RESULT_COALESCE_MAX, IDLE_SESSION_UNLOAD_SETTING,
+    OrchestrationSettingsRepository, RuntimeStore,
 };
 use tower::ServiceExt;
 
 const PATH: &str = "/api/orchestration/settings";
+const HOLD: &str = "childResultCoalesceSeconds";
+const UNLOAD: &str = "idleSessionUnloadMinutes";
 
 async fn call(app: &axum::Router, method: &str, body: Option<Value>) -> (u16, Value) {
     let request = Request::builder()
@@ -38,12 +40,12 @@ async fn call(app: &axum::Router, method: &str, body: Option<Value>) -> (u16, Va
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
-fn seconds(body: &Value) -> Value {
-    body["settings"]["childResultCoalesceSeconds"].clone()
+fn settings(hold: Value, unload: Value) -> Value {
+    json!({ HOLD: hold, UNLOAD: unload })
 }
 
 #[tokio::test]
-async fn hold_setting_defaults_persists_and_refuses_out_of_range_values() {
+async fn settings_default_persist_and_refuse_out_of_range_values() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let state = HttpState::new(
@@ -61,39 +63,45 @@ async fn hold_setting_defaults_persists_and_refuses_out_of_range_values() {
     let (status, body) = call(&app, "GET", None).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(
-        seconds(&body),
-        json!(CHILD_RESULT_COALESCE_DEFAULT.as_secs())
+        body["settings"],
+        settings(
+            json!(CHILD_RESULT_COALESCE_DEFAULT.as_secs()),
+            json!(IDLE_SESSION_UNLOAD_SETTING.default)
+        )
     );
 
-    for value in [0, CHILD_RESULT_COALESCE_MAX.as_secs()] {
-        let (status, body) = call(
-            &app,
-            "POST",
-            Some(json!({"childResultCoalesceSeconds": value})),
-        )
-        .await;
+    for (hold, unload) in [
+        (0, IDLE_SESSION_UNLOAD_SETTING.max),
+        (CHILD_RESULT_COALESCE_MAX.as_secs(), 0),
+    ] {
+        let written = settings(json!(hold), json!(unload));
+        let (status, body) = call(&app, "POST", Some(written.clone())).await;
         assert_eq!(status, 200, "{body}");
-        assert_eq!(seconds(&body), json!(value));
+        assert_eq!(body["settings"], written);
         let (_, body) = call(&app, "GET", None).await;
-        assert_eq!(seconds(&body), json!(value));
+        assert_eq!(body["settings"], written);
     }
 
-    for value in [
-        json!(CHILD_RESULT_COALESCE_MAX.as_secs() + 1),
-        json!(-1),
-        json!("10"),
+    for body in [
+        settings(json!(CHILD_RESULT_COALESCE_MAX.as_secs() + 1), json!(0)),
+        settings(json!(-1), json!(0)),
+        settings(json!("10"), json!(0)),
+        settings(json!(0), json!(IDLE_SESSION_UNLOAD_SETTING.max + 1)),
+        settings(json!(0), json!(-1)),
+        json!({ HOLD: 0 }),
     ] {
-        let (status, body) = call(
-            &app,
-            "POST",
-            Some(json!({"childResultCoalesceSeconds": value})),
-        )
-        .await;
-        assert!((400..500).contains(&status), "{value}: {status} {body}");
+        let (status, response) = call(&app, "POST", Some(body.clone())).await;
+        assert!((400..500).contains(&status), "{body}: {status} {response}");
     }
+    let connection = store.read().unwrap();
     assert_eq!(
-        OrchestrationSettingsRepository::child_result_coalesce(&store.read().unwrap()).unwrap(),
+        OrchestrationSettingsRepository::child_result_coalesce(&connection).unwrap(),
         CHILD_RESULT_COALESCE_MAX,
         "a refused write keeps the stored hold"
+    );
+    assert_eq!(
+        OrchestrationSettingsRepository::idle_session_unload(&connection).unwrap(),
+        None,
+        "a refused write keeps the stored unload delay"
     );
 }

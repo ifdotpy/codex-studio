@@ -92,7 +92,8 @@ pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::notification_dispatch::NotificationDispatchRepository;
 pub use repositories::orchestration_settings::{
     CHILD_RESULT_COALESCE_DEFAULT, CHILD_RESULT_COALESCE_MAX, CHILD_RESULT_COALESCE_MIN,
-    OrchestrationSettingsRepository,
+    CHILD_RESULT_COALESCE_SETTING, IDLE_SESSION_UNLOAD_SETTING, OrchestrationSettingsRepository,
+    Setting as OrchestrationSetting,
 };
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::project_locations::{ProjectLocationRecord, ProjectLocationsRepository};

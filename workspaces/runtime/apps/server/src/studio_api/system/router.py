@@ -174,7 +174,9 @@ def create_router(context: ApiContext) -> APIRouter:
             settings = (
                 codex_orchestration_settings.read(db)
                 if values is None
-                else codex_orchestration_settings.write(db, values.childResultCoalesceSeconds)
+                else codex_orchestration_settings.write(
+                    db, values.childResultCoalesceSeconds, values.idleSessionUnloadMinutes
+                )
             )
         return {"settings": cast(dict[str, JsonValue], settings)}
 

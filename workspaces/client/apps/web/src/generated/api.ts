@@ -15838,6 +15838,11 @@ export interface components {
        * @description Seconds a lead's finished-subagent result waits for sibling subagents that are still running, so close results arrive in one turn; 0 delivers each at once.
        */
       childResultCoalesceSeconds: number;
+      /**
+       * Idlesessionunloadminutes
+       * @description Minutes an idle Codex thread or Claude session stays loaded without a running turn, pending input, or active monitor; the next message resumes it. 0 never unloads.
+       */
+      idleSessionUnloadMinutes: number;
     };
     /** OrchestrationSettingsResponse */
     OrchestrationSettingsResponse: {

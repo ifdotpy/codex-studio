@@ -96,6 +96,16 @@ pub(crate) fn unsettled_request_predicate() -> String {
     REQUESTS.predicate()
 }
 
+/// The predicate of the active-monitor partial index.
+pub(crate) fn active_monitor_predicate() -> String {
+    MONITORS.predicate()
+}
+
+/// The predicate of the unsettled tool-request partial index.
+pub(crate) fn unsettled_tool_request_predicate() -> String {
+    TOOL_REQUESTS.predicate()
+}
+
 pub struct StartupRecoveryRepository;
 
 impl StartupRecoveryRepository {

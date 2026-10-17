@@ -59,6 +59,14 @@ CHILD_RESULT_COALESCE_DEFAULT_SECONDS = 10
 CHILD_RESULT_COALESCE_MIN_SECONDS = 0
 CHILD_RESULT_COALESCE_MAX_SECONDS = 300
 
+# An idle provider thread (a Codex thread or a Claude session) is unloaded after this many
+# minutes without a running turn, pending input, or active monitor, and an account's provider
+# process stops once it holds no loaded thread. The next message resumes the thread. The
+# orchestration setting chooses a value in [MIN, MAX]; 0 never unloads.
+IDLE_SESSION_UNLOAD_DEFAULT_MINUTES = 15
+IDLE_SESSION_UNLOAD_MIN_MINUTES = 0
+IDLE_SESSION_UNLOAD_MAX_MINUTES = 1440
+
 
 def user_attachment_limit_label() -> str:
     """Return the display label derived from the byte-valued attachment cap."""

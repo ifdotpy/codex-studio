@@ -87,6 +87,7 @@ pub struct TurnAttemptIdentity {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SchedulerRepository;
 
+mod idle_unload;
 mod lifecycle;
 mod selection;
 mod steer;
