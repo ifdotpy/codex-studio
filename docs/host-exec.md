@@ -224,7 +224,7 @@ python3 -B workspaces/runtime/apps/server/tests/host-exec-contract.py
 python3 -B workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py
 python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime
-xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization desktop/native/linux-vm/main.swift
+xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization workspaces/client/apps/desktop/native/linux-vm/main.swift workspaces/client/apps/desktop/native/linux-vm/shared_values_generated.swift
 ```
 
 The manual benchmark `workspaces/runtime/apps/server/tests/host-exec-transfer-bench.py`

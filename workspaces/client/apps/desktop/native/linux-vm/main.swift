@@ -37,6 +37,18 @@ func address(_ path: String) throws -> sockaddr_un {
     return result
 }
 
+// Rosetta for Linux runs x86_64 Linux binaries in the arm64 guest (docs/linux-vm-workspaces.md,
+// "x86_64 binaries"). The helper never installs Rosetta and never prompts: without it the VM
+// starts without the share.
+func rosettaAvailability() -> String {
+    switch VZLinuxRosettaDirectoryShare.availability {
+    case .installed: return "installed"
+    case .notInstalled: return "notInstalled"
+    case .notSupported: return "notSupported"
+    @unknown default: return "unknown"
+    }
+}
+
 final class HostExecListener: NSObject, VZVirtioSocketListenerDelegate {
     weak var host: Host?
     init(host: Host) { self.host = host }
@@ -67,6 +79,10 @@ final class Host: NSObject, VZVirtualMachineDelegate {
     var sharePort: Int?
     var shareError: String?
     let shareChannels = DispatchSemaphore(value: 32)
+    // Whether this boot has the Rosetta share. Availability can change after the boot, and the
+    // device is fixed at the start, so a new share needs a VM restart.
+    var rosettaAttached = false
+    var rosettaError: String?
 
     init(directory: URL) { self.directory = directory }
     func boot() throws {
@@ -125,6 +141,17 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         network.attachment = VZNATNetworkDeviceAttachment()
         configuration.networkDevices = [network]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        if VZLinuxRosettaDirectoryShare.availability == .installed {
+            do {
+                let rosetta = VZVirtioFileSystemDeviceConfiguration(tag: LINUX_VM_ROSETTA_TAG)
+                rosetta.share = try VZLinuxRosettaDirectoryShare()
+                configuration.directorySharingDevices = [rosetta]
+                rosettaAttached = true
+            } catch {
+                // An optional capability: the VM starts without it and the status names the cause.
+                rosettaError = error.localizedDescription
+            }
+        }
         configuration.storageDevices = try [("system.raw", false), ("data.raw", false), ("seed.iso", true)].map { name, readOnly in
             let attachment = try VZDiskImageStorageDeviceAttachment(url: directory.appendingPathComponent(name), readOnly: readOnly)
             return VZVirtioBlockDeviceConfiguration(attachment: attachment)
@@ -231,8 +258,10 @@ final class Host: NSObject, VZVirtualMachineDelegate {
             case "host.status":
                 let share: [String: Any] = ["state": sharePort == nil ? "unavailable" : "listening",
                                             "port": sharePort ?? NSNull(), "error": shareError ?? NSNull()]
+                let rosetta: [String: Any] = ["availability": rosettaAvailability(), "attached": rosettaAttached,
+                                              "error": rosettaError ?? NSNull()]
                 let result: [String: Any] = ["state": phase, "pid": getpid(), "error": failure ?? NSNull(),
-                                             "settings": config, "share": share]
+                                             "settings": config, "share": share, "rosetta": rosetta]
                 reply(fd, ["id": id, "result": result]); close(fd)
             case "host.stop":
                 guard let machine = vm, machine.canStop else {
@@ -356,7 +385,8 @@ if CommandLine.arguments == [CommandLine.arguments[0], "--check"] {
     let delegate = HostExecListener(host: checkHost)
     let acceptsHostConnections = delegate.responds(to: #selector(VZVirtioSocketListenerDelegate.listener(_:shouldAcceptNewConnection:from:)))
     print(String(data: json(["supported": VZVirtualMachine.isSupported, "architecture": "arm64", "protocol": 1,
-                            "hostExecListener": acceptsHostConnections]), encoding: .utf8)!)
+                            "hostExecListener": acceptsHostConnections,
+                            "rosetta": rosettaAvailability()]), encoding: .utf8)!)
     exit(VZVirtualMachine.isSupported && acceptsHostConnections ? 0 : 1)
 }
 guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "serve" else {
