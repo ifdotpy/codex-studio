@@ -312,9 +312,11 @@ sys.exit(7)
         f.eventually(lambda: "retained-before-loss" in self.manager.output(first["id"])["text"])
         old_connection = self.manager.connection
         server = self.manager.server
-        server.proc.kill()
-        server.proc.wait(5)
-        f.eventually(lambda: not self.manager.processes)
+        with patch("codex_terminals.subprocess.check_output", side_effect=
+                   subprocess.TimeoutExpired(["/bin/ps"], 5)):
+            server.proc.kill()
+            server.proc.wait(5)
+            f.eventually(lambda: not self.manager.processes)
         output = self.manager.output(first["id"])
         self.assertEqual(output["status"], "exited")
         self.assertIsNone(output["exitCode"])

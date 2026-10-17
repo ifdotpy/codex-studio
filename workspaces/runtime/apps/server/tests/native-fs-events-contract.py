@@ -1,6 +1,9 @@
 """Manual macOS FSEvents delivery check; depends on the host event service."""
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,6 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import codex_vm_mac_sync as sync
 from server_test_waits import wait_for_condition
 
