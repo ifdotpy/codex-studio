@@ -3,8 +3,9 @@
 //! A change list is a candidate list: an entry that kept its inode and path has the changed byte
 //! ranges, so a content check reads only those ranges. Other entries are checked in full.
 
-use crate::btrfs;
 use crate::fsutil::{self, Meta};
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
+use crate::storage as btrfs;
 use crate::stream;
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -32,6 +33,7 @@ impl Change {
 }
 
 /// Raw candidate list from the stream, without content checks.
+#[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
 pub fn candidates(parent: &Path, child: &Path) -> Result<Vec<Change>> {
     let data = btrfs::send_no_data(parent, child)?;
     let cmds = stream::parse(&data)?;
@@ -149,6 +151,12 @@ pub fn really_changed(parent: &Path, child: &Path, c: &Change) -> Result<bool> {
         return Ok(true);
     }
     if o.is_dir() {
+        return Ok(false);
+    }
+    // APFS already compared every byte while it built these ranges. Both trees
+    // are read-only, so an empty result does not need another open and stat.
+    #[cfg(any(target_os = "macos", feature = "overlayfs"))]
+    if o.is_file() && o.size == n.size && c.ranges.as_ref().is_some_and(|ranges| ranges.is_empty()) {
         return Ok(false);
     }
     Ok(!fsutil::same_entry(parent, c.src(), child, &c.path, c.ranges.as_deref())?)
@@ -294,4 +302,9 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
 
 fn split(d: &[u8]) -> Vec<&[u8]> {
     d.split_inclusive(|b| *b == b'\n').collect()
+}
+
+#[cfg(any(target_os = "macos", feature = "overlayfs"))]
+pub fn candidates(parent: &Path, child: &Path) -> Result<Vec<Change>> {
+    crate::storage::candidates(parent, child)
 }

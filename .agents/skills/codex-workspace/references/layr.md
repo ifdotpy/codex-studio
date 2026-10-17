@@ -14,8 +14,8 @@ Use Git only for the remote bridge and tools that call Git themselves.
 Use `layr push --squash -m <task title>` to export one task commit to the remote when authorized.
 In a project synced with the Mac, Git lives on the Mac: `layr push` from the VM is off and
 agents may not add remotes. Accepted work reaches the Mac folder as uncommitted changes.
-If a tool in the VM needs git HEAD at the current layr state, commit it locally in the
-line's `.git` and do not push.
+If a tool in the VM needs git HEAD at the current layr state, run `layr git-sync`; it does not
+push.
 
 The lead owns the main line and may commit in it.
 Each worker has its own line and Linux user.

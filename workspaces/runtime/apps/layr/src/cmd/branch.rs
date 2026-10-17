@@ -106,7 +106,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             );
             rec.data = serde_json::json!({"name": l.name, "final_state": last});
             repo.commit_record(ctx, rec)?;
-            crate::btrfs::delete_tree(&repo.working(&l))?;
+            crate::storage::delete_tree(&repo.working(&l))?;
             repo.drop_stage(&l)?;
             repo.set_pending_moves(&l, &Default::default())?;
             repo.prune_bases(&l, None, 0)?;
@@ -129,7 +129,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
         if repo.p.db.line_by_name(&new)?.is_some() {
             return Err(exit(128, format!("fatal: a line named '{new}' already exists")));
         }
-        std::fs::rename(repo.p.line_path(&l.name), repo.p.line_path(&new))?;
+        crate::fsutil::rename_tree(repo.p.line_path(&l.name), repo.p.line_path(&new))?;
         let mut after = repo.line_state(&l, &l.head);
         after.name = new.clone();
         let mut rec = Record::new("line.rename");

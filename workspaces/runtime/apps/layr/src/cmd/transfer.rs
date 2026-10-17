@@ -2,7 +2,6 @@
 
 use super::{exit, here};
 use crate::args::{parse, Spec};
-use crate::btrfs;
 use crate::changes;
 use crate::ctx::Ctx;
 use crate::fsutil;
@@ -11,6 +10,7 @@ use crate::model::{Record, StateKind};
 use crate::privs::as_caller_fs;
 use crate::repo::{skip_path, Repo};
 use crate::revs;
+use crate::storage as btrfs;
 use crate::store::Project;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -495,7 +495,7 @@ pub fn run_backup(ctx: &Ctx, repo: &Repo, root: &Path, full: bool, writer: (u32,
         let seq = next_seq(&m);
         let file = unique_name(&dir, &m, seq, &format!("{}.stream.zst", ids::short(&id)));
         let pp = parent.as_ref().map(|p| repo.p.state_path(p));
-        let (sha, bytes) = compress_to(btrfs::send_command(pp.as_deref(), &repo.p.state_path(&id)), &dir.join(&file), writer)?;
+        let (sha, bytes) = compress_to(btrfs::send_command(pp.as_deref(), &repo.p.state_path(&id))?, &dir.join(&file), writer)?;
         m.items.push(Item {
             seq,
             kind: "state".into(),
@@ -719,6 +719,7 @@ pub fn backup(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 },
             };
             if !ctx.caller.is_root() {
+                crate::privs::as_caller_fs(ctx, || Ok(std::fs::create_dir_all(&dir)?))?;
                 crate::privs::check_caller_writable(ctx, &dir)?;
             }
             let (n, c) = run_backup(ctx, &h.repo, &dir, a.has("--full"), (ctx.caller.uid, ctx.caller.gid))?;
@@ -733,8 +734,8 @@ pub fn backup(ctx: &Ctx, args: &[String]) -> Result<i32> {
             crate::privs::as_caller_fs(ctx, || list_or_verify(ctx, &root, sub == "verify"))
         }
         "restore" => {
-            if !ctx.caller.is_root() {
-                return Err(exit(1, "error: restore needs root (it receives btrfs streams)"));
+            if !ctx.caller.is_root() && !(cfg!(target_os = "macos") && rustix::process::geteuid().as_raw() == ctx.caller.uid) {
+                return Err(exit(1, "error: restore needs root through the service"));
             }
             let root = caller_path(
                 ctx,
@@ -791,7 +792,7 @@ fn restore_item(p: &Project, d: &File, i: &Item) -> Result<bool> {
                 let path = p.state_path(&pid);
                 path.exists().then_some(path)
             };
-            let e = crate::recv::Expect { name: &id, uuid: &rec.subvol, parent: &parent };
+            let e = crate::recv::Expect { name: &id, uuid: &rec.subvol, parent: &parent, clones: &[] };
             let ((), (sha, _)) = decompress(f, |r| crate::recv::receive(r, &p.states_dir(), &e))?;
             if sha != i.sha256 {
                 let _ = btrfs::delete_tree(&p.state_path(&id));
@@ -903,6 +904,15 @@ fn restore(ctx: &Ctx, root: &Path, as_name: Option<&str>, chain: Option<u32>, qu
             if let Some(key) = k.strip_suffix(&suffix) {
                 take.insert(key.to_string(), serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)));
             }
+        }
+        #[cfg(target_os = "macos")]
+        if !ctx.caller.is_root() {
+            // A local restore creates a store owned by this user. Foreign numeric UIDs
+            // cannot leave its owner unable to administer the restored project.
+            let inherited = p.config_value("access")?.unwrap_or_else(|| serde_json::json!({}));
+            let access = take.entry("access").or_insert(inherited);
+            let access = access.as_object_mut().ok_or_else(|| anyhow::anyhow!("invalid restored access policy"))?;
+            access.insert(format!("user:{}", ctx.caller.uid), serde_json::json!("admin"));
         }
         if !take.is_empty() {
             let mut rec = Record::new("config");

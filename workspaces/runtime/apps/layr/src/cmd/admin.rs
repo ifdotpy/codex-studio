@@ -2,7 +2,6 @@
 
 use super::{exit, here};
 use crate::args::{parse, Spec};
-use crate::btrfs;
 use crate::changes;
 use crate::ctx::Ctx;
 use crate::fsutil;
@@ -10,14 +9,20 @@ use crate::ids;
 use crate::model::{Line, LineChange, Record, StateKind};
 use crate::repo::{skip_path, Repo};
 use crate::revs;
+use crate::storage as btrfs;
 use crate::store::Project;
 use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec =
-        Spec::new().value("-m|--message").flag("--running").flag("--force").flag("--caches").flag("--all").flag("-q|--quiet");
+    let spec = Spec::new()
+        .value("-m|--message")
+        .flag("--running")
+        .flag("--force")
+        .flag("--caches|--layers")
+        .flag("--all")
+        .flag("-q|--quiet");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let repo = &h.repo;
@@ -118,8 +123,8 @@ pub fn record_caches(
         let info = btrfs::subvol_info(&repo.p.cache_path(state, snap)).map_err(undo)?;
         uuids.insert(snap.clone(), serde_json::Value::String(info.uuid));
     }
-    let mut rec = Record::new("save.caches");
-    rec.data = serde_json::json!({"state": state, "caches": caches, "uuids": uuids, "shared": shared});
+    let mut rec = Record::new("save.layers");
+    rec.data = serde_json::json!({"state": state, "layers": caches, "uuids": uuids, "shared": shared});
     repo.commit_record(ctx, rec).map_err(undo)?;
     Ok(caches)
 }
@@ -140,6 +145,7 @@ const NOT_UNDOABLE: &[&str] = &[
     "backup",
     "save",
     "save.caches",
+    "save.layers",
     "check",
     "gc",
     "machine",
@@ -332,7 +338,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
                 // Save the current content, then restore the old pointers and content.
                 wb = repo.working_state(ctx, l, "before undo")?;
                 if b.name != l.name {
-                    std::fs::rename(repo.p.line_path(&l.name), repo.p.line_path(&b.name))?;
+                    crate::fsutil::rename_tree(repo.p.line_path(&l.name), repo.p.line_path(&b.name))?;
                 }
                 let mut l2 = l.clone();
                 l2.name = b.name.clone();
@@ -1653,7 +1659,7 @@ pub fn debug(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 let path = p.state_path(&id);
                 path.exists().then_some(path)
             };
-            let e = crate::recv::Expect { name: &args[1], uuid: &args[2], parent: &parent };
+            let e = crate::recv::Expect { name: &args[1], uuid: &args[2], parent: &parent, clones: &[] };
             crate::recv::receive(&mut std::io::stdin(), &p.states_dir(), &e)?;
             outln!(ctx, "received {}", args[1]);
             Ok(0)

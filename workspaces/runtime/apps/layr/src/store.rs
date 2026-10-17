@@ -42,13 +42,24 @@ pub struct Store {
 }
 
 pub fn default_root() -> PathBuf {
-    std::env::var_os("LAYR_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/var/lib/layr"))
+    std::env::var_os("LAYR_ROOT").map(PathBuf::from).unwrap_or_else(|| {
+        #[cfg(target_os = "macos")]
+        {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/layr")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            PathBuf::from("/var/lib/layr")
+        }
+    })
 }
 
 fn mkdir_mode(p: &Path, mode: u32) -> Result<()> {
     if !p.exists() {
         fs::create_dir_all(p).with_context(|| format!("mkdir {}", p.display()))?;
     }
+    #[cfg(target_os = "macos")]
+    crate::sys::apfs_clear_acl(p)?;
     fs::set_permissions(p, fs::Permissions::from_mode(mode))?;
     Ok(())
 }
@@ -59,6 +70,12 @@ fn hostname() -> String {
 
 impl Store {
     pub fn open(root: &Path) -> Result<Store> {
+        #[cfg(not(feature = "overlayfs"))]
+        if root.join(".layr-overlayfs").exists() {
+            bail!("this store requires a layr build with the overlayfs feature");
+        }
+        #[cfg(feature = "overlayfs")]
+        crate::storage::recover(root)?;
         let mdir = root.join("machine");
         if !mdir.join("key").exists() {
             if !root.exists() {
@@ -232,8 +249,13 @@ impl<'a> Project<'a> {
         if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
         }
-        if !crate::btrfs::is_btrfs(&store.projects_dir()) {
+        if !crate::storage::is_supported(&store.projects_dir()) {
+            #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
             bail!("{} is not on btrfs", store.projects_dir().display());
+            #[cfg(target_os = "macos")]
+            bail!("{} is not on case-sensitive APFS", store.projects_dir().display());
+            #[cfg(feature = "overlayfs")]
+            bail!("OverlayFS requires a local store and mount permission");
         }
         mkdir_mode(&dir, 0o755)?;
         mkdir_mode(&dir.join("states"), 0o700)?;
@@ -243,7 +265,7 @@ impl<'a> Project<'a> {
             mkdir_mode(&dir.join("meta").join(d), 0o700)?;
         }
         if !dir.join("meta").join("db").exists() {
-            crate::btrfs::create_subvolume(&dir.join("meta").join("db"))?;
+            crate::storage::create_subvolume(&dir.join("meta").join("db"))?;
             std::fs::set_permissions(dir.join("meta").join("db"), fs::Permissions::from_mode(0o700))?;
         }
         let id = ids::new_id();
@@ -262,8 +284,13 @@ impl<'a> Project<'a> {
         if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
         }
-        if !crate::btrfs::is_btrfs(&store.projects_dir()) {
+        if !crate::storage::is_supported(&store.projects_dir()) {
+            #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
             bail!("{} is not on btrfs", store.projects_dir().display());
+            #[cfg(target_os = "macos")]
+            bail!("{} is not on case-sensitive APFS", store.projects_dir().display());
+            #[cfg(feature = "overlayfs")]
+            bail!("OverlayFS requires a local store and mount permission");
         }
         mkdir_mode(&dir, 0o755)?;
         mkdir_mode(&dir.join("states"), 0o700)?;
@@ -273,7 +300,7 @@ impl<'a> Project<'a> {
             mkdir_mode(&dir.join("meta").join(d), 0o700)?;
         }
         if !dir.join("meta").join("db").exists() {
-            crate::btrfs::create_subvolume(&dir.join("meta").join("db"))?;
+            crate::storage::create_subvolume(&dir.join("meta").join("db"))?;
             std::fs::set_permissions(dir.join("meta").join("db"), fs::Permissions::from_mode(0o700))?;
         }
         let db = Db::open(&db_file(&dir))?;

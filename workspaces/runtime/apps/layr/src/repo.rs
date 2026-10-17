@@ -1,7 +1,6 @@
 //! Repository operations on one project: snapshots, lines, staging, status and in-place updates.
 
 use crate::access::{Policy, Role, Rule, Who};
-use crate::btrfs;
 use crate::changes::{self, Change};
 use crate::ctx::Ctx;
 use crate::db::need;
@@ -9,6 +8,7 @@ use crate::fsutil;
 use crate::ids;
 use crate::ignore_rules::Rules;
 use crate::model::{Conflict, Line, LineChange, LineState, Record, StateKind, StateRec};
+use crate::storage as btrfs;
 use crate::store::{check_name, Project};
 use crate::tree::Tree;
 use anyhow::{bail, Context, Result};
@@ -360,15 +360,18 @@ impl<'a> Repo<'a> {
                     t.remove(p)?;
                 }
             }
+            drop(t);
             btrfs::set_readonly(&dst)?;
             // An overlay file under another name leaves too: moved from an overlay path, or a
             // new file with the content of an overlay file (a copy, an editor's backup).
             let copies = self.private_copies(line, &dst, &private)?;
             if !copies.is_empty() {
                 btrfs::set_writable(&dst)?;
+                let t = Tree::open(&dst)?;
                 for p in &copies {
                     t.remove(p)?;
                 }
+                drop(t);
                 btrfs::set_readonly(&dst)?;
             }
             btrfs::subvol_info(&dst)
@@ -863,7 +866,7 @@ impl<'a> Repo<'a> {
                 }
                 Ok(())
             })
-            .and_then(|_| Ok(std::fs::rename(&tmp, dst)?));
+            .and_then(|_| Ok(crate::fsutil::rename_tree(&tmp, dst)?));
         if r.is_err() {
             let _ = btrfs::delete_tree(&tmp);
         }
@@ -886,6 +889,8 @@ impl<'a> Repo<'a> {
                 fsutil::chown_nofollow(&w.join(p), uid, gid)?;
             }
         }
+        #[cfg(target_os = "macos")]
+        crate::sys::apfs_clear_acl(w)?;
         fsutil::chown_nofollow(w, uid, gid)?;
         std::fs::set_permissions(w, std::fs::Permissions::from_mode(0o700))?;
         crate::gitbridge::make_git_folder(self, line, state, w)?;
@@ -1200,7 +1205,7 @@ pub fn regenerable_folders(w: &Path) -> Vec<String> {
                         if ignored.ignored(&rel, true) {
                             found.push(rel);
                         }
-                    } else if m.ino != 256 {
+                    } else if !fsutil::is_layer(w, &rel, &m) {
                         // Another subvolume (a cache of the machine setting) is not entered.
                         stack.push(rel);
                     }
@@ -1217,7 +1222,7 @@ pub fn regenerable_folders(w: &Path) -> Vec<String> {
 pub fn make_cache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<()> {
     let t = Tree::open(w)?;
     if let Some(m) = t.stat(path) {
-        if m.is_dir() && m.ino == 256 {
+        if fsutil::is_layer(w, path, &m) {
             return Ok(());
         }
         if m.is_dir() && t.list(path)?.is_empty() {
@@ -1283,7 +1288,7 @@ pub fn convert_cache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
             return Ok(true);
         }
     };
-    if !m.is_dir() || m.ino == 256 {
+    if !m.is_dir() || fsutil::is_layer(w, path, &m) {
         return Ok(false);
     }
     replace_folder(&t, path, true, uid, gid)?;
@@ -1295,7 +1300,7 @@ pub fn convert_cache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
 pub fn uncache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
     let t = Tree::open(w)?;
     match t.stat(path) {
-        Some(m) if m.is_dir() && m.ino == 256 => {}
+        Some(m) if fsutil::is_layer(w, path, &m) => {}
         _ => return Ok(false),
     }
     replace_folder(&t, path, false, uid, gid)?;

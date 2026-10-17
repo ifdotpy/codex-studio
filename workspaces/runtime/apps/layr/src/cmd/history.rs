@@ -360,8 +360,12 @@ fn unescape_format(f: &str) -> String {
     f.to_string()
 }
 
+/// The git tree hash of a state, for `%T` and `%t`: the hash of its content, the same on every
+/// machine and in git.
+pub type TreeOf<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// Expand a `--format` string for one state.
-pub fn format_state(f: &str, s: &StateRec, decor: &Decor, date_style: &str) -> String {
+pub fn format_state(f: &str, s: &StateRec, decor: &Decor, date_style: &str, tree: TreeOf) -> String {
     let f = unescape_format(f);
     let mut out = String::new();
     let b = f.as_bytes();
@@ -382,8 +386,8 @@ pub fn format_state(f: &str, s: &StateRec, decor: &Decor, date_style: &str) -> S
         match c {
             'H' => out.push_str(&ids::display(&s.id)),
             'h' => out.push_str(&ids::short(&s.id)),
-            'T' => out.push_str(&ids::display(&s.id)),
-            't' => out.push_str(&ids::short(&s.id)),
+            'T' => out.push_str(&tree(&s.id).unwrap_or_default()),
+            't' => out.push_str(&tree(&s.id).map(|t| t[..7.min(t.len())].to_string()).unwrap_or_default()),
             'P' => out.push_str(&s.parents.iter().map(|p| ids::display(p)).collect::<Vec<_>>().join(" ")),
             'p' => out.push_str(&s.parents.iter().map(|p| ids::short(p)).collect::<Vec<_>>().join(" ")),
             's' => out.push_str(&subject(s)),
@@ -507,7 +511,15 @@ fn pretty_format(a: &crate::args::Parsed) -> Option<String> {
 }
 
 /// Print one state in a log or show format.
-fn print_state(ctx: &Ctx, s: &StateRec, fmt: Option<&str>, decor: &Decor, date_style: &str, first: bool) -> Result<bool> {
+fn print_state(
+    ctx: &Ctx,
+    s: &StateRec,
+    fmt: Option<&str>,
+    decor: &Decor,
+    date_style: &str,
+    first: bool,
+    tree: TreeOf,
+) -> Result<bool> {
     match fmt {
         Some("oneline") => {
             outln!(ctx, "{}{} {}", ids::short(&s.id), decor.of(&s.id), subject(s));
@@ -553,7 +565,7 @@ fn print_state(ctx: &Ctx, s: &StateRec, fmt: Option<&str>, decor: &Decor, date_s
             if !term && !first {
                 outln!(ctx);
             }
-            let text = format_state(body, s, decor, date_style);
+            let text = format_state(body, s, decor, date_style, tree);
             out!(ctx, "{}", text);
             if term && !text.is_empty() {
                 outln!(ctx);
@@ -642,7 +654,8 @@ pub fn show(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         let id = revs::resolve(repo, line.as_ref(), &r)?;
         let s = repo.state(&id)?;
-        let header_ends_blank = print_state(ctx, &s, fmt.as_deref(), &decor, &date_style, first)?;
+        let header_ends_blank =
+            print_state(ctx, &s, fmt.as_deref(), &decor, &date_style, first, &|id| crate::gitbridge::tree_of(repo, id).ok())?;
         first = false;
         if a.has("-s") {
             continue;
@@ -851,7 +864,8 @@ pub fn log(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let want_diff = opts.patch || opts.stat || opts.numstat || opts.name_only || opts.name_status || opts.shortstat;
     let mut first = true;
     for s in &picked {
-        let blank = print_state(ctx, s, fmt.as_deref(), &decor, &date_style, first)?;
+        let blank =
+            print_state(ctx, s, fmt.as_deref(), &decor, &date_style, first, &|id| crate::gitbridge::tree_of(repo, id).ok())?;
         first = false;
         if want_diff && repo.p.state_path(&s.id).exists() {
             let (old, _t, new, list) = state_changes(repo, s)?;
@@ -932,6 +946,40 @@ pub fn rev_parse(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 return Err(exit(128, format!("fatal: no upstream configured for line '{n}'")));
             }
             outln!(ctx, "{r}");
+            continue;
+        }
+        if let Some((rv, path)) = r.split_once(':').filter(|(rv, _)| !rv.is_empty()) {
+            // <rev>:<path>: the git object id of the path in the commit a push exports for the
+            // state (a tree for a folder, a blob for a file). Relative paths as in `show`.
+            let rv_state = rv.trim_end_matches("^{tree}").trim_end_matches("^{commit}").trim_end_matches("^{}");
+            let obj = revs::resolve(repo, line.as_ref(), rv_state).and_then(|id| {
+                let p = if path.starts_with("./") || path.starts_with("../") {
+                    super::normalize(&h.loc.sub, path)?
+                } else {
+                    path.trim_start_matches('/').to_string()
+                };
+                Ok((crate::gitbridge::object_of(repo, &id, &p)?, p))
+            });
+            match obj {
+                Ok((Some(o), _)) => outln!(ctx, "{}", &o[..short.unwrap_or(o.len()).clamp(4, o.len())]),
+                Ok((None, _)) | Err(_) if a.has("-q") => return Ok(1),
+                Ok((None, p)) => return Err(exit(128, format!("fatal: path '{p}' does not exist in '{rv}'"))),
+                Err(e) => return Err(exit(128, format!("fatal: {e}"))),
+            }
+            continue;
+        }
+        if let Some(rr) = r.strip_suffix("^{tree}") {
+            // The git tree hash of the state's content: the same on every machine and in git.
+            let tree = revs::resolve(repo, line.as_ref(), rr).and_then(|id| crate::gitbridge::tree_of(repo, &id));
+            match tree {
+                Ok(t) => outln!(ctx, "{}", &t[..short.unwrap_or(t.len()).clamp(4, t.len())]),
+                Err(e) => {
+                    if a.has("-q") {
+                        return Ok(1);
+                    }
+                    return Err(exit(128, format!("fatal: {e}")));
+                }
+            }
             continue;
         }
         let rr = r.trim_end_matches("^{commit}").trim_end_matches("^{}");
