@@ -1,3 +1,4 @@
+pub mod blocking_pool;
 mod bootstrap;
 mod feature_schema;
 mod fresh_state;
@@ -606,6 +607,8 @@ pub enum StoreError {
     CommitActorOutcomeUnknown(tokio_rusqlite::Error),
     #[error("nested read checkout from the same runtime store is not supported")]
     NestedRead,
+    #[error("asynchronous store read task did not complete")]
+    ReadTaskFailed,
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -655,6 +658,8 @@ pub struct RuntimeStore {
     analytics: Arc<Mutex<Connection>>,
     version_reader: Mutex<Connection>,
     read_pool: Arc<ReadConnectionPool>,
+    /// Admission for [`RuntimeStore::read_async`]; one permit per pooled reader.
+    read_admission: Arc<tokio::sync::Semaphore>,
     writer_waiters: AtomicUsize,
     writer_waiter_peak: AtomicUsize,
     identity_registry_path: PathBuf,
@@ -896,6 +901,23 @@ impl ReadConnectionPool {
     }
 }
 
+fn read_snapshot<T, E>(
+    pool: &Arc<ReadConnectionPool>,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<StoreError>,
+{
+    let mut connection = pool.checkout()?;
+    let transaction = connection.transaction().map_err(StoreError::from)?;
+    let value = operation(&transaction)?;
+    transaction
+        .commit()
+        .map_err(StoreError::from)
+        .map_err(E::from)?;
+    Ok(value)
+}
+
 #[derive(Default)]
 struct CommitNotifiers {
     primary: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1062,6 +1084,7 @@ impl RuntimeStore {
             analytics: Arc::new(Mutex::new(analytics)),
             version_reader: Mutex::new(version_reader),
             read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
+            read_admission: Arc::new(tokio::sync::Semaphore::new(READ_CONNECTION_POOL_CAPACITY)),
             writer_waiters: AtomicUsize::new(0),
             writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path,
@@ -1704,14 +1727,35 @@ impl RuntimeStore {
     where
         E: From<StoreError>,
     {
-        let mut connection = self.read()?;
-        let transaction = connection.transaction().map_err(StoreError::from)?;
-        let value = operation(&transaction)?;
-        transaction
-            .commit()
-            .map_err(StoreError::from)
-            .map_err(E::from)?;
-        Ok(value)
+        read_snapshot(&self.read_pool, operation)
+    }
+
+    /// Run `operation` in one read-only SQLite snapshot on the blocking pool.
+    ///
+    /// Callers wait for a reader as futures: a blocking-pool thread is taken
+    /// only after one of the [`READ_CONNECTION_POOL_CAPACITY`] permits is held,
+    /// so a read burst never parks more threads than there are readers.
+    /// `label` names the call site in the blocking-pool diagnostics.
+    pub async fn read_async<T, E>(
+        &self,
+        label: &'static str,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        let permit = Arc::clone(&self.read_admission)
+            .acquire_owned()
+            .await
+            .map_err(|_| StoreError::ReadTaskFailed)?;
+        let pool = Arc::clone(&self.read_pool);
+        blocking_pool::spawn_blocking(label, move || {
+            let _permit = permit;
+            read_snapshot(&pool, operation)
+        })
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)?
     }
 
     /// Return SQLite's connection-local generation, advanced by commits made

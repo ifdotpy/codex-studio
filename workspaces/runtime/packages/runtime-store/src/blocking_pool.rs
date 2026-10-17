@@ -1,7 +1,10 @@
-//! Opt-in measurements for Tokio's blocking pool.
+//! The single entry point to Tokio's blocking pool, with opt-in measurements.
+//!
+//! Every blocking closure is submitted through [`spawn_blocking`] with a static
+//! call-site label; Clippy rejects direct `tokio::task::spawn_blocking` calls.
 //!
 //! The wrapper adds one cached flag read when disabled. Set
-//! `CODEX_RUNTIME_BLOCKING_POOL_DIAGNOSTICS=1` to collect per-group queue wait,
+//! `CODEX_RUNTIME_BLOCKING_POOL_DIAGNOSTICS=1` to collect per-label queue wait,
 //! closure duration, and occupancy measurements.
 //!
 //! Measurement procedure: run the isolated `fixture_reports_pool_wait_duration_and_occupancy`
@@ -12,111 +15,35 @@
 //! `blockingPoolMetrics`. No live backend is used by the fixture test.
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const DIAGNOSTICS_ENV: &str = "CODEX_RUNTIME_BLOCKING_POOL_DIAGNOSTICS";
 const NANOS_PER_MILLISECOND: f64 = 1_000_000.0;
-/// Retained samples per call-site group for p95/p99 summaries.
+/// Upper bound on concurrently running blocking-pool threads in the runtime
+/// server. Waiting for a SQLite reader is a future (`RuntimeStore::read_async`),
+/// so this bounds thread count without bounding read admission. Unit: threads.
+pub const MAX_THREADS: usize = 32;
+/// How long an idle blocking-pool thread is kept for reuse before it exits, so
+/// bursts reuse threads instead of creating and freeing them. Unit: time.
+pub const THREAD_KEEP_ALIVE: Duration = Duration::from_secs(300);
+/// Retained samples per call-site label for p95/p99 summaries.
 const SAMPLE_LIMIT_PER_GROUP: usize = 512;
 
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
-#[derive(Clone, Copy)]
-#[repr(usize)]
-enum CallSiteGroup {
-    RuntimeHttpBranches,
-    RuntimeHttpHostSecrets,
-    RuntimeHttpImports,
-    RuntimeHttpSyncDocuments,
-    RuntimeProcessOperationalLog,
-    RuntimeProcessProviderTask,
-    RuntimeServerAccountRegistry,
-    RuntimeServerMain,
-    RuntimeServicesBrowser,
-    RuntimeServicesMonitorRuntimeWiring,
-    RuntimeServicesTerminalDriver,
-    RuntimeServicesVoiceProvider,
-    FixtureHeld,
-    FixtureQueued,
-    FixtureAborted,
-    Other,
-}
-
-const CALL_SITE_GROUPS: [CallSiteGroup; 16] = [
-    CallSiteGroup::RuntimeHttpBranches,
-    CallSiteGroup::RuntimeHttpHostSecrets,
-    CallSiteGroup::RuntimeHttpImports,
-    CallSiteGroup::RuntimeHttpSyncDocuments,
-    CallSiteGroup::RuntimeProcessOperationalLog,
-    CallSiteGroup::RuntimeProcessProviderTask,
-    CallSiteGroup::RuntimeServerAccountRegistry,
-    CallSiteGroup::RuntimeServerMain,
-    CallSiteGroup::RuntimeServicesBrowser,
-    CallSiteGroup::RuntimeServicesMonitorRuntimeWiring,
-    CallSiteGroup::RuntimeServicesTerminalDriver,
-    CallSiteGroup::RuntimeServicesVoiceProvider,
-    CallSiteGroup::FixtureHeld,
-    CallSiteGroup::FixtureQueued,
-    CallSiteGroup::FixtureAborted,
-    CallSiteGroup::Other,
-];
-
-impl CallSiteGroup {
-    fn from_label(label: &'static str) -> Self {
-        match label {
-            "runtime-http/routes/branches" => Self::RuntimeHttpBranches,
-            "runtime-http/routes/host_secrets" => Self::RuntimeHttpHostSecrets,
-            "runtime-http/routes/imports" => Self::RuntimeHttpImports,
-            "runtime-http/routes/sync_documents" => Self::RuntimeHttpSyncDocuments,
-            "runtime-process/operational_log" => Self::RuntimeProcessOperationalLog,
-            "runtime-process/provider_task" => Self::RuntimeProcessProviderTask,
-            "runtime-server/account_registry" => Self::RuntimeServerAccountRegistry,
-            "runtime-server/main" => Self::RuntimeServerMain,
-            "runtime-services/browser" => Self::RuntimeServicesBrowser,
-            "runtime-services/monitor_runtime_wiring" => Self::RuntimeServicesMonitorRuntimeWiring,
-            "runtime-services/terminal_driver" => Self::RuntimeServicesTerminalDriver,
-            "runtime-services/voice/provider" => Self::RuntimeServicesVoiceProvider,
-            "fixture/held" => Self::FixtureHeld,
-            "fixture/queued" => Self::FixtureQueued,
-            "fixture/aborted" => Self::FixtureAborted,
-            _ => Self::Other,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::RuntimeHttpBranches => "runtime-http/routes/branches",
-            Self::RuntimeHttpHostSecrets => "runtime-http/routes/host_secrets",
-            Self::RuntimeHttpImports => "runtime-http/routes/imports",
-            Self::RuntimeHttpSyncDocuments => "runtime-http/routes/sync_documents",
-            Self::RuntimeProcessOperationalLog => "runtime-process/operational_log",
-            Self::RuntimeProcessProviderTask => "runtime-process/provider_task",
-            Self::RuntimeServerAccountRegistry => "runtime-server/account_registry",
-            Self::RuntimeServerMain => "runtime-server/main",
-            Self::RuntimeServicesBrowser => "runtime-services/browser",
-            Self::RuntimeServicesMonitorRuntimeWiring => "runtime-services/monitor_runtime_wiring",
-            Self::RuntimeServicesTerminalDriver => "runtime-services/terminal_driver",
-            Self::RuntimeServicesVoiceProvider => "runtime-services/voice/provider",
-            Self::FixtureHeld => "fixture/held",
-            Self::FixtureQueued => "fixture/queued",
-            Self::FixtureAborted => "fixture/aborted",
-            Self::Other => "other",
-        }
-    }
-}
-
 struct Metrics {
     queued: AtomicUsize,
     running: AtomicUsize,
     peak_occupancy: AtomicUsize,
-    groups: [GroupMetrics; CALL_SITE_GROUPS.len()],
+    /// Per-label measurements, keyed by the call site's static label.
+    groups: Mutex<BTreeMap<&'static str, Arc<GroupMetrics>>>,
 }
 
 #[derive(Default)]
@@ -192,7 +119,7 @@ fn metrics() -> &'static Metrics {
         queued: AtomicUsize::new(0),
         running: AtomicUsize::new(0),
         peak_occupancy: AtomicUsize::new(0),
-        groups: std::array::from_fn(|_| GroupMetrics::default()),
+        groups: Mutex::new(BTreeMap::new()),
     })
 }
 
@@ -226,11 +153,19 @@ where
     R: Send + 'static,
 {
     if !collect {
+        #[allow(clippy::disallowed_methods)] // The single entry point to Tokio's blocking pool.
         return tokio::task::spawn_blocking(work);
     }
 
     let metrics = metrics();
-    let group = CallSiteGroup::from_label(group);
+    let entry = Arc::clone(
+        metrics
+            .groups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(group)
+            .or_default(),
+    );
     let submitted_at = Instant::now();
     let queued = metrics.queued.fetch_add(1, Ordering::Relaxed) + 1;
     update_peak(metrics, metrics.running.load(Ordering::Relaxed) + queued);
@@ -238,6 +173,7 @@ where
         metrics,
         queued: true,
     };
+    #[allow(clippy::disallowed_methods)] // The single entry point to Tokio's blocking pool.
     tokio::task::spawn_blocking(move || {
         let queue_wait = submitted_at.elapsed();
         queued_guard.started();
@@ -248,7 +184,6 @@ where
         let duration = started_at.elapsed();
         metrics.running.fetch_sub(1, Ordering::Relaxed);
 
-        let entry = &metrics.groups[group as usize];
         let queue_wait_ns = nanos(queue_wait);
         let duration_ns = nanos(duration);
         entry
@@ -290,17 +225,19 @@ fn snapshot_with_collection(collect: bool) -> BlockingPoolSnapshot {
     }
 
     let metrics = metrics();
-    let groups = CALL_SITE_GROUPS
+    let groups = metrics
+        .groups
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter_map(|group| {
-            let value = &metrics.groups[*group as usize];
+        .filter_map(|(group, value)| {
             let count = value.count.load(Ordering::Relaxed);
             if count == 0 {
                 return None;
             }
             let divisor = count as f64;
             Some(BlockingPoolGroupSnapshot {
-                group: group.label(),
+                group,
                 count,
                 queue_wait_avg_ms: value.queue_wait_total_ns.load(Ordering::Relaxed) as f64
                     / divisor

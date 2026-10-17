@@ -71,7 +71,9 @@ impl InternalErrorKind {
             | StoreError::CommitActorOutcomeUnknown(_)
             | StoreError::WriterActorInitialization(_)
             | StoreError::WriterActorControl(_) => Self::StoreDatabase,
-            StoreError::WriterPoisoned | StoreError::NestedRead => Self::StoreConcurrency,
+            StoreError::WriterPoisoned | StoreError::NestedRead | StoreError::ReadTaskFailed => {
+                Self::StoreConcurrency
+            }
         }
     }
 }
