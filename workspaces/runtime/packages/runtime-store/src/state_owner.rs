@@ -133,46 +133,47 @@ mod tests {
     }
 
     fn marker(root: &Path) -> Value {
-        serde_json::from_slice(&fs::read(root.join(STATE_OWNER_FILE)).unwrap()).unwrap()
+        serde_json::from_slice(&fs::read(root.join(STATE_OWNER_FILE)).expect("test fixture"))
+            .expect("test fixture")
     }
 
     #[test]
     fn a_first_claim_writes_the_marker_and_a_repeat_keeps_it() {
-        let root = tempfile::tempdir().unwrap();
-        claim(root.path(), &build('a')).unwrap();
-        claim(root.path(), &build('a')).unwrap();
+        let root = tempfile::tempdir().expect("test fixture");
+        claim(root.path(), &build('a')).expect("test fixture");
+        claim(root.path(), &build('a')).expect("test fixture");
         assert_eq!(
             marker(root.path()),
             json!({"runtime":"rust","formatVersion":1,"backendBuild":"a".repeat(64)})
         );
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root.path()).expect("test fixture").count(), 1);
     }
 
     #[test]
     fn a_later_build_with_the_same_format_takes_over_the_marker() {
-        let root = tempfile::tempdir().unwrap();
-        claim(root.path(), &build('a')).unwrap();
-        claim(root.path(), &build('b')).unwrap();
+        let root = tempfile::tempdir().expect("test fixture");
+        claim(root.path(), &build('a')).expect("test fixture");
+        claim(root.path(), &build('b')).expect("test fixture");
         assert_eq!(marker(root.path())["backendBuild"], "b".repeat(64));
     }
 
     #[test]
     fn unknown_owners_formats_and_builds_are_refused_without_a_change() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("test fixture");
         for prior in [
             "{".to_owned(),
             json!({"runtime":"python","formatVersion":1,"backendBuild":"a".repeat(64)}).to_string(),
             json!({"runtime":"rust","formatVersion":2,"backendBuild":"a".repeat(64)}).to_string(),
             json!({"runtime":"rust","formatVersion":1}).to_string(),
         ] {
-            fs::write(root.path().join(STATE_OWNER_FILE), &prior).unwrap();
+            fs::write(root.path().join(STATE_OWNER_FILE), &prior).expect("test fixture");
             assert!(claim(root.path(), &build('b')).is_err(), "{prior}");
             assert_eq!(
-                fs::read_to_string(root.path().join(STATE_OWNER_FILE)).unwrap(),
+                fs::read_to_string(root.path().join(STATE_OWNER_FILE)).expect("test fixture"),
                 prior
             );
         }
-        fs::remove_file(root.path().join(STATE_OWNER_FILE)).unwrap();
+        fs::remove_file(root.path().join(STATE_OWNER_FILE)).expect("test fixture");
         let invalid = StateOwnerClaim {
             backend_build: "A".repeat(64),
         };
