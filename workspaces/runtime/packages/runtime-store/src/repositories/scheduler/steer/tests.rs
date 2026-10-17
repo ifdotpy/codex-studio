@@ -528,7 +528,7 @@ fn closed_generation_unconfirms_only_older_submissions() {
 #[test]
 fn wake_page_selects_running_claude_turns_with_queued_user_input() {
     let page = |connection: &Connection| {
-        SchedulerRepository::account_wake_page(connection, "", &BTreeMap::new(), 4, 4)
+        SchedulerRepository::account_wake_page(connection, "", &BTreeMap::new(), 4, 4, 0.0)
             .expect("wake page reads")
     };
     let connection = database();

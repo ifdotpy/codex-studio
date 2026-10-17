@@ -68,6 +68,35 @@ fn archive_deadline_read_deferred(
     retry_at.is_some_and(|retry_at| retry_at > now)
 }
 
+/// Wake when the earliest held child result stops waiting for its siblings
+/// (`CHILD_RESULT_COALESCE_MAX`); a failed read retries after `RETRY_DELAY`.
+async fn child_result_release_at(
+    store: Arc<studio_runtime_store::RuntimeStore>,
+) -> Option<tokio::time::Instant> {
+    let now = event_time();
+    let read = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/account_registry",
+        move || -> Result<Option<f64>, WorkerError> {
+            let db = store.read()?;
+            Ok(SchedulerRepository::child_result_release_at(&db, now)?)
+        },
+    )
+    .await;
+    match read {
+        Ok(Ok(deadline)) => deadline.map(|deadline| {
+            tokio::time::Instant::now() + Duration::from_secs_f64((deadline - now).max(0.0))
+        }),
+        Ok(Err(error)) => {
+            eprintln!("account registry child result release read deferred: {error}");
+            Some(tokio::time::Instant::now() + RETRY_DELAY)
+        }
+        Err(error) => {
+            eprintln!("account registry child result release worker failed: {error}");
+            Some(tokio::time::Instant::now() + RETRY_DELAY)
+        }
+    }
+}
+
 async fn checkpoint_maintenance(
     store: Arc<studio_runtime_store::RuntimeStore>,
 ) -> (bool, Option<tokio::time::Instant>) {
@@ -994,6 +1023,7 @@ impl AccountRegistry {
                         &page_account,
                         &after_agent,
                         WAKE_PAGE,
+                        event_time(),
                     )
                 },
             )
@@ -1101,6 +1131,7 @@ impl AccountRegistry {
                                         &page_account,
                                         &after_agent,
                                         WAKE_PAGE,
+                                        event_time(),
                                     )
                                 },
                             )
@@ -1418,8 +1449,9 @@ impl AccountRegistry {
                             }
                         }
                     };
+                    let release_at = child_result_release_at(self.store.clone()).await;
                     retry_at = next_registry_retry_at(
-                        archive_retry_at,
+                        archive_retry_at.into_iter().chain(release_at).min(),
                         checkpoint_retry_at,
                         &self.worker_retry_at,
                     );
@@ -1488,8 +1520,15 @@ pub(crate) fn target_page(
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
     let db = store.read()?;
-    SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
-        .map_err(Into::into)
+    SchedulerRepository::account_wake_page(
+        &db,
+        after_account,
+        after_agent,
+        MAX_ACCOUNTS,
+        WAKE_PAGE,
+        event_time(),
+    )
+    .map_err(Into::into)
 }
 
 fn target_page_after(
@@ -1504,6 +1543,7 @@ fn target_page_after(
         after_agent,
         MAX_ACCOUNTS,
         WAKE_PAGE,
+        event_time(),
     )
     .map_err(Into::into)
 }

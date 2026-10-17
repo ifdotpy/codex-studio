@@ -1317,3 +1317,222 @@ mod child_turn_parent_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod child_result_coalesce_tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use studio_runtime_store::CHILD_RESULT_COALESCE_MAX;
+
+    const CHILDREN: [&str; 3] = ["w1", "w2", "w3"];
+
+    fn wall_clock() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |duration| duration.as_secs_f64())
+    }
+
+    /// A lead with three running children, each on its own submitted turn.
+    async fn team(
+        directory: &std::path::Path,
+        provider: &str,
+    ) -> (RuntimeStore, BTreeMap<&'static str, TurnIntent>) {
+        let store = RuntimeStore::open(Some(directory))
+            .await
+            .expect("runtime store opens");
+        let provider = provider.to_owned();
+        store
+            .transaction(move |tx| {
+                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed",
+                    "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
+                    "provider":provider,"accountKey":"default","threadId":"lead-thread"});
+                AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(lead).expect("lead"),
+                )?;
+                for id in CHILDREN {
+                    let child = json!({"id":id,"rootId":"lead","parentId":"lead","epoch":1,
+                        "status":"queued","autoWake":true,"name":id,"cwd":"/work",
+                        "provider":provider,"accountKey":"default",
+                        "threadId":format!("thread-{id}"),"lastAnswer":format!("{id} done")});
+                    AgentRepository::put(
+                        tx,
+                        &studio_runtime_store::AgentRecord::from_value(child).expect("child"),
+                    )?;
+                    tx.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                         VALUES(?1,?2,'user','go','pending',1,1)",
+                        rusqlite::params![format!("start-{id}"), id],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("team seeds");
+        let mut intents = BTreeMap::new();
+        for id in CHILDREN {
+            let intent = claim_intent(&store, id, 1, &format!("attempt-{id}"), 1.0)
+                .await
+                .expect("claim runs")
+                .expect("child is claimable");
+            assert!(
+                mark_submitted_for_provider(&store, &intent, "ticket", 1, "connection")
+                    .await
+                    .expect("submission marks")
+            );
+            settle_started_provider(&store, &intent, "ticket", 1, &format!("turn-{id}"))
+                .await
+                .expect("start settles");
+            intents.insert(id, intent);
+        }
+        (store, intents)
+    }
+
+    async fn finish(store: &RuntimeStore, intents: &BTreeMap<&str, TurnIntent>, id: &str) {
+        let params = json!({"threadId":format!("thread-{id}"),
+            "turn":{"id":format!("turn-{id}"),"status":"completed"}});
+        assert!(
+            settle_terminal_attempt(store, &intents[id].identity(), &params)
+                .await
+                .expect("terminal settles")
+        );
+    }
+
+    /// Claim through the preparation path the account worker uses.
+    async fn claim_lead(store: &RuntimeStore, attempt: &str, now: f64) -> Option<TurnIntent> {
+        let attempt = attempt.to_owned();
+        lifecycle_transaction_with(store, move |tx| {
+            claim_preparation_in_transaction(tx, "lead", 1, &attempt, now)
+        })
+        .await
+        .expect("lead claim runs")
+    }
+
+    fn lead_listed(store: &RuntimeStore, now: f64) -> bool {
+        let connection = store.read().expect("reader");
+        SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8, now)
+            .expect("wake page reads")
+            .values()
+            .flatten()
+            .any(|(id, _, _)| id == "lead")
+    }
+
+    fn release_at(store: &RuntimeStore, now: f64) -> Option<f64> {
+        let connection = store.read().expect("reader");
+        SchedulerRepository::child_result_release_at(&connection, now).expect("release reads")
+    }
+
+    fn event_ids(intent: &TurnIntent) -> Vec<&str> {
+        intent
+            .events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sequential_child_results_wake_the_lead_once_with_all_results() {
+        for provider in ["codex", "claude"] {
+            let directory = tempfile::tempdir().expect("temporary state directory");
+            let (store, intents) = team(directory.path(), provider).await;
+            for id in &CHILDREN[..2] {
+                finish(&store, &intents, id).await;
+                let now = wall_clock();
+                assert!(!lead_listed(&store, now), "{provider} {id}");
+                assert!(claim_lead(&store, "lead-early", now).await.is_none());
+            }
+            finish(&store, &intents, "w3").await;
+            let now = wall_clock();
+            assert!(lead_listed(&store, now), "{provider}");
+            assert_eq!(release_at(&store, now), None, "{provider}");
+            let intent = claim_lead(&store, "lead-turn", now)
+                .await
+                .expect("lead claims once every child settled");
+            assert_eq!(
+                event_ids(&intent),
+                ["child:w1:turn-w1", "child:w2:turn-w2", "child:w3:turn-w3"],
+                "{provider}"
+            );
+            assert!(claim_lead(&store, "lead-again", now).await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn long_running_child_releases_results_after_the_maximum_hold() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let (store, intents) = team(directory.path(), "codex").await;
+        finish(&store, &intents, "w1").await;
+        finish(&store, &intents, "w2").await;
+        let release = release_at(&store, wall_clock()).expect("results are held");
+        let half_hold = CHILD_RESULT_COALESCE_MAX.as_secs_f64() / 2.0;
+        let during = release - half_hold;
+        assert!(!lead_listed(&store, during));
+        assert!(claim_lead(&store, "lead-early", during).await.is_none());
+        assert!(lead_listed(&store, release));
+        let intent = claim_lead(&store, "lead-turn", release)
+            .await
+            .expect("hold expired");
+        assert_eq!(event_ids(&intent), ["child:w1:turn-w1", "child:w2:turn-w2"]);
+        assert_eq!(release_at(&store, release), None, "nothing stays held");
+    }
+
+    #[tokio::test]
+    async fn user_message_during_the_hold_delivers_everything_at_once() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let (store, intents) = team(directory.path(), "claude").await;
+        finish(&store, &intents, "w1").await;
+        let now = wall_clock();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                     VALUES('lead-user','lead','user','status?','pending',?1,1)",
+                    [now],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("user message writes");
+        assert!(lead_listed(&store, now));
+        let intent = claim_lead(&store, "lead-turn", now)
+            .await
+            .expect("user input releases the hold");
+        assert_eq!(event_ids(&intent), ["child:w1:turn-w1", "lead-user"]);
+    }
+
+    #[tokio::test]
+    async fn restart_during_the_hold_keeps_one_delivery_without_duplicates() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let (store, intents) = team(directory.path(), "codex").await;
+        finish(&store, &intents, "w1").await;
+        finish(&store, &intents, "w2").await;
+        drop(store);
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store reopens");
+        let now = wall_clock();
+        assert!(!lead_listed(&store, now));
+        assert!(claim_lead(&store, "lead-early", now).await.is_none());
+        finish(&store, &intents, "w3").await;
+        // A replayed settlement after the restart writes no second result.
+        finish(&store, &intents, "w2").await;
+        let intent = claim_lead(&store, "lead-turn", wall_clock())
+            .await
+            .expect("lead claims after restart");
+        assert_eq!(
+            event_ids(&intent),
+            ["child:w1:turn-w1", "child:w2:turn-w2", "child:w3:turn-w3"]
+        );
+        let results: i64 = store
+            .read()
+            .expect("reader")
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_events WHERE agent='lead' AND kind='child_result'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count reads");
+        assert_eq!(results, CHILDREN.len() as i64);
+    }
+}

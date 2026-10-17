@@ -100,8 +100,8 @@ pub use repositories::reviewer_archive::ReviewerArchiveRepository;
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{
-    AccountWakePage, AcknowledgedSteer, ClaimedEvents, ClaimedSteer, STEER_UNCONFIRMED_ERROR,
-    SchedulerRepository, TurnAttemptIdentity,
+    AccountWakePage, AcknowledgedSteer, CHILD_RESULT_COALESCE_MAX, ClaimedEvents, ClaimedSteer,
+    STEER_UNCONFIRMED_ERROR, SchedulerRepository, TurnAttemptIdentity,
 };
 pub use repositories::sync_documents::{
     ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH, EntityPage, EntityRow, SyncDocument,

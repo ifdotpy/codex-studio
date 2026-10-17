@@ -62,15 +62,39 @@ fn account_wake_capacity_candidate(record: &str) -> String {
     )
 }
 
-fn account_wake_pending(record: &str) -> String {
+/// SQL predicate: the pending event aliased `event` is a `child_result` that
+/// still waits, at the bound Unix time `now`, for an active sibling child of
+/// the same parent. [`CHILD_RESULT_COALESCE_MAX`] bounds the wait.
+fn child_result_held(event: &str, now: &str) -> String {
+    let hold = CHILD_RESULT_COALESCE_MAX.as_secs_f64();
     format!(
-        "(({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
-             AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending')) \
+        "({event}.kind='child_result' AND {event}.created+{hold:.3}>{now} \
+         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE CASE WHEN json_valid(c.record) THEN ( \
+           json_extract(c.record,'$.parentId')={event}.agent \
+           AND json_extract(c.record,'$.deletedAt') IS NULL \
+           AND json_extract(c.record,'$.status') IN ('queued','starting','running')) ELSE 0 END))"
+    )
+}
+
+/// SQL predicate: agent `agent` has a pending event of `epoch` that may start
+/// a turn at the bound Unix time `now`.
+fn deliverable_pending(agent: &str, epoch: &str, now: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent={agent} \
+         AND e.epoch={epoch} AND e.status='pending' AND NOT {})",
+        child_result_held("e", now)
+    )
+}
+
+fn account_wake_pending(record: &str, now: &str) -> String {
+    format!(
+        "(({} AND {}) \
          OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
              AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending' \
              AND e.kind='user')) \
          OR {})",
         account_wake_queued_candidate(record),
+        deliverable_pending("a.id", &format!("json_extract({record},'$.epoch')"), now),
         account_wake_steer_candidate(record),
         account_wake_capacity_candidate(record)
     )
@@ -95,9 +119,9 @@ fn account_wake_recovery(record: &str) -> String {
     )
 }
 
-fn account_wake_target_filter(record: &str) -> String {
+fn account_wake_target_filter(record: &str, now: &str) -> String {
     let eligibility = account_wake_index_eligibility(record);
-    let pending = account_wake_pending(record);
+    let pending = account_wake_pending(record, now);
     let recovery = account_wake_recovery(record);
     format!(
         "{eligibility} \
@@ -108,7 +132,7 @@ fn account_wake_target_filter(record: &str) -> String {
 }
 
 fn account_wake_invalid_target_query() -> String {
-    let target_filter = account_wake_target_filter("a.record");
+    let target_filter = account_wake_target_filter("a.record", "?3");
     format!(
         "SELECT a.id FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
          WHERE {target_filter} \
@@ -117,13 +141,14 @@ fn account_wake_invalid_target_query() -> String {
     )
 }
 
-fn validate_account_wake_targets(connection: &Connection) -> StoreResult<()> {
+fn validate_account_wake_targets(connection: &Connection, now: f64) -> StoreResult<()> {
     if let Some(id) = connection
         .query_row(
             &account_wake_invalid_target_query(),
             rusqlite::params![
                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                now
             ],
             |row| row.get::<_, String>(0),
         )
@@ -138,7 +163,7 @@ fn validate_account_wake_targets(connection: &Connection) -> StoreResult<()> {
 }
 
 fn account_wake_accounts_query() -> String {
-    let target_filter = account_wake_target_filter("a.record");
+    let target_filter = account_wake_target_filter("a.record", "?5");
     let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
     format!(
         "SELECT DISTINCT {account} FROM runtime_agents AS a \
@@ -148,7 +173,7 @@ fn account_wake_accounts_query() -> String {
 }
 
 fn account_wake_pending_agents_query() -> String {
-    let pending = account_wake_pending("a.record");
+    let pending = account_wake_pending("a.record", "?6");
     let eligibility = account_wake_index_eligibility("a.record");
     let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
     format!(
@@ -197,8 +222,9 @@ impl SchedulerRepository {
         after_agents: &BTreeMap<String, String>,
         account_limit: usize,
         agent_limit: usize,
+        now: f64,
     ) -> StoreResult<AccountWakePage> {
-        validate_account_wake_targets(connection)?;
+        validate_account_wake_targets(connection, now)?;
 
         let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
@@ -208,7 +234,8 @@ impl SchedulerRepository {
                         crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                         crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                         after,
-                        account_limit as i64
+                        account_limit as i64,
+                        now
                     ],
                     |row| row.get(0),
                 )?
@@ -233,7 +260,8 @@ impl SchedulerRepository {
                                 after,
                                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                                 crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                                agent_limit as i64
+                                agent_limit as i64,
+                                now
                             ],
                             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                         )?
@@ -257,8 +285,9 @@ impl SchedulerRepository {
         after_agents: &BTreeMap<String, String>,
         account_limit: usize,
         agent_limit: usize,
+        now: f64,
     ) -> StoreResult<AccountWakePage> {
-        validate_account_wake_targets(connection)?;
+        validate_account_wake_targets(connection, now)?;
 
         let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
         let accounts = account_statement
@@ -267,7 +296,8 @@ impl SchedulerRepository {
                     crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                     crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                     after_account,
-                    account_limit as i64
+                    account_limit as i64,
+                    now
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -287,7 +317,8 @@ impl SchedulerRepository {
                                 after,
                                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                                 crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                                agent_limit as i64
+                                agent_limit as i64,
+                                now
                             ],
                             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                         )?
@@ -310,8 +341,9 @@ impl SchedulerRepository {
         account: &str,
         after_agent: &str,
         agent_limit: usize,
+        now: f64,
     ) -> StoreResult<Vec<(String, i64, Option<String>)>> {
-        validate_account_wake_targets(connection)?;
+        validate_account_wake_targets(connection, now)?;
         let mut statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
         let rows = statement
             .query_map(
@@ -320,12 +352,27 @@ impl SchedulerRepository {
                     after_agent,
                     crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                     crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                    agent_limit as i64
+                    agent_limit as i64,
+                    now
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// The Unix time at which the earliest held `child_result` stops waiting
+    /// for its siblings, so a scheduler can wake without a new commit.
+    pub fn child_result_release_at(connection: &Connection, now: f64) -> StoreResult<Option<f64>> {
+        let earliest: Option<f64> = connection.query_row(
+            &format!(
+                "SELECT MIN(e.created) FROM runtime_events e WHERE e.status='pending' AND {}",
+                child_result_held("e", "?1")
+            ),
+            [now],
+            |row| row.get(0),
+        )?;
+        Ok(earliest.map(|created| created + CHILD_RESULT_COALESCE_MAX.as_secs_f64()))
     }
 
     /// The same metadata identity used by claim replay and submit authorization.
@@ -477,6 +524,17 @@ impl SchedulerRepository {
         if limit == 0 {
             return Ok(None);
         }
+        // Held child results wait for their siblings; any deliverable event
+        // claims the whole ordered prefix, held results included.
+        if radio_event.is_none()
+            && !transaction.query_row(
+                &format!("SELECT {}", deliverable_pending("?1", "?2", "?3")),
+                params![agent_id, epoch, attempt_created],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            return Ok(None);
+        }
 
         // Python gives radio turns priority over the ordinary queue prefix.
         if radio_event.is_none()
@@ -620,11 +678,11 @@ impl SchedulerRepository {
                 && prepared
                     .events
                     .first()
-                    .is_some_and(|e| !matches!(e.kind.as_str(), "user" | "complaint")));
+                    .is_some_and(|e| !shares_turn(&e.kind, true)));
         let mut events = if take_single_event {
             prepared.events.iter().take(1).cloned().collect()
         } else {
-            select_turn_batch(&prepared.events, &prepared.metadata, prefix)
+            select_turn_batch(&prepared.events, &prepared.metadata, prefix, preparation)
         };
 
         let unsupported = if radio_event.is_some() {
@@ -1380,15 +1438,23 @@ pub(super) fn set_waiting(
     EventWriteRepository::set_agent_sync_lifecycle(transaction, agent_id, "waiting", false, None)
 }
 
+/// Event kinds that share one turn with neighboring input. Child results
+/// batch only on the preparation path, the one that renders them, so a lead
+/// receives results that arrive together in a single turn.
+fn shares_turn(kind: &str, child_results: bool) -> bool {
+    matches!(kind, "user" | "complaint") || (child_results && kind == "child_result")
+}
+
 pub(super) fn select_turn_batch(
     events: &[QueueEvent],
     metadata: &BTreeMap<String, Value>,
     limit: usize,
+    child_results: bool,
 ) -> Vec<QueueEvent> {
     let mut selected = Vec::new();
     let mut has_composer_input = false;
     for event in events.iter().take(limit.min(MAX_EVENTS_PER_TURN)) {
-        if !matches!(event.kind.as_str(), "user" | "complaint") {
+        if !shares_turn(&event.kind, child_results) {
             break;
         }
         let meta = metadata.get(&event.id.0);
@@ -1521,6 +1587,7 @@ mod account_wake_index_tests {
             &BTreeMap::new(),
             1,
             1,
+            0.0,
         )
         .expect("account cursor advances to recovery account");
         assert_eq!(page, BTreeMap::from([("account-b".to_owned(), vec![])]));
@@ -1531,6 +1598,7 @@ mod account_wake_index_tests {
             &BTreeMap::new(),
             1,
             1,
+            0.0,
         )
         .expect("account cursor wraps");
         assert_eq!(
@@ -1541,13 +1609,13 @@ mod account_wake_index_tests {
         let mut after_agent = BTreeMap::new();
         after_agent.insert("account-a".to_owned(), "aaa".to_owned());
         let next_agent =
-            SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1)
+            SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1, 0.0)
                 .expect("agent cursor advances");
         assert_eq!(next_agent["account-a"], vec![("zzz".to_owned(), 2, None)]);
 
         after_agent.insert("account-a".to_owned(), "zzz".to_owned());
         let wrapped_agent =
-            SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1)
+            SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1, 0.0)
                 .expect("agent cursor wraps");
         assert_eq!(
             wrapped_agent["account-a"],
@@ -1555,7 +1623,7 @@ mod account_wake_index_tests {
         );
 
         let no_wrap =
-            SchedulerRepository::account_wake_agents_after(&connection, "account-a", "zzz", 1)
+            SchedulerRepository::account_wake_agents_after(&connection, "account-a", "zzz", 1, 0.0)
                 .expect("capacity continuation does not wrap the agent cursor");
         assert!(no_wrap.is_empty());
     }
@@ -1584,7 +1652,7 @@ mod account_wake_index_tests {
         install_index(&mut connection);
 
         let first =
-            SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 1, 32)
+            SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 1, 32, 0.0)
                 .expect("initial bounded account page is selected");
         let first = &first["account-middle"];
         assert_eq!(first.len(), 32);
@@ -1593,6 +1661,7 @@ mod account_wake_index_tests {
             "account-middle",
             &first.last().expect("first page has a final row").0,
             32,
+            0.0,
         )
         .expect("strict continuation page is selected");
         assert_eq!(next.len(), 1);
@@ -1603,6 +1672,7 @@ mod account_wake_index_tests {
                 "account-middle",
                 "agent-999",
                 32,
+                0.0,
             )
             .expect("strict continuation never wraps")
             .is_empty()
@@ -1639,6 +1709,7 @@ mod account_wake_index_tests {
             &BTreeMap::new(),
             128,
             32,
+            0.0,
         )
         .expect("ordinary account selection stays bounded");
         assert_eq!(normal.len(), 128);
@@ -1651,6 +1722,7 @@ mod account_wake_index_tests {
             &BTreeMap::new(),
             128,
             32,
+            0.0,
         )
         .expect("strict account continuation reaches the final candidate account");
         assert_eq!(tail.keys().cloned().collect::<Vec<_>>(), ["account-129"]);
@@ -1661,13 +1733,14 @@ mod account_wake_index_tests {
                 &BTreeMap::new(),
                 128,
                 32,
+                0.0,
             )
             .expect("strict account continuation never wraps")
             .is_empty()
         );
 
         let released =
-            SchedulerRepository::account_wake_agents_after(&connection, "account-000", "", 32)
+            SchedulerRepository::account_wake_agents_after(&connection, "account-000", "", 32, 0.0)
                 .expect("released account is queried directly despite global cursor progress");
         assert_eq!(released, vec![("agent-000".to_owned(), 1, None)]);
     }
@@ -1719,7 +1792,8 @@ mod account_wake_index_tests {
                     crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                     crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                     "",
-                    4_i64
+                    4_i64,
+                    0.0
                 ],
                 |row| row.get::<_, String>(3),
             )
@@ -1733,8 +1807,9 @@ mod account_wake_index_tests {
             "{details}"
         );
 
-        let page = SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 4, 4)
-            .expect("guarded candidate selection skips malformed JSON");
+        let page =
+            SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 4, 4, 0.0)
+                .expect("guarded candidate selection skips malformed JSON");
         assert_eq!(page.keys().cloned().collect::<Vec<_>>(), vec!["default"]);
     }
 

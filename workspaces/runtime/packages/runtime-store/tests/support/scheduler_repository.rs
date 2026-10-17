@@ -402,6 +402,24 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
 }
 
 #[test]
+fn child_results_share_a_turn_only_on_the_preparation_path() {
+    let events = vec![
+        selected_event("w1", "child_result", "{}"),
+        selected_event("user", "user", "status?"),
+        selected_event("w2", "child_result", "{}"),
+        selected_event("monitor", "monitor", "{}"),
+    ];
+    let ids = |child_results| {
+        select_turn_batch(&events, &BTreeMap::new(), events.len(), child_results)
+            .iter()
+            .map(|event| event.id.0.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(true), ["w1", "user", "w2"]);
+    assert!(ids(false).is_empty());
+}
+
+#[test]
 fn batch_selection_keeps_only_the_first_composer_input_boundary() {
     let events = vec![
         selected_event("ordinary", "user", "ordinary"),
@@ -413,7 +431,7 @@ fn batch_selection_keeps_only_the_first_composer_input_boundary() {
         ("send-now".to_owned(), json!({"sendNow":true})),
     ]);
     assert_eq!(
-        select_turn_batch(&events, &metadata, 32)
+        select_turn_batch(&events, &metadata, 32, true)
             .iter()
             .map(|event| event.id.0.as_str())
             .collect::<Vec<_>>(),

@@ -14,6 +14,12 @@ use crate::{
 pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
 const MAX_EVENTS_PER_TURN: usize = 32;
+
+/// Longest wait of a parent's pending `child_result` for still-active sibling
+/// children, so one parent turn receives results that finish close together.
+/// Measured from the event's `created` Unix time; any other pending input
+/// releases the held results at once.
+pub const CHILD_RESULT_COALESCE_MAX: std::time::Duration = std::time::Duration::from_secs(45);
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",
@@ -551,8 +557,9 @@ mod tests {
             )
             .expect("invalid agent hold receipt writes");
 
-        let page = SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8)
-            .expect("wake page skips held agent");
+        let page =
+            SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8, 0.0)
+                .expect("wake page skips held agent");
 
         assert!(
             page.is_empty(),
