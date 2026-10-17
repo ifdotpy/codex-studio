@@ -21,6 +21,8 @@ from .models import (
     DirectoriesResponse,
     LinuxVMSettings,
     LinuxVMSettingsResponse,
+    OrchestrationSettings,
+    OrchestrationSettingsResponse,
 )
 
 
@@ -161,6 +163,36 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def linux_vm_settings_write(request: Request, body: LinuxVMSettings = Body()) -> Response:
         return context.send(request, linux_vm_configuration(body))
+
+    def orchestration_settings(values: OrchestrationSettings | None = None) -> dict[str, JsonValue]:
+        runtime = context.runtime
+        if runtime is None:
+            raise HTTPException(status_code=503, detail="The server runtime is unavailable")
+        import codex_orchestration_settings
+
+        with runtime.db() as db:
+            settings = (
+                codex_orchestration_settings.read(db)
+                if values is None
+                else codex_orchestration_settings.write(db, values.childResultCoalesceSeconds)
+            )
+        return {"settings": cast(dict[str, JsonValue], settings)}
+
+    @router.get(
+        "/api/orchestration/settings",
+        response_model=OrchestrationSettingsResponse,
+        responses=api_read_responses(errors=(503,)),
+    )
+    def orchestration_settings_read(request: Request) -> Response:
+        return context.send(request, orchestration_settings())
+
+    @router.post(
+        "/api/orchestration/settings",
+        response_model=OrchestrationSettingsResponse,
+        responses=api_write_responses(errors=(503,)),
+    )
+    def orchestration_settings_write(request: Request, body: OrchestrationSettings = Body()) -> Response:
+        return context.send(request, orchestration_settings(body))
 
     @router.get(
         "/api/desktop",

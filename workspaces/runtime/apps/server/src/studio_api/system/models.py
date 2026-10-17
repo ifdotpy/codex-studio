@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field
 
+from codex_shared_values import CHILD_RESULT_COALESCE_MAX_SECONDS, CHILD_RESULT_COALESCE_MIN_SECONDS
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
 from studio_api.models import SupervisorIdentity as SupervisorIdentity
 from studio_api.sync.models import AgentStatus, ReviewTargetDto, SnapshotModelSettingsDto
@@ -1012,6 +1013,22 @@ class LinuxVMSettings(ContractModel):
     memoryBytes: SafeInt = Field(ge=1024 ** 3, le=64 * 1024 ** 3, strict=True)
     systemDiskBytes: SafeInt = Field(ge=8 * 1024 ** 3, le=128 * 1024 ** 3, strict=True)
     dataDiskBytes: SafeInt = Field(ge=8 * 1024 ** 3, le=1024 * 1024 ** 3, strict=True)
+
+
+class OrchestrationSettings(ContractModel):
+    childResultCoalesceSeconds: SafeInt = Field(
+        ge=CHILD_RESULT_COALESCE_MIN_SECONDS,
+        le=CHILD_RESULT_COALESCE_MAX_SECONDS,
+        strict=True,
+        description=(
+            "Seconds a lead's finished-subagent result waits for sibling subagents that are "
+            "still running, so close results arrive in one turn; 0 delivers each at once."
+        ),
+    )
+
+
+class OrchestrationSettingsResponse(ResponseModel):
+    settings: OrchestrationSettings
 
 
 class LinuxVMSettingsResponse(ResponseModel):

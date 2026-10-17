@@ -2,6 +2,7 @@ import { Tabs } from "@mantine/core";
 export const studioSettingsTabs = [
   ["accounts", "Accounts"],
   ["appearance", "Appearance"],
+  ["agents", "Agents"],
   ["federation", "Federation"],
   ["servers", "Servers"],
   ["linux-vm", "Linux VM"],

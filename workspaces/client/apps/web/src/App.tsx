@@ -182,6 +182,7 @@ import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
+import { OrchestrationSettings } from "./components/OrchestrationSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
@@ -3664,6 +3665,11 @@ export default function App({ active = true }: { active?: boolean }) {
                   notify={notify}
                 />
               )}
+            </Tabs.Panel>
+            <Tabs.Panel value="agents" pt="md">
+              <OrchestrationSettings
+                active={studioSettingsOpen && studioSettingsTab === "agents"}
+              />
             </Tabs.Panel>
             <Tabs.Panel value="linux-vm" pt="md">
               <LinuxVMSettings active={studioSettingsOpen} />
