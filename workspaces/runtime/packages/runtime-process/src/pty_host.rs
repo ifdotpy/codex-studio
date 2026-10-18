@@ -35,6 +35,10 @@ use crate::supervisor_identity::{boot_id, signal_verified_group_member, start_ti
 #[cfg(test)]
 type BeforeKillHook = Box<dyn Fn(bool) + Send>;
 
+/// How long close waits for the terminal session to exit after SIGTERM before
+/// it sends SIGKILL. The wait ends early when the leader is reaped.
+const TERM_GRACE: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Error)]
 pub enum PtyHostError {
     #[error(transparent)]
@@ -183,6 +187,14 @@ impl PtyShared {
     }
 
     fn terminate(&self, deadline: Instant) -> Result<ExitStatus, PtyHostError> {
+        self.terminate_with_term_grace(TERM_GRACE, deadline)
+    }
+
+    fn terminate_with_term_grace(
+        &self,
+        term_grace: Duration,
+        deadline: Instant,
+    ) -> Result<ExitStatus, PtyHostError> {
         let mut child = self.child()?;
         self.termination_attempted.store(true, Ordering::Release);
         if self.termination_complete.load(Ordering::Acquire) {
@@ -204,7 +216,7 @@ impl PtyShared {
             }
             captured.clone()
         };
-        let term_deadline = (Instant::now() + Duration::from_millis(500)).min(deadline);
+        let term_deadline = (Instant::now() + term_grace).min(deadline);
         let _term_result = signal_groups(
             &groups,
             self.session,
@@ -880,6 +892,32 @@ mod tests {
 
     use super::{LocalPtyHost, PtyHost, PtyHostError, write_all_until, write_bounded};
 
+    /// Upper bound for a test process to react to SIGTERM. A close under test
+    /// with this grace ends its TERM wait as soon as the leader is reaped, so
+    /// the bound only limits how long a broken leader can hang the test.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const TEST_TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// Upper bound for a whole close under test: the TERM grace, the time the
+    /// test holds the pre-KILL hook, and the reap after KILL.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const TEST_CLOSE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Close a session as `LocalPtyHost::close` does, with the test bounds in
+    /// place of the product TERM grace and close deadline.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn close_with_test_bounds(session: super::PtySession) -> Result<(), PtyHostError> {
+        let outcome = session
+            .0
+            .terminate_with_term_grace(
+                TEST_TERM_GRACE,
+                std::time::Instant::now() + TEST_CLOSE_DEADLINE,
+            )
+            .map(|_| ());
+        drop(session);
+        outcome
+    }
+
     #[test]
     fn bounded_write_checks_deadline_after_interruption_and_partial_progress() {
         let start = std::time::Instant::now();
@@ -989,10 +1027,15 @@ mod tests {
         let cwd = root.join(format!("leader-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
         let host = LocalPtyHost;
+        // The script writes with os.write, not print. The test sends TERM as
+        // soon as it reads READY, which can be before print('READY') returns.
+        // The handler then runs inside the stdout BufferedWriter, and a print
+        // in the forked replacement fails with "reentrant call", so the
+        // replacement exits before its handshake.
         let command = [
             "/usr/bin/python3".to_owned(),
             "-c".to_owned(),
-            "import os,signal\nr,w=os.pipe()\ndef term(_sig,_frame):\n pid=os.fork()\n if pid==0:\n  os.close(r); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n  print(f'REPLACEMENT:{os.getpid()}:{os.getpgrp()}',flush=True); os.write(w,b'x'); signal.pause()\n os.close(w); os.read(r,1); raise SystemExit(0)\nsignal.signal(signal.SIGTERM,term)\nprint('READY',flush=True)\nsignal.pause()".to_owned(),
+            "import os,signal\nr,w=os.pipe()\ndef term(_sig,_frame):\n pid=os.fork()\n if pid==0:\n  os.close(r); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n  os.write(1,f'REPLACEMENT:{os.getpid()}:{os.getpgrp()}\\n'.encode()); os.write(w,b'x'); signal.pause()\n os.close(w); os.read(r,1); raise SystemExit(0)\nsignal.signal(signal.SIGTERM,term)\nos.write(1,b'READY\\n')\nsignal.pause()".to_owned(),
         ];
         let env = [
             ("TERM".into(), "xterm-256color".into()),
@@ -1020,7 +1063,11 @@ mod tests {
         });
         *session.0.before_kill.lock().expect("termination hook") = Some(hook);
         let repeated_close = session.clone();
-        let close_thread = thread::spawn(move || host.close(session));
+        // The product TERM grace is a fixed 500 ms. A loaded runner can need
+        // longer for the leader to fork, hand off and exit, and the KILL pass
+        // then runs before try_wait reaps it. The test bound keeps the TERM
+        // wait open until the leader is reaped, so the witness is exact.
+        let close_thread = thread::spawn(move || close_with_test_bounds(session));
         assert!(
             observed_receiver.recv().expect("pre-KILL reaping witness"),
             "Child::try_wait must reap the TERM-responsive leader before KILL"
@@ -1224,6 +1271,36 @@ mod tests {
         assert!(super::session_groups(identity.session).is_empty());
     }
 
+    /// SIGKILL a test process on drop if it still has its recorded identity,
+    /// so a failed assertion cannot leave it running.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    struct KillOnDrop {
+        pid: u32,
+        identity: String,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let alive = super::start_time(self.pid, false)
+                .ok()
+                .flatten()
+                .is_some_and(|current| current == self.identity);
+            if alive
+                && let Some(pid) = i32::try_from(self.pid)
+                    .ok()
+                    .and_then(rustix::process::Pid::from_raw)
+            {
+                let _kill = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            }
+        }
+    }
+
+    // The session keeps a TERM-immune job in the leader's group after the
+    // leader exits. A KILL failure then cannot be explained by a vanished
+    // group, so close must report it on every platform. A session whose
+    // processes are all gone does not prove this: macOS forgives EPERM after
+    // the reaped group vanishes, because Darwin returns EPERM for such groups.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn failed_kill_signal_returns_error_and_retains_the_recovery_identity() {
@@ -1235,28 +1312,74 @@ mod tests {
         let cwd = root.join(format!("signal-failure-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
         let host = LocalPtyHost;
-        let session = host
-            .open(
-                &["/bin/cat".into()],
-                &cwd,
-                &[("TERM".into(), "xterm".into())],
-            )
-            .expect("open cat");
+        // The job announces itself only after it ignores TERM and HUP, so the
+        // close below cannot signal it before the dispositions are in place.
+        let command = [
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            "/bin/sh -c 'trap \"\" TERM HUP; echo SURVIVOR:$$; exec /bin/sleep 60' & wait"
+                .to_owned(),
+        ];
+        let mut session = host
+            .open(&command, &cwd, &[("TERM".into(), "xterm".into())])
+            .expect("open shell with a TERM-immune job");
+        let leader = session.identity().expect("leader identity").clone();
+        let mut output = String::new();
+        let survivor = loop {
+            if let Some(pid) = output
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("SURVIVOR:")?.parse::<u32>().ok())
+            {
+                break pid;
+            }
+            let mut bytes = [0_u8; 512];
+            let count = host.read(&mut session, &mut bytes).expect("read job PID");
+            assert_ne!(count, 0, "shell exited before it started the job");
+            output.push_str(&String::from_utf8_lossy(&bytes[..count]));
+        };
+        let survivor_identity = super::start_time(survivor, false)
+            .expect("job identity")
+            .expect("job is live");
+        let _cleanup = KillOnDrop {
+            pid: survivor,
+            identity: survivor_identity.clone(),
+        };
         let recovery = session.clone();
         session
             .0
             .fail_next_kill
             .store(true, std::sync::atomic::Ordering::Release);
+        let error =
+            close_with_test_bounds(session).expect_err("injected signal failure is reported");
         assert!(
-            host.close(session).is_err(),
-            "injected signal failure is reported"
+            matches!(error, PtyHostError::Signal(rustix::io::Errno::PERM)),
+            "close reports the injected KILL failure, not another error: {error}"
         );
         assert!(
-            recovery.identity().is_some(),
+            recovery.0.child().expect("child lock").status.is_some(),
+            "the TERM-responsive leader is reaped before the error"
+        );
+        assert_eq!(
+            super::start_time(survivor, false)
+                .expect("job identity after failed close")
+                .as_deref(),
+            Some(survivor_identity.as_str()),
+            "the job survives the failed KILL"
+        );
+        assert_eq!(
+            recovery.identity(),
+            Some(&leader),
             "recovery identity remains available"
         );
         host.close(recovery)
             .expect("a later close completes after the injected failure");
+        assert_ne!(
+            super::start_time(survivor, false)
+                .expect("job identity after recovery close")
+                .as_deref(),
+            Some(survivor_identity.as_str()),
+            "the later close kills the remaining job"
+        );
         let _remove = std::fs::remove_dir_all(cwd);
     }
 }
