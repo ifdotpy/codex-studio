@@ -273,7 +273,6 @@ pub(crate) async fn pull(
 }
 
 enum EntityMaintenancePreparation {
-    Retry,
     Response(SyncPullResponseBody),
     ReadFallback {
         vault_signature: String,
@@ -399,7 +398,6 @@ async fn pull_with_maintenance(
         .map_err(|_| ApiError::internal())??;
 
         let (rooms, vault_snapshot, vault_signature, project_server_id) = match preparation {
-            EntityMaintenancePreparation::Retry => continue,
             EntityMaintenancePreparation::Response(response) => return Ok(response),
             EntityMaintenancePreparation::ReadFallback {
                 vault_signature,

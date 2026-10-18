@@ -651,7 +651,7 @@ mod tests {
                     sample_count.fetch_add(1, Ordering::SeqCst);
                     123
                 },
-                emit_diagnostic: move |line| {
+                emit_diagnostic: move |line: &[u8]| {
                     assert!(emit_flushed.load(Ordering::SeqCst));
                     assert!(line.starts_with(STDIN_TIMING_DIAGNOSTIC_PREFIX));
                     emitted_count.fetch_add(1, Ordering::SeqCst);
@@ -692,7 +692,7 @@ mod tests {
                     sample_count.fetch_add(1, Ordering::SeqCst);
                     123
                 },
-                emit_diagnostic: move |_| {
+                emit_diagnostic: move |_: &[u8]| {
                     emitted_count.fetch_add(1, Ordering::SeqCst);
                 },
             },

@@ -2855,23 +2855,17 @@ mod diagnostics_hook_tests {
             StoreError::writer_actor_control(tokio_rusqlite::Error::ConnectionClosed);
         let _non_lock_error = StoreError::from(rusqlite::Error::InvalidQuery);
 
-        let events = EVENTS.lock().expect("diagnostic events lock");
-        assert_eq!(
+        let totals: Vec<_> = {
+            let events = EVENTS.lock().expect("diagnostic events lock");
             events
                 .iter()
-                .filter(|event| matches!(event, StoreDiagnosticsEvent::SqliteLockError { .. }))
-                .count(),
-            4
-        );
-        let totals: Vec<_> = events
-            .iter()
-            .filter_map(|event| match event {
-                StoreDiagnosticsEvent::SqliteLockError { total } => Some(*total),
-                _ => None,
-            })
-            .collect();
+                .filter_map(|event| match event {
+                    StoreDiagnosticsEvent::SqliteLockError { total } => Some(*total),
+                    _ => None,
+                })
+                .collect()
+        };
         assert_eq!(totals, vec![before + 1, before + 2, before + 3, before + 4]);
-        drop(events);
         store
             .set_diagnostics_callback(None)
             .await
