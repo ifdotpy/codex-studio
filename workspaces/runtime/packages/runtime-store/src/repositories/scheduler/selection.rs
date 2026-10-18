@@ -632,10 +632,14 @@ impl SchedulerRepository {
         {
             return Ok(None);
         }
+        // A claim waits for input that another claim still owns. An `uncertain`
+        // input is never claimed again, and, as in Python `pending_batch`, it
+        // does not stop new input: one old unknown delivery must not block
+        // the worker for good (agent 841ebc0e, 18 October 2026).
         let unresolved = transaction
             .query_row(
                 "SELECT 1 FROM runtime_events WHERE agent=?1 \
-                 AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                 AND status IN ('reserved','dispatching') LIMIT 1",
                 [agent_id],
                 |_| Ok(()),
             )
