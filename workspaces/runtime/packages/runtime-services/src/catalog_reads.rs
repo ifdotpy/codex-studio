@@ -15,7 +15,6 @@ use tokio::time::Instant;
 
 const CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_CACHE_ENTRIES: usize = 256;
-const CLIENT_INFO: &str = "codex_studio_catalog_reads";
 const MAX_TERMINAL_PAGES: usize = 100;
 const TERMINAL_PAGE_SIZE: u64 = 100;
 
@@ -87,10 +86,9 @@ pub async fn provider_exchange(
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("catalog-reads-initialize".into()),
-            initialize_params: json!({
-                "clientInfo": {"name": CLIENT_INFO, "version": "1.0.0"},
-                "capabilities": {"experimentalApi": true}
-            }),
+            initialize_params: studio_runtime_providers::initialize_params(
+                studio_runtime_providers::ClientName::CatalogReads,
+            ),
         },
         move |session, started| Box::pin(read_requests(session, started, requests, timeout)),
     )
@@ -187,10 +185,9 @@ pub async fn cancel_terminal(
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("native-command-cancel-initialize".into()),
-            initialize_params: json!({
-                "clientInfo": {"name": CLIENT_INFO, "version": "1.0.0"},
-                "capabilities": {"experimentalApi": true}
-            }),
+            initialize_params: studio_runtime_providers::initialize_params(
+                studio_runtime_providers::ClientName::CatalogReads,
+            ),
         },
         move |session, started| {
             Box::pin(cancel_terminal_in_session(
@@ -1173,13 +1170,30 @@ mod tests {
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-init".into()),
-                initialize_params: json!({"clientInfo":{"name":"scripted","version":"1"},"capabilities":{"experimentalApi":true}}),
+                initialize_params: studio_runtime_providers::initialize_params(
+                    studio_runtime_providers::ClientName::CatalogReads,
+                ),
             },
-            |session, started| Box::pin(read_requests(session, started, vec![
-                ProviderRequest { method:"skills/list".into(), params:json!({"cwds":["/repo"],"forceReload":true}) },
-                ProviderRequest { method:"mcpServerStatus/list".into(), params:json!({"threadId":"thread","limit":100}) },
-            ], Duration::from_secs(5))),
-        ).await.expect("scripted replies complete");
+            |session, started| {
+                Box::pin(read_requests(
+                    session,
+                    started,
+                    vec![
+                        ProviderRequest {
+                            method: "skills/list".into(),
+                            params: json!({"cwds":["/repo"],"forceReload":true}),
+                        },
+                        ProviderRequest {
+                            method: "mcpServerStatus/list".into(),
+                            params: json!({"threadId":"thread","limit":100}),
+                        },
+                    ],
+                    Duration::from_secs(5),
+                ))
+            },
+        )
+        .await
+        .expect("scripted replies complete");
         assert_eq!(
             result,
             vec![
@@ -1259,16 +1273,20 @@ mod tests {
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-init".into()),
-                initialize_params: json!({"clientInfo":{"name":"scripted","version":"1"},"capabilities":{"experimentalApi":true}}),
+                initialize_params: studio_runtime_providers::initialize_params(
+                    studio_runtime_providers::ClientName::CatalogReads,
+                ),
             },
-            |session, started| Box::pin(cancel_terminal_in_session(
-                session,
-                started,
-                Some("thread-a".into()),
-                "item-a".into(),
-                "44".into(),
-                Duration::from_secs(5),
-            )),
+            |session, started| {
+                Box::pin(cancel_terminal_in_session(
+                    session,
+                    started,
+                    Some("thread-a".into()),
+                    "item-a".into(),
+                    "44".into(),
+                    Duration::from_secs(5),
+                ))
+            },
         )
         .await
         .expect("scripted cancel completes");
@@ -1302,16 +1320,20 @@ mod tests {
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-mismatch-init".into()),
-                initialize_params: json!({"clientInfo":{"name":"scripted","version":"1"},"capabilities":{"experimentalApi":true}}),
+                initialize_params: studio_runtime_providers::initialize_params(
+                    studio_runtime_providers::ClientName::CatalogReads,
+                ),
             },
-            |session, started| Box::pin(cancel_terminal_in_session(
-                session,
-                started,
-                Some("thread-a".into()),
-                "item-a".into(),
-                "44".into(),
-                Duration::from_secs(5),
-            )),
+            |session, started| {
+                Box::pin(cancel_terminal_in_session(
+                    session,
+                    started,
+                    Some("thread-a".into()),
+                    "item-a".into(),
+                    "44".into(),
+                    Duration::from_secs(5),
+                ))
+            },
         )
         .await
         .expect("scripted refusal completes");
@@ -1334,19 +1356,32 @@ mod tests {
             "/var/tmp".into(),
         );
         let result = crate::provider_exchange::run_with_factory(
-            factory, launch, Instant::now(),
+            factory,
+            launch,
+            Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
                 stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-item-mismatch-init".into()),
-                initialize_params: json!({"clientInfo":{"name":"scripted","version":"1"},"capabilities":{"experimentalApi":true}}),
+                initialize_params: studio_runtime_providers::initialize_params(
+                    studio_runtime_providers::ClientName::CatalogReads,
+                ),
             },
-            |session, started| Box::pin(cancel_terminal_in_session(
-                session, started, Some("thread-a".into()), "item-a".into(), "44".into(), Duration::from_secs(5),
-            )),
-        ).await.expect("scripted refusal completes");
+            |session, started| {
+                Box::pin(cancel_terminal_in_session(
+                    session,
+                    started,
+                    Some("thread-a".into()),
+                    "item-a".into(),
+                    "44".into(),
+                    Duration::from_secs(5),
+                ))
+            },
+        )
+        .await
+        .expect("scripted refusal completes");
         assert_eq!(result, None);
         let calls = requests.lock().expect("script request list");
         assert_eq!(calls.len(), 3);

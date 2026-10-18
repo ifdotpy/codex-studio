@@ -883,10 +883,9 @@ async fn read_provider_catalog(
             timeout: CATALOG_TIMEOUT,
             shutdown: stop,
             initialize_operation: OperationId("catalog-initialize".into()),
-            initialize_params: json!({
-                "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
-                "capabilities": {"experimentalApi": true}
-            }),
+            initialize_params: studio_runtime_providers::initialize_params(
+                studio_runtime_providers::ClientName::Catalog,
+            ),
         },
         |session, started| Box::pin(read_pages(session, started)),
     )
@@ -926,10 +925,9 @@ async fn read_session_with_shutdown(
             timeout: CATALOG_TIMEOUT,
             shutdown,
             initialize_operation: OperationId("catalog-initialize".into()),
-            initialize_params: json!({
-                "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
-                "capabilities": {"experimentalApi": true}
-            }),
+            initialize_params: studio_runtime_providers::initialize_params(
+                studio_runtime_providers::ClientName::Catalog,
+            ),
         },
         |session, started| Box::pin(read_pages(session, started)),
     )

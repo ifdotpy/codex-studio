@@ -1974,7 +1974,9 @@ impl AccountLauncher for HostLauncher {
                     expected_generation: Some(generation),
                 },
                 config: SessionTaskConfig {
-                    initialize_params: json!({"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}),
+                    initialize_params: studio_runtime_providers::initialize_params(
+                        studio_runtime_providers::ClientName::AccountSession,
+                    ),
                     generation,
                     claude: provider == "claude",
                     timeout_ms: REQUEST_TIMEOUT_MS,

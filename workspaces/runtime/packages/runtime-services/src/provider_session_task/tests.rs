@@ -80,7 +80,28 @@ async fn panic_after_take_after_mutation_and_with_outstanding_receipt_retains_ev
             BTreeMap::new(),
             "/var/tmp".into(),
         );
-        let mut session = SessionHandle::open(factory, handle, OpenOptions { clock: SessionClock::default(), launch, expected_generation: None }, SessionTaskConfig { initialize_params: serde_json::json!({"clientInfo":{"name":"test","version":"1"},"capabilities":{"experimentalApi":true}}), generation: Generation(1), claude: false, timeout_ms: 100, initialize_operation: OperationId("init".into()), request_id_prefix: None, recovered: vec![] }).await.unwrap();
+        let mut session = SessionHandle::open(
+            factory,
+            handle,
+            OpenOptions {
+                clock: SessionClock::default(),
+                launch,
+                expected_generation: None,
+            },
+            SessionTaskConfig {
+                initialize_params: studio_runtime_providers::initialize_params(
+                    studio_runtime_providers::ClientName::AccountSession,
+                ),
+                generation: Generation(1),
+                claude: false,
+                timeout_ms: 100,
+                initialize_operation: OperationId("init".into()),
+                request_id_prefix: None,
+                recovered: vec![],
+            },
+        )
+        .await
+        .unwrap();
         while session.status.borrow().initialization != InitializationStatus::Ready {
             session.status.changed().await.unwrap();
         }

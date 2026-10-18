@@ -2363,7 +2363,9 @@ impl Worker {
                     expected_generation: Some(generation),
                 },
                 SessionTaskConfig {
-                    initialize_params: json!({"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}),
+                    initialize_params: studio_runtime_providers::initialize_params(
+                        studio_runtime_providers::ClientName::AccountSession,
+                    ),
                     generation,
                     claude: resolved.provider == "claude",
                     timeout_ms: self.timeout_ms,

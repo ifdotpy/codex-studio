@@ -5,6 +5,7 @@
 mod callback_queue_limit_generated;
 mod codec;
 mod connection;
+mod initialize;
 mod provider_kind;
 mod session;
 pub mod supervisor_v1;
@@ -21,5 +22,6 @@ pub use connection::{
     Action, Inbound, InitializationStatus, Lifecycle, RequestOutcome, RequestTicket, SessionError,
     SessionState,
 };
+pub use initialize::{ClientName, initialize_params};
 pub use provider_kind::{ProviderKind, UnknownProvider};
 pub use session::{BookError, PendingBook, RequestState, ResponseMatch};

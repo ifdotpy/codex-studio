@@ -5,15 +5,15 @@ use studio_runtime_providers::{
     validate_initialize_params,
 };
 
-const INIT: &str = r#"{"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}"#;
-
 fn state(claude: bool) -> SessionState {
     let (mut state, actions) = SessionState::new(
         9,
         claude,
         0,
         100,
-        serde_json::from_str(INIT).expect("scripted test operation"),
+        studio_runtime_providers::initialize_params(
+            studio_runtime_providers::ClientName::AccountSession,
+        ),
     )
     .expect("scripted test operation");
     assert!(matches!(actions.as_slice(), [Action::Write(_)]));
@@ -134,7 +134,9 @@ fn recovered_requests_keep_a_finite_configured_deadline() {
         false,
         10,
         5,
-        serde_json::from_str(INIT).expect("scripted test operation"),
+        studio_runtime_providers::initialize_params(
+            studio_runtime_providers::ClientName::AccountSession,
+        ),
         vec![(recovered_id.clone(), Method::ModelList, None)],
     )
     .expect("recovered request should register");

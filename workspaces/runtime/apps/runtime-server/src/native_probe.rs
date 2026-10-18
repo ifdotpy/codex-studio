@@ -251,7 +251,13 @@ async fn smoke(executable: &Path, home: &Path) -> Result<(), ()> {
     let mut reader = BufReader::new(output);
     let deadline = tokio::time::Instant::now() + SMOKE_TIMEOUT;
     let result = async {
-        let initialize = request(1, "initialize", json!({"clientInfo":{"name":"codex_studio_update","version":"1.0.0"},"capabilities":{"experimentalApi":true}}));
+        let initialize = request(
+            1,
+            "initialize",
+            studio_runtime_providers::initialize_params(
+                studio_runtime_providers::ClientName::UpdateProbe,
+            ),
+        );
         write_frame(&mut input, &initialize).await?;
         let initialized = response(&mut reader, 1, deadline).await?;
         if initialized
@@ -262,7 +268,11 @@ async fn smoke(executable: &Path, home: &Path) -> Result<(), ()> {
             return Err(());
         }
         write_frame(&mut input, &json!({"method":"initialized"})).await?;
-        write_frame(&mut input, &request(2, "config/read", json!({"includeLayers":false}))).await?;
+        write_frame(
+            &mut input,
+            &request(2, "config/read", json!({"includeLayers":false})),
+        )
+        .await?;
         let config = response(&mut reader, 2, deadline).await?;
         if !config.get("config").is_some_and(Value::is_object) {
             return Err(());
