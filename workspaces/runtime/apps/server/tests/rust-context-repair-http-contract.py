@@ -16,6 +16,7 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, no_write_snapshot
 from runtime_test_environment import make_runtime
+from codex_session_names import identity as native_name_identity
 from studio_api.models import MAX_SAFE_INTEGER
 
 _fixture_spec = importlib.util.spec_from_file_location(
@@ -49,6 +50,10 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     agent["contextRepair"] = dict(id="repair", phase="unknown")
                 elif name == "rewrite":
                     agent["threadId"] = "synthetic-thread"
+                # Paused agents still participate in native-name synchronization.
+                # Seed its existing owner identity before startup so that this
+                # no-write proof has no unrelated name-sync work in flight.
+                agent["nativeNameSynced"] = native_name_identity(agent)
                 with runtime.lock, runtime.db() as db:
                     runtime.put(db, "agents", agent)
                     if name == "rewrite":
@@ -119,13 +124,7 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post({"id": self.ids["rewrite"]})
         self.assertEqual(response.status, 400, response.body)
         self.assertEqual(
-            (
-                self.snapshot(),
-                no_write_snapshot(
-                    self.backend.state, baseline_snapshot=before[1]
-                ),
-            ),
-            before,
+            (self.snapshot(), no_write_snapshot(self.backend.state)), before
         )
 
     def test_validation_and_missing_agent(self):
