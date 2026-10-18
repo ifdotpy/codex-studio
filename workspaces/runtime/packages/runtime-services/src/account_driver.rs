@@ -2772,6 +2772,9 @@ exit 0
         }
     }
 
+    /// Hang guard for deterministic authentication-read synchronization.
+    const AUTH_READ_GUARD: Duration = Duration::from_secs(10);
+
     /// Announces each read start, then returns the next metadata the test sends.
     struct GatedReader {
         started: Mutex<std::sync::mpsc::Sender<()>>,
@@ -2788,7 +2791,7 @@ exit 0
             self.released
                 .lock()
                 .expect("read release receiver")
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(AUTH_READ_GUARD)
                 .expect("test releases the auth read")
         }
     }
@@ -3122,10 +3125,10 @@ print(store.path)
         std::thread::scope(|scope| {
             let getter = scope.spawn(|| driver.get("default"));
             started
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(AUTH_READ_GUARD)
                 .expect("auth read started");
             scope.spawn(|| done_tx.send(driver.snapshot().is_ok()));
-            let progressed = done_rx.recv_timeout(Duration::from_secs(10));
+            let progressed = done_rx.recv_timeout(AUTH_READ_GUARD);
             release
                 .send(metadata(
                     AuthStatus::Ready,
@@ -3150,7 +3153,7 @@ print(store.path)
         std::thread::scope(|scope| {
             let getter = scope.spawn(|| driver.get("default"));
             started
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(AUTH_READ_GUARD)
                 .expect("auth read started");
             // Set the flag directly: disconnect() would re-read through this gated reader.
             driver.state.lock().expect("registry lock").value["accounts"]["default"]["disconnected"] =
@@ -3185,7 +3188,7 @@ print(store.path)
         std::thread::scope(|scope| {
             let getter = scope.spawn(|| driver.get("default"));
             started
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(AUTH_READ_GUARD)
                 .expect("auth read started");
             driver.state.lock().expect("registry lock").value["accounts"]["default"]["home"] =
                 Value::String(moved_home.to_string_lossy().into_owned());
