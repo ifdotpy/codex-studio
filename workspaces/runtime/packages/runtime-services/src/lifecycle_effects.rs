@@ -1151,13 +1151,12 @@ fn notify_parent_with_id(
         payload.to_string(),
         effect.at(),
     )
-    .map_err(|error| {
-        ManagementError::Invalid(match error {
-            event_write::EventWriteError::RemoteEventsUnavailable => {
-                "Remote child event unavailable"
-            }
-            _ => "Unable to write child stop event",
-        })
+    .map_err(|error| match error {
+        event_write::EventWriteError::RemoteEventsUnavailable => {
+            ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
+        }
+        event_write::EventWriteError::Store(error) => ManagementError::Store(error),
+        _ => ManagementError::Invalid("Unable to write child stop event"),
     })?;
     Ok(())
 }
@@ -1193,9 +1192,12 @@ pub(crate) fn notify_parent_of_disconnect(
     }
     let effect = LifecycleEffect::new(LifecycleEffectKind::NotifyParent, before, stopped, at);
     match notify_parent(tx, &effect) {
-        // A parent that cannot take a local event (a remote proxy) is not told
-        // here; the disconnect itself must still commit.
-        Ok(()) | Err(ManagementError::Invalid(_)) => Ok(()),
+        // A remote proxy has no local event queue. Its disconnect still commits.
+        // A local queue write failure remains an error so the transaction rolls back.
+        Ok(())
+        | Err(ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)) => {
+            Ok(())
+        }
         Err(ManagementError::Store(error)) => Err(error),
         Err(other) => Err(studio_runtime_store::StoreError::SchemaMismatch(
             other.to_string(),

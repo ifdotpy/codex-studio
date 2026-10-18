@@ -370,7 +370,8 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
         *total = total
             .checked_add(count)
             .ok_or(AdapterError::InvalidConfiguration)?;
-        if line.len() + count > frame_limit {
+        let payload_count = count - usize::from(available[count - 1] == b'\n');
+        if line.len() + payload_count > frame_limit {
             return Err(AdapterError::OutputLimit { limit: frame_limit });
         }
         if let Some(limit) = output_limit.filter(|limit| *total > *limit) {
@@ -419,6 +420,30 @@ mod tests {
         assert_eq!(line, b"second\n");
         assert_eq!((line.as_ptr(), line.capacity()), allocation);
         assert_eq!(total, b"first\nsecond\n".len());
+    }
+
+    #[tokio::test]
+    async fn stdout_frame_limit_excludes_the_line_delimiter_at_codec_boundary() {
+        let mut input = vec![b'x'; studio_runtime_providers::MAX_FRAME_BYTES];
+        input.push(b'\n');
+        let mut reader = BufReader::new(input.as_slice());
+        let mut line = Vec::new();
+        let mut total = 0;
+
+        assert!(
+            read_stdout_line(
+                &mut reader,
+                &mut line,
+                &mut total,
+                studio_runtime_providers::MAX_FRAME_BYTES,
+                None,
+            )
+            .await
+            .expect("codec-sized payload with newline is one frame")
+        );
+        assert_eq!(line.len(), studio_runtime_providers::MAX_FRAME_BYTES + 1);
+        assert_eq!(line.last(), Some(&b'\n'));
+        assert_eq!(total, studio_runtime_providers::MAX_FRAME_BYTES + 1);
     }
 
     #[tokio::test(start_paused = true)]

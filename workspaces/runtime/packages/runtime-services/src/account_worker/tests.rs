@@ -5455,6 +5455,68 @@ async fn provider_exit_while_the_server_runs_is_a_disconnect_reported_once() {
 }
 
 #[tokio::test]
+async fn disconnect_parent_event_local_enqueue_failure_is_propagated() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let before = state.record().await;
+
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch(
+                        "CREATE TRIGGER reject_child_notice BEFORE INSERT ON runtime_events \
+                         WHEN NEW.kind='child_result' \
+                         BEGIN SELECT RAISE(ABORT,'injected local enqueue failure'); END;",
+                    )?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("install local event failure trigger");
+
+    let failure = state
+        .bridge
+        .run(move |store| async move {
+            Ok(store
+                .transaction(move |tx| store::disconnect_provider_generation(tx, "default", 1))
+                .await)
+        })
+        .await
+        .expect("observe the failed disconnect transaction");
+    assert!(matches!(failure, Err(StoreError::Sqlite(_))));
+    assert_eq!(state.record().await, before, "disconnect writes roll back");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch("DROP TRIGGER reject_child_notice")?;
+                    Ok(())
+                })
+                .await?;
+            store
+                .transaction(move |tx| store::disconnect_provider_generation(tx, "default", 1))
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("disconnect retries after local storage is available");
+    assert_eq!(state.record().await["status"], "interrupted");
+    assert_eq!(child_stop_notices(&state, &parent).await, 1);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_new_backend_process_still_classifies_the_old_generation_as_a_restart() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -5489,6 +5551,10 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     assert!(record["startAttempt"].is_null());
     assert_eq!(state.event_status("input").await, "pending");
     assert_eq!(child_stop_notices(&state, &parent).await, 0);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "turn/start was not submitted before thread creation completed"
+    );
 
     let mut next = Peer::identity("default", 2, None);
     let mut replacement = next.worker(state.bridge.clone()).await;
@@ -5503,6 +5569,57 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     assert!(
         next.writes.try_recv().is_err(),
         "the input is submitted once"
+    );
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("fixture agent exists");
+                    agent.extra.remove("threadId");
+                    AgentRepository::put(tx, &agent)?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("fixture requires a new native thread");
+
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let _thread_start = peer.write("thread/start").await;
+    provider_exits(&peer, &mut worker).await;
+
+    let record = state.record().await;
+    assert_eq!(record["status"], "queued");
+    assert!(record["startAttempt"].is_null());
+    assert_eq!(state.event_status("input").await, "pending");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+
+    let mut next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    state.wake(&replacement).await;
+    let thread_start = next.write("thread/start").await;
+    next.reply(&thread_start, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let turn_start = next.write("turn/start").await;
+    next.accepted(&turn_start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker_barrier(&replacement).await;
+    assert!(
+        next.writes.try_recv().is_err(),
+        "the unsubmitted input is delivered once after thread creation"
     );
     replacement.shutdown().await.unwrap();
 }
