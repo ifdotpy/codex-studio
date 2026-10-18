@@ -48,7 +48,8 @@ class AccessClient(ContractModel):
     kind: Literal["ui", "server"]
     origin: str | None
     publicKey: str
-    tailscaleUser: str
+    tailscaleUser: str | None = Field(
+        description="The Tailscale owner; null for the previous identity of this server after replace_server.")
     status: Literal["paired", "revoked", "discovered", "unreachable"]
     created: float
     lastAccess: float | None

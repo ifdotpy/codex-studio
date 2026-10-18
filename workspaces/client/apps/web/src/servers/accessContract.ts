@@ -7,7 +7,7 @@ export type ServerAccessPeer = {
   label: string;
   origin: string | null;
   publicKey: string;
-  tailscaleUser: string;
+  tailscaleUser: string | null;
   status: "discovered" | "paired" | "revoked" | "unreachable";
   reachability?: "reachable" | "unreachable" | "unknown" | null;
   created: number;
