@@ -4,10 +4,21 @@ import { Button } from "@mantine/core";
 import { errorText } from "../api";
 import type { Agent } from "../types";
 import { nativeThreadError } from "../nativeErrors";
+import {
+  BACKEND_RESTARTED_TURN_ERROR,
+  PROVIDER_DISCONNECTED_TURN_ERROR,
+  VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+} from "../generated/sharedValues";
 
-const disconnectErrors = new Set([
-  "Codex disconnected. Review the transcript before resuming.",
-  "Server restarted during a turn. Review history, then send a new instruction.",
+// A provider connection ended. The server can check a start that has no turn
+// ID yet in native history, so these errors do not need a turn ID.
+const transportErrors = new Set<string>([
+  PROVIDER_DISCONNECTED_TURN_ERROR,
+  VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+]);
+const disconnectErrors = new Set<string>([
+  ...transportErrors,
+  BACKEND_RESTARTED_TURN_ERROR,
 ]);
 
 export function canCheckConnection(agent: Agent) {
@@ -22,9 +33,9 @@ export function canCheckConnection(agent: Agent) {
     !agent.deletedAt &&
     !nativeThreadError(agent) &&
     !!agent.threadId &&
-    !!agent.turnId &&
     typeof agent.error === "string" &&
-    disconnectErrors.has(agent.error)
+    disconnectErrors.has(agent.error) &&
+    (!!agent.turnId || transportErrors.has(agent.error))
   );
 }
 
@@ -37,7 +48,7 @@ export function matchingConnectionCheck(agent: Agent) {
     (receipt.epoch ?? null) === (agent.epoch ?? null) &&
     (receipt.accountKey || "default") === (agent.accountKey || "default") &&
     receipt.threadId === agent.threadId &&
-    receipt.turnId === agent.turnId &&
+    (receipt.turnId ?? null) === (agent.turnId ?? null) &&
     receipt.previousError === agent.error
     ? receipt
     : null;

@@ -2,7 +2,9 @@
 import base64
 import json
 import unittest
+from unittest.mock import patch
 
+from codex_linux_vm import LinuxVMError
 from codex_linux_vm_provider import GuestProcessProxy
 
 
@@ -166,6 +168,68 @@ class GuestNativeProxy(unittest.TestCase):
                                   operation_id='turn-exact')
         self.assertEqual(len(self.client.requests), 1)
         self.assertEqual(self.client.requests[0][2]['timeout'], 15)
+
+    def unproven_reads(self, *errors):
+        """Answer the next journal reads with guest errors, as a stalled guest supervisor does."""
+        original = self.client.request
+        pending = list(errors)
+
+        def request(method, params, **options):
+            if params['action'] in {'next', 'ack'} and pending:
+                self.client.requests.append((method, params, options))
+                raise pending.pop(0)
+            return original(method, params, **options)
+        self.client.request = request
+
+    def test_an_unproven_journal_read_is_read_again_and_keeps_the_connection(self):
+        # 2026-10-18 incident: one `next` poll got outcome_unknown from the guest supervisor
+        # relay, and the whole provider connection ended with an unknown turn outcome.
+        self.unproven_reads(
+            LinuxVMError("Linux guest provider.rpc: {'code': 'outcome_unknown', 'message': "
+                         "'The native supervisor operation has no proven result'}",
+                         uncertain=True, code='outcome_unknown'),
+            LinuxVMError('The Linux VM response failed: timed out', uncertain=True))
+        self.client.events = [self.event(1, {'method': 'thread/started', 'params': {}})]
+        with patch('codex_linux_vm_provider.time.sleep') as sleep:
+            sequence, line = self.proxy.next_event()
+        self.assertEqual((sequence, json.loads(line)['method']), (1, 'thread/started'))
+        self.assertEqual([r[1]['action'] for r in self.client.requests], ['next'] * 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_an_unproven_ack_is_sent_again_with_the_same_cursor(self):
+        self.unproven_reads(LinuxVMError('lost', uncertain=True, code='outcome_unknown'))
+        self.proxy.read_cursor = 1
+        with patch('codex_linux_vm_provider.time.sleep'):
+            self.proxy.ack(1)
+        self.assertEqual([(r[1]['action'], r[1]['sequence']) for r in self.client.requests],
+                         [('ack', 1), ('ack', 1)])
+        self.assertEqual(self.proxy.cursor, 1)
+
+    def test_a_proven_read_refusal_and_a_lost_write_are_not_sent_again(self):
+        self.unproven_reads(LinuxVMError('Linux guest provider.rpc: not found', code='not_found'))
+        with self.assertRaisesRegex(LinuxVMError, 'not found'):
+            self.proxy.next_event()
+        self.assertEqual([r[1]['action'] for r in self.client.requests], ['next'])
+        self.client.requests.clear()
+        self.client.fail_write = True
+        with patch('codex_linux_vm_provider.time.sleep') as sleep, \
+                self.assertRaisesRegex(ConnectionError, 'VM connection lost'):
+            self.proxy.send_write({'id': 4, 'method': 'turn/start', 'params': {}},
+                                  operation_id='turn-once')
+        self.assertEqual([r[1]['action'] for r in self.client.requests], ['write'])
+        sleep.assert_not_called()
+
+    def test_unproven_reads_stop_after_the_shared_retry_budget(self):
+        from codex_shared_values import GUEST_PROVIDER_READ_RETRY_SECONDS
+        self.unproven_reads(*[LinuxVMError('lost', uncertain=True, code='outcome_unknown')] * 1000)
+        clock = [0.0]
+        with patch('codex_linux_vm_provider.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('codex_linux_vm_provider.time.sleep',
+                      side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                self.assertRaisesRegex(LinuxVMError, 'lost'):
+            self.proxy.next_event()
+        self.assertLess(clock[0], GUEST_PROVIDER_READ_RETRY_SECONDS)
+        self.assertGreater(clock[0], GUEST_PROVIDER_READ_RETRY_SECONDS - 3)
 
     def test_old_generation_reply_is_not_delivered_to_a_new_child(self):
         self.client.events = [self.event(1, {'id': 91, 'result': {}}, generation=1),

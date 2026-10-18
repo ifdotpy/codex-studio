@@ -4,6 +4,8 @@ import json
 import time
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
+from codex_shared_values import BACKEND_RESTARTED_TURN_ERROR
+
 if TYPE_CHECKING:
     import sqlite3
     from codex_records import AgentRecord
@@ -22,7 +24,7 @@ class NativeTurn(TypedDict):
     status: NotRequired[str]
     items: NotRequired[list[NativeTurnItem]]
 
-RESTART_ERROR = 'Server restarted during a turn. Review history, then send a new instruction.'
+RESTART_ERROR = BACKEND_RESTARTED_TURN_ERROR
 SCOPE: tuple[Literal['epoch'], Literal['accountKey'], Literal['threadId']] = ('epoch', 'accountKey', 'threadId')
 
 

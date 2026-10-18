@@ -101,6 +101,18 @@ A guest service or Studio restart can attach to the same live provider.
 A VM reboot ends the process. An unproven result remains unknown.
 A caller must recover its receipt before it retries a mutation.
 
+The guest relays each provider journal request to its native supervisor with short deadlines.
+It answers `outcome_unknown` when the supervisor does not answer in time.
+The host sends a journal read (`next`, `replay`, `eventRead`, `info`, `status`) or an `ack`
+again for up to `GUEST_PROVIDER_READ_RETRY_SECONDS` (30 s). These requests change no provider
+state. A stall shorter than this does not end the provider connection. A write is never sent again.
+
+When the connection ends, Studio settles a turn start with no turn ID in one of three ways:
+
+- `AppServer.write` refused the start before it wrote a byte: the batch returns to the queue once.
+- Native history has a turn with the exact input ID: Studio binds that turn and recovers it.
+- Neither is proven: the input stays uncertain. "Check connection" reads the history again.
+
 Use `host_exec` for macOS commands. It uses a Mac slot and returns the result through layr.
 The Mac native project folder is not that slot and does not receive automatic changes.
 VM command monitors use guest Bash and the owned provider sandbox.
