@@ -5,8 +5,10 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const DEFAULT_MODEL = "gpt-6-luna";
-const DEFAULT_EFFORT = "low";
+import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.mjs";
+
+const DEFAULT_MODEL = SCALE_PROVIDER.model;
+const DEFAULT_EFFORT = SCALE_PROVIDER.effort;
 const EXPECTED_REPLY = "STUDIO_RUST_LUNA_OK";
 const ACTION_TIMEOUT_MS = 15_000;
 const NAVIGATION_TIMEOUT_MS = 45_000;
@@ -19,6 +21,7 @@ const DELETE_UI_TIMEOUT_MS = 20_000;
 const POST_DELETE_OBSERVATION_MS = 4_000;
 const EVIDENCE_CAPTURE_TIMEOUT_MS = 10_000;
 const RECEIPT_TIMEOUT_MS = 10_000;
+const CATALOG_TIMEOUT_MS = 10_000;
 const TERMINAL_STATE_TIMEOUT_MS = 120_000;
 const REVALIDATION_SETTLE_MS = 3_000;
 const IDLE_OBSERVATION_MS = 15_000;
@@ -27,6 +30,18 @@ const POLL_INTERVAL_MS = 1_000;
 const MAX_STEADY_REQUESTS_PER_ENDPOINT = 3;
 const MAX_RECORDED_RESOURCES = 200;
 const MAX_ANSWER_TEXT = 20_000;
+// A durable input receipt is not proof that the provider has received the input.
+const ACCEPTED_MESSAGE_RECEIPT_STATUSES = new Set([
+  "pending",
+  "queued",
+  "accepted",
+  "delivered",
+  "sent",
+]);
+
+export function isAcceptedMessageReceiptStatus(status) {
+  return ACCEPTED_MESSAGE_RECEIPT_STATUSES.has(status);
+}
 
 function argumentsFrom(argv) {
   const options = {};
@@ -421,6 +436,12 @@ async function main() {
   assert.ok(options["evidence-dir"], "--evidence-dir is required.");
   if (!options.resume)
     assert.ok(options.project, "--project is required for a new lifecycle.");
+  if (!options.resume && options.model)
+    assert.equal(
+      options.model,
+      SCALE_PROVIDER.model,
+      "Only the approved cheap Claude model is allowed for a new lifecycle.",
+    );
 
   const origin = ensureHttps(options.url);
   const evidenceDir = resolve(options["evidence-dir"]);
@@ -601,6 +622,21 @@ async function main() {
     if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postDataJSON();
     assert.equal(
+      body.account_key,
+      SCALE_PROVIDER.accountKey,
+      "Creation used another account.",
+    );
+    assert.equal(
+      body.model,
+      SCALE_PROVIDER.model,
+      "Only the approved cheap Claude model may be invoked.",
+    );
+    assert.equal(
+      body.fast_mode,
+      SCALE_PROVIDER.fastMode,
+      "Paid checks require fast mode off.",
+    );
+    assert.equal(
       body.model,
       journal.model,
       "Creation request used another model.",
@@ -608,7 +644,7 @@ async function main() {
     assert.equal(
       body.effort,
       DEFAULT_EFFORT,
-      "Creation request did not use the approved Luna low effort.",
+      "Creation request did not use the approved cheap Claude effort.",
     );
     assert.equal(
       body.cwd,
@@ -644,6 +680,11 @@ async function main() {
   await page.route("**/api/messages", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postDataJSON();
+    assert.equal(
+      journal.model,
+      SCALE_PROVIDER.model,
+      "Refused a new prompt to a model outside the approved cheap Claude profile.",
+    );
     if (body.room !== journal.chatId)
       throw new Error("Refused to send to a chat outside this lifecycle.");
     if (journal.messageId && journal.messageId !== body.id)
@@ -695,7 +736,8 @@ async function main() {
         "Resume requires the chat ID saved in the lifecycle journal.",
       );
       traffic.stage = "resume-inspection";
-      await page.reload({ waitUntil: "domcontentloaded" });
+      // Initial navigation already opened a fresh page. Reloading here aborts
+      // its projection hydration and records failures caused by the verifier.
       if (journal.stages.delete?.state === "sent") {
         const stillVisible = await page
           .locator(chatSelector(journal.chatId))
@@ -763,16 +805,8 @@ async function main() {
           "Message receipt belongs to another chat.",
         );
         assert.ok(
-          [
-            "queued",
-            "accepted",
-            "delivered",
-            "sent",
-            "pending",
-            "reserved",
-            "dispatching",
-            "uncertain",
-          ].includes(found.status),
+          isAcceptedMessageReceiptStatus(found.status) ||
+            ["reserved", "dispatching", "uncertain"].includes(found.status),
           `Message receipt has terminal nonaccepted status ${found.status}; the send will not be replayed.`,
         );
         journal.stages.prompt ||= {};
@@ -786,6 +820,22 @@ async function main() {
       }
     } else {
       traffic.stage = "create";
+      const catalog = await page.evaluate(
+        async ({ account, timeoutMs }) => {
+          const response = await fetch(
+            `/api/models?account_key=${encodeURIComponent(account)}`,
+            {
+              credentials: "same-origin",
+              signal: AbortSignal.timeout(timeoutMs),
+            },
+          );
+          if (!response.ok)
+            throw new Error(`Model catalog returned HTTP ${response.status}.`);
+          return response.json();
+        },
+        { account: SCALE_PROVIDER.accountKey, timeoutMs: CATALOG_TIMEOUT_MS },
+      );
+      requireScaleModel(catalog);
       const projectSections = page.locator("[data-project-path]");
       await projectSections.first().waitFor();
       const projectPath = await projectSections.evaluateAll(
@@ -874,12 +924,28 @@ async function main() {
       await dialog
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
-      const modelOption = page.getByRole("option", { name: /Luna/i }).first();
+      const accountGroup = page.getByRole("group", {
+        name: "Main agent account",
+        exact: true,
+      });
+      await accountGroup
+        .getByRole("radio", { name: "Claude", exact: true })
+        .locator("..")
+        .locator("label")
+        .click();
+      await accountGroup
+        .locator(
+          `[data-account-key=${JSON.stringify(SCALE_PROVIDER.accountKey)}]`,
+        )
+        .click();
+      const modelOption = page.locator(
+        `[role="option"][data-value=${JSON.stringify(journal.model)}]`,
+      );
       await modelOption.waitFor();
       const value = await modelOption.getAttribute("data-value");
       if (value !== journal.model)
         throw new Error(
-          `The visible Luna option was ${value}; expected ${journal.model}.`,
+          `The visible model option was ${value}; expected ${journal.model}.`,
         );
       await modelOption.click();
       await page.getByText("Low", { exact: true }).click();
@@ -970,7 +1036,7 @@ async function main() {
         "Message receipt belongs to another chat.",
       );
       assert.ok(
-        ["queued", "accepted", "delivered", "sent"].includes(body.status),
+        isAcceptedMessageReceiptStatus(body.status),
         `Message receipt did not confirm acceptance (status ${body.status}).`,
       );
       journal.stages.prompt = {
@@ -1071,7 +1137,6 @@ async function main() {
       observedAt: new Date().toISOString(),
     };
     saveJournal(journalPath, journal);
-    assertTrafficHealthy(traffic, journal);
     if (journal.stages.delete?.state === "sent")
       throw new Error(
         "A prior delete response was lost and the chat still exists; inspect manually before any retry.",
@@ -1144,6 +1209,8 @@ async function main() {
     };
     saveJournal(journalPath, journal);
 
+    // Retire the owned, completed chat before reporting recorded traffic
+    // failures. The final assertion still rejects the original failure.
     const finalReset409s = assertTrafficHealthy(traffic, journal);
     journal.result = "passed";
     journal.completedAt = new Date().toISOString();
