@@ -306,6 +306,165 @@ fn revision(metadata: &fs::Metadata) -> Result<String, ProgressPanelError> {
     }
 }
 
+/// Longest `progress-layout --wait` an agent may request, in seconds.
+pub const LAYOUT_CHECK_MAX_WAIT_SECONDS: f64 = 5.0;
+/// Pause between layout re-reads while `progress-layout --wait` waits, in seconds.
+const LAYOUT_CHECK_POLL_SECONDS: f64 = 0.1;
+
+fn unix_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+/// Summarize the current, recent renderer measurements of one agent's progress file.
+pub fn layout_status(state_dir: &Path, agent: &str) -> Result<Value, ProgressPanelError> {
+    layout_status_at(state_dir, agent, unix_seconds())
+}
+
+fn layout_status_at(state_dir: &Path, agent: &str, now: f64) -> Result<Value, ProgressPanelError> {
+    let current = read_progress(state_dir, agent)?;
+    if !current["error"].is_null() {
+        return Ok(json!({"status":"does_not_fit","error":current["error"],"reports":[]}));
+    }
+    let markdown = current["markdown"].as_str().unwrap_or_default();
+    if markdown.trim().is_empty() {
+        return Ok(json!({"status":"empty","reports":[]}));
+    }
+    let stored = read_layout(&progress_path(state_dir, agent)?.with_file_name(LAYOUT_FILE))?;
+    let latest = read_progress(state_dir, agent)?;
+    if !latest["error"].is_null() || latest["revision"] != current["revision"] {
+        return Ok(json!({"status":"unmeasured","reports":[],
+            "note":"The progress file changed during the check. Check its current revision again."}));
+    }
+    let digest = studio_runtime_store::sha256_hex(markdown.as_bytes());
+    let matching = stored.get("version").and_then(Value::as_u64) == Some(1)
+        && stored.get("agent").and_then(Value::as_str) == Some(agent)
+        && stored.get("revision") == Some(&current["revision"])
+        && stored.get("sha256").and_then(Value::as_str) == Some(digest.as_str());
+    let reports = if matching {
+        fresh_reports(&stored, now)
+    } else {
+        Vec::new()
+    };
+    let status = status(&reports);
+    let mut result = json!({"status":status,"revision":current["revision"],"sha256":digest,
+        "reports":reports,
+        "note":"Only current, recent visible-client measurements count. Without a renderer, fit is unmeasured."});
+    let field = |row: &Value, key: &str| row[key].as_f64().unwrap_or_default();
+    let limiting = reports
+        .iter()
+        .filter(|row| row["renderer"] == RENDERER_V2 && row["reason"] != "unsupported")
+        .min_by(|a, b| {
+            let key = |row: &Value| {
+                (
+                    field(row, "visibleLines"),
+                    -field(row, "overflowY"),
+                    -field(row, "overflowX"),
+                )
+            };
+            key(a)
+                .partial_cmp(&key(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    if let Some(row) = limiting {
+        // Describe the least visible client; keep every report and its identity.
+        let hidden = field(row, "totalLines") - field(row, "visibleLines");
+        let mut hint = format!(
+            "Visible: first {} top-level lines/items.",
+            field(row, "visibleLines")
+        );
+        if hidden > 0.0 {
+            let label = ["lastVisibleHeading", "lastVisibleLine"]
+                .iter()
+                .find_map(|key| row[*key].as_str().filter(|label| !label.is_empty()));
+            hint.push_str(&match label {
+                Some(label) => format!(" Hidden: {hidden} lines/items below {label}."),
+                None => format!(" Hidden: {hidden} lines/items."),
+            });
+        }
+        if field(row, "overflowX") != 0.0 || field(row, "overflowY") != 0.0 {
+            hint.push_str(&format!(
+                " Overflow: {:.0}px down, {:.0}px across.",
+                field(row, "overflowY"),
+                field(row, "overflowX")
+            ));
+        }
+        result["hint"] = json!(hint);
+    }
+    if status == "unmeasured" {
+        let (reason, next) = if matching {
+            (
+                "expired",
+                "No visible client measured this revision recently. Keep a short status. Fit stays unmeasured.",
+            )
+        } else if stored.get("version").and_then(Value::as_u64) == Some(1) {
+            (
+                "older_revision",
+                "A client measured an earlier revision and has not read this edit yet. Check once more after a few seconds. Do not loop.",
+            )
+        } else {
+            (
+                "no_client",
+                "No visible Studio client has measured this panel. Keep a short status. Fit stays unmeasured.",
+            )
+        };
+        result["reason"] = json!(reason);
+        result["next"] = json!(next);
+    }
+    Ok(result)
+}
+
+/// The `progress-layout` command: report the layout status of the exact per-agent
+/// `PROGRESS.md` path, waiting up to `wait_seconds` for a visible renderer.
+/// Returns the JSON to print and the process exit code.
+pub fn layout_check(file: &Path, wait_seconds: f64) -> (Value, i32) {
+    let result = layout_check_status(file, wait_seconds)
+        .unwrap_or_else(|error| json!({"status":"unmeasured","error":error.to_string()}));
+    let code = match result["status"].as_str() {
+        Some("fits" | "clipped" | "empty") => 0,
+        Some("does_not_fit") => 1,
+        _ => 2,
+    };
+    (result, code)
+}
+
+fn layout_check_status(file: &Path, wait_seconds: f64) -> Result<Value, ProgressPanelError> {
+    let file = std::path::absolute(file)?;
+    let invalid = || ProgressPanelError::InvalidLayout("progress file path");
+    fn name(path: Option<&Path>) -> Option<&str> {
+        path.and_then(Path::file_name).and_then(|n| n.to_str())
+    }
+    let agent_directory = file.parent();
+    let progress_directory = agent_directory.and_then(Path::parent);
+    if name(Some(&file)) != Some("PROGRESS.md") || name(progress_directory) != Some("progress") {
+        return Err(invalid());
+    }
+    let agent = name(agent_directory).ok_or_else(invalid)?;
+    let state_dir = progress_directory
+        .and_then(Path::parent)
+        .ok_or_else(invalid)?;
+    let started = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs_f64(wait_seconds);
+    let mut result = layout_status(state_dir, agent)?;
+    while result["status"] == "unmeasured" && started.elapsed() < deadline {
+        let remaining = deadline.saturating_sub(started.elapsed()).as_secs_f64();
+        std::thread::sleep(std::time::Duration::from_secs_f64(
+            LAYOUT_CHECK_POLL_SECONDS.min(remaining),
+        ));
+        result = layout_status(state_dir, agent)?;
+    }
+    if wait_seconds > 0.0 && result["status"] == "unmeasured" {
+        result["waitedSeconds"] =
+            json!((started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0);
+        result["next"] = json!(
+            "No client measured the current revision during this wait. Keep a short status until a visible client measures it."
+        );
+    }
+    Ok(result)
+}
+
 pub fn record_layout(state_dir: &Path, body: &Value) -> Result<Value, ProgressPanelError> {
     let report = validate_report(body)?;
     let agent = required_string(body, "agent")?;
@@ -1027,5 +1186,51 @@ mod tests {
                 .expect("valid id")
                 .ends_with("progress/agent-a/PROGRESS.md")
         );
+    }
+
+    #[test]
+    fn layout_check_reports_the_least_visible_client_and_exit_codes() {
+        let root = fixture();
+        let path = root.path().join("progress/agent-a/PROGRESS.md");
+        assert_eq!(
+            super::layout_check(&path, 0.0).1,
+            0,
+            "a missing file is empty"
+        );
+        fs::write(&path, "# Status\n- one\n- two\n").expect("progress writes");
+        let (result, code) = super::layout_check(&path, 0.0);
+        assert_eq!(
+            (result["status"].as_str(), result["reason"].as_str(), code),
+            (Some("unmeasured"), Some("no_client"), 2)
+        );
+        let revision = read_progress(root.path(), "agent-a").expect("progress reads")["revision"]
+            .as_str()
+            .expect("revision is string")
+            .to_owned();
+        let mut clipped = report(&revision, 1);
+        clipped["renderer"] = json!("progress-markdown-v2");
+        clipped["height"] = json!(100);
+        clipped["contentHeight"] = json!(130);
+        clipped["fits"] = json!(false);
+        clipped["reason"] = json!("overflow");
+        clipped["overflowX"] = json!(0);
+        clipped["overflowY"] = json!(30);
+        clipped["totalLines"] = json!(3);
+        clipped["visibleLines"] = json!(2);
+        clipped["lastVisibleLine"] = json!("- one");
+        clipped["lastVisibleHeading"] = json!("# Status");
+        record_layout(root.path(), &clipped).expect("measurement records");
+        let (result, code) = super::layout_check(&path, 0.0);
+        assert_eq!(code, 0);
+        assert_eq!(result["status"], "clipped");
+        assert_eq!(
+            result["hint"],
+            "Visible: first 2 top-level lines/items. Hidden: 1 lines/items below # Status. Overflow: 30px down, 0px across."
+        );
+        fs::write(&path, "# Changed\n").expect("progress changes");
+        let (result, _) = super::layout_check(&path, 0.0);
+        assert_eq!(result["reason"], "older_revision");
+        let (result, code) = super::layout_check(&root.path().join("other.md"), 0.0);
+        assert_eq!((result["status"].as_str(), code), (Some("unmeasured"), 2));
     }
 }

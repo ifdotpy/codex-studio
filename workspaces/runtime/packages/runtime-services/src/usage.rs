@@ -1,40 +1,28 @@
 //! Local usage snapshot readers that do not require provider or turn drivers.
 
-use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, TryLockError, mpsc};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
 // Python owns the shared cost values in codex_costs.py:27-33: refresh
-// intervals, history windows, the scanner/build timeouts, and report bytes.
-// costs-contract.py checks the Rust and Swift consumers against those owners.
+// intervals, history windows, and the scan timeout. costs-contract.py checks
+// the Rust consumers against those owners.
 const COST_REFRESH_SECONDS: f64 = 120.0;
 const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
 const CLAUDE_COST_HISTORY_DAYS: i64 = 30;
 const COST_REPORT_HISTORY_DAYS: i64 = 30;
-const COST_SCAN_OUTPUT_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 // Python owns models.dev refresh policy in codex_pricing.py:17-18,120-128.
 const PRICING_CATALOG_TTL_SECONDS: f64 = 24.0 * 60.0 * 60.0;
 const PRICING_CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-// Rust-only capture bound for the build helper's diagnostic pipes. Python's
-// helper publishes only the final 4000 diagnostic characters (build.py:122-123).
-const COST_SCANNER_BUILD_STDERR_LIMIT_BYTES: usize = 64 * 1024;
-const COST_SCANNER_BUILD_TIMEOUT_SECONDS: Duration = Duration::from_secs(120);
 const COST_SCAN_TIMEOUT_SECONDS: Duration = Duration::from_secs(900);
 const COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS: u64 = 50;
-const COST_COMMAND_POLL_INTERVAL_MILLISECONDS: u64 = 10;
-// Keep helper shutdown aligned with cost-scanner/build.py's compiler cleanup grace.
-const COST_COMMAND_TERMINATION_GRACE_SECONDS: Duration = Duration::from_secs(5);
-// Rust-only scheduling headroom after the helper's bounded compiler cleanup.
-const COST_COMMAND_TERMINATION_HEADROOM_SECONDS: Duration = Duration::from_secs(2);
 static COST_REFRESH_ATTEMPTS: LazyLock<Mutex<BTreeMap<String, tokio::time::Instant>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static ACTIVE_COST_REFRESHES: LazyLock<Mutex<BTreeSet<String>>> =
@@ -52,26 +40,10 @@ pub enum UsageError {
     CacheRead,
     #[error("Local cost scan failed.")]
     Scan,
-    #[error("Cannot prepare the local cost scanner.")]
-    ScannerPrepare,
-    #[error("Local cost scan timed out.")]
-    ScannerTimedOut,
     #[error("Local cost scanner is busy.")]
     ScannerBusy,
     #[error("Local cost scanner was cancelled during shutdown.")]
     ScannerCancelled,
-    #[error("Could not stop and reap the local cost scanner.")]
-    ScannerCleanup,
-    #[error("Local cost scan failed (exit {0}).")]
-    ScannerFailed(i32),
-    #[error("Local cost report exceeds 32 MiB.")]
-    ScannerOutputLimit,
-    #[error("CodexBar did not return local Codex costs.")]
-    ScannerReport,
-    #[error("CodexBar returned an unsupported currency.")]
-    ScannerCurrency,
-    #[error("The local cost scanner returned invalid coverage.")]
-    ScannerCoverage,
 }
 
 /// Read an account's last locally scanned cost snapshot.
@@ -190,9 +162,7 @@ fn refresh_account_costs(
     account: &Value,
     cancelled: &AtomicBool,
 ) -> Result<(), UsageError> {
-    let build_script =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src/cost-scanner/build.py");
-    refresh_account_costs_report(state_dir, account_key, account, cancelled, &build_script).1
+    refresh_account_costs_report(state_dir, account_key, account, cancelled).1
 }
 
 /// Refresh and report whether a cache value was durably saved, even if the
@@ -202,17 +172,15 @@ pub fn refresh_account_costs_report(
     account_key: &str,
     account: &Value,
     cancelled: &AtomicBool,
-    build_script: &Path,
 ) -> (bool, Result<(), UsageError>) {
-    let build_script = build_script.to_owned();
     refresh_account_costs_with(
         state_dir,
         account_key,
         account,
         cancelled,
         unix_time_seconds,
-        move |home, state_dir, scanner_cache, cancelled| {
-            scan_codex_sessions(home, state_dir, scanner_cache, &build_script, cancelled)
+        |home, state_dir, cancelled| {
+            scan_codex_sessions(home, state_dir, unix_time_seconds(), cancelled)
         },
     )
 }
@@ -227,7 +195,7 @@ fn refresh_account_costs_with<C, S>(
 ) -> (bool, Result<(), UsageError>)
 where
     C: Fn() -> f64,
-    S: FnOnce(&Path, &Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
+    S: FnOnce(&Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
 {
     let home = match account
         .get("home")
@@ -280,9 +248,7 @@ where
         Err(error) => return (false, Err(error)),
     };
     let result: Result<(), UsageError> = (|| {
-        let scanner_cache = cache_root.join("scanner");
-        create_private_dir(&scanner_cache)?;
-        let data = scanner(&home, state_dir, &scanner_cache, cancelled)?;
+        let data = scanner(&home, state_dir, cancelled)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(UsageError::ScannerCancelled);
         }
@@ -659,66 +625,262 @@ where
     )
 }
 
-/// Match the Python scanner runner: build the vendored scanner, then run it
-/// against only this Codex profile and normalize its aggregate report.
-/// Python owners: builder invocation and 120-second timeout are in
-/// codex_costs.py:342-350; resolved account home, isolated cache and CODEX_HOME
-/// are at :352-391; CodexBar normalization is at :61-132. The helper's
-/// 110-second compiler timeout, 5-second termination grace and atomic
-/// executable publication are in cost-scanner/build.py:17-19,76-125.
+/// Token counts of one Codex `token_count` usage object: input (including
+/// cached), cached input, and output.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+struct CodexTokens {
+    input: u64,
+    cached: u64,
+    output: u64,
+}
+
+impl CodexTokens {
+    fn from_usage(usage: Option<&Value>) -> Option<Self> {
+        let usage = usage?;
+        let count = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| usage.get(*key).and_then(Value::as_u64))
+                .unwrap_or(0)
+        };
+        Some(Self {
+            input: count(&["input_tokens"]),
+            cached: count(&["cached_input_tokens", "cache_read_input_tokens"]),
+            output: count(&["output_tokens"]),
+        })
+    }
+
+    fn at_least(self, other: Self) -> bool {
+        self.input >= other.input && self.cached >= other.cached && self.output >= other.output
+    }
+
+    fn minus(self, other: Self) -> Self {
+        Self {
+            input: self.input - other.input,
+            cached: self.cached - other.cached,
+            output: self.output - other.output,
+        }
+    }
+}
+
+/// Estimated usage of one model on one local day.
+#[derive(Default)]
+struct CodexModelDay {
+    tokens: u64,
+    cost_usd: f64,
+    unpriced: bool,
+}
+
+/// Scan the Codex session logs of one profile and build the aggregate cost
+/// report. Reads `sessions` and the sibling `archived_sessions` under `home`;
+/// a fork's replayed parent history only advances the running totals.
+/// History completeness is never verified, so coverage is always `partial`.
 fn scan_codex_sessions(
     home: &Path,
     state_dir: &Path,
-    scanner_cache: &Path,
-    build_script: &Path,
+    now: f64,
     cancelled: &AtomicBool,
 ) -> Result<Value, UsageError> {
-    let cost_root = state_dir.join("account-costs");
-    let executable = cost_root.join("bin/codex-cost-scanner");
-    create_private_dir(executable.parent().ok_or(UsageError::ScannerPrepare)?)?;
-    let python = crate::python_tool::resolve_python_tool().ok_or(UsageError::ScannerPrepare)?;
-    let mut build = Command::new(python);
-    build.arg(build_script).arg("--output").arg(&executable);
-    let build_output = run_cost_command(
-        build,
-        COST_SCANNER_BUILD_TIMEOUT_SECONDS,
-        COST_SCAN_OUTPUT_LIMIT_BYTES,
-        Some(COST_SCANNER_BUILD_STDERR_LIMIT_BYTES),
-        cancelled,
-    )
-    .map_err(|error| match error {
-        UsageError::ScannerCancelled => UsageError::ScannerCancelled,
-        _ => UsageError::ScannerPrepare,
-    })?;
-    if !build_output.status.success() {
-        return Err(UsageError::ScannerPrepare);
+    scan_codex_sessions_with_catalog(home, now, cancelled, || {
+        pricing_catalog_with_fetch(state_dir, now, fetch_models_dev_catalog)
+    })
+}
+
+fn scan_codex_sessions_with_catalog<F>(
+    home: &Path,
+    now: f64,
+    cancelled: &AtomicBool,
+    fetch_catalog: F,
+) -> Result<Value, UsageError>
+where
+    F: FnOnce() -> Option<crate::pricing::PricingCatalog>,
+{
+    let started = Instant::now();
+    let oldest_mtime = SystemTime::UNIX_EPOCH
+        + Duration::from_secs_f64((now - COST_REPORT_HISTORY_DAYS as f64 * 86_400.0).max(0.0));
+    let since_day = local_day(now - (COST_REPORT_HISTORY_DAYS - 1) as f64 * 86_400.0);
+    let mut files = BTreeMap::<std::ffi::OsString, PathBuf>::new();
+    for root in [home.join("sessions"), home.join("archived_sessions")] {
+        let mut stack = vec![root];
+        while let Some(directory) = stack.pop() {
+            check_codex_scan(started, cancelled)?;
+            let Ok(entries) = fs::read_dir(directory) else {
+                continue;
+            };
+            for entry in entries {
+                let entry = entry.map_err(|_| UsageError::Scan)?;
+                let path = entry.path();
+                let kind = entry.file_type().map_err(|_| UsageError::Scan)?;
+                if kind.is_dir() {
+                    stack.push(path);
+                } else if kind.is_file()
+                    && path.extension().and_then(|v| v.to_str()) == Some("jsonl")
+                    && entry
+                        .metadata()
+                        .and_then(|meta| meta.modified())
+                        .is_ok_and(|modified| modified >= oldest_mtime)
+                {
+                    files.entry(entry.file_name()).or_insert(path);
+                }
+            }
+        }
     }
-    let _ = pricing_catalog_with_fetch(state_dir, unix_time_seconds(), fetch_models_dev_catalog);
-    write_scanner_pricing_copy(state_dir, scanner_cache)?;
-    let mut command = Command::new(&executable);
-    command
-        .arg("--home")
-        .arg(home)
-        .arg("--cache")
-        .arg(scanner_cache)
-        .env("CODEX_HOME", home)
-        .stderr(Stdio::null());
-    let output = run_cost_command(
-        command,
-        COST_SCAN_TIMEOUT_SECONDS,
-        COST_SCAN_OUTPUT_LIMIT_BYTES,
-        None,
-        cancelled,
-    )?;
-    if !output.status.success() {
-        return Err(UsageError::ScannerFailed(output.status.code().unwrap_or(1)));
+    let catalog = fetch_catalog();
+    let mut days = BTreeMap::<(String, String), CodexModelDay>::new();
+    for path in files.values() {
+        let file = File::open(path).map_err(|_| UsageError::Scan)?;
+        let mut model = None::<String>;
+        let mut fork_at = None::<chrono::DateTime<chrono::FixedOffset>>;
+        let mut previous = CodexTokens::default();
+        for line in BufReader::new(file).lines() {
+            check_codex_scan(started, cancelled)?;
+            let Ok(row) = serde_json::from_str::<Value>(&line.map_err(|_| UsageError::Scan)?)
+            else {
+                continue;
+            };
+            let payload = row.get("payload");
+            let at = row
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok());
+            match row.get("type").and_then(Value::as_str) {
+                Some("session_meta") => {
+                    if payload.is_some_and(|meta| meta.get("forked_from_id").is_some()) {
+                        fork_at = payload
+                            .and_then(|meta| meta.get("timestamp"))
+                            .and_then(Value::as_str)
+                            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                            .or(at);
+                    }
+                }
+                Some("turn_context") => {
+                    let named = |value: Option<&Value>| {
+                        value
+                            .and_then(|v| v.get("model"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    };
+                    model = named(payload).or_else(|| named(payload.and_then(|p| p.get("info"))));
+                }
+                Some("event_msg")
+                    if payload.and_then(|p| p.get("type")).and_then(Value::as_str)
+                        == Some("token_count") =>
+                {
+                    let info = payload.and_then(|p| p.get("info"));
+                    let last =
+                        CodexTokens::from_usage(info.and_then(|i| i.get("last_token_usage")));
+                    let total =
+                        CodexTokens::from_usage(info.and_then(|i| i.get("total_token_usage")));
+                    let delta = match (total, last) {
+                        (Some(total), last) => {
+                            let delta = if total.at_least(previous) {
+                                total.minus(previous)
+                            } else {
+                                last.unwrap_or(total)
+                            };
+                            previous = total;
+                            delta
+                        }
+                        (None, Some(last)) => last,
+                        (None, None) => continue,
+                    };
+                    let Some(at) = at else { continue };
+                    if fork_at.is_some_and(|forked| at < forked) || delta == CodexTokens::default()
+                    {
+                        continue;
+                    }
+                    let day = at
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    if day < since_day {
+                        continue;
+                    }
+                    let name = codex_model_name(model.as_deref().unwrap_or("gpt-5"));
+                    let cached = delta.cached.min(delta.input);
+                    let usage = json!({"inputTokens":delta.input,"cachedInputTokens":cached,
+                        "outputTokens":delta.output});
+                    let cost = catalog
+                        .as_ref()
+                        .map(|catalog| {
+                            catalog.price_usage(
+                                "openai",
+                                &name,
+                                &usage,
+                                Some(delta.input as f64),
+                                false,
+                            )
+                        })
+                        .and_then(|price| price.amount_usd);
+                    let entry = days.entry((day, name)).or_default();
+                    entry.tokens += delta.input + delta.output;
+                    match cost {
+                        Some(cost) => entry.cost_usd += cost,
+                        None => entry.unpriced = true,
+                    }
+                }
+                _ => {}
+            }
+        }
     }
-    if output.stdout_exceeded {
-        return Err(UsageError::ScannerOutputLimit);
+    let today = local_day(now);
+    let mut unknown = BTreeSet::new();
+    let (mut today_tokens, mut today_cost, mut month_tokens, mut month_cost) = (0, 0.0, 0, 0.0);
+    for ((day, name), entry) in &days {
+        // A zero with tokens is not evidence of free inference.
+        if entry.unpriced || (entry.cost_usd == 0.0 && entry.tokens > 0) {
+            unknown.insert(name.chars().take(160).collect::<String>());
+        }
+        month_tokens += entry.tokens;
+        month_cost += entry.cost_usd;
+        if *day == today {
+            today_tokens += entry.tokens;
+            today_cost += entry.cost_usd;
+        }
     }
-    let payload: Value =
-        serde_json::from_slice(&output.stdout).map_err(|_| UsageError::ScannerReport)?;
-    normalize_codex_costs(&payload)
+    // A claimed zero must not conceal missing rates or incomplete history.
+    let usd = |cost: f64| if cost > 0.0 { json!(cost) } else { Value::Null };
+    let tokens = |count: u64, present: bool| if present { json!(count) } else { Value::Null };
+    let has_today = days.keys().any(|(day, _)| *day == today);
+    Ok(json!({
+        "source":"CodexBar local logs",
+        "scope":"Local Codex sessions on this computer, including supported pi sessions. All projects and accounts in those logs.",
+        "kind":"api_estimate",
+        "currency":"USD",
+        "billedUSD":null,
+        "todayUSD":usd(today_cost),
+        "last30DaysUSD":usd(month_cost),
+        "todayTokens":tokens(today_tokens, has_today),
+        "last30DaysTokens":tokens(month_tokens, !days.is_empty()),
+        "sourceUpdatedAt":chrono::DateTime::from_timestamp(now as i64, 0)
+            .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        "sourceDay":days.keys().map(|(day, _)| day).max(),
+        "coverage":"partial",
+        "unknownModels":unknown,
+        "historyDays":COST_REPORT_HISTORY_DAYS,
+        "note":"API-rate estimate, not your ChatGPT bill. Base rates apply when the scanner cannot resolve a published context tier."
+    }))
+}
+
+fn check_codex_scan(started: Instant, cancelled: &AtomicBool) -> Result<(), UsageError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(UsageError::ScannerCancelled);
+    }
+    check_scan_timeout(started)
+}
+
+/// Drop the provider prefix and a trailing `-YYYY-MM-DD` snapshot date.
+fn codex_model_name(raw: &str) -> String {
+    let name = raw.trim().strip_prefix("openai/").unwrap_or(raw.trim());
+    let dated = name.len() > 11
+        && name.is_char_boundary(name.len() - 11)
+        && chrono::NaiveDate::parse_from_str(&name[name.len() - 10..], "%Y-%m-%d").is_ok()
+        && name.as_bytes()[name.len() - 11] == b'-';
+    if dated {
+        &name[..name.len() - 11]
+    } else {
+        name
+    }
+    .to_owned()
 }
 
 /// Python waits up to the scan timeout for its shared scan lock and only then
@@ -749,70 +911,6 @@ fn acquire_codex_scan_lock_for(
             Err(TryLockError::WouldBlock) => return Err(UsageError::ScannerBusy),
         }
     }
-}
-
-fn write_scanner_pricing_copy(state_dir: &Path, scanner_cache: &Path) -> Result<(), UsageError> {
-    let Some(mut artifact) = read_json(&state_dir.join("model-pricing/models-dev-v1.json")) else {
-        return Ok(());
-    };
-    if let Some(providers) = artifact
-        .get_mut("catalog")
-        .and_then(Value::as_object_mut)
-        .and_then(|catalog| catalog.get_mut("providers"))
-        .and_then(Value::as_object_mut)
-    {
-        for provider in providers.values_mut() {
-            let Some(models) = provider.get_mut("models").and_then(Value::as_object_mut) else {
-                continue;
-            };
-            for model in models.values_mut() {
-                let Some(cost) = model.get_mut("cost").and_then(Value::as_object_mut) else {
-                    continue;
-                };
-                let Some(tiers) = cost.get("tiers").and_then(Value::as_array) else {
-                    continue;
-                };
-                if tiers.is_empty() {
-                    continue;
-                }
-                let context_tiers = tiers
-                    .iter()
-                    .filter(|tier| {
-                        tier.pointer("/tier/type").and_then(Value::as_str) == Some("context")
-                    })
-                    .collect::<Vec<_>>();
-                if context_tiers.len() == 1
-                    && cost_amount(context_tiers[0].pointer("/tier/size")) == Some(200_000.0)
-                {
-                    let mut context = serde_json::Map::new();
-                    for key in ["input", "output", "cache_read", "cache_write"] {
-                        if let Some(value) = context_tiers[0]
-                            .get(key)
-                            .filter(|value| cost_amount(Some(value)).is_some())
-                        {
-                            context.insert(key.to_owned(), value.clone());
-                        }
-                    }
-                    cost.insert("context_over_200k".to_owned(), Value::Object(context));
-                } else {
-                    cost.remove("context_over_200k");
-                }
-            }
-        }
-    }
-    let directory = scanner_cache.join("model-pricing");
-    create_private_dir(&directory)?;
-    let path = directory.join("models-dev-v1.json");
-    let temporary = directory.join(".models-dev-v1.json.tmp");
-    let bytes = serde_json::to_vec(&artifact).map_err(|_| UsageError::Scan)?;
-    fs::write(&temporary, bytes).map_err(|_| UsageError::Scan)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|_| UsageError::Scan)?;
-    }
-    fs::rename(&temporary, path).map_err(|_| UsageError::Scan)
 }
 
 fn pricing_catalog_with_fetch<F>(
@@ -958,296 +1056,6 @@ fn write_private_json_atomic(path: &Path, value: &Value, prefix: &str) -> Result
     fs::rename(&temporary, path).map_err(|_| UsageError::Scan)
 }
 
-struct CostCommandOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stdout_exceeded: bool,
-}
-
-fn run_cost_command(
-    command: Command,
-    timeout: Duration,
-    stdout_limit: usize,
-    stderr_limit: Option<usize>,
-    cancelled: &AtomicBool,
-) -> Result<CostCommandOutput, UsageError> {
-    let deadline = Instant::now() + timeout;
-    let mut command = command;
-    command.stdin(Stdio::null()).stdout(Stdio::piped());
-    command.stderr(if stderr_limit.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let mut command = CommandWrap::from(command);
-    #[cfg(unix)]
-    command.wrap(ProcessGroup::leader());
-    let mut child = command.spawn().map_err(|_| UsageError::ScannerPrepare)?;
-    let stdout = match child.stdout().take() {
-        Some(stdout) => stdout,
-        None => {
-            terminate_cost_child(&mut *child)?;
-            return Err(UsageError::ScannerPrepare);
-        }
-    };
-    let stderr = if stderr_limit.is_some() {
-        match child.stderr().take() {
-            Some(stderr) => Some(stderr),
-            None => {
-                terminate_cost_child(&mut *child)?;
-                return Err(UsageError::ScannerPrepare);
-            }
-        }
-    } else {
-        None
-    };
-    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
-    let stdout_reader = thread::spawn(move || {
-        drop(stdout_sender.send(read_cost_pipe(stdout, stdout_limit)));
-    });
-    let stderr_reader = if let (Some(limit), Some(stderr)) = (stderr_limit, stderr) {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let reader = thread::spawn(move || drop(sender.send(read_cost_pipe(stderr, limit))));
-        Some((receiver, reader))
-    } else {
-        None
-    };
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if cancelled.load(Ordering::Acquire) => {
-                terminate_cost_child(&mut *child)?;
-                join_cost_reader(stdout_reader)?;
-                if let Some((_, reader)) = stderr_reader {
-                    join_cost_reader(reader)?;
-                }
-                return Err(UsageError::ScannerCancelled);
-            }
-            Ok(None) if Instant::now() < deadline => thread::sleep(
-                Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS)
-                    .min(deadline.saturating_duration_since(Instant::now())),
-            ),
-            Ok(None) => {
-                terminate_cost_child(&mut *child)?;
-                join_cost_reader(stdout_reader)?;
-                if let Some((_, reader)) = stderr_reader {
-                    join_cost_reader(reader)?;
-                }
-                return Err(UsageError::ScannerTimedOut);
-            }
-            Err(_) => {
-                terminate_cost_child(&mut *child)?;
-                join_cost_reader(stdout_reader)?;
-                if let Some((_, reader)) = stderr_reader {
-                    join_cost_reader(reader)?;
-                }
-                return Err(UsageError::Scan);
-            }
-        }
-    };
-    child.wait().map_err(|_| UsageError::ScannerCleanup)?;
-    let stdout_result = stdout_receiver.recv();
-    join_cost_reader(stdout_reader)?;
-    let stdout = stdout_result
-        .map_err(|_| UsageError::Scan)?
-        .map_err(|_| UsageError::Scan)?;
-    if let Some((receiver, reader)) = stderr_reader {
-        let stderr_result = receiver.recv();
-        join_cost_reader(reader)?;
-        let _stderr = stderr_result
-            .map_err(|_| UsageError::Scan)?
-            .map_err(|_| UsageError::Scan)?;
-    }
-    Ok(CostCommandOutput {
-        status,
-        stdout: stdout.bytes,
-        stdout_exceeded: stdout.exceeded,
-    })
-}
-
-struct CostPipeOutput {
-    bytes: Vec<u8>,
-    exceeded: bool,
-}
-
-fn read_cost_pipe(mut pipe: impl Read, limit: usize) -> std::io::Result<CostPipeOutput> {
-    let mut bytes = Vec::with_capacity(limit.min(16_384));
-    let mut buffer = [0_u8; 8192];
-    let mut exceeded = false;
-    loop {
-        let count = pipe.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let retained = count.min(limit.saturating_sub(bytes.len()));
-        bytes.extend_from_slice(&buffer[..retained]);
-        exceeded |= retained < count;
-    }
-    Ok(CostPipeOutput { bytes, exceeded })
-}
-
-fn terminate_cost_child(child: &mut dyn ChildWrapper) -> Result<(), UsageError> {
-    #[cfg(unix)]
-    {
-        let process_group = nix::unistd::Pid::from_raw(child.id() as i32);
-        if nix::sys::signal::killpg(process_group, nix::sys::signal::Signal::SIGTERM).is_ok() {
-            let deadline = Instant::now()
-                + COST_COMMAND_TERMINATION_GRACE_SECONDS
-                + COST_COMMAND_TERMINATION_HEADROOM_SECONDS
-                + Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS);
-            while Instant::now() < deadline {
-                match child.try_wait() {
-                    Ok(Some(_)) => {
-                        return child
-                            .wait()
-                            .map(|_| ())
-                            .map_err(|_| UsageError::ScannerCleanup);
-                    }
-                    Ok(None) => thread::sleep(
-                        Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS)
-                            .min(deadline.saturating_duration_since(Instant::now())),
-                    ),
-                    Err(_) => break,
-                }
-            }
-        }
-    }
-    if child.start_kill().is_err()
-        && child
-            .try_wait()
-            .map_err(|_| UsageError::ScannerCleanup)?
-            .is_none()
-    {
-        return Err(UsageError::ScannerCleanup);
-    }
-    child.wait().map_err(|_| UsageError::ScannerCleanup)?;
-    Ok(())
-}
-
-fn join_cost_reader(reader: thread::JoinHandle<()>) -> Result<(), UsageError> {
-    reader.join().map_err(|_| UsageError::Scan)
-}
-
-fn normalize_codex_costs(payload: &Value) -> Result<Value, UsageError> {
-    let row = payload
-        .as_array()
-        .and_then(|rows| {
-            rows.iter().find(|row| {
-                row.is_object() && row.get("provider").and_then(Value::as_str) == Some("codex")
-            })
-        })
-        .ok_or(UsageError::ScannerReport)?;
-    if !row.get("error").is_none_or(Value::is_null)
-        || row.get("source").and_then(Value::as_str) != Some("local")
-    {
-        return Err(UsageError::ScannerReport);
-    }
-    if row.get("currencyCode").and_then(Value::as_str) != Some("USD") {
-        return Err(UsageError::ScannerCurrency);
-    }
-    let coverage = row
-        .get("coverage")
-        .and_then(Value::as_object)
-        .ok_or(UsageError::ScannerCoverage)?;
-    let complete = row
-        .get("historyCoverageIsEstablished")
-        .and_then(Value::as_bool)
-        .ok_or(UsageError::ScannerCoverage)?;
-    let mut unknown = BTreeSet::new();
-    if let Some(daily) = row.get("daily").and_then(Value::as_array) {
-        for day in daily.iter().filter_map(Value::as_object) {
-            let mut seen = BTreeSet::new();
-            if let Some(breakdowns) = day.get("modelBreakdowns").and_then(Value::as_array) {
-                for model in breakdowns.iter().filter_map(Value::as_object) {
-                    let name = model
-                        .get("modelName")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Unknown model")
-                        .chars()
-                        .take(160)
-                        .collect::<String>();
-                    seen.insert(name.clone());
-                    let cost = cost_amount(model.get("cost"));
-                    let tokens = cost_amount(model.get("totalTokens"));
-                    if cost.is_none() || (cost == Some(0.0) && tokens != Some(0.0)) {
-                        unknown.insert(name);
-                    }
-                }
-            }
-            if let Some(models) = day.get("modelsUsed").and_then(Value::as_array) {
-                for model in models {
-                    let name = model
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| model.to_string())
-                        .chars()
-                        .take(160)
-                        .collect::<String>();
-                    if !seen.contains(&name) {
-                        unknown.insert(name);
-                    }
-                }
-            }
-        }
-    }
-    let unpriced = coverage
-        .iter()
-        .filter(|(key, _)| key.to_ascii_lowercase().contains("unpriced"))
-        .filter_map(|(_, value)| cost_amount(Some(value)))
-        .sum::<f64>();
-    let partial = !unknown.is_empty() || unpriced > 0.0 || !complete;
-    let today = cost_amount(row.get("sessionCostUSD"));
-    let month = cost_amount(row.get("last30DaysCostUSD"));
-    let safe_today = if today == Some(0.0) && partial {
-        Value::Null
-    } else {
-        cost_value(row.get("sessionCostUSD"))
-    };
-    let safe_month = if month == Some(0.0) && partial {
-        Value::Null
-    } else {
-        cost_value(row.get("last30DaysCostUSD"))
-    };
-    let source_day = row
-        .get("daily")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|day| day.get("date").and_then(Value::as_str))
-        .filter(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok())
-        .max();
-    Ok(json!({
-        "source":"CodexBar local logs",
-        "scope":"Local Codex sessions on this computer, including supported pi sessions. All projects and accounts in those logs.",
-        "kind":"api_estimate",
-        "currency":"USD",
-        "billedUSD":null,
-        "todayUSD":safe_today,
-        "last30DaysUSD":safe_month,
-        "todayTokens":cost_value(row.get("sessionTokens")),
-        "last30DaysTokens":cost_value(row.get("last30DaysTokens")),
-        "sourceUpdatedAt":row.get("updatedAt"),
-        "sourceDay":source_day,
-        "coverage":if partial {"partial"} else if !coverage.is_empty() {"reported"} else {"unverified"},
-        "unknownModels":unknown,
-        "historyDays":row.get("historyDays").cloned().unwrap_or(json!(COST_REPORT_HISTORY_DAYS)),
-        "note":"API-rate estimate, not your ChatGPT bill. Base rates apply when the scanner cannot resolve a published context tier."
-    }))
-}
-
-fn cost_amount(value: Option<&Value>) -> Option<f64> {
-    value
-        .and_then(Value::as_f64)
-        .filter(|amount| amount.is_finite() && *amount >= 0.0)
-}
-
-fn cost_value(value: Option<&Value>) -> Value {
-    value
-        .filter(|value| cost_amount(Some(value)).is_some())
-        .cloned()
-        .unwrap_or(Value::Null)
-}
-
 fn check_scan_timeout(started: Instant) -> Result<(), UsageError> {
     if started.elapsed() >= COST_SCAN_TIMEOUT_SECONDS {
         Err(UsageError::Scan)
@@ -1340,12 +1148,8 @@ fn local_day(timestamp: f64) -> String {
 mod tests {
     use super::{account_cost_snapshot, refresh_account_costs, scan_claude_sessions};
     use serde_json::{Value, json};
-    use std::path::Path;
-    use std::process::Command;
     use std::sync::atomic::AtomicBool;
-    use std::thread;
     use std::time::Duration;
-    use std::time::Instant;
 
     #[test]
     fn concurrent_refresh_for_same_account_is_rejected_until_guard_drops() {
@@ -1379,7 +1183,7 @@ mod tests {
                     &account_for_worker,
                     &AtomicBool::new(false),
                     move || clock_for_worker.load(std::sync::atomic::Ordering::Relaxed) as f64,
-                    move |_, _, _, _| {
+                    move |_, _, _| {
                         started_sender
                             .send(())
                             .map_err(|_| super::UsageError::Scan)?;
@@ -1412,179 +1216,6 @@ mod tests {
         assert_eq!(snapshot["_refreshDue"], false);
     }
 
-    #[cfg(unix)]
-    #[tokio::test(start_paused = true)]
-    async fn shutdown_kills_and_reaps_fake_scanner_and_releases_refresh_guard() {
-        let directory = tempfile::tempdir().expect("fixture directory");
-        let state_dir = directory.path().join("state");
-        let home = directory.path().join("profile");
-        let marker = directory.path().join("scanner-ready");
-        let account =
-            json!({"id":"cancelled-scan","accountId":"acct","home":home,"status":"ready"});
-        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-        let cancelled_for_worker = std::sync::Arc::clone(&cancelled);
-        let account_for_worker = account.clone();
-        let marker_for_worker = marker.clone();
-        let state_dir_for_worker = state_dir.clone();
-        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
-        let worker = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/usage",
-            move || {
-                super::refresh_account_costs_with(
-                    &state_dir_for_worker,
-                    "cancelled-scan",
-                    &account_for_worker,
-                    &cancelled_for_worker,
-                    || 1_000.0,
-                    move |_, _, _, cancellation| {
-                        started_sender
-                            .send(())
-                            .map_err(|_| super::UsageError::Scan)?;
-                        let mut command = std::process::Command::new("python3");
-                        command
-                        .arg("-c")
-                        .arg("import os,pathlib,sys,time\nmarker=pathlib.Path(sys.argv[1])\ntemporary=marker.with_suffix('.tmp')\nwith temporary.open('w') as file: file.write(str(os.getpid()))\nos.replace(temporary, marker)\ntime.sleep(60)")
-                        .arg(&marker_for_worker);
-                        super::run_cost_command(
-                            command,
-                            Duration::from_secs(900),
-                            1024,
-                            None,
-                            cancellation,
-                        )?;
-                        Ok(json!({}))
-                    },
-                )
-            },
-        );
-        started_receiver.await.expect("fake scanner started");
-        let ready_marker = marker.clone();
-        let child_ready = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/usage",
-            move || {
-                for _ in 0..500 {
-                    if ready_marker.is_file() {
-                        return true;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                false
-            },
-        )
-        .await
-        .expect("marker waiter");
-        assert!(child_ready, "fake scanner should create its ready marker");
-        let pid = std::fs::read_to_string(&marker)
-            .expect("scanner PID")
-            .parse::<u32>()
-            .expect("valid scanner PID");
-        cancelled.store(true, std::sync::atomic::Ordering::Release);
-        let (cache_saved, result) = worker.await.expect("refresh worker");
-        assert!(!cache_saved);
-        assert!(matches!(result, Err(super::UsageError::ScannerCancelled)));
-
-        let probe = std::process::Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .expect("probe scanner process");
-        assert!(!probe.success(), "cancelled scanner process must be reaped");
-        assert!(!super::cost_refresh_active(&super::account_refresh_key(
-            "cancelled-scan",
-            &home
-        )));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cancelling_scanner_build_reaps_its_detached_fake_compiler() {
-        const READY_TIMEOUT: Duration = Duration::from_secs(5);
-
-        let directory = tempfile::tempdir().expect("fixture directory");
-        let build_script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/server/src/cost-scanner/build.py");
-        let output = directory.path().join("scanner");
-        let compiler = directory.path().join("fake-swiftc");
-        let compiler_pid_path = directory.path().join("compiler.pid");
-        std::fs::write(
-            &compiler,
-            "#!/usr/bin/env python3\nimport os,pathlib,sys,time\n".to_owned()
-                + "marker=pathlib.Path(os.environ['FAKE_SWIFTC_PID'])\n"
-                + "temporary=marker.with_suffix('.tmp')\n"
-                + "temporary.write_text(str(os.getpid()))\n"
-                + "os.replace(temporary, marker)\n"
-                + "time.sleep(60)\n",
-        )
-        .expect("fake compiler script");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o700))
-                .expect("make fake compiler executable");
-        }
-        let helper_code = "import importlib.util,pathlib,sys; spec=importlib.util.spec_from_file_location('cost_scanner_build',sys.argv[1]); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); module.compile_binary(pathlib.Path(sys.argv[2]),[],sys.argv[3])";
-        let mut command = Command::new("python3");
-        command
-            .arg("-c")
-            .arg(helper_code)
-            .arg(&build_script)
-            .arg(&output)
-            .arg(&compiler)
-            .env("FAKE_SWIFTC_PID", &compiler_pid_path);
-        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-        let worker_cancelled = std::sync::Arc::clone(&cancelled);
-        let worker = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/usage",
-            move || {
-                super::run_cost_command(
-                    command,
-                    Duration::from_secs(900),
-                    1024,
-                    Some(1024),
-                    &worker_cancelled,
-                )
-            },
-        );
-        let ready_path = compiler_pid_path.clone();
-        let compiler_pid = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/usage",
-            move || {
-                let deadline = Instant::now() + READY_TIMEOUT;
-                while Instant::now() < deadline {
-                    if let Ok(value) = std::fs::read_to_string(&ready_path)
-                        && let Ok(pid) = value.trim().parse::<u32>()
-                    {
-                        return Some(pid);
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-                None
-            },
-        )
-        .await
-        .expect("fake compiler PID waiter");
-        let Some(compiler_pid) = compiler_pid else {
-            cancelled.store(true, std::sync::atomic::Ordering::Release);
-            drop(worker.await.expect("cancelled scanner worker"));
-            panic!("fake compiler did not publish its PID");
-        };
-
-        cancelled.store(true, std::sync::atomic::Ordering::Release);
-        let result = worker.await.expect("scanner build worker");
-        assert!(matches!(result, Err(super::UsageError::ScannerCancelled)));
-        let probe = Command::new("/bin/kill")
-            .args(["-0", &compiler_pid.to_string()])
-            .status()
-            .expect("probe fake compiler process");
-        assert!(
-            !probe.success(),
-            "cancelled compiler process must be reaped"
-        );
-        assert!(
-            !output.exists(),
-            "cancelled build must not publish the scanner"
-        );
-    }
-
     #[tokio::test(start_paused = true)]
     async fn failed_cache_save_has_a_normal_refresh_backoff() {
         let directory = tempfile::tempdir().expect("fixture directory");
@@ -1606,7 +1237,7 @@ mod tests {
             &account,
             &AtomicBool::new(false),
             || 1_000.0,
-            |_, _, _, _| {
+            |_, _, _| {
                 Ok(json!({"todayUSD":2.0,"last30DaysUSD":3.0,"todayTokens":4,
                     "last30DaysTokens":5,"sourceDay":"2026-10-15","coverage":"reported",
                     "unknownModels":[],"historyDays":30}))
@@ -1706,32 +1337,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_scanner_report_is_normalized_without_reparsing_session_logs() {
-        let report = json!([{
-            "provider":"codex",
-            "source":"local",
-            "currencyCode":"USD",
-            "updatedAt":"2026-10-15T12:00:00Z",
-            "historyDays":30,
-            "historyCoverageIsEstablished":false,
-            "coverage":{"priced":1,"unpriced":1},
-            "sessionTokens":10,
-            "sessionCostUSD":0,
-            "last30DaysTokens":25,
-            "last30DaysCostUSD":0,
-            "daily":[{"date":"2026-10-15","modelsUsed":["gpt-unknown"],
-                "modelBreakdowns":[{"modelName":"gpt-unknown","cost":null,"totalTokens":10}]}]
-        }]);
-        let normalized = super::normalize_codex_costs(&report).expect("valid scanner report");
-        assert_eq!(normalized["sourceDay"], "2026-10-15");
-        assert_eq!(normalized["todayTokens"], 10);
-        assert_eq!(normalized["todayUSD"], Value::Null);
-        assert_eq!(normalized["last30DaysUSD"], Value::Null);
-        assert_eq!(normalized["unknownModels"], json!(["gpt-unknown"]));
-        assert_eq!(normalized["coverage"], "partial");
-    }
-
-    #[test]
     fn scanner_lock_contention_matches_python_busy_error() {
         let _guard = super::CODEX_SCAN_LOCK
             .lock()
@@ -1742,20 +1347,71 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn linux_uses_the_same_mac_only_scanner_builder_as_python() {
-        let root = std::env::temp_dir().join(format!("usage-scanner-linux-{}", std::process::id()));
-        let result = super::scan_codex_sessions(
-            &root.join("profile"),
-            &root.join("state"),
-            &root.join("state/account-costs/test/scanner"),
-            &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../apps/server/src/cost-scanner/build.py"),
+    fn codex_session_fixture_counts_total_deltas_skips_fork_replay_and_flags_unpriced_models() {
+        let root = tempfile::tempdir().expect("fixture directory");
+        let home = root.path();
+        let day = home.join("sessions/2026/10/15");
+        std::fs::create_dir_all(&day).expect("fixture sessions");
+        std::fs::create_dir_all(home.join("archived_sessions")).expect("fixture archive");
+        let now = chrono::Utc::now();
+        let at = |minutes: i64| (now - chrono::Duration::minutes(minutes)).to_rfc3339();
+        let count = |minutes: i64, input: u64, cached: u64, output: u64| {
+            json!({"timestamp":at(minutes),"type":"event_msg","payload":{"type":"token_count",
+                "info":{"total_token_usage":{"input_tokens":input,"cached_input_tokens":cached,
+                "output_tokens":output}}}})
+            .to_string()
+        };
+        let context = |minutes: i64, model: &str| {
+            json!({"timestamp":at(minutes),"type":"turn_context","payload":{"model":model}})
+                .to_string()
+        };
+        // Repeated totals add nothing: 1_000_000 input (200_000 cached) and 100_000 output.
+        let parent = [
+            context(60, "openai/gpt-test-2026-01-01"),
+            count(59, 400_000, 100_000, 40_000),
+            count(58, 400_000, 100_000, 40_000),
+            count(57, 1_000_000, 200_000, 100_000),
+        ];
+        std::fs::write(day.join("rollout-parent.jsonl"), parent.join("\n")).expect("parent log");
+        // The fork replays the parent history, then adds 1_000 input and 2_000 output tokens.
+        let fork = [
+            json!({"timestamp":at(30),"type":"session_meta","payload":{"id":"fork",
+                "forked_from_id":"parent","timestamp":at(30)}})
+            .to_string(),
+            context(40, "gpt-test"),
+            count(39, 1_000_000, 200_000, 100_000),
+            count(20, 1_001_000, 200_000, 102_000),
+        ];
+        std::fs::write(
+            home.join("archived_sessions/rollout-fork.jsonl"),
+            fork.join("\n"),
+        )
+        .expect("fork log");
+        let unknown = [context(10, "gpt-unpriced"), count(9, 10, 0, 5)];
+        std::fs::write(day.join("rollout-unknown.jsonl"), unknown.join("\n")).expect("unknown log");
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}}}))
+        .expect("fixture catalog");
+
+        let report = super::scan_codex_sessions_with_catalog(
+            home,
+            now.timestamp() as f64,
             &AtomicBool::new(false),
-        );
-        assert!(matches!(result, Err(super::UsageError::ScannerPrepare)));
-        std::fs::remove_dir_all(root).expect("fixture cleanup");
+            || Some(catalog),
+        )
+        .expect("scan fixture logs");
+        // Parent: 800_000 uncached input * 1 + 200_000 cached * 0.5 + 100_000 output * 2 = 1.1 USD.
+        // Fork: 1_000 input * 1 + 2_000 output * 2 = 0.005 USD.
+        let month = report["last30DaysUSD"].as_f64().expect("priced month");
+        assert!((month - 1.105).abs() < 1e-9, "{month}");
+        assert_eq!(report["last30DaysTokens"], 1_100_000 + 3_000 + 15);
+        assert_eq!(report["unknownModels"], json!(["gpt-unpriced"]));
+        assert_eq!(report["coverage"], "partial");
+        assert_eq!(report["historyDays"], 30);
+        let latest = (now - chrono::Duration::minutes(9)).with_timezone(&chrono::Local);
+        assert_eq!(report["sourceDay"], latest.format("%Y-%m-%d").to_string());
     }
 
     #[test]

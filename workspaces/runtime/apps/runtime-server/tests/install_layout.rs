@@ -83,12 +83,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .map(|directory| directory.join("python3"))
         .find(|path| path.is_file())
         .expect("python3 is available in the build environment");
-    for name in [
-        "codex_python.py",
-        "codex_layout.py",
-        "codex_cache_paths.py",
-        "codex_progress_layout.py",
-    ] {
+    for name in ["codex_python.py", "codex_layout.py", "codex_cache_paths.py"] {
         fs::copy(source.join(name), scripts.join(name)).unwrap();
     }
     let skills = workspace.join(".agents/skills");

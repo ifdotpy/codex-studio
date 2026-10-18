@@ -31,10 +31,7 @@ pub(crate) fn accept_thread(
         thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
         _ => None,
     };
-    let filesystem = ThreadFilesystemInputs {
-        progress_directory,
-        python_tool: None,
-    };
+    let filesystem = ThreadFilesystemInputs { progress_directory };
     let current = thread_snapshot(
         tx,
         resources,

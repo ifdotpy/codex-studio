@@ -69,6 +69,27 @@ pub fn page_at_snapshot(
     Ok((value, revision))
 }
 
+/// Project the complete sync payload from the writer transaction that will
+/// persist it. This keeps ordinary transcript updates from pairing a page
+/// with a revision observed in a different SQLite snapshot.
+pub(crate) fn page_in_transaction(
+    store: &RuntimeStore,
+    transaction: &rusqlite::Transaction<'_>,
+    agent: &str,
+    request: &PageRequest,
+    now: f64,
+) -> Result<Value, TranscriptError> {
+    if !now.is_finite() || now < 0.0 {
+        return Err(TranscriptError::Store);
+    }
+    let analytics = AnalyticsRepository::new(store.root())
+        .open_read_only()
+        .map_err(|_| TranscriptError::Store)?;
+    let mut value = project(transaction, &analytics, agent, request, now)?;
+    project_tool_results(store, &mut value, now)?;
+    Ok(value)
+}
+
 struct PageRow {
     id: String,
     created: f64,

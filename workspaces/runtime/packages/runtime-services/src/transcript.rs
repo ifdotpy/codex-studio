@@ -11,8 +11,6 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-const TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES: usize = 1;
-
 #[derive(Debug, Error)]
 pub enum TranscriptError {
     #[error("unknown message in this conversation")]
@@ -116,116 +114,51 @@ pub async fn pull_scope(
     let scope = scope.to_owned();
     let agent = agent.to_owned();
     let now = crate::transcript_runtime::observed_at()?;
-    for attempt in 0..=TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES {
-        let read_store = Arc::clone(&store);
-        let read_agent = agent.clone();
-        let read_attempt = attempt;
-        let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/transcript_scope",
-            move || {
-                let mut reader = read_store.read()?;
-                let snapshot = reader.transaction()?;
-                let actor = TranscriptRepository::agent(&snapshot, &read_agent)?;
-                let deleted = actor
-                    .as_ref()
-                    .is_none_or(|value| truthy(value.get("deletedAt")));
-                let deleted_revision = if deleted {
-                    snapshot
-                        .query_row(
-                            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                            [&read_agent],
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .optional()?
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-                drop(snapshot);
-                drop(reader);
-                if deleted {
-                    return Ok::<_, TranscriptError>(Some((deleted_revision, None)));
-                }
-                let snapshot = crate::transcript_runtime::page_at_snapshot(
-                    &read_store,
-                    &read_agent,
-                    &crate::transcript_runtime::PageRequest::default(),
-                    now,
-                );
-                match snapshot {
-                    Ok((payload, revision)) => Ok(Some((revision, Some(payload)))),
-                    Err(TranscriptError::DeletedConversation)
-                        if read_attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES =>
-                    {
-                        Ok(None)
-                    }
-                    Err(error) => Err(error),
-                }
-            },
-        )
-        .await
-        .map_err(|_| TranscriptError::Store)??;
-        let Some((expected_revision, fresh_payload)) = prepared else {
-            continue;
-        };
-        let read_store = Arc::clone(&store);
-        let read_scope = scope.clone();
-        let read_agent = agent.clone();
-        let (result, fresh_payload) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/transcript_scope",
-            move || {
-                let result = read_store.read_transaction_with_error(|transaction| {
-                    pull_scope_in(
-                        transaction,
-                        &read_scope,
-                        &read_agent,
-                        after,
-                        expected_revision,
-                        fresh_payload.as_ref(),
-                    )
-                });
-                Ok::<_, TranscriptError>((result, fresh_payload))
-            },
-        )
-        .await
-        .map_err(|_| TranscriptError::Store)??;
-        let result = match result {
-            Err(TranscriptError::ReadOnlyRepair) => {
-                let transaction_scope = scope.clone();
-                let transaction_agent = agent.clone();
-                store
-                    .transaction_with(move |transaction| {
-                        pull_scope_in(
-                            transaction,
-                            &transaction_scope,
-                            &transaction_agent,
-                            after,
-                            expected_revision,
-                            fresh_payload.as_ref(),
-                        )
-                    })
-                    .await
-            }
-            result => result,
-        };
-        if matches!(&result, Err(TranscriptError::SnapshotChanged))
-            && attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES
-        {
-            continue;
-        }
-        return result;
+    let read_scope = scope.clone();
+    let read_agent = agent.clone();
+    let read_store = Arc::clone(&store);
+    let cached = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/transcript_scope",
+        move || {
+            read_store.read_transaction_with_error(|transaction| {
+                pull_scope_cached_in(transaction, &read_scope, &read_agent, after)
+            })
+        },
+    )
+    .await
+    .map_err(|_| TranscriptError::Store)?;
+    match cached {
+        Ok(Some(result)) => return Ok(result),
+        Ok(None) | Err(TranscriptError::ReadOnlyRepair) => {}
+        Err(error) => return Err(error),
     }
-    unreachable!("the transcript snapshot retry loop always returns or continues")
+
+    let transaction_scope = scope;
+    let transaction_agent = agent;
+    let write_store = Arc::clone(&store);
+    store
+        .transaction_with(move |transaction| {
+            pull_scope_in(
+                transaction,
+                &write_store,
+                &transaction_scope,
+                &transaction_agent,
+                after,
+                now,
+            )
+        })
+        .await
 }
 
-fn pull_scope_in(
+/// Read-only pulls stay cheap when the requested revision is already cached.
+/// A missing or stale payload returns `None` so it can be built with the
+/// current revision inside the writer transaction.
+fn pull_scope_cached_in(
     transaction: &Transaction<'_>,
     scope: &str,
     agent: &str,
     after: i64,
-    expected_revision: i64,
-    fresh_payload: Option<&Value>,
-) -> Result<Value, TranscriptError> {
+) -> Result<Option<Value>, TranscriptError> {
     let actor = TranscriptRepository::agent(transaction, agent)?;
     let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
     let revision = transaction
@@ -236,8 +169,6 @@ fn pull_scope_in(
         )
         .optional()?
         .unwrap_or(0);
-    // An unchanged revision is authoritative even when a reasoning view
-    // contains an observation timestamp. Do not turn a read into new deltas.
     let high = transaction.query_row(
         "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
         [scope],
@@ -255,42 +186,70 @@ fn pull_scope_in(
         && hash.as_deref()
             == Some(studio_runtime_store::sha256_hex(revision.to_string().as_bytes()).as_str())
     {
-        return Ok(
-            json!({"workspaceId":studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?,"documents":[],"checkpoint":{"seq":high}}),
-        );
+        return Ok(Some(json!({
+            "workspaceId": studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?,
+            "documents": [],
+            "checkpoint": {"seq": high}
+        })));
     }
-    let cache = transaction.query_row(
+    let cache = transaction
+        .query_row(
             "SELECT payload FROM sync_entities WHERE collection=?1 AND id='@revision' AND hash=?2 AND deleted=0",
             params![scope, studio_runtime_store::sha256_hex(revision.to_string().as_bytes())],
             |r| r.get::<_, Option<String>>(0),
-        ).optional()?.flatten();
-    if cache.is_none() && !deleted && revision != expected_revision {
-        return Err(TranscriptError::SnapshotChanged);
+        )
+        .optional()?
+        .flatten();
+    let Some(raw) = cache else {
+        return Ok(None);
+    };
+    let payload: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("sync_entities", scope))?;
+    if !deleted {
+        validate_cached_payload(scope, &payload)?;
     }
-    let payload = if let Some(raw) = &cache {
-        serde_json::from_str(raw).map_err(|_| invalid_stored("sync_entities", scope))?
-    } else if deleted {
+    Ok(Some(TranscriptRepository::pull_payload(
+        transaction,
+        scope,
+        after.max(0),
+        &payload,
+        deleted,
+        Some(revision),
+    )?))
+}
+
+fn pull_scope_in(
+    transaction: &Transaction<'_>,
+    store: &RuntimeStore,
+    scope: &str,
+    agent: &str,
+    after: i64,
+    now: f64,
+) -> Result<Value, TranscriptError> {
+    if let Some(result) = pull_scope_cached_in(transaction, scope, agent, after)? {
+        return Ok(result);
+    }
+    let actor = TranscriptRepository::agent(transaction, agent)?;
+    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let revision = transaction
+        .query_row(
+            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+            [agent],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let payload = if deleted {
         json!({})
     } else {
-        fresh_payload.cloned().ok_or(TranscriptError::Store)?
+        crate::transcript_runtime::page_in_transaction(
+            store,
+            transaction,
+            agent,
+            &crate::transcript_runtime::PageRequest::default(),
+            now,
+        )?
     };
-    if cache.is_some() && !deleted {
-        let cache_id = format!("{scope}/@revision");
-        let items = payload
-            .get("items")
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-        if payload.get("truncated").and_then(Value::as_bool).is_none() {
-            return Err(invalid_stored("sync_entities", &cache_id));
-        }
-        for item in items {
-            let id = item["id"]
-                .as_str()
-                .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-            studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
-                .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
-        }
-    }
     let response = TranscriptRepository::pull_payload(
         transaction,
         scope,
@@ -299,16 +258,33 @@ fn pull_scope_in(
         deleted,
         Some(revision),
     )?;
-    if cache.is_none() {
-        // Keep the bounded result on the existing revision entity. A lost
-        // response can replay any original cursor without observing time again.
-        let encoded = serde_json::to_string(&payload).map_err(|_| TranscriptError::Store)?;
-        transaction.execute(
-            "UPDATE sync_entities SET payload=?1 WHERE collection=?2 AND id='@revision'",
-            params![encoded, scope],
-        )?;
-    }
+    // Keep the bounded result on the existing revision entity. A lost
+    // response can replay any original cursor without observing time again.
+    let encoded = serde_json::to_string(&payload).map_err(|_| TranscriptError::Store)?;
+    transaction.execute(
+        "UPDATE sync_entities SET payload=?1 WHERE collection=?2 AND id='@revision'",
+        params![encoded, scope],
+    )?;
     Ok(response)
+}
+
+fn validate_cached_payload(scope: &str, payload: &Value) -> Result<(), TranscriptError> {
+    let cache_id = format!("{scope}/@revision");
+    let items = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
+    if payload.get("truncated").and_then(Value::as_bool).is_none() {
+        return Err(invalid_stored("sync_entities", &cache_id));
+    }
+    for item in items {
+        let id = item["id"]
+            .as_str()
+            .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
+        studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
+            .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
+    }
+    Ok(())
 }
 
 pub fn item(store: &RuntimeStore, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
@@ -987,7 +963,10 @@ fn find_lowercase(text: &str, query: &str) -> Option<usize> {
 mod tests {
     use super::{hydrate_input, parent_projection};
     use serde_json::{Value, json};
-    use studio_runtime_store::{TranscriptItem, TranscriptItemRecord};
+    use std::sync::Arc;
+    use studio_runtime_store::{
+        AgentRecord, AgentRepository, RuntimeStore, TranscriptItem, TranscriptItemRecord,
+    };
 
     #[test]
     fn global_excerpt_uses_thirty_words_and_shared_lowercase_limit() {
@@ -1069,5 +1048,105 @@ mod tests {
             assert_eq!(projected["text"], "hydrated input text");
             assert_eq!(projected["role"], "assistant");
         }
+    }
+
+    #[tokio::test]
+    async fn pull_rebuilds_stale_transcript_cache_from_current_revision() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store
+            .transaction(|transaction| {
+                AgentRepository::put(
+                    transaction,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent", "rootId":"agent", "epoch":0, "status":"idle"
+                    }))?,
+                )?;
+                transaction.execute(
+                    "INSERT INTO runtime_items(id,agent,created,record) VALUES ('agent:item','agent',1.0,?1)",
+                    [json!({"id":"agent:item","role":"assistant","text":"before"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed transcript");
+
+        let baseline = super::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
+            .await
+            .expect("initial transcript snapshot");
+        let prior_checkpoint = baseline["checkpoint"]["seq"]
+            .as_i64()
+            .expect("baseline checkpoint");
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='agent:item'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("ordinary transcript update");
+        let pulled = super::pull_scope(
+            Arc::clone(&store),
+            "transcript:agent",
+            "agent",
+            prior_checkpoint,
+        )
+        .await
+        .expect("incremental pull rebuilds stale cache from current revision");
+        let document = pulled["documents"]
+            .as_array()
+            .expect("documents")
+            .iter()
+            .find(|document| document["id"] == "transcript:agent")
+            .expect("transcript delta");
+        let payload: Value = serde_json::from_str(document["payload"].as_str().expect("payload"))
+            .expect("delta JSON");
+        assert_eq!(payload["delta"], true);
+        assert_eq!(payload["items"][0]["id"], "agent:item");
+        assert_eq!(payload["items"][0]["text"], "after");
+        assert!(pulled["checkpoint"]["seq"].as_i64().expect("checkpoint") > prior_checkpoint);
+
+        let sync_state = || {
+            let connection = store.read().expect("reader");
+            let mut statement = connection
+                .prepare("SELECT id,seq,hash,payload,deleted FROM sync_entities WHERE collection='transcript:agent' ORDER BY id")
+                .expect("sync ledger snapshot query");
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(json!([
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?
+                    ]))
+                })
+                .expect("sync ledger rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("sync ledger snapshot");
+            rows
+        };
+        let committed_sync_state = sync_state();
+
+        let replay = super::pull_scope(
+            Arc::clone(&store),
+            "transcript:agent",
+            "agent",
+            prior_checkpoint,
+        )
+        .await
+        .expect("same cursor replays exact incremental response");
+        assert_eq!(replay, pulled);
+        assert_eq!(
+            sync_state(),
+            committed_sync_state,
+            "replay must not add ledger writes"
+        );
     }
 }

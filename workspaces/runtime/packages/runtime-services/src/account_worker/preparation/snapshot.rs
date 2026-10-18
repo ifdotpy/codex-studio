@@ -311,7 +311,6 @@ pub(super) struct FilesystemSnapshot {
 #[derive(Clone)]
 pub(super) struct ThreadFilesystemInputs {
     pub progress_directory: Option<String>,
-    pub python_tool: Option<PathBuf>,
 }
 impl FilesystemSnapshot {
     /// Capture the observations of one admission: the resolved paths of the
@@ -371,30 +370,8 @@ impl FilesystemSnapshot {
         .then(|| progress.to_string_lossy().into_owned());
         Ok(Self {
             resolved_paths,
-            thread_inputs: ThreadFilesystemInputs {
-                progress_directory,
-                python_tool: None,
-            },
+            thread_inputs: ThreadFilesystemInputs { progress_directory },
         })
-    }
-
-    /// [`Self::capture_for_authorization`] plus the thread-snapshot tool paths.
-    pub fn capture_for_authorized_thread_snapshot(
-        store: &RuntimeStore,
-        intent: &TurnIntent,
-    ) -> Result<Self, WorkerError> {
-        let mut snapshot = Self::capture_for_authorization(store, intent)?;
-        snapshot.thread_inputs.python_tool = crate::python_tool::resolve_python_tool();
-        Ok(snapshot)
-    }
-
-    pub fn capture_for_thread_snapshot(
-        store: &RuntimeStore,
-        id: &str,
-    ) -> Result<Self, WorkerError> {
-        let mut snapshot = Self::capture(store, id)?;
-        snapshot.thread_inputs.python_tool = crate::python_tool::resolve_python_tool();
-        Ok(snapshot)
     }
 }
 
@@ -499,16 +476,6 @@ pub(super) fn guidance(
     resources: &PreparationResources,
     record: &Value,
     state_root: &Path,
-    python: Option<PathBuf>,
-) -> Result<thread::GuidanceBundle, WorkerError> {
-    guidance_with_python(resources, record, state_root, python)
-}
-
-fn guidance_with_python(
-    resources: &PreparationResources,
-    record: &Value,
-    state_root: &Path,
-    python: Option<PathBuf>,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
     let lead = flag(record, "isLead")?;
     let name = if lead {
@@ -589,13 +556,7 @@ fn guidance_with_python(
                     .with_file_name("PROGRESS.layout.json")
                     .to_string_lossy(),
             );
-        let layout_guidance = progress_layout_guidance(
-            python,
-            &resources
-                .server_source_root
-                .join("codex_progress_layout.py"),
-            &path,
-        );
+        let layout_guidance = progress_layout_guidance(std::env::current_exe().ok(), &path);
         progress.replace("{progress_layout_check}", &layout_guidance)
     } else {
         String::new()
@@ -608,22 +569,14 @@ fn guidance_with_python(
     })
 }
 
-fn progress_layout_guidance(
-    python: Option<PathBuf>,
-    script: &Path,
-    progress_file: &Path,
-) -> String {
-    python.map_or_else(
-            String::new,
-            |python| {
-                format!(
-                    "After editing PROGRESS.md, run {} {} {} --wait 3 once to check which top-level lines or list items are visible. Trim only when important lines are hidden. Exit 0 means the current revision is visible, including clipped content (or is empty); 1 means unsupported content or a file-read error; 2 means no current measurement exists. The hint describes the least visible current client. Exact revisions and recent clients remain separate. Do not loop or wake another agent. ",
-                    shell_quote(&python.to_string_lossy()),
-                    shell_quote(&script.to_string_lossy()),
-                    shell_quote(&progress_file.to_string_lossy()),
-                )
-            },
+fn progress_layout_guidance(server: Option<PathBuf>, progress_file: &Path) -> String {
+    server.map_or_else(String::new, |server| {
+        format!(
+            "After editing PROGRESS.md, run {} progress-layout {} --wait 3 once to check which top-level lines or list items are visible. Trim only when important lines are hidden. Exit 0 means the current revision is visible, including clipped content (or is empty); 1 means unsupported content or a file-read error; 2 means no current measurement exists. The hint describes the least visible current client. Exact revisions and recent clients remain separate. Do not loop or wake another agent. ",
+            shell_quote(&server.to_string_lossy()),
+            shell_quote(&progress_file.to_string_lossy()),
         )
+    })
 }
 pub(super) fn native_thread_blocked(record: &Value) -> bool {
     let Some(thread) = record["threadId"].as_str().filter(|s| !s.is_empty()) else {
@@ -814,12 +767,7 @@ pub(super) fn thread_snapshot(
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
-        guidance: guidance(
-            resources,
-            record,
-            state_root,
-            filesystem.python_tool.clone(),
-        )?,
+        guidance: guidance(resources, record, state_root)?,
         catalog: thread::CatalogSnapshot {
             source,
             definitions,
@@ -847,18 +795,12 @@ pub(super) fn submission_snapshot(
     record: &Value,
     intent: &TurnIntent,
     state_root: &Path,
-    filesystem: &ThreadFilesystemInputs,
 ) -> Result<(turn::PreparationSnapshot, Vec<turn::Event>), WorkerError> {
     let root_id = record["rootId"]
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
-    let guidance = guidance(
-        resources,
-        record,
-        state_root,
-        filesystem.python_tool.clone(),
-    )?;
+    let guidance = guidance(resources, record, state_root)?;
     let plans = records(tx, "runtime_plans")?;
     let plan=plans.get(root_id).map(|s|serde_json::from_str::<Value>(s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();
@@ -1136,34 +1078,25 @@ mod resource_tests {
     }
 
     #[test]
-    fn guidance_includes_the_optional_python_layout_tool() {
-        let python = crate::agents_create::prepared_python(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
+    fn guidance_points_at_the_progress_layout_command() {
         let resources =
             PreparationResources::bundled(String::new(), ModelCatalogService::new(None))
                 .expect("runtime resources");
-        let bundle = guidance_with_python(
+        let bundle = guidance(
             &resources,
             &json!({"id":"lead", "isLead":true}),
             Path::new("/state"),
-            Some(python.clone()),
         )
         .expect("progress guidance");
-        assert!(
-            bundle
-                .progress
-                .contains(&shell_quote(&python.to_string_lossy()))
+        let server = shell_quote(
+            &std::env::current_exe()
+                .expect("test executable path")
+                .to_string_lossy(),
         );
-        let without_python = guidance_with_python(
-            &resources,
-            &json!({"id":"lead", "isLead":true}),
-            Path::new("/state"),
-            None,
-        )
-        .expect("progress guidance without Python");
-        assert!(!without_python.progress.contains("--wait 3"));
-        assert!(without_python.progress.contains("Do not repeat rewrites"));
+        assert!(bundle.progress.contains(&format!(
+            "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
+        )));
+        assert!(!bundle.progress.contains(".py"));
     }
 
     #[test]
@@ -1175,11 +1108,10 @@ mod resource_tests {
         let reference =
             resources.role_guidance[Path::new("codex-workspace/references/layr.md")].clone();
         for lead in [true, false] {
-            let vm = guidance_with_python(
+            let vm = guidance(
                 &resources,
                 &json!({"id":"agent", "isLead":lead, "executionMode":"vm"}),
                 Path::new("/state"),
-                None,
             )
             .expect("layr guidance");
             assert!(
@@ -1195,22 +1127,20 @@ mod resource_tests {
                 "Source: {VM_GUEST_SKILLS_ROOT}/{name}/SKILL.md\nShared tool guidance: \
                  {VM_GUEST_SKILLS_ROOT}/codex-workspace/SKILL.md\n"
             )));
-            let native = guidance_with_python(
+            let native = guidance(
                 &resources,
                 &json!({"id":"agent", "isLead":lead}),
                 Path::new("/state"),
-                None,
             )
             .expect("native guidance");
             assert!(!native.role.contains("# layr by task"));
             assert!(!native.role.contains(VM_GUEST_SKILLS_ROOT));
         }
         resources.role_guidance.remove(Path::new("layr/SKILL.md"));
-        let refused = guidance_with_python(
+        let refused = guidance(
             &resources,
             &json!({"id":"agent", "isLead":true, "executionMode":"vm"}),
             Path::new("/state"),
-            None,
         );
         assert!(matches!(
             refused,

@@ -124,40 +124,10 @@ class CostsTests(unittest.TestCase):
                 "Duration::from_secs(900)",
                 900,
             ),
-            "COST_SCANNER_BUILD_TIMEOUT_SECONDS": (
-                COST_SCANNER_BUILD_TIMEOUT_SECONDS,
-                "Duration::from_secs(120)",
-                120,
-            ),
-            "COST_SCAN_OUTPUT_LIMIT_BYTES": (
-                COST_SCAN_OUTPUT_LIMIT_BYTES,
-                "32 * 1024 * 1024",
-                32 * 1024 * 1024,
-            ),
-            "COST_SCANNER_BUILD_STDERR_LIMIT_BYTES": (
-                None,
-                "64 * 1024",
-                64 * 1024,
-            ),
-            "COST_COMMAND_TERMINATION_GRACE_SECONDS": (
-                5,
-                "Duration::from_secs(5)",
-                5,
-            ),
-            "COST_COMMAND_TERMINATION_HEADROOM_SECONDS": (
-                None,
-                "Duration::from_secs(2)",
-                2,
-            ),
             "COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS": (
                 None,
                 "50",
                 50,
-            ),
-            "COST_COMMAND_POLL_INTERVAL_MILLISECONDS": (
-                None,
-                "10",
-                10,
             ),
         }
         for name, (python_value, rust_value, expected) in bounds.items():
