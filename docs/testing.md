@@ -35,6 +35,9 @@ warm-checkout prerequisite and its cold build is outside the 30-second target.
 The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
 passed in 23.759 seconds; cold setup was excluded.
 The short tier does not build the browser or contact a model provider.
+Route-manifest extraction uses the ordinary Rust test profile and the same
+`print_operation_manifest` witness as workspace tests; it does not compile a
+second optimized HTTP test binary solely to print route metadata.
 
 `just test-comprehensive` preserves the previous broad local recipe: default
 server suites, server bridge, workspace Rust nextest, web type and unit checks,

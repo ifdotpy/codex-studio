@@ -1077,7 +1077,6 @@ def rust_operation_manifest() -> dict[tuple[str, str], dict[str, Any]]:
             "cargo",
             "test",
             "--locked",
-            "--release",
             "-p",
             "studio-runtime-http",
             "--lib",
