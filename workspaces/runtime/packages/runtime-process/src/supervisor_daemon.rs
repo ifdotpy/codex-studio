@@ -33,6 +33,8 @@ use studio_runtime_store::supervisor_journal::{
     JournalError, StoredHandle, SupervisorJournal, launch_signature,
 };
 
+use crate::shared_values_generated::{SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY};
+
 const MAX_REQUEST_BYTES: u64 = crate::transport::MAX_FRAME_BYTES as u64;
 const MAX_CONNECTIONS: usize = 512;
 /// Pause after an accept error before the listener tries again.
@@ -73,6 +75,8 @@ pub(super) fn now() -> Result<f64> {
 struct Supervisor {
     root: PathBuf,
     journal: Arc<SupervisorJournal>,
+    /// The journal's random identity; part of every open receipt's journal epoch.
+    journal_id: String,
     children: Mutex<BTreeMap<String, Arc<ChildSlot>>>,
     active_children: AtomicUsize,
     ownership: Mutex<Ownership>,
@@ -462,9 +466,10 @@ impl Supervisor {
 
     fn open_result(&self, handle: &str, child: &OwnedChild, resumed: bool) -> Result<Value> {
         let row = self.saved(handle)?;
-        Ok(
-            json!({"resumed":resumed,"initResult":row.init_result,"acknowledged":row.snapshot.acknowledged(),"sequence":row.snapshot.sequence(),"generation":row.snapshot.generation(),"returnCode":child.code()?,"pid":child.pid}),
-        )
+        let mut result = json!({"resumed":resumed,"initResult":row.init_result,"acknowledged":row.snapshot.acknowledged(),"sequence":row.snapshot.sequence(),"generation":row.snapshot.generation(),"returnCode":child.code()?,"pid":child.pid});
+        result[SUPERVISOR_JOURNAL_EPOCH_FIELD] =
+            json!(self.journal.epoch(handle, &self.journal_id)?);
+        Ok(result)
     }
     fn child_action(&self, command: Command) -> Result<Value> {
         let handle = command
@@ -1101,6 +1106,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     }
     free_space(&root, HANDLE_LIMIT + 16 * 1024 * 1024)?;
     let journal = Arc::new(SupervisorJournal::open(&root)?);
+    let journal_id = journal.ensure_journal_id(SUPERVISOR_JOURNAL_ID_KEY)?;
     fs::set_permissions(
         root.join("supervisor.sqlite3"),
         fs::Permissions::from_mode(0o600),
@@ -1108,6 +1114,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     let supervisor = Arc::new(Supervisor {
         root: root.clone(),
         journal,
+        journal_id,
         children: Mutex::new(BTreeMap::new()),
         active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),

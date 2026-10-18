@@ -4,9 +4,14 @@ use std::sync::mpsc;
 
 fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
     let root = tempfile::tempdir().unwrap();
+    let journal = Arc::new(SupervisorJournal::open(root.path()).unwrap());
+    let journal_id = journal
+        .ensure_journal_id(SUPERVISOR_JOURNAL_ID_KEY)
+        .unwrap();
     let supervisor = Arc::new(Supervisor {
         root: root.path().to_owned(),
-        journal: Arc::new(SupervisorJournal::open(root.path()).unwrap()),
+        journal,
+        journal_id,
         children: Mutex::new(BTreeMap::new()),
         active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
@@ -491,6 +496,13 @@ fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
     };
     assert_eq!(exit_sequence, 71);
 
+    // The open receipt names this handle row of this journal.
+    assert!(
+        opened[SUPERVISOR_JOURNAL_EPOCH_FIELD]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{}:", supervisor.journal_id))
+    );
     let generation = crate::Generation(opened["generation"].as_u64().unwrap());
     let first = supervisor
         .next_batch_ready(&crate::NextBatchRequest {

@@ -11,6 +11,7 @@ from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
 from codex_private_paths import ensure_private_dir
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -26,7 +27,10 @@ import time
 import uuid
 
 from codex_open_file_limit import raise_open_file_limit
-from codex_shared_values import MAX_SUPERVISOR_FRAME_BYTES, PROCESS_SUPERVISOR_PROTOCOL_VERSION
+from codex_shared_values import (
+    MAX_SUPERVISOR_FRAME_BYTES, PROCESS_SUPERVISOR_PROTOCOL_VERSION,
+    SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY,
+)
 
 PROTOCOL = PROCESS_SUPERVISOR_PROTOCOL_VERSION
 MAX_STDERR_EVENT_BYTES = 256 * 1024
@@ -103,6 +107,24 @@ def _recv(sock, stream):
             raise RuntimeError("Supervisor sent an invalid frame") from error
 
 
+def journal_epoch(journal_id, created):
+    """Name one handle row of one journal; return None when either part is unknown.
+
+    A handle's event sequence starts again in a new journal and in a recreated
+    handle row. The Rust supervisor journal builds the same value:
+    `<journal id>:<floor(created seconds * 1_000_000)>`.
+    """
+    if (not isinstance(journal_id, str) or not journal_id or type(created) not in (int, float)
+            or not math.isfinite(created)):
+        return None
+    return f"{journal_id}:{math.floor(created * 1_000_000)}"
+
+
+def _journal_id(db):
+    row = db.execute("SELECT value FROM supervisor_state WHERE key=?", (SUPERVISOR_JOURNAL_ID_KEY,)).fetchone()
+    return row[0] if row else None
+
+
 class Journal:
     """Small per-state journal; FULL synchronous makes accepted writes durable."""
 
@@ -176,6 +198,9 @@ class Journal:
                 db.execute("ALTER TABLE operations ADD COLUMN response_sequence INTEGER")
             db.execute("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations("
                        "handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")
+            # Created once per journal. Event sequences restart in another journal.
+            db.execute("INSERT OR IGNORE INTO supervisor_state VALUES (?,?)",
+                       (SUPERVISOR_JOURNAL_ID_KEY, uuid.uuid4().hex))
 
     @contextmanager
     def db(self):
@@ -769,10 +794,12 @@ class Supervisor:
         if request.get("action") == "open":
             child, resumed = self.open_handle(handle, request["command"], request["env"], request["cwd"])
             with self.journal.db() as db:
-                row = db.execute("SELECT init_result,acknowledged,sequence,generation FROM handles WHERE id=?",
+                row = db.execute("SELECT init_result,acknowledged,sequence,generation,created FROM handles WHERE id=?",
                                  (handle,)).fetchone()
+                epoch = journal_epoch(_journal_id(db), row[4])
             return {"resumed": resumed, "initResult": json.loads(row[0]) if row[0] else None,
                     "acknowledged": row[1], "sequence": row[2], "generation": row[3],
+                    SUPERVISOR_JOURNAL_EPOCH_FIELD: epoch,
                     "returnCode": child.process.poll(), "pid": child.process.pid}
         child = self.children.get(handle)
         if child is None:
@@ -1262,11 +1289,20 @@ def supervisor_launch_snapshot(root, handle):
         columns = {item[1] for item in db.execute('PRAGMA table_info(child_identities)')}
         job = ('c.job_name,c.job_kill_on_close' if {'job_name', 'job_kill_on_close'} <= columns
                else "'' AS job_name,0 AS job_kill_on_close")
+        # A journal epoch needs the handle creation time and the journal identity;
+        # an older supervisor schema can lack either, and then the epoch is unknown.
+        handle_columns = {item[1] for item in db.execute('PRAGMA table_info(handles)')}
+        created = 'h.created' if 'created' in handle_columns else 'NULL AS created'
         row = db.execute('SELECT h.signature,h.pid,h.generation,h.closed_at,h.init_result,'
-                         'h.sequence,h.acknowledged,c.pid AS identity_pid,c.start_time,'
+                         'h.sequence,h.acknowledged,' + created + ',c.pid AS identity_pid,c.start_time,'
                          + job + ' FROM handles h LEFT JOIN child_identities c ON c.handle=h.id '
                          'WHERE h.id=?', (handle,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        saved = dict(row)
+        has_state = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supervisor_state'").fetchone()
+        saved['journal_epoch'] = journal_epoch(_journal_id(db) if has_state else None, saved.pop('created'))
+        return saved
     finally:
         db.close()
 
@@ -1350,7 +1386,8 @@ def retained_open_receipt(proxy, expected, command, env, cwd):
         if not isinstance(initialized, dict):
             raise RuntimeError('The retained native initialization receipt is unavailable; native outcome remains unknown')
         return {'resumed': True, 'pid': saved['pid'], 'initResult': initialized, 'generation': saved['generation'],
-                'acknowledged': saved['acknowledged'], 'sequence': saved['sequence']}
+                'acknowledged': saved['acknowledged'], 'sequence': saved['sequence'],
+                SUPERVISOR_JOURNAL_EPOCH_FIELD: saved['journal_epoch']}
     if (saved is None or any(saved[key] != expected.get(key) for key in keys)
             or saved['closed_at'] is not None or status.get('pid') != saved['pid']
             or status.get('returnCode') is not None
@@ -1365,7 +1402,8 @@ def retained_open_receipt(proxy, expected, command, env, cwd):
     if not isinstance(initialized, dict):
         raise RuntimeError('The retained native initialization receipt is unavailable; native outcome remains unknown')
     return {'resumed': True, 'pid': saved['pid'], 'initResult': initialized, 'generation': saved['generation'],
-            'acknowledged': saved['acknowledged'], 'sequence': saved['sequence']}
+            'acknowledged': saved['acknowledged'], 'sequence': saved['sequence'],
+            SUPERVISOR_JOURNAL_EPOCH_FIELD: saved['journal_epoch']}
 
 
 def process_launch_environment(pid):
@@ -1527,6 +1565,9 @@ class ProcessProxy:
         self.read_cursor = self.cursor
         self.ack_pending = set()
         self.sequence = opened["sequence"]
+        # None when the supervisor predates journal epochs.
+        epoch = opened.get(SUPERVISOR_JOURNAL_EPOCH_FIELD)
+        self.journal_epoch = epoch if isinstance(epoch, str) and epoch else None
         self.remote_to_local = {}
 
     def call(self, action, **values):

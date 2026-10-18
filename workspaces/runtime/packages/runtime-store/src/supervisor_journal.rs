@@ -195,6 +195,34 @@ impl SupervisorJournal {
             })
             .collect()
     }
+    /// Create this journal's random identity once and return it. Event sequences
+    /// start again in another journal, so the identity is part of each handle epoch.
+    pub fn ensure_journal_id(&self, key: &str) -> Result<String> {
+        let db = self.lock()?;
+        db.execute(
+            "INSERT OR IGNORE INTO supervisor_state VALUES (?,?)",
+            params![key, uuid::Uuid::new_v4().simple().to_string()],
+        )?;
+        Ok(db.query_row(
+            "SELECT value FROM supervisor_state WHERE key=?",
+            [key],
+            |row| row.get(0),
+        )?)
+    }
+    /// Name one handle row of this journal: `<journal id>:<floor(created seconds * 1_000_000)>`,
+    /// the same value as `codex_process_supervisor.journal_epoch` in the Python supervisor.
+    /// A recreated handle row gets a new creation time and so a new epoch.
+    pub fn epoch(&self, handle: &str, journal_id: &str) -> Result<Option<String>> {
+        let db = self.lock()?;
+        let created: Option<f64> = db
+            .query_row("SELECT created FROM handles WHERE id=?", [handle], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(created
+            .filter(|created| created.is_finite())
+            .map(|created| format!("{journal_id}:{}", (created * 1_000_000.0).floor() as i64)))
+    }
     /// Reserve before spawn. A crash at this point leaves an orphan refusal, never a duplicate child.
     pub fn reserve(&self, handle: &str, signature: &str, now: f64) -> Result<()> {
         self.transaction(|tx, _buffered| {
@@ -578,6 +606,37 @@ fn migrate(db: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_epoch_names_one_handle_row_of_one_journal() {
+        let root = tempfile::tempdir().expect("temporary supervisor journal root");
+        let journal = SupervisorJournal::open(root.path()).expect("open journal");
+        let id = journal.ensure_journal_id("journalId").expect("journal id");
+        assert_eq!(journal.ensure_journal_id("journalId").expect("same id"), id);
+        assert_eq!(journal.epoch("account:a", &id).expect("missing row"), None);
+        journal
+            .reserve("account:a", "signature", 1792051725.8936651)
+            .expect("reserve handle");
+        // codex_process_supervisor.journal_epoch builds the same literal.
+        assert_eq!(
+            journal.epoch("account:a", "journal").expect("epoch"),
+            Some("journal:1792051725893665".to_owned())
+        );
+        // A repeated reservation keeps the row and its epoch.
+        journal
+            .reserve("account:a", "signature", 5.0)
+            .expect("reserve again");
+        assert_eq!(
+            journal.epoch("account:a", "journal").expect("epoch"),
+            Some("journal:1792051725893665".to_owned())
+        );
+        drop(journal);
+        let reopened = SupervisorJournal::open(root.path()).expect("reopen journal");
+        assert_eq!(
+            reopened.ensure_journal_id("journalId").expect("kept id"),
+            id
+        );
+    }
 
     #[test]
     fn v2_batch_rejects_an_oversized_first_event_without_advancing_ack() {

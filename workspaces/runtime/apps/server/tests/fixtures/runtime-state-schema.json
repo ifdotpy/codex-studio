@@ -1386,7 +1386,7 @@
       {
         "create_order": 77,
         "name": "runtime_supervisor_cursor",
-        "sql": "CREATE TABLE runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)",
+        "sql": "CREATE TABLE runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL, epoch TEXT)",
         "table": "runtime_supervisor_cursor",
         "type": "table"
       },

@@ -133,8 +133,8 @@ def connect_agent(runtime, agent):
             supervisor_commit=lambda message, sequence: runtime.commit_supervisor_event(
                 handle, message, sequence, account_key, connection),
             supervisor_event_applied=lambda sequence: runtime.supervisor_event_applied(handle, sequence),
-            supervisor_cursor_rebase=lambda sequence, acknowledged: runtime.rebase_supervisor_cursor(
-                handle, sequence, acknowledged),
+            supervisor_cursor_attach=lambda epoch, sequence, acknowledged: runtime.attach_supervisor_cursor(
+                handle, epoch, sequence, acknowledged),
             supervisor_reattached=lambda resumed: runtime.supervisor_reattached(
                 account_key, connection, resumed, agent_id=agent_id),
             supervisor_monitor_bindings=lambda proxy: runtime.supervisor_monitor_bindings(account_key, connection, proxy),
