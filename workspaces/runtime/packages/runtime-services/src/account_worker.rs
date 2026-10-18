@@ -1286,9 +1286,14 @@ impl Worker {
             }
             ServeSignal::SessionStatusChanged(false) => return Ok(false),
             ServeSignal::SessionStatusChanged(true) => {
-                self.idle_initialized = false;
-                self.idle_clocks = idle_unload::IdleClocks::default();
-                self.idle_deadline = None;
+                if idle_unload::session_status_invalidates_snapshot(
+                    &self.session.status.borrow(),
+                    self.generation,
+                ) {
+                    self.idle_initialized = false;
+                    self.idle_clocks = idle_unload::IdleClocks::default();
+                    self.idle_deadline = None;
+                }
             }
             ServeSignal::IdleSweep => {
                 if self.idle_initialized {

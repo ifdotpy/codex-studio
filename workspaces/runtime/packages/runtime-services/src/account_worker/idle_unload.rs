@@ -16,6 +16,15 @@ use std::time::Duration;
 use studio_runtime_store::OrchestrationSettingsRepository;
 use tokio::time::Instant;
 
+/// Journal ACK progress also publishes session status. It does not invalidate
+/// the loaded-thread inventory or restart its idle clocks.
+pub(super) fn session_status_invalidates_snapshot(
+    status: &SessionStatus,
+    generation: Generation,
+) -> bool {
+    status.generation != generation || status.initialization != InitializationStatus::Ready
+}
+
 /// Deadline of one provider request of the sweep.
 const IDLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Retry delay after a provider snapshot or idle request has an unknown result.
@@ -807,6 +816,40 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use studio_runtime_process::{
+        EventCursor,
+        provider_seam::{AttachmentInfo, AttachmentStatus},
+    };
+
+    #[test]
+    fn acknowledged_cursor_keeps_the_loaded_snapshot_valid() {
+        let generation = Generation(7);
+        let handle = ProviderHandle::for_account("default");
+        let mut status = SessionStatus {
+            generation,
+            initialization: InitializationStatus::Ready,
+            attachment: AttachmentStatus {
+                handle: handle.clone(),
+                open_attempted: true,
+                initialization: InitializationStatus::Ready,
+                info: Some(AttachmentInfo {
+                    handle,
+                    generation,
+                    pid: 1,
+                    acknowledged: EventCursor(0),
+                    resumed: false,
+                }),
+            },
+        };
+        assert!(!session_status_invalidates_snapshot(&status, generation));
+        status.attachment.info.as_mut().unwrap().acknowledged = EventCursor(1);
+        assert!(!session_status_invalidates_snapshot(&status, generation));
+        status.initialization = InitializationStatus::AwaitingReply;
+        assert!(session_status_invalidates_snapshot(&status, generation));
+        status.initialization = InitializationStatus::Ready;
+        status.generation = Generation(generation.0 + 1);
+        assert!(session_status_invalidates_snapshot(&status, generation));
+    }
 
     const DELAY: Duration = Duration::from_secs(15 * 60);
 
