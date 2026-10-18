@@ -242,7 +242,10 @@ fn daybreak_program(
     resources: &PreparationResources,
     snapshot: &thread::Snapshot,
 ) -> Result<Option<String>, WorkerError> {
-    if snapshot.account.provider == studio_runtime_providers::ProviderKind::Claude {
+    if !crate::provider_adapter::adapter(snapshot.account.provider)
+        .capabilities()
+        .daybreak
+    {
         if snapshot.settings.daybreak_enabled == thread::Stored::Present(Some(true)) {
             return Err(refusal("daybreak/provider-unsupported".into()));
         }
@@ -783,7 +786,7 @@ pub(crate) async fn prepare_monitor_command(
     validate_monitor_actor(&observed, epoch)?;
     let image_temp = if observed["imageWorkspace"] == true
         && observed["imageWorkspaceReady"] != true
-        && observed["provider"] != "claude"
+        && writable_sandbox_roots(&observed)
     {
         let store = Arc::clone(&store);
         let agent_id = agent_id.to_owned();
@@ -872,6 +875,15 @@ fn apply_vm_reviewer_permissions(params: &mut serde_json::Map<String, Value>, vm
     }
 }
 
+/// The agent's provider can give an unready image workspace a writable temp root.
+fn writable_sandbox_roots(record: &Value) -> bool {
+    studio_runtime_providers::ProviderKind::of_record(record).is_ok_and(|kind| {
+        crate::provider_adapter::adapter(kind)
+            .capabilities()
+            .writable_sandbox_roots
+    })
+}
+
 fn monitor_command_settings(
     record: &Value,
     cwd: &str,
@@ -882,7 +894,7 @@ fn monitor_command_settings(
     image_temp: Option<&str>,
 ) -> Result<Value, WorkerError> {
     let permissions = if record["imageWorkspace"] == true && record["imageWorkspaceReady"] != true {
-        if record["provider"] == "claude" {
+        if !writable_sandbox_roots(record) {
             json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
         } else {
             let temp = image_temp

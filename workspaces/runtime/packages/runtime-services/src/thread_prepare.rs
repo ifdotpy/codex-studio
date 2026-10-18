@@ -20,6 +20,7 @@
 //! cannot publish a loaded thread. Native error/read-fallback handling and durable
 //! journal settlement remain the account worker's responsibility.
 
+use crate::provider_adapter::adapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use studio_runtime_providers::ProviderKind;
@@ -304,7 +305,9 @@ pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
     let mut result = Vec::new();
     for mut tool in s.catalog.definitions.clone() {
         let name = tool.name.as_str();
-        if (s.account.provider == ProviderKind::Claude
+        if (!adapter(s.account.provider)
+            .capabilities()
+            .voice_and_review_tools
             && matches!(name, "orchestration_speak" | "orchestration_review"))
             || (!s.settings.is_lead
                 && matches!(name, "orchestration_speak" | "orchestration_servers"))
@@ -502,10 +505,8 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         }
         None => {}
     }
-    if s.account.provider == ProviderKind::Claude {
-        instructions.push_str("\nThis session uses Claude Code and its native tools. The native Agent tool is off. Studio managed agents replace it, and native agent type lists do not apply. Use Studio command monitors for long-running commands that need output, input, or cancellation. Use Bash for other commands. Studio voice is unavailable. Do not tell the user that an MCP server or connector needs authentication unless the user asks for work that needs it.\n");
-        params.insert("claude".into(), json!(s.settings.claude_options));
-    }
+    let provider = adapter(s.account.provider);
+    provider.shape_thread_params(s, &mut params, &mut instructions);
     let mut context_versions = Map::new();
     let mut artifacts = Vec::new();
     for (key, text) in [
@@ -524,7 +525,7 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         }
     }
     params.insert("developerInstructions".into(), json!(instructions));
-    let tool_catalog = if method == Method::Start || s.account.provider == ProviderKind::Claude {
+    let tool_catalog = if method == Method::Start || provider.capabilities().tools_on_every_turn {
         params.insert("dynamicTools".into(), json!(tools));
         Some(tools)
     } else {
@@ -651,21 +652,11 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
         );
         params.insert("sandboxPolicy".into(), sandbox);
     }
-    if s.account.provider == ProviderKind::Claude {
+    let provider = adapter(s.account.provider);
+    if provider.capabilities().tools_on_every_turn {
         params.insert("dynamicTools".into(), json!(tool_definitions(s)?));
-        if let [event] = input.events.as_slice()
-            && event.kind == "user"
-            && !input.has_assets
-            && !event.text.contains('\n')
-        {
-            let command = crate::event_write::python_strip(&event.text);
-            if command.starts_with(['/', '$']) {
-                params.insert("claudeCommand".into(), json!(command));
-            }
-        }
-    } else {
-        params.insert("cyberAccessProgram".into(), json!("standard"));
     }
+    provider.shape_turn_params(input, &mut params);
     Ok(params)
 }
 

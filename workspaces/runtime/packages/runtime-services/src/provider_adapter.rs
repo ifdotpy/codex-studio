@@ -10,8 +10,9 @@ use crate::account_driver::{AuthMetadata, AuthProfile, AuthStatus, account_serve
 use crate::account_worker::WorkerError;
 use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
 use crate::continuation_runtime::classify_usage_failure;
+use crate::thread_prepare::{Snapshot, TurnInput};
 use crate::usage_resume::Cause as UsageCause;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     env,
@@ -45,8 +46,36 @@ pub struct ProviderLaunch {
     pub executable: Option<String>,
 }
 
+/// Closed, typed provider capabilities that preparation reads instead of
+/// testing for a provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capabilities {
+    /// `dynamicTools` is resent on every resume and turn, not only on thread start.
+    pub tools_on_every_turn: bool,
+    /// `orchestration_speak` and `orchestration_review` are offered.
+    pub voice_and_review_tools: bool,
+    /// Daybreak cyber-access grants apply.
+    pub daybreak: bool,
+    /// An unready image workspace gets a writable temporary sandbox root
+    /// (otherwise it runs read-only).
+    pub writable_sandbox_roots: bool,
+}
+
 pub trait ProviderAdapter: Send + Sync + 'static {
     fn kind(&self) -> ProviderKind;
+
+    fn capabilities(&self) -> Capabilities;
+
+    /// Provider-specific parts of `thread/start` and `thread/resume` params.
+    fn shape_thread_params(
+        &self,
+        s: &Snapshot,
+        params: &mut Map<String, Value>,
+        instructions: &mut String,
+    );
+
+    /// Provider-specific parts of `turn/start` params.
+    fn shape_turn_params(&self, input: &TurnInput, params: &mut Map<String, Value>);
 
     /// Launch spec for the retained session of one host account.
     fn host_launch(&self, input: HostLaunch<'_>) -> Result<ProviderLaunch, WorkerError>;
@@ -112,6 +141,8 @@ pub fn adapter(kind: ProviderKind) -> &'static dyn ProviderAdapter {
 const CODEX_APP_SERVER_ARGS: [&str; 3] = ["app-server", "--listen", "stdio://"];
 /// Codex config override that keeps credentials in the account's own home.
 const CODEX_FILE_CREDENTIALS: [&str; 2] = ["-c", "cli_auth_credentials_store=\"file\""];
+/// Developer instructions added to every Claude session.
+const CLAUDE_SESSION_INSTRUCTIONS: &str = "\nThis session uses Claude Code and its native tools. The native Agent tool is off. Studio managed agents replace it, and native agent type lists do not apply. Use Studio command monitors for long-running commands that need output, input, or cancellation. Use Bash for other commands. Studio voice is unavailable. Do not tell the user that an MCP server or connector needs authentication unless the user asks for work that needs it.\n";
 /// JSON-RPC error the Claude bridge returns for a request on a busy thread.
 const CLAUDE_BUSY_CODE: i64 = -32000;
 const CLAUDE_BUSY_MESSAGE: &str = "Claude is still working";
@@ -125,6 +156,21 @@ const VM_CLAUDE_BRIDGE: &str = "/opt/codex-studio/claude_bridge/bridge.mjs";
 impl ProviderAdapter for CodexAdapter {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Codex
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            tools_on_every_turn: false,
+            voice_and_review_tools: true,
+            daybreak: true,
+            writable_sandbox_roots: true,
+        }
+    }
+
+    fn shape_thread_params(&self, _: &Snapshot, _: &mut Map<String, Value>, _: &mut String) {}
+
+    fn shape_turn_params(&self, _input: &TurnInput, params: &mut Map<String, Value>) {
+        params.insert("cyberAccessProgram".into(), json!("standard"));
     }
 
     fn host_launch(&self, input: HostLaunch<'_>) -> Result<ProviderLaunch, WorkerError> {
@@ -198,6 +244,39 @@ impl ProviderAdapter for CodexAdapter {
 impl ProviderAdapter for ClaudeAdapter {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Claude
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            tools_on_every_turn: true,
+            voice_and_review_tools: false,
+            daybreak: false,
+            writable_sandbox_roots: false,
+        }
+    }
+
+    fn shape_thread_params(
+        &self,
+        s: &Snapshot,
+        params: &mut Map<String, Value>,
+        instructions: &mut String,
+    ) {
+        instructions.push_str(CLAUDE_SESSION_INSTRUCTIONS);
+        params.insert("claude".into(), json!(s.settings.claude_options));
+    }
+
+    /// A single-line `/` or `$` user message is passed to Claude Code as a command.
+    fn shape_turn_params(&self, input: &TurnInput, params: &mut Map<String, Value>) {
+        if let [event] = input.events.as_slice()
+            && event.kind == "user"
+            && !input.has_assets
+            && !event.text.contains('\n')
+        {
+            let command = crate::event_write::python_strip(&event.text);
+            if command.starts_with(['/', '$']) {
+                params.insert("claudeCommand".into(), json!(command));
+            }
+        }
     }
 
     fn host_launch(&self, input: HostLaunch<'_>) -> Result<ProviderLaunch, WorkerError> {
