@@ -119,13 +119,7 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post({"id": self.ids["rewrite"]})
         self.assertEqual(response.status, 400, response.body)
         self.assertEqual(
-            (
-                self.snapshot(),
-                no_write_snapshot(
-                    self.backend.state, baseline_snapshot=before[1]
-                ),
-            ),
-            before,
+            (self.snapshot(), no_write_snapshot(self.backend.state)), before
         )
 
     def test_validation_and_missing_agent(self):
