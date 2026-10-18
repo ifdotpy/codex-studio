@@ -89,6 +89,28 @@ pub(super) fn delete_receipt(
     )?;
     Ok(())
 }
+/// Account operations are `account:{account}:…`, so each of their receipts
+/// starts with `receipt_id("account", "")`. The exclusive end replaces that
+/// prefix's final `:` with the next byte, `;`, so one range covers all accounts.
+fn account_operation_receipt_range() -> (String, String) {
+    let prefix = receipt_id("account", "");
+    let end = format!("{};", &prefix[..prefix.len() - 1]);
+    (prefix, end)
+}
+/// Unresolved thread start or resume submissions for `agent`, in any account.
+/// The receipt-ID range is an index search; the other predicates are unchanged.
+const PENDING_THREAD_START_SQL: &str = "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id>=?2 AND r.id<?3 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved'))";
+fn has_pending_thread_start(
+    connection: &rusqlite::Connection,
+    agent: &str,
+) -> rusqlite::Result<bool> {
+    let (start, end) = account_operation_receipt_range();
+    connection.query_row(
+        PENDING_THREAD_START_SQL,
+        params![agent, start, end],
+        |row| row.get(0),
+    )
+}
 pub(super) fn record(request: &RecoveredRequest) -> Value {
     json!({"id":request.ticket.id,"generation":request.ticket.generation,"method":request.ticket.method.as_str(),"operation":request.operation_id.0,"thread":request.thread_id,"lightweight":request.lightweight,"deadline":request.deadline_ms,"unknown":request.unknown,"remoteId":request.remote_id})
 }
@@ -461,97 +483,103 @@ pub(super) async fn claim(
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| WorkerError::TaskFailed)?;
     let attempt = studio_runtime_store::sha256_hex(&bytes);
-    scheduler::lifecycle_transaction_with(&store, move |tx| -> Result<Option<TurnIntent>, WorkerError> {
-        let record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?;
-        if record.as_ref().is_none_or(|a| account_key(a) != account.as_str()) {
-            return Ok(None);
-        }
-        if record
-            .as_ref()
-            .is_some_and(|a| studio_runtime_store::truthy(a.extra.get("moveImportPending")))
-        {
-            return Ok(None);
-        }
-        if record.as_ref().is_some_and(|a| {
-            ["claudePreInputRetry", "claudeAuthWait"]
-                .iter()
-                .any(|key| a.extra.get(*key).is_some_and(|v| !v.is_null()))
-        }) {
-            hold_before_claim(
-                tx,
-                &agent,
-                "preparation/claude-frozen-input-recovery-required",
-            )?;
-            return Ok(None);
-        }
-        let preparing = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id LIKE 'account-worker:account:%:submitted' AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved'))", [agent.as_str()], |row| row.get::<_, bool>(0))?;
-        if preparing {
-            return Ok(None);
-        }
-        let pending = record
-            .as_ref()
-            .and_then(|a| a.extra.get("startAttempt"))
-            .filter(|a| {
-                a["submitted"] == false
-                    && matches!(
-                        a["prepareError"].as_str(),
-                        Some("workspace-readiness/pending" | "model-catalog/refresh-pending")
-                    )
-            });
-        let attempt = pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt);
-        if let Some(prepared) = &prepared {
-            prepared
-                .recheck(tx)
-                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-            let mut statement = tx.prepare(
+    scheduler::lifecycle_transaction_with(
+        &store,
+        move |tx| -> Result<Option<TurnIntent>, WorkerError> {
+            let record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?;
+            if record
+                .as_ref()
+                .is_none_or(|a| account_key(a) != account.as_str())
+            {
+                return Ok(None);
+            }
+            if record
+                .as_ref()
+                .is_some_and(|a| studio_runtime_store::truthy(a.extra.get("moveImportPending")))
+            {
+                return Ok(None);
+            }
+            if record.as_ref().is_some_and(|a| {
+                ["claudePreInputRetry", "claudeAuthWait"]
+                    .iter()
+                    .any(|key| a.extra.get(*key).is_some_and(|v| !v.is_null()))
+            }) {
+                hold_before_claim(
+                    tx,
+                    &agent,
+                    "preparation/claude-frozen-input-recovery-required",
+                )?;
+                return Ok(None);
+            }
+            let preparing = has_pending_thread_start(tx, agent.as_str())?;
+            if preparing {
+                return Ok(None);
+            }
+            let pending = record
+                .as_ref()
+                .and_then(|a| a.extra.get("startAttempt"))
+                .filter(|a| {
+                    a["submitted"] == false
+                        && matches!(
+                            a["prepareError"].as_str(),
+                            Some("workspace-readiness/pending" | "model-catalog/refresh-pending")
+                        )
+                });
+            let attempt = pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt);
+            if let Some(prepared) = &prepared {
+                prepared
+                    .recheck(tx)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                let mut statement = tx.prepare(
                 "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
                  WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
             )?;
-            let events = statement
-                .query_map(rusqlite::params![agent.as_str(), epoch], |row| {
-                    Ok(studio_runtime_store::QueueEvent {
-                        id: studio_runtime_store::QueueEventId(row.get(0)?),
-                        agent: studio_runtime_store::AgentId(row.get(1)?),
-                        kind: row.get(2)?,
-                        text: row.get(3)?,
-                        status: row.get(4)?,
-                        created: row.get(5)?,
-                        epoch: row.get(6)?,
-                        turn_id: row.get(7)?,
-                        error: row.get(8)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(statement);
-            let selected = crate::radio_runtime::select_pending(
-                tx,
-                prepared,
-                &record.as_ref().ok_or(WorkerError::Closed)?.value(),
-                &events,
-                now(),
-            )
-            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-            if let Some(event) = selected.first().filter(|event| event.kind == "radio_turn") {
-                return scheduler::claim_radio_turn_in_transaction(
+                let events = statement
+                    .query_map(rusqlite::params![agent.as_str(), epoch], |row| {
+                        Ok(studio_runtime_store::QueueEvent {
+                            id: studio_runtime_store::QueueEventId(row.get(0)?),
+                            agent: studio_runtime_store::AgentId(row.get(1)?),
+                            kind: row.get(2)?,
+                            text: row.get(3)?,
+                            status: row.get(4)?,
+                            created: row.get(5)?,
+                            epoch: row.get(6)?,
+                            turn_id: row.get(7)?,
+                            error: row.get(8)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                drop(statement);
+                let selected = crate::radio_runtime::select_pending(
                     tx,
-                    &agent,
-                    epoch,
-                    attempt,
+                    prepared,
+                    &record.as_ref().ok_or(WorkerError::Closed)?.value(),
+                    &events,
                     now(),
-                    &event.id.0,
                 )
-                .map_err(Into::into);
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                if let Some(event) = selected.first().filter(|event| event.kind == "radio_turn") {
+                    return scheduler::claim_radio_turn_in_transaction(
+                        tx,
+                        &agent,
+                        epoch,
+                        attempt,
+                        now(),
+                        &event.id.0,
+                    )
+                    .map_err(Into::into);
+                }
             }
-        }
-        match scheduler::claim_preparation_in_transaction(tx, &agent, epoch, attempt, now()) {
-            Ok(intent) => Ok(intent),
-            Err(scheduler::SchedulerError::PolicyRefused(reason)) => {
-                hold_before_claim(tx, &agent, &reason)?;
-                Ok(None)
+            match scheduler::claim_preparation_in_transaction(tx, &agent, epoch, attempt, now()) {
+                Ok(intent) => Ok(intent),
+                Err(scheduler::SchedulerError::PolicyRefused(reason)) => {
+                    hold_before_claim(tx, &agent, &reason)?;
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
             }
-            Err(error) => Err(error.into()),
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -2570,5 +2598,152 @@ mod journal_frame_payload_tests {
         assert_legacy_payload_bytes(&response_result);
         assert_legacy_payload_bytes(&response_error);
         assert_legacy_payload_bytes(&unknown);
+    }
+}
+
+#[cfg(test)]
+mod pending_thread_start_tests {
+    use super::*;
+    use rusqlite::{Connection, params};
+    use serde_json::{Value, json};
+
+    fn receipts() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory receipts");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
+            )
+            .expect("receipt table");
+        connection
+    }
+
+    fn insert(connection: &Connection, id: &str, result: Value) {
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",
+                params![id, result.to_string()],
+            )
+            .expect("receipt fixture");
+    }
+
+    fn operation(account: &str, method: &str) -> String {
+        format!("account:{account}:attempt:{method}")
+    }
+
+    fn context(agent: &str, method: &str) -> Value {
+        json!({"context":{"intent":{"agent_id":agent},"method":method}})
+    }
+
+    fn submit(connection: &Connection, account: &str, agent: &str, method: &str) {
+        insert(
+            connection,
+            &receipt_id(&operation(account, method), "submitted"),
+            context(agent, method),
+        );
+    }
+
+    fn resolve(connection: &Connection, account: &str, method: &str) {
+        insert(
+            connection,
+            &receipt_id(&operation(account, method), "resolved"),
+            json!({}),
+        );
+    }
+
+    /// Small mixed fixture: unrelated receipts and one submission from another agent.
+    fn seed(connection: &Connection) {
+        for index in 0..64 {
+            insert(
+                connection,
+                &format!("callback:default:{index}:ack"),
+                json!({"index": index}),
+            );
+        }
+        submit(connection, "default", "other", "thread/start");
+    }
+
+    #[test]
+    fn pending_lookup_uses_the_receipt_id_index() {
+        let connection = receipts();
+        seed(&connection);
+        let (start, end) = account_operation_receipt_range();
+        assert_eq!(
+            (start.as_str(), end.as_str()),
+            ("account-worker:account:", "account-worker:account;")
+        );
+        let mut statement = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {PENDING_THREAD_START_SQL}"))
+            .expect("plan statement");
+        let details = statement
+            .query_map(params!["lead", start, end], |row| row.get::<_, String>(3))
+            .expect("plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan details");
+        assert!(
+            details
+                .iter()
+                .any(|d| d.starts_with("SEARCH r USING INDEX") && d.contains("(id>? AND id<?)")),
+            "{details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|d| !d.starts_with("SCAN") || d.contains("CONSTANT")),
+            "{details:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_thread_start_blocks_its_agent() {
+        let connection = receipts();
+        submit(&connection, "default", "lead", "thread/start");
+        assert!(has_pending_thread_start(&connection, "lead").expect("lookup"));
+    }
+
+    #[test]
+    fn unresolved_thread_resume_blocks_its_agent() {
+        let connection = receipts();
+        submit(&connection, "default", "lead", "thread/resume");
+        assert!(has_pending_thread_start(&connection, "lead").expect("lookup"));
+    }
+
+    #[test]
+    fn resolved_start_does_not_block() {
+        let connection = receipts();
+        submit(&connection, "default", "lead", "thread/start");
+        resolve(&connection, "default", "thread/start");
+        assert!(!has_pending_thread_start(&connection, "lead").expect("lookup"));
+    }
+
+    #[test]
+    fn another_agents_start_does_not_block() {
+        let connection = receipts();
+        submit(&connection, "default", "other", "thread/start");
+        assert!(!has_pending_thread_start(&connection, "lead").expect("lookup"));
+    }
+
+    #[test]
+    fn unrelated_receipts_do_not_block() {
+        let connection = receipts();
+        submit(&connection, "default", "lead", "turn/start");
+        insert(
+            &connection,
+            &receipt_id(&operation("default", "thread/start"), "written"),
+            context("lead", "thread/start"),
+        );
+        insert(
+            &connection,
+            "account-worker:retained:default:attempt:submitted",
+            context("lead", "thread/start"),
+        );
+        assert!(!has_pending_thread_start(&connection, "lead").expect("lookup"));
+    }
+
+    #[test]
+    fn unresolved_start_in_another_account_still_blocks() {
+        let connection = receipts();
+        resolve(&connection, "default", "thread/start");
+        submit(&connection, "other", "lead", "thread/start");
+        assert!(has_pending_thread_start(&connection, "lead").expect("lookup"));
     }
 }
