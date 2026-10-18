@@ -1088,7 +1088,11 @@ mod resource_tests {
             Path::new("/state"),
         )
         .expect("progress guidance");
-        let server = shell_quote(&std::env::current_exe().unwrap().to_string_lossy());
+        let server = shell_quote(
+            &std::env::current_exe()
+                .expect("test executable path")
+                .to_string_lossy(),
+        );
         assert!(bundle.progress.contains(&format!(
             "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
         )));
