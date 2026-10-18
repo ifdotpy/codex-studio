@@ -64,6 +64,7 @@ pub use allocator::log_on_demand_memory_snapshot;
 pub use host::{current_process_id, process_kind, system_snapshot};
 pub use http::{http_request_metrics, record_http_request};
 pub use locks::{record_store_writer_transaction, runtime_lock_operations, runtime_lock_samples};
+use sqlite::record_sqlite_lock_error_snapshot;
 pub use sqlite::{
     DatabaseKind, SqliteStatement, TransactionOutcome, TransactionTrace, begin_sqlite_transaction,
     finish_sqlite_transaction, record_commit_profile, record_sqlite_profile,
