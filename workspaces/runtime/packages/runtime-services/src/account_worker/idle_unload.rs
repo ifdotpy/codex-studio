@@ -256,7 +256,7 @@ impl Worker {
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
             return Ok(());
         }
-        self.idle_check_threads(now, delay, due, None).await
+        self.idle_check_threads(now, delay, due).await
     }
 
     pub(super) async fn idle_initialize(&mut self, now: Instant) -> Result<(), WorkerError> {
@@ -309,7 +309,7 @@ impl Worker {
                 delay,
             );
         }
-        self.idle_check_threads(now, delay, BTreeSet::new(), Some(usage.account_in_use))
+        self.idle_check_process(now, delay, Some(usage.account_in_use), false)
             .await
     }
 
@@ -318,7 +318,6 @@ impl Worker {
         now: Instant,
         delay: Duration,
         threads: BTreeSet<String>,
-        account_in_use_snapshot: Option<bool>,
     ) -> Result<(), WorkerError> {
         let mut retry = false;
         for thread in &threads {
@@ -340,6 +339,18 @@ impl Worker {
                 }
             }
         }
+        self.idle_check_process(now, delay, None, retry).await
+    }
+
+    // Event completion can recheck the process clock while an idle provider
+    // request is pumping events. It must never reenter thread inspection.
+    async fn idle_check_process(
+        &mut self,
+        now: Instant,
+        delay: Duration,
+        account_in_use_snapshot: Option<bool>,
+        retry: bool,
+    ) -> Result<(), WorkerError> {
         let locally_unused = !self.closing
             && self
                 .idle_clocks
@@ -397,7 +408,7 @@ impl Worker {
                 delay,
             );
         }
-        self.idle_check_threads(now, delay, BTreeSet::new(), Some(usage.account_in_use))
+        self.idle_check_process(now, delay, Some(usage.account_in_use), false)
             .await
     }
 
@@ -427,7 +438,7 @@ impl Worker {
                 delay,
             );
         }
-        self.idle_check_threads(now, delay, BTreeSet::new(), Some(usage.account_in_use))
+        self.idle_check_process(now, delay, Some(usage.account_in_use), false)
             .await
     }
 
