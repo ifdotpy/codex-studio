@@ -2032,6 +2032,66 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn question_tool_item_is_stored_as_the_card_contract() {
+        // The chat card parses this stored text; Python has the same witness.
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../client/contracts/agent-question-item.json"
+        ))
+        .unwrap();
+        let item = contract["item"].clone();
+        let root = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .unwrap();
+        let notification = json!({"method":"item/completed","params":{
+            "threadId":"thread","turnId":"turn","item":item
+        }});
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
+                    [json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
+                        "accountKey":"default","provider":"claude","turnId":"turn","inFlight":true,
+                        "autoWake":true,"activeTools":[],"events":0,"isLead":true
+                    })
+                    .to_string()],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+                super::dispatch_notification(
+                    tx,
+                    "agent",
+                    &PublicationContext::default(),
+                    &NotificationStreamBuffer::default(),
+                    &identity(1),
+                    &frame(&notification),
+                    100.0,
+                )?;
+                Ok::<_, super::NotificationDispatchError>(())
+            })
+            .await
+            .unwrap();
+        let raw: String = store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_items WHERE id='agent:toolu_contract'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let record: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(record["role"], "output");
+        assert_eq!(record["title"], "mcpToolCall");
+        assert_eq!(record["toolStatus"], "completed");
+        let stored: Value = serde_json::from_str(record["text"].as_str().unwrap()).unwrap();
+        // Every provider field survives; the dispatcher may add timing fields.
+        for (key, value) in item.as_object().unwrap() {
+            assert_eq!(&stored[key], value, "{key}");
+        }
+    }
+
     #[test]
     fn stale_safety_notice_keeps_current_turn_stream_pending() {
         let mut connection = database();

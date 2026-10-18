@@ -1,0 +1,27 @@
+{
+  "description": "Provider item of a Claude AskUserQuestion call, as the Claude bridge emits it in item/completed. Both backends store it unchanged as the text of an output transcript row titled mcpToolCall, and the chat question card parses that text. Consumers: claude-bridge features.test.mjs, server question-history-contract.py, runtime-services notification_dispatch tests, web QuestionCard.test.ts.",
+  "item": {
+    "id": "toolu_contract",
+    "type": "mcpToolCall",
+    "server": "claude",
+    "tool": "AskUserQuestion",
+    "status": "completed",
+    "arguments": {
+      "questions": [
+        {
+          "question": "Which targets get the release?",
+          "header": "Deploy",
+          "multiSelect": true,
+          "options": [
+            { "label": "Dev", "description": "Test cluster first" },
+            { "label": "Prod, EU", "description": "EU production cluster" },
+            { "label": "Prod, US", "description": "US production cluster" }
+          ]
+        }
+      ]
+    },
+    "result": {
+      "content": "User has answered your questions: \"Which targets get the release?\"=\"Dev, Prod, EU\". You can now continue with the user's answers in mind."
+    }
+  }
+}

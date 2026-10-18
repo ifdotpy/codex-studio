@@ -39,7 +39,7 @@ from codex_work import WorkMixin, work_tools
 from codex_efficiency import EfficiencyMixin, efficiency_tools
 from codex_workspace import WorkspaceMixin, active_monitors, active_task_records
 from codex_rules import RulesMixin, rule_tools
-from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
+from codex_questions import QuestionsMixin, async_question_id, is_question, answer_signature, record_answer
 from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
@@ -8507,7 +8507,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.item(db, a["id"], item["id"], "assistant", text, streaming=False,
                               turnId=p.get("turnId") or a.get("turnId"), phase=item.get("phase"))
                     if item.get("questions"):
-                        request_id = a["id"] + ":question:" + item["id"]
+                        request_id = async_question_id(a["id"], item["id"])
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
                             questions: list[RequestQuestionFieldRecord] = [{"id": str(i), "question": q["title"],
                                           "options": [{"label": o} if isinstance(o, str) else o for o in q.get("options") or []],

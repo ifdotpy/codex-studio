@@ -680,6 +680,21 @@ function RequestCard({
   );
 }
 
+/** Open the answer form of a pending request card, as its own Answer button does. */
+export function openRequestAnswer(requestId: string): boolean {
+  const trigger = [
+    ...document.querySelectorAll<HTMLButtonElement>("#requests [data-answer]"),
+  ].find((button) => button.dataset.answer === requestId);
+  if (!trigger) return false;
+  const later = trigger.closest("details");
+  if (later) later.open = true;
+  if (trigger.getAttribute("aria-expanded") === "true") {
+    trigger.scrollIntoView({ block: "nearest" });
+    trigger.focus();
+  } else trigger.click();
+  return true;
+}
+
 export default function Requests({
   requests,
   allRequests,

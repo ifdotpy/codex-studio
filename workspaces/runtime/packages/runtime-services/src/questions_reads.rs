@@ -174,8 +174,90 @@ fn question_projection(
             record.get(field).cloned().unwrap_or(Value::Null),
         );
     }
+    result.insert(
+        "itemId".to_owned(),
+        question_item_id(record, id).map_or(Value::Null, |item| Value::String(item.to_owned())),
+    );
+    result.insert(
+        "turnId".to_owned(),
+        question_turn_id(record, params).map_or(Value::Null, |turn| Value::String(turn.to_owned())),
+    );
     result.insert("questions".to_owned(), Value::Array(questions));
     Ok(Value::Object(result))
+}
+
+/// Separator of an asynchronous question id: `<agent>:question:<agent message item>`.
+const ASYNC_QUESTION_SEPARATOR: &str = ":question:";
+
+/// Request id of the asynchronous question that a completed agent message asks.
+pub fn async_question_id(agent: &str, item: &str) -> String {
+    format!("{agent}{ASYNC_QUESTION_SEPARATOR}{item}")
+}
+
+/// Provider transcript item that asked this question, when the record names one.
+fn question_item_id<'a>(record: &'a Map<String, Value>, id: &'a str) -> Option<&'a str> {
+    if let Some(item) = record
+        .get("params")
+        .and_then(Value::as_object)
+        .and_then(|params| string_member(params, "itemId"))
+        .filter(|item| !item.is_empty())
+    {
+        return Some(item);
+    }
+    if string_member(record, "method") != Some("agent/asyncQuestion") {
+        return None;
+    }
+    let agent = string_member(record, "agent")?;
+    id.strip_prefix(agent)
+        .and_then(|rest| rest.strip_prefix(ASYNC_QUESTION_SEPARATOR))
+        .filter(|item| !item.is_empty())
+}
+
+/// Native turn that asked this question: the provider request names it, else the record.
+fn question_turn_id<'a>(
+    record: &'a Map<String, Value>,
+    params: &'a Map<String, Value>,
+) -> Option<&'a str> {
+    string_member(params, "turnId")
+        .filter(|turn| !turn.is_empty())
+        .or_else(|| string_member(record, "turnId").filter(|turn| !turn.is_empty()))
+}
+
+/// Header, choices and selection mode of a native or asynchronous question.
+fn question_choices(field: &Map<String, Value>) -> [(&'static str, Value); 4] {
+    let options = field
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| {
+                    match option {
+                    Value::String(label) => Some(json!({"label": label, "description": null})),
+                    Value::Object(option) => string_member(option, "label").map(|label| {
+                        json!({"label": label, "description": string_member(option, "description")})
+                    }),
+                    _ => None,
+                }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    [
+        (
+            "header",
+            string_member(field, "header").map_or(Value::Null, |header| json!(header)),
+        ),
+        ("options", Value::Array(options)),
+        (
+            "multiSelect",
+            json!(field.get("multiSelect") == Some(&Value::Bool(true))),
+        ),
+        (
+            "isOther",
+            json!(field.get("isOther") == Some(&Value::Bool(true))),
+        ),
+    ]
 }
 
 fn request_fields(
@@ -199,7 +281,11 @@ fn request_fields(
                 None => false,
                 Some(value) => value.as_bool().ok_or_else(|| invalid("requests", id))?,
             };
-            Ok(json!({"id": id_value, "question": question, "isSecret": secret}))
+            let mut entry = json!({"id": id_value, "question": question, "isSecret": secret});
+            for (name, value) in question_choices(field) {
+                entry[name] = value;
+            }
+            Ok(entry)
         })
         .collect()
 }
@@ -390,6 +476,53 @@ mod tests {
         .expect("form question projects");
         assert_eq!(result["items"][0]["questions"][0]["id"], "password");
         assert_eq!(result["items"][0]["questions"][1]["id"], "color");
+    }
+
+    #[test]
+    fn links_questions_to_their_transcript_items_with_choices() {
+        let stored = |value: serde_json::Value| {
+            (
+                RequestRecord::from_value(value.clone()).expect("request fixture validates"),
+                value.to_string(),
+            )
+        };
+        let result = question_history(
+            Some("lead"),
+            vec![agent("lead", "lead", None)],
+            vec![
+                stored(json!({
+                    "id":"native","agent":"lead","method":"item/tool/requestUserInput",
+                    "status":"answered","createdAt":2,
+                    "params":{"itemId":"toolu_1","turnId":"turn-1","questions":[{
+                        "id":"0","header":"Deploy","question":"Which target?","multiSelect":true,
+                        "isOther":true,"options":[{"label":"Dev","description":"Test first"},{"label":"Prod"},7]
+                    }]},
+                    "answerHistory":[{"id":"0","question":"Which target?","isSecret":false,"answer":["Dev","Prod"]}]
+                })),
+                stored(json!({
+                    "id":super::async_question_id("lead", "call_1"),"agent":"lead",
+                    "method":"agent/asyncQuestion","status":"pending","createdAt":1,"turnId":"turn-0",
+                    "params":{"questions":[{"id":"0","question":"Name?","options":[{"label":"A"}],"multiSelect":false}]}
+                })),
+            ],
+        )
+        .expect("question projection succeeds");
+        let native = &result["items"][0];
+        assert_eq!(native["itemId"], "toolu_1");
+        assert_eq!(native["turnId"], "turn-1");
+        assert_eq!(
+            native["questions"][0],
+            json!({
+                "id":"0","question":"Which target?","isSecret":false,"header":"Deploy",
+                "options":[{"label":"Dev","description":"Test first"},{"label":"Prod","description":null}],
+                "multiSelect":true,"isOther":true
+            })
+        );
+        let asynchronous = &result["items"][1];
+        assert_eq!(asynchronous["itemId"], "call_1");
+        assert_eq!(asynchronous["turnId"], "turn-0");
+        assert_eq!(asynchronous["questions"][0]["header"], json!(null));
+        assert_eq!(asynchronous["questions"][0]["isOther"], false);
     }
 
     #[test]

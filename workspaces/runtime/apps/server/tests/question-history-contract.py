@@ -220,6 +220,50 @@ class QuestionHistoryContract(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertFalse(self.history()[0]["deferred"])
 
+    def test_question_tool_item_is_stored_as_the_card_contract(self):
+        # The chat card parses this stored text; the Rust dispatcher has the same witness.
+        contract = Path(__file__).resolve().parents[5] / "workspaces/client/contracts/agent-question-item.json"
+        item = json.loads(contract.read_text(encoding="utf-8"))["item"]
+        self.runtime.notification({"method": "item/completed", "params": {
+            "threadId": self.lead["threadId"], "item": item}})
+        with self.runtime.db() as db:
+            row = db.execute("SELECT record FROM runtime_items WHERE id=?",
+                             (self.lead["id"] + ":" + item["id"],)).fetchone()
+        record = json.loads(row[0])
+        self.assertEqual((record["role"], record["title"], record["toolStatus"]),
+                         ("output", "mcpToolCall", "completed"))
+        stored = json.loads(record["text"])
+        # Every provider field survives; a backend may add timing fields.
+        self.assertEqual({key: stored.get(key) for key in item}, item)
+
+    def test_history_links_questions_to_transcript_items_with_choices(self):
+        # The chat card joins these rows to transcript items by agent and item id.
+        self.runtime.request({"id": 106, "method": "item/tool/requestUserInput", "params": {
+            "threadId": self.lead["threadId"], "turnId": "turn-native", "itemId": "toolu_card",
+            "questions": [{"id": "0", "header": "Deploy", "question": "Which target?", "multiSelect": True,
+                           "isOther": True, "options": [{"label": "Dev", "description": "Test first"},
+                                                        {"label": "Prod"}]}]}})
+        native = read_runtime_state(self.runtime)["requests"][-1]
+        self.runtime.answer(native["id"], {"answers": {"0": {"answers": ["Dev", "Prod"]}}})
+        self.runtime.notification({"method": "item/completed", "params": {
+            "threadId": self.lead["threadId"],
+            "item": {"id": "call_card", "type": "agentMessage", "text": "Scope?",
+                     "questions": [{"title": "Scope?", "options": ["One", "All"]}]}}})
+        rows = {row["method"]: row for row in self.history()}
+        row = rows["item/tool/requestUserInput"]
+        self.assertEqual((row["itemId"], row["turnId"]), ("toolu_card", "turn-native"))
+        self.assertEqual(row["questions"], [{
+            "id": "0", "question": "Which target?", "isSecret": False, "header": "Deploy",
+            "options": [{"label": "Dev", "description": "Test first"}, {"label": "Prod", "description": None}],
+            "multiSelect": True, "isOther": True}])
+        self.assertEqual(row["answerHistory"][0]["answer"], ["Dev", "Prod"])
+        row = rows["agent/asyncQuestion"]
+        self.assertEqual(row["itemId"], "call_card")
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["questions"][0]["options"],
+                         [{"label": "One", "description": None}, {"label": "All", "description": None}])
+        self.assertIsNone(row["questions"][0]["header"])
+
 
 
 if __name__ == "__main__":

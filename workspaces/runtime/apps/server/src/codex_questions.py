@@ -51,6 +51,57 @@ def question_fields(record: "RequestRecord") -> list["RequestQuestionFieldRecord
     ]
 
 
+ASYNC_QUESTION_SEPARATOR = ":question:"
+
+
+def async_question_id(agent: str, item: str) -> str:
+    """Request id of the asynchronous question that a completed agent message asks."""
+    return agent + ASYNC_QUESTION_SEPARATOR + item
+
+
+def question_item_id(record: "RequestRecord") -> str | None:
+    """Provider transcript item that asked this question, when the record names one."""
+    item = record.get("params", {}).get("itemId")
+    if isinstance(item, str) and item:
+        return item
+    agent = record.get("agent")
+    if record.get("method") == "agent/asyncQuestion" and isinstance(agent, str):
+        prefix = async_question_id(agent, "")
+        key = record.get("id") or ""
+        if key.startswith(prefix) and len(key) > len(prefix):
+            return key[len(prefix):]
+    return None
+
+
+def question_turn_id(record: "RequestRecord") -> str | None:
+    """Native turn that asked this question: the provider request names it, else the record."""
+    for turn in (record.get("params", {}).get("turnId"), record.get("turnId")):
+        if isinstance(turn, str) and turn:
+            return turn
+    return None
+
+
+def history_question(record: "RequestRecord", field: "RequestQuestionFieldRecord") -> dict[str, object]:
+    """One question as the history projection shows it; native and asynchronous
+    questions also carry their header, choices and selection mode."""
+    entry: dict[str, object] = {"id": field["id"], "question": field.get("question", field["id"]),
+                                "isSecret": bool(field.get("isSecret"))}
+    if record.get("method") == "mcpServer/elicitation/request":
+        return entry
+    header = field.get("header")
+    options: list[dict[str, object]] = []
+    stored_options = field.get("options")
+    for option in stored_options if isinstance(stored_options, list) else []:
+        if isinstance(option, str):
+            options.append({"label": option, "description": None})
+        elif isinstance(option, dict) and isinstance(option.get("label"), str):
+            description = option.get("description")
+            options.append({"label": option["label"],
+                            "description": description if isinstance(description, str) else None})
+    return entry | {"header": header if isinstance(header, str) else None, "options": options,
+                    "multiSelect": field.get("multiSelect") is True, "isOther": field.get("isOther") is True}
+
+
 def answer_signature(data: "RequestAnswerDataRecord") -> str:
     # Never store secret values in receipts or the history projection.
     body = {key: data[key] for key in ("answers", "content", "decision") if key in data}
@@ -128,7 +179,8 @@ class QuestionsMixin:
                 records.append({name: record.get(name) for name in (
                     "id", "agent", "method", "status", "createdAt", "answeredAt", "answeredBy", "decision",
                     "deferred", "deferredAt", "deferredBy", "answerHistory", "answerError")}
-                    | {"questions": [{"id": q["id"], "question": q.get("question", q["id"]), "isSecret": bool(q.get("isSecret"))}
-                                     for q in question_fields(record)]})
+                    | {"itemId": question_item_id(record),
+                       "turnId": question_turn_id(record),
+                       "questions": [history_question(record, q) for q in question_fields(record)]})
             records.sort(key=lambda record: record.get("answeredAt") or record.get("createdAt") or 0, reverse=True)  # type: ignore[arg-type,return-value]  # typed-suspect: stored timestamp may not be numeric
             return {"items": records}

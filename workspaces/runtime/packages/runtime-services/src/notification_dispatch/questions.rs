@@ -362,10 +362,9 @@ pub(super) fn completed(
     at: f64,
 ) -> Result<(), NotificationDispatchError> {
     let questions = fields(&params["item"]["questions"])?;
-    let id = format!(
-        "{}:question:{}",
+    let id = crate::questions_reads::async_question_id(
         agent["id"].as_str().unwrap_or_default(),
-        params["item"]["id"].as_str().unwrap_or_default()
+        params["item"]["id"].as_str().unwrap_or_default(),
     );
     if Table::<RequestRecord>::new(tx).get(&id)?.is_some() {
         return Ok(());
