@@ -17,8 +17,6 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SchedulerRepository};
 
-const MAX_STARTUP_SCAN_PAGES: usize = 32;
-
 pub(super) struct FirstPass {
     pub(super) bridge: StoreBridge,
     pub(super) account: String,
@@ -77,14 +75,13 @@ async fn reconcile_first_pass(
     scope: ConnectionScope,
     session: super::retained::RetainedSessionPort,
 ) -> Result<FirstPassResult, RecoveryError> {
-    let mut cursor = RecoveryCursor::default();
+    // Every agent of the account gets this pass. A load returns nothing for a
+    // full page without an eligible row, so only the sweep end stops the scan.
+    let mut cursor = RecoveryCursor::sweep();
     let mut recovered = Vec::new();
     let mut recovered_streams = None;
-    for _ in 0..MAX_STARTUP_SCAN_PAGES {
+    while !cursor.swept() {
         let jobs = load_recovery_jobs_blocking(Arc::clone(&store), account, &mut cursor).await?;
-        if jobs.is_empty() {
-            break;
-        }
         for job in jobs {
             // Python's connection recovery service reconciles each restart turn
             // automatically from native history (`codex_connection_recovery.tick`).

@@ -1207,6 +1207,75 @@ async fn startup_first_pass_continues_an_interrupted_restart_turn_from_native_hi
     worker.shutdown().await.unwrap();
 }
 
+/// Idle agents of the same account whose ids sort before the test agent. They
+/// are not eligible for recovery, so a scan page of them hands off nothing.
+async fn seed_idle_agents_before(state: &State, count: usize) {
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let template = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("seed agent")
+                        .value();
+                    for n in 0..count {
+                        let id = format!("0000-idle-{n:03}");
+                        assert!(id < agent_id, "{id} must sort before {agent_id}");
+                        let mut idle = template.clone();
+                        idle["id"] = json!(id);
+                        idle["rootId"] = json!(id);
+                        idle["status"] = json!("completed");
+                        idle["inFlight"] = json!(false);
+                        idle["turnId"] = Value::Null;
+                        let object = idle.as_object_mut().expect("agent object");
+                        for key in ["startAttempt", "restartRecovery", "disconnectRecovery"] {
+                            object.remove(key);
+                        }
+                        AgentRepository::put(
+                            tx,
+                            &studio_runtime_store::AgentRecord::from_value(idle)
+                                .expect("idle agent"),
+                        )?;
+                    }
+                    Ok::<(), WorkerError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("seed idle agents");
+}
+
+/// Rehearsal 9 (agent 3a35babb): the account had 415 agents and the restart
+/// turn sorted after the first scan page of 32. The first pass stopped at that
+/// page, so the turn was never read, its marker stayed pending, and a later
+/// restart interrupted the agent again after the user's next turn.
+#[tokio::test]
+async fn startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page() {
+    let state = State::new().await;
+    seed_idle_agents_before(&state, crate::recovery_runtime::MAX_SCAN_JOBS + 8).await;
+    seed_restart_turn(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    reply_restart_turn_history(&mut peer, "interrupted").await;
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let start = peer.write("turn/start").await;
+    let input = start["params"]["input"].to_string();
+    assert!(
+        input.contains("Studio restarted. The previous native turn is confirmed interrupted."),
+        "{input}"
+    );
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["restartRecovery"]["stage"], "continued");
+    assert_eq!(record["lastCompletedTurn"], "old-turn");
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn startup_first_pass_finishes_a_completed_restart_turn_without_new_input() {
     let state = State::new().await;
