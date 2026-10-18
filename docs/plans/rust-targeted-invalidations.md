@@ -15,6 +15,10 @@ identities, response payloads, event delivery, and HTTP behavior unchanged. Keep
 all existing model-catalog, Mac sync, host-secret, and route-owned resource
 notifications. Do not suppress or merge them into this classifier.
 
+Volatile token-rate effects publish through the existing token-rate hub and SSE
+frame, without resetting the durable state cursor. Analytics, recovery, and
+overflow publications retain their explicit state invalidations.
+
 History import failures caused by a typed discovery bound or invalid budget
 records block only the affected actor until relevant profile, agent, or budget
 input changes. Budget state and usage commits use separate store observers and

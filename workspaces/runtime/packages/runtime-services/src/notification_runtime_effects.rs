@@ -222,20 +222,26 @@ impl RuntimeNotificationPostCommitSink {
         &self,
         effect: &NotificationPostCommit,
     ) -> Result<(), NotificationDispatchError> {
-        if let NotificationPostCommit::Recovered { identity, .. } = effect {
-            self.resources
-                .publish_once(&serde_json::json!({
-                    "requestId": format!("recovered-provider-publication:{identity}"),
-                    "resources": [{"kind":"state"}],
-                }))
-                .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
-            return Ok(());
-        }
-        match effect {
+        let (observation, kind) = match effect {
+            NotificationPostCommit::Recovered { identity, .. } => {
+                self.resources
+                    .publish_once(&serde_json::json!({
+                        "requestId": format!("recovered-provider-publication:{identity}"),
+                        "resources": [{"kind":"state"}],
+                    }))
+                    .map_err(|_| {
+                        NotificationDispatchError::Dependency("sync/resources/publication")
+                    })?;
+                return Ok(());
+            }
             NotificationPostCommit::TokenRateStream(_)
             | NotificationPostCommit::TokenRateAssociation(_)
             | NotificationPostCommit::TokenRateUsage(_) => {
                 self.project_token_rate(effect)?;
+                // The token-rate hub owns this volatile update and its SSE frame.
+                // No durable state changed here, so a state reset would only
+                // make clients reread the same entity sequence.
+                return Ok(());
             }
             NotificationPostCommit::Analytics {
                 observation,
@@ -243,6 +249,7 @@ impl RuntimeNotificationPostCommitSink {
             } => {
                 self.capture_analytics(effect, observation, None).await?;
                 self.project_token_rate(effect)?;
+                (observation, "analytics")
             }
             NotificationPostCommit::AnalyticsStream {
                 observation,
@@ -250,32 +257,10 @@ impl RuntimeNotificationPostCommitSink {
             } => {
                 self.capture_analytics(effect, observation, Some(metrics.clone()))
                     .await?;
-            }
-            NotificationPostCommit::Recovered { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
-            }
-        };
-        let observation = match effect {
-            NotificationPostCommit::Analytics { observation, .. }
-            | NotificationPostCommit::AnalyticsStream { observation, .. }
-            | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation)
-            | NotificationPostCommit::TokenRateUsage(observation) => observation,
-            NotificationPostCommit::Recovered { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
+                (observation, "analyticsStream")
             }
         };
         let delivery = &observation.delivery;
-        let kind = match effect {
-            NotificationPostCommit::Analytics { .. } => "analytics",
-            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
-            NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
-            NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
-            NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
-            NotificationPostCommit::Recovered { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
-            }
-        };
         let request = serde_json::json!({
             "requestId": format!("provider-publication:{}:{}:{}:{kind}", delivery.provider_handle, delivery.generation, delivery.cursor),
             "resources": [{"kind":"state"}],

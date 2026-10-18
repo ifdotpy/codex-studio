@@ -730,7 +730,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound() {
 }
 
 #[tokio::test]
-async fn drained_effect_reaches_token_rate_and_resource_hubs() {
+async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
     let (root, store) = test_store();
     let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
     let token_rates = Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
@@ -742,22 +742,37 @@ async fn drained_effect_reaches_token_rate_and_resource_hubs() {
     ));
     let sink = Arc::new(RuntimeNotificationPostCommitSink {
         token_rates,
-        resources,
+        resources: Arc::clone(&resources),
         analytics_store: Arc::clone(&store),
     });
     seed_analytics_agent(&store).await;
     let started = analytics_effect(8, "turn/started", json!({"turnId":"turn"}));
     let delta = publication_effect(9);
     stage(&store, 1, 0, value(1, 0, started)).await;
-    stage(&store, 1, 1, value(1, 1, delta)).await;
-
     assert_eq!(
         store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
             .await
-            .expect("drain to hubs"),
-        2
+            .expect("drain analytics to hubs"),
+        1
     );
-    snapshots.changed().await.expect("token-rate snapshot");
+    let state_resource = [json!({"kind":"state"})];
+    assert!(
+        resources
+            .changes_since(&state_resource, Some(0))
+            .expect("analytics state invalidation")
+            .entity_reset
+    );
+    snapshots.borrow_and_update();
+    let before_delta = changes.snapshot().revision;
+
+    stage(&store, 1, 1, value(1, 1, delta)).await;
+    assert_eq!(
+        store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
+            .await
+            .expect("drain volatile token update"),
+        1
+    );
+    assert!(snapshots.has_changed().expect("token-rate hub stays open"));
     let value = snapshots.borrow_and_update();
     assert_eq!(value.to_value()["rates"]["agent"]["active"], true);
     assert!(
@@ -765,7 +780,12 @@ async fn drained_effect_reaches_token_rate_and_resource_hubs() {
             .as_f64()
             .is_some_and(|tokens| tokens > 0.0)
     );
-    assert!(changes.snapshot().revision >= 3);
+    assert!(changes.snapshot().revision > before_delta);
+    let resource_changes = resources
+        .changes_since(&state_resource, Some(before_delta))
+        .expect("read unchanged durable resource cursor");
+    assert!(resource_changes.resources.is_empty());
+    assert!(!resource_changes.entity_reset);
     assert_eq!(pending_count(&store), 0);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
