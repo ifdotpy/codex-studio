@@ -29,7 +29,9 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
 # current while the corpus verifies the direct notification path.
 # release_unapplied_steers acts only on a turn that carries unappliedSteers from the
 # Claude bridge; no corpus case has that field, so the cases below are unchanged.
-_NOTIFICATION_GUARD_DIGEST = '2e930d6fcb8976f6a2a0ca8d3ff0d54db46df5c960f6d2a9936b57387cd5ad0e'
+# The asynchronous question id now comes from codex_questions.async_question_id
+# (same text as before), so the cases below are unchanged.
+_NOTIFICATION_GUARD_DIGEST = '7312dad6eb56247a853deb25a0b4d138e1908d471d0823bd745f086729b622b7'
 assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
     'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:
