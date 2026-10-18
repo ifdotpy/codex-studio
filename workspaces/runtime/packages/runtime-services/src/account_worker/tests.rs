@@ -4842,7 +4842,7 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
     let shutdown = worker.shutdown().await;
     assert!(
         shutdown.is_ok(),
-        "stale actor callback does not terminate its account worker; last phase: {}",
+        "stale actor callback does not terminate its account worker: {shutdown:?}; last phase: {}",
         worker.faults.current_shutdown_phase()
     );
 }
@@ -4913,7 +4913,7 @@ async fn vm_auth_callback_shutdown_waits_for_final_generation_fence() {
     let shutdown = worker.completion().await;
     assert!(
         shutdown.is_ok(),
-        "stale actor callback does not terminate its account worker; last phase: {}",
+        "stale actor callback does not terminate its account worker: {shutdown:?}; last phase: {}",
         worker.faults.current_shutdown_phase()
     );
     assert_eq!(
