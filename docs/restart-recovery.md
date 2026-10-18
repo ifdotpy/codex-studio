@@ -156,7 +156,10 @@ supervisor or recovery job stays loaded. No desktop window is required.
 The LaunchAgents require a logged-in macOS user session.
 
 The first cutover refuses active turns, queued or uncertain input, monitors,
-terminals, server commands, and supervisor handles. Stop admission of new work
+terminals, server commands, and supervisor handles. With a running backend, it is
+a first cutover when that backend is not in supervisor mode. With no backend, it
+is a first cutover unless the saved configuration has `supervisorEnabled` and
+`supervisor.sqlite3` exists. Stop admission of new work
 before this command. The command checks activity again before the cutover.
 It preserves the state identity and checks the backend process identity.
 Do not send new work until the command completes. A repeat with an existing
@@ -340,7 +343,11 @@ Swap at a quiet moment:
 Rollback uses the same steps with the Python selection
 (`codex-supervisor enable` without `CODEX_DESKTOP_BACKEND`). In step 5, restore
 the pre-Rust backup instead: Python refuses a state that the Rust server owns.
-The restore itself is outside this command. `enable` then saves
+The restore itself is outside this command. When the Rust server never started
+(no `rust-state-owner.json`), there is nothing to restore. The rollback does not
+require idle agents: the saved `supervisorEnabled` and the existing
+`supervisor.sqlite3` show that this is not a first cutover, and the swap already
+ended the provider processes. `enable` then saves
 `backend: python`, removes `runtimeServer` and `processSupervisor`, and installs
 the Python supervisor job (`codex_process_supervisor.py --wait-for-lease`).
 

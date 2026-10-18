@@ -495,6 +495,17 @@ def enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
         return enable_rust_linux(resources, state, port) if rust else _enable(resources, state, port)
 
 
+def _supervised_before(state: Path, config: dict[str, Any]) -> bool:
+    """Whether a stopped state already ran under a process supervisor.
+
+    An earlier enable saved `supervisorEnabled` and the supervisor created its journal. Then
+    this enable is not a first cutover: the swap or rollback steps already ended the provider
+    processes, and the next backend restores their work through supervisor recovery. A
+    rollback after a failed Rust start must not wait for idle agents that cannot finish.
+    """
+    return config.get('supervisorEnabled') is True and (state / 'supervisor.sqlite3').is_file()
+
+
 def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
     import fcntl
     url = 'http://127.0.0.1:' + str(port)
@@ -507,7 +518,8 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
             raise ValueError('The selected port differs from the recovery configuration.')
     else:
         python = sys.executable
-    initial = before is None or before.get('supervisorMode') is not True
+    initial = (before.get('supervisorMode') is not True if before
+               else not _supervised_before(state, config))
     from codex_process_supervisor import process_start_time, process_launch_command
     birth = cast(Callable[[int], str | None], process_start_time)
     arguments = cast(Callable[[int], list[str]], process_launch_command)
