@@ -51,7 +51,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
 
   assert.match(comprehensive.command, /test-server\.py/);
   assert.match(comprehensive.command, /--workspace/);
-  assert.match(comprehensive.command, /test:unit/);
+  assert.match(comprehensive.command, /vitest\.unit\.config\.ts/);
   assert.match(comprehensive.command, /test:browser:smoke/);
   assert.doesNotMatch(
     comprehensive.command,
