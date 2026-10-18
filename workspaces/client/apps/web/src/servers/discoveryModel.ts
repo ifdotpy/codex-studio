@@ -9,6 +9,7 @@ export type DiscoveredServer = {
   paired: boolean;
   publicKey: string;
   generation: string;
+  replacedBy?: string | null;
 };
 export type DiscoverySnapshot = {
   localServerId: string;
@@ -18,6 +19,7 @@ export type DiscoverySnapshot = {
   autoPair: boolean;
   autoUpdate: boolean;
   servers: DiscoveredServer[];
+  identityAlerts?: ServerIdentityAlert[];
 };
 export type DiscoveryActions = {
   find: () => void;
@@ -25,7 +27,7 @@ export type DiscoveryActions = {
   setAutoUpdate: (enabled: boolean) => void;
 };
 
-import type { ServerAccessState } from "./accessContract";
+import type { ServerAccessState, ServerIdentityAlert } from "./accessContract";
 import { serveOrigin } from "./registry";
 import type { PreferenceFields } from "../sync/uiPreferenceMerge";
 
@@ -73,6 +75,8 @@ export function discoverySnapshot(
         paired: peer.status === "paired",
         publicKey: peer.publicKey,
         generation: JSON.stringify([peer.created, peer.publicKey]),
+        replacedBy: peer.replacedBy ?? null,
       })),
+    identityAlerts: state.identityAlerts ?? [],
   };
 }

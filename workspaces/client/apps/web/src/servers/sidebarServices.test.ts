@@ -93,6 +93,51 @@ function fixture() {
   const sources = [source("local"), source("remote")];
   return { sources, model: mergeSidebar(sources, 10, true) };
 }
+describe("unavailable project actions", () => {
+  const online = (owner: string) => owner === "local" || owner === "remote";
+  const backends = () =>
+    new Map([
+      ["local", backend("local").api],
+      ["remote", backend("remote").api],
+    ]);
+
+  it("name a home server that no connected server reports", () => {
+    const { sources } = fixture();
+    // The home server lost its identity; the alias names an ID that no source reports.
+    sources[1].sidebar.projects[0].projectAliases = [
+      { serverId: "lost-identity", projectId: "project-id", name: "Home" },
+    ];
+    const model = mergeSidebar(sources, 10, true);
+    const path = JSON.stringify(["project", "lost-identity", "project-id"]);
+    const services = createMergedSidebarServices(model, backends(), online, {});
+    expect(services.available({ kind: "project", path })).toBe(false);
+    expect(services.unavailable({ kind: "project", path })).toContain(
+      "home server lost-identity is not connected",
+    );
+  });
+
+  it("name an offline server by its alias and stay silent when online", () => {
+    const { model } = fixture();
+    const home = JSON.stringify(["project", "local", "project-id"]);
+    const offline = createMergedSidebarServices(
+      model,
+      backends(),
+      (owner) => owner === "remote",
+      { local: "LOC" },
+    );
+    expect(offline.unavailable({ kind: "project", path: home })).toBe(
+      "Server LOC is offline.",
+    );
+    const available = createMergedSidebarServices(
+      model,
+      backends(),
+      online,
+      {},
+    );
+    expect(available.unavailable({ kind: "project", path: home })).toBeNull();
+  });
+});
+
 function backend(ownerId: string) {
   const values = new Map<string, string>();
   const requests: { path: string; body: unknown }[] = [];

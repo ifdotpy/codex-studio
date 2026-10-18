@@ -11,6 +11,84 @@
   ],
   "acceptedLoosenings": [
     {
+      "pointer": "/components/schemas/AccessAudit/properties/action",
+      "constraint": "enum",
+      "baseline": "['accept_invite', 'alias', 'auto_pair', 'create_invite', 'name', 'pair', 'revoke', 'settings', 'unrevoke']",
+      "candidate": "['accept_invite', 'alias', 'auto_pair', 'create_invite', 'name', 'pair', 'replace_server', 'revoke', 'settings', 'unrevoke']"
+    },
+    {
+      "pointer": "/components/schemas/AccessAuditResponse/properties/records/items/properties/action",
+      "constraint": "enum",
+      "baseline": "['accept_invite', 'alias', 'auto_pair', 'create_invite', 'name', 'pair', 'revoke', 'settings', 'unrevoke']",
+      "candidate": "['accept_invite', 'alias', 'auto_pair', 'create_invite', 'name', 'pair', 'replace_server', 'revoke', 'settings', 'unrevoke']"
+    },
+    {
+      "pointer": "/components/schemas/AccessClient/properties/replacedBy",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AccessClient/properties/replacedBy",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessClient/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/replacedBy",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/replacedBy",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/identityAlerts",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/identityAlerts/items/properties/origin",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/identityAlerts/items/properties/origin",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/servers/items/properties/replacedBy",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/servers/items/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/AgentRecordResponse/properties/imageWorkspaceCleanupRetry/properties/_syncEntities",
       "constraint": "@nullable",
       "baseline": "None",
@@ -329,6 +407,18 @@
       "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
     },
     {
+      "pointer": "/components/schemas/DiscoveredServer/properties/replacedBy",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiscoveredServer/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/DiskSpaceStatus/properties/freeBytes",
       "constraint": "@nullable",
       "baseline": "None",
@@ -381,6 +471,18 @@
       "constraint": "@anyOf",
       "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
       "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/IdentityAlert/properties/origin",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/IdentityAlert/properties/origin",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/components/schemas/ImageWorkspaceCleanupRetryRecordResponse/properties/_syncEntities",
@@ -1371,6 +1473,12 @@
       "constraint": "required",
       "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
       "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/paths/~1api~1multi-server/post/requestBody/content/application~1json/schema",
+      "constraint": "@oneOf",
+      "baseline": "['{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"accept_invite\",\"title\":\"Action\",\"type\":\"string\"},\"invitation\":{\"additionalProperties\":false,\"properties\":{\"expires\":{\"maximum\":9007199254740991,\"minimum\":0,\"title\":\"Expires\",\"type\":\"integer\"},\"inviteId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Inviteid\",\"type\":\"string\"},\"label\":{\"maxLength\":80,\"minLength\":1,\"title\":\"Label\",\"type\":\"string\"},\"origin\":{\"maxLength\":512,\"title\":\"Origin\",\"type\":\"string\"},\"protocol\":{\"const\":1,\"maximum\":1,\"minimum\":1,\"title\":\"Protocol\",\"type\":\"integer\"},\"publicKey\":{\"maxLength\":4096,\"title\":\"Publickey\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"},\"tailscaleUser\":{\"maxLength\":254,\"minLength\":1,\"title\":\"Tailscaleuser\",\"type\":\"string\"},\"token\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Token\",\"type\":\"string\"}},\"required\":[\"protocol\",\"inviteId\",\"token\",\"serverId\",\"label\",\"origin\",\"publicKey\",\"tailscaleUser\",\"expires\"],\"title\":\"AccessInvitation\",\"type\":\"object\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\",\"invitation\"],\"title\":\"AcceptInvite\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"alias\",\"title\":\"Action\",\"type\":\"string\"},\"alias\":{\"maxLength\":3,\"minLength\":1,\"pattern\":\"^[A-Z]{1,3}$\",\"title\":\"Alias\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"}},\"required\":[\"action\",\"serverId\",\"alias\",\"requestId\"],\"title\":\"SetServerAlias\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"create_invite\",\"title\":\"Action\",\"type\":\"string\"},\"label\":{\"anyOf\":[{\"maxLength\":80,\"minLength\":1,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Label\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\"],\"title\":\"CreateInvite\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"discover\",\"title\":\"Action\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\"],\"title\":\"DiscoverServers\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"name\",\"title\":\"Action\",\"type\":\"string\"},\"label\":{\"maxLength\":80,\"minLength\":1,\"pattern\":\"^[^\\\\\\\\s\\\\\\\\p{C}](?:[^\\\\\\\\s\\\\\\\\p{C}]| +[^\\\\\\\\s\\\\\\\\p{C}])*$\",\"title\":\"Label\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"}},\"required\":[\"action\",\"serverId\",\"label\",\"requestId\"],\"title\":\"SetServerName\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"revoke\",\"title\":\"Action\",\"type\":\"string\"},\"clientId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Clientid\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\",\"clientId\"],\"title\":\"RevokeClient\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"settings\",\"title\":\"Action\",\"type\":\"string\"},\"autoPair\":{\"anyOf\":[{\"type\":\"boolean\"},{\"type\":\"null\"}],\"title\":\"Autopair\"},\"autoUpdate\":{\"anyOf\":[{\"type\":\"boolean\"},{\"type\":\"null\"}],\"title\":\"Autoupdate\"},\"requestId\":{\"anyOf\":[{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Requestid\"}},\"required\":[\"action\"],\"title\":\"SetAccessSettings\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"ui_invite\",\"title\":\"Action\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"}},\"required\":[\"action\",\"serverId\",\"requestId\"],\"title\":\"UiInvite\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"unrevoke\",\"title\":\"Action\",\"type\":\"string\"},\"clientId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Clientid\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"clientId\",\"requestId\"],\"title\":\"UnrevokeServer\",\"type\":\"object\"}']",
+      "candidate": "['{\"additionalProperties\":false,\"description\":\"Record that a paired server, or this server, succeeds a lost server identity.\",\"properties\":{\"action\":{\"const\":\"replace_server\",\"title\":\"Action\",\"type\":\"string\"},\"newServerId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Newserverid\",\"type\":\"string\"},\"oldServerId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Oldserverid\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"oldServerId\",\"newServerId\",\"requestId\"],\"title\":\"ReplaceServer\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"accept_invite\",\"title\":\"Action\",\"type\":\"string\"},\"invitation\":{\"additionalProperties\":false,\"properties\":{\"expires\":{\"maximum\":9007199254740991,\"minimum\":0,\"title\":\"Expires\",\"type\":\"integer\"},\"inviteId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Inviteid\",\"type\":\"string\"},\"label\":{\"maxLength\":80,\"minLength\":1,\"title\":\"Label\",\"type\":\"string\"},\"origin\":{\"maxLength\":512,\"title\":\"Origin\",\"type\":\"string\"},\"protocol\":{\"const\":1,\"maximum\":1,\"minimum\":1,\"title\":\"Protocol\",\"type\":\"integer\"},\"publicKey\":{\"maxLength\":4096,\"title\":\"Publickey\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"},\"tailscaleUser\":{\"maxLength\":254,\"minLength\":1,\"title\":\"Tailscaleuser\",\"type\":\"string\"},\"token\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Token\",\"type\":\"string\"}},\"required\":[\"protocol\",\"inviteId\",\"token\",\"serverId\",\"label\",\"origin\",\"publicKey\",\"tailscaleUser\",\"expires\"],\"title\":\"AccessInvitation\",\"type\":\"object\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\",\"invitation\"],\"title\":\"AcceptInvite\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"alias\",\"title\":\"Action\",\"type\":\"string\"},\"alias\":{\"maxLength\":3,\"minLength\":1,\"pattern\":\"^[A-Z]{1,3}$\",\"title\":\"Alias\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"}},\"required\":[\"action\",\"serverId\",\"alias\",\"requestId\"],\"title\":\"SetServerAlias\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"create_invite\",\"title\":\"Action\",\"type\":\"string\"},\"label\":{\"anyOf\":[{\"maxLength\":80,\"minLength\":1,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Label\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\"],\"title\":\"CreateInvite\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"discover\",\"title\":\"Action\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\"],\"title\":\"DiscoverServers\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"name\",\"title\":\"Action\",\"type\":\"string\"},\"label\":{\"maxLength\":80,\"minLength\":1,\"pattern\":\"^[^\\\\\\\\s\\\\\\\\p{C}](?:[^\\\\\\\\s\\\\\\\\p{C}]| +[^\\\\\\\\s\\\\\\\\p{C}])*$\",\"title\":\"Label\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"}},\"required\":[\"action\",\"serverId\",\"label\",\"requestId\"],\"title\":\"SetServerName\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"revoke\",\"title\":\"Action\",\"type\":\"string\"},\"clientId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Clientid\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"requestId\",\"clientId\"],\"title\":\"RevokeClient\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"settings\",\"title\":\"Action\",\"type\":\"string\"},\"autoPair\":{\"anyOf\":[{\"type\":\"boolean\"},{\"type\":\"null\"}],\"title\":\"Autopair\"},\"autoUpdate\":{\"anyOf\":[{\"type\":\"boolean\"},{\"type\":\"null\"}],\"title\":\"Autoupdate\"},\"requestId\":{\"anyOf\":[{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Requestid\"}},\"required\":[\"action\"],\"title\":\"SetAccessSettings\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"ui_invite\",\"title\":\"Action\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"},\"serverId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Serverid\",\"type\":\"string\"}},\"required\":[\"action\",\"serverId\",\"requestId\"],\"title\":\"UiInvite\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"unrevoke\",\"title\":\"Action\",\"type\":\"string\"},\"clientId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Clientid\",\"type\":\"string\"},\"requestId\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Requestid\",\"type\":\"string\"}},\"required\":[\"action\",\"clientId\",\"requestId\"],\"title\":\"UnrevokeServer\",\"type\":\"object\"}']"
     },
     {
       "pointer": "/paths/~1api~1processes~1action/post/requestBody/content/application~1json/schema/properties/process",

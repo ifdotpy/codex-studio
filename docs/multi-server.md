@@ -268,13 +268,14 @@ A pass does not overlap another pass on the same server.
 
 The existing session authenticates these `POST /api/multi-server` actions:
 
-| Body                                        | Response                       | Access                        |
-| ------------------------------------------- | ------------------------------ | ----------------------------- |
-| `{action:"discover",requestId}`             | Access snapshot after the pass | Local session only            |
-| `{action:"settings",autoPair,requestId?}`   | Access snapshot                | Local session or signed owner |
-| `{action:"unrevoke",clientId,requestId}`    | Access snapshot                | Local session or signed owner |
-| `{action:"alias",serverId,alias,requestId}` | Access snapshot                | Local session only            |
-| `{action:"ui_invite",serverId,requestId}`   | `{invitation,expires}`         | Local session only            |
+| Body                                                          | Response                       | Access                           |
+| ------------------------------------------------------------- | ------------------------------ | -------------------------------- |
+| `{action:"discover",requestId}`                               | Access snapshot after the pass | Local session only               |
+| `{action:"settings",autoPair,requestId?}`                     | Access snapshot                | Local session or signed owner    |
+| `{action:"unrevoke",clientId,requestId}`                      | Access snapshot                | Local session or signed owner    |
+| `{action:"alias",serverId,alias,requestId}`                   | Access snapshot                | Local session only               |
+| `{action:"ui_invite",serverId,requestId}`                     | `{invitation,expires}`         | Local session only               |
+| `{action:"replace_server",oldServerId,newServerId,requestId}` | Access snapshot                | Local session or signed owner UI |
 
 An access snapshot adds `settings:{autoPair}`. Its `servers` list contains the
 existing server fields and `lastSeen` (Unix seconds or null) and `autoPair`
@@ -312,3 +313,68 @@ origin, identity, disabled auto-pair, and revocation errors. HTTP 409 covers a
 request conflict or an active discovery pass. Identity or transport outages
 return HTTP 503 or 504 for explicit operations. Background discovery records
 unreachable known peers and ignores unknown services without log output.
+
+## Replace a lost server identity
+
+A server creates a new identity when its `multi-server/identity.json` is lost, for
+example after a restore without that file. Its private key is gone, so no server
+can prove the old identity again. Records on the paired servers, and on the
+server itself, still name the old server ID. Project aliases, remote-parent
+links, and agent routes then point to a server that cannot answer.
+
+The access snapshot shows each such case in `identityAlerts`. Each alert has
+`{code,oldServerId,newServerId,origin,detail}`:
+
+| Code                     | Condition                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| `peer_identity_changed`  | A paired server uses the same origin as another server record that has no replacement.          |
+| `local_identity_changed` | A home-side link or a project home on this server names a server ID other than the current one. |
+
+The alerts are derived from the records at read time. The server management
+page shows them with a Replace button.
+
+`replace_server` records that `newServerId` succeeds `oldServerId`. The local
+session or the owner's paired UI can call it; a server credential cannot.
+
+- **Peer succession**, where `newServerId` is a paired server: the old identity
+  needs a saved record (a credential or a discovery record) with the same origin
+  and the same Tailscale owner as the successor. The server then probes the
+  shared origin. The probe must return the successor's ID, public key, and owner.
+- **Local succession**, where `newServerId` is this server: no paired server may
+  use the old ID, and local links or project homes must name it.
+
+One transaction applies the change:
+
+- Project homes, project locations, and project aliases change to the successor.
+  The project sync entities change with them.
+- Remote-parent links and agent routes change: `remoteOrigin`, `remoteAnchor`,
+  `remoteWorker`, `movedTo`, `executionRouteAliases`, and `projectServerId`.
+  Moves in the `ready` or `active` phase change their route fields.
+  Server command handles change their owner.
+- A request in the outbound queue to the old identity without a receipt becomes
+  complete with outcome `unknown`, `terminal: true`, and error `server_replaced`.
+  Studio never sends it again; inspect its effect on the target server. A worker
+  whose slot admission was in that queue asks the successor for a new admission.
+- The old identity becomes a revoked credential with `replacedBy` and a
+  `replacement` record (request ID, actor, time, counts, and the reconciled
+  request IDs). Its discovery record is removed. Its alias moves to the successor.
+- One `replace_server` audit record names the old identity.
+
+Receipts, retired request records, audit records, transcripts, move history
+(`movedFrom`, `executionArchives`), and in-flight moves keep the old ID.
+An inbound request that the old identity started has a receipt bound to that
+identity. A retry of it from the successor fails as changed content; it cannot
+run twice.
+
+An exact retry returns the current snapshot without a second change. The same
+request ID with other content fails with `request_conflict`. A second successor
+for the same old identity fails with `already_replaced`. Other failures change
+nothing: `identity_mismatch` (origin, owner, or probe), `unknown_server` (no saved
+identity or local evidence), `server_still_paired`, and `replacement_conflict`
+(one project has locations on both identities).
+
+Run the operation on every server that names the old ID: on each paired server
+as a peer succession, and on the server that lost its identity as a local
+succession. The Rust backend does not implement this action yet. It refuses
+`replace_server` with HTTP 501 before any write, and its snapshot has no
+`identityAlerts` or `replacedBy` fields.
