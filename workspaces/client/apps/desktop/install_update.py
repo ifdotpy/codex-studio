@@ -91,25 +91,47 @@ def quit_desktop(updates, run, sleep):
         sleep(1)
 
 
-def stop_backend(config, state):
-    """SIGTERM the verified backend of this state directory. The recovery loop starts the new one."""
+def verify_backend(config, state):
+    """Before the swap: prove which process is the backend of this state directory.
+
+    The proof reads the installed app that started the backend (its packaged process reader,
+    script path and, for Rust, executable hash) with modules of one build. After the swap the
+    app holds the new build: a module imported then can need names that the modules this run
+    already imported do not have, and the Rust hash is the new executable's.
+    Returns the PID and its start time, or None when no backend runs."""
+    data = recovery.identity(config["port"], state)
+    if not data:
+        return None
+    recovery.verify_backend_process(data, config)
+    started = recovery.process_start_time(data["pid"])
+    return {"pid": data["pid"], "started": started} if started else None
+
+
+def stop_backend(config, state, backend):
+    """After the swap: SIGTERM the backend that verify_backend proved, only while the same
+    process (PID and start time) reports this state directory and owns the listener.
+    The recovery loop starts the new one."""
+    if backend is None:
+        return "not running"
     data = recovery.identity(config["port"], state)
     if not data:
         return "not running"
-    recovery.verify_backend_process(data, config)
-    os.kill(data["pid"], signal.SIGTERM)
+    if data["pid"] != backend["pid"] or recovery.process_start_time(backend["pid"]) != backend["started"]:
+        raise RuntimeError("The backend changed during the install; it was not verified.")
+    recovery.verify_listener(backend["pid"], config)
+    os.kill(backend["pid"], signal.SIGTERM)
     deadline = time.monotonic() + BACKEND_EXIT_SECONDS
     while time.monotonic() < deadline:
         try:
-            os.kill(data["pid"], 0)
+            os.kill(backend["pid"], 0)
         except ProcessLookupError:
             return "stopped"
         time.sleep(.2)
     return "stopping"
 
 
-def install(state, config, *, applications=Path("/Applications"), run=None, stop=stop_backend,
-            sleep=time.sleep, clock=time.time):
+def install(state, config, *, applications=Path("/Applications"), run=None, verify=verify_backend,
+            stop=stop_backend, sleep=time.sleep, clock=time.time):
     """Install the pending update. Returns (exit status, detail)."""
     updates, vm = load_updates(config["resources"])
     run = run or updates.run_tool
@@ -126,10 +148,10 @@ def install(state, config, *, applications=Path("/Applications"), run=None, stop
         with held(vm.vm_state_dir(state) / vm.MAINTENANCE_LOCK, create=False) as free:
             if not free:
                 return WAITING, "waiting for the VM maintenance lock"
-            return _install(state, config, pending, updates, applications, run, stop, sleep, clock)
+            return _install(state, config, pending, updates, applications, run, verify, stop, sleep, clock)
 
 
-def _install(state, config, pending, updates, applications, run, stop, sleep, clock):
+def _install(state, config, pending, updates, applications, run, verify, stop, sleep, clock):
     installed = applications / updates.APP_NAME
     staged = Path(pending["app"])
     following = applications / (installed.stem + ".next.app")
@@ -169,7 +191,13 @@ def _install(state, config, pending, updates, applications, run, stop, sleep, cl
         updates.remove_tree(following)
         reopen()
         return finish("failed", str(error)[:300] or type(error).__name__)
+    try:
+        backend, unverified = verify(config, state), None
+    except (OSError, RuntimeError, ValueError) as error:
+        # The install continues; the old backend runs until its next restart.
+        backend, unverified = None, f"not restarted: {error}"[:300]
     # The swap. Never delete the installed app in place: its backend still runs from it.
+    # From here this run imports no packaged module: the new build is at the installed path.
     try:
         if previous.exists():
             retired = applications / f".{installed.stem}.retired-{os.getpid()}.app"
@@ -191,7 +219,7 @@ def _install(state, config, pending, updates, applications, run, stop, sleep, cl
         reopen()
         return finish("failed", f"The swap failed; the previous app is back: {error}"[:300])
     try:
-        backend = stop(config, state)
+        backend = unverified or stop(config, state, backend)
     except (OSError, RuntimeError, ValueError) as error:
         # The new app is in place. The old backend runs until its next restart.
         backend = f"not restarted: {error}"[:300]
