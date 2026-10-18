@@ -1319,6 +1319,12 @@
       "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
     },
     {
+      "pointer": "/components/schemas/WorkInboxEntry/properties/work",
+      "constraint": "required",
+      "baseline": "['id', 'rootId', 'status', 'title', 'description', 'created', 'updated', 'createdBy', 'version', 'dependencies', 'decisions', 'results', 'blockedBy', 'displayStatus']",
+      "candidate": "['id', 'rootId', 'status', 'title', 'description', 'created', 'updated', 'version', 'dependencies', 'decisions', 'results', 'blockedBy', 'displayStatus']"
+    },
+    {
       "pointer": "/components/schemas/WorkInboxEntry/properties/work/properties/results/items",
       "constraint": "required",
       "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
@@ -1353,6 +1359,12 @@
       "constraint": "required",
       "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
       "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkViewRecordResponse",
+      "constraint": "required",
+      "baseline": "['id', 'rootId', 'status', 'title', 'description', 'created', 'updated', 'createdBy', 'version', 'dependencies', 'decisions', 'results', 'blockedBy', 'displayStatus']",
+      "candidate": "['id', 'rootId', 'status', 'title', 'description', 'created', 'updated', 'version', 'dependencies', 'decisions', 'results', 'blockedBy', 'displayStatus']"
     },
     {
       "pointer": "/components/schemas/WorkViewRecordResponse/properties/results/items",
