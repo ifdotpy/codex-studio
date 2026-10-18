@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::Value;
-use studio_runtime_store::{ObservedTable, RuntimeStore};
+use studio_runtime_store::{ObservedTable, RuntimeStore, TableChange};
 use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, SemaphorePermit, watch};
 use tokio::task::JoinHandle;
 
@@ -35,12 +35,36 @@ use crate::{event_write, monitor_runtime, rules_tick};
 const BATCH: usize = 64;
 const ERROR_RETRY_MIN: Duration = Duration::from_millis(250);
 const ERROR_RETRY_MAX: Duration = Duration::from_secs(30);
-/// Durable inputs consulted by monitor dispatch, rule scheduling, and stall checks.
-const MONITOR_WAKE_TABLES: [ObservedTable; 3] = [
-    ObservedTable::Monitors,
-    ObservedTable::Rules,
-    ObservedTable::Agents,
-];
+/// Durable inputs that always start a monitor tick: monitor and rule rows.
+const MONITOR_WAKE_TABLES: [ObservedTable; 2] = [ObservedTable::Monitors, ObservedTable::Rules];
+/// Agent rowids kept between two monitor passes before the next pass stops narrowing.
+/// Unit: rowids.
+const MAX_PENDING_AGENT_ROW_HINTS: usize = 4096;
+
+/// Agent rows committed since the last monitor pass; an agent change starts a tick only when
+/// a rule exists or a running monitor belongs to a changed agent.
+#[derive(Default)]
+struct AgentHints {
+    /// Row identity is unknown or overflowed, so any running monitor counts.
+    full: bool,
+    rows: BTreeSet<i64>,
+}
+
+impl AgentHints {
+    fn record(&mut self, change: TableChange<'_>) {
+        match change {
+            TableChange::Rows(ids)
+                if self.rows.len() + ids.len() <= MAX_PENDING_AGENT_ROW_HINTS =>
+            {
+                self.rows.extend(ids.iter().copied());
+            }
+            TableChange::Rows(_) | TableChange::Full => {
+                self.full = true;
+                self.rows.clear();
+            }
+        }
+    }
+}
 
 /// The retained session must replay the same delivery until acknowledge succeeds.
 /// Its cursor belongs to that session, not to a second supervisor journal reader.
@@ -142,6 +166,8 @@ pub struct MonitorRuntime {
     scan: AsyncMutex<Scan>,
     dispatch_wake: Arc<Notify>,
     observation_wake: Arc<Notify>,
+    agents_wake: Arc<Notify>,
+    agent_hints: Arc<Mutex<AgentHints>>,
     observation_slots: Semaphore,
     last_tick_error: Mutex<Option<String>>,
     watcher_error: Mutex<Option<String>>,
@@ -181,12 +207,26 @@ impl MonitorRuntime {
             let observers = Arc::clone(&observation_wake);
             store.add_table_change_observer(table, move || observers.notify_waiters());
         }
+        let observers = Arc::clone(&observation_wake);
+        store.add_table_change_observer(ObservedTable::Agents, move || observers.notify_waiters());
+        let agents_wake = Arc::new(Notify::new());
+        let agent_hints = Arc::new(Mutex::new(AgentHints::default()));
+        let (hint_wake, hints) = (Arc::clone(&agents_wake), Arc::clone(&agent_hints));
+        store.add_table_row_change_observer(ObservedTable::Agents, move |change| {
+            hints
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record(change);
+            hint_wake.notify_one();
+        });
         Self {
             store,
             port,
             output: MonitorOutput::default(),
             dispatch_wake,
             observation_wake,
+            agents_wake,
+            agent_hints,
             observation_slots: Semaphore::new(
                 studio_runtime_schema::shared_values::MONITOR_WAIT_SLOTS,
             ),
@@ -285,6 +325,49 @@ impl MonitorRuntime {
             }
         }
         Ok(submitted)
+    }
+
+    /// Whether the agent rows committed since the last call can matter to a monitor tick: a
+    /// rule may react to any agent, a running monitor only to its own agent. With neither,
+    /// an agent commit costs no tick.
+    fn agent_commit_needs_tick(&self) -> Result<bool, MonitorError> {
+        let hints = std::mem::take(
+            &mut *self
+                .agent_hints
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let connection = self.store.read()?;
+        let rules: bool = connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM runtime_rules)", [], |row| {
+                row.get(0)
+            })
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if rules {
+            return Ok(true);
+        }
+        let running = "json_extract(m.record,'$.status')='running'";
+        let sql = if hints.full {
+            format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running})")
+        } else {
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running} AND \
+                 json_extract(m.record,'$.agent') IN \
+                 (SELECT id FROM runtime_agents WHERE rowid IN (SELECT value FROM json_each(?1))))"
+            )
+        };
+        let rows = serde_json::to_string(&hints.rows.iter().collect::<Vec<_>>())
+            .map_err(|_| MonitorError::Refused("Monitor agent hints could not be encoded"))?;
+        let mut statement = connection
+            .prepare_cached(&sql)
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let needed = if hints.full {
+            statement.query_row([], |row| row.get(0))
+        } else {
+            statement.query_row([rows], |row| row.get(0))
+        }
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Ok(needed)
     }
 
     /// Wake the monitor tick after a managed creation transaction commits.
@@ -1186,50 +1269,61 @@ pub fn start(
                     .fetch_add(1, Ordering::SeqCst);
                 runtime.loop_activity.waited.notify_one();
             }
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() { return Ok(()); }
-                }
-                _ = runtime.dispatch_wake.notified() => {
-                    immediate = true;
-                }
-                changed = receipt_events.changed() => {
-                    if changed.is_err() { return Err(MonitorError::TaskFailed); }
-                    if *receipt_events.borrow_and_update() {
-                        runtime.wake_receipt_recovery().await;
+            loop {
+                tokio::select! {
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                    }
+                    _ = runtime.dispatch_wake.notified() => {
                         immediate = true;
                     }
-                }
-                changed = rule_events.changed() => {
-                    if changed.is_err() { return Err(MonitorError::TaskFailed); }
-                    if *rule_events.borrow_and_update() {
+                    _ = runtime.agents_wake.notified() => {
+                        // An unrelated agent commit keeps the deadline computed for this wait.
+                        if runtime.agent_commit_needs_tick().unwrap_or(true) {
+                            immediate = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    changed = receipt_events.changed() => {
+                        if changed.is_err() { return Err(MonitorError::TaskFailed); }
+                        if *receipt_events.borrow_and_update() {
+                            runtime.wake_receipt_recovery().await;
+                            immediate = true;
+                        }
+                    }
+                    changed = rule_events.changed() => {
+                        if changed.is_err() { return Err(MonitorError::TaskFailed); }
+                        if *rule_events.borrow_and_update() {
+                            immediate = true;
+                        }
+                    }
+                    changed = watch_reset_events.changed() => {
+                        if changed.is_err() { return Err(MonitorError::TaskFailed); }
+                        watch_reset_events.borrow_and_update();
+                        runtime.request_receipt_recovery().await;
+                        watcher = None;
+                        watched_rule_directories.clear();
+                        watcher_retry_at = None;
                         immediate = true;
                     }
-                }
-                changed = watch_reset_events.changed() => {
-                    if changed.is_err() { return Err(MonitorError::TaskFailed); }
-                    watch_reset_events.borrow_and_update();
-                    runtime.request_receipt_recovery().await;
-                    watcher = None;
-                    watched_rule_directories.clear();
-                    watcher_retry_at = None;
-                    immediate = true;
-                }
-                _ = async {
-                    match wait_until {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
-                    let now = tokio::time::Instant::now();
-                    if retry_at.is_none_or(|deadline| now >= deadline) {
-                        retry_at = None;
-                        immediate = true;
-                    }
-                    if watcher_retry_at.is_none_or(|deadline| now >= deadline) {
-                        immediate = true;
+                    _ = async {
+                        match wait_until {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        let now = tokio::time::Instant::now();
+                        if retry_at.is_none_or(|deadline| now >= deadline) {
+                            retry_at = None;
+                            immediate = true;
+                        }
+                        if watcher_retry_at.is_none_or(|deadline| now >= deadline) {
+                            immediate = true;
+                        }
                     }
                 }
+                break;
             }
         }
     })
@@ -1557,6 +1651,79 @@ mod tests {
         })
         .await
         .expect("monitor watcher reconciles watched directory");
+    }
+
+    async fn commit_agent(store: &RuntimeStore, id: &'static str, provider: &'static str) {
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2) \
+                     ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                    rusqlite::params![
+                        id,
+                        serde_json::json!({"id":id,"rootId":id,"epoch":0,"status":"idle",
+                            "provider":provider})
+                        .to_string()
+                    ],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("commit agent");
+    }
+
+    #[tokio::test]
+    async fn agent_commits_start_a_tick_only_for_rules_or_their_own_running_monitors() {
+        let (_root, store, port) = fixture().await;
+        let runtime = MonitorRuntime::new(store.clone(), port, Arc::new(Notify::new()));
+        // No rules and no monitors: neither provider's agent commit costs a tick.
+        for (id, provider) in [("codex-agent", "codex"), ("claude-agent", "claude")] {
+            commit_agent(&store, id, provider).await;
+            assert!(!runtime.agent_commit_needs_tick().expect("hint check"));
+        }
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('m',?1)",
+                    [
+                        serde_json::json!({"id":"m","agent":"claude-agent","status":"running"})
+                            .to_string(),
+                    ],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("commit monitor");
+        // Another agent's commit does not reach the monitor; its own agent's commit does.
+        commit_agent(&store, "codex-agent", "codex").await;
+        assert!(!runtime.agent_commit_needs_tick().expect("other agent"));
+        commit_agent(&store, "claude-agent", "claude").await;
+        assert!(runtime.agent_commit_needs_tick().expect("own agent"));
+        // The hints are consumed by the check.
+        assert!(!runtime.agent_commit_needs_tick().expect("consumed"));
+        // An overflowed hint set stops narrowing but still skips when nothing runs.
+        runtime
+            .agent_hints
+            .lock()
+            .expect("hints")
+            .record(studio_runtime_store::TableChange::Full);
+        assert!(runtime.agent_commit_needs_tick().expect("full hint"));
+        store
+            .transaction_with(|tx| {
+                tx.execute("DELETE FROM runtime_monitors", [])?;
+                tx.execute(
+                    "INSERT INTO runtime_rules(id,record) VALUES ('r',?1)",
+                    [
+                        serde_json::json!({"id":"r","agent":"codex-agent","status":"active"})
+                            .to_string(),
+                    ],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("swap monitor for rule");
+        commit_agent(&store, "codex-agent", "codex").await;
+        assert!(runtime.agent_commit_needs_tick().expect("rule present"));
     }
 
     async fn stop_task(
