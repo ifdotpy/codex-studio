@@ -3097,9 +3097,11 @@ impl Worker {
             } else {
                 Some(self.generation.0)
             },
-            provider: claude_account_pin["provider"]
-                .as_str()
-                .unwrap_or("codex")
+            provider: studio_runtime_providers::ProviderKind::of_record(&claude_account_pin)
+                .map_err(|_| {
+                    WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+                })?
+                .key()
                 .to_owned(),
         });
         let (previous, committed) = self

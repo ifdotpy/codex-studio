@@ -246,9 +246,12 @@ async fn settle_blocked(
     .await
 }
 
-/// Probe the selected Claude profile before input preparation. Timeout waits and
-/// ordinary refusals settle the start; the only accepted error latch is verified
-/// through this account worker's retained bridge.
+/// Account auth gate before a turn start, for every provider. The shared core
+/// reads the account's cached auth status (no probe while it is valid) and
+/// holds the start when the provider adapter says the status blocks it. Only
+/// Claude adds work beyond that, and only when its status is not Ready: the
+/// probe-timeout wait and the keychain latch verified through this account
+/// worker's retained bridge (`account/read` plus the first-party plan check).
 pub async fn require_before_start<F, Fut>(
     store: Arc<RuntimeStore>,
     driver: Arc<crate::account_driver::AccountDriver>,
@@ -260,31 +263,75 @@ where
     F: FnOnce(crate::account_worker::retained::RequestActor, Instant) -> Fut + Send,
     Fut: Future<Output = Result<Value>> + Send,
 {
+    let provider = crate::provider_adapter::adapter(intent.provider);
     let account_key = intent.account_key.clone();
-    let driver_copy = driver.clone();
-    let key_copy = account_key.clone();
-    let before = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/claude_auth_runtime",
-        move || driver_copy.internal_record(&key_copy),
+    let reader = driver.clone();
+    let (status, current) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_auth_gate",
+        move || {
+            let status = reader.get(&account_key)?;
+            Ok::<_, crate::account_driver::AccountDriverError>((
+                status,
+                reader.internal_record(&account_key)?,
+            ))
+        },
     )
     .await
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
-    if !same_selected_account(&selected_pin, &before) {
-        let store = store.clone();
-        let intent = intent.clone();
+    .map_err(|_| ContinuationError::Unavailable("account-auth/status"))?
+    .map_err(|_| ContinuationError::Unavailable("account-auth/status"))?;
+    if !provider.auth_blocks_start(status) {
+        if same_selected_account(&selected_pin, &current) {
+            return Ok(true);
+        }
+        settle_blocked(&store, intent, provider.account_changed_message()).await?;
+        return Ok(false);
+    }
+    if intent.provider != studio_runtime_providers::ProviderKind::Claude {
+        settle_blocked(&store, intent, provider.sign_in_message()).await?;
+        return Ok(false);
+    }
+    require_claude_before_start(
+        store,
+        driver,
+        selected_pin,
+        intent,
+        read_account,
+        status,
+        current,
+    )
+    .await
+}
+
+/// Claude's extra work when its cached status is not Ready: a probe timeout
+/// records a durable auth wait for the captured input, and the keychain latch
+/// is accepted only after the retained bridge proves the pinned identity.
+/// `status` and `after` are the shared gate's single status read.
+async fn require_claude_before_start<F, Fut>(
+    store: Arc<RuntimeStore>,
+    driver: Arc<crate::account_driver::AccountDriver>,
+    selected_pin: Value,
+    intent: &crate::scheduler::TurnIntent,
+    read_account: F,
+    status: crate::account_driver::AccountStatus,
+    after: Value,
+) -> Result<bool>
+where
+    F: FnOnce(crate::account_worker::retained::RequestActor, Instant) -> Fut + Send,
+    Fut: Future<Output = Result<Value>> + Send,
+{
+    if !same_selected_account(&selected_pin, &after) {
         settle_blocked(
             &store,
-            &intent,
-            "The Claude account changed during authentication",
+            intent,
+            crate::provider_adapter::adapter(studio_runtime_providers::ProviderKind::Claude)
+                .account_changed_message(),
         )
         .await?;
         return Ok(false);
     }
-    let store_copy = store.clone();
     let agent = intent.agent_id.clone();
-    let capture_pin = before.clone();
-    let (settings, capture) = store_copy
+    let capture_pin = after.clone();
+    let (settings, capture) = store
         .read_async("runtime-services/claude_auth_runtime", move |tx| {
             let state = snapshot(tx, &agent, None)?;
             let settings = preparation_settings(&state.agent);
@@ -292,38 +339,6 @@ where
             Ok::<_, ContinuationError>((settings, capture))
         })
         .await?;
-
-    let driver_copy = driver.clone();
-    let key_copy = account_key.clone();
-    let status = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/claude_auth_runtime",
-        move || driver_copy.get(&key_copy),
-    )
-    .await
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
-    let driver_copy = driver.clone();
-    let after = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/claude_auth_runtime",
-        move || driver_copy.internal_record(&account_key),
-    )
-    .await
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
-    if claude_auth_wait::account_pin(&before) != claude_auth_wait::account_pin(&after) {
-        let store = store.clone();
-        let intent = intent.clone();
-        settle_blocked(
-            &store,
-            &intent,
-            "The Claude account changed during authentication",
-        )
-        .await?;
-        return Ok(false);
-    }
-    if status == crate::account_driver::AccountStatus::Ready {
-        return Ok(true);
-    }
     let error_kind = after
         .get("_authErrorKind")
         .and_then(Value::as_str)
@@ -383,7 +398,13 @@ where
     }
     let store = store.clone();
     let intent = intent.clone();
-    settle_blocked(&store, &intent, "Sign in with claude auth login first").await?;
+    settle_blocked(
+        &store,
+        &intent,
+        crate::provider_adapter::adapter(studio_runtime_providers::ProviderKind::Claude)
+            .sign_in_message(),
+    )
+    .await?;
     Ok(false)
 }
 

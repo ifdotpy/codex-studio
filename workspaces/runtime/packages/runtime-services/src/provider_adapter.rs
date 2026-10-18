@@ -6,7 +6,9 @@
 //! decisions that callers used to branch on with provider strings.
 
 use crate::account_driver::auth_cache::CredentialLocation;
-use crate::account_driver::{AuthMetadata, AuthProfile, AuthStatus, account_server_root};
+use crate::account_driver::{
+    AccountStatus, AuthMetadata, AuthProfile, AuthStatus, account_server_root,
+};
 use crate::account_worker::WorkerError;
 use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
 use crate::continuation_runtime::classify_usage_failure;
@@ -113,6 +115,15 @@ pub trait ProviderAdapter: Send + Sync + 'static {
 
     /// Credential files whose change ends the cached status of `profile`.
     fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation;
+
+    /// The account's cached auth status holds a turn start before any provider write.
+    fn auth_blocks_start(&self, status: AccountStatus) -> bool;
+
+    /// Hold reason of a start blocked because the account is not signed in.
+    fn sign_in_message(&self) -> &'static str;
+
+    /// Hold reason of a start whose account identity changed under the session.
+    fn account_changed_message(&self) -> &'static str;
 }
 
 /// The agent's provider keeps a native rollout history. An unknown provider
@@ -147,6 +158,8 @@ pub fn adapter(kind: ProviderKind) -> &'static dyn ProviderAdapter {
     }
 }
 
+/// Codex CLI looked up in `PATH` when no executable is selected.
+const CODEX_EXECUTABLE: &str = "codex";
 /// Codex app-server peer over stdio.
 const CODEX_APP_SERVER_ARGS: [&str; 3] = ["app-server", "--listen", "stdio://"];
 /// Codex config override that keeps credentials in the account's own home.
@@ -193,7 +206,7 @@ impl ProviderAdapter for CodexAdapter {
             mut environment,
             ..
         } = input;
-        let mut command = vec![codex_executable.unwrap_or("codex").to_owned()];
+        let mut command = vec![codex_executable.unwrap_or(CODEX_EXECUTABLE).to_owned()];
         command.extend(CODEX_APP_SERVER_ARGS.map(str::to_owned));
         environment.insert("CODEX_HOME".into(), home);
         if isolated {
@@ -208,7 +221,7 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn vm_guest_command(&self, _guest_home: &str, _agent_id: &str) -> Vec<String> {
-        let mut command = vec!["codex".to_owned()];
+        let mut command = vec![CODEX_EXECUTABLE.to_owned()];
         command.extend(CODEX_APP_SERVER_ARGS.map(str::to_owned));
         command.extend(CODEX_FILE_CREDENTIALS.map(str::to_owned));
         command
@@ -249,6 +262,20 @@ impl ProviderAdapter for CodexAdapter {
 
     fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation {
         crate::account_driver::codex_location(profile)
+    }
+
+    /// Only a missing or signed-out `auth.json` holds a start: the app-server
+    /// refreshes an expired token itself, so any other status may still run.
+    fn auth_blocks_start(&self, status: AccountStatus) -> bool {
+        status == AccountStatus::SignedOut
+    }
+
+    fn sign_in_message(&self) -> &'static str {
+        "Sign in to this Codex account first"
+    }
+
+    fn account_changed_message(&self) -> &'static str {
+        "The Codex account changed during authentication"
     }
 }
 
@@ -353,6 +380,18 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation {
         crate::account_driver::claude_location(profile)
+    }
+
+    fn auth_blocks_start(&self, status: AccountStatus) -> bool {
+        status != AccountStatus::Ready
+    }
+
+    fn sign_in_message(&self) -> &'static str {
+        "Sign in with claude auth login first"
+    }
+
+    fn account_changed_message(&self) -> &'static str {
+        "The Claude account changed during authentication"
     }
 }
 

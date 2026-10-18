@@ -51,8 +51,7 @@ async fn prepare(
     } = run;
     let method = *method;
     if method == Method::TurnStart
-        && intent.provider == studio_runtime_providers::ProviderKind::Claude
-        && !stage("turn_preparation.claude_auth", require_claude_auth(run)).await?
+        && !stage("turn_preparation.account_auth", require_account_auth(run)).await?
     {
         return Ok(store::PreparationStep::Settled);
     }
@@ -142,13 +141,14 @@ async fn settle(
     store::preparation_step(&run.bridge.store, &run.intent, async { result }).await
 }
 
-/// Claude's pre-start account proof; its account read goes through this
-/// worker's retained port, which the worker serves while this task waits.
-async fn require_claude_auth(run: &Run) -> Result<bool, WorkerError> {
+/// Pre-start account auth gate for every provider (see
+/// `claude_auth_runtime::require_before_start`). Claude's latch proof reads the
+/// account through this worker's retained port, which the worker serves while
+/// this task waits. A host without an account registry (fixtures and transfer
+/// probes; production hosts always have one) has no auth source to gate on.
+async fn require_account_auth(run: &Run) -> Result<bool, WorkerError> {
     let Some(driver) = run.resources.account_driver.clone() else {
-        return Err(WorkerError::PreparationRefused(
-            "claude-auth/account-driver-unavailable".into(),
-        ));
+        return Ok(true);
     };
     let port = run.retained_port.clone();
     crate::claude_auth_runtime::require_before_start(

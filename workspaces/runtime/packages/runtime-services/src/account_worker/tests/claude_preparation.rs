@@ -80,3 +80,76 @@ async fn claude_turn_freezes_exact_input_before_native_write() {
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
 }
+
+/// A Codex account registry whose home has `auth` as its `auth.json`, or none.
+fn codex_resources(state: &State, auth: Option<Value>) -> preparation::PreparationResources {
+    let mut resources = super::test_resources().unwrap();
+    let home = state.root.join("codex-home");
+    let registry = state.root.join("accounts/registry.json");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    if let Some(auth) = auth {
+        std::fs::write(home.join("auth.json"), auth.to_string()).unwrap();
+    }
+    std::fs::write(
+        &registry,
+        json!({
+            "version": 1,
+            "defaultAccountKey": "default",
+            "accounts": {"default": {
+                "id": "default", "home": home, "label": "Fixture Codex",
+                "source": "Codex CLI", "status": "ready", "provider": "codex"
+            }},
+            "logins": {}, "deleteReceipts": {}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let driver = Arc::new(crate::account_driver::AccountDriver::open(&registry).unwrap());
+    // The launcher pins the account after its first status read, as here.
+    driver.get("default").unwrap();
+    resources.claude_account_pin = driver.internal_record("default").unwrap();
+    resources.account_driver = Some(driver);
+    resources
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_turn_passes_the_shared_auth_gate_when_signed_in() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let resources = codex_resources(&state, Some(json!({"OPENAI_API_KEY": "sk-fixture"})));
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let start = state.start(&mut peer, &worker).await;
+    assert_eq!(start["params"]["cyberAccessProgram"], "standard");
+    peer.accepted(&start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_turn_is_held_by_the_shared_auth_gate_when_signed_out() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let resources = codex_resources(&state, None);
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert!(
+        record
+            .to_string()
+            .contains("Sign in to this Codex account first"),
+        "{record}"
+    );
+    assert_ne!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
