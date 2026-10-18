@@ -400,6 +400,7 @@ fn eligibility(a: &Value) -> Eligibility {
                 &a["error"],
                 &[
                     PROVIDER_DISCONNECTED_TURN_ERROR,
+                    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
                     BACKEND_RESTARTED_TURN_ERROR,
                 ],
             )
@@ -467,5 +468,27 @@ mod connection_recovery_identity_tests {
             connection_recovery_id(&first),
             connection_recovery_id(&second)
         );
+    }
+}
+
+#[cfg(test)]
+mod disconnect_text_tests {
+    use super::eligibility;
+    use serde_json::json;
+    use studio_runtime_store::{
+        PROVIDER_DISCONNECTED_TURN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    };
+
+    fn interrupted(error: &str) -> serde_json::Value {
+        json!({"id":"agent-1","epoch":4,"accountKey":"acct","status":"interrupted",
+               "inFlight":false,"autoWake":false,"threadId":"thread-1","turnId":"turn-1",
+               "error":error})
+    }
+
+    #[test]
+    fn a_vm_provider_disconnect_has_the_manual_connection_check() {
+        assert!(eligibility(&interrupted(PROVIDER_DISCONNECTED_TURN_ERROR)).connection);
+        assert!(eligibility(&interrupted(VM_PROVIDER_DISCONNECTED_TURN_ERROR)).connection);
+        assert!(!eligibility(&interrupted("Some other failure")).connection);
     }
 }

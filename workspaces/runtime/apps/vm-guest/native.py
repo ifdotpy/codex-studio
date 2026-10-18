@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
 import uuid
 
 from common import GuestError, MAX_LINE, atomic_json, integer, private_dir, require
@@ -17,6 +18,16 @@ from common import GuestError, MAX_LINE, atomic_json, integer, private_dir, requ
 INLINE_EVENT_BYTES = 64 * 1024
 MAX_EVENT_BYTES = 256 * 1024 * 1024
 MAX_EVENT_CHUNK_BYTES = 1024 * 1024
+
+
+def unproven(action, phase, error, started):
+    """Leave journal evidence for a supervisor request without a proven result.
+
+    The supervisor itself writes no log, so this line is the only guest record of
+    the stall. It names the action and the phase, never the request content.
+    """
+    print(f"native supervisor {action} {phase} has no proven result after "
+          f"{(time.monotonic() - started) * 1000:.0f} ms: {type(error).__name__}", file=sys.stderr, flush=True)
 
 
 class Native:
@@ -29,9 +40,11 @@ class Native:
         self.process = None
 
     async def call(self, action, *, operator=False, **params):
+        started = time.monotonic()
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(self.socket), limit=MAX_LINE + 1), 2)
         except (OSError, asyncio.TimeoutError) as exc:
+            unproven(action, "connect", exc, started)
             raise GuestError("outcome_unknown", "The native supervisor connection is unavailable") from exc
         try:
             writer.write(json.dumps({"protocol": 1, "stateDir": str(self.root),
@@ -54,6 +67,7 @@ class Native:
                 raise GuestError("outcome_unknown", "The native supervisor rejected the operation; inspect its state")
             return response["result"]
         except (OSError, asyncio.TimeoutError, ValueError) as exc:
+            unproven(action, "exchange", exc, started)
             raise GuestError("outcome_unknown", "The native supervisor operation has no proven result") from exc
         finally:
             writer.close()
