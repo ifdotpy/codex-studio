@@ -6,7 +6,6 @@ use axum::response::Response;
 use axum::routing::any;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use studio_runtime_process::operational_log::OperationalLog;
@@ -115,7 +114,6 @@ pub struct HttpState {
     pub(crate) state_dir: String,
     pub(crate) cost_scan_cancelled: Arc<std::sync::atomic::AtomicBool>,
     cost_refresh_workers: Arc<CostRefreshWorkers>,
-    pub(crate) cost_scanner_build_script: Option<PathBuf>,
     pub(crate) vm_state_dir: std::path::PathBuf,
     pub(crate) app_server_log: Option<OperationalLog>,
     pub(crate) port: u16,
@@ -255,7 +253,6 @@ impl HttpState {
             state_dir,
             cost_scan_cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cost_refresh_workers: Arc::new(CostRefreshWorkers::default()),
-            cost_scanner_build_script: None,
             vm_state_dir,
             app_server_log: None,
             port,
@@ -529,11 +526,6 @@ impl HttpState {
 
     pub(crate) fn track_cost_refresh_worker(&self) -> CostRefreshWorkerGuard {
         self.cost_refresh_workers.track()
-    }
-
-    pub fn with_cost_scanner_build_script(mut self, path: PathBuf) -> Self {
-        self.cost_scanner_build_script = Some(path);
-        self
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.
