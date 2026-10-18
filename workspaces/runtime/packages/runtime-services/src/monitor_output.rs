@@ -85,9 +85,8 @@ impl MonitorOutput {
                 "operation identity changed",
             ));
         }
-        if offset > count {
-            return Err(MonitorError::InvalidOutputReceipt("cursor has a gap"));
-        }
+        // Output that reaches a finished monitor is ignored and does not advance
+        // its byte count, so every later chunk of it is ignored too, not a gap.
         if before
             .record()
             .get("status")
@@ -95,6 +94,9 @@ impl MonitorOutput {
             != Some("running")
         {
             return Ok(());
+        }
+        if offset > count {
+            return Err(MonitorError::InvalidOutputReceipt("cursor has a gap"));
         }
         let path = std::path::Path::new(id);
         if path.components().count() != 1 || path.file_name().and_then(|s| s.to_str()) != Some(id) {

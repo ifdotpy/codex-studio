@@ -142,6 +142,50 @@ async fn receipt_survives_store_failure_restart_and_replays_once() {
     );
 }
 
+/// Rehearsal 9 (rule monitor of agent 4c360fa0): the monitor finished while two
+/// output chunks were still queued. The first late chunk was skipped without
+/// advancing the byte count, so the second failed as "cursor has a gap" and
+/// replaced the monitor's own result with that delivery error.
+#[tokio::test]
+async fn output_queued_before_a_finish_is_ignored_without_a_cursor_gap() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor fixture")
+        .to_owned();
+    let store = fixtures::store(root.path(), "late-output").await;
+    case["before"]["bytes"] = json!(0);
+    case["before"]["log"] = json!(
+        studio_runtime_services::monitor_output::log_root(store.root()).join(format!("{id}.log"))
+    );
+    fixtures::seed(&store, &case).await;
+    let operation = operation(&case);
+    monitor_receipts::finish(
+        &store,
+        &ResultReceipt {
+            version: 1,
+            key: id.clone(),
+            code: Some(0),
+            error: None,
+            operation: Some(operation.clone()),
+            finished: 2000.0,
+        },
+    )
+    .await
+    .expect("monitor finishes");
+    let finished = record(&store, &id);
+    let output = MonitorOutput::default();
+    for (offset, bytes) in [(0, b"one".as_slice()), (3, b"two".as_slice())] {
+        output
+            .append(&store, &id, &operation, offset, bytes, 2001.0)
+            .await
+            .expect("late output is ignored");
+    }
+    assert_eq!(record(&store, &id), finished);
+}
+
 #[tokio::test]
 async fn malformed_pending_result_receipt_is_retained_and_skipped() {
     let root = fixtures::tempdir();
