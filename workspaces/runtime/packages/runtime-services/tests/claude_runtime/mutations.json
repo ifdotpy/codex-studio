@@ -1,17 +1,5 @@
 [
   {
-    "id": "C1",
-    "description": "stale connection cannot requeue frozen input",
-    "file": "workspaces/runtime/packages/runtime-services/src/claude_input_recovery.rs",
-    "edits": [
-      {
-        "before": "            && self.attempt.connection_id.as_deref() == Some(self.transport.connection_id.as_str())\n",
-        "after": ""
-      }
-    ],
-    "witnesses": ["stale connection cannot requeue frozen input"]
-  },
-  {
     "id": "C2",
     "description": "durable submitted code is never written twice",
     "file": "workspaces/runtime/packages/runtime-services/src/claude_login.rs",

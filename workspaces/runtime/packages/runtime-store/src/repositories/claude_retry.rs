@@ -1,6 +1,6 @@
-//! Frozen retry rows are loaded and applied under the caller's single transaction.
+//! Frozen Claude start rows are loaded and saved under the caller's single transaction.
 use crate::schema::SchemaRequirements;
-use crate::{AgentId, AgentRecord, AgentRepository, StoreError, StoreResult, Transaction};
+use crate::{AgentId, AgentRepository, StoreError, StoreResult, Transaction};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 
@@ -55,85 +55,6 @@ impl ClaudeRetryRepository {
             attempt,
             events,
         }))
-    }
-    pub fn has_turn_work(
-        tx: &Transaction<'_>,
-        agent: &str,
-        turn: &str,
-        since: f64,
-    ) -> StoreResult<bool> {
-        Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_items WHERE agent=?1 AND created>=?2 AND json_extract(record,'$.turnId')=?3 AND json_extract(record,'$.role') IN ('assistant','tool')) OR EXISTS(SELECT 1 FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.created')>=?2 AND json_extract(record,'$.turnId')=?3)",params![agent,since-60.0,turn],|r|r.get(0))?)
-    }
-    pub fn later_user(
-        tx: &Transaction<'_>,
-        agent: &str,
-        epoch: i64,
-        since: f64,
-    ) -> StoreResult<bool> {
-        Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.epoch=?2 AND e.kind='user' AND e.status='pending' AND e.turn_id IS NULL AND e.created>?3 AND json_type(m.record,'$.acceptedAt') IN ('integer','real') AND json_extract(m.record,'$.acceptedAt')>?3)",params![agent,epoch,since],|r|r.get(0))?)
-    }
-    pub fn transcript(
-        tx: &Transaction<'_>,
-        agent: &str,
-        id: &str,
-    ) -> StoreResult<Option<(Value, Option<String>)>> {
-        let raw: Option<String> = tx
-            .query_row(
-                "SELECT record FROM runtime_items WHERE id=?1 AND agent=?2",
-                params![id, agent],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(raw) = raw else {
-            return Ok(None);
-        };
-        let fulltext = tx
-            .query_row(
-                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(Some((serde_json::from_str(&raw)?, fulltext)))
-    }
-    pub fn apply(
-        tx: &Transaction<'_>,
-        agent: &Value,
-        attempt: &Value,
-        events: &[Value],
-    ) -> StoreResult<()> {
-        validate_attempt(attempt)?;
-        let record = AgentRecord::from_value(agent.clone())?;
-        AgentRepository::put(tx, &record)?;
-        let id = attempt
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("attempt"))?;
-        let count = tx.execute(
-            "UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2",
-            params![attempt.to_string(), id],
-        )?;
-        if count != 1 {
-            return Err(invalid(id));
-        }
-        for event in events {
-            let id = event
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("event"))?;
-            let metadata = event.get("metadata").ok_or_else(|| invalid(id))?;
-            if !studio_runtime_schema::validate("RuntimeEventMetadataRecord", metadata)
-                .map_err(|_| invalid(id))?
-            {
-                return Err(invalid(id));
-            }
-            tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,metadata.to_string()])?;
-            let count=tx.execute("UPDATE runtime_events SET status=?1,turn_id=?2,error=?3 WHERE id=?4 AND agent=?5 AND epoch=?6",params![event["status"].as_str(),event["turn_id"].as_str(),event["error"].as_str(),id,event["agent"].as_str(),event["epoch"].as_i64()])?;
-            if count != 1 {
-                return Err(invalid(id));
-            }
-        }
-        Ok(())
     }
 }
 fn validate_attempt(record: &Value) -> StoreResult<()> {

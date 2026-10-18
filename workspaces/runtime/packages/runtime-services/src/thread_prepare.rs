@@ -678,7 +678,6 @@ pub struct ProviderReceipt {
     /// Map preserves absent versus explicit null for the provider's model field.
     pub fields: Map<String, Value>,
     pub reattached: bool,
-    pub claude_read_submitted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -828,9 +827,7 @@ pub fn reduce_receipt(
             receipt.fields.get(source).cloned().unwrap_or(Value::Null),
         );
     }
-    if !(current.account.provider == ProviderKind::Claude
-        && (receipt.reattached || receipt.claude_read_submitted))
-    {
+    if !(current.account.provider == ProviderKind::Claude && receipt.reattached) {
         set.insert("preparedContext".into(), json!({"epoch":[thread_id,current.actor.compactions],"versions":attempt.context_versions}));
     }
     if let Some(mut release) = current.actor.native_release.clone() {

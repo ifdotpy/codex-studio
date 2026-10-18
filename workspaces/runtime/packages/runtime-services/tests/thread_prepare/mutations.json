@@ -26,7 +26,7 @@
     "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
     "edits": [
       {
-        "before": "let tool_catalog = if method == Method::Start || s.account.provider == Provider::Claude {",
+        "before": "let tool_catalog = if method == Method::Start || s.account.provider == ProviderKind::Claude {",
         "after": "let tool_catalog = if true {"
       }
     ],
@@ -81,11 +81,11 @@
     "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
     "edits": [
       {
-        "before": "if !(current.account.provider == Provider::Claude\n        && (receipt.reattached || receipt.claude_read_submitted))",
+        "before": "if !(current.account.provider == ProviderKind::Claude && receipt.reattached)",
         "after": "if true"
       }
     ],
-    "witness": "receipts-24"
+    "witness": "receipts-32"
   },
   {
     "id": "thread-catalog-order",

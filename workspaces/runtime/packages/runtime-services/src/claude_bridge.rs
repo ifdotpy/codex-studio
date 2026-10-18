@@ -188,29 +188,6 @@ pub fn bridge_options(value: &Value) -> Result<Value, BridgeHold> {
     options.insert("extraArgs".into(), Value::Object(extra));
     Ok(Value::Object(options))
 }
-/// Existing unsupported recovery records stay visible and cannot enter ordinary batching.
-pub fn admission_hold(agent: &Value) -> Option<&'static str> {
-    for (field, message) in [
-        (
-            "claudePreInputRetry",
-            "Claude's original input is frozen pending exact retry recovery",
-        ),
-        (
-            "claudeAuthWait",
-            "Claude account verification is pending; original input remains held",
-        ),
-    ] {
-        if agent.get(field).is_some_and(|v| !v.is_null()) {
-            return Some(message);
-        }
-    }
-    let attempt = agent.get("startAttempt")?;
-    (agent.get("provider") == Some(&json!("claude"))
-        && attempt.get("executionOutcome") == Some(&json!("not_applied"))
-        && attempt.get("claudeInputRequest").is_none_or(Value::is_null))
-    .then_some("Claude input rejection has no frozen request; inspect before resuming")
-}
-
 /// An incompatible bridge is held until its owner proves it idle and retires the
 /// exact retained generation. This decision never detaches or stops active work.
 pub fn compatibility_hold(

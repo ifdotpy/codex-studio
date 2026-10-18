@@ -3,18 +3,15 @@ mod python_test_support;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 use studio_runtime_services::{
-    account_worker::{WorkerError, commit_prepared_turn},
+    account_worker::commit_prepared_turn,
     claude_input_recovery::{
-        Rejection, TransportSnapshot,
-        runtime::{
-            SubmittedBinding, bind_submitted, freeze_start, start_input, submission::commit_start,
-        },
-        store::recover_rejected_start,
+        TransportSnapshot,
+        runtime::{SubmittedBinding, bind_submitted, freeze_start, submission::commit_start},
     },
-    notification_dispatch::{PreparedSubmission, SubmittedInput, record_user_submission},
+    notification_dispatch::{PreparedSubmission, SubmittedInput},
     scheduler::TurnIntent,
 };
-use studio_runtime_store::{AgentRecord, AgentRepository, ExecutionHistoryRepository, sha256_hex};
+use studio_runtime_store::sha256_hex;
 
 fn corpus(root: &std::path::Path) -> Vec<Value> {
     static TEMPLATE: OnceLock<(tempfile::TempDir, Vec<Value>)> = OnceLock::new();
@@ -199,14 +196,27 @@ fn real_submission_transaction_matches_python_complete_rows_and_crash_boundaries
         let mut db = rusqlite::Connection::open(path).expect("db");
         compare(&db, &case["before"], "Python prestate");
         let retry = case["retry"] == true;
-        let mut before = case["before"].clone();
+        let before = case["before"].clone();
         if retry {
+            // Python's exact-retry attempts have no Rust retry path: the
+            // legacy record stays held and no submission row is written.
+            let i = intent(&before);
             let tx = db.transaction().expect("tx");
-            record_user_submission(&tx, "agent", &submission(&before, 150.0))
-                .expect("existing transcript receipt");
-            tx.commit().expect("commit");
-            add_receipts(&mut before, &[], true);
-            compare(&db, &before, "retry prestate with verified receipt");
+            assert!(
+                commit_start(
+                    &tx,
+                    &i,
+                    &format!("request:{}", i.attempt_id),
+                    binding(7),
+                    &params(&before),
+                    &submission(&before, 170.0),
+                )
+                .is_err(),
+                "legacy retry must stay held"
+            );
+            drop(tx);
+            compare(&db, &before, "legacy retry held without writes");
+            continue;
         }
         let i = intent(&before);
         if case["fault"] == "bind" {
@@ -219,7 +229,7 @@ fn real_submission_transaction_matches_python_complete_rows_and_crash_boundaries
             &format!("request:{}", i.attempt_id),
             binding(7),
             &params(&before),
-            &submission(&before, if retry { 170.0 } else { 150.0 }),
+            &submission(&before, 150.0),
         );
         let failed = matches!(case["fault"].as_str(), Some("configuration" | "bind"));
         assert_eq!(
@@ -248,115 +258,10 @@ fn real_submission_transaction_matches_python_complete_rows_and_crash_boundaries
             } else {
                 &[]
             },
-            retry || committed,
+            committed,
         );
-        compare(
-            &db,
-            &expected,
-            &format!("retry={retry} fault={}", case["fault"]),
-        );
+        compare(&db, &expected, &format!("fault={}", case["fault"]));
     }
-}
-#[test]
-fn first_submission_rejection_and_new_attempt_preserve_the_complete_original_receipt() {
-    let root = tempfile::tempdir().expect("tmpfs");
-    let cases = corpus(root.path());
-    let fresh = cases
-        .iter()
-        .find(|c| c["retry"] == false && c["fault"].is_null())
-        .expect("fresh");
-    let retry = cases
-        .iter()
-        .find(|c| c["retry"] == true && c["fault"].is_null())
-        .expect("retry");
-    let mut db = rusqlite::Connection::open(fresh["path"].as_str().expect("path")).expect("db");
-    let tx = db.transaction().expect("tx");
-    let first = submission(&fresh["before"], 150.0);
-    commit_start(
-        &tx,
-        &intent(&fresh["before"]),
-        "request:attempt",
-        binding(7),
-        &params(&fresh["before"]),
-        &first,
-    )
-    .expect("first submission");
-    tx.commit().expect("commit");
-    let tx = db.transaction().expect("tx");
-    let rejection: Rejection = serde_json::from_value(
-        json!({"kind":"rpc","code":-32000,"data":{"turnStartOutcome":"not_applied"}}),
-    )
-    .expect("rejection");
-    assert_eq!(
-        serde_json::to_value(
-            recover_rejected_start(&tx, "agent", "attempt", transport(), false, &rejection)
-                .expect("rejection")
-        )
-        .expect("outcome"),
-        json!("retry")
-    );
-    tx.commit().expect("commit");
-    // The exact-retry reservation belongs to the scheduler integrator. Seed only
-    // the NEW UNSENT reservation, leaving first Submitted/receipt rows untouched.
-    let tx = db.transaction().expect("tx");
-    let a = AgentRecord::from_value(agent(&retry["before"]).clone()).expect("agent");
-    AgentRepository::put(&tx, &a).expect("reserve agent");
-    ExecutionHistoryRepository::record(&tx, &a).expect("reserve attempt");
-    tx.execute("UPDATE runtime_events SET status='reserved'", [])
-        .expect("reserve input");
-    tx.commit().expect("commit");
-    let mut expected_before = retry["before"].clone();
-    add_receipts(&mut expected_before, &["attempt"], true);
-    compare(
-        &db,
-        &expected_before,
-        "after positive rejection and new reservation",
-    );
-    let later = submission(&expected_before, 170.0);
-    let tx = db.transaction().expect("tx");
-    // Reproduces the rejected integration: new attempt + current clock conflicts.
-    freeze_start(
-        &tx,
-        "agent",
-        "retry",
-        transport(),
-        &params(&expected_before),
-        &later.text,
-    )
-    .expect("freeze");
-    assert!(matches!(commit_prepared_turn(&tx,&intent(&expected_before),"request:retry",7,"test-connection",&later),Err(WorkerError::Notification(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput))));
-    drop(tx);
-    compare(&db, &expected_before, "conflicting integration rolled back");
-    let tx = db.transaction().expect("tx");
-    let mut rebuilt = params(&expected_before);
-    rebuilt["input"] = json!([{"type":"text","text":"new compiled text"}]);
-    let input = start_input(
-        &tx,
-        "agent",
-        "retry",
-        transport(),
-        rebuilt,
-        "new compiled text".into(),
-    )
-    .expect("frozen preparation");
-    assert_eq!(input.text, first.text);
-    commit_start(
-        &tx,
-        &intent(&expected_before),
-        "request:retry",
-        binding(7),
-        &input.params,
-        &later,
-    )
-    .expect("retry through real commit_prepared_turn");
-    tx.commit().expect("commit");
-    let mut expected = retry["after"].clone();
-    add_receipts(&mut expected, &["attempt", "retry"], true);
-    compare(
-        &db,
-        &expected,
-        "retry committed, original transcript and receipt unchanged",
-    );
 }
 #[test]
 fn initial_binding_refuses_wrong_or_missing_prepared_generation_and_foreign_transport() {
@@ -426,141 +331,6 @@ fn initial_binding_refuses_wrong_or_missing_prepared_generation_and_foreign_tran
         compare(&tx, &unbound, "binding refusal has no writes");
         drop(tx);
         compare(&db, &before, "outer rollback restores complete prestate");
-    }
-}
-
-#[test]
-fn retry_reconstructs_full_text_and_original_assets_and_rejects_a_changed_receipt() {
-    let root = tempfile::tempdir().expect("tmpfs");
-    let cases = corpus(root.path());
-    let fresh = &cases[0];
-    let retry = cases
-        .iter()
-        .find(|c| c["retry"] == true && c["fault"].is_null())
-        .expect("retry");
-    let mut db = rusqlite::Connection::open(fresh["path"].as_str().expect("path")).expect("db");
-    let full = "long input ".repeat(2001);
-    db.execute("UPDATE runtime_events SET text=?1 WHERE id='one'", [&full])
-        .expect("long input");
-    db.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.assets',json('[\"asset\"]')) WHERE id='one'",[]).expect("asset");
-    let before = state(&db);
-    let mut original = submission(&before, 150.0);
-    original.text = full.clone();
-    original.inputs[0].assets = json!([{"id":"asset","name":"original asset view"}]);
-    original.assets = original.inputs[0].assets.clone();
-    let mut prepared = params(&before);
-    prepared["input"] = json!([{"type":"text","text":full}]);
-    let tx = db.transaction().expect("tx");
-    commit_start(
-        &tx,
-        &intent(&before),
-        "request:attempt",
-        binding(7),
-        &prepared,
-        &original,
-    )
-    .expect("first submission");
-    tx.commit().expect("commit");
-    let first = state(&db);
-    assert_eq!(first["runtime_items"][0]["record"]["truncated"], true);
-    assert_eq!(
-        first["runtime_items"][0]["record"]["inputs"][0]["truncated"],
-        true
-    );
-    assert_eq!(first["runtime_item_fulltext"][0]["body"], full);
-    let tx = db.transaction().expect("tx");
-    let rejection = serde_json::from_value(
-        json!({"kind":"rpc","code":-32000,"data":{"turnStartOutcome":"not_applied"}}),
-    )
-    .expect("rejection");
-    assert!(
-        recover_rejected_start(&tx, "agent", "attempt", transport(), false, &rejection)
-            .expect("recover")
-            .is_some()
-    );
-    let mut current = agent(&state(&tx)).clone();
-    current["startAttempt"] = agent(&retry["before"])["startAttempt"].clone();
-    current["status"] = json!("starting");
-    current["inFlight"] = json!(true);
-    let record = AgentRecord::from_value(current).expect("agent");
-    AgentRepository::put(&tx, &record).expect("reserve");
-    ExecutionHistoryRepository::record(&tx, &record).expect("record reservation");
-    tx.execute("UPDATE runtime_events SET status='reserved'", [])
-        .expect("reserve events");
-    tx.commit().expect("commit");
-    let before_retry = state(&db);
-    let mut later = original.clone();
-    later.submitted_at = 170.0;
-    later.created_at = 171.0;
-    later.assets = json!([{"id":"asset","name":"new asset view"}]);
-    later.inputs[0].assets = later.assets.clone();
-    later.inputs[0].text = "new compiler preview".into();
-    for fault in ["clock", "assets", "input_assets"] {
-        let tx = db.transaction().expect("tx");
-        let path = match fault {
-            "clock" => "$.at",
-            "assets" => "$.assets",
-            _ => "$.inputs[0].assets",
-        };
-        let value = if fault == "clock" {
-            json!(1.0)
-        } else {
-            json!([{"id":"asset","name":"tampered"}])
-        };
-        tx.execute(
-            "UPDATE runtime_items SET record=json_set(record,?1,json(?2))",
-            rusqlite::params![path, value.to_string()],
-        )
-        .expect("tamper original identity");
-        assert!(matches!(commit_start(&tx,&intent(&before_retry),"request:retry",binding(7),&prepared,&later),Err(WorkerError::Notification(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput))),"{fault}");
-        drop(tx);
-        compare(
-            &db,
-            &before_retry,
-            "receipt conflict rolled back all submission writes",
-        );
-    }
-    // A full transcript is proof for the frozen retry; a preview alone is not.
-    let tx = db.transaction().expect("tx");
-    tx.execute("DELETE FROM runtime_item_fulltext WHERE id='agent:one'", [])
-        .expect("missing fulltext");
-    let incomplete = state(&tx);
-    assert!(
-        commit_start(
-            &tx,
-            &intent(&before_retry),
-            "request:retry",
-            binding(7),
-            &prepared,
-            &later
-        )
-        .is_err()
-    );
-    compare(
-        &tx,
-        &incomplete,
-        "missing long fulltext refuses before submission writes",
-    );
-    drop(tx);
-    compare(&db, &before_retry, "missing fulltext refusal rolled back");
-    let tx = db.transaction().expect("tx");
-    commit_start(
-        &tx,
-        &intent(&before_retry),
-        "request:retry",
-        binding(7),
-        &prepared,
-        &later,
-    )
-    .expect("exact original submission from full input and saved assets");
-    tx.commit().expect("commit");
-    let after = state(&db);
-    for table in [
-        "runtime_items",
-        "runtime_item_fulltext",
-        "runtime_operation_receipts",
-    ] {
-        assert_eq!(after[table], first[table], "{table}");
     }
 }
 
@@ -668,93 +438,4 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
     );
     drop(tx);
     compare(&db, &before, "ownership loss after freeze rolls back");
-}
-
-#[test]
-fn python_retry_without_a_rust_receipt_migrates_only_a_complete_transcript() {
-    let root = tempfile::tempdir().expect("tmpfs");
-    let cases = corpus(root.path());
-    let retry = cases
-        .iter()
-        .find(|c| c["retry"] == true && c["fault"].is_null())
-        .expect("Python retry");
-    for fault in [
-        "none",
-        "missing_item",
-        "missing_inputs",
-        "partial_input",
-        "missing_assets",
-        "missing_clock",
-        "missing_text",
-        "partial_text",
-    ] {
-        let path = root.path().join(format!("python-retry-{fault}.sqlite3"));
-        std::fs::copy(retry["path"].as_str().expect("path"), &path)
-            .expect("Python-written prestate");
-        let mut db = rusqlite::Connection::open(&path).expect("db");
-        compare(
-            &db,
-            &retry["before"],
-            "untouched Python retry, no Rust receipt seeded",
-        );
-        assert_eq!(state(&db)["runtime_operation_receipts"], json!([]));
-        match fault {
-            "missing_item" => {
-                db.execute("DELETE FROM runtime_items WHERE id='agent:one'", [])
-                    .expect("missing item");
-            }
-            "partial_text" => {
-                db.execute("UPDATE runtime_items SET record=json_set(record,'$.text','partial') WHERE id='agent:one'",[]).expect("partial text");
-            }
-            "none" => {}
-            _ => {
-                let field = match fault {
-                    "missing_inputs" => "$.inputs",
-                    "partial_input" => "$.inputs[0].assets",
-                    "missing_assets" => "$.assets",
-                    "missing_clock" => "$.at",
-                    "missing_text" => "$.text",
-                    _ => unreachable!(),
-                };
-                db.execute(
-                    "UPDATE runtime_items SET record=json_remove(record,?1) WHERE id='agent:one'",
-                    [field],
-                )
-                .expect("incomplete item");
-            }
-        }
-        let before = state(&db);
-        let tx = db.transaction().expect("tx");
-        let result = commit_start(
-            &tx,
-            &intent(&before),
-            "request:retry",
-            binding(7),
-            &params(&before),
-            &submission(&before, 170.0),
-        );
-        assert_eq!(result.is_ok(), fault == "none", "{fault}: {result:?}");
-        if fault == "none" {
-            tx.commit().expect("commit Python-origin retry");
-        } else {
-            drop(tx);
-        }
-        drop(db);
-        let db = rusqlite::Connection::open(&path).expect("restart");
-        if fault == "none" {
-            let mut expected = retry["after"].clone();
-            add_receipts(&mut expected, &["retry"], true);
-            compare(
-                &db,
-                &expected,
-                "Python transcript migrated through commit_start without a prior Rust receipt",
-            );
-        } else {
-            compare(
-                &db,
-                &before,
-                "unproven retry refused, all rows unchanged after restart",
-            );
-        }
-    }
 }

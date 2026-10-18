@@ -34,24 +34,42 @@ fn row(db: &rusqlite::Connection, table: &str, id: &str) -> Value {
     serde_json::from_str(&text).expect("json")
 }
 #[test]
-fn fresh_and_retry_freeze_match_python_capture_and_preserve_refreshed_tools() {
+fn fresh_freeze_matches_python_capture_and_legacy_retry_stays_held() {
     let root = tempfile::tempdir().expect("scratch");
     for case in fixtures(root.path()) {
         let mut db =
             rusqlite::Connection::open(case["path"].as_str().expect("path")).expect("open");
         let attempt = case["attempt"]["id"].as_str().expect("attempt");
         let tx = db.transaction().expect("transaction");
-        let mut current = case["params"].clone();
         if case["retry"] == true {
-            current["input"] =
-                json!([{"type":"text","text":"newly compiled, must not replace frozen"}]);
+            // A Python exact-retry record has no Rust retry path; it stays held.
+            let before = row(&tx, "runtime_agents", "agent");
+            let transport =
+                || serde_json::from_value(case["transport"].clone()).expect("transport");
+            let text = case["text"].as_str().expect("text");
+            assert!(
+                start_input(
+                    &tx,
+                    "agent",
+                    attempt,
+                    transport(),
+                    case["params"].clone(),
+                    text.into()
+                )
+                .is_err()
+            );
+            assert!(
+                freeze_start(&tx, "agent", attempt, transport(), &case["params"], text).is_err()
+            );
+            assert_eq!(row(&tx, "runtime_agents", "agent"), before);
+            continue;
         }
         let input = start_input(
             &tx,
             "agent",
             attempt,
             serde_json::from_value(case["transport"].clone()).expect("transport"),
-            current,
+            case["params"].clone(),
             case["text"].as_str().expect("text").into(),
         )
         .expect("prepare");
@@ -90,7 +108,10 @@ fn fresh_and_retry_freeze_match_python_capture_and_preserve_refreshed_tools() {
 #[test]
 fn freeze_failpoints_roll_back_and_restart_without_losing_the_original_input() {
     let root = tempfile::tempdir().expect("scratch");
-    for case in fixtures(root.path()) {
+    for case in fixtures(root.path())
+        .into_iter()
+        .filter(|case| case["retry"] != true)
+    {
         for boundary in ["attempt", "agent", "before_commit", "after_commit"] {
             let path = root
                 .path()

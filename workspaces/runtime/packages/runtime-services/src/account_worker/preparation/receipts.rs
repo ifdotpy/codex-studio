@@ -59,7 +59,6 @@ pub(crate) fn accept_thread(
             .ok_or_else(|| invalid("thread receipt"))?
             .clone(),
         reattached: false,
-        claude_read_submitted: false,
     };
     if let thread::ReceiptOutcome::Accepted { patch, loaded } =
         thread::reduce_receipt(attempt, &current, Some(&receipt), None, json!(now()))

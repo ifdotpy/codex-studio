@@ -3,7 +3,7 @@ mod python_test_support;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     account_driver::{AuthMetadata, AuthStatus},
-    claude_bridge::{BridgeSnapshot, ResolvedBridge, admission_hold},
+    claude_bridge::{BridgeSnapshot, ResolvedBridge},
 };
 #[test]
 fn python_launch_plans_and_explicit_recovery_holds() {
@@ -65,15 +65,6 @@ fn python_launch_plans_and_explicit_recovery_holds() {
         .expect("valid fixture");
         assert_eq!(actual, case["expected"]);
     }
-    for key in ["claudePreInputRetry", "claudeAuthWait"] {
-        assert!(admission_hold(&json!({key:{"original":"preserved"}})).is_some());
-    }
-    assert!(
-        admission_hold(
-            &json!({"provider":"claude","startAttempt":{"executionOutcome":"not_applied"}})
-        )
-        .is_some()
-    );
 }
 
 #[test]

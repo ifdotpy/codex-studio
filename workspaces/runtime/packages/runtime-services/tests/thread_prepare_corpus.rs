@@ -93,7 +93,7 @@ fn attempt(outcome: Outcome) -> PreparedAttempt {
     }
 }
 fn receipt(a: &PreparedAttempt) -> ProviderReceipt {
-    serde_json::from_value(json!({"identity":a.receipt_identity(),"thread_id":"thread","fields":{"model":"native-model"},"reattached":false,"claude_read_submitted":false})).expect("receipt")
+    serde_json::from_value(json!({"identity":a.receipt_identity(),"thread_id":"thread","fields":{"model":"native-model"},"reattached":false})).expect("receipt")
 }
 fn apply(value: &mut Value, patch: &AgentPatch) {
     let object = value.as_object_mut().expect("record");

@@ -1,7 +1,7 @@
 //! Submission helpers for the account worker's existing transaction. Preparation
 //! calls `start_input`; the Submitted transaction calls `submission::commit_start`
 //! with the exact prepared wire params and request generation. No provider call or journal ACK belongs here.
-use super::{TransportSnapshot, capture_input, store};
+use super::{TransportSnapshot, capture_input};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ClaudeRetryRecords, ClaudeRetryRepository, StoreError,
@@ -95,17 +95,15 @@ pub fn start_input(
     text: String,
 ) -> StoreResult<StartInput> {
     let rows = reserved(tx, agent, attempt, &transport)?;
-    resolve(tx, agent, &rows, transport, params, text)
+    resolve(agent, &rows, params, text)
 }
 fn resolve(
-    tx: &Transaction<'_>,
     agent: &str,
     rows: &ClaudeRetryRecords,
-    transport: TransportSnapshot,
-    mut params: Value,
-    mut text: String,
+    params: Value,
+    text: String,
 ) -> StoreResult<StartInput> {
-    let object = params.as_object_mut().ok_or_else(|| invalid(agent))?;
+    let object = params.as_object().ok_or_else(|| invalid(agent))?;
     if object.get("threadId") != rows.agent.get("threadId")
         || object
             .get("threadId")
@@ -117,36 +115,16 @@ fn resolve(
     {
         return Err(invalid(agent));
     }
-    let retry = rows
+    // Legacy Python retry state (an exact-retry attempt or a pending retry) has
+    // no Rust retry path: such a record stays held and visible, never resent.
+    if rows
         .agent
         .pointer("/startAttempt/claudeRetryOf")
-        .and_then(Value::as_str);
-    if let Some(retry) = retry {
-        let frozen = store::retry_input(tx, agent, retry, transport, false)?
-            .ok_or_else(|| invalid(agent))?;
-        let configuration: serde_json::Map<String, Value> = object
-            .iter()
-            .filter(|(key, _)| {
-                !["input", "dynamicTools", "clientUserMessageId"].contains(&key.as_str())
-            })
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        if frozen.get("configuration") != Some(&Value::Object(configuration)) {
-            return Err(invalid(agent));
-        }
-        object.insert(
-            "input".into(),
-            frozen.get("input").cloned().ok_or_else(|| invalid(agent))?,
-        );
-        text = frozen
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid(agent))?
-            .into();
-    } else if rows
-        .agent
-        .get("claudePreInputRetry")
         .is_some_and(|value| !value.is_null())
+        || rows
+            .agent
+            .get("claudePreInputRetry")
+            .is_some_and(|value| !value.is_null())
     {
         return Err(invalid(agent));
     }
@@ -165,7 +143,7 @@ pub fn freeze_start(
     text: &str,
 ) -> StoreResult<()> {
     let mut rows = reserved(tx, agent, attempt, &transport)?;
-    let input = resolve(tx, agent, &rows, transport, params.clone(), text.into())?;
+    let input = resolve(agent, &rows, params.clone(), text.into())?;
     if &input.params != params || input.text != text {
         return Err(invalid(agent));
     }
