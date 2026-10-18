@@ -219,7 +219,8 @@ pub(super) fn decide(
             {
                 return Ok(decision);
             }
-            let fallback = json!({"message":"Codex reported an error."});
+            let label = provider_label(original);
+            let fallback = json!({"message": format!("{label} reported an error.")});
             let error = params
                 .get("error")
                 .filter(|v| !v.is_null() && **v != json!({}))
@@ -233,7 +234,7 @@ pub(super) fn decide(
             } else if error_kind == "activeTurnNotSteerable" {
                 decision.item = Some(notice(
                     format!("steer:{}", turn.as_str().unwrap_or_default()),
-                    error_message(error),
+                    error_message(error, label),
                     "warning",
                     json!({"turnId":turn,"nativeError":error}),
                 ));
@@ -254,7 +255,7 @@ pub(super) fn decide(
                 agent["activity"] = json!({"phase":"error","at":at});
                 decision.item = Some(notice(
                     format!("error:{}", turn.as_str().unwrap_or_default()),
-                    error_message(error),
+                    error_message(error, label),
                     "error",
                     json!({"turnId":turn,"nativeError":error,"cyberAccessProgram":agent["cyberAccessProgram"]}),
                 ));
@@ -434,9 +435,9 @@ const ERROR_MESSAGES: &[(&str, &str)] = &[
         "flexUnavailable",
         "The selected model is temporarily unavailable on the flexible processing tier. Try again later or choose another model.",
     ),
-    ("default", "Codex reported an error."),
 ];
-pub(crate) fn error_message(error: &Value) -> String {
+/// Notice text for a provider error; `label` names the agent's provider.
+pub(crate) fn error_message(error: &Value, label: &str) -> String {
     let kind = error_kind(error);
     if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| *k == kind) {
         return (*message).into();
@@ -445,8 +446,15 @@ pub(crate) fn error_message(error: &Value) -> String {
         .as_str()
         .or_else(|| error.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or(ERROR_MESSAGES[4].1)
-        .into()
+        .map_or_else(|| format!("{label} reported an error."), str::to_owned)
+}
+
+/// Display name of the agent's provider in notices (Codex for an unknown one,
+/// whose turn the runtime refuses before it can produce a notice).
+pub(super) fn provider_label(agent: &Value) -> &'static str {
+    studio_runtime_providers::ProviderKind::of_record(agent)
+        .unwrap_or(studio_runtime_providers::ProviderKind::Codex)
+        .label()
 }
 
 pub(super) use studio_runtime_store::python_json_utf8 as json_text;
@@ -618,4 +626,24 @@ pub(crate) fn account_notice(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_label_tests {
+    use super::{error_message, provider_label};
+    use serde_json::json;
+
+    #[test]
+    fn error_notices_name_the_agents_provider() {
+        assert_eq!(provider_label(&json!({"provider": "claude"})), "Claude");
+        assert_eq!(provider_label(&json!({})), "Codex");
+        assert_eq!(
+            error_message(&json!({}), "Claude"),
+            "Claude reported an error."
+        );
+        assert_eq!(
+            error_message(&json!({"codexErrorInfo": "cyberPolicy"}), "Codex"),
+            "Codex refused this turn under its cybersecurity policy."
+        );
+    }
 }

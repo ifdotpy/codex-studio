@@ -68,7 +68,7 @@ pub(super) fn apply(
                 tx,
                 &id,
                 &item.key,
-                ("system", "Codex"),
+                ("system", notices::provider_label(agent)),
                 &item.text,
                 item.metadata,
                 at,

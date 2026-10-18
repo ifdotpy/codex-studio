@@ -210,7 +210,8 @@ where
     let Some(_refresh) = begin_cost_refresh(refresh_key) else {
         return (false, Ok(()));
     };
-    let is_claude = account.get("provider").and_then(Value::as_str) == Some("claude")
+    let is_claude = studio_runtime_providers::ProviderKind::of_record(account)
+        == Ok(studio_runtime_providers::ProviderKind::Claude)
         || account_key == "claude-local";
     if is_claude {
         if cancelled.load(Ordering::Acquire) {
