@@ -757,16 +757,15 @@ impl Worker {
             return Ok(None);
         };
         let observed_generation = *self.idle_state_changes.borrow();
-        if let Some(thread) = unsubscribe_thread.as_deref() {
-            if !self.queued_commands.is_empty()
+        if let Some(thread) = unsubscribe_thread.as_deref()
+            && (!self.queued_commands.is_empty()
                 || !self.inbox.is_empty()
                 || self.closing
                 || !self.thread_unused(thread).await?
                 || *self.idle_state_changes.borrow() != observed_generation
-                || self.idle_setting_changes.has_changed().unwrap_or(true)
-            {
-                return Ok(None);
-            }
+                || self.idle_setting_changes.has_changed().unwrap_or(true))
+        {
+            return Ok(None);
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         self.request_waiters.insert(operation.clone(), reply);
