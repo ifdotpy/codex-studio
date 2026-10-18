@@ -775,6 +775,22 @@ class SchemaContractTests(unittest.TestCase):
         # Stored lead messages and user task replies carry their source type.
         add("/components/schemas/ComplaintDetailResponse/properties/sourceType",
             "property", "@nullable", "@nullableBranch")
+
+        # A lost server identity: its replacement action, audit name, successor
+        # field, and the derived identity alerts in the access snapshot.
+        add("/paths/~1api~1multi-server/post/requestBody/content/application~1json/schema", "@oneOf")
+        for pointer in ("/components/schemas/AccessAudit/properties/action",
+                        "/components/schemas/AccessAuditResponse/properties/records/items/properties/action"):
+            add(pointer, "enum")
+        for pointer in ("/components/schemas/AccessClient/properties/replacedBy",
+                        "/components/schemas/AccessSnapshot/properties/clients/items/properties/replacedBy"):
+            add(pointer, "property", "@nullable", "@nullableBranch")
+        for pointer in ("/components/schemas/AccessSnapshot/properties/servers/items/properties/replacedBy",
+                        "/components/schemas/DiscoveredServer/properties/replacedBy",
+                        "/components/schemas/AccessSnapshot/properties/identityAlerts/items/properties/origin",
+                        "/components/schemas/IdentityAlert/properties/origin"):
+            add(pointer, "@nullable", "@nullableBranch")
+        add("/components/schemas/AccessSnapshot/properties/identityAlerts", "property")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

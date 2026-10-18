@@ -14,6 +14,15 @@ export type ServerAccessPeer = {
   lastSeen: number | null;
   autoPair: boolean | null;
   alias?: string | null;
+  replacedBy?: string | null;
+};
+/** A server identity change that leaves live references to the lost identity. */
+export type ServerIdentityAlert = {
+  code: "peer_identity_changed" | "local_identity_changed";
+  oldServerId: string;
+  newServerId: string;
+  origin: string | null;
+  detail: string;
 };
 export type ServerAccessState = {
   protocol: typeof ACCESS_PROTOCOL_VERSION;
@@ -38,6 +47,7 @@ export type ServerAccessState = {
   };
   servers: ServerAccessPeer[];
   invites: unknown[];
+  identityAlerts?: ServerIdentityAlert[];
 };
 export type ServerAccessRequest =
   | { action: "create_invite"; requestId: string; label?: string }
@@ -48,7 +58,13 @@ export type ServerAccessRequest =
   | { action: "settings"; autoPair: boolean; requestId: string }
   | { action: "settings"; autoUpdate: boolean; requestId: string }
   | { action: "name"; serverId: string; label: string; requestId: string }
-  | { action: "alias"; serverId: string; alias: string; requestId: string };
+  | { action: "alias"; serverId: string; alias: string; requestId: string }
+  | {
+      action: "replace_server";
+      oldServerId: string;
+      newServerId: string;
+      requestId: string;
+    };
 export type ServerAccessResponse =
   | ServerAccessState
   | { invitation: PairInvitation; expires: number }

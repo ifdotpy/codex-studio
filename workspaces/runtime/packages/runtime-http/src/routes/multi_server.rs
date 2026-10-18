@@ -206,6 +206,13 @@ async fn manage(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if action == "replace_server" {
+        // The Python backend owns this repair (docs/multi-server.md). Refuse before any write.
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: replace_server runs on the Python backend",
+        ));
+    }
     if action == "create_invite" {
         let request_id = body["requestId"]
             .as_str()
@@ -1129,6 +1136,38 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&body).expect("error envelope"),
             serde_json::json!({"error":"Not implemented: requires server-credentials/platform-support"})
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_server_has_a_named_501_refusal_without_a_store() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().display().to_string(),
+            12345,
+            None,
+            None,
+            None,
+        );
+        let refusal = manage(
+            State(state),
+            ApiJson(serde_json::json!({
+                "action":"replace_server","oldServerId":"lost","newServerId":"successor","requestId":"replace"
+            })),
+        )
+        .await
+        .expect_err("the Rust backend refuses the repair");
+        let response = refusal.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("small refusal body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("error envelope"),
+            serde_json::json!({"error":"Not implemented: replace_server runs on the Python backend"})
         );
     }
 

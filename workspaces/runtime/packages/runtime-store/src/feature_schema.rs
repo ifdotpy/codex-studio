@@ -223,7 +223,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_native_catalog_updates (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_native_limit_refreshes (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL, epoch TEXT);
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default')) WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' AND (json_extract(record,'$.contextRepair.phase') IN ('preparing','submitted','unknown','ready') OR COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!='');
             CREATE INDEX IF NOT EXISTS runtime_agent_callback_context ON runtime_agents(
                 COALESCE(json_extract(record,'$.accountKey'),'default'),

@@ -14,6 +14,7 @@ import threading
 import uuid
 
 from codex_process_supervisor import ProcessProxy, _Input, _Stdout
+from codex_shared_values import SUPERVISOR_JOURNAL_EPOCH_FIELD
 
 
 class GuestProcessProxy(ProcessProxy):
@@ -37,6 +38,9 @@ class GuestProcessProxy(ProcessProxy):
         self.read_cursor = self.cursor
         self.ack_pending = set()
         self.sequence = opened['sequence']
+        # The guest journal does not report an epoch yet; None keeps the legacy cursor rule.
+        epoch = opened.get(SUPERVISOR_JOURNAL_EPOCH_FIELD)
+        self.journal_epoch = epoch if isinstance(epoch, str) and epoch else None
         self.remote_to_local = {}
 
     def call(self, action, **values):
