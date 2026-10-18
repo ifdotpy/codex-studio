@@ -301,12 +301,30 @@ fn panic_observed_log(location: Option<&std::panic::Location<'_>>) -> String {
     format!("runtime server observed panic{location} (payload redacted)")
 }
 
+/// The vault writer layr-desk runs: configure the VM writer from the configuration on standard input.
+#[cfg(unix)]
+fn vault_configure(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let [vm_state_dir, source] = args else {
+        return Err("vault-configure requires a VM state directory and a project folder".into());
+    };
+    let given: serde_json::Value = serde_json::from_reader(std::io::stdin())?;
+    let guest = studio_runtime_services::linux_vm_guest::UnixGuestRpc::new(vm_state_dir);
+    let result =
+        studio_runtime_services::vault::configure(&guest, Path::new(vm_state_dir), source, &given)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
     studio_runtime_process::child_priority::ChildPriority::from_environment();
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::ProcessStarted,
     );
     let args = env::args().skip(1).collect::<Vec<_>>();
+    #[cfg(unix)]
+    if args.first().map(String::as_str) == Some(studio_runtime_services::vault::WRITER_SUBCOMMAND) {
+        return vault_configure(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("state-check") {
         let state_dir = args
             .get(1)

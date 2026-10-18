@@ -2,6 +2,7 @@
 //! separate effect boundaries; paper words and private key material are never read here.
 
 use serde_json::{Map, Value, json};
+use sha2::Digest;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -39,8 +40,10 @@ pub enum VaultError {
     InvalidSite,
     #[error("The layr-desk command is not installed (cargo install --path crates/layr-desk)")]
     DeskMissing,
-    #[error("requires python interpreter for layr-desk")]
-    PythonForDeskMissing,
+    #[error("The vault configuration lacks a required field")]
+    InvalidConfiguration,
+    #[error("The VM did not accept the vault configuration")]
+    GuestFailed,
     #[error("layr-desk command timed out")]
     DeskTimedOut,
     #[error("layr-desk command failed")]
@@ -68,14 +71,18 @@ pub struct DeskResult {
 /// Host-local resources already resolved by runtime-server's HostRuntime.
 #[derive(Clone, Debug)]
 pub struct VaultHostCommand {
-    server_source: PathBuf,
     desk_program_override: Option<PathBuf>,
 }
 
+impl Default for VaultHostCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VaultHostCommand {
-    pub fn new(server_source: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self {
-            server_source,
             desk_program_override: None,
         }
     }
@@ -84,10 +91,6 @@ impl VaultHostCommand {
     pub fn with_desk_program(mut self, program: PathBuf) -> Self {
         self.desk_program_override = Some(program);
         self
-    }
-
-    pub fn python_tool(&self) -> Result<PathBuf, VaultError> {
-        require_python_tool(crate::python_tool::resolve_python_tool())
     }
 
     /// Resolve the same command selected by the Desk runner without starting it.
@@ -110,8 +113,11 @@ impl VaultHostCommand {
         )
     }
 
-    pub fn writer(&self, source: &str, python: &Path) -> String {
-        writer_command(python, &self.server_source.join("codex_vault.py"), source)
+    /// The command layr-desk runs to configure the VM writer: this executable, with the VM data
+    /// directory and the project folder. The configuration arrives on its standard input.
+    pub fn writer(&self, source: &str, vm_state_dir: &Path) -> Result<String, VaultError> {
+        let executable = std::env::current_exe().map_err(|_| VaultError::DeskFailed)?;
+        Ok(writer_command(&executable, vm_state_dir, source))
     }
 
     pub async fn run_desk<F>(
@@ -157,10 +163,6 @@ impl VaultHostCommand {
         )
         .await
     }
-}
-
-fn require_python_tool(python: Option<PathBuf>) -> Result<PathBuf, VaultError> {
-    python.ok_or(VaultError::PythonForDeskMissing)
 }
 
 /// Run the host's layr-desk command through runtime-process's owned, bounded child.
@@ -296,13 +298,13 @@ fn bundled_desk_program() -> Option<PathBuf> {
         } else {
             ancestor
         };
-        let scripts = root.join("scripts");
-        if scripts.join("codex_vm_vault.py").is_file() {
-            return Some(root.join("bin/layr-desk"));
-        }
-        let source = root.join("workspaces/runtime/apps/server/src");
-        if source.join("codex_vm_vault.py").is_file() {
-            return Some(root.join("workspaces/runtime/apps/server/bin/layr-desk"));
+        for desk in [
+            root.join("bin/layr-desk"),
+            root.join("workspaces/runtime/apps/server/bin/layr-desk"),
+        ] {
+            if desk.is_file() {
+                return Some(desk);
+            }
         }
     }
     None
@@ -568,12 +570,67 @@ pub fn valid_region(region: &str) -> bool {
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_lowercase()))
 }
 
-/// Build the same writer command string Python gives to `layr-desk deploy`.
-pub fn writer_command(python: &Path, script: &Path, source: &str) -> String {
+/// The runtime-server subcommand that layr-desk runs as its vault writer.
+pub const WRITER_SUBCOMMAND: &str = "vault-configure";
+/// Longest wait for the guest to apply a vault configuration, in seconds.
+const VAULT_CONFIGURE_TIMEOUT_SECONDS: u64 = 60;
+const VAULT_CONFIGURE_FIELDS: [&str; 6] = [
+    "bucket",
+    "region",
+    "prefix",
+    "recipient",
+    "accessKeyId",
+    "secretAccessKey",
+];
+
+/// The layr project ID of a Mac folder: the SHA-256 of its registered path.
+fn project_id(source: &str) -> String {
+    data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(source.as_bytes()))
+}
+
+/// Configure the VM writer of the project at `source` from the vault configuration `given`
+/// (layr-desk's writer input), then keep its optional Desk site. Secrets only go to the guest.
+pub fn configure(
+    guest: &dyn crate::linux_vm_guest::GuestRpc,
+    vm_state_dir: &Path,
+    source: &str,
+    given: &Value,
+) -> Result<Value, VaultError> {
+    let field = |name: &str| given.get(name).and_then(Value::as_str);
+    if VAULT_CONFIGURE_FIELDS
+        .iter()
+        .any(|name| field(name).is_none())
+    {
+        return Err(VaultError::InvalidConfiguration);
+    }
+    let project = project_id(source);
+    let mut params = json!({"projectId": project});
+    for name in VAULT_CONFIGURE_FIELDS.into_iter().chain(["signingKey"]) {
+        if let Some(value) = given.get(name).filter(|value| !value.is_null()) {
+            params[name] = value.clone();
+        }
+    }
+    let request_id = format!("vault-configure:{}", uuid::Uuid::new_v4());
+    let result = guest
+        .call(
+            "vault.configure",
+            &params,
+            Some(&request_id),
+            Duration::from_secs(VAULT_CONFIGURE_TIMEOUT_SECONDS),
+        )
+        .map_err(|_| VaultError::GuestFailed)?;
+    if let Some(site) = field("site") {
+        store_site(vm_state_dir, &project, site)?;
+    }
+    Ok(result)
+}
+
+/// The writer command layr-desk runs.
+fn writer_command(executable: &Path, vm_state_dir: &Path, source: &str) -> String {
     [
-        python.as_os_str().to_string_lossy().into_owned(),
-        script.as_os_str().to_string_lossy().into_owned(),
-        "configure".to_owned(),
+        executable.as_os_str().to_string_lossy().into_owned(),
+        WRITER_SUBCOMMAND.to_owned(),
+        vm_state_dir.as_os_str().to_string_lossy().into_owned(),
         source.to_owned(),
     ]
     .iter()
@@ -678,7 +735,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), VaultError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        VaultError, require_python_tool, resolve_desk_program, run_desk_with_environment,
+        VaultError, configure, project_id, resolve_desk_program, run_desk_with_environment,
         setup_facts, store_site, suggested_prefix, valid_prefix, valid_profile, valid_region, view,
         writer_command,
     };
@@ -861,12 +918,73 @@ mod tests {
     fn writer_command_uses_shell_join_quoting() {
         assert_eq!(
             writer_command(
-                std::path::Path::new("/tmp/python3"),
-                std::path::Path::new("/tmp/server scripts/codex_vault.py"),
+                std::path::Path::new("/tmp/runtime server"),
+                std::path::Path::new("/tmp/vm"),
                 "/tmp/a'b"
             ),
-            "/tmp/python3 '/tmp/server scripts/codex_vault.py' configure '/tmp/a'\\''b'"
+            "'/tmp/runtime server' vault-configure /tmp/vm '/tmp/a'\\''b'"
         );
+    }
+
+    struct FakeGuest(std::sync::Mutex<Vec<(String, Value, Option<String>)>>);
+
+    impl crate::linux_vm_guest::GuestRpc for FakeGuest {
+        fn stream(
+            &self,
+            method: &str,
+            params: &Value,
+            request_id: Option<&str>,
+            _timeout: std::time::Duration,
+            _on_frame: &mut dyn FnMut(Value) -> Result<(), crate::linux_vm_guest::GuestError>,
+        ) -> Result<Value, crate::linux_vm_guest::GuestError> {
+            self.0.lock().unwrap().push((
+                method.to_owned(),
+                params.clone(),
+                request_id.map(str::to_owned),
+            ));
+            Ok(json!({"configured": true}))
+        }
+    }
+
+    #[test]
+    fn configure_sends_the_guest_call_and_keeps_the_site() {
+        let root = tempfile::tempdir().unwrap();
+        let guest = FakeGuest(Default::default());
+        let given = json!({"bucket":"b","region":"r","prefix":"p","recipient":"x","accessKeyId":"k",
+            "secretAccessKey":"s","signingKey":null,"site":"https://desk.example.com","extra":1});
+        let result = configure(&guest, root.path(), "/tmp/Project One", &given).unwrap();
+        assert_eq!(result, json!({"configured": true}));
+        let calls = guest.0.lock().unwrap();
+        let project = project_id("/tmp/Project One");
+        assert_eq!(project.len(), 64);
+        assert_eq!(calls[0].0, "vault.configure");
+        assert_eq!(
+            calls[0].1,
+            json!({"projectId":project,"bucket":"b","region":"r","prefix":"p",
+            "recipient":"x","accessKeyId":"k","secretAccessKey":"s"})
+        );
+        assert!(
+            calls[0]
+                .2
+                .as_deref()
+                .unwrap()
+                .starts_with("vault-configure:")
+        );
+        let site = fs::read(
+            root.path()
+                .join("layr-projects")
+                .join(&project)
+                .join("vault-site.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&site).unwrap(),
+            json!({"site":"https://desk.example.com/"})
+        );
+        assert!(matches!(
+            configure(&guest, root.path(), "/x", &json!({"bucket":"b"})),
+            Err(VaultError::InvalidConfiguration)
+        ));
     }
 
     #[cfg(unix)]
@@ -912,16 +1030,6 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&result.stdout).unwrap(),
             json!({"profiles":[]})
-        );
-    }
-
-    #[test]
-    fn missing_python_for_vault_writer_is_named() {
-        assert_eq!(
-            require_python_tool(None)
-                .expect_err("missing Python is refused")
-                .to_string(),
-            "requires python interpreter for layr-desk"
         );
     }
 
