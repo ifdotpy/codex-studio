@@ -279,12 +279,7 @@ enum EntityMaintenancePreparation {
         vault_signature: String,
         observed_generation: u64,
     },
-    Apply {
-        rooms: studio_runtime_services::sync_entity_context::RoomDirectory,
-        vault_snapshot: sync_policy::ProjectVaultSnapshot,
-        vault_signature: String,
-        project_server_id: Option<String>,
-    },
+    PrepareFilesystem,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -346,7 +341,9 @@ async fn pull_with_maintenance(
                                 generation,
                                 &prepare_validators,
                             ) {
-                                Ok(response) => Ok(EntityMaintenancePreparation::Response(response)),
+                                Ok(response) => {
+                                    Ok(EntityMaintenancePreparation::Response(response))
+                                }
                                 Err(StoreError::Sqlite(
                                     studio_runtime_store::SqliteError::SqliteFailure(error, _),
                                 )) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
@@ -393,20 +390,7 @@ async fn pull_with_maintenance(
                             return Ok(EntityMaintenancePreparation::Response(response));
                         }
 
-                        let project_server_id = prepare_store
-                            .local_server_id()
-                            .map_err(map_sync_store_error)?;
-                        let rooms =
-                            studio_runtime_services::sync_entity_context::RoomDirectory::prepare_for_sync(
-                                transaction,
-                            )
-                            .map_err(map_sync_store_error)?;
-                        Ok(EntityMaintenancePreparation::Apply {
-                            rooms,
-                            vault_snapshot,
-                            vault_signature,
-                            project_server_id,
-                        })
+                        Ok(EntityMaintenancePreparation::PrepareFilesystem)
                     },
                 )
             },
@@ -457,12 +441,31 @@ async fn pull_with_maintenance(
                 }
                 continue;
             }
-            EntityMaintenancePreparation::Apply {
-                rooms,
-                vault_snapshot,
-                vault_signature,
-                project_server_id,
-            } => (rooms, vault_snapshot, vault_signature, project_server_id),
+            EntityMaintenancePreparation::PrepareFilesystem => {
+                let prepare_store = store.clone();
+                let prepare_state_dir = state_dir.clone();
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-http/routes/sync_documents/entity-maintenance-filesystem",
+                    move || -> Result<_, ApiError> {
+                        // Path canonicalization must finish outside a SQLite
+                        // transaction; the writer rechecks these room inputs.
+                        let (reader, vault_snapshot) =
+                            capture_project_vault_snapshot(&prepare_store, &prepare_state_dir)?;
+                        let vault_signature = vault_snapshot.signature();
+                        let project_server_id = prepare_store
+                            .local_server_id()
+                            .map_err(map_sync_store_error)?;
+                        let rooms =
+                            studio_runtime_services::sync_entity_context::RoomDirectory::prepare_for_sync(
+                                &reader,
+                            )
+                            .map_err(map_sync_store_error)?;
+                        Ok((rooms, vault_snapshot, vault_signature, project_server_id))
+                    },
+                )
+                .await
+                .map_err(|_| ApiError::internal())??
+            }
         };
         before_room_recheck().await;
         let transaction_state_dir = state_dir.clone();
@@ -508,7 +511,6 @@ async fn pull_with_maintenance(
     ))
 }
 
-#[cfg(test)]
 fn capture_project_vault_snapshot(
     store: &RuntimeStore,
     state_dir: &str,
