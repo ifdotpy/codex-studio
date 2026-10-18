@@ -1207,6 +1207,155 @@ mod tests {
         );
     }
 
+    /// State after replace_server on the Python backend (docs/multi-server.md, "Replace a lost
+    /// server identity"): the previous local identity has no Tailscale owner, and the record
+    /// keeps `replacedBy` and `replacement`.
+    #[tokio::test]
+    async fn snapshot_serves_replaced_identities_and_their_alerts() {
+        let root = tempfile::tempdir().expect("isolated multi-server state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
+        let records = [
+            serde_json::json!({
+                "id":"lostlocal","clientId":"lostlocal","serverId":"lostlocal",
+                "label":"Studio server (previous identity)","kind":"server",
+                "origin":"https://local.example","publicKey":"","tailscaleUser":null,
+                "status":"revoked","created":1.5,"lastAccess":null,"revoked":1.5,"alias":"MAC",
+                "replacedBy":"current","replacement":{"requestId":"replace-1","actorId":"local",
+                "created":1.5,"rewritten":{"runtime_projects":1},"reconcile":[]}
+            }),
+            serde_json::json!({
+                "id":"newpeer","clientId":"newpeer","serverId":"newpeer","label":"Peer",
+                "kind":"server","origin":"https://peer.example","publicKey":"key",
+                "tailscaleUser":"owner@example.test","status":"paired","created":2.0,
+                "lastAccess":null,"revoked":null,"alias":"NEW"
+            }),
+            // No alias yet: the read saves a default alias and keeps every stored field.
+            serde_json::json!({
+                "id":"lostpeer","clientId":"lostpeer","serverId":"lostpeer","label":"Gone",
+                "kind":"server","origin":"https://gone.example","publicKey":"key",
+                "tailscaleUser":"owner@example.test","status":"revoked","created":3.0,
+                "lastAccess":null,"revoked":3.0,"replacedBy":"newpeer",
+                "replacement":{"requestId":"replace-2","actorId":"local","created":3.0}
+            }),
+        ];
+        let discovered = serde_json::json!({
+            "id":"oldpeer","clientId":"oldpeer","serverId":"oldpeer","label":"Peer before",
+            "kind":"server","origin":"https://peer.example","publicKey":"old",
+            "tailscaleUser":"owner@example.test","status":"unreachable","created":1.0,
+            "lastAccess":null,"revoked":null
+        });
+        store
+            .transaction_with(move |tx| {
+                for record in &records {
+                    tx.execute(
+                        "INSERT INTO runtime_access_clients VALUES(?1,?2)",
+                        rusqlite::params![record["id"].as_str(), record.to_string()],
+                    )?;
+                }
+                tx.execute(
+                    "INSERT INTO runtime_access_discovered VALUES('oldpeer',?1)",
+                    [discovered.to_string()],
+                )?;
+                for (id, home) in [("p1", "lostlocal"), ("p2", "otherold")] {
+                    tx.execute(
+                        "INSERT INTO runtime_projects VALUES(?1,?2)",
+                        rusqlite::params![id, serde_json::json!({"homeServerId": home}).to_string()],
+                    )?;
+                }
+                tx.execute_batch(
+                    "CREATE TABLE runtime_peer_update_settings(id INTEGER PRIMARY KEY CHECK(id=1), auto_update INTEGER NOT NULL);
+                     INSERT INTO runtime_peer_update_settings VALUES(1,0);",
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("fixture records are saved");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().display().to_string(),
+            12345,
+            Some("https://local.example".into()),
+            Some(Arc::clone(&store)),
+            None,
+        )
+        .with_credentials(Arc::new(
+            studio_runtime_services::federation_credentials::Credentials::default(),
+        ));
+        let response = snapshot(State(state))
+            .await
+            .expect("the snapshot of replaced identities is served")
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("small snapshot body");
+        let body: Value = serde_json::from_slice(&body).expect("snapshot JSON");
+        let local = body["identity"]["serverId"]
+            .as_str()
+            .expect("local server ID");
+        let lost = body["clients"]
+            .as_array()
+            .and_then(|clients| clients.iter().find(|client| client["id"] == "lostlocal"))
+            .expect("the previous local identity is listed");
+        assert_eq!(lost["tailscaleUser"], Value::Null);
+        assert_eq!(lost["replacedBy"], "current");
+        assert!(lost.get("replacement").is_none());
+        assert_eq!(body["settings"]["autoUpdate"], false);
+        let servers = body["servers"]
+            .as_array()
+            .expect("server list")
+            .iter()
+            .map(|server| {
+                (
+                    server["id"].as_str().unwrap_or_default(),
+                    server["reachability"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            servers,
+            [
+                ("lostlocal", "unknown"),
+                ("lostpeer", "unknown"),
+                ("newpeer", "unknown"),
+                ("oldpeer", "unreachable"),
+            ]
+        );
+        assert_eq!(
+            body["identityAlerts"],
+            serde_json::json!([
+                {
+                    "code":"peer_identity_changed","oldServerId":"oldpeer","newServerId":"newpeer",
+                    "origin":"https://peer.example",
+                    "detail":"https://peer.example now presents server newpeer. Run replace_server with oldServerId oldpeer after the old identity is gone."
+                },
+                {
+                    "code":"local_identity_changed","oldServerId":"otherold","newServerId":local,
+                    "origin":"https://local.example",
+                    "detail":format!("Local state still names this server otherold. Run replace_server here, and on each paired server that names otherold, with newServerId {local}.")
+                },
+            ])
+        );
+        let saved: Value = store
+            .read_transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id='lostpeer'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .map(|raw| serde_json::from_str(&raw).expect("stored JSON"))
+            .expect("stored record");
+        assert_eq!(saved["alias"], "GON");
+        assert_eq!(saved["replacement"]["requestId"], "replace-2");
+    }
+
     #[tokio::test]
     async fn create_invite_uses_injected_tailscale_identity_without_host_access() {
         let root = tempfile::tempdir().expect("isolated multi-server state");

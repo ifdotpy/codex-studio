@@ -95,23 +95,193 @@ fn snapshot_in_transaction(
         .optional()?
         .unwrap_or(1)
         != 0;
-    let mut servers = clients
+    let auto_update = peer_auto_update(tx)?;
+    let identity_alerts = identity_alerts(tx, identity, &clients, &discovered)?;
+    let servers = server_list(&clients, discovered);
+
+    Ok(json!({
+        "protocol": ACCESS_PROTOCOL_VERSION,
+        "identity": identity,
+        "clients": clients,
+        "servers": servers,
+        "invites": invites,
+        "settings": {"autoPair": auto_pair, "autoUpdate": auto_update, "aliases": aliases},
+        "identityAlerts": identity_alerts,
+    }))
+}
+
+/// Paired and discovered servers by ID. A saved server takes its activity from its discovery
+/// record. The rules are those of `ServerDiscovery.servers` in codex_server_discovery.py.
+fn server_list(clients: &[Value], discovered: Vec<Value>) -> Vec<Value> {
+    let mut known = discovered
+        .into_iter()
+        .map(|peer| (peer["id"].as_str().unwrap_or_default().to_owned(), peer))
+        .collect::<BTreeMap<_, _>>();
+    for client in clients
         .iter()
-        .filter(|v| v.get("kind").and_then(Value::as_str) == Some("server"))
-        .cloned()
+        .filter(|client| client["kind"].as_str() == Some("server"))
+    {
+        let id = client["id"].as_str().unwrap_or_default().to_owned();
+        let found = known.get(&id);
+        let reachability = match found {
+            Some(peer) if peer["status"].as_str() == Some("unreachable") => "unreachable",
+            Some(_) => "reachable",
+            None => "unknown",
+        };
+        let mut server = client.clone();
+        server["lastSeen"] = found.map_or(Value::Null, |peer| peer["lastSeen"].clone());
+        server["autoPair"] = found.map_or(Value::Null, |peer| peer["autoPair"].clone());
+        server["reachability"] = json!(reachability);
+        known.insert(id, server);
+    }
+    known
+        .into_values()
+        .map(|mut peer| {
+            if peer.get("reachability").is_none() {
+                let unreachable = peer["status"].as_str() == Some("unreachable");
+                peer["reachability"] = json!(if unreachable {
+                    "unreachable"
+                } else {
+                    "reachable"
+                });
+            }
+            peer
+        })
+        .collect()
+}
+
+/// The peer auto-update setting (docs/peer-updates.md). The Python backend creates its table;
+/// without the table the setting has its contract default, on.
+fn peer_auto_update(tx: &rusqlite::Transaction<'_>) -> Result<bool, StoreError> {
+    if !table_exists(tx, "runtime_peer_update_settings")? {
+        return Ok(true);
+    }
+    Ok(tx
+        .query_row(
+            "SELECT auto_update FROM runtime_peer_update_settings WHERE id=1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_none_or(|value| value != 0))
+}
+
+fn table_exists(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<bool, StoreError> {
+    Ok(tx
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Identity changes that leave live references to a lost server. They are derived on each
+/// read and never stored. The rules are those of `identity_alerts` in codex_multi_server.py
+/// (docs/multi-server.md, "Replace a lost server identity").
+fn identity_alerts(
+    tx: &rusqlite::Transaction<'_>,
+    identity: &Value,
+    clients: &[Value],
+    discovered: &[Value],
+) -> Result<Vec<Value>, StoreError> {
+    let id_of = |record: &Value| record["id"].as_str().unwrap_or_default().to_owned();
+    let servers = clients
+        .iter()
+        .filter(|record| record["kind"].as_str() == Some("server"))
         .collect::<Vec<_>>();
-    for peer in discovered {
-        if !servers
-            .iter()
-            .any(|saved| saved.get("id") == peer.get("id"))
-        {
-            servers.push(peer);
+    let replaced = servers
+        .iter()
+        .filter(|record| {
+            record["replacedBy"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        })
+        .map(|record| id_of(record))
+        .collect::<BTreeSet<_>>();
+    let mut known = servers
+        .iter()
+        .map(|record| (id_of(record), *record))
+        .collect::<BTreeMap<_, _>>();
+    for record in discovered {
+        known.entry(id_of(record)).or_insert(record);
+    }
+    let mut successors = servers
+        .iter()
+        .filter(|record| record["status"].as_str() == Some("paired"))
+        .collect::<Vec<_>>();
+    successors.sort_by_key(|record| id_of(record));
+    let mut alerts = Vec::new();
+    for successor in successors {
+        let new = id_of(successor);
+        let Some(origin) = successor["origin"]
+            .as_str()
+            .filter(|origin| !origin.is_empty())
+        else {
+            continue;
+        };
+        for (old, peer) in &known {
+            if *old != new && !replaced.contains(old) && peer["origin"].as_str() == Some(origin) {
+                alerts.push(json!({
+                    "code": "peer_identity_changed",
+                    "oldServerId": old,
+                    "newServerId": new,
+                    "origin": origin,
+                    "detail": format!(
+                        "{origin} now presents server {new}. Run replace_server with oldServerId {old} after the old identity is gone."
+                    ),
+                }));
+            }
         }
     }
+    let local = identity["serverId"].as_str().unwrap_or_default();
+    for old in previous_local_identities(tx, local)?.difference(&replaced) {
+        alerts.push(json!({
+            "code": "local_identity_changed",
+            "oldServerId": old,
+            "newServerId": local,
+            "origin": identity["origin"],
+            "detail": format!(
+                "Local state still names this server {old}. Run replace_server here, and on each paired server that names {old}, with newServerId {local}."
+            ),
+        }));
+    }
+    Ok(alerts)
+}
 
-    Ok(
-        json!({"protocol":ACCESS_PROTOCOL_VERSION,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}),
-    )
+/// Server IDs that local state uses for this server itself, other than its current ID: a
+/// home-side link names this server as its home, and a project names its own server as its
+/// home. The rules are those of `previous_local_identities` in codex_server_replacement.py.
+fn previous_local_identities(
+    tx: &rusqlite::Transaction<'_>,
+    local: &str,
+) -> Result<BTreeSet<String>, StoreError> {
+    let queries = [
+        (
+            "runtime_server_links",
+            "SELECT DISTINCT json_extract(record,'$.home') FROM runtime_server_links WHERE json_extract(record,'$.side')='home'",
+        ),
+        (
+            "runtime_projects",
+            "SELECT DISTINCT json_extract(record,'$.homeServerId') FROM runtime_projects",
+        ),
+    ];
+    let mut found = BTreeSet::new();
+    for (table, query) in queries {
+        if !table_exists(tx, table)? {
+            continue;
+        }
+        let mut statement = tx.prepare_cached(query)?;
+        let rows = statement.query_map([], |row| row.get::<_, rusqlite::types::Value>(0))?;
+        for value in rows {
+            if let rusqlite::types::Value::Text(id) = value? {
+                found.insert(id);
+            }
+        }
+    }
+    found.remove(local);
+    Ok(found)
 }
 
 pub async fn manage(
@@ -385,6 +555,7 @@ fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Va
             "lastSeen",
             "autoPair",
             "alias",
+            "replacedBy",
         ];
         obj.retain(|k, _| allowed.contains(&k.as_str()));
         for key in ["id", "clientId", "label", "kind", "publicKey", "status"] {
@@ -404,6 +575,7 @@ fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Va
             "tailscaleUser",
             "reachability",
             "alias",
+            "replacedBy",
         ] {
             if obj.get(key).is_some_and(|v| !v.is_null() && !v.is_string()) {
                 return Err(invalid(table, &id, key));
@@ -484,9 +656,10 @@ fn server_aliases(
             let alias = default_server_alias(client, &mut used);
             client["alias"] = json!(alias);
             if persist_default_aliases {
+                // Set only the alias: the stored record keeps the fields that the projection omits.
                 tx.execute(
-                    "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
-                    rusqlite::params![client.to_string(), id],
+                    "UPDATE runtime_access_clients SET record=json_set(record,'$.alias',?1) WHERE id=?2",
+                    rusqlite::params![alias, id],
                 )?;
             }
             alias

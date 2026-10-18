@@ -376,5 +376,8 @@ identity or local evidence), `server_still_paired`, and `replacement_conflict`
 Run the operation on every server that names the old ID: on each paired server
 as a peer succession, and on the server that lost its identity as a local
 succession. The Rust backend does not implement this action yet. It refuses
-`replace_server` with HTTP 501 before any write, and its snapshot has no
-`identityAlerts` or `replacedBy` fields.
+`replace_server` with HTTP 501 before any write. Its snapshot reports
+`identityAlerts` and `replacedBy` with the same rules.
+
+The saved previous identity of this server has no Tailscale owner: its
+`tailscaleUser` is `null`.
