@@ -120,6 +120,11 @@ def verify_backend_process(data, config):
         script = (backend_scripts(config["resources"]) / "codex-canvas").resolve()
         if str(script) not in arguments:
             raise RuntimeError("The reported backend PID is not the packaged Codex Canvas process.")
+    verify_listener(pid, config)
+
+
+def verify_listener(pid, config):
+    """Prove that the PID owns the configured listener."""
     try:
         listeners = subprocess.check_output(
             ["/usr/sbin/lsof", "-nP", f"-iTCP:{config['port']}", "-sTCP:LISTEN", "-t"],

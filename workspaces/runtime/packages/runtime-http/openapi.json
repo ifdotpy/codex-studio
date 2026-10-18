@@ -1164,8 +1164,16 @@
             "type": "string"
           },
           "tailscaleUser": {
-            "title": "Tailscaleuser",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The Tailscale owner; null for the previous identity of this server after replace_server.",
+            "title": "Tailscaleuser"
           }
         },
         "required": [
@@ -24506,8 +24514,16 @@
             "type": "string"
           },
           "tailscaleUser": {
-            "title": "Tailscaleuser",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The Tailscale owner; null for the previous identity of this server after replace_server.",
+            "title": "Tailscaleuser"
           }
         },
         "required": [

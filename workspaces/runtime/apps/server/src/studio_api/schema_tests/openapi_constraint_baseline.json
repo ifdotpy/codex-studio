@@ -41,6 +41,18 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/AccessClient/properties/tailscaleUser",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessClient/properties/tailscaleUser",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/replacedBy",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -54,6 +66,18 @@
     },
     {
       "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/tailscaleUser",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/clients/items/properties/tailscaleUser",
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"
@@ -84,6 +108,18 @@
     },
     {
       "pointer": "/components/schemas/AccessSnapshot/properties/servers/items/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/servers/items/properties/tailscaleUser",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccessSnapshot/properties/servers/items/properties/tailscaleUser",
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"
@@ -414,6 +450,18 @@
     },
     {
       "pointer": "/components/schemas/DiscoveredServer/properties/replacedBy",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiscoveredServer/properties/tailscaleUser",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiscoveredServer/properties/tailscaleUser",
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"

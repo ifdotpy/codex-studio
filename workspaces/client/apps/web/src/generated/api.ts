@@ -2657,8 +2657,11 @@ export interface components {
        * @enum {string}
        */
       status: "paired" | "revoked" | "discovered" | "unreachable";
-      /** Tailscaleuser */
-      tailscaleUser: string;
+      /**
+       * Tailscaleuser
+       * @description The Tailscale owner; null for the previous identity of this server after replace_server.
+       */
+      tailscaleUser: null | string;
     };
     /** AccessInvitation */
     AccessInvitation: {
@@ -11844,8 +11847,11 @@ export interface components {
        * @enum {string}
        */
       status: "paired" | "revoked" | "discovered" | "unreachable";
-      /** Tailscaleuser */
-      tailscaleUser: string;
+      /**
+       * Tailscaleuser
+       * @description The Tailscale owner; null for the previous identity of this server after replace_server.
+       */
+      tailscaleUser: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
