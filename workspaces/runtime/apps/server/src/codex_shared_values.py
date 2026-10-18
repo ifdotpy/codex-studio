@@ -44,6 +44,17 @@ GUEST_UPDATE_PART_BYTES = 1024 * 1024
 # "x86_64 binaries"). The VM helper attaches the share with this tag; the guest mounts it.
 LINUX_VM_ROSETTA_TAG = "rosetta"
 
+# Persisted agent errors for a turn whose provider connection ended. Connection recovery,
+# the scheduler, and the web "Check connection" action match these exact texts.
+PROVIDER_DISCONNECTED_TURN_ERROR = "Codex disconnected. Review the transcript before resuming."
+BACKEND_RESTARTED_TURN_ERROR = "Server restarted during a turn. Review history, then send a new instruction."
+VM_PROVIDER_DISCONNECTED_TURN_ERROR = ("Linux VM provider disconnected. The turn outcome is unknown. "
+                                       "Review the transcript before resuming.")
+# Seconds that the host retries one idempotent Linux VM provider journal read (next, replay,
+# eventRead, info, status, ack) after a result that the guest could not prove. A guest supervisor
+# stall shorter than this does not end the provider connection. Writes are never retried.
+GUEST_PROVIDER_READ_RETRY_SECONDS = 30
+
 # Codex model/list catalog response contract; byte values count encoded UTF-8.
 MODEL_CATALOG_MAX_FRAME_BYTES = 2 * 1024 * 1024
 MODEL_CATALOG_MAX_RESPONSE_BYTES = 16 * 1024 * 1024

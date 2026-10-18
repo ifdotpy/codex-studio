@@ -49,7 +49,7 @@ from codex_native_errors import NativeRpcError
 def check_boundaries(runtime):
     # Lock the complete turn-submission caller, not only the projected statements.
     # Notification handling is intentionally outside this preparation oracle.
-    expected = {'start': '78ff53425f5ea723308533bfc81dbf0d5d19f989d3b6f9f1745c40c2c0f69cca'}
+    expected = {'start': '7c0ffb8597ccbef9f1ff1ba02c4fbd369790d921f56870e8dcb5092fde8e613d'}
     for name, digest in expected.items():
         node = next(n for n in runtime.body if isinstance(n, ast.FunctionDef) and n.name == name)
         actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()

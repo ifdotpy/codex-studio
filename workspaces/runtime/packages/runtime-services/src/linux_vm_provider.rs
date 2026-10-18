@@ -28,6 +28,7 @@ use studio_runtime_process::{
     },
 };
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
+use studio_runtime_schema::shared_values::GUEST_PROVIDER_READ_RETRY_SECONDS;
 use studio_runtime_store::{
     AgentId, AgentRepository, EventWriteRepository, RuntimeStore, StoreError,
 };
@@ -631,12 +632,9 @@ impl GuestProviderSession {
     /// this cursor never acknowledges the guest event; only settle_then_ack does.
     pub async fn next(&self) -> Result<Option<ProviderEvent>> {
         let cursor = self.read_cursor.load(Ordering::Acquire);
-        let result = call_guest(
+        let result = read_guest_journal(
             self.guest.clone(),
-            "provider.rpc",
             json!({"handle":self.identity.handle,"action":"next","cursor":cursor}),
-            None,
-            PROVIDER_RPC_TIMEOUT,
         )
         .await?;
         match result.get("event") {
@@ -664,12 +662,9 @@ impl GuestProviderSession {
         {
             return Err(GuestProviderError::Invalid);
         }
-        let result = call_guest(
+        let result = read_guest_journal(
             self.guest.clone(),
-            "provider.rpc",
             json!({"handle":self.identity.handle,"action":"replay","cursor":cursor,"limit":limit}),
-            None,
-            PROVIDER_RPC_TIMEOUT,
         )
         .await?;
         let events = result
@@ -738,12 +733,9 @@ impl GuestProviderSession {
             }
             let offset = output.len() as u64;
             let max_bytes = EVENT_CHUNK_MAX_BYTES.min(total - offset);
-            let chunk = call_guest(
+            let chunk = read_guest_journal(
                 self.guest.clone(),
-                "provider.rpc",
                 json!({"handle":self.identity.handle,"action":"eventRead","sequence":sequence,"offset":offset,"maxBytes":max_bytes}),
-                None,
-                PROVIDER_RPC_TIMEOUT,
             )
             .await?;
             let data = chunk
@@ -794,12 +786,10 @@ impl GuestProviderSession {
             return Err(GuestProviderError::Invalid);
         }
         let value = settle()?;
-        call_guest(
+        // The guest answers an ACK at or below its saved cursor without a change.
+        read_guest_journal(
             self.guest.clone(),
-            "provider.rpc",
             json!({"handle":self.identity.handle,"action":"ack","sequence":event.sequence}),
-            None,
-            PROVIDER_RPC_TIMEOUT,
         )
         .await?;
         self.cursor
@@ -1152,6 +1142,42 @@ async fn call_guest(
         })?
 }
 
+/// Send one idempotent provider journal request: `next`, `replay` and `eventRead`
+/// change nothing, and the guest answers a repeated `ack` without a change. The
+/// guest relays each one to its native supervisor with short deadlines and
+/// reports `outcome_unknown` when the supervisor stalls. A stall must not end a
+/// live provider connection, so these requests are sent again until
+/// `GUEST_PROVIDER_READ_RETRY_SECONDS` pass. A refusal with a proven result is
+/// returned at once. Writes never use this path: their identity is reconciled.
+async fn read_guest_journal(
+    guest: Arc<dyn GuestRpc>,
+    params: Value,
+) -> std::result::Result<Value, GuestError> {
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(GUEST_PROVIDER_READ_RETRY_SECONDS);
+    let mut delay = Duration::from_millis(250);
+    loop {
+        match call_guest(
+            guest.clone(),
+            "provider.rpc",
+            params.clone(),
+            None,
+            PROVIDER_RPC_TIMEOUT,
+        )
+        .await
+        {
+            Err(error)
+                if (error.uncertain() || matches!(error, GuestError::Transport { .. }))
+                    && tokio::time::Instant::now() + delay < deadline =>
+            {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(2));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn parse_info(handle: &str, value: Value) -> Result<ProviderInfo> {
     let parsed = ProviderInfo {
         handle: value
@@ -1245,6 +1271,9 @@ mod tests {
         write_entered: tokio::sync::Notify,
         endless_events: Mutex<bool>,
         next_calls: Mutex<usize>,
+        /// `next` answers with these guest errors first, in order.
+        next_failures: Mutex<Vec<GuestError>>,
+        next_attempts: Mutex<usize>,
     }
 
     impl FakeGuest {
@@ -1264,6 +1293,8 @@ mod tests {
                 write_entered: tokio::sync::Notify::new(),
                 endless_events: Mutex::new(false),
                 next_calls: Mutex::new(0),
+                next_failures: Mutex::new(Vec::new()),
+                next_attempts: Mutex::new(0),
             }
         }
 
@@ -1283,6 +1314,13 @@ mod tests {
             _timeout: Duration,
             _on_frame: &mut dyn FnMut(Value) -> std::result::Result<(), GuestError>,
         ) -> std::result::Result<Value, GuestError> {
+            if method == "provider.rpc" && params["action"] == "next" {
+                *self.next_attempts.lock().unwrap() += 1;
+                let mut failures = self.next_failures.lock().unwrap();
+                if !failures.is_empty() {
+                    return Err(failures.remove(0));
+                }
+            }
             match method {
                 "provider.start" => {
                     *self.starts.lock().unwrap() += 1;
@@ -1483,6 +1521,43 @@ mod tests {
             guest.stops.lock().unwrap()[0]["handle"],
             "linux-worker:agent-1"
         );
+    }
+
+    #[tokio::test]
+    async fn an_unproven_journal_read_is_read_again_and_keeps_the_connection() {
+        let (_directory, store) = open_store().await;
+        let guest = Arc::new(FakeGuest::new(false));
+        let session = open_session(store, guest.clone()).await.unwrap();
+        // The guest supervisor stalled: the guest could not prove the read result.
+        *guest.next_failures.lock().unwrap() = vec![
+            GuestError::Rejected {
+                code: Some("outcome_unknown".into()),
+                detail: Some("The native supervisor operation has no proven result".into()),
+                uncertain: true,
+            },
+            GuestError::Transport {
+                message: "timed out".into(),
+                uncertain: true,
+            },
+        ];
+        let event = session.next().await.unwrap().unwrap();
+        assert_eq!(event.sequence, 1);
+        assert_eq!(*guest.next_attempts.lock().unwrap(), 3);
+        assert_eq!(*guest.writes.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_proven_journal_read_refusal_is_not_sent_again() {
+        let (_directory, store) = open_store().await;
+        let guest = Arc::new(FakeGuest::new(false));
+        let session = open_session(store, guest.clone()).await.unwrap();
+        *guest.next_failures.lock().unwrap() = vec![GuestError::Rejected {
+            code: Some("not_found".into()),
+            detail: None,
+            uncertain: false,
+        }];
+        assert!(session.next().await.is_err());
+        assert_eq!(*guest.next_attempts.lock().unwrap(), 1);
     }
 
     #[tokio::test]

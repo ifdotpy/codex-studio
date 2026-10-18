@@ -43,3 +43,9 @@ pub const ACCOUNT_LIMITS_ERROR_RETRY_SECONDS: f64 = 30.0;
 pub const CHILD_RESULT_COALESCE_DEFAULT_SECONDS: u64 = 10;
 pub const CHILD_RESULT_COALESCE_MIN_SECONDS: u64 = 0;
 pub const CHILD_RESULT_COALESCE_MAX_SECONDS: u64 = 300;
+pub const PROVIDER_DISCONNECTED_TURN_ERROR: &str =
+    "Codex disconnected. Review the transcript before resuming.";
+pub const BACKEND_RESTARTED_TURN_ERROR: &str =
+    "Server restarted during a turn. Review history, then send a new instruction.";
+pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+pub const GUEST_PROVIDER_READ_RETRY_SECONDS: u64 = 30;

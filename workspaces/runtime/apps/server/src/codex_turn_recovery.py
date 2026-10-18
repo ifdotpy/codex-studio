@@ -163,6 +163,55 @@ def read_native_turn(server: "TurnRecoveryServer", thread_id: str, turn_id: str)
         seen.add(cursor)
 
 
+def find_start_receipt(server: "TurnRecoveryServer", thread_id: str, message: str) -> "JsonObject | None":
+    """Read complete native history for the turn that accepted one exact input.
+
+    The first input ID of a start batch is its clientUserMessageId. A turn that
+    is still preparing or that the provider did not apply is not a receipt.
+    Return None only after every page was read; raise on any doubt.
+    """
+    cursor, seen, turn = None, set(), None
+    deadline = time.monotonic() + 20
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Native start receipt read timed out')
+        params = {'threadId': thread_id, 'limit': 10,
+                  'sortDirection': 'desc', 'itemsView': 'full'}
+        if cursor is not None:
+            params['cursor'] = cursor
+        page = server.call('thread/turns/list', params, timeout=min(5, remaining))
+        if not isinstance(page, dict) or not isinstance(page.get('data'), list):
+            raise ValueError('Native start history returned an invalid page')
+        matches = [candidate for candidate in page['data']
+                   if candidate.get('startOutcome') not in {'preparing', 'not_applied'} and (
+                       candidate.get('clientUserMessageId') == message or any(
+                       item.get('type') == 'userMessage' and item.get('clientId') == message
+                       and item.get('deliveryStatus') not in {'preparing', 'not_applied'}
+                       for item in candidate.get('items', [])))]
+        if len(matches) > 1:
+            raise ValueError('Native history has conflicting start receipts')
+        if matches:
+            candidate = matches[0]
+            if not isinstance(candidate.get('id'), str) or not candidate['id']:
+                raise ValueError('The native start receipt has no turn identity')
+            if turn is None:
+                turn = candidate
+            elif turn.get('id') != candidate['id']:
+                raise ValueError('Native history has conflicting start receipts')
+            elif turn != candidate:
+                raise ValueError('Native history changed the exact start receipt')
+        next_cursor = page.get('nextCursor')
+        if next_cursor is None:
+            return turn
+        if not isinstance(next_cursor, str) or not next_cursor:
+            raise ValueError('Native start history returned an invalid page cursor')
+        if next_cursor in seen:
+            raise ValueError('Native start history repeated its page cursor')
+        seen.add(next_cursor)
+        cursor = next_cursor
+
+
 def orphan_busy(agent: "AgentRecord") -> bool:
     """A busy flag with no native turn and no Studio start cannot be cleared by any notification."""
     return bool(agent.get('inFlight') and not agent.get('turnId') and not agent.get('startAttempt')
@@ -354,48 +403,8 @@ class TurnRecoveryMixin:
             and current_child['generation'] > previous_child['generation'])
         if attempt.get('connectionId') != connection and not replaced_child:
             return {'status': 'unconfirmed'}
-        message = attempt['events'][0]
-        cursor, seen, turn = None, set(), None
-        deadline = time.monotonic() + 20
         try:
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError('Native start receipt read timed out')
-                params = {'threadId': a['threadId'], 'limit': 10,
-                          'sortDirection': 'desc', 'itemsView': 'full'}
-                if cursor is not None:
-                    params['cursor'] = cursor
-                page = server.call('thread/turns/list', params, timeout=min(5, remaining))
-                if not isinstance(page, dict) or not isinstance(page.get('data'), list):
-                    raise ValueError('Native start history returned an invalid page')
-                matches = [candidate for candidate in page['data']
-                           if candidate.get('startOutcome') not in {'preparing', 'not_applied'} and (
-                               candidate.get('clientUserMessageId') == message or any(
-                               item.get('type') == 'userMessage' and item.get('clientId') == message
-                               and item.get('deliveryStatus') not in {'preparing', 'not_applied'}
-                               for item in candidate.get('items', [])))]
-                if len(matches) > 1:
-                    raise ValueError('Native history has conflicting start receipts')
-                if matches:
-                    candidate = matches[0]
-                    if not isinstance(candidate.get('id'), str) or not candidate['id']:
-                        raise ValueError('The native start receipt has no turn identity')
-                    if turn is None:
-                        turn = candidate
-                    elif turn.get('id') != candidate['id']:
-                        raise ValueError('Native history has conflicting start receipts')
-                    elif turn != candidate:
-                        raise ValueError('Native history changed the exact start receipt')
-                next_cursor = page.get('nextCursor')
-                if next_cursor is None:
-                    break
-                if not isinstance(next_cursor, str) or not next_cursor:
-                    raise ValueError('Native start history returned an invalid page cursor')
-                if next_cursor in seen:
-                    raise ValueError('Native start history repeated its page cursor')
-                seen.add(next_cursor)
-                cursor = next_cursor
+            turn = find_start_receipt(server, a['threadId'], attempt['events'][0])
             if turn is None:
                 # A replaced native child cannot finish an old request. A
                 # live child can still accept its request after this read.

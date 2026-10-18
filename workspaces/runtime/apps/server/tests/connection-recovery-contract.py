@@ -26,6 +26,7 @@ spec = importlib.util.spec_from_file_location('turn_fixture', Path(__file__).wit
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_canvas import Canvas, make_server
+from codex_shared_values import PROVIDER_DISCONNECTED_TURN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR
 from codex_connection_recovery import (eligible, recover, tick as connection_recovery_tick,
                                        disconnected_preparation_eligible)
 from studio_api.testing import read_session_token
@@ -129,6 +130,63 @@ class ConnectionRecoveryContract(unittest.TestCase):
                                                              (self.key,))], [('first-unsent', 'reserved'), ('uncertain-input', 'uncertain')])
         self.assertFalse(self.runtime.agent(self.key)['autoWake'])
         self.assertEqual(self.server.calls, [])
+
+    def submitted_disconnect(self, error):
+        """A start that was submitted when its connection ended, before a turn ID arrived."""
+        self.runtime.send(self.key, 'The monitor exited.', message_id='lost-input')
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            attempt = {'id': 'lost-attempt', 'epoch': agent['epoch'], 'accountKey': 'default',
+                       'events': ['lost-input'], 'submitted': True, 'activeAtReservation': False,
+                       'threadId': 'native-thread', 'connectionId': 'old-connection',
+                       'nativeOperationId': 'turn:' + self.key + ':lost-input:attempt:lost-attempt'}
+            agent.update(status='interrupted', autoWake=False, inFlight=False, threadId='native-thread',
+                         turnId=None, startAttempt=None, error=error,
+                         disconnectRecovery={'epoch': agent['epoch'], 'accountKey': 'default',
+                            'threadId': 'native-thread', 'turnId': None, 'autoWake': True,
+                            'connectionId': 'old-connection', 'startAttempt': attempt})
+            db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' "
+                       "WHERE id='lost-input'")
+            self.runtime.put(db, 'agents', agent)
+        self.server.calls.clear()
+        return agent
+
+    def test_linux_vm_disconnect_has_the_manual_connection_check(self):
+        self.update(error=VM_PROVIDER_DISCONNECTED_TURN_ERROR)
+        self.assertTrue(eligible(self.runtime.agent(self.key)))
+        result = recover(self.runtime, self.key)
+        self.assertEqual(result, {'status': 'reconciled', 'turnId': 'lost-turn', 'outcome': 'completed'})
+        self.read_calls_only()
+
+    def test_lost_start_without_turn_id_binds_its_exact_native_turn(self):
+        # 2026-10-18 incident shape: turnId None after a VM provider disconnect.
+        self.submitted_disconnect(VM_PROVIDER_DISCONNECTED_TURN_ERROR)
+        self.server.native['turns'][0]['clientUserMessageId'] = 'lost-input'
+        result = recover(self.runtime, self.key)
+        self.assertEqual(result, {'status': 'reconciled', 'turnId': 'lost-turn', 'outcome': 'completed'})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['lastAnswer']), ('completed', 'Full final answer'))
+        with self.runtime.read_db() as db:
+            self.assertEqual(tuple(db.execute("SELECT status,turn_id FROM runtime_events WHERE id='lost-input'").fetchone()),
+                             ('delivered', 'lost-turn'))
+        self.assertFalse([method for method, _ in self.server.calls if method == 'turn/start'])
+        self.assertTrue(all(method in {'thread/read', 'thread/turns/list', 'thread/items/list'}
+                            for method, _ in self.server.calls), self.server.calls)
+
+    def test_lost_start_absent_from_native_history_keeps_its_uncertainty(self):
+        before = self.submitted_disconnect(PROVIDER_DISCONNECTED_TURN_ERROR)
+        self.assertTrue(eligible(before))
+        result = recover(self.runtime, self.key)
+        self.assertEqual(result, {'status': 'unconfirmed', 'checked': True})
+        current = self.runtime.agent(self.key)
+        receipt = current.pop('connectionCheck')
+        self.assertEqual((receipt['turnId'], receipt['previousError']), (None, PROVIDER_DISCONNECTED_TURN_ERROR))
+        self.assertEqual(current, before)
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='lost-input'").fetchone()[0],
+                             'uncertain')
+        self.assertTrue(all(method in {'thread/read', 'thread/turns/list'}
+                            for method, _ in self.server.calls), self.server.calls)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-connection-recovery-')

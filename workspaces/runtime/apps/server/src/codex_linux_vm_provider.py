@@ -14,7 +14,11 @@ import threading
 import uuid
 
 from codex_process_supervisor import ProcessProxy, _Input, _Stdout
-from codex_shared_values import SUPERVISOR_JOURNAL_EPOCH_FIELD
+from codex_shared_values import GUEST_PROVIDER_READ_RETRY_SECONDS, SUPERVISOR_JOURNAL_EPOCH_FIELD
+
+# Guest journal actions that change no provider state (the guest answers a repeated ACK at or
+# below its saved cursor without a change). Only these are sent again after an unproven result.
+IDEMPOTENT_ACTIONS = frozenset({'next', 'replay', 'eventRead', 'info', 'status', 'responseStatus', 'ack'})
 
 
 class GuestProcessProxy(ProcessProxy):
@@ -44,11 +48,27 @@ class GuestProcessProxy(ProcessProxy):
         self.remote_to_local = {}
 
     def call(self, action, **values):
-        with self.write_lock:
-            self.request_id += 1
-            result = self.client.request('provider.rpc', {
-                'handle': self.handle, 'action': action, **values},
-                request_id=str(uuid.uuid4()), timeout=15)
+        deadline = time.monotonic() + GUEST_PROVIDER_READ_RETRY_SECONDS
+        delay = 0.25
+        while True:
+            try:
+                with self.write_lock:
+                    self.request_id += 1
+                    result = self.client.request('provider.rpc', {
+                        'handle': self.handle, 'action': action, **values},
+                        request_id=str(uuid.uuid4()), timeout=15)
+                break
+            except Exception as error:
+                # The guest relays each journal request to its native supervisor with short
+                # deadlines and answers outcome_unknown when the supervisor stalls. A read, or
+                # an ACK that the guest answers again without a change, is sent again; a write
+                # is never repeated here. The lock is free between tries, so writes can pass.
+                unproven = getattr(error, 'uncertain', False) or isinstance(error, OSError)
+                if (action not in IDEMPOTENT_ACTIONS or not unproven or self.detached
+                        or time.monotonic() + delay >= deadline):
+                    raise
+                time.sleep(delay)
+                delay = min(2.0, delay * 2)
         if action == 'next' and result.get('event') is not None:
             result['event'] = self.hydrate(result['event'])
         elif action == 'replay':

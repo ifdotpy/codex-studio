@@ -1861,8 +1861,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if marker.get("stage") == "held" and not a.get("deletedAt"):
                     held_restart_stops.append((a["id"], marker.get("turnId") or marker.get("at")))
                 if not restart_restored and a["status"] in {"running", "starting", "approval"}:
+                    from codex_shared_values import BACKEND_RESTARTED_TURN_ERROR
                     a.update(status="interrupted", autoWake=False,  # type: ignore[call-arg]  # typed-update
-                             error="Server restarted during a turn. Review history, then send a new instruction.")
+                             error=BACKEND_RESTARTED_TURN_ERROR)
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
                 from codex_connection_recovery import preparation_eligible
@@ -4505,8 +4506,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             "supervisor": supervisor_identity(self.server_for(account_key, connection_id)),
                             "at": time.time(),
                         }
-                        a.update(status="interrupted", autoWake=False, error=("Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming."
-                                 if linux_id is not None else "Codex disconnected. Review the transcript before resuming."))
+                        from codex_shared_values import (PROVIDER_DISCONNECTED_TURN_ERROR,
+                                                         VM_PROVIDER_DISCONNECTED_TURN_ERROR)
+                        a.update(status="interrupted", autoWake=False, error=(VM_PROVIDER_DISCONNECTED_TURN_ERROR
+                                 if linux_id is not None else PROVIDER_DISCONNECTED_TURN_ERROR))
                     a["inFlight"] = False
                 self.put(db, "agents", a)
                 uncertain = db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
@@ -7562,8 +7565,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # A submitted reservation is durable before native I/O. If the answer
             # is lost, recovery inspects native history; it never sends this batch again.
             timing["nativeSubmitBeganAt"] = time.monotonic_ns()
-            submitted = self.submit_reserved(server, "turn/start", params,
-                operation_id=native_operation_id)
+            try:
+                submitted = self.submit_reserved(server, "turn/start", params,
+                    operation_id=native_operation_id)
+            except RuntimeError as error:
+                if (str(error) == "Codex app-server is offline"
+                        and self.offline_start_unsent(a["id"], attempt_id, server)):
+                    return
+                raise
             timing["submittedAt"] = time.monotonic_ns()
             try:
                 with self.db() as db:
@@ -7599,6 +7608,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                               unknown="outcome unknown" in str(cause)))
         except Exception as error:
             self.start_error(a["id"], attempt_id, error, unknown="outcome unknown" in str(error))
+
+    def offline_start_unsent(self, agent_id, attempt_id, server):
+        """Record a start that a lost transport refused before native I/O as not submitted.
+
+        The submitted flag is saved before native I/O. AppServer.write raises
+        "Codex app-server is offline" before it writes a byte, so this batch
+        never reached the provider. The transport loss owns the visible state:
+        disconnected() saves this attempt, and connection recovery returns the
+        exact batch to the queue once (disconnected_preparation_eligible).
+        """
+        if getattr(server, "closed", False) or not getattr(server, "transport_error", None):
+            return False
+        with self.lock, self.db() as db:
+            a = self.agent(agent_id, db)
+            live = a.get("startAttempt") or {}
+            saved = (a.get("disconnectRecovery") or {}).get("startAttempt") or {}
+            attempt = live if live.get("id") == attempt_id else saved if saved.get("id") == attempt_id else None
+            if (attempt is None or attempt.get("submitted") is not True or attempt.get("turnId")
+                    or attempt.get("observedTurnId") or attempt.get("activeAtReservation")
+                    or attempt.get("action") or attempt.get("epoch") != a["epoch"]):
+                return False
+            attempt.update(submitted=False, executionOutcome="unsent")
+            for event_id in attempt["events"]:
+                # disconnected() marks a dispatching input uncertain with this exact error.
+                db.execute("UPDATE runtime_events SET status='reserved', error=NULL "
+                           "WHERE id=? AND agent=? AND epoch=? AND turn_id IS NULL AND "
+                           "(status='dispatching' OR (status='uncertain' AND error='Codex disconnected'))",
+                           (event_id, agent_id, attempt["epoch"]))
+            self.put(db, "agents", a)
+        self.changed.set()
+        return True
 
     def bind_start(self, db, a, attempt_id, turn, historical=None):
         """Bind only this dispatch's input batch to its accepted native turn."""

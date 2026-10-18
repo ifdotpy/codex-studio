@@ -5,11 +5,12 @@ import threading
 import time
 
 from codex_native_errors import native_thread_block
+from codex_shared_values import (BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
+                                 VM_PROVIDER_DISCONNECTED_TURN_ERROR)
 
-DISCONNECT_ERRORS = frozenset({
-    'Codex disconnected. Review the transcript before resuming.',
-    'Server restarted during a turn. Review history, then send a new instruction.',
-})
+# A provider connection ended during a turn: a local provider or a Linux VM provider.
+TRANSPORT_ERRORS = frozenset({PROVIDER_DISCONNECTED_TURN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR})
+DISCONNECT_ERRORS = TRANSPORT_ERRORS | {BACKEND_RESTARTED_TURN_ERROR}
 RESTART_ACTIVE_HOLD_SECONDS = 30
 MAX_ACCOUNT_RECOVERIES = 8
 IDENTITY = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'status', 'error',
@@ -40,8 +41,7 @@ def transport_turn_eligible(agent):
     return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and agent.get('threadId') and agent.get('turnId')
             and isinstance(agent.get('error'), str)
-            and agent.get('error') in {'Codex disconnected. Review the transcript before resuming.',
-                                 'Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.'}
+            and agent.get('error') in TRANSPORT_ERRORS
             and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
             and not native_thread_block(agent)
@@ -89,7 +89,7 @@ def eligible(agent):
     restart_pending = restart_turn_pending(agent)
     marker = agent.get('restartRecovery') or {}
     stale_restart = marker.get('stage') in {'pending', 'superseded'}
-    return disconnected_preparation_eligible(agent) or preparation_eligible(agent) or queued_restart_eligible(agent) or queued_active_wait_eligible(agent) or restart_pending or transport_turn_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
+    return disconnected_preparation_eligible(agent) or disconnected_start_eligible(agent) or preparation_eligible(agent) or queued_restart_eligible(agent) or queued_active_wait_eligible(agent) or restart_pending or transport_turn_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and not agent.get('startAttempt')
             and not stale_restart
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
@@ -106,13 +106,42 @@ def disconnected_preparation_eligible(agent):
     return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
         and not agent.get('autoWake') and not agent.get('startAttempt') and not agent.get('turnId')
         and isinstance(agent.get('error'), str)
-        and agent.get('error') in {'Codex disconnected. Review the transcript before resuming.',
-                                 'Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.'}
+        and agent.get('error') in TRANSPORT_ERRORS
         and previous.get('autoWake') and not previous.get('turnId')
         and all(previous.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId'))
         and attempt.get('id') and attempt.get('submitted') is False
         and attempt.get('epoch') == agent.get('epoch')
         and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+        and not attempt.get('activeAtReservation') and not attempt.get('turnId')
+        and not attempt.get('observedTurnId') and not attempt.get('action')
+        and isinstance(events, list) and 0 < len(events) <= 32
+        and all(isinstance(event, str) and event for event in events)
+        and len(events) == len(set(events))
+        and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
+        and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+        and not native_thread_block(agent)
+        and (agent.get('restartRecovery') or {}).get('stage') not in {'pending', 'held', 'superseded'})
+
+
+def disconnected_start_eligible(agent):
+    """A submitted start lost its connection before Studio knew its native turn.
+
+    Only native history can settle it: the exact input ID binds its turn, and
+    absence keeps the uncertainty. Studio never sends this batch again.
+    """
+    previous = agent.get('disconnectRecovery') or {}
+    attempt = previous.get('startAttempt') or {}
+    events = attempt.get('events')
+    return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
+        and not agent.get('autoWake') and not agent.get('startAttempt') and not agent.get('turnId')
+        and agent.get('threadId') and isinstance(agent.get('error'), str)
+        and agent['error'] in TRANSPORT_ERRORS
+        and previous.get('autoWake') and not previous.get('turnId')
+        and all(previous.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId'))
+        and attempt.get('id') and attempt.get('submitted') is True
+        and attempt.get('epoch') == agent.get('epoch')
+        and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+        and attempt.get('threadId') in (None, agent.get('threadId'))
         and not attempt.get('activeAtReservation') and not attempt.get('turnId')
         and not attempt.get('observedTurnId') and not attempt.get('action')
         and isinstance(events, list) and 0 < len(events) <= 32
@@ -267,6 +296,9 @@ def recover(runtime, key, *, automatic=False):
         thread = server.call('thread/read', {'threadId': agent['threadId'], 'includeTurns': False}, timeout=5)['thread']
         if thread.get('id') != agent['threadId']:
             raise ValueError('Native thread identity changed')
+        if disconnected_start_eligible(agent):
+            return recover_disconnected_start(runtime, expected, connection, server,
+                                              thread.get('status', {}).get('type'), automatic)
         marker = agent.get('restartRecovery') or {}
         pending_restart = restart_turn_pending(agent)
         if (automatic and not pending_restart and transport_turn_eligible(agent)
@@ -471,6 +503,46 @@ def recover_queued_active_wait(runtime, expected, connection, server):
         return result.result(timeout=10)
     except Exception as error:
         return {'status': 'unconfirmed', 'error': str(error)}
+
+
+def recover_disconnected_start(runtime, expected, connection, server, native_state, automatic):
+    """Bind a lost start to the native turn that holds its exact input; never resend it."""
+    from codex_turn_recovery import find_start_receipt
+    attempt = expected['disconnectRecovery']['startAttempt']
+    turn = find_start_receipt(server, expected['threadId'], attempt['events'][0])
+    if turn is None:
+        # The request can still wait in the provider's journal. Keep the uncertainty.
+        return record_check(runtime, expected, connection, server, native_state)
+    result = Future()
+    def bind():
+        try:
+            with runtime.lock, runtime.db() as db:
+                if not current(runtime, db, expected, connection, server):
+                    result.set_result({'status': 'superseded'})
+                    return
+                agent = runtime.agent(expected['id'], db)
+                previous = agent['disconnectRecovery']
+                saved = previous['startAttempt']
+                if not runtime.bind_start(db, agent, saved['id'], turn['id'], historical=saved):
+                    result.set_result({'status': 'unconfirmed'})
+                    return
+                # The disconnect receipt now names the turn, so the transport recovery
+                # below adopts or settles it with its usual proofs.
+                previous['turnId'] = turn['id']
+                agent['turnId'] = turn['id']
+                agent['connectionRecovery'] = {'source': 'native_start_receipt', 'at': time.time(),
+                    'attemptId': saved['id'], 'eventIds': list(saved['events']), 'turnId': turn['id'],
+                    'previousError': agent['error'], 'outcome': 'input_delivered'}
+                runtime.put(db, 'agents', agent)
+            result.set_result({'status': 'bound', 'turnId': turn['id']})
+        except Exception as error:
+            result.set_exception(error)
+    server.after_events(bind)
+    bound = result.result(timeout=10)
+    if bound['status'] != 'bound':
+        return bound
+    runtime.changed.set()
+    return recover(runtime, expected['id'], automatic=automatic)
 
 
 def adopt_transport_turn(runtime, expected, connection, server, turn, prior_supervisor):
