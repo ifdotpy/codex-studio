@@ -90,6 +90,24 @@ async fn reconcile_first_pass(
             // automatically from native history (`codex_connection_recovery.tick`).
             let restart_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
                 if snapshot.eligibility().restart_turn);
+            let job = if restart_turn {
+                let RecoveryJob::Connection {
+                    snapshot,
+                    automatic,
+                } = job
+                else {
+                    continue;
+                };
+                let Some(snapshot) = claim_automatic_restart_check(&store, snapshot).await? else {
+                    continue;
+                };
+                RecoveryJob::Connection {
+                    snapshot,
+                    automatic,
+                }
+            } else {
+                job
+            };
             let snapshot = match &job {
                 RecoveryJob::Turn(snapshot)
                     if snapshot.record()["restartRecovery"]["stage"] == "held"
@@ -186,6 +204,41 @@ async fn reconcile_first_pass(
         ready: recovered,
         streams: recovered_streams,
     })
+}
+
+/// Claim the one automatic native-history check of a restart marker. Each check
+/// is a retained read whose receipts stay durable, and a pending marker survives
+/// every later provider generation, so checking again on each worker start would
+/// retain receipts without bound. A manual connection check and the user's next
+/// message remain available after this one check.
+async fn claim_automatic_restart_check(
+    store: &Arc<RuntimeStore>,
+    snapshot: RecoverySnapshot,
+) -> Result<Option<RecoverySnapshot>, RecoveryError> {
+    let id = snapshot.record()["id"]
+        .as_str()
+        .ok_or(RecoveryError::CommitFailed)?
+        .to_owned();
+    let check = snapshot.connection_recovery_id();
+    let expected = snapshot.record().clone();
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
+        let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+            return Ok(None);
+        };
+        let mut current = agent.value();
+        if current != expected || current["restartRecovery"]["automaticCheck"] == check.as_str() {
+            return Ok(None);
+        }
+        current["restartRecovery"]["automaticCheck"] = json!(check);
+        let snapshot = RecoverySnapshot::from_record(current.clone())?;
+        AgentRepository::put(
+            tx,
+            &studio_runtime_store::AgentRecord::from_value(current)
+                .map_err(|_| RecoveryError::CommitFailed)?,
+        )?;
+        Ok(Some(snapshot))
+    })
+    .await
 }
 
 async fn load_recovery_jobs_blocking(

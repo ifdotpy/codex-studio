@@ -1848,6 +1848,21 @@ pub(super) fn disconnect_agent(
                 .unwrap_or(&Value::Null)
                 .clone();
             marker["stage"] = json!(if unknown || legacy { "held" } else { "pending" });
+            // The same recovery keeps the record of its one automatic history check.
+            if let Some(check) = agent
+                .extra
+                .get("restartRecovery")
+                .and_then(|previous| previous.get("automaticCheck"))
+                .filter(|_| {
+                    agent
+                        .extra
+                        .get("restartRecovery")
+                        .is_some_and(|previous| same_recovery_scope(previous, &marker))
+                })
+                .cloned()
+            {
+                marker["automaticCheck"] = check;
+            }
             if unknown || legacy {
                 marker["reason"] = json!(if legacy {
                     LEGACY_RECOVERY
