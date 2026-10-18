@@ -747,42 +747,10 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": "Server restarted during a turn. Review history, then send a new instruction.",
-        "pythonPresent": true,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/runtime_agents/0/record/restartRecovery/connectionId",
         "python": null,
         "pythonPresent": false,
         "rust": null,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/restartRecovery/reason",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/restartRecovery/stage",
-        "python": "pending",
-        "pythonPresent": true,
-        "rust": "held",
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       },
@@ -792,18 +760,6 @@
         "pythonPresent": false,
         "rust": {
           "generation": null
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/startOutcomeHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "epoch": 0,
-          "reason": "Python submission identity requires native history reconciliation; input will not be replayed.",
-          "stage": "recovery"
         },
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
@@ -856,36 +812,12 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/runtime_execution_runs/0/record/restartRecovery/reason",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_execution_runs/0/record/restartRecovery/stage",
-        "python": "pending",
-        "pythonPresent": true,
-        "rust": "held",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/runtime_execution_runs/0/record/restartRecovery/supervisor",
         "python": null,
         "pythonPresent": false,
         "rust": {
           "generation": null
         },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": "Server restarted during a turn. Review history, then send a new instruction.",
-        "pythonPresent": true,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       }
