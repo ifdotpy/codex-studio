@@ -261,7 +261,12 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
                 shutdown.subscribe(),
                 GuestAttachmentContext {
                     clock: options.clock,
-                    response_ids: options.launch.retained_response_ids,
+                    response_ids: options
+                        .launch
+                        .retained_response_ids
+                        .into_iter()
+                        .map(|(remote, local)| (remote, Value::from(local)))
+                        .collect(),
                     session_generation: generation,
                 },
             ));
@@ -274,7 +279,8 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
 
 struct GuestAttachmentContext {
     clock: SessionClock,
-    response_ids: BTreeMap<u64, u64>,
+    /// Guest supervisor remote request ID to the host's local request ID.
+    response_ids: BTreeMap<u64, Value>,
     session_generation: Generation,
 }
 
@@ -335,17 +341,30 @@ async fn run_guest_attachment(
                         }
                         continue;
                     }
-                    let native_id = message.get("id").cloned().or_else(|| {
-                        (method.as_deref() == Some("initialize")).then_some(Value::from(1))
-                    });
+                    let initialize = method.as_deref() == Some("initialize");
+                    let local_id = message.get("id").cloned();
+                    // The guest supervisor renumbers a request only when its
+                    // native ID is an integer, and it saves the reply to remote
+                    // ID 1 as the handle's initialize result. Initialize always
+                    // gets an integer native ID, as on the local supervisor
+                    // path, so a Claude initialize with a string ID is saved too
+                    // and a reattach never sends initialize to a live provider.
+                    let native_id = match &local_id {
+                        Some(Value::String(_)) | None if initialize => Some(Value::from(1)),
+                        _ => local_id.clone(),
+                    };
                     let receipt = match session.write(&write.operation_id().0,
                         native_id.as_ref().unwrap_or(&Value::Null), message).await {
                         Ok(value) if value.get("accepted") == Some(&Value::Bool(true)) => {
                             let remote_id = value.get("remoteId").and_then(Value::as_u64);
-                            if let (Some(remote), Some(local)) = (remote_id, native_id.as_ref().and_then(Value::as_u64)) {
+                            if let (Some(remote), Some(local), true) = (
+                                remote_id,
+                                local_id.clone(),
+                                native_id.as_ref().is_some_and(Value::is_u64),
+                            ) {
                                 context.response_ids.insert(remote, local);
                             }
-                            if method.as_deref() == Some("initialize") { initialize_id = native_id; }
+                            if initialize { initialize_id = local_id.or(native_id); }
                             if method.as_deref() == Some("initialized") {
                                 initialization = InitializationStatus::Ready;
                                 let mut published = status.borrow().clone();
@@ -401,11 +420,14 @@ async fn run_guest_attachment(
             event = read_rx.recv() => match event.unwrap_or(Err(GuestProviderError::Task)) {
                 Ok(Some(mut event)) => {
                     if event.kind == "stdout" {
-                        if let Some(remote) = event.payload.get("id").and_then(Value::as_u64)
+                        // A server request carries the provider's own ID space;
+                        // only a reply maps back to a local request ID.
+                        if event.payload.get("method").is_none()
+                            && let Some(remote) = event.payload.get("id").and_then(Value::as_u64)
                             && let Some(local) = context.response_ids.get(&remote)
                             && let Some(object) = event.payload.as_object_mut()
                         {
-                            object.insert("id".into(), Value::from(*local));
+                            object.insert("id".into(), local.clone());
                         }
                         if let Some(id) = &initialize_id
                             && event.payload.get("id") == Some(id)
@@ -1852,6 +1874,188 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// A guest that applies the guest supervisor's rules
+    /// (`codex_process_supervisor.py`, `Child.write` and `_append_frame`):
+    /// only an integer native ID with a method is renumbered from the handle's
+    /// RPC sequence, and a stdout reply with ID 1 and a result is saved as the
+    /// handle's initialize result, which `info` returns on reattach.
+    #[derive(Default)]
+    struct SupervisorRulesGuest {
+        rpc_sequence: Mutex<u64>,
+        events: Mutex<Vec<Value>>,
+        init_result: Mutex<Option<Value>>,
+        writes: Mutex<Vec<Value>>,
+    }
+
+    impl SupervisorRulesGuest {
+        fn info(&self) -> Value {
+            let events = self.events.lock().unwrap();
+            json!({"handle":"linux-worker:agent-1","generation":3,
+                "sequence":events.len(),"lastSeq":events.len(),"acknowledged":0,
+                "pid":42,"resumed":true,"initResult":*self.init_result.lock().unwrap(),
+                "state":"running"})
+        }
+    }
+
+    impl GuestRpc for SupervisorRulesGuest {
+        fn stream(
+            &self,
+            method: &str,
+            params: &Value,
+            _request_id: Option<&str>,
+            _timeout: Duration,
+            _on_frame: &mut dyn FnMut(Value) -> std::result::Result<(), GuestError>,
+        ) -> std::result::Result<Value, GuestError> {
+            match (method, params["action"].as_str()) {
+                ("provider.start", _) | ("provider.rpc", Some("info")) => Ok(self.info()),
+                ("provider.rpc", Some("write")) => {
+                    self.writes.lock().unwrap().push(params.clone());
+                    let message = &params["message"];
+                    let mut remote = params["nativeId"].clone();
+                    if remote.is_i64() && message.get("method").is_some() {
+                        let mut sequence = self.rpc_sequence.lock().unwrap();
+                        *sequence += 1;
+                        remote = Value::from(*sequence);
+                    }
+                    if message["method"] == "initialize" {
+                        // The bridge answers on stdout with the ID it received.
+                        let result = json!({"userAgent":"claude-bridge/1"});
+                        if remote == json!(1) {
+                            *self.init_result.lock().unwrap() = Some(result.clone());
+                        }
+                        let mut events = self.events.lock().unwrap();
+                        let sequence = events.len() + 1;
+                        events.push(json!({"sequence":sequence,"generation":3,"kind":"stdout",
+                            "payload":json!({"id":remote,"result":result}).to_string()}));
+                    }
+                    Ok(json!({"accepted":true,"duplicate":false,"remoteId":remote}))
+                }
+                ("provider.rpc", Some("next")) => {
+                    let cursor = usize::try_from(params["cursor"].as_u64().unwrap()).unwrap();
+                    let events = self.events.lock().unwrap();
+                    Ok(json!({"event":events.get(cursor).cloned(),"returnCode":null}))
+                }
+                ("provider.rpc", Some("ack")) => Ok(json!({"acknowledged":params["sequence"]})),
+                _ => Err(GuestError::Rejected {
+                    code: Some("invalid_params".into()),
+                    detail: None,
+                    uncertain: false,
+                }),
+            }
+        }
+    }
+
+    // Rust Studio gives Claude bridge requests string IDs. The saved result must
+    // still let a reattach answer initialize without writing it to the live
+    // bridge again, as the Codex path and the Python host do.
+    #[tokio::test]
+    async fn claude_initialize_result_is_saved_with_the_handle_and_reused_on_reattach() {
+        let (_directory, store) = open_store().await;
+        store
+            .transaction(|tx| {
+                let mut record =
+                    AgentRepository::get(tx, &AgentId::from("agent-1"))?.expect("fixture agent");
+                record.extra.insert("provider".into(), json!("claude"));
+                AgentRepository::put(tx, &record)
+            })
+            .await
+            .unwrap();
+        let guest = Arc::new(SupervisorRulesGuest::default());
+        let factory = GuestProviderTaskFactory::new(
+            store.clone(),
+            guest.clone(),
+            GuestProviderIdentity {
+                agent_id: "agent-1".into(),
+                epoch: 9,
+                generation: 3,
+                account_key: "default".into(),
+                provider: "claude".into(),
+            },
+            "profiles/default",
+        );
+        let open = |shutdown: Shutdown| {
+            factory.open(
+                ProviderHandle::for_account("agent-1"),
+                OpenOptions {
+                    clock: SessionClock::default(),
+                    launch: launch(),
+                    expected_generation: Some(Generation(3)),
+                },
+                shutdown,
+            )
+        };
+        let local_id = RequestId::String(format!("claude:{:032x}", 1));
+        let initialize = |operation: &str| {
+            let frame = Frame::Request(RequestFrame {
+                id: local_id.clone(),
+                method: Method::Initialize,
+                params: Some(json!({})),
+                fields: Default::default(),
+            });
+            PreparedWrite::new(OperationId(operation.into()), &frame).unwrap()
+        };
+
+        let mut first = open(Shutdown::default()).await.unwrap();
+        let (command, receipt) = AdapterCommand::write(initialize("initialize-1"));
+        first.commands.send(command).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(3), receipt.receive())
+                .await
+                .unwrap(),
+            CommandReceipt::Written { .. }
+        ));
+        let entry = tokio::time::timeout(Duration::from_secs(3), first.journal.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // The reply reaches the session under the local string ID.
+        assert!(
+            matches!(&entry.payload, JournalPayload::Frame(Frame::Response { id, .. }) if *id == local_id),
+            "the initialize reply keeps the local request ID"
+        );
+        assert_eq!(
+            *guest.init_result.lock().unwrap(),
+            Some(json!({"userAgent":"claude-bridge/1"})),
+            "the guest supervisor saves the Claude initialize result with the handle"
+        );
+        // A provider server request has its own ID space. An ID equal to a
+        // remote request ID is not a reply and keeps its value.
+        guest
+            .events
+            .lock()
+            .unwrap()
+            .push(json!({"sequence":2,"generation":3,"kind":"stdout",
+            "payload":json!({"id":1,"method":"item/tool/call","params":{}}).to_string()}));
+        let entry = tokio::time::timeout(Duration::from_secs(3), first.journal.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&entry.payload, JournalPayload::Frame(Frame::Request(request))
+                if request.id == RequestId::Number(1)),
+            "a server request keeps the provider's request ID"
+        );
+        let _exit = first.shutdown().await;
+
+        let mut second = open(Shutdown::default()).await.unwrap();
+        let (command, receipt) = AdapterCommand::write(initialize("initialize-2"));
+        second.commands.send(command).await.unwrap();
+        let cached = tokio::time::timeout(Duration::from_secs(3), receipt.receive())
+            .await
+            .unwrap();
+        assert!(
+            matches!(&cached, CommandReceipt::CachedInitialize(result)
+                if *result == json!({"userAgent":"claude-bridge/1"})),
+            "a reattach reuses the saved initialize result"
+        );
+        assert_eq!(
+            guest.writes.lock().unwrap().len(),
+            1,
+            "initialize is never written again to the live bridge"
+        );
+        let _exit = second.shutdown().await;
     }
 
     // The session task stops serving at shutdown and reads a pending receipt
