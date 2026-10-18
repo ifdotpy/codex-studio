@@ -703,6 +703,13 @@ class SchemaContractTests(unittest.TestCase):
         ):
             add(pointer, "@oneOf")
 
+        # A turn that failed because the disk was full waits for free space as a
+        # capacity retry with the cause diskFull (codex_disk_space.DISK_FULL_KIND).
+        add("/components/schemas/CapacityRetryCause", "enum")
+        add("/components/schemas/RetryResponse/properties/cause", "enum")
+        add("/components/schemas/AgentEntityCapacityRetryDto/properties/cause",
+            "property", "@nullable", "@nullableBranch")
+
         # /api/desktop reports free disk space; each field is null when the
         # volume cannot be read or the space is above the warning threshold.
         add("/components/schemas/DesktopResponse/properties/diskSpace",

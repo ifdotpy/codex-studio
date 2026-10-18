@@ -70,6 +70,9 @@ def policy_refusal_reason(error: "Any") -> dict[str, "Any"]:
 
 
 def error_message(error: "Any") -> str:
+    from codex_disk_space import ERROR_MESSAGE as DISK_FULL_MESSAGE, is_disk_full_error
+    if is_disk_full_error(error):
+        return DISK_FULL_MESSAGE
     if isinstance(error, dict):
         kind = error_kind(error)
         if kind == 'cyberPolicy':

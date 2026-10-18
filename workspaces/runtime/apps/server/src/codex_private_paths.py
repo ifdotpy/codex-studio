@@ -112,6 +112,41 @@ def protect_temp_file(path: str | Path) -> Path:
     return target
 
 
+def write_atomic(path: str | Path, data: bytes | str, *, mode: int = 0o600, durable: bool = False) -> None:
+    """Replace a file with new content in one rename.
+
+    A failure at any step (a full disk included) removes the temporary file and keeps the
+    previous file. Each call uses its own temporary name, so parallel writers do not collide."""
+    import tempfile
+
+    target = Path(path)
+    payload = data.encode('utf-8') if isinstance(data, str) else data
+    descriptor, name = tempfile.mkstemp(prefix='.' + target.name + '.', suffix='.tmp', dir=target.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(payload)
+            stream.flush()
+            if durable:
+                os.fsync(stream.fileno())
+        os.chmod(name, mode)
+        if os.name == 'nt':
+            protect_temp_file(name)
+        os.replace(name, target)
+        name = ''
+        if durable and os.name != 'nt':
+            directory = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if name:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
+
+
 def reject_reparse_path(root: str | Path, target: str | Path, *, allow_missing: bool = False) -> None:
     """Reject reparse points in a path rooted at a private directory."""
     base = Path(os.path.abspath(root))

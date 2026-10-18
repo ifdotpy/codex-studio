@@ -151,7 +151,8 @@
             "httpConnectionFailed",
             "responseStreamConnectionFailed",
             "responseStreamDisconnected",
-            "responseTooManyFailedAttempts"
+            "responseTooManyFailedAttempts",
+            "diskFull"
           ],
           "title": "Cause",
           "type": "string"

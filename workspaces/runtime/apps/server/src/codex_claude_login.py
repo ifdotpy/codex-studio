@@ -66,17 +66,12 @@ class LoginManager:
         # Browser URLs and authorization codes never enter persistent receipts.
         receipt = {k: v for k, v in job['receipt'].items() if k != 'verificationUrl'}
         path = self._path(receipt['requestId'])
-        temporary = path.with_suffix('.tmp')
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w') as stream:
-            metadata = {key: job[key] for key in (
-                'flow', 'requestHash', 'emailHint', 'label', 'configDir', 'binaryPath', 'codeSubmitted',
-                'cleanupDone'
-            ) if key in job}
-            json.dump({'receipt': receipt, 'metadata': metadata}, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        metadata = {key: job[key] for key in (
+            'flow', 'requestHash', 'emailHint', 'label', 'configDir', 'binaryPath', 'codeSubmitted',
+            'cleanupDone'
+        ) if key in job}
+        from codex_private_paths import write_atomic
+        write_atomic(path, json.dumps({'receipt': receipt, 'metadata': metadata}), durable=True)
 
     def _job(self, rid):
         request_id(rid)

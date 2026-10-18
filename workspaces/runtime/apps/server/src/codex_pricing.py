@@ -85,10 +85,8 @@ class PricingCatalog:
                 self.refreshing = True
                 self.last_attempt = self.clock()
                 self.attempt_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                attempt_tmp = self.attempt_path.with_name("." + self.attempt_path.name + ".tmp")
-                attempt_tmp.write_text(json.dumps({"lastAttemptAt": self.last_attempt}))
-                os.chmod(attempt_tmp, 0o600)
-                os.replace(attempt_tmp, self.attempt_path)
+                from codex_private_paths import write_atomic
+                write_atomic(self.attempt_path, json.dumps({"lastAttemptAt": self.last_attempt}))
                 if artifact:
                     artifact["lastAttemptAt"] = self.last_attempt
                     self._save(artifact)
@@ -169,7 +167,6 @@ class PricingCatalog:
             return
         path = Path(cache_root) / "model-pricing" / "models-dev-v1.json"
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = path.with_name("." + path.name + ".tmp")
         scanner = copy.deepcopy(artifact)
         for provider in scanner["catalog"]["providers"].values():
             for model in provider.get("models", {}).values():
@@ -188,9 +185,8 @@ class PricingCatalog:
                         # The vendored parser only represents a 200k threshold.
                         cost.pop("context_over_200k", None)
                     model["cost"] = cost
-        temporary.write_text(json.dumps(scanner, separators=(",", ":")))
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        from codex_private_paths import write_atomic
+        write_atomic(path, json.dumps(scanner, separators=(",", ":")))
 
 
 def lookup(catalog, provider, model):

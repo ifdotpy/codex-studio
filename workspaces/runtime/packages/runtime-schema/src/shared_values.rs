@@ -52,3 +52,11 @@ pub const BACKEND_RESTARTED_TURN_ERROR: &str =
     "Server restarted during a turn. Review history, then send a new instruction.";
 pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
 pub const GUEST_PROVIDER_READ_RETRY_SECONDS: u64 = 30;
+pub const DISK_SPACE_WARNING_FREE_BYTES: u64 = 16106127360;
+pub const DISK_SPACE_CRITICAL_FREE_BYTES: u64 = 5368709120;
+pub const DISK_FULL_ENTER_FREE_BYTES: u64 = 1073741824;
+pub const DISK_FULL_EXIT_FREE_BYTES: u64 = 2147483648;
+pub const DISK_FULL_RECHECK_SECONDS: u64 = 15;
+pub const DISK_FULL_MAX_RESUMES: u64 = 5;
+pub const DISK_FULL_ERROR_PATTERN: &str =
+    "ENOSPC|No space left on device|database or disk is full|SQLITE_FULL";

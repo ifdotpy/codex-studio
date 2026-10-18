@@ -175,6 +175,8 @@ class CapacityRetryCause(ContractStrEnum):
     RESPONSE_STREAM_CONNECTION_FAILED = "responseStreamConnectionFailed"
     RESPONSE_STREAM_DISCONNECTED = "responseStreamDisconnected"
     RESPONSE_TOO_MANY_FAILED_ATTEMPTS = "responseTooManyFailedAttempts"
+    # The turn failed because the disk was full; the retry waits for free space.
+    DISK_FULL = "diskFull"
 
 
 class CapacityRetryStatus(ContractStrEnum):
@@ -257,6 +259,8 @@ class AgentEntityCapacityRetryDto(ContractModel):
     acceptedTurnId: str | None = None
     claimedAt: float | None = None
     reason: str | None = None
+    # diskFull: the retry waits for free disk space; the renderer shows a held agent.
+    cause: CapacityRetryCause | None = None
 
 
 class AgentEntityUsageResumeDto(ContractModel):

@@ -18,3 +18,5 @@ export const BACKEND_RESTARTED_TURN_ERROR =
   "Server restarted during a turn. Review history, then send a new instruction.";
 export const VM_PROVIDER_DISCONNECTED_TURN_ERROR =
   "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+export const DISK_FULL_ERROR_PATTERN =
+  "ENOSPC|No space left on device|database or disk is full|SQLITE_FULL";

@@ -55,7 +55,8 @@ class CapacityContinuation(OpenRecord):
     epoch: Count
     turnId: Identity
     status: Literal["scheduled", "starting", "finished", "cancelled", "unknown", "exhausted", "failed"]
-    cause: Literal["serverOverloaded", "internalServerError", "httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts"]
+    # diskFull (codex_disk_space.DISK_FULL_KIND) waits for free space instead of a delay.
+    cause: Literal["serverOverloaded", "internalServerError", "httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts", "diskFull"]
     cwd: Text
     settings: dict[str, JsonValue]
     attempt: Count

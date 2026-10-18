@@ -114,7 +114,7 @@ _AGENT_FIELD_ALLOWLISTS = {
     ),
     "readState": ("threadId", "turnId", "read", "revision"),
     "startAttempt": ("prepareError", "responseError", "retiredEvents"),
-    "capacityRetry": ("id", "threadId", "epoch", "accountKey", "status",
+    "capacityRetry": ("id", "threadId", "epoch", "accountKey", "status", "cause",
                       "acceptedTurnId", "updatedAt", "dueAt", "claimedAt", "reason"),
     "usageResume": ("id", "status", "cause", "reason", "updatedAt", "plannedAt", "dueAt"),
     "contextRepairWait": ("scope", "error"),

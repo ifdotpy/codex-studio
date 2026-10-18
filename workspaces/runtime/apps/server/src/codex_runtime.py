@@ -7114,6 +7114,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # starts. Old unknown receipts do not consume a slot forever.
             from codex_turn_recovery import START_PACE_LIMIT, recent_account_starts
             recent_starts = recent_account_starts(agents)
+            # While the disk is full no new turn starts. Queued input stays queued, and the
+            # desktop shows one notice with the free space. Steering a running turn continues.
+            from codex_disk_space import full_free_bytes
+            disk_full = bool(candidates) and full_free_bytes(self) is not None
             for a in candidates:
                 # The root owns the setting. Resolve it from the current DB
                 # record instead of trusting a cached descendant projection.
@@ -7127,7 +7131,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     continue
                 if fast_dispatch:
                     fast_marks["fastRadioCheckedAt"] = time.monotonic_ns()
-                if not busy and len(active) >= global_limit:
+                if not busy and (disk_full or len(active) >= global_limit):
                     continue
                 account_key = a.get("accountKey", "default")
                 if (not busy and a.get("provider", "codex") == "codex"
@@ -7813,6 +7817,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         from codex_workspace_delivery import defer_workspace_start
         if defer_workspace_start(self, agent_id, attempt_id, error, unknown=unknown):
+            return
+        from codex_disk_space import defer_start as defer_disk_start
+        if defer_disk_start(self, agent_id, attempt_id, error, unknown=unknown):
             return
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)

@@ -332,8 +332,9 @@ class PeerUpdateStatus(ContractModel):
 
 
 class DiskSpaceStatus(ContractModel):
-    level: Literal["warning", "critical"] | None = Field(
-        description="Set when the free space of the state volume is below the warning or the critical threshold."
+    level: Literal["warning", "critical", "full"] | None = Field(
+        description=("Set when the free space of the state volume is below the warning or the critical threshold. "
+                     "full: the disk is full; Studio starts no new turn and holds agents until space returns.")
     )
     freeBytes: SafeInt | None
     message: str | None

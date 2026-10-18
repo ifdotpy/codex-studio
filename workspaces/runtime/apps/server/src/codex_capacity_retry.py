@@ -6,7 +6,10 @@ import time
 from typing import TYPE_CHECKING, Protocol
 
 from codex_records import RecordStore
+from codex_disk_space import (DISK_FULL_KIND, DiskFullError, full_free_bytes, held_reason,
+                              is_disk_full_error, observe_full)
 from codex_native_errors import assert_native_thread_open, error_kind
+from codex_shared_values import DISK_FULL_MAX_RESUMES, DISK_FULL_RECHECK_SECONDS
 
 if TYPE_CHECKING:
     import sqlite3
@@ -24,6 +27,13 @@ SERVER_KINDS = {'serverOverloaded', 'internalServerError'}
 WAIT_MAX_SECONDS = 300
 CONNECTION_KINDS = {'httpConnectionFailed', 'responseStreamConnectionFailed',
                     'responseStreamDisconnected', 'responseTooManyFailedAttempts'}
+# A turn that failed because the disk was full waits for free space, not for a delay.
+DISK_KINDS = {DISK_FULL_KIND}
+
+
+def failure_kind(error: object) -> str:
+    """The capacity-retry cause of a failed turn's error, or its native error kind."""
+    return DISK_FULL_KIND if is_disk_full_error(error) else error_kind(error)
 
 
 class CapacityRetryRuntime(RecordStore, Protocol):
@@ -51,7 +61,7 @@ class CapacityRetryRuntime(RecordStore, Protocol):
     def capacity_started(self, db: "sqlite3.Connection", agent: "AgentRecord",
                          attempt: "StartAttemptRecord", turn_id: str) -> None: ...
     def capacity_wait(self, db: "sqlite3.Connection", agent: "AgentRecord",
-                      retry: "CapacityRetryRecord", reason: str) -> None: ...
+                      retry: "CapacityRetryRecord", reason: str, *, delay: float | None = None) -> None: ...
     def capacity_check(self, db: "sqlite3.Connection", agent: "AgentRecord",
                        retry: "CapacityRetryRecord", *, claimed: bool = False) -> None: ...
     def capacity_run(self, key: str, attempt: "StartAttemptRecord") -> None: ...
@@ -138,9 +148,9 @@ class CapacityRetryMixin:
             if turn.get('status') == 'completed':
                 a.pop('nativeFailureHold', None)
         error = turn.get('error') or {}
-        kind = error_kind(error)
+        kind = failure_kind(error)
         if (not known_turn or not turn.get('id') or turn.get('status') != 'failed'
-                or kind not in SERVER_KINDS | CONNECTION_KINDS
+                or kind not in SERVER_KINDS | CONNECTION_KINDS | DISK_KINDS
                 or not a.get('autoWake') or a.get('deletedAt')
                 or a.get('turnEpoch', a['epoch']) != a['epoch']):
             return
@@ -153,13 +163,20 @@ class CapacityRetryMixin:
         if db.execute('SELECT 1 FROM runtime_capacity_retries WHERE id=?', (retry_id,)).fetchone():
             return
         count = a.get('capacityRetryCount', 0)
-        delays = CONNECTION_DELAYS if kind in CONNECTION_KINDS else DELAYS
+        if kind in DISK_KINDS:
+            # Check free space at once; capacity_tick waits while the disk is still full.
+            observe_full(self)
+            delays: tuple[int, ...] = (0,) * DISK_FULL_MAX_RESUMES
+        else:
+            delays = CONNECTION_DELAYS if kind in CONNECTION_KINDS else DELAYS
         retry = dict(id=retry_id, threadId=a['threadId'], turnId=turn['id'],  # type: ignore[assignment]  # typed-narrowing: retry resets to complete fields
                      accountKey=a.get('accountKey', 'default'), epoch=a['epoch'], cause=kind,
                      status='scheduled' if count < len(delays) else 'exhausted',
                      dueAt=time.time() + delays[count] if count < len(delays) else None,
                      attempt=count + 1, maxAttempts=len(delays),
                      cwd=a['cwd'], settings=self.preparation_settings(a))
+        if kind in DISK_KINDS:
+            retry['reason'] = held_reason(full_free_bytes(self))  # type: ignore[index]  # typed-narrowing: initialized retry accepts its reason
         retry['taskClaims'] = self.continuation_work_claims(db, a)  # type: ignore[index]  # typed-narrowing: initialized retry accepts task claims
         a['capacityRetry'] = retry  # type: ignore[typeddict-item]  # typed-narrowing: rebuilt retry matches declared shape
         self.capacity_save(db, a, retry)  # type: ignore[arg-type]  # typed-narrowing: rebuilt retry matches capacity shape
@@ -174,6 +191,10 @@ class CapacityRetryMixin:
             retry.update(status='cancelled', dueAt=None, reason=str(error))  # type: ignore[call-arg]  # typed-update
             self.capacity_save(db, a, retry)
             return
+        if not unknown and isinstance(error, DiskFullError):
+            # Nothing was submitted; the disk filled between the claim and the submission.
+            self.capacity_wait(db, a, retry, str(error), delay=DISK_FULL_RECHECK_SECONDS)
+            return
         if not unknown and isinstance(getattr(error, 'contextRepairWait', None), dict):
             # A running command, monitor or receipt delays context repair. This
             # is a wait, not a rejection: nothing was submitted. Check again later.
@@ -183,11 +204,15 @@ class CapacityRetryMixin:
         self.capacity_save(db, a, retry)
 
     def capacity_wait(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
-                      retry: "CapacityRetryRecord", reason: str) -> None:
-        waits = retry.get('waits', 0) + 1
+                      retry: "CapacityRetryRecord", reason: str, *, delay: float | None = None) -> None:
         retry.pop('claimedAt', None)
-        retry.update(status='scheduled', dueAt=time.time() + min(WAIT_MAX_SECONDS, 15 * waits),  # type: ignore[call-arg]  # typed-update
-                     waits=waits, reason=reason)
+        if delay is not None:
+            # A free-space wait is checked at a fixed interval and does not grow.
+            retry.update(status='scheduled', dueAt=time.time() + delay, reason=reason)  # type: ignore[call-arg]  # typed-update
+        else:
+            waits = retry.get('waits', 0) + 1
+            retry.update(status='scheduled', dueAt=time.time() + min(WAIT_MAX_SECONDS, 15 * waits),  # type: ignore[call-arg]  # typed-update
+                         waits=waits, reason=reason)
         self.capacity_save(db, a, retry)
 
     def capacity_check(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
@@ -200,6 +225,10 @@ class CapacityRetryMixin:
             raise ValueError('This retry belongs to an earlier agent state.')
         assert_native_thread_open(a)
         self.assert_workspace_available(db, a)
+        free = full_free_bytes(self)
+        if free is not None:
+            # A continuation is a new turn. None starts while the disk is full.
+            raise DiskFullError(free)
         if not claimed and (a.get('inFlight') or a.get('turnId')
                             or a['status'] in {'queued', 'starting', 'running', 'approval'}):
             raise ValueError('Wait for the current turn before retry.')
@@ -329,6 +358,8 @@ class CapacityRetryMixin:
                             retry.update(status='cancelled', dueAt=None, reason=str(error))  # type: ignore[call-arg]  # typed-update
                             self.capacity_save(db, a, retry)
                             self.permanent_worker_hold(db, a, retry_id, 'identity-changed', str(error))
+                        elif isinstance(error, DiskFullError):
+                            self.capacity_wait(db, a, retry, str(error), delay=DISK_FULL_RECHECK_SECONDS)
                         else:
                             self.capacity_wait(db, a, retry, str(error))
                         self.put(db, 'agents', a)
