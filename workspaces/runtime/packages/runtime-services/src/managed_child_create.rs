@@ -575,14 +575,17 @@ pub(crate) async fn spawn_agents(
             )?;
         }
         let provider = account.provider.key();
-        let model = if requested_model == "gpt-6-astra"
+        let account_adapter = crate::provider_adapter::adapter(account.provider);
+        // An unselected lead default that the account's provider cannot run
+        // becomes that provider's own default.
+        let model = if requested_model == crate::agents_create::DEFAULT_LEAD_MODEL
             && root_value.get("model").is_none()
             && defaults.get("model").is_none()
             && profile_model.is_none()
             && spec.get("model").is_none()
-            && provider == "claude"
+            && !account_adapter.owns_model(requested_model)
         {
-            "default"
+            account_adapter.default_model()
         } else {
             requested_model
         };

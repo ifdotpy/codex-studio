@@ -10,6 +10,7 @@ use studio_runtime_services::agents_create::{
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
+use studio_runtime_services::provider_adapter::{adapter, model_provider};
 
 /// Compose the same fresh model admission and P02 host snapshot used by agent
 /// creation for managed Spawn, Review, and monitor admission.
@@ -172,19 +173,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         let requested_name = self.catalog.pricing_name(account_key, account, requested)?;
         let default_name = self.catalog.pricing_name(account_key, account, default)?;
         let provider_for = |model: &str| {
-            if model.starts_with("gpt-") {
-                "openai"
-            } else if model.starts_with("claude-")
-                || model == "default"
-                || model == "sonnet"
-                || model == "opus"
-                || model == "haiku"
-                || account.provider == studio_runtime_providers::ProviderKind::Claude
-            {
-                "anthropic"
-            } else {
-                "openai"
-            }
+            adapter(model_provider(model).unwrap_or(account.provider)).pricing_vendor()
         };
         let prices = Some((
             catalog.worker_choice_rates(provider_for(requested), &requested_name),
@@ -1204,15 +1193,8 @@ async fn wait_for_agent_catalog(
                     .or(worker_model)
                     .or(root_model)
                     .unwrap_or_else(|| "gpt-6-astra".to_owned());
-                let provider = if model.starts_with("gpt-") {
-                    Some("codex")
-                } else if model.starts_with("claude-")
-                    || matches!(model.as_str(), "default" | "sonnet" | "opus" | "haiku")
-                {
-                    Some("claude")
-                } else {
-                    None
-                };
+                let provider =
+                    model_provider(&model).map(studio_runtime_providers::ProviderKind::key);
                 let pinned = explicit.or(selected_account);
                 let mut keys = Vec::new();
                 let mut add = |key: Option<&str>, expected_provider: Option<&str>| {

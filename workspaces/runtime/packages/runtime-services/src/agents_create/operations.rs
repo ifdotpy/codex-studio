@@ -695,11 +695,7 @@ async fn create(
             .get("model")
             .and_then(Value::as_str)
             .filter(|model| !model.trim().is_empty())
-            .unwrap_or(if provider == "claude" {
-                "default"
-            } else {
-                DEFAULT_LEAD_MODEL
-            });
+            .unwrap_or(crate::provider_adapter::default_model(&provider));
         let effort = request
             .intent
             .get("effort")
@@ -749,11 +745,7 @@ async fn create(
             )?
     } else {
         ExecutionSettings {
-            model: if provider == "claude" {
-                "default".to_owned()
-            } else {
-                DEFAULT_LEAD_MODEL.to_owned()
-            },
+            model: crate::provider_adapter::default_model(&provider).to_owned(),
             effort: Some("medium".to_owned()),
             native_effort: "medium".to_owned(),
             fast_mode: false,
@@ -1132,11 +1124,7 @@ async fn create_child(
         .and_then(Value::as_str)
         .or_else(|| defaults.get("model").and_then(Value::as_str))
         .or_else(|| root.get("model").and_then(Value::as_str))
-        .unwrap_or(if provider == "claude" {
-            "default"
-        } else {
-            DEFAULT_LEAD_MODEL
-        });
+        .unwrap_or(crate::provider_adapter::default_model(&provider));
     let effort = execution_intent
         .get("effort")
         .and_then(Value::as_str)
@@ -1961,11 +1949,7 @@ pub async fn conversation(
                 .then(|| initial.get("model").and_then(Value::as_str))
                 .flatten()
         })
-        .unwrap_or(if provider == "claude" {
-            "default"
-        } else {
-            DEFAULT_LEAD_MODEL
-        });
+        .unwrap_or(crate::provider_adapter::default_model(&provider));
     let effort = if request.effort_present {
         request.effort.as_ref().and_then(Option::as_deref)
     } else {
@@ -2936,7 +2920,7 @@ pub(crate) fn build_agent_record(
           "id":id,"threadId":null,"accountKey":account,"executionSettingsAccountKey":account,
           "provider":provider,"yoloMode":yolo,"name":name,"prompt":prompt,"cwd":cwd,
           "role":role,"isLead":is_lead,"needsTitle":draft,"parentId":null,"rootId":id,
-          "model":if provider == "claude" {"default"} else {DEFAULT_LEAD_MODEL},"effort":"medium",
+          "model":crate::provider_adapter::default_model(provider),"effort":"medium",
           "fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":"standard",
           "maxAgents":max_agents,"tokenBudget":token_budget,"status":status,"autoWake":true,
           "epoch":0,"turnId":null,"inFlight":false,"turnEpoch":0,"usageResumeEnabled":true,

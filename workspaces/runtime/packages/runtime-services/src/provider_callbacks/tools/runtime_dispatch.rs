@@ -217,15 +217,7 @@ fn ordered_worker_account_candidates<'a>(
 }
 
 fn worker_model_provider(model: &str) -> Option<&'static str> {
-    if model.starts_with("gpt-") {
-        Some("codex")
-    } else if matches!(model, "default" | "sonnet" | "opus" | "haiku")
-        || model.starts_with("claude-")
-    {
-        Some("claude")
-    } else {
-        None
-    }
+    crate::provider_adapter::model_provider(model).map(studio_runtime_providers::ProviderKind::key)
 }
 
 #[derive(Clone, Debug)]

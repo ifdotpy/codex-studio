@@ -2385,13 +2385,9 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
                 ),
             );
         }
-        let provider = if model.starts_with("claude-")
-            || ["default", "sonnet", "opus", "haiku"].contains(&model)
-        {
-            "claude"
-        } else {
-            "codex"
-        };
+        let provider = crate::provider_adapter::model_provider(model)
+            .unwrap_or(studio_runtime_providers::ProviderKind::Codex)
+            .key();
         Ok((
             key.to_owned(),
             crate::host_worker_create::AccountIdentity {

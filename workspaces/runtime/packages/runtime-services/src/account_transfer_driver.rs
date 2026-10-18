@@ -239,7 +239,7 @@ pub async fn request(
                         value["accountKey"] = json!(target);
                         if provider != target_provider {
                             value["provider"] = json!(target_provider);
-                            value["model"] = json!(if target_provider == "claude" {"default"} else {crate::agents_create::DEFAULT_LEAD_MODEL});
+                            value["model"] = json!(crate::provider_adapter::default_model(&target_provider));
                             value["effort"] = Value::Null;
                             value["nativeEffort"] = json!("medium");
                             value["fastMode"] = json!(false);
@@ -368,7 +368,7 @@ pub async fn request(
                     value["accountKey"] = json!(target);
                     if provider != target_provider {
                         value["provider"] = json!(target_provider);
-                        value["model"] = json!(if target_provider == "claude" {"default"} else {crate::agents_create::DEFAULT_LEAD_MODEL});
+                        value["model"] = json!(crate::provider_adapter::default_model(&target_provider));
                         value["effort"] = Value::Null;
                         value["nativeEffort"] = json!("medium");
                         value["fastMode"] = json!(false);

@@ -567,11 +567,7 @@ fn destination_settings(
     });
     let chosen = if changed || current.is_none() {
         visible.iter().find(|model| model.is_default).or_else(|| {
-            let fallback = if target_provider == "claude" {
-                "default"
-            } else {
-                crate::agents_create::DEFAULT_LEAD_MODEL
-            };
+            let fallback = crate::provider_adapter::default_model(target_provider);
             visible.iter().find(|model| model.model == fallback)
         })
     } else {

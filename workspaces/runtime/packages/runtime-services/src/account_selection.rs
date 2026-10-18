@@ -71,11 +71,7 @@ impl SelectionSnapshot {
             .key();
         if studio_runtime_providers::ProviderKind::key_of(&agent) != Some(provider) {
             agent["provider"] = json!(provider);
-            agent["model"] = json!(if provider == "claude" {
-                "default"
-            } else {
-                "gpt-6-astra"
-            });
+            agent["model"] = json!(crate::provider_adapter::default_model(provider));
             agent["effort"] = json!("medium");
             agent["nativeEffort"] = json!("medium");
             agent["fastMode"] = json!(false);

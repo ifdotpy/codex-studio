@@ -61,6 +61,29 @@ pub trait ProviderAdapter: Send + Sync + 'static {
 
     /// The peer refused a request because the thread is still running a turn.
     fn is_busy_error(&self, error: &Value) -> bool;
+
+    /// The model id or alias belongs to this provider's model family.
+    fn owns_model(&self, model: &str) -> bool;
+
+    /// Model of a new agent when nothing selects one.
+    fn default_model(&self) -> &'static str;
+
+    /// Vendor key of this provider's models in the pricing catalog.
+    fn pricing_vendor(&self) -> &'static str;
+}
+
+/// The provider whose model family contains `model`, if any.
+#[must_use]
+pub fn model_provider(model: &str) -> Option<ProviderKind> {
+    ProviderKind::ALL
+        .into_iter()
+        .find(|kind| adapter(*kind).owns_model(model))
+}
+
+/// Default model for a stored provider key; a key other than Claude's is Codex's.
+#[must_use]
+pub fn default_model(provider: &str) -> &'static str {
+    adapter(provider.parse().unwrap_or(ProviderKind::Codex)).default_model()
 }
 
 struct CodexAdapter;
@@ -81,6 +104,10 @@ const CODEX_FILE_CREDENTIALS: [&str; 2] = ["-c", "cli_auth_credentials_store=\"f
 /// JSON-RPC error the Claude bridge returns for a request on a busy thread.
 const CLAUDE_BUSY_CODE: i64 = -32000;
 const CLAUDE_BUSY_MESSAGE: &str = "Claude is still working";
+/// Claude Code's own default-model selector.
+const CLAUDE_DEFAULT_MODEL: &str = "default";
+/// Claude Code model aliases (besides `claude-*` ids).
+const CLAUDE_MODEL_ALIASES: [&str; 4] = [CLAUDE_DEFAULT_MODEL, "sonnet", "opus", "haiku"];
 /// Guest path of the Claude bridge inside the VM image.
 const VM_CLAUDE_BRIDGE: &str = "/opt/codex-studio/claude_bridge/bridge.mjs";
 
@@ -135,6 +162,18 @@ impl ProviderAdapter for CodexAdapter {
     fn is_busy_error(&self, _error: &Value) -> bool {
         false
     }
+
+    fn owns_model(&self, model: &str) -> bool {
+        model.starts_with("gpt-")
+    }
+
+    fn default_model(&self) -> &'static str {
+        crate::agents_create::DEFAULT_LEAD_MODEL
+    }
+
+    fn pricing_vendor(&self) -> &'static str {
+        "openai"
+    }
 }
 
 impl ProviderAdapter for ClaudeAdapter {
@@ -182,6 +221,18 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn is_busy_error(&self, error: &Value) -> bool {
         *error == serde_json::json!({"code": CLAUDE_BUSY_CODE, "message": CLAUDE_BUSY_MESSAGE})
+    }
+
+    fn owns_model(&self, model: &str) -> bool {
+        model.starts_with("claude-") || CLAUDE_MODEL_ALIASES.contains(&model)
+    }
+
+    fn default_model(&self) -> &'static str {
+        CLAUDE_DEFAULT_MODEL
+    }
+
+    fn pricing_vendor(&self) -> &'static str {
+        "anthropic"
     }
 }
 
@@ -321,5 +372,28 @@ mod tests {
         assert_eq!(claude.classify_error(&claude_only), Some(UsageCause::Auth));
         assert!(!codex.is_busy_error(&busy));
         assert!(claude.is_busy_error(&busy));
+    }
+
+    #[test]
+    fn model_families_and_defaults_belong_to_one_provider() {
+        use super::{default_model, model_provider};
+        for (model, owner) in [
+            ("gpt-6-astra", Some(ProviderKind::Codex)),
+            ("gpt-6-luna", Some(ProviderKind::Codex)),
+            ("gpt-5.6-luna", Some(ProviderKind::Codex)),
+            ("claude-sonnet-4", Some(ProviderKind::Claude)),
+            ("default", Some(ProviderKind::Claude)),
+            ("haiku", Some(ProviderKind::Claude)),
+            ("o3", None),
+        ] {
+            assert_eq!(model_provider(model), owner, "{model}");
+        }
+        for kind in ProviderKind::ALL {
+            let default = adapter(kind).default_model();
+            assert_eq!(model_provider(default), Some(kind));
+            assert_eq!(super::default_model(kind.key()), default);
+        }
+        assert_eq!(default_model("claude"), "default");
+        assert_eq!(default_model("codex"), "gpt-6-astra");
     }
 }

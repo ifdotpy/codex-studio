@@ -71,8 +71,8 @@
     "witness": "selection_matches_real_python_method",
     "edits": [
       {
-        "before": "if provider == \"claude\" {",
-        "after": "if provider != \"claude\" {"
+        "before": "agent[\"model\"] = json!(crate::provider_adapter::default_model(provider));",
+        "after": "agent[\"model\"] = json!(crate::provider_adapter::default_model(\"codex\"));"
       }
     ]
   },
