@@ -411,9 +411,6 @@ pub enum AccountCommand {
     },
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),
-    /// Run the idle sweep now as if the clock read the given instant.
-    #[cfg(test)]
-    IdleSweep(tokio::time::Instant),
     /// Re-evaluate idle candidates as if a durable blocker commit notified the worker.
     #[cfg(test)]
     IdleStateChange(tokio::time::Instant),
@@ -1293,7 +1290,6 @@ impl Worker {
             }
             ServeSignal::IdleStateChanged(changed) => {
                 changed.map_err(|_| WorkerError::TaskFailed)?;
-                let _ = self.idle_state_changes.borrow_and_update();
                 self.idle_state_changed(tokio::time::Instant::now()).await?;
             }
             ServeSignal::IdleSettingChanged(changed) => {
@@ -1316,8 +1312,6 @@ impl Worker {
                         .load(std::sync::atomic::Ordering::SeqCst),
                 );
             }
-            #[cfg(test)]
-            AccountCommand::IdleSweep(now) => self.idle_sweep(now).await?,
             #[cfg(test)]
             AccountCommand::IdleStateChange(now) => self.idle_state_changed(now).await?,
             AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,

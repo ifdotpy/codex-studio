@@ -394,6 +394,7 @@ impl Worker {
     }
 
     pub(super) async fn idle_state_changed(&mut self, now: Instant) -> Result<(), WorkerError> {
+        let _ = self.idle_state_changes.borrow_and_update();
         let blocked = self.idle_clocks.blocked_by(IdleBlocker::Durable);
         if blocked.is_empty() && !self.idle_clocks.process_blocked {
             return Ok(());

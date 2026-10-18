@@ -19,8 +19,22 @@ async fn progress<T>(future: impl std::future::Future<Output = T>) -> T {
 /// Longer than the longest accepted unload delay.
 const BEYOND_ANY_DELAY: Duration = Duration::from_secs((IDLE_SESSION_UNLOAD_SETTING.max + 1) * 60);
 
-async fn sweep(worker: &AccountHandle, at: tokio::time::Instant) {
-    worker.send(AccountCommand::IdleSweep(at)).await.unwrap();
+async fn sweep(worker: &AccountHandle) {
+    worker
+        .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
+        .await
+        .unwrap();
+    progress(worker_barrier(worker)).await;
+    // Advance the worker's actual clock, then resume before database work can
+    // cause Tokio to auto-advance unrelated protocol deadlines.
+    tokio::time::pause();
+    tokio::time::advance(BEYOND_ANY_DELAY).await;
+    tokio::time::resume();
+}
+
+async fn enable_unload(state: &State, peer: &mut Peer) {
+    set_delay(state, IDLE_SESSION_UNLOAD_SETTING.default).await;
+    loaded(peer).await;
 }
 
 async fn answer(peer: &mut Peer, method: &str, params: Value, result: Value) {
@@ -148,17 +162,16 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     // Acknowledge the single attach inventory before sending later provider events.
-    loaded(&mut peer).await;
-    let base = tokio::time::Instant::now();
+    enable_unload(&state, &mut peer).await;
 
     // In-flight work never starts a periodic inventory or an unload request.
-    sweep(&worker, base + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     progress(worker_barrier(&worker)).await;
     assert!(peer.writes.try_recv().is_err());
     progress(peer.completed()).await;
 
     // Completion makes the already-known loaded thread eligible for its idle clock.
-    sweep(&worker, base + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     idle_checks(&mut peer).await;
     // A failed unsubscribe proves nothing; the thread stays loaded.
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
@@ -168,7 +181,7 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     progress(peer.acknowledged(cursor)).await;
     worker_barrier(&worker).await;
 
-    sweep(&worker, base + BEYOND_ANY_DELAY * 2).await;
+    sweep(&worker).await;
     idle_checks(&mut peer).await;
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
@@ -190,7 +203,14 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     state.enqueue("again").await;
     let mut peer = Peer::identity("default", 2, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
-    worker_barrier(&worker).await;
+    answer(
+        &mut peer,
+        "thread/loaded/list",
+        json!({"limit": 100}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    progress(worker_barrier(&worker)).await;
     assert_eq!(state.record().await["status"], "queued");
     state.wake(&worker).await;
     let resume = progress(peer.write("thread/resume")).await;
@@ -217,10 +237,10 @@ async fn input_arriving_during_native_checks_prevents_unsubscribe() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    loaded(&mut peer).await;
     progress(peer.completed()).await;
+    enable_unload(&state, &mut peer).await;
 
-    sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     answer(
         &mut peer,
         "thread/read",
@@ -247,16 +267,15 @@ async fn input_arriving_during_native_checks_prevents_unsubscribe() {
 }
 
 #[tokio::test]
-async fn a_loaded_thread_blocked_at_attach_gets_a_deadline_after_durable_completion() {
+async fn a_loaded_thread_blocked_when_enabled_gets_a_deadline_after_durable_completion() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    let inventory = progress(peer.write("thread/loaded/list")).await;
     progress(peer.completed()).await;
     set_thread_in_use(&state, true).await;
-    progress(peer.reply(&inventory, json!({"data": [THREAD], "nextCursor": null}))).await;
+    enable_unload(&state, &mut peer).await;
     worker_barrier(&worker).await;
     assert!(peer.writes.try_recv().is_err());
 
@@ -265,7 +284,7 @@ async fn a_loaded_thread_blocked_at_attach_gets_a_deadline_after_durable_complet
         .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
         .await
         .unwrap();
-    sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     idle_checks(&mut peer).await;
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
@@ -280,11 +299,11 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    loaded(&mut peer).await;
     progress(peer.completed()).await;
+    enable_unload(&state, &mut peer).await;
     set_unloaded_agent_in_use(&state, true).await;
 
-    sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     idle_checks(&mut peer).await;
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
@@ -300,7 +319,7 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
         .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
         .await
         .unwrap();
-    sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     progress(worker.completion()).await.unwrap();
 }
 
@@ -316,12 +335,12 @@ async fn claude_idle_close_requires_a_loaded_snapshot_and_native_idle_confirmati
         .await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    loaded(&mut peer).await;
     progress(peer.completed()).await;
+    enable_unload(&state, &mut peer).await;
 
     // Claude goes through the same authoritative loaded snapshot. A busy
     // native thread must keep the account session alive despite durable idle.
-    sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
+    sweep(&worker).await;
     answer(
         &mut peer,
         "thread/read",
@@ -359,7 +378,7 @@ async fn committed_setting_and_agent_changes_wake_idle_reconciliation() {
     let mut settings = state.bridge.idle_setting_changes();
     let mut changes = state.bridge.idle_state_changes();
 
-    set_delay(&state, 0).await;
+    set_delay(&state, IDLE_SESSION_UNLOAD_SETTING.default).await;
     tokio::time::timeout(PROGRESS_GUARD, settings.changed())
         .await
         .expect("setting commit wakes idle workers")

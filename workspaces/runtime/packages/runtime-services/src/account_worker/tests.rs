@@ -663,6 +663,19 @@ impl State {
         .await
         .unwrap();
         let store = Arc::new(RuntimeStore::open(Some(&root)).await.unwrap());
+        // Idle unloading has its own protocol fixtures. Other account tests
+        // must not receive optional inventory requests during their scenarios.
+        store
+            .transaction(|tx| {
+                studio_runtime_store::OrchestrationSettingsRepository::set(
+                    tx,
+                    studio_runtime_store::IDLE_SESSION_UNLOAD_SETTING,
+                    0,
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
         let mut bridge = StoreBridge::new(store).await.unwrap();
         let retained = MATRIX
             .try_with(|context| {
