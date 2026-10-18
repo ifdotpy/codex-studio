@@ -6,6 +6,7 @@ from __future__ import annotations
 from test_isolation import isolate_supervisor_environment
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
@@ -223,6 +224,10 @@ BACKGROUND_AGENT_FIELDS = BACKGROUND_CHILD_COMPLETION_FIELDS | frozenset({
     "workspaceInGit", "canSend", "empty", "launcherAlive", "source",
     "nextTurnSettingsSupported", "readStateSupported",
 })
+
+
+# Children of one parent in the shared-workspace scale check; a count of agents.
+SHARED_CHILD_COUNT = 40
 
 
 def python_draft(backend, request, draft=True):
@@ -816,6 +821,53 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
         self.quiesce_fixture_agent(request["id"])
         self.quiesce_fixture_agent(maximum_name_request["id"])
+
+    def test_shared_workspace_children_use_the_parent_directory_and_keep_it_on_delete(self):
+        self.rust_only()
+        parent = python_draft(self.backend, {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "yolo_mode": False,
+        })
+        parent_id = parent["record"]["id"]
+        parent_cwd = parent["record"]["cwd"]
+        self.backend.start()
+        self.await_model_catalog(parent["record"].get("accountKey", "default"))
+        lead = self.backend.request(
+            "POST", "/api/leads",
+            body={"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "workspaceMode": "shared"},
+            headers=self.headers(),
+        )
+        self.assertEqual(lead.status, 400, lead.body[:1000])
+        child_ids = [str(uuid.uuid4()) for _ in range(SHARED_CHILD_COUNT)]
+
+        def create(child_id):
+            return self.backend.request(
+                "POST", "/api/agents",
+                body={
+                    "id": child_id, "parent": parent_id, "name": "Shared worker",
+                    "prompt": "Work in the shared directory.", "workspaceMode": "shared",
+                },
+                headers=self.headers(),
+            )
+
+        with ThreadPoolExecutor(max_workers=SHARED_CHILD_COUNT) as pool:
+            responses = list(pool.map(create, child_ids))
+        for response in responses:
+            self.assertEqual(response.status, 200, response.body[:1000])
+        self.await_background_quiescence()
+        for child_id in child_ids:
+            saved = self.stored(child_id)
+            self.assertEqual(saved["workspaceMode"], "shared")
+            self.assertIs(saved["worktree"], False)
+            self.assertEqual(saved["cwd"], parent_cwd)
+            self.assertNotEqual(saved.get("worktreePreparation"), "failed")
+        deleted = self.backend.request(
+            "POST", "/api/conversation/delete", body={"id": child_ids[0]}, headers=self.headers(),
+        )
+        self.assertEqual(deleted.status, 200, deleted.body[:1000])
+        self.assertTrue(Path(parent_cwd).is_dir())
 
     def test_reviewer_child_uses_shared_workspace_and_read_only_permissions(self):
         parent_request = {

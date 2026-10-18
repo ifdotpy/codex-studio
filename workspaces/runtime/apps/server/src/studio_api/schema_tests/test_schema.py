@@ -672,6 +672,13 @@ class SchemaContractTests(unittest.TestCase):
         ):
             add(pointer, "property")
 
+        # Shared-workspace children: CreateAgentRequest.workspaceMode gains "shared".
+        for pointer in (
+            "/components/schemas/CreateAgentRequest/properties/workspaceMode",
+            "/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/workspaceMode",
+        ):
+            add(pointer, "enum")
+
         for database in ("canvas", "analytics"):
             add(
                 f"/components/schemas/WalTelemetry/properties/{database}",

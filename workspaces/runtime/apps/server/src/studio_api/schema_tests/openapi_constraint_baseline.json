@@ -335,6 +335,12 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/CreateAgentRequest/properties/workspaceMode",
+      "constraint": "enum",
+      "baseline": "['image', 'layr', 'worktree']",
+      "candidate": "['image', 'layr', 'shared', 'worktree']"
+    },
+    {
       "pointer": "/components/schemas/DesktopResponse/properties/diskSpace",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -1845,6 +1851,12 @@
       "constraint": "required",
       "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
       "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/workspaceMode",
+      "constraint": "enum",
+      "baseline": "['image', 'layr', 'worktree']",
+      "candidate": "['image', 'layr', 'shared', 'worktree']"
     },
     {
       "pointer": "/paths/~1api~1multi-server/post/requestBody/content/application~1json/schema",

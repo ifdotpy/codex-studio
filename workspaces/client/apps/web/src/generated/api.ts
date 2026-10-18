@@ -11311,7 +11311,7 @@ export interface components {
        * @default worktree
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree";
+      workspaceMode?: "layr" | "image" | "worktree" | "shared";
       /**
        * Yolo Mode
        * @default true

@@ -23064,7 +23064,8 @@
             "enum": [
               "layr",
               "image",
-              "worktree"
+              "worktree",
+              "shared"
             ],
             "title": "Workspacemode",
             "type": "string"

@@ -3825,6 +3825,15 @@ mod tests {
     }
 
     #[test]
+    fn explicit_shared_workspace_gives_an_implementer_the_parent_directory() {
+        assert_eq!(
+            child_role_workspace(None, Some("shared"), "worktree", false)
+                .expect("shared implementer"),
+            ("implementer", "shared", false),
+        );
+    }
+
+    #[test]
     fn reviewer_child_defaults_to_shared_workspace() {
         assert_eq!(
             child_role_workspace(Some("reviewer"), None, "image", false)

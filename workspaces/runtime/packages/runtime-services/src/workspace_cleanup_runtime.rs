@@ -1289,6 +1289,17 @@ mod tests {
             .expect("agent reads")
     }
 
+    #[test]
+    fn shared_workspace_agent_never_plans_a_directory_removal() {
+        let agent = json!({
+            "id":"shared-child", "cwd":"/project", "workspaceMode":"shared",
+            "worktree":false,
+        });
+        for action in [CleanupAction::Archive, CleanupAction::Delete] {
+            assert!(super::plan(&agent, action).expect("plan").is_empty());
+        }
+    }
+
     #[tokio::test]
     async fn archive_orders_workspace_effects_and_clears_cleanup_pending() {
         let (_directory, store) = fixture().await;

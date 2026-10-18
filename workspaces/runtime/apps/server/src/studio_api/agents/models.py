@@ -250,7 +250,7 @@ class ReviewDefaults(ContractModel):
 
 
 class CreateAgentRequest(ContractModel):
-    workspaceMode: Literal["layr", "image", "worktree"] = "worktree"
+    workspaceMode: Literal["layr", "image", "worktree", "shared"] = "worktree"
     id: str | None = Field(
         default=None,
         min_length=36,
