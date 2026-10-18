@@ -84,7 +84,7 @@ pub enum WorkspaceRefusal {
     WorkspaceRecoveryRequired {
         operation: Option<String>,
         path: PathBuf,
-        reason: &'static str,
+        reason: String,
     },
 }
 /// Readiness cannot expose a cwd until transactionally validated.
@@ -125,12 +125,12 @@ pub fn unsupported(actor: &WorkspaceActor) -> Option<WorkspaceRefusal> {
 pub fn recovery(
     operation: Option<String>,
     path: PathBuf,
-    reason: &'static str,
+    reason: impl Into<String>,
 ) -> WorkspaceDecision {
     WorkspaceDecision::Refuse(WorkspaceRefusal::WorkspaceRecoveryRequired {
         operation,
         path,
-        reason,
+        reason: reason.into(),
     })
 }
 
