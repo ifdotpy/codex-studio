@@ -262,11 +262,11 @@ fn reservations_defer_capture_and_refuse_restore_or_replaced_ownership() {
         );
         assert_eq!(
             matches!(result, WorkspaceDecision::Defer { .. }),
-            matches!(operation, "capture" | "checkpoint")
+            matches!(operation, "capture" | "checkpoint" | "provision")
         );
         assert_eq!(
             matches!(result, WorkspaceDecision::Refuse(_)),
-            !matches!(operation, "capture" | "checkpoint")
+            !matches!(operation, "capture" | "checkpoint" | "provision")
         );
     }
     let own = Reservation {
@@ -316,6 +316,86 @@ fn reservations_defer_capture_and_refuse_restore_or_replaced_ownership() {
         ),
         WorkspaceDecision::Refuse(_)
     ));
+}
+
+fn foreign_provision(destination: &str, phase: &str) -> Reservation {
+    Reservation {
+        agent: "other".into(),
+        cwd: destination.into(),
+        operation: "provision".into(),
+        id: Some("provision:other:1".into()),
+        phase: Some(phase.into()),
+    }
+}
+
+#[test]
+fn another_agents_provision_does_not_block_unrelated_workers_or_the_lead() {
+    let (record, actor, plan) = input();
+    let other = foreign_provision("/repo/.worktrees/other", "local_mutation");
+    // A worker with a different destination provisions while the other runs.
+    assert!(matches!(
+        decide_workspace(
+            &actor,
+            &record,
+            Some(&actor.cwd),
+            std::slice::from_ref(&other),
+            Some(&plan),
+            false,
+            &GitObservation::default()
+        ),
+        WorkspaceDecision::Provision(_)
+    ));
+    // The lead works in the repository root that contains the destination.
+    let lead_record = json!({"id":"lead","epoch":1,"cwd":"/repo","autoWake":true});
+    let lead: WorkspaceActor = serde_json::from_value(lead_record.clone()).expect("lead");
+    assert!(matches!(
+        decide_workspace(
+            &lead,
+            &lead_record,
+            Some(&lead.cwd),
+            &[other],
+            None,
+            false,
+            &GitObservation::default()
+        ),
+        WorkspaceDecision::Ready { .. }
+    ));
+}
+
+#[test]
+fn provision_conflicts_only_on_same_destination_or_inside_it() {
+    let (record, actor, plan) = input();
+    // Same destination is a real conflict, final even while in progress.
+    let same = foreign_provision("/repo/.worktrees/worker", "local_mutation");
+    assert!(matches!(
+        decide_workspace(
+            &actor,
+            &record,
+            Some(&actor.cwd),
+            &[same],
+            Some(&plan),
+            false,
+            &GitObservation::default()
+        ),
+        WorkspaceDecision::Refuse(_)
+    ));
+    // An actor inside another agent's destination waits while it runs and is refused when it needs recovery.
+    let inside =
+        json!({"id":"w2","epoch":1,"cwd":"/repo/.worktrees/other/project","autoWake":true});
+    let w2: WorkspaceActor = serde_json::from_value(inside.clone()).expect("w2");
+    for (phase, defers) in [("local_mutation", true), ("recovery_required", false)] {
+        let result = decide_workspace(
+            &w2,
+            &inside,
+            Some(&w2.cwd),
+            &[foreign_provision("/repo/.worktrees/other", phase)],
+            None,
+            false,
+            &GitObservation::default(),
+        );
+        assert_eq!(matches!(result, WorkspaceDecision::Defer { .. }), defers);
+        assert_eq!(matches!(result, WorkspaceDecision::Refuse(_)), !defers);
+    }
 }
 
 #[test]

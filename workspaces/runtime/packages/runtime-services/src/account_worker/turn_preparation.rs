@@ -13,9 +13,6 @@ pub(super) struct Run {
     pub connection_id: String,
     pub intent: TurnIntent,
     pub method: Method,
-    /// Workspace token of this attempt's thread preparation, reused by its
-    /// first turn so one agent turn runs one workspace pass.
-    pub thread_workspace: Option<ReadyToken>,
     /// Subscribed before the attempt; a pending step waits for its next change.
     pub agent_changes: watch::Receiver<u64>,
     /// Durable effect completed only after this preparation is handled.
@@ -81,15 +78,6 @@ async fn prepare(
         Ok(selection) => selection,
         Err(step) => return Ok(step),
     };
-    if let Some(token) = run.thread_workspace.clone() {
-        // The token is revalidated inside the ready snapshot's transaction; a
-        // stale one falls back to a fresh workspace pass instead of refusing.
-        match ready(run, selection.clone(), token).await {
-            Err(WorkerError::PreparationRefused(reason))
-                if reason == preparation::WORKSPACE_TOKEN_STALE => {}
-            result => return settle(run, result).await,
-        }
-    }
     let i = intent.clone();
     let r = resources.clone();
     let token = match stage(

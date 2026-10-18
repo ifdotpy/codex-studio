@@ -159,11 +159,18 @@ pub fn decide_workspace(
         if own_provision {
             continue;
         }
-        if cwd.is_some_and(|p| overlaps(p, &reservation.cwd))
-            || plan.is_some_and(|p| overlaps(&p.destination, &reservation.cwd))
-            || reservation.agent == actor.id
-        {
-            if matches!(reservation.operation.as_str(), "capture" | "checkpoint")
+        let destination = plan.map(|p| p.destination.as_path());
+        let blocks = match cwd {
+            Some(cwd) => reservation.blocks(&actor.id, cwd, destination),
+            None => reservation.agent == actor.id,
+        };
+        if blocks {
+            // An unfinished capture, checkpoint, or foreign provision resolves by itself.
+            let foreign_provision =
+                reservation.operation == "provision" && reservation.agent != actor.id;
+            let same_destination = destination.is_some_and(|d| overlaps(d, &reservation.cwd));
+            if (matches!(reservation.operation.as_str(), "capture" | "checkpoint")
+                || (foreign_provision && !same_destination))
                 && reservation.phase.as_deref() != Some("recovery_required")
             {
                 return WorkspaceDecision::Defer {

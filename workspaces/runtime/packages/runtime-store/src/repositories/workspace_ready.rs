@@ -102,7 +102,7 @@ impl ReadyToken {
                 .is_none_or(Value::is_null)
             && !reservations(&current)
                 .iter()
-                .any(|r| r.agent == self.agent || overlaps(&r.cwd, &self.cwd));
+                .any(|r| r.blocks(&self.agent, &self.cwd, None));
         Ok(if valid {
             Ok(self.cwd.clone())
         } else {
@@ -118,6 +118,24 @@ pub struct Reservation {
     pub operation: String,
     pub id: Option<String>,
     pub phase: Option<String>,
+}
+
+impl Reservation {
+    /// Whether this reservation conflicts with `actor` working in `cwd` and, when planning a
+    /// worktree, creating `destination`. Another agent's provision owns only its destination:
+    /// it conflicts with an actor inside that destination or planning an overlapping one, never
+    /// with an actor elsewhere in the same repository.
+    #[must_use]
+    pub fn blocks(&self, actor: &str, cwd: &Path, destination: Option<&Path>) -> bool {
+        if self.agent == actor {
+            return true;
+        }
+        if self.operation == "provision" {
+            cwd.starts_with(&self.cwd) || destination.is_some_and(|d| overlaps(d, &self.cwd))
+        } else {
+            overlaps(cwd, &self.cwd) || destination.is_some_and(|d| overlaps(d, &self.cwd))
+        }
+    }
 }
 
 pub fn overlaps(a: &Path, b: &Path) -> bool {
@@ -144,9 +162,14 @@ pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
                         .iter()
                         .find(|op| op.record["agent"] == other.id)
                 });
+            // A provision reserves its destination; the agent's cwd is still the source.
+            let cwd = match (kind, op) {
+                ("provision", Some(op)) => path(&op.record["cwd"]),
+                _ => path(&other.record["cwd"]),
+            };
             result.push(Reservation {
                 agent: other.id.clone(),
-                cwd: path(&other.record["cwd"]),
+                cwd,
                 operation: kind.into(),
                 id: id.map(str::to_owned).or_else(|| op.map(|o| o.id.clone())),
                 phase: op
@@ -179,9 +202,7 @@ fn conflicts(snapshot: &WorkspaceSnapshot, plan: &ProvisionIdentity) -> Vec<Rese
             !(r.agent == plan.agent
                 && r.operation == "provision"
                 && r.id.as_deref() == Some(&plan.id))
-                && (r.agent == plan.agent
-                    || overlaps(&r.cwd, &source)
-                    || overlaps(&r.cwd, &plan.destination))
+                && r.blocks(&plan.agent, &source, Some(&plan.destination))
         })
         .collect()
 }

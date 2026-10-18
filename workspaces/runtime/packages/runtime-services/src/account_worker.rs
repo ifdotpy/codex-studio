@@ -716,7 +716,6 @@ pub async fn start_account_worker_with_publication_sink(
         preparation_waits: BTreeMap::new(),
         preparations: JoinSet::new(),
         preparing: BTreeMap::new(),
-        thread_workspaces: BTreeMap::new(),
         effect_in_hand: None,
         idle_snapshot: None,
         #[cfg(test)]
@@ -885,7 +884,6 @@ struct Worker {
     /// arrived meanwhile (re-run when that preparation is handled).
     preparing: BTreeMap<String, Option<i64>>,
     /// Workspace token of each agent's last thread preparation, by attempt.
-    thread_workspaces: BTreeMap<String, (String, crate::workspace_ready::ReadyToken)>,
     /// Durable key of the effect being run; a spawned preparation takes it and
     /// completes it once handled.
     effect_in_hand: Option<String>,
@@ -1870,14 +1868,6 @@ impl Worker {
                 return Ok(());
             }
         }
-        let thread_workspace = if method == Method::TurnStart {
-            self.thread_workspaces
-                .remove(&intent.agent_id)
-                .filter(|(attempt, _)| *attempt == intent.attempt_id)
-                .map(|(_, token)| token)
-        } else {
-            None
-        };
         self.preparing.insert(intent.agent_id.clone(), None);
         let run = turn_preparation::Run {
             bridge: self.bridge.clone(),
@@ -1887,7 +1877,6 @@ impl Worker {
             connection_id: self.connection_id.clone(),
             agent_changes: self.bridge.agent_changes(),
             effect: self.effect_in_hand.take(),
-            thread_workspace,
             intent,
             method,
         };
@@ -1917,12 +1906,6 @@ impl Worker {
         } = done;
         let rewake = self.preparing.remove(&intent.agent_id).flatten();
         if let Some(prepared) = self.preparation_ready(outcome?, &intent, &agent_changes) {
-            if matches!(prepared.method, Method::ThreadStart | Method::ThreadResume) {
-                self.thread_workspaces.insert(
-                    intent.agent_id.clone(),
-                    (intent.attempt_id.clone(), prepared.guard.workspace_token()),
-                );
-            }
             let method = prepared.method;
             Box::pin(self.submit_prepared(prepared.intent.clone(), method, None, Some(prepared)))
                 .await?;

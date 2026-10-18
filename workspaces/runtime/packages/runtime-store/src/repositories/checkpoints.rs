@@ -179,7 +179,7 @@ impl CheckpointsRepository {
         Ok(Some(WorkspaceSnapshot {
             agent,
             parent_checkpoint,
-            agents: read_all(connection, "runtime_agents")?,
+            agents: read_live_or_reserved_agents(connection)?,
             operations: read_active(
                 connection,
                 "runtime_workspace_operations",
@@ -843,6 +843,21 @@ fn read_all(connection: &Connection, table: &str) -> StoreResult<Vec<StoredCheck
         connection.prepare_cached(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
     let rows = statement.query_map([], read_stored_row)?;
     collect_records(rows, table)
+}
+
+/// Tombstones matter only while they still hold a workspace reservation.
+fn read_live_or_reserved_agents(
+    connection: &Connection,
+) -> StoreResult<Vec<StoredCheckpointObject>> {
+    if !table_exists(connection, "runtime_agents")? {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare_cached(
+        "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL \
+         OR json_extract(record,'$.workspaceOperation') IS NOT NULL ORDER BY rowid",
+    )?;
+    let rows = statement.query_map([], read_stored_row)?;
+    collect_records(rows, "runtime_agents")
 }
 
 fn read_active(

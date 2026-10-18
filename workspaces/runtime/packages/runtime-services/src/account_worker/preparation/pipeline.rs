@@ -17,12 +17,6 @@ pub(crate) struct CommitGuard {
     filesystem: FilesystemSnapshot,
     prepared_host: Option<crate::host_project_runtime::PreparedHost>,
 }
-impl CommitGuard {
-    /// The validated workspace token this preparation was built on.
-    pub(crate) fn workspace_token(&self) -> crate::workspace_ready::ReadyToken {
-        self.token.clone()
-    }
-}
 #[derive(Clone)]
 pub(crate) struct Admission {
     selection: gates::ExecutionSelection,

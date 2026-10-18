@@ -1895,3 +1895,60 @@ async fn git_failure_and_git_deadline_have_distinct_messages() {
     };
     assert_eq!(step, "git status");
 }
+
+#[tokio::test]
+async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
+    const WORKERS: usize = 40;
+    let fixture = Fixture::new().await;
+    let seed = fixture.actor();
+    let mut ids = vec![fixture.id.clone()];
+    let lead_cwd = fixture.repo.clone();
+    let records = (1..WORKERS)
+        .map(|n| {
+            let mut worker = seed.clone();
+            worker["id"] = json!(format!("worker-{n}"));
+            worker["rootId"] = worker["id"].clone();
+            worker
+        })
+        .chain(std::iter::once({
+            let mut lead = seed.clone();
+            lead["id"] = json!("lead");
+            lead["rootId"] = json!("lead");
+            lead["cwd"] = json!(lead_cwd);
+            lead["worktree"] = json!(false);
+            lead
+        }))
+        .collect::<Vec<_>>();
+    ids.extend(
+        records
+            .iter()
+            .map(|r| r["id"].as_str().expect("id").to_owned()),
+    );
+    fixture
+        .store
+        .transaction(move |tx| {
+            for record in records {
+                let id = record["id"].as_str().expect("id").to_owned();
+                tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent',?1,1,'fixture',?2,0)",
+                    rusqlite::params![id, json!({"collection":"agent","id":id,"value":record}).to_string()])?;
+                AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("seed agents");
+    let tasks = ids
+        .into_iter()
+        .map(|id| {
+            let store = std::sync::Arc::clone(&fixture.store);
+            tokio::spawn(async move { (id.clone(), prepare(store, id).await) })
+        })
+        .collect::<Vec<_>>();
+    for task in tasks {
+        let (id, decision) = task.await.expect("preparation task");
+        assert!(
+            matches!(decision, Ok(WorkspaceDecision::Ready { .. })),
+            "{id}: {decision:?}"
+        );
+    }
+}
