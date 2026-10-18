@@ -162,6 +162,21 @@ pub fn adapter(kind: ProviderKind) -> &'static dyn ProviderAdapter {
 const CODEX_EXECUTABLE: &str = "codex";
 /// Codex app-server peer over stdio.
 const CODEX_APP_SERVER_ARGS: [&str; 3] = ["app-server", "--listen", "stdio://"];
+/// Names of the MCP servers that the Codex home's `config.toml` defines. The
+/// app-server merges per-thread `config` into that file, so a server can only
+/// be switched off by name (`enabled = false`), never by an empty table.
+#[must_use]
+pub fn codex_user_mcp_servers(home: &str) -> Vec<String> {
+    std::fs::read_to_string(Path::new(home).join("config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|config| match config.get("mcp_servers") {
+            Some(toml::Value::Table(servers)) => Some(servers.keys().cloned().collect()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// Codex config override that keeps credentials in the account's own home.
 const CODEX_FILE_CREDENTIALS: [&str; 2] = ["-c", "cli_auth_credentials_store=\"file\""];
 /// Developer instructions added to every Claude session.
@@ -302,6 +317,10 @@ impl ProviderAdapter for ClaudeAdapter {
     ) {
         instructions.push_str(CLAUDE_SESSION_INSTRUCTIONS);
         params.insert("claude".into(), json!(s.settings.claude_options));
+        // A managed worker (a child agent) runs without the user's MCP servers.
+        if s.actor.parent_id.is_some() {
+            params.insert("userMcp".into(), json!(false));
+        }
     }
 
     /// A single-line `/` or `$` user message is passed to Claude Code as a command.

@@ -33,6 +33,7 @@ rusqlite = { workspace = true }
 sha2 = { workspace = true }
 shlex = "=2.0.1"
 spki = { workspace = true }
+toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 studio-operations = { path = "../operations", features = ["serde"] }
 studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }

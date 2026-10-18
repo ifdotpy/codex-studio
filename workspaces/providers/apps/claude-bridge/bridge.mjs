@@ -284,6 +284,8 @@ const settings = (s) => ({
   ...(s.moveProof
     ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
     : {}),
+  // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
+  ...(s.userMcp === false ? { strictMcpConfig: true } : {}),
   includePartialMessages: true,
   env: {
     ...process.env,
@@ -298,6 +300,7 @@ const settings = (s) => ({
           CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
         }
       : {}),
+    ...(s.userMcp === false ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
     ...(typeof s.studioImageWorkspaceTempDir === "string"
       ? { TMPDIR: s.studioImageWorkspaceTempDir }
       : {}),

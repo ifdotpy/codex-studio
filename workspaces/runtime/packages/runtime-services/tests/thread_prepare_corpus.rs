@@ -694,3 +694,22 @@ fn oracle_boundary_guards_detect_enclosing_control_flow_changes() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn only_a_claude_worker_turns_user_mcp_servers_off() {
+    for (parent, provider, expected) in [
+        (Some("lead"), "claude", Some(json!(false))),
+        (None, "claude", None),
+        (Some("lead"), "codex", None),
+    ] {
+        let mut value = baseline();
+        value["actor"]["parent_id"] = json!(parent);
+        value["account"]["provider"] = json!(provider);
+        let prepared = attempt(plan(&snapshot(&value), "attempt", "ticket"));
+        assert_eq!(
+            prepared.params.get("userMcp"),
+            expected.as_ref(),
+            "{provider} {parent:?}"
+        );
+    }
+}

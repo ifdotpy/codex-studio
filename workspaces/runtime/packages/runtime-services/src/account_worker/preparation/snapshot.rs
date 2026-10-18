@@ -1,5 +1,6 @@
 //! Checked projections of stored rows and immutable runtime preparation resources.
 use super::*;
+use crate::provider_adapter::{ProviderKind, codex_user_mcp_servers};
 use crate::{model_catalog::ModelCatalogService, thread_prepare as thread, turn_prepare as turn};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, de::DeserializeOwned};
@@ -561,11 +562,25 @@ pub(super) fn guidance(
     } else {
         String::new()
     };
+    let mut thread_config = resources.thread_config.clone();
+    // A managed worker (a child agent) runs without the user's MCP servers, so
+    // none of them is spawned per thread. The lead and root chats keep them.
+    // (Claude workers get the same rule from the adapter's `userMcp` param.)
+    if record["parentId"].is_string() && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+    {
+        let servers: Map<String, Value> = codex_user_mcp_servers(&resources.account_home)
+            .into_iter()
+            .map(|name| (name, serde_json::json!({"enabled": false})))
+            .collect();
+        if !servers.is_empty() {
+            thread_config.insert("mcp_servers".into(), Value::Object(servers));
+        }
+    }
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
         progress,
-        thread_config: resources.thread_config.clone(),
+        thread_config,
     })
 }
 
@@ -1093,6 +1108,40 @@ mod resource_tests {
             "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
         )));
         assert!(!bundle.progress.contains(".py"));
+    }
+
+    #[test]
+    fn only_a_codex_worker_switches_off_the_homes_mcp_servers() {
+        let home = std::env::temp_dir().join(format!("worker-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::write(
+            home.join("config.toml"),
+            "[mcp_servers.playwright]\ncommand = \"npx\"\n[mcp_servers.\"aws.mcp\"]\ncommand = \"uvx\"\n",
+        )
+        .expect("config");
+        let resources = PreparationResources::bundled(
+            home.to_string_lossy().into_owned(),
+            ModelCatalogService::new(),
+        )
+        .expect("runtime resources");
+        let servers = |record: Value| {
+            guidance(&resources, &record, Path::new("/state"))
+                .expect("guidance")
+                .thread_config
+                .get("mcp_servers")
+                .cloned()
+        };
+        assert_eq!(
+            servers(json!({"id":"w", "parentId":"lead", "provider":"codex"})),
+            Some(json!({"playwright":{"enabled":false},"aws.mcp":{"enabled":false}}))
+        );
+        assert_eq!(servers(json!({"id":"l", "isLead":true})), None);
+        assert_eq!(servers(json!({"id":"r", "provider":"codex"})), None);
+        assert_eq!(
+            servers(json!({"id":"c", "parentId":"lead", "provider":"claude"})),
+            None
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
     }
 
     #[test]
