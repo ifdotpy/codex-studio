@@ -528,15 +528,15 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
                         radio_authorized: false,
                     }
                 };
-                assert!(
+                assert!(matches!(
                     store::preparation_step(
                         store.as_ref(),
                         &intent,
                         preparation::admit(Arc::clone(&store), &resources, &intent)
                     )
-                    .await?
-                    .is_some()
-                );
+                    .await?,
+                    store::PreparationStep::Ready(_)
+                ));
                 Ok(())
             })
             .await

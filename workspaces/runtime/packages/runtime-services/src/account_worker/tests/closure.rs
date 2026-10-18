@@ -678,9 +678,7 @@ async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
         held["startAttempt"]["prepareError"],
         "model-catalog/refresh-pending"
     );
-    tokio::time::pause();
-    tokio::time::advance(PREPARATION_RETRY).await;
-    tokio::time::resume();
+    // The pending preparation starts the refresh itself and wakes on its result.
     let list = catalog_peer.write("model/list").await;
     // The one-off exchange does not require journal ACK for its final response.
     catalog_peer.frame(json!({"id":list["id"],"result":{"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}})).await;
@@ -767,6 +765,73 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     );
     assert!(state.record().await.get("lastWorkspaceWait").is_none());
     replacement.shutdown().await.unwrap();
+}
+/// A workspace-pending preparation wakes on the blocker's commit in the same
+/// worker: no timer, no restart, and one prepareError write per blocker.
+#[tokio::test]
+async fn workspace_pending_wakes_when_the_blocking_owner_commits() {
+    let state = State::new().await;
+    let id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    owner.id = AgentId::from("workspace-owner");
+                    owner.status = studio_runtime_store::AgentStatus::Waiting;
+                    owner.extra.insert("autoWake".into(), json!(false));
+                    owner
+                        .extra
+                        .insert("workspaceOperation".into(), json!("capture"));
+                    AgentRepository::put(tx, &owner)?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    let held = state.record().await;
+    assert_eq!(
+        held["startAttempt"]["prepareError"],
+        "workspace-readiness/pending"
+    );
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+    tokio::time::resume();
+    worker_barrier(&worker).await;
+    assert!(peer.writes.try_recv().is_err(), "time alone never retries");
+    assert_eq!(
+        state.record().await["lastWorkspaceWait"]["at"],
+        held["lastWorkspaceWait"]["at"],
+        "a repeated attempt with the same blocker does not rewrite it"
+    );
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut owner =
+                        AgentRepository::get(tx, &AgentId::from("workspace-owner"))?.unwrap();
+                    owner.extra.remove("workspaceOperation");
+                    AgentRepository::put(tx, &owner)?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let turn = peer.write("turn/start").await;
+    peer.accepted(&turn).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
 }
 #[tokio::test]
 async fn workspace_retry_wakes_after_restart() {

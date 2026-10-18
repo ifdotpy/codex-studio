@@ -194,13 +194,13 @@ async fn prepare_attempt(
         return Ok(context.decide());
     };
     let lock = repository_lock(&plan.identity.common_dir)?;
-    let _guard = match lock.try_lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Ok(WorkspaceDecision::Defer {
-                reservation: Some(plan.identity.id),
-            });
-        }
+    // Overlapping preparations of one repository queue on its lock within the
+    // Git deadline; only a lock still held at the deadline defers the turn.
+    let lock_deadline = tokio::time::Instant::from_std(git_deadline);
+    let Ok(_guard) = tokio::time::timeout_at(lock_deadline, lock.lock()).await else {
+        return Ok(WorkspaceDecision::Defer {
+            reservation: Some(plan.identity.id),
+        });
     };
     // Another worker may have completed while this caller waited for the common repository.
     let observe_store = Arc::clone(&store);

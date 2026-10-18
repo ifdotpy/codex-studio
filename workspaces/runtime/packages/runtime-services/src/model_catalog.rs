@@ -329,6 +329,35 @@ impl ModelCatalogService {
         }
     }
 
+    /// Wait until admission can make progress on this catalog: start or join a
+    /// refresh now and wait for a published result; after a cached failure,
+    /// wait for its retry deadline (or any earlier published result).
+    pub async fn refreshed(&self, account_key: &str, home: &str, provider: &str) {
+        let notified = self.0.refresh_changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let _status = self.read(account_key, home, provider, false).await;
+        if matches!(
+            self.read_for_admission(account_key, home, provider),
+            AdmissionCatalogRead::Fresh { .. }
+        ) {
+            return;
+        }
+        let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        let retry_at = self.0.cache.lock().ok().and_then(|cache| {
+            cache
+                .get(&key)
+                .filter(|entry| entry.error && !entry.pending)
+                .and_then(|entry| entry.expires_at)
+        });
+        match retry_at {
+            Some(at) => {
+                tokio::select! { () = &mut notified => {}, () = tokio::time::sleep_until(at) => {} }
+            }
+            None => notified.await,
+        }
+    }
+
     #[must_use]
     pub fn new(executable: Option<String>) -> Self {
         Self::with_change_callback(executable, Arc::new(|| {}))

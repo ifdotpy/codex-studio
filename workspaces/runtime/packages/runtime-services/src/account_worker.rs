@@ -61,7 +61,6 @@ const IDLE_STATE_OBSERVED_TABLES: [ObservedTable; 6] = [
 // Maximum provider events per journal transaction; bounds transaction work and ACK delay.
 const JOURNAL_BATCH_MAX_EVENTS: usize = 32;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
-const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 // A worker can be finishing a serialized provider operation when shutdown is
 // requested. Keep shutdown bounded while allowing ordinary host contention to
@@ -163,6 +162,9 @@ pub struct StoreBridge {
     auth_wait_generation: Arc<watch::Sender<u64>>,
     idle_state_generation: Arc<watch::Sender<u64>>,
     idle_setting_generation: Arc<watch::Sender<u64>>,
+    /// Advances on every committed `runtime_agents` change; pending
+    /// preparations wait on it for their workspace or VM blocker.
+    agent_generation: Arc<watch::Sender<u64>>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
     #[cfg(test)]
@@ -201,6 +203,14 @@ impl StoreBridge {
                 generation.send_modify(|value| *value = value.wrapping_add(1));
             }
         });
+        let (agent_generation, _) = watch::channel(0_u64);
+        let agent_generation = Arc::new(agent_generation);
+        let observed_agents = Arc::downgrade(&agent_generation);
+        store.add_table_change_observer(ObservedTable::Agents, move || {
+            if let Some(generation) = observed_agents.upgrade() {
+                generation.send_modify(|value| *value = value.wrapping_add(1));
+            }
+        });
         let bridge = Self {
             store,
             operation_slot: Arc::new(Semaphore::new(1)),
@@ -213,6 +223,7 @@ impl StoreBridge {
             auth_wait_generation,
             idle_state_generation,
             idle_setting_generation,
+            agent_generation,
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             faults: Arc::default(),
@@ -285,6 +296,9 @@ impl StoreBridge {
     }
     fn idle_setting_changes(&self) -> watch::Receiver<u64> {
         self.idle_setting_generation.subscribe()
+    }
+    fn agent_changes(&self) -> watch::Receiver<u64> {
+        self.agent_generation.subscribe()
     }
     async fn run<T, F, Fut>(&self, operation: F) -> Result<T, WorkerError>
     where
@@ -706,7 +720,8 @@ pub async fn start_account_worker_with_publication_sink(
             stop: stop.clone(),
         },
         queued_commands: VecDeque::new(),
-        retry_at: Some(tokio::time::Instant::now()),
+        resume_preparations: true,
+        preparation_waits: BTreeMap::new(),
         pending: recovered
             .into_iter()
             .map(|(context, record)| (record.ticket.id, context))
@@ -861,7 +876,10 @@ struct Worker {
     commands: mpsc::Sender<AccountCommand>,
     retained_session: retained::RetainedSessionPort,
     queued_commands: VecDeque<AccountCommand>,
-    retry_at: Option<tokio::time::Instant>,
+    /// Resume durable pending preparations once, after the session is ready.
+    resume_preparations: bool,
+    /// One event-driven wake per agent whose preparation is pending.
+    preparation_waits: BTreeMap<String, tokio::task::AbortHandle>,
     pending: BTreeMap<RequestId, Pending>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
@@ -902,7 +920,6 @@ enum ServeSignal {
     Shutdown,
     Flush,
     PublicationRetry,
-    PreparationRetry,
     AuthWait,
     VmCredentialRefresh,
     AuthWaitChanged(Result<(), watch::error::RecvError>),
@@ -1054,6 +1071,9 @@ impl Worker {
             let _joined = recovery.await;
         }
         self.connection_recovery.abort_all();
+        for wait in std::mem::take(&mut self.preparation_waits).into_values() {
+            wait.abort();
+        }
         #[cfg(test)]
         self.bridge
             .faults
@@ -1156,6 +1176,13 @@ impl Worker {
             {
                 self.flush().await?;
             }
+            if self.resume_preparations
+                && self.session.status.borrow().initialization == InitializationStatus::Ready
+            {
+                self.resume_preparations = false;
+                self.resume_pending_preparations().await?;
+                continue;
+            }
             if self.session.status.borrow().initialization == InitializationStatus::Ready
                 && let Some(effect) = self.effects.pop_front()
             {
@@ -1177,7 +1204,8 @@ impl Worker {
                 && self.pending.is_empty()
                 && self.retained_requests.is_empty()
                 && self.effects.is_empty()
-                && self.retry_at.is_none()
+                && !self.resume_preparations
+                && self.preparation_waits.is_empty()
                 && self.queued_commands.is_empty()
                 && self.inbox.is_empty()
             {
@@ -1238,7 +1266,6 @@ impl Worker {
             _ = Shutdown::cancelled(&mut self.stop) => ServeSignal::Shutdown,
             _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => ServeSignal::Flush,
             _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => ServeSignal::PublicationRetry,
-            _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => ServeSignal::PreparationRetry,
             _ = tokio::time::sleep_until(self.auth_wait_at.unwrap_or_else(tokio::time::Instant::now)), if self.auth_wait_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWait,
             _ = tokio::time::sleep_until(self.vm_credential_refresh_at.unwrap_or_else(tokio::time::Instant::now)), if self.vm_credential_refresh_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::VmCredentialRefresh,
             changed = self.auth_wait_changes.changed(), if self.resources.claude_account_pin.get("provider") == Some(&json!("claude")) && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWaitChanged(changed),
@@ -1258,7 +1285,6 @@ impl Worker {
             ServeSignal::Shutdown => self.closing = true,
             ServeSignal::Flush => self.flush().await?,
             ServeSignal::PublicationRetry => self.drain_publications().await?,
-            ServeSignal::PreparationRetry => self.retry_preparations().await?,
             ServeSignal::AuthWait => self.probe_auth_waits().await?,
             ServeSignal::VmCredentialRefresh => self.refresh_vm_claude_credentials().await?,
             ServeSignal::AuthWaitChanged(changed) => {
@@ -1558,11 +1584,12 @@ impl Worker {
             }
         }
     }
-    async fn retry_preparations(&mut self) -> Result<(), WorkerError> {
-        self.retry_at = None;
+    /// Durable pending preparations survive a worker restart; wake each once.
+    /// Each one that is still blocked registers its own event-driven wake.
+    async fn resume_pending_preparations(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let pending = self
-            .db("retry_preparations", move |store| async move {
+            .db("pending_preparations", move |store| async move {
                 store
                     .read_async("runtime-services/account_worker_read", move |connection| {
                         store::pending_preparations(connection, &account)
@@ -1570,27 +1597,53 @@ impl Worker {
                     .await
             })
             .await?;
-        if !pending.is_empty() {
-            self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
-        }
-        for (agent, epoch, reason, provider) in pending {
-            if reason == "model-catalog/refresh-pending" {
-                // This initiates/coalesces refresh outside the store bridge. The
-                // shared service owns the child and its cleanup until completion.
-                let _status = self
-                    .resources
-                    .model_catalog
-                    .read(
-                        &self.account,
-                        &self.resources.account_home,
-                        &provider,
-                        false,
-                    )
-                    .await;
-            }
+        for (agent, epoch) in pending {
             self.wake(agent, epoch).await?;
         }
         Ok(())
+    }
+    /// Wake a pending preparation when the event that can unblock it happens:
+    /// a published catalog refresh, or any committed agent change (workspace
+    /// owners, VM readiness). `agents` was subscribed before the attempt, so a
+    /// change committed while it ran is not missed.
+    fn wait_for_preparation(
+        &mut self,
+        intent: &TurnIntent,
+        reason: &str,
+        mut agents: watch::Receiver<u64>,
+    ) {
+        let commands = self.commands.clone();
+        let agent_id = intent.agent_id.clone();
+        let epoch = intent.epoch;
+        let catalog = (reason == preparation::CATALOG_PENDING_REASON).then(|| {
+            (
+                self.resources.model_catalog.clone(),
+                self.account.clone(),
+                self.resources.account_home.clone(),
+                intent.provider.clone(),
+            )
+        });
+        let task = tokio::spawn(async move {
+            match catalog {
+                Some((catalog, account, home, provider)) => {
+                    catalog.refreshed(&account, &home, &provider).await;
+                }
+                None => {
+                    if agents.changed().await.is_err() {
+                        return;
+                    }
+                }
+            }
+            let _closed = commands
+                .send(AccountCommand::Wake { agent_id, epoch })
+                .await;
+        });
+        if let Some(previous) = self
+            .preparation_waits
+            .insert(intent.agent_id.clone(), task.abort_handle())
+        {
+            previous.abort();
+        }
     }
     async fn probe_auth_waits(&mut self) -> Result<(), WorkerError> {
         self.auth_wait_at = None;
@@ -1717,7 +1770,26 @@ impl Worker {
         }
         Ok(())
     }
+    /// A pending step registers its wake; a settled (refused) step is final.
+    fn preparation_ready<T>(
+        &mut self,
+        step: store::PreparationStep<T>,
+        intent: &TurnIntent,
+        agent_changes: &watch::Receiver<u64>,
+    ) -> Option<T> {
+        match step {
+            store::PreparationStep::Ready(value) => Some(value),
+            store::PreparationStep::Pending(reason) => {
+                self.wait_for_preparation(intent, &reason, agent_changes.clone());
+                None
+            }
+            store::PreparationStep::Settled => None,
+        }
+    }
     async fn wake(&mut self, agent: String, epoch: i64) -> Result<(), WorkerError> {
+        if let Some(wait) = self.preparation_waits.remove(&agent) {
+            wait.abort();
+        }
         if self.closing {
             return Ok(());
         }
@@ -1851,9 +1923,10 @@ impl Worker {
         let prepared = if method == Method::TurnInterrupt {
             None
         } else {
+            let agent_changes = self.bridge.agent_changes();
             let i = intent.clone();
             let resources = self.resources.clone();
-            let Some(selection) = self
+            let step = self
                 .prepare("preparation", move |s| async move {
                     if method == Method::TurnStart {
                         crate::account_transfer_executor::before_start(
@@ -1874,14 +1947,13 @@ impl Worker {
                     )
                     .await
                 })
-                .await?
-            else {
-                self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
+                .await?;
+            let Some(selection) = self.preparation_ready(step, &intent, &agent_changes) else {
                 return Ok(());
             };
             let i = intent.clone();
             let resources = self.resources.clone();
-            let Some(token) = self
+            let step = self
                 .prepare("workspace", move |s| async move {
                     store::preparation_step(
                         &s,
@@ -1890,14 +1962,13 @@ impl Worker {
                     )
                     .await
                 })
-                .await?
-            else {
-                self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
+                .await?;
+            let Some(token) = self.preparation_ready(step, &intent, &agent_changes) else {
                 return Ok(());
             };
             let i = intent.clone();
             let resources = self.resources.clone();
-            let Some(prepared) = self
+            let step = self
                 .prepare("preparation", move |s| async move {
                     store::preparation_step(&s, &i, {
                         preparation::prepare_ready(
@@ -1913,9 +1984,8 @@ impl Worker {
                     })
                     .await
                 })
-                .await?
-            else {
-                self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
+                .await?;
+            let Some(prepared) = self.preparation_ready(step, &intent, &agent_changes) else {
                 return Ok(());
             };
             Some(prepared)

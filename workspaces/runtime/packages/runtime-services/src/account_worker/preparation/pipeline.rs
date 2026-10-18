@@ -213,8 +213,10 @@ fn preconditions_for_purpose(
     }
     Ok(record)
 }
+/// Pending reason of a turn that waits for a model catalog refresh.
+pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
-    WorkerError::PreparationPending("model-catalog/refresh-pending".into())
+    WorkerError::PreparationPending(CATALOG_PENDING_REASON.into())
 }
 fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
     match error {

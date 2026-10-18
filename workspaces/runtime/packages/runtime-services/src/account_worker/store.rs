@@ -2373,7 +2373,7 @@ pub(super) async fn flush_streams(
 pub(super) fn pending_preparations(
     db: &rusqlite::Connection,
     account: &str,
-) -> Result<Vec<(String, i64, String, String)>, WorkerError> {
+) -> Result<Vec<(String, i64)>, WorkerError> {
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
     let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id")?;
@@ -2384,36 +2384,27 @@ pub(super) fn pending_preparations(
         .map(|id| {
             let row = AgentRepository::get(db, &AgentId::from(id.as_str()))?
                 .ok_or_else(|| invalid(&id))?;
-            let reason = row
-                .extra
-                .get("startAttempt")
-                .and_then(|attempt| attempt["prepareError"].as_str())
-                .or_else(|| {
-                    row.extra
-                        .get("lastWorkspaceWait")
-                        .and_then(|wait| wait["attemptId"].as_str())
-                        .map(|_| "workspace-readiness/pending")
-                })
-                .ok_or_else(|| invalid(&id))?
-                .to_owned();
-            let provider = row
-                .extra
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("codex")
-                .to_owned();
-            Ok((id, row.epoch, reason, provider))
+            Ok((id, row.epoch))
         })
         .collect()
+}
+
+/// Outcome of one preparation stage.
+pub(super) enum PreparationStep<T> {
+    Ready(T),
+    /// Durably recorded as `startAttempt.prepareError`; wake when it unblocks.
+    Pending(String),
+    /// The start outcome was settled (refused); nothing further to do.
+    Settled,
 }
 
 pub(super) async fn preparation_step<T: Send + 'static>(
     store: &RuntimeStore,
     intent: &TurnIntent,
     action: impl Future<Output = Result<T, WorkerError>> + Send,
-) -> Result<Option<T>, WorkerError> {
+) -> Result<PreparationStep<T>, WorkerError> {
     match action.await {
-        Ok(value) => Ok(Some(value)),
+        Ok(value) => Ok(PreparationStep::Ready(value)),
         Err(WorkerError::PreparationPending(reason)) => {
             let agent_id = intent.agent_id.clone();
             let attempt_id = intent.attempt_id.clone();
@@ -2423,11 +2414,24 @@ pub(super) async fn preparation_step<T: Send + 'static>(
                 .map(|event| event.id.clone())
                 .collect::<Vec<_>>();
             let epoch = intent.epoch;
-            let reason = reason.clone();
+            let blocker = reason.clone();
             scheduler::lifecycle_transaction_with(store, move |tx| {
+                let reason = blocker;
                 let mut row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                     .ok_or_else(|| invalid(&agent_id))?;
-                if row.epoch == epoch
+                // Write once per blocker change; a repeated attempt with the
+                // same blocker leaves the row (and its observers) untouched.
+                let unchanged = row
+                    .extra
+                    .get("startAttempt")
+                    .is_some_and(|a| a.get("prepareError") == Some(&json!(reason)))
+                    && (reason != "workspace-readiness/pending"
+                        || row
+                            .extra
+                            .get("lastWorkspaceWait")
+                            .is_some_and(|wait| wait["attemptId"] == attempt_id));
+                if !unchanged
+                    && row.epoch == epoch
                     && row
                         .extra
                         .get("startAttempt")
@@ -2456,11 +2460,11 @@ pub(super) async fn preparation_step<T: Send + 'static>(
                 Ok::<_, WorkerError>(())
             })
             .await?;
-            Ok(None)
+            Ok(PreparationStep::Pending(reason))
         }
         Err(WorkerError::PreparationRefused(reason)) => {
             scheduler::settle_start_outcome(store, intent, TurnStart::Blocked { reason }).await?;
-            Ok(None)
+            Ok(PreparationStep::Settled)
         }
         Err(error) => Err(error),
     }

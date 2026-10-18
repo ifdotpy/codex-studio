@@ -716,7 +716,8 @@ impl Worker {
             && self.restart_recovery.is_none()
             && !self.connection_recovery_active
             && self.connection_recovery.is_empty()
-            && self.retry_at.is_none()
+            && !self.resume_preparations
+            && self.preparation_waits.is_empty()
     }
 
     /// Close the session; requests that arrive from now on were never sent.
