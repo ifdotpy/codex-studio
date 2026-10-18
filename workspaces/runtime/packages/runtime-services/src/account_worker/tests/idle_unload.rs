@@ -96,8 +96,9 @@ async fn set_delay(state: &State, minutes: u64) {
         .unwrap();
 }
 
-async fn set_thread_in_use(state: &State, in_use: bool) {
+async fn set_agent_in_use(state: &State, thread: &str, in_use: bool) {
     let agent_id = state.agent.clone();
+    let thread = thread.to_owned();
     state
         .bridge
         .run(move |store| async move {
@@ -105,7 +106,7 @@ async fn set_thread_in_use(state: &State, in_use: bool) {
                 .transaction_with(move |tx| {
                     let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("test agent exists");
-                    agent.extra.insert("threadId".into(), json!(THREAD));
+                    agent.extra.insert("threadId".into(), json!(thread));
                     agent.extra.insert("inFlight".into(), json!(in_use));
                     agent
                         .extra
@@ -113,37 +114,8 @@ async fn set_thread_in_use(state: &State, in_use: bool) {
                     agent.status = if in_use {
                         AgentStatus::Running
                     } else {
-                        AgentStatus::Idle
-                    };
-                    AgentRepository::put(tx, &agent)
-                })
-                .await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-}
-
-async fn set_unloaded_agent_in_use(state: &State, in_use: bool) {
-    let agent_id = state.agent.clone();
-    state
-        .bridge
-        .run(move |store| async move {
-            store
-                .transaction_with(move |tx| {
-                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
-                        .expect("test agent exists");
-                    agent
-                        .extra
-                        .insert("threadId".into(), json!("unloaded-thread"));
-                    agent.extra.insert("inFlight".into(), json!(in_use));
-                    agent
-                        .extra
-                        .insert("turnId".into(), json!(if in_use { "busy" } else { "" }));
-                    agent.status = if in_use {
-                        AgentStatus::Running
-                    } else {
-                        AgentStatus::Idle
+                        // Preserve the completed attempt's authoritative terminal status.
+                        AgentStatus::Completed
                     };
                     AgentRepository::put(tx, &agent)
                 })
@@ -274,12 +246,12 @@ async fn a_loaded_thread_blocked_when_enabled_gets_a_deadline_after_durable_comp
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     progress(peer.completed()).await;
-    set_thread_in_use(&state, true).await;
+    set_agent_in_use(&state, THREAD, true).await;
     enable_unload(&state, &mut peer).await;
     worker_barrier(&worker).await;
     assert!(peer.writes.try_recv().is_err());
 
-    set_thread_in_use(&state, false).await;
+    set_agent_in_use(&state, THREAD, false).await;
     worker
         .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
         .await
@@ -301,7 +273,7 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
     peer.accepted(&start).await;
     progress(peer.completed()).await;
     enable_unload(&state, &mut peer).await;
-    set_unloaded_agent_in_use(&state, true).await;
+    set_agent_in_use(&state, "unloaded-thread", true).await;
 
     sweep(&worker).await;
     idle_checks(&mut peer).await;
@@ -314,7 +286,7 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
         "the account-wide durable owner keeps the process alive after its only loaded thread is released"
     );
 
-    set_unloaded_agent_in_use(&state, false).await;
+    set_agent_in_use(&state, "unloaded-thread", false).await;
     worker
         .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
         .await
