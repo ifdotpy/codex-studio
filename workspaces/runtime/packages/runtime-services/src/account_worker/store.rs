@@ -993,6 +993,10 @@ pub(super) async fn outcome(
                             }
                         }
                         ResponseBody::Error(error) => {
+                            if crate::disk_space::is_disk_full_error(&error) {
+                                // Hold new starts for the recheck interval.
+                                crate::disk_space::observe_full();
+                            }
                             SchedulerRepository::settle_start_rejected_provider(
                                 tx,
                                 &i.agent_id,

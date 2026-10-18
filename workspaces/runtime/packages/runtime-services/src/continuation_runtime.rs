@@ -319,6 +319,51 @@ pub fn stage_capacity_retry(
     now: f64,
     automatic: bool,
 ) -> Result<Staged> {
+    stage_capacity_retry_observed(
+        tx,
+        agent_id,
+        retry_id,
+        now,
+        automatic,
+        crate::disk_space::full_free_bytes(),
+    )
+}
+
+/// As [`stage_capacity_retry`] with an explicit disk observation: the free
+/// bytes while the state volume is full, else None. A continuation is a new
+/// turn, so none is claimed while the disk is full; the retry waits instead.
+pub fn stage_capacity_retry_observed(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    retry_id: &str,
+    now: f64,
+    automatic: bool,
+    disk_full: Option<u64>,
+) -> Result<Staged> {
+    if let Some(free) = disk_full {
+        let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
+        if snapshot
+            .record
+            .as_ref()
+            .is_some_and(|record| text(record, "status") != "scheduled")
+        {
+            // A manual retry of a finished or cancelled retry stays manual.
+            return Err(ContinuationError::Unavailable("disk-space/full"));
+        }
+        let reason = crate::disk_space::held_reason(Some(free));
+        let decision =
+            capacity_retry::transition(&snapshot, CapacityAction::DiskWait(&reason), now)?;
+        let mut staged = empty_stage(tx, agent_id)?;
+        collect_apply(
+            tx,
+            &mut staged,
+            ContinuationTable::Capacity,
+            &snapshot,
+            decision,
+            now,
+        )?;
+        return Ok(staged);
+    }
     let mut snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
     if let Some(pending) = snapshot
         .agent
@@ -645,7 +690,19 @@ fn stage_terminal(
     if let Some(kind) = capacity_failure(error) {
         let snapshot = load(tx, agent_id, ContinuationTable::Capacity, None)?;
         let settings = PreparationSettings::from_agent(&snapshot.agent)?.value();
-        let decision = capacity_retry::failed(&snapshot, kind, turn_id, &settings, now)?;
+        let reason = matches!(kind, CapacityFailure::DiskFull).then(|| {
+            // Check free space at once; the tick waits while the disk is still full.
+            crate::disk_space::observe_full();
+            crate::disk_space::held_reason(crate::disk_space::full_free_bytes())
+        });
+        let decision = capacity_retry::failed_with_reason(
+            &snapshot,
+            kind,
+            turn_id,
+            &settings,
+            now,
+            reason.as_deref(),
+        )?;
         if let Some(record) = decision.record.as_ref()
             && record_exists(
                 tx,
@@ -1100,6 +1157,9 @@ pub fn committed(staged: &Staged, port: &dyn WakePort) -> Result<()> {
 }
 
 fn capacity_failure(error: &Value) -> Option<CapacityFailure> {
+    if crate::disk_space::is_disk_full_error(error) {
+        return Some(CapacityFailure::DiskFull);
+    }
     match error_kind(error) {
         "serverOverloaded" => Some(CapacityFailure::ServerOverloaded),
         "internalServerError" => Some(CapacityFailure::InternalServerError),

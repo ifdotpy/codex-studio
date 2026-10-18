@@ -1359,7 +1359,6 @@ fn write_vm_project_registration(
             .map_err(|_| NativeError::Unavailable("workspace-state/vm-project-registration"))?;
     }
     let path = directory.join("project.json");
-    let temporary = directory.join("project.json.tmp");
     let value = serde_json::json!({
         "projectId": project_id,
         "source": source,
@@ -1367,18 +1366,7 @@ fn write_vm_project_registration(
     });
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| NativeError::Unavailable("workspace-state/vm-project-registration"))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let write_result = options
-        .open(&temporary)
-        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()));
-    write_result
-        .and_then(|()| std::fs::rename(&temporary, &path))
+    crate::atomic_file::replace(&path, &bytes, Some(0o600), true)
         .map_err(|_| NativeError::Unavailable("workspace-state/vm-project-registration"))
 }
 

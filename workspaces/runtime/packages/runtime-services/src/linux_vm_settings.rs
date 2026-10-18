@@ -1,7 +1,7 @@
 //! Host-side Linux VM resource settings, backed by the Python-compatible VM files.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 #[cfg(target_os = "macos")]
@@ -264,17 +264,8 @@ fn resize_disk(path: &Path, size: u64) -> Result<(), SettingsError> {
 }
 
 fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), SettingsError> {
-    let mut temporary: PathBuf = path.to_owned();
-    temporary.set_extension(format!("tmp-{}", std::process::id()));
     let bytes = serde_json::to_vec(value).map_err(SettingsError::Json)?;
-    fs::write(&temporary, bytes).map_err(SettingsError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(SettingsError::Io)?;
-    }
-    fs::rename(temporary, path).map_err(SettingsError::Io)
+    crate::atomic_file::replace(path, &bytes, Some(0o600), false).map_err(SettingsError::Io)
 }
 
 fn allocated_disk_bytes(vm_dir: &Path) -> u64 {

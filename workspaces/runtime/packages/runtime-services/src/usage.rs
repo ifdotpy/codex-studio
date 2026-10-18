@@ -284,15 +284,13 @@ where
         let state = json!({"at":at,"checkedAt":checked_at,"error":null,"data":data,"sourceFingerprint":fingerprint});
         let bytes = serde_json::to_vec(&json!({"scope":scope,"state":state}))
             .map_err(|_| UsageError::Scan)?;
-        let temp = cache_root.join(format!(".local-costs-{}.tmp", std::process::id()));
-        fs::write(&temp, bytes).map_err(|_| UsageError::Scan)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))
-                .map_err(|_| UsageError::Scan)?;
-        }
-        fs::rename(&temp, cache_root.join("local-costs.json")).map_err(|_| UsageError::Scan)?;
+        crate::atomic_file::replace(
+            &cache_root.join("local-costs.json"),
+            &bytes,
+            Some(0o600),
+            false,
+        )
+        .map_err(|_| UsageError::Scan)?;
         Ok(())
     })();
     let mut cache_saved = result.is_ok();
@@ -310,11 +308,8 @@ where
             fields.insert("error".to_owned(), Value::String(error.to_string()));
             fields.insert("checkedAt".to_owned(), Value::from(checked_at));
         }
-        let temporary = cache_root.join(format!(".local-costs-error-{}.tmp", std::process::id()));
-        if let Ok(bytes) = serde_json::to_vec(&json!({"scope":scope,"state":state}))
-            && fs::write(&temporary, bytes).is_ok()
-        {
-            match fs::rename(&temporary, path) {
+        if let Ok(bytes) = serde_json::to_vec(&json!({"scope":scope,"state":state})) {
+            match crate::atomic_file::replace(&path, &bytes, Some(0o600), false) {
                 Ok(()) => cache_saved = true,
                 Err(error) => {
                     eprintln!("Could not persist local cost scan failure: {error}");
@@ -381,25 +376,12 @@ fn refresh_claude_costs(
         return Err(UsageError::ScannerCancelled);
     }
     let content = json!({"config":home,"data":data,"checked":clock(),"error":error});
-    let temporary = root.join(format!(".claude-costs-{}.tmp", std::process::id()));
-    fs::write(
-        &temporary,
-        serde_json::to_vec(&content).map_err(|_| UsageError::Scan)?,
-    )
-    .map_err(|_| UsageError::Scan)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|_| UsageError::Scan)?;
-    }
+    let bytes = serde_json::to_vec(&content).map_err(|_| UsageError::Scan)?;
     if cancelled.load(Ordering::Acquire) {
-        if let Err(error) = fs::remove_file(&temporary) {
-            eprintln!("Could not remove cancelled Claude cost scan file: {error}");
-        }
         return Err(UsageError::ScannerCancelled);
     }
-    fs::rename(&temporary, cache).map_err(|_| UsageError::Scan)?;
+    crate::atomic_file::replace(&cache, &bytes, Some(0o600), false)
+        .map_err(|_| UsageError::Scan)?;
     Ok(())
 }
 
@@ -968,7 +950,7 @@ where
     }
     if let Some(existing) = artifact.as_mut() {
         existing["lastAttemptAt"] = json!(now);
-        if let Err(error) = write_private_json_atomic(&path, existing, ".models-dev-") {
+        if let Err(error) = write_private_json_atomic(&path, existing) {
             eprintln!("Could not persist models.dev pricing attempt: {error}");
         }
     }
@@ -990,7 +972,7 @@ where
         "lastAttemptAt": now,
         "catalog": catalog_value,
     });
-    if write_private_json_atomic(&path, &artifact, ".models-dev-").is_err() {
+    if write_private_json_atomic(&path, &artifact).is_err() {
         return current_catalog;
     }
     if let Err(error) = fs::remove_file(attempt_path) {
@@ -1039,22 +1021,14 @@ where
 }
 
 fn write_pricing_attempt(path: &Path, now: f64) -> Result<(), UsageError> {
-    write_private_json_atomic(path, &json!({"lastAttemptAt":now}), ".refresh-state-")
+    write_private_json_atomic(path, &json!({"lastAttemptAt":now}))
 }
 
-fn write_private_json_atomic(path: &Path, value: &Value, prefix: &str) -> Result<(), UsageError> {
+fn write_private_json_atomic(path: &Path, value: &Value) -> Result<(), UsageError> {
     let parent = path.parent().ok_or(UsageError::Scan)?;
     create_private_dir(parent)?;
-    let temporary = parent.join(format!("{prefix}{}.tmp", std::process::id()));
     let bytes = serde_json::to_vec(value).map_err(|_| UsageError::Scan)?;
-    fs::write(&temporary, bytes).map_err(|_| UsageError::Scan)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|_| UsageError::Scan)?;
-    }
-    fs::rename(&temporary, path).map_err(|_| UsageError::Scan)
+    crate::atomic_file::replace(path, &bytes, Some(0o600), false).map_err(|_| UsageError::Scan)
 }
 
 fn check_scan_timeout(started: Instant) -> Result<(), UsageError> {

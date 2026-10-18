@@ -677,14 +677,7 @@ fn read_json(path: &Path, default: Value) -> Result<Value, MacSyncError> {
 }
 fn save_json(path: &Path, value: &Value) -> Result<(), MacSyncError> {
     let bytes = serde_json::to_vec(value).map_err(MacSyncError::Json)?;
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp, bytes).map_err(MacSyncError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600)).map_err(MacSyncError::Io)?;
-    }
-    fs::rename(temp, path).map_err(MacSyncError::Io)
+    crate::atomic_file::replace(path, &bytes, Some(0o600), false).map_err(MacSyncError::Io)
 }
 fn hex_sha(bytes: &[u8]) -> String {
     data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))

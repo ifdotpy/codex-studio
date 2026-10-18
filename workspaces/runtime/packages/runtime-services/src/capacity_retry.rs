@@ -5,10 +5,14 @@ use crate::continuation::{
 };
 use crate::usage_resume::TASK_CHANGED;
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::{DISK_FULL_MAX_RESUMES, DISK_FULL_RECHECK_SECONDS};
 const WAIT_MAX: f64 = 300.0;
 const WAIT_STEP: f64 = 15.0;
 const DELAYS: [f64; 4] = [10.0, 30.0, 120.0, 300.0];
 const CONNECTION_DELAYS: [f64; 7] = [10.0, 30.0, 120.0, 300.0, 600.0, 1200.0, 1800.0];
+/// A disk-full retry is due at once; the tick waits while the disk is still full.
+const DISK_FULL_DELAYS: [f64; DISK_FULL_MAX_RESUMES as usize] =
+    [0.0; DISK_FULL_MAX_RESUMES as usize];
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
     ServerOverloaded,
@@ -17,6 +21,8 @@ pub enum Failure {
     ResponseStreamConnectionFailed,
     ResponseStreamDisconnected,
     ResponseTooManyFailedAttempts,
+    /// The turn failed because the disk was full. The retry waits for free space.
+    DiskFull,
 }
 impl Failure {
     fn kind(self) -> &'static str {
@@ -27,13 +33,14 @@ impl Failure {
             Self::ResponseStreamConnectionFailed => "responseStreamConnectionFailed",
             Self::ResponseStreamDisconnected => "responseStreamDisconnected",
             Self::ResponseTooManyFailedAttempts => "responseTooManyFailedAttempts",
+            Self::DiskFull => crate::disk_space::DISK_FULL_KIND,
         }
     }
     fn delays(self) -> &'static [f64] {
-        if matches!(self, Self::ServerOverloaded | Self::InternalServerError) {
-            &DELAYS
-        } else {
-            &CONNECTION_DELAYS
+        match self {
+            Self::ServerOverloaded | Self::InternalServerError => &DELAYS,
+            Self::DiskFull => &DISK_FULL_DELAYS,
+            _ => &CONNECTION_DELAYS,
         }
     }
 }
@@ -47,6 +54,8 @@ pub enum Action<'a> {
     Reset(&'a str),
     Cancel,
     Wait(&'a str),
+    /// The disk is full: check free space again after a fixed interval.
+    DiskWait(&'a str),
     Excluded(&'a str),
     Error {
         attempt: &'a Value,
@@ -69,6 +78,18 @@ pub fn failed(
     turn_id: &str,
     settings: &Value,
     now: f64,
+) -> Result<Decision> {
+    failed_with_reason(s, kind, turn_id, settings, now, None)
+}
+
+/// As [`failed`], with the visible reason of a disk-full hold.
+pub fn failed_with_reason(
+    s: &Snapshot,
+    kind: Failure,
+    turn_id: &str,
+    settings: &Value,
+    now: f64,
+    reason: Option<&str>,
 ) -> Result<Decision> {
     now_checked(now)?;
     if crate::continuation::native_thread_blocked(&s.agent)
@@ -99,7 +120,10 @@ pub fn failed(
         .unwrap_or(0);
     let delays = kind.delays();
     let delay = usize::try_from(count).ok().and_then(|i| delays.get(i));
-    let r = json!({"id":id,"threadId":s.agent["threadId"],"turnId":turn_id,"accountKey":account(&s.agent),"epoch":s.agent["epoch"],"cause":kind.kind(),"status":if delay.is_some(){"scheduled"}else{"exhausted"},"dueAt":delay.map(|d|now+d),"attempt":count.saturating_add(1),"maxAttempts":delays.len(),"cwd":s.agent["cwd"],"settings":settings,"taskClaims":s.claims});
+    let mut r = json!({"id":id,"threadId":s.agent["threadId"],"turnId":turn_id,"accountKey":account(&s.agent),"epoch":s.agent["epoch"],"cause":kind.kind(),"status":if delay.is_some(){"scheduled"}else{"exhausted"},"dueAt":delay.map(|d|now+d),"attempt":count.saturating_add(1),"maxAttempts":delays.len(),"cwd":s.agent["cwd"],"settings":settings,"taskClaims":s.claims});
+    if let Some(reason) = reason {
+        r["reason"] = json!(reason);
+    }
     Ok(Decision::save(s, r, "capacityRetry", now))
 }
 pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision> {
@@ -198,6 +222,19 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             patch(
                 &mut r,
                 json!({"status":"scheduled","dueAt":now+(WAIT_STEP*waits as f64).min(WAIT_MAX),"waits":waits,"reason":reason}),
+            );
+        }
+        Action::DiskWait(reason) => {
+            if text(&r, "status") == "unknown"
+                || present(&r, "acceptedTurnId")
+                || flag(&attempt, "submitted")
+            {
+                return Ok(Decision::default());
+            }
+            remove(&mut r, "claimedAt");
+            patch(
+                &mut r,
+                json!({"status":"scheduled","dueAt":now+DISK_FULL_RECHECK_SECONDS as f64,"reason":reason}),
             );
         }
         Action::Excluded(reason) => {

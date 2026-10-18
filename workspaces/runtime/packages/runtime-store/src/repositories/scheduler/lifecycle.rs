@@ -1006,6 +1006,19 @@ impl SchedulerRepository {
             .and_then(Value::as_str)
             .unwrap_or("provider rejected turn/start")
             .to_owned();
+        if proven_unapplied_disk_full(&error) {
+            return return_unapplied_input(
+                transaction,
+                agent.agent,
+                &TurnAttemptIdentity {
+                    agent_id: agent_id.into(),
+                    epoch,
+                    attempt_id: attempt_id.into(),
+                },
+                &message,
+                input,
+            );
+        }
         apply_start_error(
             transaction,
             agent.agent,
@@ -1466,6 +1479,71 @@ pub(super) fn start_error_decision(
             && agent.extra.get("autoWake").is_some_and(truthy),
     }
 }
+/// The provider states that the disk was full and it never handed this input to
+/// the model (the Claude bridge could not write its pre-input receipt).
+fn proven_unapplied_disk_full(error: &Value) -> bool {
+    let data = &error["data"];
+    data["turnStartOutcome"] == "not_applied"
+        && data["diskFull"] == true
+        && data["inputSubmitted"] != true
+}
+
+/// Return an idle start's exact input to the queue after a proven unapplied
+/// disk-full rejection. The worker starts it again when free space returns; the
+/// input is not failed and no submitted input is replayed. A busy (steer) start
+/// keeps the ordinary busy-rejection path.
+fn return_unapplied_input(
+    tx: &Transaction<'_>,
+    mut agent: AgentRecord,
+    identity: &TurnAttemptIdentity,
+    message: &str,
+    input: Value,
+) -> StoreResult<bool> {
+    let receipt_input = json!({"agent":identity.agent_id,"epoch":identity.epoch,"input":input});
+    if let Some(result) =
+        ExecutionHistoryRepository::replay(tx, &identity.attempt_id, "startResult", &receipt_input)?
+    {
+        return result
+            .as_bool()
+            .ok_or_else(|| invalid_agent(&identity.agent_id));
+    }
+    let Some(attempt) = agent.extra.get("startAttempt") else {
+        return Ok(false);
+    };
+    if attempt["activeAtReservation"] == true {
+        return apply_start_error(tx, agent, identity, false, false, message, input);
+    }
+    if attempt["id"] != identity.attempt_id
+        || attempt["epoch"] != identity.epoch
+        || attempt["turnId"].is_string()
+        || attempt["observedTurnId"].is_string()
+        || agent.epoch != identity.epoch
+        || !agent.extra.get("autoWake").is_some_and(truthy)
+    {
+        return Ok(false);
+    }
+    let events = validated_events(tx, &agent, attempt)?;
+    ExecutionHistoryRepository::reject_attempt(tx, &identity.attempt_id, message)?;
+    tx.execute(
+        "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE agent=?1 AND epoch=?2 AND id IN(SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')",
+        params![identity.agent_id, identity.epoch, events],
+    )?;
+    agent.status = AgentStatus::Queued;
+    agent.extra.insert("error".into(), Value::Null);
+    agent.extra.insert("inFlight".into(), json!(false));
+    agent.extra.remove("startAttempt");
+    agent.extra.remove("startOutcomeHold");
+    publish_agent(tx, &agent)?;
+    ExecutionHistoryRepository::save_receipt(
+        tx,
+        &identity.attempt_id,
+        "startResult",
+        receipt_input,
+        json!(true),
+    )?;
+    Ok(true)
+}
+
 pub(super) fn apply_start_error(
     tx: &Transaction<'_>,
     mut agent: AgentRecord,

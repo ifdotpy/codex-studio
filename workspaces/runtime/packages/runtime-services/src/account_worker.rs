@@ -1623,6 +1623,20 @@ impl Worker {
             previous.abort();
         }
     }
+    /// Wake a queued agent again after the disk-full recheck interval.
+    fn wait_for_disk_space(&mut self, agent_id: String, epoch: i64) {
+        let commands = self.commands.clone();
+        let key = agent_id.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(crate::disk_space::RECHECK).await;
+            let _closed = commands
+                .send(AccountCommand::Wake { agent_id, epoch })
+                .await;
+        });
+        if let Some(previous) = self.preparation_waits.insert(key, task.abort_handle()) {
+            previous.abort();
+        }
+    }
     async fn probe_auth_waits(&mut self) -> Result<(), WorkerError> {
         self.auth_wait_at = None;
         let Some(driver) = self.resources.account_driver.clone() else {
@@ -1787,6 +1801,12 @@ impl Worker {
             steer::WakeClaim::Steer(intent, turn) => return self.steer(*intent, turn).await,
             steer::WakeClaim::Busy => return Ok(()),
             steer::WakeClaim::Idle => {}
+        }
+        if crate::disk_space::full_free_bytes().is_some() {
+            // While the disk is full no new turn starts. The input stays queued
+            // with its identity; the desktop shows one notice with the free space.
+            self.wait_for_disk_space(agent, epoch);
+            return Ok(());
         }
         let candidate = loop {
             let account = self.account.clone();

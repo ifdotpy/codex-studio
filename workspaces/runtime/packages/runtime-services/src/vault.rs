@@ -724,11 +724,10 @@ fn load_optional_object(
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<(), VaultError> {
-    let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec(value)
         .map_err(|_| VaultError::InvalidStoredRecord("vault-site.json"))?;
-    fs::write(&temporary, bytes).map_err(|_| VaultError::InvalidStoredRecord("vault-site.json"))?;
-    fs::rename(&temporary, path).map_err(|_| VaultError::InvalidStoredRecord("vault-site.json"))
+    crate::atomic_file::replace(path, &bytes, None, false)
+        .map_err(|_| VaultError::InvalidStoredRecord("vault-site.json"))
 }
 
 #[cfg(test)]
