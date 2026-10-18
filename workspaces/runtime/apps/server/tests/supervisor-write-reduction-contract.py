@@ -245,7 +245,7 @@ class SupervisorWriteReduction(unittest.TestCase):
                 results.append(runtime.supervisor_event_applied(HANDLE, 1))
                 for sequence in range(1, 4):
                     with runtime.lock, runtime.db() as db:
-                        db.execute('INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) '
+                        db.execute('INSERT INTO runtime_supervisor_cursor(handle,sequence) VALUES (?,?) ON CONFLICT(handle) '
                                    'DO UPDATE SET sequence=excluded.sequence', (HANDLE, sequence))
                     # Each lookup reads the latest committed cursor.
                     results.append(runtime.supervisor_event_applied(HANDLE, sequence))

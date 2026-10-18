@@ -251,9 +251,10 @@ class StreamBuffer:
                 self.runtime.put(db, 'agents', agent)
             applied.append((key, entry, len(batches), target))
         if supervisor_handle is not None and supervisor_sequence is not None:
-            db.execute('INSERT INTO runtime_supervisor_cursor VALUES (?,?) '
-                       'ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)',
-                       (supervisor_handle, supervisor_sequence))
+            from codex_supervisor_cursor import save as save_supervisor_cursor
+            epoch_of = getattr(self.runtime, 'supervisor_cursor_epoch', None)
+            save_supervisor_cursor(db, supervisor_handle, supervisor_sequence,
+                                   epoch_of(supervisor_handle) if epoch_of else None)
         if applied or (supervisor_handle is not None and supervisor_sequence is not None):
             db.commit()
             with self.lock:

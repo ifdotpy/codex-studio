@@ -262,7 +262,9 @@ class NativeRuntimeUpdates:
                          supervisor_commit=lambda message, sequence: self.rt.commit_supervisor_event(
                              handle, message, sequence, account, None),
                          supervisor_event_applied=lambda sequence: self.rt.supervisor_event_applied(
-                             handle, sequence))
+                             handle, sequence),
+                         supervisor_cursor_attach=lambda epoch, sequence, acknowledged: self.rt.attach_supervisor_cursor(
+                             handle, epoch, sequence, acknowledged))
 
     def _rotate(self, account, selected):
         from codex_native_tools import _local_idle, _native_idle, _same_source, account_reserved
