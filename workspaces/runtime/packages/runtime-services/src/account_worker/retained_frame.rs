@@ -85,10 +85,6 @@ impl Worker {
             let _ignored = reply.send(Ok(WriteOutcome::NotSent));
             return Ok(());
         }
-        if self.retained_frames.len() >= MAX_PENDING_RESPONSES {
-            let _ignored = reply.send(Err(PortError::Capacity));
-            return Ok(());
-        }
         let key = format!(
             "retained-frame:{}:{}",
             self.account,

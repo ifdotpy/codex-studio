@@ -478,7 +478,7 @@ pub(in crate::account_worker) async fn recover(
     s.transaction_with(move |tx| {
         let prefix = format!("account-worker:retained:{account}:");
         let checkpoint = store::checkpoint(tx, &account, generation)?;
-        let mut statement = tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.call.scope.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':result' AND json_extract(done.result,'$.result') != 'Unknown' AND json_extract(done.result,'$.cursor') <=?4) ORDER BY r.id LIMIT 33")?;
+        let mut statement = tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.call.scope.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':result' AND json_extract(done.result,'$.result') != 'Unknown' AND json_extract(done.result,'$.cursor') <=?4) ORDER BY r.id")?;
         let rows = statement.query_map(rusqlite::params![prefix, format!("{prefix}~"), i64::try_from(generation).map_err(|_|WorkerError::Capacity)?, i64::try_from(checkpoint).map_err(|_|WorkerError::Capacity)?], |row|row.get::<_,String>(0))?;
         let mut result = Vec::new();
         for row in rows {
@@ -498,7 +498,6 @@ pub(in crate::account_worker) async fn recover(
                 result: None,
                 result_cursor: 0,
             }, request));
-            if result.len() > MAX_PENDING_RESPONSES { return Err(WorkerError::Capacity); }
         }
         Ok(result)
     }).await

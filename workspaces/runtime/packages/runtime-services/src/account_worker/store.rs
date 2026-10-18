@@ -173,7 +173,7 @@ pub(super) async fn recover(
             }
         }
         let prefix = format!("account-worker:account:{account}:");
-        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id LIMIT 33")?;
+        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id")?;
         let rows = stmt
             .query_map(params![prefix, format!("{prefix}~"),], |r| {
                 r.get::<_, String>(0)
@@ -252,9 +252,6 @@ pub(super) async fn recover(
                 continue;
             }
             recovered.push((context, request));
-            if recovered.len() > MAX_PENDING_RESPONSES {
-                return Err(WorkerError::Capacity);
-            }
         }
         Ok(recovered)
     })
@@ -317,9 +314,6 @@ pub(super) fn recover_vm_actor_requests(
         let request = decode(&record)?;
         if request.ticket.generation == generation {
             recovered.push((context, request));
-            if recovered.len() > MAX_PENDING_RESPONSES {
-                return Err(WorkerError::Capacity);
-            }
         }
     }
     Ok(recovered)
@@ -1728,16 +1722,13 @@ pub(super) fn recover_effects(
 ) -> Result<VecDeque<Effect>, WorkerError> {
     let prefix = format!("account-worker:effect:{account}:");
     let mut stmt = connection.prepare(
-        "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.order'),rowid LIMIT 33",
+        "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.order'),rowid",
     )?;
     let rows = stmt
         .query_map(params![prefix, format!("{prefix}~")], |r| {
             r.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    if rows.len() > MAX_PENDING_RESPONSES {
-        return Err(WorkerError::Capacity);
-    }
     rows.into_iter()
         .map(|raw| {
             let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;
@@ -2358,13 +2349,10 @@ pub(super) fn pending_preparations(
 ) -> Result<Vec<(String, i64, String, String)>, WorkerError> {
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
-    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id LIMIT 33")?;
+    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id")?;
     let ids = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    if ids.len() > MAX_PENDING_RESPONSES {
-        return Err(WorkerError::Capacity);
-    }
     ids.into_iter()
         .map(|id| {
             let row = AgentRepository::get(db, &AgentId::from(id.as_str()))?

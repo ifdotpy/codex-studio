@@ -2301,7 +2301,7 @@ async fn committed_stop_survives_crash_before_interrupt_admission() {
 #[test]
 fn only_explicit_admission_rejection_can_mark_not_sent() {
     assert!(definite_rejection(&WorkerError::Session(
-        SessionTaskError::Capacity
+        SessionTaskError::Invalid
     )));
     for error in [
         WorkerError::TaskFailed,
@@ -2816,6 +2816,86 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     producer.abort();
     let _cancelled = producer.await;
     let _completed = worker.completion().await;
+}
+
+/// More provider callbacks than the provider response window are queued
+/// effects, not a capacity failure: each is answered and the worker survives.
+#[tokio::test]
+async fn callback_burst_beyond_response_window_is_answered_without_worker_exit() {
+    const BURST: u64 = 40;
+    assert!(BURST as usize > studio_runtime_process::provider_seam::MAX_PENDING_RESPONSES);
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    // Hold the store bridge so the burst queues up behind one transaction.
+    let permit = state
+        .bridge
+        .operation_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    let entries = peer.entries.clone();
+    let clock = peer.clock.clone();
+    let producer = tokio::spawn(async move {
+        for cursor in 1..=BURST {
+            let line = format!(
+                "{}\n",
+                json!({"id":format!("callback-{cursor}"),"method":"item/commandExecution/requestApproval","params":{}})
+            );
+            entries
+                .send(JournalEntry {
+                    cursor: EventCursor(cursor),
+                    generation: Generation(1),
+                    received_at_ms: clock.now_ms(),
+                    payload: JournalPayload::Frame(
+                        studio_runtime_providers::LineDecoder::new()
+                            .push(line.as_bytes())
+                            .unwrap()
+                            .remove(0),
+                    ),
+                })
+                .await
+                .unwrap();
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        while peer.entries.capacity() > 0 && !producer.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("burst fills the provider journal lane");
+    drop(permit);
+    let mut answered = BTreeSet::new();
+    let mut acknowledged = 0;
+    while answered.len() < BURST as usize {
+        // The fake peer blocks on its bounded ACK lane; drain it alongside writes.
+        let wire = tokio::select! {
+            wire = peer.writes.recv() => wire.expect("worker answers callback"),
+            ack = peer.acks.recv() => { acknowledged = ack.expect("session acknowledges").0; continue; }
+        };
+        assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
+        answered.insert(wire.value["id"].as_str().unwrap().to_owned());
+        wire.receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .ok()
+            .unwrap();
+    }
+    producer.await.unwrap();
+    assert_eq!(
+        answered.len(),
+        BURST as usize,
+        "every callback answered once"
+    );
+    if acknowledged < BURST {
+        peer.acknowledged_or_worker_exits(BURST, &mut worker).await;
+    }
+    assert!(!*worker.completion_signal().borrow());
+    worker.shutdown().await.unwrap();
 }
 
 #[tokio::test]

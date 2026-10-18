@@ -18,7 +18,7 @@ use studio_runtime_providers::{
     SessionError, SessionState,
 };
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
@@ -59,13 +59,17 @@ pub struct RequestSpec {
 }
 
 /// Validated wire size/shape before the account commits its Submitted marker.
-/// Admission can still be refused if readiness or capacity changes afterward.
+/// It owns an unresolved-request slot, so admission never fails for capacity;
+/// it can still be refused if readiness changes afterward.
 pub struct PreparedRequest {
     spec: RequestSpec,
     prepared_at_ms: u64,
     write: Option<PreparedWrite>,
     generation: Generation,
     owner: mpsc::Sender<Command>,
+    /// One of the session's `MAX_PENDING_RESPONSES` unresolved-request slots.
+    /// Admission moves it into the request record; dropping it frees the slot.
+    slot: Option<OwnedSemaphorePermit>,
 }
 impl PreparedRequest {
     /// Persist this absolute deadline with Submitted, before calling submit.
@@ -135,8 +139,6 @@ pub struct SessionStatus {
 pub enum SessionTaskError {
     #[error("session closed")]
     Closed,
-    #[error("session admission capacity exhausted")]
-    Capacity,
     #[error("session admission receipt was lost; submission may have occurred")]
     AdmissionUnknown,
     #[error("invalid session configuration or prepared command")]
@@ -178,6 +180,8 @@ pub struct SessionControl {
     settlements: mpsc::Sender<Settlement>,
     status: watch::Receiver<SessionStatus>,
     stop: Shutdown,
+    /// Unresolved provider responses; `prepare` waits for a slot (backpressure).
+    response_slots: Arc<Semaphore>,
 }
 
 impl SessionHandle {
@@ -204,7 +208,6 @@ impl SessionHandle {
                     || r.operation_id.0.len() > 1024
             })
             || config.timeout_ms > MAX_TIMEOUT_MS
-            || config.recovered.len() > MAX_PENDING_RESPONSES
             || config.recovered.iter().any(|r| {
                 r.thread_id
                     .as_ref()
@@ -236,6 +239,7 @@ impl SessionHandle {
             id: initialize_frame.id.clone(),
             method: Method::Initialize,
         };
+        let response_slots = Arc::new(Semaphore::new(MAX_PENDING_RESPONSES));
         let mut records = BTreeMap::new();
         for recovered in config.recovered {
             state.restore_request(
@@ -269,6 +273,9 @@ impl SessionHandle {
                     send: SendState::Unknown,
                     write: None,
                     ready: false,
+                    // Recovery restores every durable request; only new
+                    // preparations wait while recovered ones hold the slots.
+                    _slot: Arc::clone(&response_slots).try_acquire_owned().ok(),
                 },
             );
         }
@@ -283,6 +290,7 @@ impl SessionHandle {
                 lightweight: false,
                 write: Some(initialize),
                 ready: true,
+                _slot: None,
             },
         );
         let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
@@ -324,6 +332,7 @@ impl SessionHandle {
                 settlements,
                 status: observed.clone(),
                 stop: stop.clone(),
+                response_slots,
             },
             status: observed,
             stop,
@@ -384,12 +393,18 @@ impl SessionControl {
             fields: Map::new(),
         });
         let write = PreparedWrite::new(spec.operation_id.clone(), &frame)?;
+        let mut stop = self.stop.subscribe();
+        let slot = tokio::select! { biased;
+            _ = Shutdown::cancelled(&mut stop) => return Err(SessionTaskError::Closed),
+            slot = Arc::clone(&self.response_slots).acquire_owned() => slot.map_err(|_| SessionTaskError::Closed)?,
+        };
         let prepared = PreparedRequest {
             spec,
             prepared_at_ms: self.clock.now_ms(),
             write: Some(write),
             generation: self.status.borrow().generation,
             owner: self.commands.clone(),
+            slot: Some(slot),
         };
         let (reply, receipt) = oneshot::channel();
         self.commands
@@ -530,6 +545,8 @@ struct Record {
     lightweight: bool,
     write: Option<PreparedWrite>,
     ready: bool,
+    /// Held until the record retires (positive reply or definite NotSent).
+    _slot: Option<OwnedSemaphorePermit>,
 }
 struct PendingWrite {
     write: PreparedWrite,
@@ -592,9 +609,9 @@ impl SessionTask {
             Ok(adapter) => adapter,
             Err(error) => return self.finish_without_adapter(Err(error.into())),
         };
-        // Only callbacks use this lane. Each admitted request already owns its
-        // reserved prepared write in records, including serialized successors.
-        let (writes, mut queued) = mpsc::channel(MAX_PENDING_RESPONSES + 2);
+        // Only callback responses use this lane; each answers one provider
+        // request already journaled, so the provider bounds its length.
+        let (writes, mut queued) = mpsc::unbounded_channel();
         let mut flight: Option<InFlight> = None;
         let result = std::panic::AssertUnwindSafe(self.serve(
             &mut adapter,
@@ -705,8 +722,8 @@ impl SessionTask {
     async fn serve(
         &mut self,
         adapter: &mut ProviderAttachment,
-        writes: &mpsc::Sender<PendingWrite>,
-        queued: &mut mpsc::Receiver<PendingWrite>,
+        writes: &mpsc::UnboundedSender<PendingWrite>,
+        queued: &mut mpsc::UnboundedReceiver<PendingWrite>,
         flight: &mut Option<InFlight>,
     ) -> Result<(), SessionTaskError> {
         let mut stop = self.stop.subscribe();
@@ -948,7 +965,10 @@ impl SessionTask {
         });
     }
 
-    fn command(&mut self, writes: &mpsc::Sender<PendingWrite>) -> Result<(), SessionTaskError> {
+    fn command(
+        &mut self,
+        writes: &mpsc::UnboundedSender<PendingWrite>,
+    ) -> Result<(), SessionTaskError> {
         // Keep the taken command until its write belongs to a record/channel and
         // the admission result is ready. No fallible transition owns it locally.
         match self
@@ -960,19 +980,16 @@ impl SessionTask {
             Command::Barrier { .. } => return Err(SessionTaskError::Invalid),
             Command::Prepare { prepared, .. } => {
                 let spec = &prepared.spec;
-                let result = if self.records.len() >= MAX_PENDING_RESPONSES {
-                    Err(SessionTaskError::Capacity)
-                } else {
-                    self.state
-                        .preflight_with_id(
-                            spec.id.clone(),
-                            spec.method,
-                            &spec.params,
-                            spec.thread_id.as_deref(),
-                            spec.lightweight,
-                        )
-                        .map_err(SessionTaskError::from)
-                };
+                let result = self
+                    .state
+                    .preflight_with_id(
+                        spec.id.clone(),
+                        spec.method,
+                        &spec.params,
+                        spec.thread_id.as_deref(),
+                        spec.lightweight,
+                    )
+                    .map_err(SessionTaskError::from);
                 if let Some(Command::Prepare { prepared, reply }) = self.retained.command.take() {
                     let _ignored = reply.send(result.map(|()| prepared));
                 }
@@ -986,19 +1003,21 @@ impl SessionTask {
                 }
             }
             Command::Frame { .. } => {
-                let permit = if self.state.initialization_status() != InitializationStatus::Ready {
+                let ready = if self.state.initialization_status() != InitializationStatus::Ready {
                     Err(SessionError::NotReady.into())
                 } else {
-                    writes.try_reserve().map_err(|_| SessionTaskError::Capacity)
+                    Ok(())
                 };
                 if let Some(Command::Frame { prepared, reply }) = self.retained.command.take() {
-                    let result = permit.map(|permit| {
-                        permit.send(PendingWrite {
-                            write: prepared.write,
-                            operation: prepared.operation,
-                            ticket: None,
-                            initialized: false,
-                        })
+                    let result = ready.and_then(|()| {
+                        writes
+                            .send(PendingWrite {
+                                write: prepared.write,
+                                operation: prepared.operation,
+                                ticket: None,
+                                initialized: false,
+                            })
+                            .map_err(|_| SessionTaskError::Closed)
                     });
                     if reply.send(result).is_err() {
                         self.stop.cancel();
@@ -1019,9 +1038,6 @@ impl SessionTask {
         if prepared.generation.0 != self.state.generation() {
             return Err(SessionError::StaleGeneration.into());
         }
-        if self.records.len() >= MAX_PENDING_RESPONSES {
-            return Err(SessionTaskError::Capacity);
-        }
         let spec = prepared.spec.clone();
         if self
             .records
@@ -1039,9 +1055,11 @@ impl SessionTask {
             spec.thread_id.clone(),
             spec.lightweight,
         )?;
-        let write = match &mut self.retained.command {
-            Some(Command::Request { prepared, .. }) => prepared.write.take(),
-            _ => None,
+        let (write, slot) = match &mut self.retained.command {
+            Some(Command::Request { prepared, .. }) => {
+                (prepared.write.take(), prepared.slot.take())
+            }
+            _ => (None, None),
         };
         self.records.insert(
             ticket.id.clone(),
@@ -1054,6 +1072,7 @@ impl SessionTask {
                 lightweight: spec.lightweight,
                 write,
                 ready: false,
+                _slot: slot,
             },
         );
         self.retained.actions = actions;

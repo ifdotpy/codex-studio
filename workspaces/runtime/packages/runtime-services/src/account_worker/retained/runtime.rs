@@ -28,10 +28,6 @@ impl Worker {
             let _ignored = reply.send(Err(error));
             return Ok(());
         }
-        if self.retained_requests.len() + self.pending.len() >= MAX_PENDING_RESPONSES {
-            let _ignored = reply.send(Err(PortError::Capacity));
-            return Ok(());
-        }
         let deferred_request = request.clone();
         let call = Call {
             scope: request.scope,

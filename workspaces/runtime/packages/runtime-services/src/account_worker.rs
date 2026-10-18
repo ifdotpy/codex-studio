@@ -3,8 +3,8 @@
 use crate::{
     notification_dispatch::NotificationStreamBuffer,
     provider_session_task::{
-        MAX_UNSETTLED, RecoveredRequest, RequestSpec, SessionControl, SessionEvent, SessionExit,
-        SessionHandle, SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
+        RecoveredRequest, RequestSpec, SessionControl, SessionEvent, SessionExit, SessionHandle,
+        SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
     },
     scheduler::{self, TurnIntent, TurnStart},
 };
@@ -19,8 +19,8 @@ use std::{
 use studio_runtime_process::{
     Generation, OperationId, ProviderHandle,
     provider_seam::{
-        InitializationStatus, JournalEntry, JournalPayload, MAX_PENDING_RESPONSES, OpenOptions,
-        ProviderTaskFactory, Shutdown,
+        InitializationStatus, JournalEntry, JournalPayload, OpenOptions, ProviderTaskFactory,
+        Shutdown,
     },
 };
 use studio_runtime_providers::{Frame, Method, RequestId, RequestOutcome, ResponseBody};
@@ -623,9 +623,6 @@ pub async fn start_account_worker_with_publication_sink(
     config
         .recovered
         .extend(retained.iter().map(|(_, request)| request.clone()));
-    if config.recovered.len() > MAX_PENDING_RESPONSES {
-        return Err(WorkerError::Capacity);
-    }
     let timeout_ms = config.timeout_ms;
     let mut session = SessionHandle::open(
         factory,
@@ -1281,7 +1278,7 @@ impl Worker {
                     .ok_or(WorkerError::TaskFailed)?
                     .map_err(|_| WorkerError::TaskFailed)?;
                 if let Some(response) = response {
-                    self.push(Effect::Callback(cursor, response, actor, epoch))?;
+                    self.push(Effect::Callback(cursor, response, actor, epoch));
                 }
             }
             ServeSignal::SessionStatusChanged(false) => return Ok(false),
@@ -1721,7 +1718,7 @@ impl Worker {
         Ok(())
     }
     async fn wake(&mut self, agent: String, epoch: i64) -> Result<(), WorkerError> {
-        if self.closing || self.pending.len() >= MAX_PENDING_RESPONSES {
+        if self.closing {
             return Ok(());
         }
         let account = self.account.clone();
@@ -2592,7 +2589,7 @@ impl Worker {
             })
             .await?;
         if let Some(effect) = effect {
-            self.push(effect)?;
+            self.push(effect);
         }
         Ok(())
     }
@@ -2617,12 +2614,8 @@ impl Worker {
         }
         Ok(())
     }
-    fn push(&mut self, effect: Effect) -> Result<(), WorkerError> {
-        if self.effects.len() >= MAX_PENDING_RESPONSES {
-            return Err(WorkerError::Capacity);
-        }
+    fn push(&mut self, effect: Effect) {
         self.effects.push_back(effect);
-        Ok(())
     }
     async fn event(&mut self, event: SessionEvent) -> Result<(), WorkerError> {
         #[cfg(test)]
@@ -2866,7 +2859,7 @@ impl Worker {
                 self.pending.remove(&id);
             }
             if let Some(effect) = effect {
-                self.push(effect)?;
+                self.push(effect);
             }
         }
         if let Some(entry) = event.journal {
@@ -3083,9 +3076,6 @@ impl Worker {
         let Some((streams, committed, deferred)) = committed? else {
             return Err(WorkerError::TaskFailed);
         };
-        if self.deferred.len().saturating_add(deferred.len()) > MAX_UNSETTLED {
-            return Err(WorkerError::Capacity);
-        }
         let had_deferred = !deferred.is_empty();
         self.deferred
             .extend(deferred.into_iter().map(|entry| (entry, source.cloned())));
@@ -3154,7 +3144,7 @@ impl Worker {
             self.bridge.continuation_wake().notify_one();
         }
         if let Some(effect) = effect {
-            self.push(effect)?;
+            self.push(effect);
         }
         if let JournalPayload::Frame(frame) = &entry.payload
             && let Frame::Notification(notification) = frame
@@ -3175,9 +3165,6 @@ impl Worker {
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
-            if self.callbacks.len() + self.managed_callbacks.len() >= MAX_PENDING_RESPONSES {
-                return Err(WorkerError::Capacity);
-            }
             let store = Arc::clone(&self.bridge.store);
             let managed_tool_runtime = self.bridge.managed_tool_runtime();
             self.managed_callback_cursors
@@ -3234,9 +3221,6 @@ impl Worker {
             let generation = self.generation.0;
             let frame = frame.clone();
             let resolver = self.resources.vm_provider_launch.clone();
-            if self.callbacks.len() + self.managed_callbacks.len() >= MAX_PENDING_RESPONSES {
-                return Err(WorkerError::Capacity);
-            }
             self.managed_callback_cursors
                 .insert((actor.clone(), actor_epoch, cursor.0));
             self.managed_callbacks.spawn(async move {
@@ -3259,7 +3243,7 @@ impl Worker {
                 response,
                 actor_id.map(str::to_owned),
                 actor_epoch,
-            ))?;
+            ));
         } else if settle && !self.closing {
             if let Some(actor) = actor_id
                 && !self.vm_sessions.get(actor).is_some_and(|session| {
@@ -3504,9 +3488,6 @@ impl Worker {
                 .remove(&(actor_id.clone(), actor_epoch, cursor.0));
             return Ok(());
         }
-        if self.callbacks.len() >= MAX_PENDING_RESPONSES {
-            return Err(WorkerError::Capacity);
-        }
         // A callback may have waited while this actor was resolving. Fence it
         // again immediately before the provider response can leave the host.
         if let Some(actor) = actor_id.as_deref() {
@@ -3677,7 +3658,7 @@ impl Worker {
             while let Some(callback) = self.managed_callbacks.join_next().await {
                 match callback {
                     Ok((cursor, actor, epoch, Some(response))) => {
-                        self.push(Effect::Callback(cursor, response, actor, epoch))?;
+                        self.push(Effect::Callback(cursor, response, actor, epoch));
                     }
                     Ok((_, _, _, None)) => {}
                     Err(error) => {
@@ -3814,7 +3795,6 @@ fn definite_rejection(error: &WorkerError) -> bool {
         error,
         WorkerError::Session(
             SessionTaskError::Protocol(studio_runtime_providers::SessionError::NotReady)
-                | SessionTaskError::Capacity
                 | SessionTaskError::Invalid
         )
     )
