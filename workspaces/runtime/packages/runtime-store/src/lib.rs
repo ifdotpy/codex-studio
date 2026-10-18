@@ -184,8 +184,48 @@ pub enum ObservedTable {
     RuntimeToolRequests,
 }
 
+/// Maximum rowid occurrences recorded per observed table for one writer transaction.
+/// Unit: occurrences, so a row written twice counts twice. Overflow drops that
+/// table's row precision for the commit and reports [`TableChange::Full`].
+const CHANGED_ROW_HINT_LIMIT: usize = 1024;
+
+/// What one known commit changed in an observed table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TableChange<'a> {
+    /// Physical rowids written by the commit, in write order. A row written more
+    /// than once appears more than once; a deleted row is reported by its rowid.
+    Rows(&'a [i64]),
+    /// Row identity is unknown; readers must reread the whole table.
+    Full,
+}
+
 type ChangeObserver = Arc<dyn Fn() + Send + Sync>;
-type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<ChangeObserver>>>;
+type TableChangeObserver = Arc<dyn for<'a> Fn(TableChange<'a>) + Send + Sync>;
+type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<TableChangeObserver>>>;
+
+/// Rowids written by the current writer transaction, grouped by observed table bit.
+#[derive(Default)]
+struct ChangedRowHints {
+    /// Tables whose rowids are recorded for the whole transaction.
+    complete: u32,
+    rows: [Vec<i64>; OBSERVED_TABLES.len()],
+}
+
+impl ChangedRowHints {
+    fn record(&mut self, table: ObservedTable, row_id: i64) {
+        let bit = table.change_bit();
+        if self.complete & bit == 0 {
+            return;
+        }
+        let rows = &mut self.rows[bit.trailing_zeros() as usize];
+        if rows.len() < CHANGED_ROW_HINT_LIMIT {
+            rows.push(row_id);
+        } else {
+            self.complete &= !bit;
+            rows.clear();
+        }
+    }
+}
 
 impl ObservedTable {
     const fn name(self) -> &'static str {
@@ -384,11 +424,22 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
     }
 }
 
-fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_tables: u32) {
+fn fire_table_change_observers(
+    observers: &TableChangeObserverRegistry,
+    changed_tables: u32,
+    changed_rows: Option<&ChangedRowHints>,
+) {
     for table in OBSERVED_TABLES {
-        if changed_tables & table.change_bit() == 0 {
+        let bit = table.change_bit();
+        if changed_tables & bit == 0 {
             continue;
         }
+        let change = match changed_rows {
+            Some(rows) if rows.complete & bit != 0 => {
+                TableChange::Rows(rows.rows[bit.trailing_zeros() as usize].as_slice())
+            }
+            _ => TableChange::Full,
+        };
         let callbacks = observers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -397,7 +448,7 @@ fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_
             .unwrap_or_default();
         for callback in callbacks {
             if let Err(_panic_payload) =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(change)))
             {
                 // A table observer panic must not interrupt other invalidations.
             }
@@ -457,12 +508,14 @@ fn install_table_change_hooks(
     connection: &Connection,
     table_change_flags: Arc<AtomicU32>,
     resource_receipt_update_count: Arc<AtomicU64>,
+    row_interest: Arc<AtomicU32>,
+    changed_rows: Arc<Mutex<ChangedRowHints>>,
 ) -> rusqlite::Result<()> {
     connection.update_hook(Some(
         move |_action: rusqlite::hooks::Action,
               database_name: &str,
               table_name: &str,
-              _rowid: i64| {
+              row_id: i64| {
             if database_name != "main" {
                 return;
             }
@@ -475,6 +528,14 @@ fn install_table_change_hooks(
             table_change_flags.fetch_or(observed.change_bit(), Ordering::Relaxed);
             if observed.suppressible_resource_receipt() {
                 resource_receipt_update_count.fetch_add(1, Ordering::Relaxed);
+            }
+            // SQLite reports the row being written. A raw UPDATE that changes a
+            // rowid is not tracked, so no repository writer relies on that path.
+            if row_interest.load(Ordering::Relaxed) & observed.change_bit() != 0 {
+                changed_rows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(*observed, row_id);
             }
         },
     ))?;
@@ -754,6 +815,9 @@ pub struct RuntimeStore {
     resource_change_observers: Arc<Mutex<Vec<ChangeObserver>>>,
     table_change_flags: Arc<AtomicU32>,
     resource_receipt_update_count: Arc<AtomicU64>,
+    /// Observed tables with a row-aware observer; set before the observer is added.
+    table_row_interest: Arc<AtomicU32>,
+    changed_rows: Arc<Mutex<ChangedRowHints>>,
     #[cfg(test)]
     simulate_unknown_commit_after_success: Arc<AtomicBool>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
@@ -1015,6 +1079,7 @@ enum WriterTransactionOutcome<T, E> {
         generation: u64,
         changed: bool,
         changed_tables: u32,
+        changed_rows: ChangedRowHints,
         resource_change: bool,
     },
     CommitOutcomeUnknown {
@@ -1118,6 +1183,10 @@ impl RuntimeStore {
         let writer = SqliteActor::open(&canvas_path, Arc::clone(&runtime_lock)).await?;
         let hook_table_change_flags = Arc::clone(&table_change_flags);
         let hook_resource_receipt_update_count = Arc::clone(&resource_receipt_update_count);
+        let table_row_interest = Arc::new(AtomicU32::new(0));
+        let changed_rows = Arc::new(Mutex::new(ChangedRowHints::default()));
+        let hook_table_row_interest = Arc::clone(&table_row_interest);
+        let hook_changed_rows = Arc::clone(&changed_rows);
         writer
             .call(move |connection| {
                 connection
@@ -1132,6 +1201,8 @@ impl RuntimeStore {
                     connection,
                     hook_table_change_flags,
                     hook_resource_receipt_update_count,
+                    hook_table_row_interest,
+                    hook_changed_rows,
                 )
                 .map_err(StoreError::from)?;
                 Ok::<(), StoreError>(())
@@ -1181,6 +1252,8 @@ impl RuntimeStore {
             resource_change_observers: Arc::new(Mutex::new(Vec::new())),
             table_change_flags,
             resource_receipt_update_count,
+            table_row_interest,
+            changed_rows,
             #[cfg(test)]
             simulate_unknown_commit_after_success: Arc::new(AtomicBool::new(false)),
             committed_change_generation: Arc::new(AtomicU64::new(0)),
@@ -1279,6 +1352,28 @@ impl RuntimeStore {
         &self,
         table: ObservedTable,
         observer: impl Fn() + Send + Sync + 'static,
+    ) {
+        self.add_table_observer(table, move |_change| observer());
+    }
+
+    /// Like [`Self::add_table_change_observer`], but a known commit passes the
+    /// rowids it wrote. Overflow or an unknown outcome passes [`TableChange::Full`].
+    /// Rowids are recorded from the next writer transaction onward, so register
+    /// before taking the snapshot that the observer will maintain.
+    pub fn add_table_row_change_observer(
+        &self,
+        table: ObservedTable,
+        observer: impl for<'a> Fn(TableChange<'a>) + Send + Sync + 'static,
+    ) {
+        self.table_row_interest
+            .fetch_or(table.change_bit(), Ordering::Release);
+        self.add_table_observer(table, observer);
+    }
+
+    fn add_table_observer(
+        &self,
+        table: ObservedTable,
+        observer: impl for<'a> Fn(TableChange<'a>) + Send + Sync + 'static,
     ) {
         self.table_commit_observers
             .lock()
@@ -1598,6 +1693,8 @@ impl RuntimeStore {
         let identity_registry_lease = Arc::clone(&self.identity_registry_lease);
         let table_change_flags = Arc::clone(&self.table_change_flags);
         let resource_receipt_update_count = Arc::clone(&self.resource_receipt_update_count);
+        let table_row_interest = Arc::clone(&self.table_row_interest);
+        let changed_rows = Arc::clone(&self.changed_rows);
         #[cfg(test)]
         let simulate_unknown_commit_after_success =
             Arc::clone(&self.simulate_unknown_commit_after_success);
@@ -1607,6 +1704,13 @@ impl RuntimeStore {
                 let _identity_registry_lease = identity_registry_lease;
                 table_change_flags.store(0, Ordering::Release);
                 resource_receipt_update_count.store(0, Ordering::Release);
+                // Row precision is kept only for tables observed when this transaction starts.
+                *changed_rows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = ChangedRowHints {
+                    complete: table_row_interest.load(Ordering::Acquire),
+                    ..ChangedRowHints::default()
+                };
                 let transaction = writer
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
@@ -1619,6 +1723,11 @@ impl RuntimeStore {
                         let receipt_updates = resource_receipt_update_count.load(Ordering::Acquire);
                         let resource_change =
                             transaction_has_resource_change(total_changes, receipt_updates);
+                        let transaction_rows = std::mem::take(
+                            &mut *changed_rows
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        );
                         let commit_started = diagnostics_enabled.then(Instant::now);
                         if let Err(error) = transaction.commit() {
                             return Ok(WriterTransactionOutcome::CommitOutcomeUnknown {
@@ -1656,6 +1765,7 @@ impl RuntimeStore {
                             generation: commit_generation,
                             changed,
                             changed_tables,
+                            changed_rows: transaction_rows,
                             resource_change,
                         })
                     }
@@ -1669,6 +1779,7 @@ impl RuntimeStore {
                             generation: generation.load(Ordering::Acquire),
                             changed: false,
                             changed_tables: 0,
+                            changed_rows: ChangedRowHints::default(),
                             resource_change: false,
                         })
                     }
@@ -1691,11 +1802,12 @@ impl RuntimeStore {
             .writer
             .call_admitted_with_completion(permit, operation, move |result, disposition| {
                 if let Ok(outcome) = result {
-                    let (changed_tables, resource_change, value) = match outcome {
+                    let (changed_tables, changed_rows, resource_change, value) = match outcome {
                         WriterTransactionOutcome::Known {
                             result: Ok(value),
                             changed,
                             changed_tables,
+                            changed_rows,
                             resource_change,
                             ..
                         } => {
@@ -1711,18 +1823,34 @@ impl RuntimeStore {
                                     // A dropped response cannot report observer panics.
                                 }
                             }
-                            (*changed_tables, *resource_change, Some(value))
+                            (
+                                *changed_tables,
+                                Some(changed_rows),
+                                *resource_change,
+                                Some(value),
+                            )
                         }
                         WriterTransactionOutcome::CommitOutcomeUnknown {
                             possible_table_changes,
                             possible_resource_change,
                             ..
-                        } => (*possible_table_changes, *possible_resource_change, None),
-                        WriterTransactionOutcome::Known { result: Err(_), .. } => (0, false, None),
+                        } => (
+                            *possible_table_changes,
+                            None,
+                            *possible_resource_change,
+                            None,
+                        ),
+                        WriterTransactionOutcome::Known { result: Err(_), .. } => {
+                            (0, None, false, None)
+                        }
                     };
                     let table_observer_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            fire_table_change_observers(&table_commit_observers, changed_tables);
+                            fire_table_change_observers(
+                                &table_commit_observers,
+                                changed_tables,
+                                changed_rows,
+                            );
                         }));
                     let post_commit_result = value.map(|value| {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3131,6 +3259,8 @@ mod commit_notification_tests {
             &database,
             Arc::clone(&table_change_flags),
             Arc::clone(&receipt_update_count),
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(Mutex::new(ChangedRowHints::default())),
         )
         .expect("install update and delete hooks");
 
@@ -3448,11 +3578,19 @@ mod commit_notification_tests {
 
         let table_change_flags = Arc::clone(&store.table_change_flags);
         let receipt_update_count = Arc::clone(&store.resource_receipt_update_count);
+        let row_interest = Arc::clone(&store.table_row_interest);
+        let changed_rows = Arc::clone(&store.changed_rows);
         store
             .writer
             .call(move |connection| {
-                install_table_change_hooks(connection, table_change_flags, receipt_update_count)
-                    .map_err(StoreError::from)?;
+                install_table_change_hooks(
+                    connection,
+                    table_change_flags,
+                    receipt_update_count,
+                    row_interest,
+                    changed_rows,
+                )
+                .map_err(StoreError::from)?;
                 connection
                     .authorizer(None::<for<'context> fn(AuthContext<'context>) -> Authorization>)
                     .map_err(StoreError::from)?;
@@ -3782,6 +3920,241 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
         assert_eq!(replacement_notifications.load(Ordering::Relaxed), 1);
         assert_eq!(observer_notifications.load(Ordering::Relaxed), 2);
+    }
+
+    /// Hang guard for writer witnesses: a stuck commit fails the test instead of blocking the suite.
+    const WRITER_WITNESS_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Each entry is one observed change: `Some(rowids)` for row hints, `None` for a full reread.
+    type RecordedChanges = Arc<Mutex<Vec<Option<Vec<i64>>>>>;
+
+    fn recording_observer(
+        recorded: &RecordedChanges,
+    ) -> impl for<'a> Fn(TableChange<'a>) + Send + Sync + 'static {
+        let recorded = Arc::clone(recorded);
+        move |change| {
+            recorded
+                .lock()
+                .expect("recorded table changes")
+                .push(match change {
+                    TableChange::Rows(row_ids) => Some(row_ids.to_vec()),
+                    TableChange::Full => None,
+                });
+        }
+    }
+
+    fn record_changes(store: &RuntimeStore, table: ObservedTable) -> RecordedChanges {
+        let recorded: RecordedChanges = Arc::new(Mutex::new(Vec::new()));
+        store.add_table_row_change_observer(table, recording_observer(&recorded));
+        recorded
+    }
+
+    fn access_client_row_ids(store: &RuntimeStore) -> Vec<i64> {
+        let db = store.read().expect("read connection");
+        let mut statement = db
+            .prepare("SELECT rowid FROM runtime_access_clients ORDER BY rowid")
+            .expect("prepare rowid query");
+        statement
+            .query_map([], |row| row.get::<_, i64>(0))
+            .expect("query rowids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read rowids")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn row_observer_receives_committed_rowids_in_write_order() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let recorded = record_changes(&store, ObservedTable::AccessClients);
+        let before = access_client_row_ids(&store);
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-a', '{}')",
+                    [],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-b', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit two client rows");
+        let written = access_client_row_ids(&store)
+            .into_iter()
+            .filter(|row_id| !before.contains(row_id))
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), 2);
+        assert_eq!(*recorded.lock().expect("recorded"), vec![Some(written)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rolled_back_transaction_reports_no_table_change() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let recorded = record_changes(&store, ObservedTable::AccessClients);
+        let result = store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-rolled-back', '{}')",
+                    [],
+                )?;
+                Err::<(), StoreError>(StoreError::RecordContract("test rollback"))
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(recorded.lock().expect("recorded").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_commit_outcome_reports_full_reread() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let recorded = record_changes(&store, ObservedTable::AccessClients);
+        store
+            .simulate_unknown_commit_after_success
+            .store(true, Ordering::Release);
+        let result = store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-unknown', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(*recorded.lock().expect("recorded"), vec![None]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn row_hint_cap_keeps_rows_at_limit_and_reports_full_past_it() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let recorded = record_changes(&store, ObservedTable::AccessClients);
+        for (label, count) in [
+            ("at-limit", CHANGED_ROW_HINT_LIMIT),
+            ("over-limit", CHANGED_ROW_HINT_LIMIT + 1),
+        ] {
+            store
+                .transaction(move |tx| {
+                    for index in 0..count {
+                        tx.execute(
+                            "INSERT INTO runtime_access_clients(id, record) VALUES (?1, '{}')",
+                            [format!("client-{label}-{index}")],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await
+                .expect("commit bounded client rows");
+        }
+        let changes = recorded.lock().expect("recorded");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(
+            changes[0].as_ref().map(Vec::len),
+            Some(CHANGED_ROW_HINT_LIMIT)
+        );
+        assert_eq!(changes[1], None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observer_registered_mid_transaction_gets_full_for_that_commit() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let recorded: RecordedChanges = Arc::new(Mutex::new(Vec::new()));
+        let observer = recording_observer(&recorded);
+        let weak_store = Arc::downgrade(&store);
+        store
+            .transaction(move |tx| {
+                // This transaction started before the row interest existed, so its
+                // rowids are incomplete and the observer must receive a full reread.
+                weak_store
+                    .upgrade()
+                    .expect("store remains alive")
+                    .add_table_row_change_observer(ObservedTable::AccessClients, observer);
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-late', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit with late observer");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-next', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit with registered observer");
+        let changes = recorded.lock().expect("recorded");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0], None);
+        assert_eq!(changes[1].as_ref().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn observer_registered_inside_callback_does_not_block_later_commits() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let call_count = Arc::clone(&calls);
+        let weak_store = Arc::downgrade(&store);
+        let nested_registered = Arc::new(AtomicBool::new(false));
+        store.add_table_row_change_observer(ObservedTable::AccessClients, move |_change| {
+            call_count.fetch_add(1, Ordering::Relaxed);
+            if !nested_registered.swap(true, Ordering::Relaxed) {
+                weak_store
+                    .upgrade()
+                    .expect("store remains alive")
+                    .add_table_row_change_observer(ObservedTable::AccessClients, |_change| {});
+            }
+        });
+        for client in ["client-callback-a", "client-callback-b"] {
+            tokio::time::timeout(
+                WRITER_WITNESS_HANG_GUARD,
+                store.transaction(move |tx| {
+                    tx.execute(
+                        "INSERT INTO runtime_access_clients(id, record) VALUES (?1, '{}')",
+                        [client],
+                    )?;
+                    Ok(())
+                }),
+            )
+            .await
+            .expect("writer does not hang after callback registration")
+            .expect("commit client row");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -255,6 +255,19 @@ impl HistorySchedule {
         }
     }
 
+    /// True when the last import of this agent is final and its inputs have not changed.
+    pub fn settled(&self, agent: &Value) -> bool {
+        let Some(id) = agent["id"].as_str() else {
+            return false;
+        };
+        self.polls.get(id).is_some_and(|poll| {
+            !poll.catching_up
+                && poll.blocked_input.is_none()
+                && !self.dirty.contains(id)
+                && !poll_changed(Some(poll), agent)
+        })
+    }
+
     pub fn has_pending(&self) -> bool {
         !self.dirty.is_empty() || self.polls.values().any(|poll| poll.catching_up)
     }

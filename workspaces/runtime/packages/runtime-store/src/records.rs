@@ -607,6 +607,42 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         Ok(records)
     }
 
+    /// Physical-row lookup for change hints; decodes like [`Table::get`].
+    pub fn get_by_row_id(&self, row_id: i64) -> StoreResult<Option<R>> {
+        ensure_query::<R>(None, RecordOrder::RowId)?;
+        let sql = format!(
+            "SELECT id,record FROM {} WHERE rowid = ?1",
+            quoted_table::<R>()
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let mut rows = statement.query([row_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
+        let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
+        decode_record::<R>(&id, encoded).map(Some)
+    }
+
+    /// Full rowid-ordered read that keeps each physical row id beside its record.
+    pub fn list_with_row_ids(&self) -> StoreResult<Vec<(i64, R)>> {
+        ensure_query::<R>(None, RecordOrder::RowId)?;
+        let sql = format!(
+            "SELECT rowid,id,record FROM {} ORDER BY rowid",
+            quoted_table::<R>()
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let mut rows = statement.query(())?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            let row_id = row.get::<_, i64>(0)?;
+            let id = stored_text(row.get_ref(1)?, R::TABLE, "<invalid id>")?;
+            let encoded = stored_text_ref(row.get_ref(2)?, R::TABLE, &id)?;
+            records.push((row_id, decode_record::<R>(&id, encoded)?));
+        }
+        Ok(records)
+    }
+
     pub fn put(&self, record: &R) -> StoreResult<()> {
         if R::KEY_MODE != RecordKeyMode::PayloadId {
             return Err(crate::StoreError::RecordContract(
