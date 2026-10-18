@@ -1886,6 +1886,7 @@ impl AccountLauncher for HostLauncher {
                 isolated,
                 codex_executable: codex_executable.as_deref(),
                 claude_bridge_dir: &self.claude_bridge_dir,
+                account: &account,
                 root: self.root.clone(),
                 environment: self.environment.clone(),
             })?;
@@ -2857,6 +2858,7 @@ pub(crate) fn codex_launch(
             isolated,
             codex_executable: native_path,
             claude_bridge_dir: Path::new(""),
+            account: "default",
             root,
             environment,
         })
@@ -2869,7 +2871,8 @@ pub(crate) fn codex_launch(
 pub(crate) fn claude_launch(
     profile: serde_json::Value,
     bridge_dir: &Path,
-    root: PathBuf,
+    state_root: &Path,
+    account: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
     adapter(ProviderKind::Claude)
@@ -2879,7 +2882,8 @@ pub(crate) fn claude_launch(
             isolated: false,
             codex_executable: None,
             claude_bridge_dir: bridge_dir,
-            root,
+            account,
+            root: state_root.to_path_buf(),
             environment,
         })
         .map(|launch| launch.spec)

@@ -304,6 +304,27 @@ With `rust`, `recover_backend.py` keeps every Python rule:
   probe then reads the crash-recovery state as before. Recovery never starts or
   stops the supervisor.
 
+The swap ends the provider processes, so the Rust backend recovers the agents
+that Python wrote:
+
+- A restart marker counts only while it is `pending` or `superseded`. A
+  disconnect receipt counts only while the agent is `interrupted`. A finished,
+  continued, or held marker is history, and a later provider generation does not
+  interrupt or hold the agent again.
+- A turn with a known identity becomes `interrupted` with a `pending` restart
+  marker, as in Python. The first account worker reads that turn from native
+  history. An interrupted turn gets one restart follow-up; a completed or failed
+  turn is recorded and reported. The old input is not sent again.
+- An idle agent whose attempt turn is its last finished turn is not changed.
+- Only an input without a turn identity stays held. A new user message clears
+  that hold, and later generations do not apply it again.
+- An `uncertain` input is never sent again, and it does not stop new input.
+- The Claude bridge of a non-default account runs in
+  `<state>/account-servers/<account>`, as in Python, so its session snapshots
+  are found.
+- A ready worktree needs only its Git registration. Its Git budget starts with
+  the first Git command, and a failure names that command and the Git error.
+
 Install the selection with the service command. The Rust binaries come from
 `CODEX_RUNTIME_SERVER` and `CODEX_PROCESS_SUPERVISOR`, else `<resources>/bin`,
 else `<resources>/target/release`:

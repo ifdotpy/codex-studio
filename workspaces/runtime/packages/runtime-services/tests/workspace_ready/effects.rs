@@ -1175,7 +1175,7 @@ async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
         deadline: Instant::now() + Duration::from_secs(120),
     }
     .run(&fixture.repo, &["workspace-stall"]);
-    assert!(matches!(result, Err(WorkspaceError::Deadline)));
+    assert!(matches!(result, Err(WorkspaceError::Deadline(_))));
     assert!(
         fixture.repo.join("running-marker").exists(),
         "child actually started before the readiness hang guard"
@@ -1782,4 +1782,116 @@ async fn required_filter_receives_non_git_caller_environment() {
         ],
     );
     public_probe(fixture, "", "filtered").await;
+}
+
+/// A worker whose linked worktree Python created and marked ready (agent
+/// 50f9a796 in the 18 October 2026 cutover).
+async fn ready_linked_worktree(fixture: &Fixture) -> PathBuf {
+    let branch = format!("codex-agent/{}", fixture.id);
+    let linked = fixture
+        .repo
+        .join(".worktrees/codex-agents")
+        .join(&fixture.id);
+    command(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path_string(&linked).expect("path"),
+        ],
+    );
+    fixture.patch("cwd", json!(linked.join("project"))).await;
+    fixture.patch("branch", json!(branch)).await;
+    fixture.patch("worktreeReady", json!(true)).await;
+    linked
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ready_worktree_git_budget_excludes_waiting_for_a_store_reader() {
+    let fixture = Fixture::new().await;
+    let linked = ready_linked_worktree(&fixture).await;
+    // Every reader stays busy for longer than the whole Git budget, as on a
+    // backend that has just started on a large state. The budget still leaves
+    // the four Git commands ample time on a loaded test host.
+    let budget = Duration::from_secs(2);
+    let held = std::sync::Arc::new(std::sync::Barrier::new(
+        studio_runtime_store::READ_CONNECTION_POOL_CAPACITY + 1,
+    ));
+    let readers = (0..studio_runtime_store::READ_CONNECTION_POOL_CAPACITY)
+        .map(|_| {
+            let store = std::sync::Arc::clone(&fixture.store);
+            let held = std::sync::Arc::clone(&held);
+            std::thread::spawn(move || {
+                let reader = store.read().expect("reader");
+                held.wait();
+                std::thread::sleep(budget + Duration::from_millis(500));
+                drop(reader);
+            })
+        })
+        .collect::<Vec<_>>();
+    held.wait();
+    let decision = prepare_with_timeout(
+        std::sync::Arc::clone(&fixture.store),
+        fixture.id.clone(),
+        budget,
+    )
+    .await
+    .expect("prepare");
+    for reader in readers {
+        reader.join().expect("reader thread");
+    }
+    assert_eq!(admitted(&fixture, decision).await, linked.join("project"));
+}
+
+#[tokio::test]
+async fn ready_worktree_needs_only_its_registration_like_python() {
+    let fixture = Fixture::new().await;
+    let linked = ready_linked_worktree(&fixture).await;
+    // Python starts a ready worker without reading its index. A damaged index is
+    // the worker's own state, not a missing workspace identity.
+    let index = PathBuf::from(command(&linked, &["rev-parse", "--git-path", "index"]).trim());
+    let index = if index.is_absolute() {
+        index
+    } else {
+        linked.join(index)
+    };
+    std::fs::write(&index, "not an index").expect("damage the worker index");
+    let decision = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    assert_eq!(admitted(&fixture, decision).await, linked.join("project"));
+}
+
+#[tokio::test]
+async fn git_failure_and_git_deadline_have_distinct_messages() {
+    let fixture = Fixture::new().await;
+    let outside = fixture.root.path().join("not-a-repository");
+    std::fs::create_dir(&outside).expect("plain directory");
+    fixture.patch("cwd", json!(outside)).await;
+    fixture.patch("worktreeReady", json!(true)).await;
+    let failure = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    let WorkspaceDecision::Refuse(refusal) = failure else {
+        panic!("expected refusal: {failure:?}")
+    };
+    let failure = refusal.to_string();
+    assert!(
+        failure.starts_with(
+            "WorkspaceRecoveryRequired: Workspace identity could not be established: \
+             git rev-parse --show-toplevel: "
+        ) && failure.contains("not a git repository"),
+        "{failure}"
+    );
+    assert!(!failure.contains("deadline"), "{failure}");
+    let expired = Git {
+        deadline: Instant::now(),
+    }
+    .run(&fixture.repo, &["status"]);
+    let Err(WorkspaceError::Deadline(step)) = expired else {
+        panic!("expected deadline: {expired:?}")
+    };
+    assert_eq!(step, "git status");
 }

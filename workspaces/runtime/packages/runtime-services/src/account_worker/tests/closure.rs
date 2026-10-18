@@ -313,26 +313,72 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
         let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
         bridge.faults = state.bridge.faults.clone();
         let mut peer = Peer::identity("default", generation, None);
+        state
+            .bridge
+            .faults
+            .startup_recovery_done
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let mut replacement = peer.worker(bridge).await;
+        if generation > 2 {
+            // The restart marker records its claimed automatic check, so a later
+            // worker finishes its startup pass without reading again.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !state
+                .bridge
+                .faults
+                .startup_recovery_done
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                assert!(
+                    peer.writes.try_recv().is_err(),
+                    "generation {generation} repeated the restart history check"
+                );
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "generation {generation} startup pass did not finish"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        if generation == 2 {
+            // Each replacement is a new backend process, so the interrupted turn
+            // is a restart turn. The first worker makes its one automatic native
+            // history check; the provider writes the read and never answers.
+            let read = peer.next_write().await;
+            assert_eq!(read.value["method"], "thread/read");
+            let _written = read.receipt.send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            });
+        }
         let marker = peer
             .frame(json!({"method":"test/barrier","params":{}}))
             .await;
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
-        let (text, receipts, checkpoints) = state.bridge.run(|store| async move {
+        let (text, receipts, retained, checkpoints) = state.bridge.run(|store| async move {
             let db=store.read()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
-            let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?;
+            let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%' AND id NOT LIKE 'account-worker:retained:%'",[],|r|r.get::<_,i64>(0))?;
+            let retained=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:%'",[],|r|r.get::<_,i64>(0))?;
             let checkpoints=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",[],|r|r.get::<_,i64>(0))?;
-            Ok((text,receipts,checkpoints))
+            Ok((text,receipts,retained,checkpoints))
         }).await.unwrap();
         assert_eq!(text, "old generation text");
         assert!(
             receipts <= 4,
             "generation churn retained {receipts} worker receipts"
         );
+        // The one automatic restart check is a retained read (submitted,
+        // written, result). Retained receipts are durable by design, and the
+        // submission pins its generation's checkpoint (see `retire_generations`).
+        // Churn adds nothing more: later workers do not repeat the check.
+        assert_eq!(
+            retained, 3,
+            "generation {generation} retained {retained} history read receipts"
+        );
         assert!(
-            checkpoints <= 1,
+            checkpoints <= 2,
             "generation churn retained {checkpoints} cursor checkpoints"
         );
     }
@@ -628,7 +674,7 @@ pub(super) async fn unresolved_thread_receipt_survives_replacement(rejected: boo
         let held = state.record().await;
         assert_eq!(
             held["startOutcomeHold"]["reason"],
-            "Provider thread resume failed; input remains pending."
+            "Provider thread resume failed (thread refused); input remains pending."
         );
         assert_eq!(held["error"], held["startOutcomeHold"]["reason"]);
     }

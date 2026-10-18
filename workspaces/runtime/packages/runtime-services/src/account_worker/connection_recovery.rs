@@ -103,51 +103,8 @@ pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
     let mut reader =
         RetainedRecoveryReader::new(command.scope.clone(), thread, &mut history, source.as_ref())
             .map_err(|_| RecoveryError::CommitFailed)?;
-    let streams = super::store::restore_streams(&store, &command.account)
-        .await
-        .map_err(|_| RecoveryError::CommitFailed)?;
-    let streams = Arc::new(std::sync::Mutex::new(streams));
-    let message_recovery_id = recovery_id.clone();
-    let write_message: Box<crate::recovery_store::RecoveryMessageWriter> = Box::new(
-        move |tx, agent, account, generation, turn, item, timestamp| {
-            let mut streams = streams.lock().map_err(|_| {
-                crate::notification_dispatch::NotificationDispatchError::InvalidNotification
-            })?;
-            let Some(next) = streams
-                .recover_agent_message_in_transaction(
-                    tx, agent, account, generation, turn, item, timestamp,
-                )
-                .map_err(|_| {
-                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification
-                })?
-            else {
-                return Ok(None);
-            };
-            *streams = next;
-            let item_id = item["id"].as_str().ok_or(
-                crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
-            )?;
-            let turn_id = turn["id"].as_str().ok_or(
-                crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
-            )?;
-            streams.stage_recovered_notification(
-                format!("connection-recovery:{message_recovery_id}:{turn_id}:item:{item_id}"),
-                crate::notification_dispatch::RecoveredNotificationObservation {
-                    agent: agent.clone(),
-                    method: "item/completed".into(),
-                    params: json!({"threadId":agent["threadId"],"turnId":turn_id,"item":item}),
-                    observed_at: timestamp,
-                },
-            );
-            Ok(Some((*streams).clone()))
-        },
-    );
-    let completion: Arc<std::sync::Mutex<Box<dyn crate::recovery_store::CompletionWriter>>> =
-        Arc::new(std::sync::Mutex::new(Box::new(LifecycleCompletionWriter {
-            at,
-            delivery: Box::new(ProductionRecoveryDelivery { at }),
-            write_message,
-        })));
+    let completion =
+        lifecycle_completion(&store, &command.account, recovery_id.clone(), at).await?;
     let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
     let mut runtime = RecoveryRuntime {
         store: Arc::clone(&store),
@@ -185,6 +142,65 @@ pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
         receipt,
         streams: result.stream_update,
     })
+}
+
+/// The canonical lifecycle writer for connection recovery: recovered final text
+/// enters the account's notification streams, and parent delivery uses the
+/// production lifecycle effects. Manual checks and automatic restart
+/// reconciliation share it.
+pub(super) async fn lifecycle_completion(
+    store: &RuntimeStore,
+    account: &str,
+    recovery_id: String,
+    at: f64,
+) -> Result<Arc<std::sync::Mutex<Box<dyn crate::recovery_store::CompletionWriter>>>, RecoveryError>
+{
+    let streams = super::store::restore_streams(store, account)
+        .await
+        .map_err(|_| RecoveryError::CommitFailed)?;
+    let streams = Arc::new(std::sync::Mutex::new(streams));
+    let message_recovery_id = recovery_id;
+    let write_message: Box<crate::recovery_store::RecoveryMessageWriter> = Box::new(
+        move |tx, agent, account, generation, turn, item, timestamp| {
+            let mut streams = streams.lock().map_err(|_| {
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification
+            })?;
+            let Some(next) = streams
+                .recover_agent_message_in_transaction(
+                    tx, agent, account, generation, turn, item, timestamp,
+                )
+                .map_err(|_| {
+                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification
+                })?
+            else {
+                return Ok(None);
+            };
+            *streams = next;
+            let item_id = item["id"].as_str().ok_or(
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
+            )?;
+            let turn_id = turn["id"].as_str().ok_or(
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
+            )?;
+            streams.stage_recovered_notification(
+                format!("connection-recovery:{message_recovery_id}:{turn_id}:item:{item_id}"),
+                crate::notification_dispatch::RecoveredNotificationObservation {
+                    agent: agent.clone(),
+                    method: "item/completed".into(),
+                    params: json!({"threadId":agent["threadId"],"turnId":turn_id,"item":item}),
+                    observed_at: timestamp,
+                },
+            );
+            Ok(Some((*streams).clone()))
+        },
+    );
+    Ok(Arc::new(std::sync::Mutex::new(Box::new(
+        LifecycleCompletionWriter {
+            at,
+            delivery: Box::new(ProductionRecoveryDelivery { at }),
+            write_message,
+        },
+    ))))
 }
 
 fn read_agent(store: &RuntimeStore, id: &str) -> Result<Value, RecoveryError> {

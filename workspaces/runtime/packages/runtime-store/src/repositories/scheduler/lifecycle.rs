@@ -125,11 +125,10 @@ impl SchedulerRepository {
             if stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
                 .as_u64()
                 .is_none_or(|g| g == generation)
+                && disconnect_agent(transaction, &mut agent, at, restart, restart)?
+                && agent.status == AgentStatus::Interrupted
             {
-                disconnect_agent(transaction, &mut agent, at, restart, restart)?;
-                if agent.status == AgentStatus::Interrupted {
-                    interrupted.push(agent.id.0);
-                }
+                interrupted.push(agent.id.0);
             }
         }
         Ok(interrupted)
@@ -178,8 +177,9 @@ impl SchedulerRepository {
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             let known = stored_attempt(&agent).and_then(|a| a["connectionGeneration"].as_u64());
             if known != Some(generation) {
-                disconnect_agent(transaction, &mut agent, at, restart, false)?;
-                if agent.status == AgentStatus::Interrupted {
+                if disconnect_agent(transaction, &mut agent, at, restart, false)?
+                    && agent.status == AgentStatus::Interrupted
+                {
                     interrupted.push(agent.id.0);
                 }
             } else if restart_continuation_allowed(&agent) {
@@ -725,7 +725,7 @@ impl SchedulerRepository {
     /// Restore Python-shaped scoped receipts; the account worker will reattach without replay.
     pub fn recover_submitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
         let query = format!(
-            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL})"
+            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL}) AND NOT ({SETTLED_IDLE_TURN_SQL})"
         );
         let mut statement = transaction.prepare_cached(&query)?;
         let rows = statement
@@ -752,8 +752,9 @@ impl SchedulerRepository {
                 Err(error) => return Err(error),
             };
             clear_hold(&mut agent);
-            disconnect_agent(transaction, &mut agent, timestamp(), true, true)?;
-            recovered += 1;
+            if disconnect_agent(transaction, &mut agent, timestamp(), true, true)? {
+                recovered += 1;
+            }
         }
         Ok(recovered)
     }
@@ -1331,7 +1332,16 @@ impl SchedulerRepository {
             && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
             && Self::has_pending_continuation_event(transaction, agent_id, epoch)?
         {
-            agent.status = AgentStatus::Queued;
+            // Python queues the worker here, and its next scheduler pass sets an
+            // empty `pending_batch` to `waiting`. Rust wakes a queued worker
+            // only for pending input, so a worker that has only unclaimable
+            // (`uncertain`) input goes to `waiting` directly instead of staying
+            // `queued` for good (agent 841ebc0e in rehearsal 8).
+            agent.status = if Self::has_claimable_input(transaction, agent_id, epoch)? {
+                AgentStatus::Queued
+            } else {
+                AgentStatus::Waiting
+            };
         }
         if native_status == "completed" && current_attempt {
             agent.extra.insert("complaintMisses".into(), json!(0));
@@ -1365,6 +1375,20 @@ impl SchedulerRepository {
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND (status IN ('pending','reserved') OR (id<>?3 AND status IN ('dispatching','uncertain'))))",
             params![agent_id, epoch, format!("{agent_id}:initial")],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
+    /// Input that a claim owns or can still take. Python `pending_batch` reads
+    /// `pending` rows of the current epoch; `reserved` rows belong to a claim.
+    fn has_claimable_input(
+        connection: &Connection,
+        agent_id: &str,
+        epoch: i64,
+    ) -> StoreResult<bool> {
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved'))",
+            params![agent_id, epoch],
             |row| row.get::<_, bool>(0),
         )?)
     }
@@ -1534,12 +1558,47 @@ pub(super) fn apply_start_error(
     Ok(true)
 }
 
-const UNRESOLVED_BASE_SQL: &str = "COALESCE(json_extract(record,'$.startAttempt.submitted'),json_extract(record,'$.disconnectRecovery.startAttempt.submitted'),json_extract(record,'$.restartRecovery.startAttempt.submitted'))=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),json_extract(record,'$.disconnectRecovery.startAttempt.executionOutcome'),json_extract(record,'$.restartRecovery.startAttempt.executionOutcome'),'unknown')='unknown'";
+// A recovery receipt names an unresolved attempt only while it is open, as
+// Python `codex_restart_recovery.restore` reads it: a restart marker while it is
+// `pending` (or `superseded`, which keeps its continuation check), and a
+// disconnect receipt while the agent is still `interrupted`. A `held`,
+// `finished`, `continued`, `reattached` or `input_restored` marker, or the
+// receipt of an agent that later returned to work, is history. A later provider
+// generation must not interrupt or hold that agent again. `stored_attempt` is
+// the Rust form of the same rule.
+const OPEN_DISCONNECT_RECEIPT_SQL: &str =
+    "COALESCE(json_extract(record,'$.status'),'')='interrupted'";
+const OPEN_RESTART_MARKER_SQL: &str =
+    "COALESCE(json_extract(record,'$.restartRecovery.stage'),'') IN ('pending','superseded')";
+const OPEN_RESTART_MARKER_STAGES: [&str; 2] = ["pending", "superseded"];
+fn unresolved_base_sql() -> String {
+    let attempt = |field: &str| {
+        format!(
+            "json_extract(record,'$.startAttempt.{field}'),\
+             CASE WHEN {OPEN_DISCONNECT_RECEIPT_SQL} \
+               THEN json_extract(record,'$.disconnectRecovery.startAttempt.{field}') END,\
+             CASE WHEN {OPEN_RESTART_MARKER_SQL} \
+               THEN json_extract(record,'$.restartRecovery.startAttempt.{field}') END"
+        )
+    };
+    format!(
+        "COALESCE({})=1 AND COALESCE({},'unknown')='unknown'",
+        attempt("submitted"),
+        attempt("executionOutcome")
+    )
+}
 // A queued agent whose saved attempt completed has new input but no new claim:
 // its earlier turn is settled, so a new provider generation must not interrupt it.
 const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.submitted'),0)=1 AND json_extract(record,'$.startAttempt.action') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.activeAtReservation'),0)=0 AND json_extract(record,'$.startOutcomeHold') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.responseError'),'')='' AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'')!='unknown' AND COALESCE(json_type(record,'$.startAttempt.turnId'),'')='text' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),'')!='' AND json_extract(record,'$.startAttempt.turnId')=COALESCE(json_extract(record,'$.lastCompletedTurn'),'') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'')='completed'";
+// An idle agent whose attempt turn is its last finished turn has nothing to
+// recover, also when the attempt was reserved during an active turn
+// (`activeAtReservation`). Python restart recovery never touches an idle agent.
+const SETTLED_IDLE_TURN_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'),'')!='' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'))=json_extract(record,'$.lastCompletedTurn') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'') IN ('completed','failed','interrupted')";
 pub(super) fn unresolved_sql() -> String {
-    format!("{UNRESOLVED_BASE_SQL} AND NOT ({COMPLETED_START_SQL})")
+    format!(
+        "{} AND NOT ({COMPLETED_START_SQL}) AND NOT ({SETTLED_IDLE_TURN_SQL})",
+        unresolved_base_sql()
+    )
 }
 pub(super) fn account_agents(
     connection: &Connection,
@@ -1700,8 +1759,11 @@ pub(super) fn disconnect_agent(
     at: f64,
     restart: bool,
     auto_reconcile_unknown: bool,
-) -> StoreResult<()> {
+) -> StoreResult<bool> {
     let attempt = stored_attempt(agent).cloned().unwrap_or(Value::Null);
+    if attempt_already_decided(agent, &attempt) {
+        return Ok(false);
+    }
     let epoch = if attempt.is_null() {
         agent.epoch
     } else {
@@ -1710,9 +1772,23 @@ pub(super) fn disconnect_agent(
             .ok_or_else(|| invalid_agent(&agent.id.0))?
     };
     let paused = agent.status == AgentStatus::Paused;
-    let legacy = attempt["connectionGeneration"].as_u64().is_none()
-        || (attempt["turnId"].as_str().is_none() && attempt["requestTicket"].as_str().is_none());
-    let unknown = attempt["turnId"].as_str().is_none();
+    // A turn that accepted this attempt makes its outcome provable from native
+    // history, whichever runtime submitted the input. Without an attempt (a
+    // turn that Python's supervisor restored) the agent's turn is that identity.
+    // An observed turn is activity, not a receipt for the input batch, so an
+    // attempt without an accepted turn stays unknown.
+    let turn = if attempt.is_null() {
+        agent.extra.get("turnId").and_then(Value::as_str)
+    } else {
+        attempt["turnId"].as_str()
+    }
+    .filter(|turn| !turn.is_empty())
+    .map(str::to_owned);
+    let unknown = turn.is_none();
+    // Without a turn, only a Rust receipt can still identify the request.
+    let legacy = unknown
+        && (attempt["connectionGeneration"].as_u64().is_none()
+            || attempt["requestTicket"].as_str().is_none());
     let restart_input_wait = restart
         && auto_reconcile_unknown
         && !paused
@@ -1726,7 +1802,7 @@ pub(super) fn disconnect_agent(
             .is_some_and(|v| !v.is_empty())
         && restart_input_events_valid(transaction, &agent.id.0, epoch, &attempt["events"])?;
     let receipt = json!({"epoch":epoch,"accountKey":agent.extra.get("accountKey").unwrap_or(&json!("default")),
-        "threadId":agent.extra.get("threadId"),"turnId":attempt.get("turnId").or_else(||agent.extra.get("turnId")),"startAttempt":attempt,
+        "threadId":agent.extra.get("threadId"),"turnId":turn,"startAttempt":attempt,
         "connectionId":agent.extra.get("connectionId"),"autoWake":agent.extra.get("autoWake"),
         "supervisor":attempt.get("supervisorIdentity").cloned().unwrap_or_else(||json!({"generation":attempt["connectionGeneration"]})),"at":at});
     if !agent
@@ -1775,6 +1851,21 @@ pub(super) fn disconnect_agent(
                 .unwrap_or(&Value::Null)
                 .clone();
             marker["stage"] = json!(if unknown || legacy { "held" } else { "pending" });
+            // The same recovery keeps the record of its one automatic history check.
+            if let Some(check) = agent
+                .extra
+                .get("restartRecovery")
+                .and_then(|previous| previous.get("automaticCheck"))
+                .filter(|_| {
+                    agent
+                        .extra
+                        .get("restartRecovery")
+                        .is_some_and(|previous| same_recovery_scope(previous, &marker))
+                })
+                .cloned()
+            {
+                marker["automaticCheck"] = check;
+            }
             if unknown || legacy {
                 marker["reason"] = json!(if legacy {
                     LEGACY_RECOVERY
@@ -1832,7 +1923,8 @@ pub(super) fn disconnect_agent(
     if !restart && !legacy {
         agent.extra.remove("startAttempt");
     }
-    publish_agent(transaction, agent)
+    publish_agent(transaction, agent)?;
+    Ok(true)
 }
 
 fn restart_input_events_valid(
@@ -1885,22 +1977,42 @@ pub(super) fn same_recovery_scope(a: &Value, b: &Value) -> bool {
         && a["startAttempt"]["connectionGeneration"] == b["startAttempt"]["connectionGeneration"]
 }
 
+/// The attempt that a disconnect or restart may still have to resolve. Recovery
+/// receipts count only while open; see `OPEN_RESTART_MARKER_SQL`.
 pub(super) fn stored_attempt(agent: &AgentRecord) -> Option<&Value> {
     agent
         .extra
         .get("startAttempt")
         .or_else(|| {
-            agent
-                .extra
-                .get("disconnectRecovery")
+            (agent.status == AgentStatus::Interrupted)
+                .then(|| agent.extra.get("disconnectRecovery"))
+                .flatten()
                 .and_then(|r| r.get("startAttempt"))
         })
         .or_else(|| {
             agent
                 .extra
                 .get("restartRecovery")
+                .filter(|marker| restart_marker_open(marker))
                 .and_then(|r| r.get("startAttempt"))
         })
+}
+fn restart_marker_open(marker: &Value) -> bool {
+    marker["stage"]
+        .as_str()
+        .is_some_and(|stage| OPEN_RESTART_MARKER_STAGES.contains(&stage))
+}
+/// A recovery decision already recorded for this exact attempt is final. A later
+/// provider generation adds no evidence about it, and applying it again would
+/// undo the user's next message. Python `restore` never revisits such a marker.
+fn attempt_already_decided(agent: &AgentRecord, attempt: &Value) -> bool {
+    agent.extra.get("restartRecovery").is_some_and(|marker| {
+        marker.is_object()
+            && !restart_marker_open(marker)
+            && marker["startAttempt"]["id"].is_string()
+            && marker["startAttempt"]["id"] == attempt["id"]
+            && marker["epoch"] == attempt["epoch"]
+    })
 }
 pub(super) fn restart_continuation_allowed(agent: &AgentRecord) -> bool {
     let Some(marker) = agent.extra.get("restartRecovery") else {
@@ -2340,3 +2452,6 @@ pub(super) fn truthy(value: &Value) -> bool {
         Value::Object(value) => !value.is_empty(),
     }
 }
+
+#[cfg(test)]
+mod tests;

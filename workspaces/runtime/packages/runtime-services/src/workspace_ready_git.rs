@@ -39,10 +39,12 @@ pub enum WorkspaceError {
     Store(#[from] StoreError),
     #[error("Invalid workspace record")]
     InvalidRecord,
-    #[error("Workspace Git observation failed")]
-    Git,
-    #[error("Workspace Git deadline expired; inspect the journal before retrying")]
-    Deadline,
+    /// The named Git step failed; the text says which command and why.
+    #[error("Workspace Git observation failed: {0}")]
+    Git(String),
+    /// The Git budget ran out before or during the named command.
+    #[error("Workspace Git deadline expired at {0}; inspect the journal before retrying")]
+    Deadline(String),
     #[error("Checkpoint reference already names a different commit")]
     CheckpointRefConflict,
     #[error("Workspace serialization lock is poisoned")]
@@ -66,22 +68,44 @@ pub async fn prepare_with_timeout(
     timeout: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     match prepare_attempt(Arc::clone(&store), agent_id.clone(), timeout).await {
-        Err(WorkspaceError::Git | WorkspaceError::Deadline) => {
-            let read_store = Arc::clone(&store);
-            let current = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/workspace_ready_git",
-                move || actor(&snapshot(&read_store, &agent_id)?),
+        Err(WorkspaceError::Deadline(step)) => {
+            recovery_required(
+                store,
+                agent_id,
+                format!(
+                    "Workspace identity could not be established within the Git deadline ({step})"
+                ),
             )
             .await
-            .map_err(|_| WorkspaceError::Worker)??;
-            Ok(recovery(
-                current.workspace_reservation_id,
-                current.cwd,
-                "Workspace identity could not be established within the Git deadline",
-            ))
+        }
+        Err(WorkspaceError::Git(detail)) => {
+            recovery_required(
+                store,
+                agent_id,
+                format!("Workspace identity could not be established: {detail}"),
+            )
+            .await
         }
         outcome => outcome,
     }
+}
+
+async fn recovery_required(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
+    reason: String,
+) -> Result<WorkspaceDecision, WorkspaceError> {
+    let current = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_ready_git",
+        move || actor(&snapshot(&store, &agent_id)?),
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)??;
+    Ok(recovery(
+        current.workspace_reservation_id,
+        current.cwd,
+        reason,
+    ))
 }
 
 async fn prepare_attempt(
@@ -91,7 +115,6 @@ async fn prepare_attempt(
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let read_store = Arc::clone(&store);
     let initial_agent_id = agent_id.clone();
-    let git_deadline = Instant::now() + timeout;
     let initial = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || snapshot(&read_store, &initial_agent_id),
@@ -158,7 +181,7 @@ async fn prepare_attempt(
             )
             .await
             .map_err(|_| WorkspaceError::Worker)?
-            .map_err(|_| WorkspaceError::Git)?;
+            .map_err(|error| WorkspaceError::Git(format!("image workspace mount: {error}")))?;
             let path = mounted
                 .get("path")
                 .and_then(Value::as_str)
@@ -176,16 +199,13 @@ async fn prepare_attempt(
         return Ok(WorkspaceDecision::Defer { reservation: None });
     }
     let observe_store = Arc::clone(&store);
-    let context = studio_runtime_process::blocking_pool::spawn_blocking(
+    let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
-            observe(
-                &observe_store,
-                initial,
-                &Git {
-                    deadline: git_deadline,
-                },
-            )
+            // The Git budget starts with the first Git command. Time spent
+            // waiting for a blocking thread or a SQLite reader is not Git time.
+            let deadline = Instant::now() + timeout;
+            observe(&observe_store, initial, &Git { deadline }).map(|context| (context, deadline))
         },
     )
     .await
@@ -273,7 +293,9 @@ async fn provision(
             if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
                 || !confined(&effect_plan)
             {
-                return Err(WorkspaceError::Git);
+                return Err(WorkspaceError::Git(
+                    "the created worktree does not match its provisioning plan".into(),
+                ));
             }
             Ok::<_, WorkspaceError>(git.checkpoint(&effect_plan).map_err(|error| error.to_string()))
         },
@@ -423,6 +445,7 @@ fn observe(
             &root,
             context.actor.branch.as_deref().unwrap_or(""),
             &common,
+            false,
         )?;
         return Ok(context);
     }
@@ -436,9 +459,7 @@ fn observe(
         return Err(WorkspaceError::InvalidRecord);
     }
     let id = format!("provision:{}:{}", context.actor.id, context.actor.epoch);
-    let repository = PathBuf::from(git.run(cwd, &["rev-parse", "--show-toplevel"])?.trim())
-        .canonicalize()
-        .map_err(|_| WorkspaceError::Git)?;
+    let repository = canonical(git.run(cwd, &["rev-parse", "--show-toplevel"])?.trim())?;
     let common_dir = git.common(&repository)?;
     let relative = cwd
         .strip_prefix(&repository)
@@ -526,9 +547,10 @@ struct Git {
 }
 impl Git {
     fn run(&self, cwd: &Path, args: &[&str]) -> Result<String, WorkspaceError> {
+        let step = || format!("git {}", args.join(" "));
         let timeout = self.deadline.saturating_duration_since(Instant::now());
         if timeout.is_zero() {
-            return Err(WorkspaceError::Deadline);
+            return Err(WorkspaceError::Deadline(step()));
         }
         let mut safe_args = vec!["-c", "protocol.allow=never"];
         // Helpers receive the caller's environment; the runner strips all ambient GIT_*.
@@ -549,49 +571,68 @@ impl Git {
             timeout,
         })
         .map_err(|error| match error {
-            ChildError::TimedOut => WorkspaceError::Deadline,
-            _ => WorkspaceError::Git,
+            ChildError::TimedOut => WorkspaceError::Deadline(step()),
+            ChildError::Failed(stderr) => WorkspaceError::Git(format!("{}: {stderr}", step())),
+            ChildError::Other => {
+                WorkspaceError::Git(format!("{}: the Git process could not run", step()))
+            }
         })?;
         if output.stdout.truncated {
-            return Err(WorkspaceError::Git);
+            return Err(WorkspaceError::Git(format!(
+                "{}: output exceeds {GIT_OUTPUT_LIMIT} bytes",
+                step()
+            )));
         }
-        String::from_utf8(output.stdout.bytes).map_err(|_| WorkspaceError::Git)
+        String::from_utf8(output.stdout.bytes)
+            .map_err(|_| WorkspaceError::Git(format!("{}: output is not UTF-8", step())))
     }
     fn common(&self, root: &Path) -> Result<PathBuf, WorkspaceError> {
-        PathBuf::from(
+        canonical(
             self.run(
                 root,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )?
             .trim(),
         )
-        .canonicalize()
-        .map_err(|_| WorkspaceError::Git)
     }
     fn worktree(&self, plan: &ProvisionIdentity) -> Result<GitObservation, WorkspaceError> {
-        if self.common(&plan.repository)? != plan.common_dir {
-            return Err(WorkspaceError::Git);
+        let common = self.common(&plan.repository)?;
+        if common != plan.common_dir {
+            return Err(WorkspaceError::Git(format!(
+                "the common Git directory changed to {}",
+                common.display()
+            )));
         }
         self.observe(
             &plan.repository,
             &plan.destination,
             &plan.branch,
             &plan.common_dir,
+            true,
         )
     }
+    /// `inspect_contents` adds the index, sparse-checkout and status checks that
+    /// only an unfinished provisioning needs. A ready worktree is identified by
+    /// its registration alone, as in Python, which runs no Git check for it.
     fn observe(
         &self,
         repository: &Path,
         destination: &Path,
         branch: &str,
         common: &Path,
+        inspect_contents: bool,
     ) -> Result<GitObservation, WorkspaceError> {
         let listing = self.run(repository, &["worktree", "list", "--porcelain", "-z"])?;
         let mut observation = GitObservation {
             destination_exists: match destination.symlink_metadata() {
                 Ok(_) => true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(_) => return Err(WorkspaceError::Git),
+                Err(error) => {
+                    return Err(WorkspaceError::Git(format!(
+                        "{}: {error}",
+                        destination.display()
+                    )));
+                }
             },
             directory: destination.canonicalize().ok().filter(|p| p.is_dir()),
             branch_exists: !self
@@ -623,6 +664,9 @@ impl Git {
                 observation.head = fields.get("HEAD").map(|s| (*s).to_owned());
                 if observation.directory.as_deref() == Some(destination) {
                     observation.common_dir = Some(self.common(destination)?);
+                    if !inspect_contents {
+                        continue;
+                    }
                     let flags = self.run(destination, &["ls-files", "-v", "-z"])?;
                     let safe_index = flags
                         .split('\0')
@@ -699,7 +743,7 @@ impl Git {
             &["update-ref", &reference, &plan.base_commit, &expected],
         )
         .map_err(|error| match error {
-            WorkspaceError::Git => WorkspaceError::CheckpointRefConflict,
+            WorkspaceError::Git(_) => WorkspaceError::CheckpointRefConflict,
             other => other,
         })?;
         Ok(
@@ -708,6 +752,11 @@ impl Git {
             "created":now(),"cwd":plan.cwd}),
         )
     }
+}
+fn canonical(path: &str) -> Result<PathBuf, WorkspaceError> {
+    PathBuf::from(path)
+        .canonicalize()
+        .map_err(|error| WorkspaceError::Git(format!("{path}: {error}")))
 }
 fn path_string(path: &Path) -> Result<&str, WorkspaceError> {
     path.to_str().ok_or(WorkspaceError::InvalidRecord)

@@ -5,7 +5,7 @@
 //! beside that wire: how the peer process is launched and the provider-specific
 //! decisions that callers used to branch on with provider strings.
 
-use crate::account_driver::{AuthMetadata, AuthStatus};
+use crate::account_driver::{AuthMetadata, AuthStatus, account_server_root};
 use crate::account_worker::WorkerError;
 use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
 use crate::continuation_runtime::classify_usage_failure;
@@ -31,6 +31,9 @@ pub struct HostLaunch<'a> {
     pub codex_executable: Option<&'a str>,
     /// Directory holding the Claude bridge (`bridge.mjs` and its SDK).
     pub claude_bridge_dir: &'a Path,
+    /// Registry key of the account that the session serves.
+    pub account: &'a str,
+    /// The state root.
     pub root: PathBuf,
     pub environment: BTreeMap<String, String>,
 }
@@ -182,10 +185,12 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn host_launch(&self, input: HostLaunch<'_>) -> Result<ProviderLaunch, WorkerError> {
+        // The bridge runs in the account's server directory, as in Python, because
+        // its session snapshots there let an agent that Python started resume.
         let (spec, executable) = claude_launch(
             input.profile,
             input.claude_bridge_dir,
-            input.root,
+            account_server_root(&input.root, input.account),
             input.environment,
         )?;
         Ok(ProviderLaunch {

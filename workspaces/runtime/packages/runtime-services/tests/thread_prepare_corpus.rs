@@ -465,11 +465,20 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
     s.catalog.saved_digest = Some("old digest".into());
     let a = attempt(plan(&s, "attempt", "ticket"));
     assert!(!a.params.contains_key("dynamicTools"));
-    s.catalog.saved_thread_id = Some("wrong".into());
+    // Context repair moves the agent to a new thread and keeps the catalog
+    // record of the old one (agent fbcb2568). Python resumes the current
+    // thread with the catalog that `nativeToolSource` selects.
+    s.catalog.saved_thread_id = Some("thread-before-context-repair".into());
+    let resumed = attempt(plan(&s, "attempt", "ticket"));
+    assert_eq!(resumed.method, Method::Resume);
+    assert_eq!(resumed.params["threadId"], "thread");
+    assert!(!resumed.params.contains_key("dynamicTools"));
+    s.catalog.source = CatalogSource::Current;
     assert_eq!(
         plan(&s, "attempt", "ticket"),
         Outcome::Refuse(Refusal::CatalogIdentity)
     );
+    s.catalog.source = CatalogSource::Legacy;
     s.catalog.saved_thread_id = Some("thread".into());
     s.loaded = Some(LoadedIdentity {
         agent_id: s.actor.id.clone(),

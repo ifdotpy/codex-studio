@@ -341,11 +341,7 @@ fn read_local_claude_usage(
             continue;
         };
         let mut ids = BTreeSet::from([thread_id.clone()]);
-        let server_root = if account_key == "default" {
-            state_root.to_path_buf()
-        } else {
-            state_root.join("account-servers").join(&account_key)
-        };
+        let server_root = crate::account_driver::account_server_root(state_root, &account_key);
         read_session_native_ids(
             &server_root
                 .join("sessions")

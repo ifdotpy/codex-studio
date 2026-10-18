@@ -86,15 +86,39 @@ async fn reconcile_first_pass(
             break;
         }
         for job in jobs {
-            let RecoveryJob::Turn(snapshot) = &job else {
-                continue;
+            // Python's connection recovery service reconciles each restart turn
+            // automatically from native history (`codex_connection_recovery.tick`).
+            let restart_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
+                if snapshot.eligibility().restart_turn);
+            let job = if restart_turn {
+                let RecoveryJob::Connection {
+                    snapshot,
+                    automatic,
+                } = job
+                else {
+                    continue;
+                };
+                let Some(snapshot) = claim_automatic_restart_check(&store, snapshot).await? else {
+                    continue;
+                };
+                RecoveryJob::Connection {
+                    snapshot,
+                    automatic,
+                }
+            } else {
+                job
             };
-            if snapshot.record()["restartRecovery"]["stage"] != "held"
-                || snapshot.record()["contextRepairWait"].is_null()
-                || !snapshot.eligibility().unconfirmed_start
-            {
-                continue;
-            }
+            let snapshot = match &job {
+                RecoveryJob::Turn(snapshot)
+                    if snapshot.record()["restartRecovery"]["stage"] == "held"
+                        && !snapshot.record()["contextRepairWait"].is_null()
+                        && snapshot.eligibility().unconfirmed_start =>
+                {
+                    snapshot
+                }
+                RecoveryJob::Connection { snapshot, .. } if restart_turn => snapshot,
+                _ => continue,
+            };
             let agent = snapshot.record()["id"]
                 .as_str()
                 .ok_or(RecoveryError::CommitFailed)?
@@ -133,8 +157,17 @@ async fn reconcile_first_pass(
             );
             let mut reader =
                 RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
-            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> =
-                Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())));
+            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> = if restart_turn {
+                super::connection_recovery::lifecycle_completion(
+                    &store,
+                    account,
+                    snapshot.connection_recovery_id(),
+                    observation.at,
+                )
+                .await?
+            } else {
+                Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())))
+            };
             let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
             let mut runtime = RecoveryRuntime {
                 store: Arc::clone(&store),
@@ -150,7 +183,15 @@ async fn reconcile_first_pass(
                 .reconcile(&selected, scope.clone(), &mut reader)
                 .await;
             scan.finish(&selected, std::time::Instant::now(), &outcome)?;
-            let outcome = outcome?;
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                // An unreadable restart turn keeps its interrupted state and its
+                // error; the user's next message still runs. Later rows proceed.
+                Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) if restart_turn => {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
                 recovered.push((agent, epoch));
                 if let Some(streams) = outcome.stream_update {
@@ -163,6 +204,41 @@ async fn reconcile_first_pass(
         ready: recovered,
         streams: recovered_streams,
     })
+}
+
+/// Claim the one automatic native-history check of a restart marker. Each check
+/// is a retained read whose receipts stay durable, and a pending marker survives
+/// every later provider generation, so checking again on each worker start would
+/// retain receipts without bound. A manual connection check and the user's next
+/// message remain available after this one check.
+async fn claim_automatic_restart_check(
+    store: &Arc<RuntimeStore>,
+    snapshot: RecoverySnapshot,
+) -> Result<Option<RecoverySnapshot>, RecoveryError> {
+    let id = snapshot.record()["id"]
+        .as_str()
+        .ok_or(RecoveryError::CommitFailed)?
+        .to_owned();
+    let check = snapshot.connection_recovery_id();
+    let expected = snapshot.record().clone();
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
+        let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+            return Ok(None);
+        };
+        let mut current = agent.value();
+        if current != expected || current["restartRecovery"]["automaticCheck"] == check.as_str() {
+            return Ok(None);
+        }
+        current["restartRecovery"]["automaticCheck"] = json!(check);
+        let snapshot = RecoverySnapshot::from_record(current.clone())?;
+        AgentRepository::put(
+            tx,
+            &studio_runtime_store::AgentRecord::from_value(current)
+                .map_err(|_| RecoveryError::CommitFailed)?,
+        )?;
+        Ok(Some(snapshot))
+    })
+    .await
 }
 
 async fn load_recovery_jobs_blocking(

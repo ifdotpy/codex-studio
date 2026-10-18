@@ -28,6 +28,19 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+/// The account's provider server directory: the state root for `default`,
+/// otherwise `<state>/account-servers/<account>`. Python owns this layout
+/// (`codex_runtime.py` and `codex_native_runtime.py`); the Claude bridge keeps
+/// its session snapshots in `<directory>/sessions`, so an agent that Python
+/// started resumes only from this directory.
+pub fn account_server_root(state_root: &Path, account_key: &str) -> PathBuf {
+    if account_key == "default" {
+        state_root.to_path_buf()
+    } else {
+        state_root.join("account-servers").join(account_key)
+    }
+}
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Mutex;
