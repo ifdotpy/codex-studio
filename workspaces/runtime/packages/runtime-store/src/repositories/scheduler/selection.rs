@@ -209,6 +209,15 @@ fn account_wake_accounts_query() -> String {
     )
 }
 
+fn account_wake_account_target_query() -> String {
+    let target_filter = account_wake_target_filter("a.record", "?4");
+    let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
+    format!(
+        "SELECT 1 FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
+         WHERE {target_filter} AND {account}=?3 LIMIT 1"
+    )
+}
+
 fn account_wake_pending_agents_query() -> String {
     let pending = account_wake_pending("a.record", "?6");
     let eligibility = account_wake_index_eligibility("a.record");
@@ -310,6 +319,48 @@ impl SchedulerRepository {
                 agents = read_agents("")?;
             }
             result.insert(account, agents);
+        }
+        Ok(result)
+    }
+
+    /// Return the wake page of only the named accounts: an account is present when it
+    /// still has a pending or recovery target, with its first bounded page of pending
+    /// agents. Cost depends on the named accounts, not on the number of accounts.
+    pub fn account_wake_for_accounts<'a>(
+        connection: &Connection,
+        accounts: impl IntoIterator<Item = &'a str>,
+        agent_limit: usize,
+        now: f64,
+    ) -> StoreResult<AccountWakePage> {
+        let held_after = child_result_held_after(connection, now)?;
+        validate_account_wake_targets(connection, held_after)?;
+        let mut target_statement = connection.prepare_cached(&account_wake_account_target_query())?;
+        let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let mut result = BTreeMap::new();
+        for account in accounts {
+            let has_target = target_statement.exists(rusqlite::params![
+                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                account,
+                held_after
+            ])?;
+            if !has_target {
+                continue;
+            }
+            let agents = agent_statement
+                .query_map(
+                    rusqlite::params![
+                        account,
+                        "",
+                        crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                        crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                        agent_limit as i64,
+                        held_after
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            result.insert(account.to_owned(), agents);
         }
         Ok(result)
     }

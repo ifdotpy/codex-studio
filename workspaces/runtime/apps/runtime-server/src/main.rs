@@ -56,15 +56,6 @@ const CURRENT_CAPACITY_RETRY_DUE_ROWS: &str = "SELECT retry.agent AS agent,CAST(
 const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
 
-/// Durable inputs that can change account dispatch selection or archive recovery.
-const REGISTRY_WAKE_TABLES: [ObservedTable; 6] = [
-    ObservedTable::Agents,
-    ObservedTable::Events,
-    ObservedTable::EventMeta,
-    ObservedTable::Rooms,
-    ObservedTable::OperationReceipts,
-    ObservedTable::Work,
-];
 /// Durable inputs that can enqueue or unblock a server-to-server delivery.
 const ORCHESTRATION_WAKE_TABLES: [ObservedTable; 3] = [
     ObservedTable::ServerOutbox,
@@ -704,7 +695,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let registry_wake = state.event_wake_handle();
     let orchestration_wake = Arc::new(Notify::new());
     let federation_wake = Arc::new(Notify::new());
-    observe_table_wakes(&store, &REGISTRY_WAKE_TABLES, Arc::clone(&registry_wake));
     observe_table_wakes(
         &store,
         &ORCHESTRATION_WAKE_TABLES,
@@ -1707,10 +1697,7 @@ async fn shutdown_signal() -> ShutdownReason {
 
 #[cfg(test)]
 mod targeted_scheduler_wake_tests {
-    use super::{
-        FEDERATION_WAKE_TABLES, ORCHESTRATION_WAKE_TABLES, REGISTRY_WAKE_TABLES,
-        observe_table_wakes,
-    };
+    use super::{FEDERATION_WAKE_TABLES, ORCHESTRATION_WAKE_TABLES, observe_table_wakes};
     use std::sync::Arc;
     use std::time::Duration;
     use studio_runtime_store::RuntimeStore;
@@ -1722,10 +1709,8 @@ mod targeted_scheduler_wake_tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("runtime store");
-        let registry = Arc::new(Notify::new());
         let orchestration = Arc::new(Notify::new());
         let federation = Arc::new(Notify::new());
-        observe_table_wakes(&store, &REGISTRY_WAKE_TABLES, Arc::clone(&registry));
         observe_table_wakes(
             &store,
             &ORCHESTRATION_WAKE_TABLES,
@@ -1733,10 +1718,6 @@ mod targeted_scheduler_wake_tests {
         );
         observe_table_wakes(&store, &FEDERATION_WAKE_TABLES, Arc::clone(&federation));
 
-        let registry_waiter = tokio::spawn({
-            let registry = Arc::clone(&registry);
-            async move { registry.notified().await }
-        });
         let orchestration_waiter = tokio::spawn({
             let orchestration = Arc::clone(&orchestration);
             async move { orchestration.notified().await }
@@ -1757,10 +1738,6 @@ mod targeted_scheduler_wake_tests {
             })
             .await
             .expect("commit unrelated event input");
-        tokio::time::timeout(Duration::from_secs(1), registry_waiter)
-            .await
-            .expect("registry observes pending event input")
-            .expect("registry waiter");
         tokio::task::yield_now().await;
         assert!(
             !orchestration_waiter.is_finished(),
@@ -1772,26 +1749,6 @@ mod targeted_scheduler_wake_tests {
         );
         orchestration_waiter.abort();
         federation_waiter.abort();
-
-        let registry_waiter = tokio::spawn({
-            let registry = Arc::clone(&registry);
-            async move { registry.notified().await }
-        });
-        tokio::task::yield_now().await;
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_event_meta(id,record) VALUES('metadata-only','{}')",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("commit scheduler metadata input");
-        tokio::time::timeout(Duration::from_secs(1), registry_waiter)
-            .await
-            .expect("registry observes metadata input used by queue selection")
-            .expect("registry metadata waiter");
 
         let orchestration_waiter = tokio::spawn({
             let orchestration = Arc::clone(&orchestration);
