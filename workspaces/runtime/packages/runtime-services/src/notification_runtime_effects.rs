@@ -158,6 +158,8 @@ impl NotificationEffects for RuntimeNotificationEffects {
 /// The worker never calls it for an uncommitted result or a receipt replay.
 /// Implementations deduplicate by the effect's `observation.delivery`; a
 /// process may crash after publication and before the durable row is deleted.
+/// An analytics effect whose agent identity was superseded returns `Ok` and
+/// writes nothing; every other error keeps the receipt for retry.
 pub trait NotificationPostCommitSink: Send + Sync {
     fn publish<'a>(
         &'a self,
@@ -217,6 +219,17 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
     }
 }
 
+/// Whether an analytics effect still belongs to the authoritative agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnalyticsDisposition {
+    /// Captured now, or an exact replay. Replays still project volatile token
+    /// rates and state, because that projection is not durable across restart.
+    Current,
+    /// The agent identity was replaced or deleted. The effect settles without
+    /// analytics, token-rate, or state publication.
+    Stale,
+}
+
 impl RuntimeNotificationPostCommitSink {
     async fn publish_effect(
         &self,
@@ -247,7 +260,10 @@ impl RuntimeNotificationPostCommitSink {
                 observation,
                 budget_capture_value: _,
             } => {
-                self.capture_analytics(effect, observation, None).await?;
+                let disposition = self.capture_analytics(effect, observation, None).await?;
+                if disposition == AnalyticsDisposition::Stale {
+                    return Ok(());
+                }
                 self.project_token_rate(effect)?;
                 (observation, "analytics")
             }
@@ -255,8 +271,12 @@ impl RuntimeNotificationPostCommitSink {
                 observation,
                 metrics,
             } => {
-                self.capture_analytics(effect, observation, Some(metrics.clone()))
+                let disposition = self
+                    .capture_analytics(effect, observation, Some(metrics.clone()))
                     .await?;
+                if disposition == AnalyticsDisposition::Stale {
+                    return Ok(());
+                }
                 (observation, "analyticsStream")
             }
         };
@@ -297,7 +317,7 @@ impl RuntimeNotificationPostCommitSink {
         effect: &NotificationPostCommit,
         observation: &NotificationObservation,
         stream: Option<crate::notification_dispatch::NotificationStreamMetrics>,
-    ) -> Result<bool, NotificationDispatchError> {
+    ) -> Result<AnalyticsDisposition, NotificationDispatchError> {
         let agent = observation
             .agent
             .as_ref()
@@ -315,7 +335,7 @@ impl RuntimeNotificationPostCommitSink {
             NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream".to_owned(),
             _ => return Err(NotificationDispatchError::InvalidNotification),
         };
-        crate::analytics_capture::capture_notification_effect(
+        match crate::analytics_capture::capture_notification_effect(
             &self.analytics_store,
             observation.delivery.provider_handle.clone(),
             observation.delivery.generation,
@@ -325,7 +345,17 @@ impl RuntimeNotificationPostCommitSink {
             stream,
         )
         .await
-        .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))
+        {
+            // `true` captured now; `false` is an exact or legacy replay whose
+            // rows already exist.
+            Ok(_) => Ok(AnalyticsDisposition::Current),
+            // The identity check rolls back the effect receipt, so a retry
+            // would fail the same way and block every later publication.
+            Err(crate::analytics_capture::CaptureError::StaleIdentity) => {
+                Ok(AnalyticsDisposition::Stale)
+            }
+            Err(_) => Err(NotificationDispatchError::Dependency("analytics/capture")),
+        }
     }
 }
 

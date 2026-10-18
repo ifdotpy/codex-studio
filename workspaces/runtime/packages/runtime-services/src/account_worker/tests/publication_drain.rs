@@ -35,10 +35,25 @@ fn rate_agent() -> Value {
         "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
 }
 
+fn agent_at_epoch(epoch: u64) -> Value {
+    let mut agent = rate_agent();
+    agent["epoch"] = json!(epoch);
+    agent
+}
+
 fn analytics_effect(cursor: u64, method: &str, params: Value) -> NotificationPostCommit {
+    analytics_effect_for(rate_agent(), cursor, method, params)
+}
+
+fn analytics_effect_for(
+    agent: Value,
+    cursor: u64,
+    method: &str,
+    params: Value,
+) -> NotificationPostCommit {
     NotificationPostCommit::Analytics {
         observation: NotificationObservation {
-            agent: Some(SharedJson::new(rate_agent())),
+            agent: Some(SharedJson::new(agent)),
             method: method.into(),
             params: SharedJson::new(params),
             delivery: ProviderDeliveryIdentity {
@@ -115,6 +130,39 @@ async fn seed_analytics_agent(store: &RuntimeStore) {
         })
         .await
         .expect("seed analytics agent identity");
+}
+
+async fn advance_agent_epoch(store: &RuntimeStore, epoch: u64) {
+    let agent = agent_at_epoch(epoch);
+    store
+        .transaction_with(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                rusqlite::params![agent.to_string(), agent["id"].as_str()],
+            )?;
+            Ok::<(), WorkerError>(())
+        })
+        .await
+        .expect("advance authoritative agent epoch");
+}
+
+fn production_sink(
+    store: &Arc<RuntimeStore>,
+) -> (
+    Arc<crate::change_notifications::ChangeNotificationHub>,
+    RuntimeNotificationPostCommitSink,
+) {
+    let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
+    let sink = RuntimeNotificationPostCommitSink {
+        token_rates: Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
+            Arc::clone(&changes),
+        )),
+        resources: Arc::new(crate::resource_notify::ResourceNotifications::new(
+            Arc::clone(&changes),
+        )),
+        analytics_store: Arc::clone(store),
+    };
+    (changes, sink)
 }
 
 fn root() -> PathBuf {
@@ -947,6 +995,134 @@ async fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
         )
         .expect("count exact delivery receipts");
     assert_eq!(receipts, 2);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn stale_analytics_observation_settles_without_publication() {
+    let (root, store) = test_store();
+    seed_analytics_agent(&store).await;
+    let (changes, sink) = production_sink(&store);
+    let stale = analytics_effect_for(
+        agent_at_epoch(0),
+        50,
+        "thread/tokenUsage/updated",
+        json!({"turnId":"turn","tokenUsage":{
+            "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+            "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+        }}),
+    );
+    advance_agent_epoch(&store, 1).await;
+    let before = analytics_counts(&root);
+    let revision = changes.snapshot().revision;
+    let snapshot = sink.token_rates.snapshot();
+
+    sink.publish(&stale)
+        .await
+        .expect("superseded observation settles");
+    assert_eq!(analytics_counts(&root), before);
+    assert_eq!(changes.snapshot().revision, revision);
+    assert_eq!(sink.token_rates.snapshot(), snapshot);
+
+    let current = analytics_effect_for(
+        agent_at_epoch(1),
+        51,
+        "turn/started",
+        json!({"turnId":"turn"}),
+    );
+    sink.publish(&current)
+        .await
+        .expect("current observation captures");
+    assert_eq!(analytics_counts(&root).2, before.2 + 1);
+    assert!(changes.snapshot().revision > revision);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn deleted_agent_observation_does_not_recreate_identity() {
+    let (root, store) = test_store();
+    seed_analytics_agent(&store).await;
+    let (changes, sink) = production_sink(&store);
+    store
+        .transaction_with(|tx| {
+            tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
+            Ok::<(), WorkerError>(())
+        })
+        .await
+        .expect("delete authoritative agent");
+    let before = analytics_counts(&root);
+    let revision = changes.snapshot().revision;
+
+    sink.publish(&analytics_effect(
+        50,
+        "turn/started",
+        json!({"turnId":"turn"}),
+    ))
+    .await
+    .expect("deleted agent observation settles");
+    assert_eq!(analytics_counts(&root), before);
+    assert_eq!(changes.snapshot().revision, revision);
+    let agents: i64 = store
+        .read()
+        .expect("read store")
+        .query_row(
+            "SELECT count(*) FROM runtime_agents WHERE id='agent'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count authoritative agents");
+    assert_eq!(agents, 0);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn stale_analytics_receipt_does_not_block_later_observations() {
+    let (root, store) = test_store();
+    seed_analytics_agent(&store).await;
+    advance_agent_epoch(&store, 1).await;
+    let (_changes, sink) = production_sink(&store);
+    stage(
+        &store,
+        1,
+        0,
+        value(
+            1,
+            0,
+            analytics_effect_for(
+                agent_at_epoch(0),
+                50,
+                "turn/started",
+                json!({"turnId":"turn"}),
+            ),
+        ),
+    )
+    .await;
+    stage(
+        &store,
+        2,
+        0,
+        value(
+            2,
+            0,
+            analytics_effect_for(
+                agent_at_epoch(1),
+                51,
+                "turn/started",
+                json!({"turnId":"turn"}),
+            ),
+        ),
+    )
+    .await;
+    let before = analytics_counts(&root);
+
+    assert_eq!(
+        store::drain_publications(Arc::clone(&store), "default".into(), Arc::new(sink))
+            .await
+            .expect("drain superseded then current receipt"),
+        2
+    );
+    assert_eq!(pending_count(&store), 0);
+    assert_eq!(analytics_counts(&root).2, before.2 + 1);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
