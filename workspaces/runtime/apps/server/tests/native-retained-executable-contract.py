@@ -82,6 +82,7 @@ class Contract(PidFileContract):
             accounts=SimpleNamespace(get=lambda _: {'provider': 'codex'}, home=lambda *a, **kw: self.home),
             notification=lambda *a: None, request=lambda *a: None, disconnected=lambda *a: None,
             commit_supervisor_event=lambda *a: None, supervisor_event_applied=lambda *a: False,
+            rebase_supervisor_cursor=lambda *a: None,
             supervisor_reattached=lambda *a: None, supervisor_monitor_bindings=lambda *a: [],
             supervisor_monitor_result=lambda *a: None)
         self.updates = native.NativeRuntimeUpdates(self.rt)

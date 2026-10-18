@@ -497,7 +497,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, notification_dispatcher_closed=None, process_factory=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, notification_dispatcher_closed=None, process_factory=None, supervisor_cursor_rebase=None):
         import queue
         self.supervisor_mode = process_factory is not None or os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -578,6 +578,8 @@ class AppServer:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
             try:
+                if supervisor_cursor_rebase is not None:
+                    self.rebase_supervisor_cursor(supervisor_cursor_rebase)
                 monitor_bindings = (supervisor_monitor_bindings(self.proc) if self.supervisor_resumed
                                     and supervisor_monitor_bindings else [])
             except Exception:
@@ -1268,6 +1270,32 @@ class AppServer:
         # A receipt callback may be registered after disconnect completed.
         # The reader has ended and all preceding events have drained.
         callback(message)
+
+    def rebase_supervisor_cursor(self, rebase):
+        """Drop an applied-event cursor that this supervisor journal cannot have produced.
+
+        The runtime skips a journal event whose sequence is at or below its saved
+        cursor. A saved cursor is evidence only for the journal that issued it. A new
+        supervisor journal, or a recreated handle row, numbers events from zero
+        again, so an older and higher cursor would skip every new event as applied.
+        A journal never issues a sequence above its own latest sequence.
+        """
+        sequence = getattr(self.proc, "sequence", None)
+        acknowledged = getattr(self.proc, "cursor", None)
+        if (type(sequence) is not int or type(acknowledged) is not int
+                or not 0 <= acknowledged <= sequence):
+            raise RuntimeError("The supervisor open receipt has no valid event sequence range")
+        stale = self.persistence_retry(lambda: rebase(sequence, acknowledged))
+        if stale is not None:
+            diagnostic = {"kind": "supervisorCursorRebased", "at": time.time(),
+                          "handle": self.supervisor_handle, "staleCursor": stale,
+                          "journalSequence": sequence, "journalAcknowledged": acknowledged}
+            try:
+                self.log.write((json.dumps(diagnostic) + "\n").encode())
+                self.log.flush()
+            except (OSError, ValueError):
+                pass
+        return stale
 
     def persistence_retry(self, operation):
         """Retry only journal persistence, never a native request or callback."""
@@ -3859,6 +3887,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                       "account:" + account_key, message, sequence, account_key, connection_id),
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
                                                       "account:" + account_key, sequence),
+                                                  supervisor_cursor_rebase=lambda sequence, acknowledged: self.rebase_supervisor_cursor(
+                                                      "account:" + account_key, sequence, acknowledged),
                                                   supervisor_reattached=lambda resumed: self.supervisor_reattached(
                                                       account_key, connection_id, resumed),
                                                   supervisor_monitor_bindings=lambda proxy: self.supervisor_monitor_bindings(
@@ -4340,6 +4370,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.close()
             raise
         return bool(rows and sequence <= rows[0][0])
+
+    def rebase_supervisor_cursor(self, handle, journal_sequence, journal_acknowledged):
+        """Reset a cursor that is ahead of the attached journal; return the stale value.
+
+        Called once per attach, before the journal's events are dispatched. Events
+        up to the journal's own acknowledged cursor are deleted from the journal and
+        cannot be replayed. Later events were not applied: each one was at or below
+        the stale cursor and was skipped as applied.
+        """
+        with self.db(busy_timeout=50) as db:
+            row = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchone()
+            if row is None or row[0] <= journal_sequence:
+                return None
+            db.execute("UPDATE runtime_supervisor_cursor SET sequence=? WHERE handle=? AND sequence=?",
+                       (journal_acknowledged, handle, row[0]))
+            return row[0]
 
     def commit_supervisor_event(self, handle, message, sequence, account, connection):
         method = message.get("method")

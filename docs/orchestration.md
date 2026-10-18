@@ -371,6 +371,10 @@ Its receipt retains source and copy hashes, event IDs, and the resulting native 
 The operation requires free space for the source copy and native fork.
 Unsupported or ambiguous history remains unchanged.
 
+A supervisor journal numbers its events from one again after it is replaced.
+At each attach, Studio resets an applied-event cursor that is above the journal's latest sequence.
+Otherwise every event of the new journal would be acknowledged as applied and dropped.
+
 ## Agent chat
 
 Select the **Agents** tab in the sidebar to read private conversations and broadcasts.
