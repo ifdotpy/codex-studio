@@ -314,7 +314,11 @@ that Python wrote:
 - A turn with a known identity becomes `interrupted` with a `pending` restart
   marker, as in Python. The first account worker reads that turn from native
   history. An interrupted turn gets one restart follow-up; a completed or failed
-  turn is recorded and reported. The old input is not sent again.
+  turn is recorded and reported. The old input is not sent again. That first
+  pass reads every agent of the account, not only the first scan page.
+- A later finished turn of the same thread closes a marker that is still
+  `pending` (for example, after a failed history read). The next restart does
+  not interrupt that agent again for the old turn.
 - An idle agent whose attempt turn is its last finished turn is not changed.
 - Only an input without a turn identity stays held. A new user message clears
   that hold, and later generations do not apply it again.
