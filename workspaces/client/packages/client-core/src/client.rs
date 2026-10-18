@@ -258,22 +258,33 @@ mod tests {
     async fn cancelled_wait_does_not_interrupt_framing_or_erase_the_commit() {
         let directory = tempfile::tempdir().unwrap();
         let client = Arc::new(open(directory.path()));
-        let text = "Ж🦀".repeat(500_000);
-        // Poll once to enqueue the owned write, then drop only the caller's wait.
-        let mut wait = Box::pin(client.request(request(
+        let symbol = "Ж🦀";
+        let text = symbol.repeat(protocol::MAX_FRAME / symbol.len() + 1);
+        let command = request(
             "cancelled-wait",
             "preferences.raw_set",
             json!({"key":"large","raw":text}),
-        )));
-        tokio::select! { biased; result = &mut wait => { result.unwrap(); }, _ = tokio::task::yield_now() => {} }
+        );
+        assert!(
+            protocol::fragments(&serde_json::to_vec(&command).unwrap())
+                .unwrap()
+                .count()
+                > 1,
+            "the cancelled write must span multiple transport frames"
+        );
+        // Enqueue without yielding to the writer, then cancel only the caller's wait.
+        let mut wait = Box::pin(client.request(command));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(wait.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
         drop(wait);
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            client.request(request("after", "preferences.raw_all", Value::Null)),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        // The suite's hang guard bounds this correctness check; it is not a latency test.
+        let result = client
+            .request(request("after", "preferences.raw_all", Value::Null))
+            .await
+            .unwrap();
         assert_eq!(result.result.unwrap()["large"], text);
     }
 }
