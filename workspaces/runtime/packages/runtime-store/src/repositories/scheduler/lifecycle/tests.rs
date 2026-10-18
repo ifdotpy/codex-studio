@@ -411,3 +411,65 @@ fn a_later_finished_turn_closes_a_pending_restart_marker() {
     assert_eq!(agent["restartRecovery"]["stage"], "finished", "{agent}");
     assert_eq!(agent["restartRecovery"]["replacedByTurn"], "turn-next");
 }
+
+#[test]
+fn a_settled_turn_of_any_terminal_status_is_not_interrupted_again() {
+    // Rehearsal 11, agent 841ebc0e: its turn failed with an auth error. At the
+    // next backend stop the provider disconnect interrupted it again and its
+    // real error became "Codex disconnected". Python interrupts only active
+    // turns, so a settled attempt of every terminal status stays as it is.
+    for (status, native) in [
+        (AgentStatus::Completed, "completed"),
+        (AgentStatus::Failed, "failed"),
+        (AgentStatus::Interrupted, "interrupted"),
+    ] {
+        let mut connection = database();
+        put(
+            &connection,
+            json!({
+                "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-now",
+                "turnEpoch": 0, "error": null,
+                "startAttempt": {
+                    "id": "now", "epoch": 0, "submitted": true, "turnId": "turn-now",
+                    "observedTurnId": "turn-now", "threadId": "thread", "accountKey": ACCOUNT,
+                    "events": ["message"], "connectionGeneration": 1, "requestTicket": "ticket"
+                }
+            }),
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);",
+            )
+            .expect("event writes");
+        let error = (native == "failed").then(|| {
+            json!({"codexErrorInfo": "unauthorized", "message": "Failed to authenticate: OAuth token revoked."})
+        });
+        let settled = with(&mut connection, |tx| {
+            SchedulerRepository::settle_terminal(
+                tx,
+                AGENT,
+                0,
+                "now",
+                "turn-now",
+                status.clone(),
+                error.clone(),
+                native,
+                error.as_ref(),
+                &[],
+            )
+            .expect("settlement runs")
+        });
+        assert!(settled, "{native}");
+        let expected = stored(&connection);
+        assert_eq!(expected["lastCompletedTurn"], "turn-now");
+        // A backend stop disconnects the account; the next start recovers
+        // submitted attempts and reconciles the new provider generation.
+        with(&mut connection, |tx| {
+            SchedulerRepository::disconnect_account(tx, ACCOUNT, 1, 11.0, false)
+                .expect("disconnect runs")
+        });
+        assert_eq!(stored(&connection), expected, "{native} after disconnect");
+        restart_and_reconnect(&mut connection, 2);
+        assert_eq!(stored(&connection), expected, "{native} after restart");
+    }
+}
