@@ -220,6 +220,7 @@ FAST_SUITES = (
     f"{TESTS_REL}/queued-active-turn-recovery-contract.py",
     f"{TESTS_REL}/native-safety-contract.py",
     f"{TESTS_REL}/limit-reset-http-contract.py",
+    f"{TESTS_REL}/test_isolation_contract.py",
     f"{TESTS_REL}/server/test_fast_suite_selection.py",
 )
 HEAVY_SUITES = {
