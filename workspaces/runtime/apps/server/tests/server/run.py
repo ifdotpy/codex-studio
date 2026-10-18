@@ -215,6 +215,14 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/portable-history-import-http-contract.py": "automated",
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
+FAST_SUITES = (
+    f"{TESTS_REL}/question-history-contract.py",
+    f"{TESTS_REL}/queued-active-turn-recovery-contract.py",
+    f"{TESTS_REL}/native-safety-contract.py",
+    f"{TESTS_REL}/limit-reset-http-contract.py",
+    f"{TESTS_REL}/server/test_schema_fixture_cache.py",
+    f"{TESTS_REL}/server/test_fast_suite_selection.py",
+)
 HEAVY_SUITES = {
     f"{TESTS_REL}/native-fs-events-contract.py":
         ("host macOS FSEvents delivery; observed service timeout at 62.35 s", 62.35),
@@ -485,6 +493,20 @@ def selected(entries, pattern):
 
 def only_category(entries, kind):
     """Select only suites assigned to one reviewed execution class."""
+    if kind == "fast":
+        selected_entries = []
+        for path in FAST_SUITES:
+            entry = exact_entry(ROOT / path)
+            if entry is None:
+                raise RuntimeError(f"fast server suite is not discoverable: {path}")
+            if entry[1] not in {"safe", "component", "automated"}:
+                raise RuntimeError(
+                    f"fast server suite has disallowed category {entry[1]}: {path}"
+                )
+            if path in HEAVY_SUITES or path in EXPENSIVE_SUITES:
+                raise RuntimeError(f"fast server suite is classified as heavy: {path}")
+            selected_entries.append(entry)
+        return selected_entries
     if kind == "automated":
         return [(path, category) for path, category in entries if path in AUTOMATED_SUITES]
     return [(path, category) for path, category in entries if category == kind]
@@ -2058,7 +2080,7 @@ def main():
     parser.add_argument("--filter", metavar="TEXT_OR_GLOB", help="select paths by substring or glob")
     parser.add_argument("--include", action="append", choices=sorted(OPT_IN), default=[],
                         help="also run this opt-in group (repeatable)")
-    parser.add_argument("--only", choices=sorted(OPT_IN),
+    parser.add_argument("--only", choices=sorted((*OPT_IN, "fast")),
                         help="run only suites in this execution class")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
                         help="deadline per normal test process (default: 120s)")
@@ -2090,19 +2112,30 @@ def main():
         parser.error("--shard-index must be between zero and shard count minus one")
     if not math.isfinite(args.load_sample_seconds) or args.load_sample_seconds < 0:
         parser.error("--load-sample-seconds must be a finite, non-negative number")
-    entries = select_entries(args.filter)
+    entries = (
+        only_category([], "fast")
+        if args.only == "fast"
+        else select_entries(args.filter)
+    )
     if args.only:
         if args.include:
             parser.error("--only cannot be combined with --include")
-        entries = only_category(entries, args.only)
+        if args.only == "fast" and args.filter:
+            parser.error("--only fast selects its registered suites; --filter is not accepted")
+        if args.only != "fast":
+            entries = only_category(entries, args.only)
     implicit_opt_ins = exact_filter_opt_ins(args.filter, entries)
     opted_in = set(args.include) | ({args.only} if args.only else set()) | implicit_opt_ins
+    if args.only == "fast":
+        opted_in.update(kind for _path, kind in entries if kind in OPT_IN)
     if args.shard_index is not None:
         try:
             _apply_shard(_runnable_entries(entries, opted_in)[0], args.shard_index, args.shard_count)
         except ValueError as error:
             parser.error(str(error))
     load_sample_seconds = args.load_sample_seconds
+    if args.only == "fast":
+        load_sample_seconds = 0.0
     if args.filter:
         selected_runnable = sum(
             1 for _path, kind in entries

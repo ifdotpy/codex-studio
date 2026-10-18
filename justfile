@@ -43,19 +43,23 @@ boundaries-check:
 check-affected base *args:
     @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}
 
-[doc("Run default server and bridge, Rust nextest, web type and unit checks, and tooling tests.")]
+[doc("Run selected safety witnesses, schema and boundary guards, and focused web/tooling checks.")]
 test-fast:
     @node {{quote(facade)}} test-fast
 
-[doc("Run the non-server checks included in the fast tier (for CI sharding).")]
+[doc("Run the previous broad local regression recipe, including browser smoke.")]
+test-comprehensive:
+    @node {{quote(facade)}} test-comprehensive
+
+[doc("Run the comprehensive non-server checks excluding browser smoke (legacy CI composition).")]
 test-fast-rest:
     @node {{quote(facade)}} test-fast-rest
 
-[doc("Run the non-Rust remainder of the fast tier in hosted CI.")]
+[doc("Run the comprehensive non-Rust remainder used by hosted CI.")]
 test-fast-rest-non-rust:
     @node {{quote(facade)}} test-fast-rest-non-rust
 
-[doc("Run one hash partition of the Rust workspace fast tier.")]
+[doc("Run one hash partition of the comprehensive Rust workspace checks.")]
 test-fast-rust-partition partition count:
     @cargo build -p studio-process-supervisor --locked
     @STUDIO_SUPERVISOR_BINARY="$(node -p 'require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "debug", "codex-process-supervisor")')" CODEX_NODE="$(node -p 'process.execPath')" cargo nextest run --workspace --profile ci --locked --partition hash:{{quote(partition)}}/{{quote(count)}}
@@ -118,7 +122,7 @@ benchmark-client-interactions baseline output:
     @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.mjs {{quote(baseline)}} {{quote(output)}}
     @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec.mjs --workers=1
 
-[doc("Run the browser smoke subset included in the fast tier.")]
+[doc("Run the browser smoke subset included in the comprehensive tier and hosted CI.")]
 test-browser-smoke:
     @node {{quote(facade)}} test-browser-smoke
 

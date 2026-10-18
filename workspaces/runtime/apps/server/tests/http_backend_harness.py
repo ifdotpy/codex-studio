@@ -589,6 +589,10 @@ class BackendProcess:
         # sequential backends in this one runner-owned scratch root.
         self.xdg_cache = self.scratch_root / "http-boundary-xdg-cache"
         self.xdg_cache.mkdir(exist_ok=True)
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            from test_isolation import seed_api_schema_cache_for_fixture
+
+            seed_api_schema_cache_for_fixture(self.xdg_cache)
         self.xdg_config = self._directory("xdg-config")
         self.cwd = self._directory("workspace")
         if initialize_workspace:

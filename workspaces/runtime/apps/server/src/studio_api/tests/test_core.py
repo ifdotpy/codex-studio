@@ -31,8 +31,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from codex_backend_identity import backend_build
-from codex_layout import SERVER_SOURCE_ROOT, WEB_ROOT
+from codex_layout import SERVER_SOURCE_ROOT
 from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
+from test_isolation import generated_api_schema_hash
 from studio_api.context import (
     API_SCHEMA_CACHE_DIRECTORY,
     API_SCHEMA_CACHE_FILE,
@@ -156,15 +157,7 @@ class CoreResponseTests(unittest.TestCase):
                     TypeAdapter(field_type).validate_python(True)
 
     def test_schema_hash_matches_generated_client_across_import_orders(self) -> None:
-        generated_schema = (WEB_ROOT / "src/generated/apiSchema.ts").read_text(
-            encoding="utf-8"
-        )
-        match = re.search(
-            r'API_SCHEMA_HASH\s*=\s*"([0-9a-f]{64})"', generated_schema
-        )
-        if match is None:
-            self.fail("generated API schema hash is missing")
-        expected_hash = match.group(1)
+        expected_hash = generated_api_schema_hash()
 
         source_root = str(SERVER_SOURCE_ROOT)
         generator_import = """

@@ -7,8 +7,10 @@ install_home_guard()
 
 import atexit
 import os
+import re
 import shutil
 import tempfile
+from pathlib import Path
 
 SUPERVISOR_ENV = (
     "CODEX_AGENTS_SUPERVISOR_MODE",
@@ -52,8 +54,49 @@ def minimal_runtime_environment(home: str | Path) -> dict[str, str]:
 def isolate_api_schema_cache():
     """Keep runtime schema cache writes inside this test server process."""
     cache_root = tempfile.mkdtemp(prefix="studio-test-api-cache-")
-    os.environ["XDG_CACHE_HOME"] = cache_root
     atexit.register(shutil.rmtree, cache_root, ignore_errors=True)
+    os.environ["XDG_CACHE_HOME"] = cache_root
+    seed_api_schema_cache_for_fixture(Path(cache_root))
+
+
+def generated_api_schema_hash() -> str:
+    """Read the generated renderer identity used by isolated server fixtures."""
+    from codex_layout import WEB_ROOT
+
+    generated = (WEB_ROOT / "src/generated/apiSchema.ts").read_text(encoding="utf-8")
+    match = re.search(r'API_SCHEMA_HASH\s*=\s*"([0-9a-f]{64})"', generated)
+    if match is None:
+        raise RuntimeError("generated API schema hash is missing")
+    return match.group(1)
+
+
+def seed_api_schema_cache_for_fixture(cache_home: Path) -> str:
+    """Prime only an explicit disposable fixture cache from generated identity."""
+    from studio_api.context import (
+        api_schema_cache_key,
+        read_cached_or_compute_api_schema_hash,
+    )
+
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    resolved_cache_home = cache_home.resolve()
+    if resolved_cache_home == temporary_root or not resolved_cache_home.is_relative_to(
+        temporary_root
+    ):
+        raise RuntimeError(
+            "fixture API schema cache must stay below the temporary directory"
+        )
+
+    previous = os.environ.get("XDG_CACHE_HOME")
+    os.environ["XDG_CACHE_HOME"] = str(resolved_cache_home)
+    try:
+        return read_cached_or_compute_api_schema_hash(
+            api_schema_cache_key(), generated_api_schema_hash,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("XDG_CACHE_HOME", None)
+        else:
+            os.environ["XDG_CACHE_HOME"] = previous
 
 
 isolate_supervisor_environment()
