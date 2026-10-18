@@ -1,5 +1,5 @@
 //! Standalone supervisor. One lease, bounded connections and owned children.
-use super::supervisor_child::OwnedChild;
+use super::supervisor_child::{OwnedChild, SpawnOutcome};
 use super::supervisor_identity::{
     RETRY, free_space, inspect_start, process_gone_error, start_time, stop_verified, valid_start,
     verify_group,
@@ -30,7 +30,7 @@ use studio_runtime_providers::supervisor_v1::{
     Command, HANDLE_LIMIT, Handshake, Ownership, PROTOCOL, Request, StartMatch, WriteDecision,
 };
 use studio_runtime_store::supervisor_journal::{
-    JournalError, StoredHandle, SupervisorJournal, launch_signature,
+    JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, launch_signature,
 };
 
 use crate::shared_values_generated::{SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY};
@@ -247,7 +247,11 @@ impl Supervisor {
                             "Supervisor handle is orphaned; native outcome remains unknown",
                         ));
                     }
-                    if !stopped && saved.signature != signature {
+                    // A failed start left no child, so its row proves no
+                    // unknown native outcome for any later launch settings.
+                    let never_started = saved.pid == 0
+                        && saved.closed_reason.as_deref() == Some(START_FAILED_REASON);
+                    if !stopped && !never_started && saved.signature != signature {
                         let proof = saved.recovery_proof
                             || saved.closed_reason.as_deref() == Some(OPERATOR_CLOSED);
                         if !proof
@@ -278,11 +282,19 @@ impl Supervisor {
                         &self.root,
                         &request,
                         slot.notify.clone(),
-                        signature,
+                        signature.clone(),
                     )
                 })();
                 let child = match reserved {
-                    Ok(child) => child,
+                    Ok(SpawnOutcome::Started(child)) => child,
+                    Ok(SpawnOutcome::NotStarted(error)) => {
+                        self.active_children.fetch_sub(1, Ordering::AcqRel);
+                        // No child remains, so close the reservation with its
+                        // reason. If this commit fails, the row stays open and
+                        // recovery keeps the outcome unknown.
+                        self.journal.start_failed(handle, &signature, now()?)?;
+                        return Err(error);
+                    }
                     Err(error) => {
                         self.active_children.fetch_sub(1, Ordering::AcqRel);
                         return Err(error);

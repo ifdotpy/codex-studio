@@ -64,6 +64,8 @@ The optional supervisor journal's source-declared schema is:
 
 The supervisor does not set `PRAGMA user_version`; migrations inspect existing columns and add missing fields. The journal configures WAL and FULL synchronous writes, then sets `wal_autocheckpoint=100` on its pooled connections. These facts are verified from [`codex_process_supervisor.py`](../workspaces/runtime/apps/server/src/codex_process_supervisor.py), not observed against a running supervisor database in this task.
 
+The Rust supervisor reserves a `handles` row with `pid` 0 before it starts a child. If the start fails and no child remains, it closes that row with the `closed_reason` that `START_FAILED_REASON` in [`supervisor_journal.rs`](../workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs) owns. A later open of that handle then proceeds with any launch settings. A row that stays open with `pid` 0 means that a start can have reached the operating system, so recovery reports `missing-identity`. The Python supervisor reads the closed row as closed: it opens the handle again with the same launch settings and asks for recovery proof for different ones.
+
 Python writes JSON with `json.dumps`; some writers use compact separators and `ensure_ascii=False`, while ordinary record writes use their local defaults. No reader should depend on whitespace, escaping choice, or object key order. `codex_time.py` also emits UTC RFC 3339-like strings with millisecond precision and `Z`; other externally sourced date strings may carry offsets. SQLite's primary persisted runtime timestamps are numeric Unix seconds, not Python `datetime` objects.
 
 ### Connection recovery request receipt
