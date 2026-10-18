@@ -4,7 +4,7 @@ mod python_test_support;
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_providers::supervisor_v1::{
-    HANDLE_LIMIT, HandleSnapshot, ReceiptSnapshot, WriteDecision,
+    HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, WriteDecision,
 };
 use studio_runtime_store::{
     python_json_with_separators, sha256_hex,
@@ -50,7 +50,7 @@ fn supervisor_python_written_decision_corpus() {
     let cases: Vec<Value> =
         serde_json::from_slice(&fs::read(root.path().join("cases.json")).unwrap()).unwrap();
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
-    assert_eq!(cases.len(), if full { 111 } else { 39 });
+    assert_eq!(cases.len(), if full { 159 } else { 51 });
     for case in cases {
         let state = HandleSnapshot::from_record(case["row"].clone()).unwrap();
         if case["action"] == "cursor" {
@@ -79,7 +79,9 @@ fn supervisor_python_written_decision_corpus() {
         let result = state.write(
             prior.as_ref(),
             &digest,
-            case["native"].as_u64(),
+            serde_json::from_value::<Option<NativeId>>(case["native"].clone())
+                .unwrap()
+                .as_ref(),
             &case["message"],
             0,
         );
@@ -108,12 +110,18 @@ fn supervisor_journal_receipts_replay_ack_and_restart() {
     let journal = SupervisorJournal::open(root.path()).unwrap();
     let message = json!({"method":"echo","params":{"text":"é😀"},"id":23});
     let result = journal
-        .accept("fixture", "monitor:one", Some(23), &message, 100.0)
+        .accept(
+            "fixture",
+            "monitor:one",
+            Some(&NativeId::Integer(23)),
+            &message,
+            100.0,
+        )
         .unwrap();
     assert!(matches!(
         result,
         WriteDecision::Accept {
-            remote_id: Some(1),
+            remote_id: Some(NativeId::Integer(1)),
             ..
         }
     ));
@@ -166,9 +174,17 @@ fn supervisor_journal_receipts_replay_ack_and_restart() {
     assert_eq!(journal.handle("fixture").unwrap().unwrap().buffered, 0);
     assert!(matches!(
         journal
-            .accept("fixture", "monitor:one", Some(99), &message, 200.0)
+            .accept(
+                "fixture",
+                "monitor:one",
+                Some(&NativeId::Integer(99)),
+                &message,
+                200.0
+            )
             .unwrap(),
-        WriteDecision::Duplicate { remote_id: Some(1) }
+        WriteDecision::Duplicate {
+            remote_id: Some(NativeId::Integer(1))
+        }
     ));
     assert!(journal.events("fixture", 0, false).is_err());
     assert_eq!(
@@ -180,7 +196,7 @@ fn supervisor_journal_receipts_replay_ack_and_restart() {
             .accept(
                 "fixture",
                 "monitor:one",
-                Some(23),
+                Some(&NativeId::Integer(23)),
                 &json!({"method":"different"}),
                 200.0
             )
@@ -221,7 +237,13 @@ fn supervisor_journal_sql_failpoints_roll_back_before_restart() {
         let message = json!({"method":"echo"});
         if action != "accept" {
             journal
-                .accept("fixture", "monitor:one", Some(9), &message, 100.0)
+                .accept(
+                    "fixture",
+                    "monitor:one",
+                    Some(&NativeId::Integer(9)),
+                    &message,
+                    100.0,
+                )
                 .unwrap();
         }
         if action == "ack" {
@@ -233,7 +255,13 @@ fn supervisor_journal_sql_failpoints_roll_back_before_restart() {
         db.execute_batch(&format!("CREATE TRIGGER stop BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;")).unwrap();
         let failed = match action {
             "accept" => journal
-                .accept("fixture", "monitor:one", Some(9), &message, 100.0)
+                .accept(
+                    "fixture",
+                    "monitor:one",
+                    Some(&NativeId::Integer(9)),
+                    &message,
+                    100.0,
+                )
                 .is_err(),
             "append" => journal
                 .append("fixture", 1, 1, "stdout", &json!({"id":1,"result":"done"}))
@@ -255,10 +283,16 @@ fn supervisor_journal_sql_failpoints_roll_back_before_restart() {
         if action == "accept" {
             assert!(matches!(
                 journal
-                    .accept("fixture", "monitor:one", Some(9), &message, 100.0)
+                    .accept(
+                        "fixture",
+                        "monitor:one",
+                        Some(&NativeId::Integer(9)),
+                        &message,
+                        100.0
+                    )
                     .unwrap(),
                 WriteDecision::Accept {
-                    remote_id: Some(1),
+                    remote_id: Some(NativeId::Integer(1)),
                     ..
                 }
             ));
@@ -285,7 +319,7 @@ fn supervisor_malformed_snapshots_and_capacity_refuse() {
             .write(
                 None,
                 "digest",
-                Some(3),
+                Some(&NativeId::Integer(3)),
                 &json!({"method":"echo"}),
                 HANDLE_LIMIT
             )
@@ -464,7 +498,13 @@ fn supervisor_checked_records_reject_each_malformed_field() {
     .unwrap();
     assert!(
         exhausted
-            .write(None, "x", Some(1), &json!({"method":"echo"}), 0)
+            .write(
+                None,
+                "x",
+                Some(&NativeId::Integer(1)),
+                &json!({"method":"echo"}),
+                0
+            )
             .is_err()
     );
 }
@@ -664,4 +704,111 @@ fn supervisor_open_requires_cwd_but_accepts_null() {
             "{case}"
         );
     }
+}
+
+/// Parity check for the `NativeId` contract: the Python supervisor journals Claude bridge
+/// replies with text ids. The Rust supervisor must open that journal and keep every receipt.
+#[test]
+fn supervisor_python_written_text_native_ids_stay_exact() {
+    let root = template_mode("--native-id-template");
+    let saved: Value =
+        serde_json::from_slice(&fs::read(root.path().join("native-ids.json")).unwrap()).unwrap();
+    let journal = SupervisorJournal::open(root.path()).unwrap();
+    // A retry of each Python-accepted write is a duplicate with the exact Python remote id.
+    for write in saved["writes"].as_array().unwrap() {
+        let operation = write["operation"].as_str().unwrap();
+        let native: Option<NativeId> = serde_json::from_value(write["native"].clone()).unwrap();
+        let decision = journal
+            .accept(
+                "fixture",
+                operation,
+                native.as_ref(),
+                &write["message"],
+                200.0,
+            )
+            .unwrap();
+        let WriteDecision::Duplicate { remote_id } = decision else {
+            panic!("{operation}: a Python receipt must make the retry a duplicate");
+        };
+        assert_eq!(
+            json!(remote_id),
+            saved["results"][operation]["remoteId"],
+            "{operation}"
+        );
+    }
+    for (operation, expected) in saved["status"].as_object().unwrap() {
+        assert_eq!(
+            &journal.operation_status("fixture", operation).unwrap(),
+            expected,
+            "{operation}"
+        );
+    }
+    // A Rust-accepted text id survives a restart exactly.
+    let reply = NativeId::Text("claude:rust-reply".into());
+    let message = json!({"id":"claude:rust-reply","result":{}});
+    let WriteDecision::Accept {
+        remote_id,
+        outbound,
+        ..
+    } = journal
+        .accept("fixture", "reply:rust", Some(&reply), &message, 300.0)
+        .unwrap()
+    else {
+        panic!("a new reply must be accepted");
+    };
+    assert_eq!(remote_id, Some(reply.clone()));
+    assert_eq!(outbound, message);
+    // INTEGER affinity would store numeric text as a number; refuse it before the commit.
+    let numeric = NativeId::Text("42".into());
+    assert!(
+        journal
+            .accept(
+                "fixture",
+                "reply:numeric",
+                Some(&numeric),
+                &json!({"id":"42","result":{}}),
+                300.0
+            )
+            .is_err()
+    );
+    drop(journal);
+    let journal = SupervisorJournal::open(root.path()).unwrap();
+    assert!(matches!(
+        journal
+            .accept("fixture", "reply:rust", Some(&reply), &message, 400.0)
+            .unwrap(),
+        WriteDecision::Duplicate { remote_id: Some(id) } if id == reply
+    ));
+    assert!(matches!(
+        journal.accept(
+            "fixture",
+            "reply:numeric",
+            Some(&numeric),
+            &json!({"id":"42","result":{}}),
+            400.0
+        ),
+        Err(_)
+    ));
+    let db = rusqlite::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
+    let missing: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM operations WHERE operation_id='reply:numeric'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(missing, 0);
+}
+
+#[test]
+fn supervisor_refuses_a_native_id_it_cannot_read_exactly() {
+    let root = template(false);
+    let db = rusqlite::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) VALUES ('fixture','monitor:real','digest',1.5,1,1)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    assert!(SupervisorJournal::open(root.path()).is_err());
 }

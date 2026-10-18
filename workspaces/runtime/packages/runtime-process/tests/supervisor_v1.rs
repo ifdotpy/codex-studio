@@ -209,7 +209,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         .write(WriteRequest {
             handle: handle.clone(),
             operation_id: operation_id.clone(),
-            native_id: Some(42),
+            native_id: Some(42.into()),
             message: json!({"method":"test/echo","params":{"text":"hello-from-rust"}}),
             extra: BTreeMap::new(),
         })

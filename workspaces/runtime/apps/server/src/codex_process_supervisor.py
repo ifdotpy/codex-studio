@@ -493,6 +493,9 @@ class Child:
             return
 
     def write(self, operation_id, native_id, message):
+        # native_id is the provider JSON-RPC id as received: int (Codex), str (Claude bridge,
+        # "claude:<uuid>") or None. The Rust supervisor reads these rows through its owner,
+        # NativeId in workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs.
         body = json.dumps(message, sort_keys=True, separators=(",", ":"))
         canonical = {key: value for key, value in message.items() if key != "id"}
         digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

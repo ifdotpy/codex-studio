@@ -45,6 +45,46 @@ if "--legacy-template" in sys.argv:
 if "--template-only" in sys.argv:
     journal.close()
     raise SystemExit(0)
+
+
+def fixture_child(owner):
+    child = Child.__new__(Child)
+    child.handle = "fixture"
+    child.lock = threading.RLock()
+    child.process = SimpleNamespace(supervisor=owner, stdin=io.StringIO(), poll=lambda: None)
+    child.paused = threading.Event()
+    owner.children["fixture"] = child
+    return child
+
+
+if "--native-id-template" in sys.argv:
+    # Real Child.write calls on the durable journal. The Python backend sends the
+    # provider message id as nativeId: an integer for Codex, a string such as
+    # "claude:<uuid>" for a Claude bridge server request, and null for a notification.
+    supervisor = Supervisor(root)
+    supervisor.journal = journal
+    child = fixture_child(supervisor)
+    bridge = "claude:803e6306-e6a7-4116-bcd3-bb677560a582"
+    writes = [
+        ("reply:claude", bridge, {"id": bridge, "result": {"decision": "accept"}}),
+        ("monitor:text", "claude:monitor", {"id": "claude:monitor", "method": "echo"}),
+        ("monitor:integer", 41, {"id": 41, "method": "echo"}),
+        ("notification", None, {"method": "initialized"}),
+        ("reply:integer", 7, {"id": 7, "result": {}}),
+    ]
+    results = {}
+    with patch("codex_process_supervisor.time.perf_counter_ns", return_value=0):
+        for operation, native, message in writes:
+            results[operation] = child.write(operation, native, message)
+    status = {operation: supervisor.handle({"action": "operationStatus", "handle": "fixture",
+                                            "operationId": operation})
+              for operation in ("monitor:text", "monitor:integer")}
+    journal.close()
+    (root / "native-ids.json").write_text(json.dumps({
+        "writes": [{"operation": o, "native": n, "message": m} for o, n, m in writes],
+        "results": results, "status": status,
+        "stdin": [json.loads(line) for line in child.process.stdin.getvalue().splitlines()]}))
+    raise SystemExit(0)
 # The durable seed above is written by Python once. Differential decisions run
 # on an SQLite backup in memory; clocks and persistence latency are not inputs.
 memory = sqlite3.connect(":memory:")
@@ -59,12 +99,7 @@ def memory_db():
 journal.db = memory_db
 supervisor = Supervisor(root)
 supervisor.journal = journal
-child = Child.__new__(Child)
-child.handle = "fixture"
-child.lock = threading.RLock()
-child.process = SimpleNamespace(supervisor=supervisor, stdin=io.StringIO(), poll=lambda: None)
-child.paused = threading.Event()
-supervisor.children["fixture"] = child
+child = fixture_child(supervisor)
 if "--request-cwd" in sys.argv:
     child.process.pid = 123
     requests = []
@@ -95,7 +130,7 @@ if os.environ.get("STUDIO_RUNTIME_CORPUS_FULL") == "1":
         None, True, False, 0, -1, 1e20, 1e-20, "\u0000", "\t\n", "𝄞" * 4, [], {"nested": [{}, None]},
     ])
 for index, message in enumerate(messages):
-    for native in (None, 17):
+    for native in (None, 17, "claude:fixture-request"):
         operation = f"monitor:{index}:{native}"
         for retry in ("new", "duplicate", "conflict"):
             value = {**message, "id": 700 if retry == "new" else 701}

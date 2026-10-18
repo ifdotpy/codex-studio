@@ -1,8 +1,8 @@
 //! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
 use crate::protocol::{
     AckRequest, AdminCloseHandleRequest, CursorRequest, FinishFallbackRequest, HandleRequest,
-    HealthRequest, NextBatchRequest, OpenRequest, OperationStatusRequest, RetireCommandRequest,
-    WriteRequest,
+    HealthRequest, NativeId, NextBatchRequest, OpenRequest, OperationStatusRequest,
+    RetireCommandRequest, WriteRequest,
 };
 use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use crate::{
@@ -144,12 +144,25 @@ pub(crate) fn parse_process_environment(raw: &[u8]) -> io::Result<BTreeMap<Strin
     Ok(environment)
 }
 
-pub(crate) fn provider_native_id(message: &Value) -> Option<u64> {
+/// The `nativeId` of a Studio write: the id of a request with an integer id, which the
+/// supervisor renumbers. A request with a string id (Claude connections use `claude:<hex>`)
+/// and a reply to a provider request (the bridge uses `claude:<uuid>`) send none. Their
+/// receipts are found by operation id, and the provider sees their ids unchanged.
+pub(crate) fn provider_native_id(message: &Value) -> Option<NativeId> {
     message
         .get("method")
         .and_then(Value::as_str)
         .and_then(|_| message.get("id"))
         .and_then(Value::as_u64)
+        .and_then(|id| i64::try_from(id).ok())
+        .map(NativeId::Integer)
+}
+
+/// The supervisor RPC id of an accepted Studio request: a positive integer.
+pub(crate) fn rpc_remote_id(remote: Option<&NativeId>) -> Option<u64> {
+    remote
+        .and_then(NativeId::rpc)
+        .and_then(|id| u64::try_from(id).ok())
 }
 
 pub(crate) fn initialized_operation_id(

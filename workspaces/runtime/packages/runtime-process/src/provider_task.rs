@@ -790,11 +790,11 @@ impl AdapterTask {
                 return Ok(CommandReceipt::NotSent);
             }
         }
-        let native_id = provider_native_id(&write.message).or_else(|| initialize.then_some(1));
+        let native_id = provider_native_id(&write.message)
+            .or_else(|| initialize.then_some(NativeId::Integer(1)));
+        let rpc_request = native_id.is_some();
         let local_id = method.and_then(|_| write.message.get("id")).cloned();
-        if native_id.is_some()
-            && (local_id.is_none() || self.response_ids.len() >= MAX_PENDING_RESPONSES)
-        {
+        if rpc_request && (local_id.is_none() || self.response_ids.len() >= MAX_PENDING_RESPONSES) {
             return Ok(CommandReceipt::NotSent);
         }
         let request = WriteRequest {
@@ -819,10 +819,10 @@ impl AdapterTask {
         if !result.accepted {
             return Ok(CommandReceipt::NotSent);
         }
-        if native_id.is_some() {
-            let remote = result.remote_id.ok_or(SupervisorError::InvalidFrame(
-                "accepted request has no remote ID".into(),
-            ))?;
+        if rpc_request {
+            let remote = rpc_remote_id(result.remote_id.as_ref()).ok_or(
+                SupervisorError::InvalidFrame("accepted request has no integer remote ID".into()),
+            )?;
             if let Some(local) = local_id {
                 if initialize {
                     self.initialize_id = Some(local.clone());
@@ -835,7 +835,8 @@ impl AdapterTask {
             self.publish();
         }
         Ok(CommandReceipt::Written {
-            remote_id: result.remote_id,
+            // A reply can find a Python-written receipt with a text id; it is no RPC identity.
+            remote_id: rpc_remote_id(result.remote_id.as_ref()),
             duplicate: result.duplicate,
         })
     }
