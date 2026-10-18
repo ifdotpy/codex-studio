@@ -441,6 +441,50 @@ class Services(unittest.TestCase):
         self.assertEqual(jobs, self.python_jobs())
         kill.assert_not_called()
 
+    def busy_canvas(self) -> None:
+        with sqlite3.connect(self.state / 'canvas.sqlite3') as db:
+            db.execute('CREATE TABLE runtime_agents (record TEXT)')
+            db.execute('INSERT INTO runtime_agents VALUES (?)', (json.dumps({'status': 'running', 'inFlight': True}),))
+
+    def test_rollback_after_a_failed_rust_start_does_not_require_idle_agents(self) -> None:
+        # The Python supervisor served this state before the Rust attempt. Its journal and the
+        # saved supervisor selection remain; the swap already ended every provider process.
+        environment = self.rust_binaries()
+        self.save_config(port=4620, supervisorEnabled=True, backend='rust',
+                         runtimeServer=environment['CODEX_RUNTIME_SERVER'],
+                         processSupervisor=environment['CODEX_PROCESS_SUPERVISOR'])
+        (self.state / 'supervisor.sqlite3').touch()
+        self.busy_canvas()
+        commands, run = self.fake_launchd({})
+        current = {'pid': 789, 'supervisorMode': True, 'supervisor': {'protocol': 1}}
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', {service.BACKEND_SELECTION_ENV: ''}), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop', side_effect=[None, current]), \
+                patch.object(service, 'wait_ready', return_value={'handles': []}), patch('os.kill') as kill:
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertTrue(result['supervisorMode'])
+        self.assertEqual(json.loads((self.state / 'background-recovery.json').read_text())['backend'], 'python')
+        self.assertIn('bootstrap', [command[1] for command in commands])
+        kill.assert_not_called()
+
+    def test_first_cutover_with_active_agents_still_refuses(self) -> None:
+        self.busy_canvas()
+        for supervised, journal in ((False, True), (True, False)):
+            with self.subTest(supervised=supervised, journal=journal):
+                before = self.save_config(port=4620, supervisorEnabled=supervised)
+                (self.state / 'supervisor.sqlite3').unlink(missing_ok=True)
+                if journal:
+                    (self.state / 'supervisor.sqlite3').touch()
+                commands, run = self.fake_launchd({})
+                with patch.object(sys, 'platform', 'darwin'), \
+                        patch.dict('os.environ', {service.BACKEND_SELECTION_ENV: ''}), \
+                        patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                        patch.object(service, 'desktop', return_value=None):
+                    with self.assertRaisesRegex(RuntimeError, 'first cutover requires an idle backend'):
+                        service.enable(self.resources, self.state, 4620)
+                self.assertEqual((self.state / 'background-recovery.json').read_bytes(), before)
+                self.assertTrue(all(command[1] == 'print' for command in commands))
+
     def test_rust_macos_keeps_registered_rust_jobs(self) -> None:
         environment = self.rust_binaries()
         rust_jobs = self.python_jobs() | {'supervisor': [environment['CODEX_PROCESS_SUPERVISOR'], '--state',
