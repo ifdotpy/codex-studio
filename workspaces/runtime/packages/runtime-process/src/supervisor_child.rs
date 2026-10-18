@@ -29,6 +29,13 @@ enum ExitEventState {
     Failed = 3,
 }
 
+/// Result of a child start. An `Err` from `OwnedChild::spawn` means a child
+/// may remain; `NotStarted` proves that no child process remains.
+pub(super) enum SpawnOutcome {
+    Started(Arc<OwnedChild>),
+    NotStarted(Error),
+}
+
 pub(super) struct OwnedChild {
     pub pid: u32,
     pub signature: String,
@@ -61,7 +68,7 @@ impl OwnedChild {
         request: &SupervisorCommand,
         notify: Arc<tokio::sync::Notify>,
         signature: String,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<SpawnOutcome> {
         let SupervisorCommand::Open {
             handle,
             command,
@@ -85,9 +92,15 @@ impl OwnedChild {
         if let Some(cwd) = cwd {
             command_builder.current_dir(cwd);
         }
-        let mut process = CommandWrap::from(command_builder)
+        let mut process = match CommandWrap::from(command_builder)
             .wrap(ProcessGroup::leader())
-            .spawn()?;
+            .spawn()
+        {
+            Ok(process) => process,
+            // The OS refused the start (for example ENOENT or EPERM), so no
+            // child process exists.
+            Err(error) => return Ok(SpawnOutcome::NotStarted(error.into())),
+        };
         let pid = process.id();
         let prepare = (|| {
             let start = start_time(pid, true)?.ok_or(Error::Refused(
@@ -99,8 +112,11 @@ impl OwnedChild {
         let (start, generation) = match prepare {
             Ok(v) => v,
             Err(error) => {
+                // `kill` signals the whole process group and reaps the leader.
+                // If it fails, the child may remain, so the reservation stays
+                // open and recovery treats its outcome as unknown.
                 process.kill()?;
-                return Err(error);
+                return Ok(SpawnOutcome::NotStarted(error));
             }
         };
         let mut stdin = process
@@ -207,7 +223,7 @@ impl OwnedChild {
             copy.publish_exit();
             copy.notify.notify_waiters();
         });
-        Ok(child)
+        Ok(SpawnOutcome::Started(child))
     }
     pub fn code(&self) -> Result<Option<i32>> {
         match lock(&self.exit_status)?.as_ref() {
@@ -424,7 +440,7 @@ mod tests {
             "IFS= read -r line; exit 0".to_owned(),
         ];
         let cwd = root.path().to_string_lossy().into_owned();
-        let child = OwnedChild::spawn(
+        let SpawnOutcome::Started(child) = OwnedChild::spawn(
             journal.clone(),
             root.path(),
             &SupervisorCommand::Open {
@@ -436,7 +452,9 @@ mod tests {
             Arc::new(tokio::sync::Notify::new()),
             "exit-event-test".to_owned(),
         )
-        .unwrap();
+        .unwrap() else {
+            panic!("the test child starts");
+        };
 
         let append_guard = child.append_lock.lock().unwrap();
         child.write(&json!({"finish":true})).unwrap();

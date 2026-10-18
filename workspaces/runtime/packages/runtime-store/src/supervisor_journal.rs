@@ -26,6 +26,11 @@ pub enum JournalError {
     Poisoned,
 }
 pub type Result<T> = std::result::Result<T, JournalError>;
+
+/// `handles.closed_reason` of a reservation whose child process never ran, or
+/// was killed and reaped before its identity was committed. No native outcome
+/// is unknown for such a row, so a later open of the handle may proceed.
+pub const START_FAILED_REASON: &str = "Native child failed to start; no child process remains";
 pub struct SupervisorJournal {
     db: Mutex<Connection>,
     buffered_by_handle: Mutex<HashMap<String, u64>>,
@@ -256,6 +261,19 @@ impl SupervisorJournal {
             )?;
             tx.execute("DELETE FROM child_identities WHERE handle=?", [handle])?;
             Ok(((), None))
+        })
+    }
+    /// Close a reservation whose child never started, or was killed and reaped
+    /// before its identity was committed. Only the unopened reservation
+    /// (pid 0, still open, same launch signature) changes, so a repeated call
+    /// records nothing new. Returns whether this call closed the row.
+    pub fn start_failed(&self, handle: &str, signature: &str, now: f64) -> Result<bool> {
+        self.transaction(|tx, _buffered| {
+            let closed = tx.execute(
+                "UPDATE handles SET closed_at=?,closed_reason=? WHERE id=? AND pid=0 AND signature=? AND closed_at IS NULL",
+                params![now, START_FAILED_REASON, handle, signature],
+            )?;
+            Ok((closed == 1, None))
         })
     }
     pub fn opened(&self, handle: &str, signature: &str, pid: u32, start: &str) -> Result<u64> {

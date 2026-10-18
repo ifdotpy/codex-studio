@@ -14,6 +14,7 @@ studio-runtime-process = { path = "../../packages/runtime-process" }
 
 [dev-dependencies]
 serde_json.workspace = true
+studio-runtime-store = { path = "../../packages/runtime-store" }
 tempfile.workspace = true
 
 [lints]
