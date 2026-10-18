@@ -2025,7 +2025,7 @@ class WorkspaceMixin:
                             "agent": w["rootId"],
                             "title": w["title"],
                             "text": "Result awaits acceptance",
-                            "work": w,
+                            "work": self.work_view(w, works),
                         }
                     )
             for a in agents:

@@ -366,17 +366,17 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
         "disconnect" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::disconnect_account(tx, "default", 1, 20.0, false)
         }).await
-        .map(|value| json!(value))
+        .map(|_interrupted| json!(()))
         .map_err(|e| e.to_string()),
         "reattach" => lifecycle_transaction(store, |tx| {
-            SchedulerRepository::reconcile_generation(tx, "default", 1, 20.0)
+            SchedulerRepository::reconcile_generation(tx, "default", 1, 20.0, true)
         }).await
-        .map(|value| json!(value))
+        .map(|_interrupted| json!(()))
         .map_err(|e| e.to_string()),
         "generation_change" => lifecycle_transaction(store, |tx| {
-            SchedulerRepository::reconcile_generation(tx, "default", 2, 20.0)
+            SchedulerRepository::reconcile_generation(tx, "default", 2, 20.0, true)
         }).await
-        .map(|value| json!(value))
+        .map(|_interrupted| json!(()))
         .map_err(|e| e.to_string()),
         _ => panic!("unimplemented Rust transition {transition}"),
     }

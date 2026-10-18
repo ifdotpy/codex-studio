@@ -2398,23 +2398,26 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         "supervisor",
     );
     let root = fixture._root.path().to_path_buf();
-    let mut supervisor = tokio::task::spawn_blocking(move || {
-        let stderr = root.join("supervisor.log");
-        let child = spawn_rust_supervisor(&root, &stderr);
-        let mut fixture = SupervisorFixture {
-            child,
-            native: Vec::new(),
-        };
-        supervisor_ready::wait(
-            &mut fixture.child,
-            studio_runtime_process::BackendIdentity {
-                backend_id: studio_runtime_process::BackendId("python-cutover-fixture".into()),
-                state_dir: root,
-            },
-            &stderr,
-        );
-        fixture
-    })
+    let mut supervisor = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/tests/wave7_p01_registry",
+        move || {
+            let stderr = root.join("supervisor.log");
+            let child = spawn_rust_supervisor(&root, &stderr);
+            let mut fixture = SupervisorFixture {
+                child,
+                native: Vec::new(),
+            };
+            supervisor_ready::wait(
+                &mut fixture.child,
+                studio_runtime_process::BackendIdentity {
+                    backend_id: studio_runtime_process::BackendId("python-cutover-fixture".into()),
+                    state_dir: root,
+                },
+                &stderr,
+            );
+            fixture
+        },
+    )
     .await
     .unwrap();
     let mut peer = tokio::io::BufReader::new(
@@ -2672,9 +2675,12 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         barrier["count"], 1,
         "exactly one turn/start reached provider"
     );
-    tokio::task::spawn_blocking(move || drop(supervisor))
-        .await
-        .unwrap();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/tests/wave7_p01_registry",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -3507,8 +3513,10 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
-                && record["restartRecovery"]["stage"] == "held"
+            // A provider crash while the backend runs is a disconnect, not a restart.
+            if record["disconnectRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["error"] == "Codex disconnected. Review the transcript before resuming."
+                && record["restartRecovery"].is_null()
             {
                 break record;
             }

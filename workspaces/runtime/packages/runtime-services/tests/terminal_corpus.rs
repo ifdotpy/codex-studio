@@ -88,9 +88,12 @@ async fn run_corpus(full: bool) {
         .tempdir_in(&temp_root)
         .expect("Python-written terminal state");
     let oracle_root = root.path().to_path_buf();
-    let oracle = tokio::task::spawn_blocking(move || run_python_oracle(&oracle_root, full))
-        .await
-        .expect("Python terminal oracle task");
+    let oracle = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/terminal_corpus",
+        move || run_python_oracle(&oracle_root, full),
+    )
+    .await
+    .expect("Python terminal oracle task");
     let store = std::sync::Arc::new(
         RuntimeStore::open(Some(root.path()))
             .await

@@ -1,6 +1,6 @@
 //! Asynchronous provider adapters, process ports and the supervisor v1 client.
 
-pub mod blocking_pool;
+pub use studio_runtime_store::blocking_pool;
 pub mod child_priority;
 mod client;
 pub mod operational_log;

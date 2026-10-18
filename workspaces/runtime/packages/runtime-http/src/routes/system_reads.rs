@@ -74,13 +74,10 @@ async fn directories(
     if !local {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let server_id = server.to_owned();
-        let paired = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/system_reads",
-            move || {
-                let mut connection = store.read().map_err(|_| ApiError::internal())?;
-                let tx = connection.transaction().map_err(|_| ApiError::internal())?;
+        let paired = store
+            .read_async("runtime-http/routes/system_reads", move |tx| {
                 use studio_runtime_store::system_reads as records;
-                let client = records::get(&tx, "runtime_access_clients", &server_id)
+                let client = records::get(tx, "runtime_access_clients", &server_id)
                     .map_err(ApiError::stored)?;
                 if let Some(client) = client {
                     // The table schema has checked the complete access record;
@@ -100,7 +97,7 @@ async fn directories(
                             && client.revoked.unwrap_or(0.0) == 0.0,
                     );
                 }
-                if records::get(&tx, "runtime_access_discovered", &server_id)
+                if records::get(tx, "runtime_access_discovered", &server_id)
                     .map_err(ApiError::stored)?
                     .is_some()
                 {
@@ -110,10 +107,8 @@ async fn directories(
                     ));
                 }
                 Ok(false)
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+            })
+            .await?;
         if !paired {
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
@@ -415,27 +410,29 @@ async fn ui_summary(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let account_driver = state.account_driver;
     let account_policy = state.account_policy;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+    // The account listing reads auth files, so it runs before the store read.
+    let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/system_reads",
         move || {
-            let accounts = if let Some(driver) = account_driver {
-                Some(
-                    driver
-                        .listing_snapshot()
-                        .map_err(|_| ApiError::internal())?,
-                )
+            if let Some(driver) = account_driver {
+                driver
+                    .listing_snapshot()
+                    .map(Some)
+                    .map_err(|_| ApiError::internal())
             } else {
-                account_policy.map(|policy| policy.accounts())
-            };
-            let mut connection = store.read().map_err(|_| ApiError::internal())?;
-            let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
-            let value =
-                system_reads::ui_summary(&transaction, accounts).map_err(ApiError::stored)?;
-            super::generated_json::<crate::generated::UiSummaryResponse>(value)
+                Ok(account_policy.map(|policy| policy.accounts()))
+            }
         },
     )
     .await
     .map_err(|_| ApiError::internal())??;
+    let value = store
+        .read_async("runtime-http/routes/system_reads", move |transaction| {
+            let value =
+                system_reads::ui_summary(transaction, accounts).map_err(ApiError::stored)?;
+            super::generated_json::<crate::generated::UiSummaryResponse>(value)
+        })
+        .await?;
     Ok(Json(value))
 }
 

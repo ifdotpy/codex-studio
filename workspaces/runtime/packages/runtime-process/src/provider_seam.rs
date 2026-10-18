@@ -271,6 +271,8 @@ pub enum AdapterError {
     ConsumerClosed,
     #[error("provider task failed")]
     TaskFailed,
+    #[error("provider stdout exceeded its {limit}-byte bound")]
+    OutputLimit { limit: usize },
     #[error(transparent)]
     Supervisor(#[from] crate::SupervisorError),
 }

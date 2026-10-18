@@ -111,15 +111,32 @@ pub(super) fn decode(record: &Value) -> Result<RecoveredRequest, WorkerError> {
         remote_id: record["remoteId"].as_u64(),
     })
 }
+/// `restart` is true for the account's first worker in this backend process;
+/// a later worker follows a provider disconnect while the server kept running.
 pub(super) async fn recover(
     store: &RuntimeStore,
     account: &str,
     generation: Generation,
+    restart: bool,
 ) -> Result<Vec<(Pending, RecoveredRequest)>, WorkerError> {
     let account = account.to_owned();
     scheduler::lifecycle_transaction_with(store, move |tx| {
         SchedulerRepository::recover_unsubmitted_for_account(tx, &account)?;
-        SchedulerRepository::reconcile_generation(tx, &account, generation.0, now())?;
+        let at = now();
+        let interrupted = SchedulerRepository::reconcile_generation(
+            tx,
+            &account,
+            generation.0,
+            at,
+            restart,
+        )?;
+        // A provider replacement in this backend is a disconnect. Actual backend
+        // restarts keep their separate history-reconciliation notification path.
+        if !restart {
+            for agent_id in interrupted {
+                crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent_id, at)?;
+            }
+        }
         retire_generations(tx, &account, generation.0)?;
         // The repository preserves Python recovery records. Journal delivery needs
         // the scoped attempt restored before notifications can be acknowledged.
@@ -248,13 +265,12 @@ pub(super) async fn recover(
 /// guest session. Host tickets are handled by `recover` and never cross this
 /// boundary.
 pub(super) fn recover_vm_actor_requests(
-    store: &RuntimeStore,
+    connection: &rusqlite::Connection,
     account: &str,
     agent: &str,
     generation: u64,
 ) -> Result<Vec<(Pending, RecoveredRequest)>, WorkerError> {
-    let connection = store.read()?;
-    let Some(agent_record) = AgentRepository::get(&connection, &AgentId::from(agent))? else {
+    let Some(agent_record) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(Vec::new());
     };
     if agent_record
@@ -742,17 +758,19 @@ pub(super) async fn submitted(
         result => result,
     }
 }
+/// `session_closed` is true while the worker settles its ended session's outcomes.
 pub(super) async fn outcome(
     store: Arc<RuntimeStore>,
     account: String,
     resources: Arc<preparation::PreparationResources>,
     pending: Option<Pending>,
     outcome: SessionOutcome,
+    session_closed: bool,
 ) -> Result<(bool, Option<Effect>), WorkerError> {
     let Some(context) = pending else {
         if let SessionOutcome::GenerationClosed { generation } = outcome {
             scheduler::lifecycle_transaction(&store, move |tx| {
-                SchedulerRepository::disconnect_account(tx, &account, generation, now(), false)
+                disconnect_provider_generation(tx, &account, generation)
             })
             .await?;
         }
@@ -805,16 +823,12 @@ pub(super) async fn outcome(
                 outcome, ticket, ..
             } => {
                 let not_sent = outcome == WriteOutcome::NotSent;
-                uncertain(tx, &context, ticket.as_ref(), not_sent)?;
-                not_sent
+                uncertain(tx, &context, ticket.as_ref(), not_sent, session_closed)? || not_sent
             }
             SessionOutcome::Resolved {
                 outcome: RequestOutcome::Unknown,
                 ticket,
-            } => {
-                uncertain(tx, &context, Some(&ticket), false)?;
-                false
-            }
+            } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
             SessionOutcome::Resolved {
                 ticket,
                 outcome: RequestOutcome::Reply { body, .. },
@@ -953,12 +967,38 @@ pub(super) async fn disconnect_vm_actor(
     .await?;
     Ok(disconnected)
 }
+/// Disconnect one ended provider generation and tell each interrupted child's
+/// parent. The notice id is the stop id a later connection recovery would use
+/// for the same turn or start attempt, so each parent hears of the stop once.
+pub(super) fn disconnect_provider_generation(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    generation: u64,
+) -> studio_runtime_store::StoreResult<()> {
+    let at = now();
+    for agent in SchedulerRepository::disconnect_account(tx, account, generation, at, false)? {
+        crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent, at)?;
+    }
+    Ok(())
+}
+/// Settle a request whose provider outcome is unknown. Returns true when the
+/// request is retired because its attempt went back to the queue.
 fn uncertain(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
     ticket: Option<&studio_runtime_providers::RequestTicket>,
     not_sent: bool,
-) -> Result<(), WorkerError> {
+    session_closed: bool,
+) -> Result<bool, WorkerError> {
+    let thread_request = !matches!(context.method()?, Method::TurnInterrupt | Method::TurnStart);
+    // A thread request that died with its provider process never submitted the
+    // input; the attempt retries on the next session instead of holding it.
+    if thread_request
+        && session_closed
+        && SchedulerRepository::requeue_unsubmitted_attempt(tx, &context.intent.identity())?
+    {
+        return Ok(true);
+    }
     if context.method()? == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
         SchedulerRepository::settle_interrupt(
@@ -991,7 +1031,7 @@ fn uncertain(
             },
         )?;
     }
-    Ok(())
+    Ok(false)
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn journal_batch(
@@ -1473,11 +1513,11 @@ pub(super) async fn stop(
     .await
 }
 pub(super) fn interrupt_intent(
-    store: &RuntimeStore,
+    connection: &rusqlite::Connection,
     agent: &str,
     thread: &str,
 ) -> Result<Option<(TurnIntent, i64)>, WorkerError> {
-    let Some(a) = AgentRepository::get(&*store.read()?, &AgentId::from(agent))? else {
+    let Some(a) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(None);
     };
     let attempt = &a.extra.get("startAttempt").unwrap_or(&Value::Null);
@@ -1683,10 +1723,9 @@ pub(super) async fn complete_effect(store: &RuntimeStore, key: &str) -> Result<(
         .await
 }
 pub(super) fn recover_effects(
-    store: &RuntimeStore,
+    connection: &rusqlite::Connection,
     account: &str,
 ) -> Result<VecDeque<Effect>, WorkerError> {
-    let connection = store.read()?;
     let prefix = format!("account-worker:effect:{account}:");
     let mut stmt = connection.prepare(
         "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.order'),rowid LIMIT 33",
@@ -2314,10 +2353,9 @@ pub(super) async fn flush_streams(
 
 /// Durable retry registration survives releasing an unsubmitted claim on restart.
 pub(super) fn pending_preparations(
-    store: &RuntimeStore,
+    db: &rusqlite::Connection,
     account: &str,
 ) -> Result<Vec<(String, i64, String, String)>, WorkerError> {
-    let db = store.read()?;
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
     let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id LIMIT 33")?;
@@ -2329,7 +2367,7 @@ pub(super) fn pending_preparations(
     }
     ids.into_iter()
         .map(|id| {
-            let row = AgentRepository::get(&db, &AgentId::from(id.as_str()))?
+            let row = AgentRepository::get(db, &AgentId::from(id.as_str()))?
                 .ok_or_else(|| invalid(&id))?;
             let reason = row
                 .extra

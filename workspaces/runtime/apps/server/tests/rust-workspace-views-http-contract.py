@@ -108,6 +108,20 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "version": 1,
                     "dependencies": [],
                 })
+                # Work written before creator tracking has no createdBy.
+                runtime.put(db, "work", {
+                    "id": "workspace-view-legacy-review",
+                    "rootId": lead["id"],
+                    "title": "Legacy review",
+                    "description": "Written before createdBy existed",
+                    "status": "review",
+                    "created": 1.5,
+                    "updated": 1.5,
+                    "version": 1,
+                    "dependencies": ["workspace-view-work"],
+                    "decisions": [],
+                    "results": [],
+                })
                 runtime.put(db, "work", {
                     "id": "workspace-view-other-review",
                     "rootId": other["id"],
@@ -354,22 +368,24 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         finally:
             self._write_record("runtime_agents", self.other_id, original)
 
-    def test_task_feed_refuses_invalid_agent_and_mismatched_row_id(self) -> None:
+    def test_task_feed_reads_only_served_rows_and_refuses_a_mismatched_row_id(self) -> None:
+        # The feed must not decode the whole task table: a malformed row outside
+        # every team scope neither appears nor makes the feed unavailable.
         row_id = "workspace-task-000"
         original = self._record("runtime_tasks", row_id)
         invalid_agent = {**original, "agent": 123}
         self._write_record("runtime_tasks", row_id, invalid_agent)
         try:
-            response = self.backend.request(
-                "GET", "/api/workspace/tasks?" + urlencode({"agent": self.lead_id}),
-            )
-            if self.rust_backend:
-                assert_stored_data_unavailable(self, response, f"runtime_tasks/{row_id}")
-            else:
+            for query in ({"agent": self.lead_id}, {}):
+                response = self.backend.request("GET", "/api/workspace/tasks?" + urlencode(query))
                 self.assertEqual(response.status, 200, response.body[:1000])
+                self.assertNotIn(row_id, {task["id"] for task in response.json()["tasks"]})
         finally:
             self._write_record("runtime_tasks", row_id, original)
 
+        # A served row is still checked.
+        row_id = "workspace-task-100"
+        original = self._record("runtime_tasks", row_id)
         self._write_record("runtime_tasks", row_id, {**original, "id": "different-task-id"})
         try:
             for path in (
@@ -404,6 +420,10 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertLessEqual(len(task["command"]), 2000)
         self.assertIn("workspace-view-complaint", {item["id"] for item in snapshot["inbox"]})
         self.assertNotIn("workspace-view-other-review", {item["id"] for item in snapshot["inbox"]})
+        legacy = next(item["work"] for item in snapshot["inbox"] if item["id"] == "workspace-view-legacy-review")
+        self.assertNotIn("createdBy", legacy)
+        self.assertEqual(legacy["blockedBy"], ["workspace-view-work"])
+        self.assertEqual(legacy["displayStatus"], "review")
         complaint_ids = [item["id"] for item in snapshot["inbox"] if item["kind"] == "complaint"]
         self.assertEqual(
             complaint_ids,

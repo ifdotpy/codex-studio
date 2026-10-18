@@ -2,8 +2,27 @@ use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-/// Largest accepted UTF-8 JSON payload, excluding its newline delimiter.
+/// Largest accepted UTF-8 JSON payload, excluding its LF or CRLF delimiter.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum wire bytes occupied by a frame's LF or CRLF delimiter.
+pub const MAX_FRAME_DELIMITER_BYTES: usize = 2;
+
+/// Count payload bytes in a complete wire frame, excluding LF or CRLF when present.
+#[must_use]
+pub fn frame_payload_bytes(frame: &[u8]) -> usize {
+    frame
+        .strip_suffix(b"\n")
+        .map_or(frame, |without_lf| {
+            without_lf.strip_suffix(b"\r").unwrap_or(without_lf)
+        })
+        .len()
+}
+
+/// Count payload bytes in a partial transport line, deferring a trailing CR until the next read.
+#[must_use]
+pub fn frame_prefix_payload_bytes(prefix: &[u8]) -> usize {
+    prefix.strip_suffix(b"\r").unwrap_or(prefix).len()
+}
 
 /// Numeric Codex IDs and string Claude bridge IDs are distinct on the wire.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -293,8 +312,9 @@ impl LineDecoder {
             .position(|byte| *byte == b'\n')
         {
             let end = consumed + relative_end;
-            if end > MAX_FRAME_BYTES {
-                consumed = end + 1;
+            let frame_end = end + 1;
+            if frame_payload_bytes(&self.buffer[consumed..frame_end]) > MAX_FRAME_BYTES {
+                consumed = frame_end;
                 decode_error = Some(CodecError::FrameTooLarge {
                     limit: MAX_FRAME_BYTES,
                 });
@@ -322,7 +342,7 @@ impl LineDecoder {
         if let Some(error) = decode_error {
             return Err(error);
         }
-        if self.buffer.len() > MAX_FRAME_BYTES {
+        if frame_prefix_payload_bytes(&self.buffer) > MAX_FRAME_BYTES {
             return Err(CodecError::FrameTooLarge {
                 limit: MAX_FRAME_BYTES,
             });
@@ -333,6 +353,10 @@ impl LineDecoder {
     pub fn finish(&mut self) -> Result<(), CodecError> {
         if self.buffer.is_empty() {
             Ok(())
+        } else if frame_payload_bytes(&self.buffer) > MAX_FRAME_BYTES {
+            Err(CodecError::FrameTooLarge {
+                limit: MAX_FRAME_BYTES,
+            })
         } else {
             Err(CodecError::TruncatedFrame {
                 buffered: self.buffer.len(),
@@ -561,7 +585,7 @@ fn decode_journal_frame(bytes: &[u8]) -> Result<Frame, CodecError> {
             line = without_carriage_return;
         }
     }
-    if line.len() > MAX_FRAME_BYTES {
+    if frame_payload_bytes(bytes) > MAX_FRAME_BYTES {
         Err(CodecError::FrameTooLarge {
             limit: MAX_FRAME_BYTES,
         })

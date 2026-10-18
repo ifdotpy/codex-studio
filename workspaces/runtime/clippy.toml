@@ -1,0 +1,6 @@
+# Blocking work has one entry point: `studio_runtime_store::blocking_pool::spawn_blocking`
+# (re-exported as `studio_runtime_process::blocking_pool`), which labels every call site.
+disallowed-methods = [
+    { path = "tokio::task::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
+    { path = "tokio::runtime::Handle::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
+]

@@ -23,6 +23,19 @@ fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame
     }
 }
 
+fn padded_unknown_method_frame(payload_bytes: usize, delimiter: &[u8]) -> Vec<u8> {
+    let prefix = br#"{"method":"unknown","padding":""#;
+    let suffix = b"\"}";
+    let fixed_bytes = prefix.len() + suffix.len();
+    assert!(payload_bytes >= fixed_bytes);
+    let mut frame = Vec::with_capacity(payload_bytes + delimiter.len());
+    frame.extend_from_slice(prefix);
+    frame.resize(payload_bytes - suffix.len(), b'x');
+    frame.extend_from_slice(suffix);
+    frame.extend_from_slice(delimiter);
+    frame
+}
+
 #[test]
 fn known_method_set_has_unique_reversible_wire_names() {
     let names = Method::all()
@@ -186,6 +199,68 @@ fn decoder_reports_malformed_oversized_and_truncated_frames() {
     assert!(matches!(
         truncated.finish(),
         Err(CodecError::TruncatedFrame { .. })
+    ));
+}
+
+#[test]
+fn line_decoder_limits_each_lf_or_crlf_frame_independently() {
+    let frame_limit = MAX_FRAME_BYTES;
+    let mut concatenated = padded_unknown_method_frame(frame_limit / 2, b"\n");
+    concatenated.extend_from_slice(&padded_unknown_method_frame(frame_limit / 2, b"\n"));
+    assert!(concatenated.len() > frame_limit);
+    let mut decoder = LineDecoder::new();
+    assert_eq!(
+        decoder
+            .push(&concatenated)
+            .expect("two bounded frames")
+            .len(),
+        2
+    );
+    decoder.finish().expect("both frames consumed");
+
+    let exact_lf = padded_unknown_method_frame(frame_limit, b"\n");
+    let mut decoder = LineDecoder::new();
+    assert_eq!(decoder.push(&exact_lf).expect("maximum LF frame").len(), 1);
+    decoder.finish().expect("LF frame consumed");
+
+    let exact_crlf = padded_unknown_method_frame(frame_limit, b"\r\n");
+    let split = exact_crlf.len() - 1;
+    let mut decoder = LineDecoder::new();
+    assert!(
+        decoder
+            .push(&exact_crlf[..split])
+            .expect("maximum CRLF frame before delimiter completion")
+            .is_empty()
+    );
+    let mut bare_cr_eof = LineDecoder::new();
+    bare_cr_eof
+        .push(&exact_crlf[..split])
+        .expect("pending CR is allowed until the delimiter resolves");
+    assert!(matches!(
+        bare_cr_eof.finish(),
+        Err(CodecError::FrameTooLarge { limit }) if limit == frame_limit
+    ));
+    assert_eq!(
+        decoder
+            .push(&exact_crlf[split..])
+            .expect("split CRLF completes maximum frame")
+            .len(),
+        1
+    );
+    decoder.finish().expect("CRLF frame consumed");
+
+    let oversized = padded_unknown_method_frame(frame_limit + 1, b"\n");
+    let mut decoder = LineDecoder::new();
+    assert!(matches!(
+        decoder.push(&oversized),
+        Err(CodecError::FrameTooLarge { limit }) if limit == frame_limit
+    ));
+
+    let oversized_crlf = padded_unknown_method_frame(frame_limit + 1, b"\r\n");
+    let mut decoder = LineDecoder::new();
+    assert!(matches!(
+        decoder.push(&oversized_crlf),
+        Err(CodecError::FrameTooLarge { limit }) if limit == frame_limit
     ));
 }
 

@@ -278,6 +278,7 @@ impl HostRuntime {
             supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
                 .is_ok_and(|value| value == "1"),
             child_priority: ChildPriority::from_environment(),
+            provider_stderr_log: state.app_server_log_handle(),
             accounts,
             store: store.clone(),
             root: store.root().to_owned(),
@@ -443,6 +444,7 @@ struct HostLauncher {
     factory: SupervisorProviderTaskFactory,
     supervisor_mode: bool,
     child_priority: ChildPriority,
+    provider_stderr_log: Option<studio_runtime_process::operational_log::OperationalLog>,
     accounts: Arc<AccountDriver>,
     store: Arc<RuntimeStore>,
     root: PathBuf,
@@ -1943,18 +1945,19 @@ impl AccountLauncher for HostLauncher {
                 (Arc::new(prepared), generation)
             } else {
                 let generation = next_direct_generation(&self.store, &account).await?;
-                let prepared = DirectProviderTaskFactory::new(self.child_priority)
-                    .prepare(
-                        handle.clone(),
-                        OpenOptions {
-                            expected_generation: Some(generation),
-                            ..open
-                        },
-                        &Shutdown::default(),
-                    )
-                    .map_err(
-                        studio_runtime_services::provider_session_task::SessionTaskError::from,
-                    )?;
+                let prepared = DirectProviderTaskFactory::new(
+                    self.child_priority,
+                    self.provider_stderr_log.clone(),
+                )
+                .prepare(
+                    handle.clone(),
+                    OpenOptions {
+                        expected_generation: Some(generation),
+                        ..open
+                    },
+                    &Shutdown::default(),
+                )
+                .map_err(studio_runtime_services::provider_session_task::SessionTaskError::from)?;
                 debug_assert_eq!(generation, prepared.generation());
                 (Arc::new(prepared), generation)
             };

@@ -196,10 +196,13 @@ async fn queued_reply_is_checked_under_the_same_gate_as_resolution_and_stop() {
         let runtime = Arc::new(CallbackRuntime::new(store.clone(), mailbox.clone()));
         let queued = reply.clone();
         let waiting = tokio::spawn(async move { mailbox.deliver(&queued, REPLY_DEADLINE).await });
-        let queued = tokio::task::spawn_blocking(move || receiver.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let queued = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/tests/wave7_p04_review",
+            move || receiver.recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         if action == "resolve" {
             runtime
                 .resolve(&context, &RequestId::Number(42), 21.0)
@@ -416,10 +419,13 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                         tokio::spawn(
                             async move { mailbox.deliver(&for_port, REPLY_DEADLINE).await },
                         );
-                    let queued = tokio::task::spawn_blocking(move || receiver.recv())
-                        .await
-                        .unwrap()
-                        .unwrap();
+                    let queued = studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-services/tests/wave7_p04_review",
+                        move || receiver.recv(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
                     if boundary >= 6 {
                         runtime
                             .submit_committed(&queued.reply, || async {

@@ -119,30 +119,33 @@ impl MultiServerBoundary {
         let invite_id_for_read = invite_id.clone();
         let store_for_read = Arc::clone(&store);
         let client_id = request.client_id().to_owned();
-        let (client, invite, auto_pair) = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction(|tx| {
-                let client = tx
-                    .query_row(
-                        "SELECT record FROM runtime_access_clients WHERE id=?1",
-                        [&client_id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?;
-                let invite = tx
-                    .query_row(
-                        "SELECT record FROM runtime_access_invites WHERE id=?1",
-                        [&invite_id_for_read],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?;
-                let auto_pair = tx.query_row(
-                    "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                )?;
-                Ok((client, invite, auto_pair))
-            })
-        })
+        let (client, invite, auto_pair) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_pairing",
+            move || {
+                store_for_read.read_transaction(|tx| {
+                    let client = tx
+                        .query_row(
+                            "SELECT record FROM runtime_access_clients WHERE id=?1",
+                            [&client_id],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .optional()?;
+                    let invite = tx
+                        .query_row(
+                            "SELECT record FROM runtime_access_invites WHERE id=?1",
+                            [&invite_id_for_read],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .optional()?;
+                    let auto_pair = tx.query_row(
+                        "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+                        [],
+                        |r| r.get::<_, bool>(0),
+                    )?;
+                    Ok((client, invite, auto_pair))
+                })
+            },
+        )
         .await
         .map_err(|_| {
             refused(
@@ -241,17 +244,20 @@ impl MultiServerBoundary {
         }
         let store_for_read = Arc::clone(&store);
         let client_id = request.client_id().to_owned();
-        let saved_client = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction(|tx| {
-                Ok(tx
-                    .query_row(
-                        "SELECT record FROM runtime_access_clients WHERE id=?1",
-                        [&client_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?)
-            })
-        })
+        let saved_client = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_pairing",
+            move || {
+                store_for_read.read_transaction(|tx| {
+                    Ok(tx
+                        .query_row(
+                            "SELECT record FROM runtime_access_clients WHERE id=?1",
+                            [&client_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?)
+                })
+            },
+        )
         .await
         .map_err(|_| {
             refused(
@@ -390,15 +396,18 @@ impl MultiServerBoundary {
         let mut identity = (self.identity)(&store).await?;
         auth::schema("ServerIdentityResponse", &identity)?;
         let store_for_read = Arc::clone(&store);
-        let enabled = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction(|tx| {
-                Ok(tx.query_row(
-                    "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                )?)
-            })
-        })
+        let enabled = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_pairing",
+            move || {
+                store_for_read.read_transaction(|tx| {
+                    Ok(tx.query_row(
+                        "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+                        [],
+                        |r| r.get::<_, bool>(0),
+                    )?)
+                })
+            },
+        )
         .await
         .map_err(|_| {
             refused(

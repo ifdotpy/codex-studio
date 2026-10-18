@@ -343,19 +343,22 @@ impl ProductionLifecyclePorts {
             }
             // A rollback leaves no durable matching receipt, so discard the
             // in-memory candidate without contacting the provider.
-            let persisted = {
-                let reader = self.store.read()?;
-                let Some(agent) =
-                    AgentRepository::get(&reader, &AgentId::from(request.agent.as_str()))?
-                else {
-                    continue;
-                };
-                let interrupt =
-                    &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
-                interrupt["requestTicket"].as_str() == Some(request.ticket.as_str())
-                    && interrupt["outcome"].as_str() == Some("unknown")
-                    && agent.epoch == request.epoch.saturating_add(1)
-            };
+            let agent_id = AgentId::from(request.agent.as_str());
+            let ticket = request.ticket.clone();
+            let epoch = request.epoch;
+            let persisted = self
+                .store
+                .read_async("runtime-services/lifecycle_effects", move |tx| {
+                    let Some(agent) = AgentRepository::get(tx, &agent_id)? else {
+                        return Ok::<_, studio_runtime_store::StoreError>(false);
+                    };
+                    let interrupt =
+                        &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
+                    Ok(interrupt["requestTicket"].as_str() == Some(ticket.as_str())
+                        && interrupt["outcome"].as_str() == Some("unknown")
+                        && agent.epoch == epoch.saturating_add(1))
+                })
+                .await?;
             if !persisted {
                 continue;
             }
@@ -385,21 +388,24 @@ impl ProductionLifecyclePorts {
     }
 
     async fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
-        let pending = self.store.read_transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT id,server,body FROM runtime_server_outbox \
+        let pending = self
+            .store
+            .read_async("runtime-services/lifecycle_effects", |tx| {
+                let mut statement = tx.prepare(
+                    "SELECT id,server,body FROM runtime_server_outbox \
                  WHERE state IN ('queued','running') ORDER BY rowid",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(studio_runtime_store::StoreError::from)
-        })?;
+                )?;
+                let rows = statement.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -438,19 +444,24 @@ impl ProductionLifecyclePorts {
     }
 
     async fn reconcile_deleted_tombstones(&self) -> Result<(), ManagementError> {
-        let pending = self.store.read_transaction(|tx| {
-            let mut pending = Vec::new();
-            for (id, raw) in
-                studio_runtime_store::StartupRecoveryRepository::deleted_agents_maybe_unsettled(tx)?
-            {
-                let record: Value =
-                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-                if needs_deleted_settlement(&record) {
-                    pending.push(id);
+        let pending = self
+            .store
+            .read_async("runtime-services/lifecycle_effects", |tx| {
+                let mut pending = Vec::new();
+                for (id, raw) in
+                    studio_runtime_store::StartupRecoveryRepository::deleted_agents_maybe_unsettled(
+                        tx,
+                    )?
+                {
+                    let record: Value = serde_json::from_str(&raw)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    if needs_deleted_settlement(&record) {
+                        pending.push(id);
+                    }
                 }
-            }
-            Ok::<_, studio_runtime_store::StoreError>(pending)
-        })?;
+                Ok::<_, studio_runtime_store::StoreError>(pending)
+            })
+            .await?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -681,17 +692,20 @@ impl ProductionLifecyclePorts {
 
 impl ProductionLifecyclePorts {
     async fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
-        let intents = self.store.read_transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
+        let intents = self
+            .store
+            .read_async("runtime-services/lifecycle_effects", |tx| {
+                let mut statement = tx.prepare(
+                    "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
                  WHERE signature=?1 AND json_extract(result,'$.status')='pending' ORDER BY id",
-            )?;
-            let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(studio_runtime_store::StoreError::from)
-        })?;
+                )?;
+                let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await?;
         if intents.is_empty() {
             return Ok(());
         }
@@ -1151,15 +1165,58 @@ fn notify_parent_with_id(
         payload.to_string(),
         effect.at(),
     )
-    .map_err(|error| {
-        ManagementError::Invalid(match error {
-            event_write::EventWriteError::RemoteEventsUnavailable => {
-                "Remote child event unavailable"
-            }
-            _ => "Unable to write child stop event",
-        })
+    .map_err(|error| match error {
+        event_write::EventWriteError::RemoteEventsUnavailable => {
+            ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
+        }
+        event_write::EventWriteError::Store(error) => ManagementError::Store(error),
+        _ => ManagementError::Invalid("Unable to write child stop event"),
     })?;
     Ok(())
+}
+
+/// Tell a disconnected child's parent that its turn or start attempt stopped.
+///
+/// The id is the one [`notify_parent`] derives for the same stop, so a later
+/// connection-recovery stop notice for this turn is a no-op. A child without a
+/// stored parent has nobody to tell.
+pub(crate) fn notify_parent_of_disconnect(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let Some(raw) = AgentRepository::get_raw(tx, &AgentId::from(agent_id))? else {
+        return Ok(());
+    };
+    let stopped: Value = serde_json::from_str(&raw).map_err(|_| {
+        studio_runtime_store::StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: agent_id.into(),
+        }
+    })?;
+    let Some(parent) = stopped.get("parentId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if AgentRepository::get(tx, &AgentId::from(parent))?.is_none() {
+        return Ok(());
+    }
+    let mut before = stopped.clone();
+    if !studio_runtime_store::truthy(before.get("turnId")) {
+        before["startAttempt"] = stopped["disconnectRecovery"]["startAttempt"].clone();
+    }
+    let effect = LifecycleEffect::new(LifecycleEffectKind::NotifyParent, before, stopped, at);
+    match notify_parent(tx, &effect) {
+        // A remote proxy has no local event queue. Its disconnect still commits.
+        // A local queue write failure remains an error so the transaction rolls back.
+        Ok(())
+        | Err(ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)) => {
+            Ok(())
+        }
+        Err(ManagementError::Store(error)) => Err(error),
+        Err(other) => Err(studio_runtime_store::StoreError::SchemaMismatch(
+            other.to_string(),
+        )),
+    }
 }
 
 /// The fields every `child_result` payload carries (Python `Runtime.parent_event`).

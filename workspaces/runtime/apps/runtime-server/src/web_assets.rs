@@ -102,10 +102,12 @@ async fn read_asset(assets: &WebAssets, relative: &str) -> Result<Vec<u8>, ReadA
         return Err(ReadAssetError::NotFound);
     }
     let resolved = resolved.clone();
-    tokio::task::spawn_blocking(move || fs::read(resolved))
-        .await
-        .map_err(|_| ReadAssetError::NotFound)?
-        .map_err(|_| ReadAssetError::NotFound)
+    studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/web_assets", move || {
+        fs::read(resolved)
+    })
+    .await
+    .map_err(|_| ReadAssetError::NotFound)?
+    .map_err(|_| ReadAssetError::NotFound)
 }
 
 fn response(relative: &str, bytes: Vec<u8>) -> Response {

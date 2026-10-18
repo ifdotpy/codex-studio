@@ -518,6 +518,12 @@ impl HttpState {
             .await
     }
 
+    /// The state directory's provider stderr log, once opened; one writer owns
+    /// its rotation, so every provider child shares this handle.
+    pub fn app_server_log_handle(&self) -> Option<OperationalLog> {
+        self.app_server_log.clone()
+    }
+
     /// Cancellation shared with blocking local cost scans during shutdown.
     pub fn cost_scan_cancellation_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
         Arc::clone(&self.cost_scan_cancelled)

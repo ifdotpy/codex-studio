@@ -361,9 +361,10 @@ impl crate::multi_server_orchestration::BrowserCallbackEffect for BrowserCallbac
         Box::pin(async move {
             let store = Arc::clone(&self.store);
             let payload = envelope["payload"].clone();
-            tokio::task::spawn_blocking(move || {
-                BrowserCallbackReceiver::new(store).receive(&payload)
-            })
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/browser",
+                move || BrowserCallbackReceiver::new(store).receive(&payload),
+            )
             .await
             .map_err(|_| {
                 crate::multi_server_auth::refused(

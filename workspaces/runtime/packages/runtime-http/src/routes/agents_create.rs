@@ -1160,109 +1160,112 @@ async fn wait_for_agent_catalog(
     let require_model_match = request.require_model_match;
     let candidate_data = tokio::time::timeout_at(
         deadline,
-        tokio::task::spawn_blocking(move || {
-            let snapshot = driver.listing_snapshot().map_err(|_| ())?;
-            let mut parent_account = preferred_parent_account;
-            let mut selected_account = None;
-            let mut root_model = None;
-            let mut worker_model = None;
-            let mut excluded = std::collections::HashSet::new();
-            if let Some(parent_id) = parent_id.as_deref() {
-                let connection = store.as_deref().ok_or(())?.read().map_err(|_| ())?;
-                let parent = studio_runtime_store::system_reads::get(
-                    &connection,
-                    "runtime_agents",
-                    parent_id,
-                )
-                .map_err(|_| ())?
-                .ok_or(())?;
-                parent_account = parent
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                if let Some(root_id) = parent.get("rootId").and_then(Value::as_str) {
-                    let root = studio_runtime_store::system_reads::get(
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agents_create",
+            move || {
+                let snapshot = driver.listing_snapshot().map_err(|_| ())?;
+                let mut parent_account = preferred_parent_account;
+                let mut selected_account = None;
+                let mut root_model = None;
+                let mut worker_model = None;
+                let mut excluded = std::collections::HashSet::new();
+                if let Some(parent_id) = parent_id.as_deref() {
+                    let connection = store.as_deref().ok_or(())?.read().map_err(|_| ())?;
+                    let parent = studio_runtime_store::system_reads::get(
                         &connection,
                         "runtime_agents",
-                        root_id,
+                        parent_id,
                     )
                     .map_err(|_| ())?
-                    .unwrap_or(parent);
-                    if !ignore_stored_worker_account {
-                        selected_account = root
-                            .pointer("/workerDefaults/accountKey")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned);
+                    .ok_or(())?;
+                    parent_account = parent
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    if let Some(root_id) = parent.get("rootId").and_then(Value::as_str) {
+                        let root = studio_runtime_store::system_reads::get(
+                            &connection,
+                            "runtime_agents",
+                            root_id,
+                        )
+                        .map_err(|_| ())?
+                        .unwrap_or(parent);
+                        if !ignore_stored_worker_account {
+                            selected_account = root
+                                .pointer("/workerDefaults/accountKey")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                        }
+                        root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
+                        if !ignore_stored_worker_account {
+                            worker_model = root
+                                .pointer("/workerDefaults/model")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                        }
+                        excluded.extend(
+                            root.get("excludedAccountKeys")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned),
+                        );
                     }
-                    root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
-                    if !ignore_stored_worker_account {
-                        worker_model = root
-                            .pointer("/workerDefaults/model")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned);
-                    }
-                    excluded.extend(
-                        root.get("excludedAccountKeys")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned),
-                    );
                 }
-            }
-            let explicit_account = requested_account.is_some();
-            let explicit = requested_account;
-            let model = requested_model
-                .or(worker_model)
-                .or(root_model)
-                .unwrap_or_else(|| "gpt-6-astra".to_owned());
-            let provider = if model.starts_with("gpt-") {
-                Some("codex")
-            } else if model.starts_with("claude-")
-                || matches!(model.as_str(), "default" | "sonnet" | "opus" | "haiku")
-            {
-                Some("claude")
-            } else {
-                None
-            };
-            let pinned = explicit.or(selected_account);
-            let mut keys = Vec::new();
-            let mut add = |key: Option<&str>, expected_provider: Option<&str>| {
-                if let Some(key) = key.filter(|key| !excluded.contains(*key))
-                    && !keys.iter().any(|known| known == key)
-                    && expected_provider.is_none_or(|expected| {
-                        snapshot
-                            .accounts
-                            .iter()
-                            .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
-                            .and_then(|row| row.get("provider").and_then(Value::as_str))
-                            .unwrap_or("codex")
-                            == expected
-                    })
+                let explicit_account = requested_account.is_some();
+                let explicit = requested_account;
+                let model = requested_model
+                    .or(worker_model)
+                    .or(root_model)
+                    .unwrap_or_else(|| "gpt-6-astra".to_owned());
+                let provider = if model.starts_with("gpt-") {
+                    Some("codex")
+                } else if model.starts_with("claude-")
+                    || matches!(model.as_str(), "default" | "sonnet" | "opus" | "haiku")
                 {
-                    keys.push(key.to_owned());
+                    Some("claude")
+                } else {
+                    None
+                };
+                let pinned = explicit.or(selected_account);
+                let mut keys = Vec::new();
+                let mut add = |key: Option<&str>, expected_provider: Option<&str>| {
+                    if let Some(key) = key.filter(|key| !excluded.contains(*key))
+                        && !keys.iter().any(|known| known == key)
+                        && expected_provider.is_none_or(|expected| {
+                            snapshot
+                                .accounts
+                                .iter()
+                                .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
+                                .and_then(|row| row.get("provider").and_then(Value::as_str))
+                                .unwrap_or("codex")
+                                == expected
+                        })
+                    {
+                        keys.push(key.to_owned());
+                    }
+                };
+                if let Some(key) = pinned.as_deref() {
+                    add(Some(key), None);
+                } else {
+                    add(parent_account.as_deref(), provider);
+                    add(snapshot.default_account_key.as_str(), provider);
+                    for row in &snapshot.accounts {
+                        let key = row.get("id").and_then(Value::as_str);
+                        add(key, provider);
+                    }
                 }
-            };
-            if let Some(key) = pinned.as_deref() {
-                add(Some(key), None);
-            } else {
-                add(parent_account.as_deref(), provider);
-                add(snapshot.default_account_key.as_str(), provider);
-                for row in &snapshot.accounts {
-                    let key = row.get("id").and_then(Value::as_str);
-                    add(key, provider);
-                }
-            }
-            let accounts = catalog_admission_candidates(
-                &snapshot.accounts,
-                &keys,
-                parent_account.as_deref(),
-                pinned.is_some(),
-                provider,
-            );
-            Ok::<_, ()>((accounts, model, explicit_account))
-        }),
+                let accounts = catalog_admission_candidates(
+                    &snapshot.accounts,
+                    &keys,
+                    parent_account.as_deref(),
+                    pinned.is_some(),
+                    provider,
+                );
+                Ok::<_, ()>((accounts, model, explicit_account))
+            },
+        ),
     )
     .await
     .map_err(|_| operation_error(OperationError::Unavailable("provider-session/model-list")))?

@@ -156,28 +156,32 @@ impl PairedTransport for HttpsPairedTransport {
             let envelope = envelope.clone();
             let store_for_identity = Arc::clone(&store);
             let server_for_lookup = server.clone();
-            let (origin, public_key) = tokio::task::spawn_blocking(move || {
-                Self::paired_server_identity(&store_for_identity, &server_for_lookup)
-            })
+            let (origin, public_key) = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || Self::paired_server_identity(&store_for_identity, &server_for_lookup),
+            )
             .await
             .map_err(|_| refused(503, "client_revoked", "The server is not paired"))??;
             let root = store.root().to_path_buf();
-            let identity = tokio::task::spawn_blocking(move || load_multi_server_identity(&root))
-                .await
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "identity_unavailable",
-                        "The local server identity is unavailable",
-                    )
-                })?
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "identity_unavailable",
-                        "The local server identity is unavailable",
-                    )
-                })?;
+            let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || load_multi_server_identity(&root),
+            )
+            .await
+            .map_err(|_| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The local server identity is unavailable",
+                )
+            })?
+            .map_err(|_| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The local server identity is unavailable",
+                )
+            })?;
             let request_id = text(&envelope, "requestId").to_owned();
             let url = format!("{}/api/servers/orchestration", origin.trim_end_matches('/'));
             let body = canonical_json(&envelope)
@@ -217,25 +221,28 @@ impl PairedTransport for HttpsPairedTransport {
             let public_key_for_call = public_key.clone();
             let server_for_call = server.clone();
             let url_for_call = url.clone();
-            let response = tokio::task::spawn_blocking(move || {
-                let headers = owned_headers
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value.as_str()))
-                    .collect::<Vec<_>>();
-                exchange_paired_request(
-                    &store,
-                    PairedRequest {
-                        server_id: &server_for_call,
-                        public_key: &public_key_for_call,
-                        method: "POST",
-                        url: &url_for_call,
-                        headers: &headers,
-                        body: &body,
-                        timeout,
-                        response_limit: MAX_RESPONSE_BYTES,
-                    },
-                )
-            })
+            let response = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || {
+                    let headers = owned_headers
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_str()))
+                        .collect::<Vec<_>>();
+                    exchange_paired_request(
+                        &store,
+                        PairedRequest {
+                            server_id: &server_for_call,
+                            public_key: &public_key_for_call,
+                            method: "POST",
+                            url: &url_for_call,
+                            headers: &headers,
+                            body: &body,
+                            timeout,
+                            response_limit: MAX_RESPONSE_BYTES,
+                        },
+                    )
+                },
+            )
             .await
             .map_err(|_| {
                 refused(
@@ -486,27 +493,30 @@ impl RuntimeOrchestrationEffects {
                 ));
             }
             let store_for_identity = Arc::clone(&self.store);
-            let local_server =
-                tokio::task::spawn_blocking(move || store_for_identity.local_server_id())
-                    .await
-                    .map_err(|_| {
-                        refused(
-                            503,
-                            "identity_unavailable",
-                            "The server identity is unavailable",
-                        )
-                    })??
-                    .ok_or_else(|| {
-                        refused(
-                            503,
-                            "identity_unavailable",
-                            "The server identity is unavailable",
-                        )
-                    })?;
+            let local_server = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || store_for_identity.local_server_id(),
+            )
+            .await
+            .map_err(|_| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The server identity is unavailable",
+                )
+            })??
+            .ok_or_else(|| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The server identity is unavailable",
+                )
+            })?;
             let canonical_path_for_info = canonical_path.to_owned();
-            let git_origin = tokio::task::spawn_blocking(move || {
-                crate::projects::peer_location_info(&canonical_path_for_info)
-            })
+            let git_origin = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || crate::projects::peer_location_info(&canonical_path_for_info),
+            )
             .await
             .map_err(|_| {
                 refused(
@@ -586,17 +596,19 @@ impl RuntimeOrchestrationEffects {
                 .await?;
         }
         let store_for_identity = Arc::clone(&self.store);
-        let local_server =
-            tokio::task::spawn_blocking(move || store_for_identity.local_server_id())
-                .await
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "identity_unavailable",
-                        "The server identity is unavailable",
-                    )
-                })??
-                .unwrap_or_default();
+        let local_server = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || store_for_identity.local_server_id(),
+        )
+        .await
+        .map_err(|_| {
+            refused(
+                503,
+                "identity_unavailable",
+                "The server identity is unavailable",
+            )
+        })??
+        .unwrap_or_default();
         Ok(ExchangeOutcome::Applied(
             json!({"removed":true,"serverId":local_server}),
         ))
@@ -634,17 +646,20 @@ impl RuntimeOrchestrationEffects {
             let store = Arc::clone(&self.store);
             let target_id = target_id.to_owned();
             Some(
-                tokio::task::spawn_blocking(move || {
-                    let connection = store.read()?;
-                    crate::message_admission::MessageIngressAdmission::load(
-                        Arc::clone(&store),
-                        &connection,
-                        &target_id,
-                    )
-                    .map_err(|_| {
-                        refused(503, "send_admission", "The message could not be admitted")
-                    })
-                })
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/multi_server_orchestration",
+                    move || {
+                        let connection = store.read()?;
+                        crate::message_admission::MessageIngressAdmission::load(
+                            Arc::clone(&store),
+                            &connection,
+                            &target_id,
+                        )
+                        .map_err(|_| {
+                            refused(503, "send_admission", "The message could not be admitted")
+                        })
+                    },
+                )
                 .await
                 .map_err(|_| {
                     refused(503, "send_admission", "The message could not be admitted")
@@ -848,55 +863,57 @@ async fn receive_remote_anchor_input(
     let link_id_for_read = link_id.to_owned();
     let principal_for_read = principal.to_owned();
     let parent_epoch_for_read = parent_epoch;
-    let (parent_id, admission) = tokio::task::spawn_blocking(move || {
-        let connection = store_for_read.read()?;
-        let raw: Option<String> = connection
-            .query_row(
-                "SELECT record FROM runtime_server_links WHERE id=?1",
-                [link_id_for_read],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let link: Value = raw
-            .as_deref()
-            .and_then(|raw| serde_json::from_str(raw).ok())
-            .ok_or_else(|| {
-                refused(
-                    404,
-                    "link_unavailable",
-                    "The remote-parent link is unavailable",
+    let (parent_id, admission) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/multi_server_orchestration",
+        move || {
+            let connection = store_for_read.read()?;
+            let raw: Option<String> = connection
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [link_id_for_read],
+                    |row| row.get(0),
                 )
+                .optional()?;
+            let link: Value = raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .ok_or_else(|| {
+                    refused(
+                        404,
+                        "link_unavailable",
+                        "The remote-parent link is unavailable",
+                    )
+                })?;
+            if link.get("side").and_then(Value::as_str) != Some("home")
+                || link.get("server").and_then(Value::as_str) != Some(principal_for_read.as_str())
+                || link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch_for_read)
+            {
+                return Err(refused(
+                    403,
+                    "link_owner",
+                    "The remote-parent link is invalid",
+                ));
+            }
+            let parent_id = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
+                refused(503, "invalid_record", "The remote-parent link is invalid")
             })?;
-        if link.get("side").and_then(Value::as_str) != Some("home")
-            || link.get("server").and_then(Value::as_str) != Some(principal_for_read.as_str())
-            || link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch_for_read)
-        {
-            return Err(refused(
-                403,
-                "link_owner",
-                "The remote-parent link is invalid",
-            ));
-        }
-        let parent_id = link
-            .get("parent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
-        let parent = studio_runtime_store::AgentRepository::get(
-            &connection,
-            &studio_runtime_store::AgentId::from(parent_id),
-        )?
-        .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
-        if parent.epoch != parent_epoch {
-            return Err(refused(409, "parent_changed", "The home agent changed"));
-        }
-        let admission = crate::message_admission::MessageIngressAdmission::load(
-            Arc::clone(&store_for_read),
-            &connection,
-            parent_id,
-        )
-        .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-        Ok::<_, AccessError>((parent_id.to_owned(), admission))
-    })
+            let parent = studio_runtime_store::AgentRepository::get(
+                &connection,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
+            if parent.epoch != parent_epoch {
+                return Err(refused(409, "parent_changed", "The home agent changed"));
+            }
+            let admission = crate::message_admission::MessageIngressAdmission::load(
+                Arc::clone(&store_for_read),
+                &connection,
+                parent_id,
+            )
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+            Ok::<_, AccessError>((parent_id.to_owned(), admission))
+        },
+    )
     .await
     .map_err(|_| refused(503, "input_rejected", "The remote input was not admitted"))??;
 
@@ -1079,89 +1096,94 @@ async fn receive_remote_input(
     let control_epoch_for_read = control_epoch;
     let remote_epoch_for_read = remote_epoch;
     let kind_for_read = kind.to_owned();
-    let preflight = tokio::task::spawn_blocking(move || {
-        let connection = store_for_read.read()?;
-        let raw: Option<String> = connection
-            .query_row(
-                "SELECT record FROM runtime_server_links WHERE id=?1",
-                [link_id_for_read],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let link: Value = raw
-            .as_deref()
-            .and_then(|raw| serde_json::from_str(raw).ok())
+    let preflight = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/multi_server_orchestration",
+        move || {
+            let connection = store_for_read.read()?;
+            let raw: Option<String> = connection
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [link_id_for_read],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let link: Value = raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .ok_or_else(|| {
+                    refused(
+                        404,
+                        "link_unavailable",
+                        "The remote-parent link is unavailable",
+                    )
+                })?;
+            if link["side"] != "remote"
+                || link["server"] != principal_for_read
+                || link["parentEpoch"].as_i64() != Some(parent_epoch_for_read)
+                || !link["workers"].as_array().is_some_and(|workers| {
+                    workers
+                        .iter()
+                        .any(|worker| worker.as_str() == Some(worker_id_for_read.as_str()))
+                })
+            {
+                return Err(refused(
+                    403,
+                    "link_owner",
+                    "The remote-parent link is invalid",
+                ));
+            }
+            let worker = studio_runtime_store::AgentRepository::get(
+                &connection,
+                &studio_runtime_store::AgentId::from(worker_id_for_read.as_str()),
+            )?
             .ok_or_else(|| {
                 refused(
                     404,
-                    "link_unavailable",
-                    "The remote-parent link is unavailable",
+                    "worker_unavailable",
+                    "The remote worker is unavailable",
                 )
             })?;
-        if link["side"] != "remote"
-            || link["server"] != principal_for_read
-            || link["parentEpoch"].as_i64() != Some(parent_epoch_for_read)
-            || !link["workers"].as_array().is_some_and(|workers| {
-                workers
-                    .iter()
-                    .any(|worker| worker.as_str() == Some(worker_id_for_read.as_str()))
-            })
-        {
-            return Err(refused(
-                403,
-                "link_owner",
-                "The remote-parent link is invalid",
-            ));
-        }
-        let worker = studio_runtime_store::AgentRepository::get(
-            &connection,
-            &studio_runtime_store::AgentId::from(worker_id_for_read.as_str()),
-        )?
-        .ok_or_else(|| {
-            refused(
-                404,
-                "worker_unavailable",
-                "The remote worker is unavailable",
-            )
-        })?;
-        let observed_control = worker
-            .extra
-            .get("remoteControlEpoch")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        if observed_control < control_epoch_for_read {
-            return Ok((worker, None, Some(ExchangeOutcome::PreEffectWaiting)));
-        }
-        if observed_control != control_epoch_for_read
-            || worker
+            let observed_control = worker
                 .extra
-                .get("remoteEpoch")
+                .get("remoteControlEpoch")
                 .and_then(Value::as_i64)
-                .unwrap_or(0)
-                > remote_epoch_for_read
-        {
-            return Ok((
-                worker,
-                None,
-                Some(ExchangeOutcome::NotApplied(
-                    "The remote worker epoch changed".to_owned(),
-                )),
-            ));
-        }
-        let admission = if matches!(kind_for_read.as_str(), "user" | "followup") {
-            Some(
-                crate::message_admission::MessageIngressAdmission::load(
-                    Arc::clone(&store_for_read),
-                    &connection,
-                    worker_id_for_read.as_str(),
+                .unwrap_or(0);
+            if observed_control < control_epoch_for_read {
+                return Ok((worker, None, Some(ExchangeOutcome::PreEffectWaiting)));
+            }
+            if observed_control != control_epoch_for_read
+                || worker
+                    .extra
+                    .get("remoteEpoch")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    > remote_epoch_for_read
+            {
+                return Ok((
+                    worker,
+                    None,
+                    Some(ExchangeOutcome::NotApplied(
+                        "The remote worker epoch changed".to_owned(),
+                    )),
+                ));
+            }
+            let admission = if matches!(kind_for_read.as_str(), "user" | "followup") {
+                Some(
+                    crate::message_admission::MessageIngressAdmission::load(
+                        Arc::clone(&store_for_read),
+                        &connection,
+                        worker_id_for_read.as_str(),
+                    )
+                    .map_err(|_| {
+                        refused(400, "input_rejected", "The remote input was not admitted")
+                    })?,
                 )
-                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?,
-            )
-        } else {
-            None
-        };
-        Ok::<_, AccessError>((worker, admission, None))
-    })
+            } else {
+                None
+            };
+            Ok::<_, AccessError>((worker, admission, None))
+        },
+    )
     .await
     .map_err(|_| refused(503, "input_rejected", "The remote input was not admitted"))??;
     let (worker, admission, early_result) = preflight;
@@ -1351,9 +1373,10 @@ impl RuntimeOrchestrationEffects {
         if action == "folders" {
             let path = envelope["payload"].get("cwd").and_then(Value::as_str);
             let path = path.map(str::to_owned);
-            let result = tokio::task::spawn_blocking(move || {
-                crate::system_reads::directories(path.as_deref())
-            })
+            let result = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || crate::system_reads::directories(path.as_deref()),
+            )
             .await
             .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?
             .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?;
@@ -1368,23 +1391,26 @@ impl RuntimeOrchestrationEffects {
         }
         if action == "location_info" {
             let path = text(&envelope["payload"], "cwd").to_owned();
-            return tokio::task::spawn_blocking(move || crate::projects::peer_location_info(&path))
-                .await
-                .map_err(|_| {
-                    refused(
-                        400,
-                        "location_unavailable",
-                        "The project folder is unavailable",
-                    )
-                })?
-                .map(ExchangeOutcome::Applied)
-                .map_err(|_| {
-                    refused(
-                        400,
-                        "location_unavailable",
-                        "The project folder is unavailable",
-                    )
-                });
+            return studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || crate::projects::peer_location_info(&path),
+            )
+            .await
+            .map_err(|_| {
+                refused(
+                    400,
+                    "location_unavailable",
+                    "The project folder is unavailable",
+                )
+            })?
+            .map(ExchangeOutcome::Applied)
+            .map_err(|_| {
+                refused(
+                    400,
+                    "location_unavailable",
+                    "The project folder is unavailable",
+                )
+            });
         }
         if action == "location_matches" {
             let payload = &envelope["payload"];
@@ -1394,9 +1420,10 @@ impl RuntimeOrchestrationEffects {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             let store = Arc::clone(&self.store);
-            return tokio::task::spawn_blocking(move || {
-                crate::projects::peer_location_matches(&store, &origin, cwd.as_deref())
-            })
+            return studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/multi_server_orchestration",
+                move || crate::projects::peer_location_matches(&store, &origin, cwd.as_deref()),
+            )
             .await
             .map_err(|_| {
                 refused(
@@ -2234,16 +2261,19 @@ impl OrchestrationDriver {
         timeout: std::time::Duration,
     ) -> Result<ExchangeOutcome, AccessError> {
         let store_for_local = Arc::clone(&self.store);
-        let local_server = tokio::task::spawn_blocking(move || store_for_local.local_server_id())
-            .await
-            .map_err(|_| {
-                refused(
-                    503,
-                    "identity_unavailable",
-                    "The local server identity is unavailable",
-                )
-            })??
-            .unwrap_or_default();
+        let local_server = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || store_for_local.local_server_id(),
+        )
+        .await
+        .map_err(|_| {
+            refused(
+                503,
+                "identity_unavailable",
+                "The local server identity is unavailable",
+            )
+        })??
+        .unwrap_or_default();
         let is_local = !local_server.is_empty() && server == local_server;
         let envelope = Envelope::from_value(
             &json!({"requestId":request_id,"action":action,"payload":payload}),
@@ -2333,7 +2363,7 @@ impl OrchestrationDriver {
         let store = Arc::clone(&self.store);
         let key = envelope.key.clone();
         type Row = (String, String, Option<String>, String, Option<String>);
-        let row: Option<Row> = tokio::task::spawn_blocking(move || {
+        let row: Option<Row> = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/multi_server_orchestration", move || {
             store.read_transaction(|tx| {
                 tx.query_row(
                     "SELECT server,body,fingerprint,state,result FROM runtime_server_outbox WHERE id=?1",
@@ -2491,16 +2521,19 @@ impl OrchestrationDriver {
         now: i64,
     ) -> Result<ExchangeOutcome, AccessError> {
         let store_for_local = Arc::clone(&self.store);
-        let local_server = tokio::task::spawn_blocking(move || store_for_local.local_server_id())
-            .await
-            .map_err(|_| {
-                refused(
-                    503,
-                    "identity_unavailable",
-                    "The local server identity is unavailable",
-                )
-            })??
-            .unwrap_or_default();
+        let local_server = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || store_for_local.local_server_id(),
+        )
+        .await
+        .map_err(|_| {
+            refused(
+                503,
+                "identity_unavailable",
+                "The local server identity is unavailable",
+            )
+        })??
+        .unwrap_or_default();
         let is_local = !local_server.is_empty() && principal == local_server;
         let envelope = Envelope::from_value(value)?;
         if envelope.action == EXEC_RECEIPT_ACTION {
@@ -2694,26 +2727,30 @@ impl OrchestrationDriver {
     /// records its result in short transactions around the transport call.
     pub async fn pump_due(&self, now: i64) -> Result<usize, AccessError> {
         let store_for_read = Arc::clone(&self.store);
-        let pending = tokio::task::spawn_blocking(move || {
-            store_for_read.read_transaction(|tx| {
-                let sql = format!(
-                    "SELECT server,body,state FROM runtime_server_outbox \
+        let pending = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || {
+                store_for_read.read_transaction(|tx| {
+                    let sql = format!(
+                        "SELECT server,body,state FROM runtime_server_outbox \
                  WHERE next_at<=?1 AND (state='queued' OR (state='running' \
                    AND json_extract(body,'$.action') IN ({}))) \
                  ORDER BY rowid LIMIT ?2",
-                    peer_replay_safe_sql_values()
-                );
-                let mut statement = tx.prepare(&sql)?;
-                let rows = statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-            })
-        })
+                        peer_replay_safe_sql_values()
+                    );
+                    let mut statement = tx.prepare(&sql)?;
+                    let rows =
+                        statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        })?;
+                    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+                })
+            },
+        )
         .await
         .map_err(|_| {
             refused(
@@ -2767,16 +2804,19 @@ impl OrchestrationDriver {
     /// peer operations can replay with their existing durable identity.
     pub async fn next_due_at(&self) -> Result<Option<i64>, AccessError> {
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || store.read_transaction(|tx| outbox_next_due_at(tx)))
-            .await
-            .map_err(|_| {
-                refused(
-                    503,
-                    "outbox_unavailable",
-                    "The delivery queue is unavailable",
-                )
-            })?
-            .map_err(Into::into)
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || store.read_transaction(|tx| outbox_next_due_at(tx)),
+        )
+        .await
+        .map_err(|_| {
+            refused(
+                503,
+                "outbox_unavailable",
+                "The delivery queue is unavailable",
+            )
+        })?
+        .map_err(Into::into)
     }
     #[allow(clippy::too_many_arguments)]
     async fn finish(
@@ -2796,18 +2836,21 @@ impl OrchestrationDriver {
             if peer_replay_safe(action) && table == "outbox" {
                 let store_for_read = Arc::clone(&self.store);
                 let key_for_read = key.to_owned();
-                let attempts = tokio::task::spawn_blocking(move || {
-                    store_for_read.read_transaction(|tx| {
-                        tx.query_row(
-                            "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
-                            [key_for_read],
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .optional()
-                        .map(|value| value.unwrap_or_default().max(0) as u64)
-                        .map_err(Into::into)
-                    })
-                })
+                let attempts = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/multi_server_orchestration",
+                    move || {
+                        store_for_read.read_transaction(|tx| {
+                            tx.query_row(
+                                "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
+                                [key_for_read],
+                                |row| row.get::<_, i64>(0),
+                            )
+                            .optional()
+                            .map(|value| value.unwrap_or_default().max(0) as u64)
+                            .map_err(Into::into)
+                        })
+                    },
+                )
                 .await
                 .map_err(|_| {
                     refused(

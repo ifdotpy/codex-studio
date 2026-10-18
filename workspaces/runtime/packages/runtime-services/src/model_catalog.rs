@@ -2243,9 +2243,9 @@ pub(crate) mod tests {
         // Catalog probes now use the temporary async stdio adapter. Keep the
         // priority assertion on that actual spawn path while the child waits.
         let mut child = StdioProviderTaskFactory {
-            deadline: Instant::now() + CATALOG_TIMEOUT,
+            deadline: Some(Instant::now() + CATALOG_TIMEOUT),
             max_frame_bytes: MAX_CATALOG_PAGE_BYTES,
-            max_output_bytes: MAX_CATALOG_RESPONSE_BYTES,
+            max_output_bytes: Some(MAX_CATALOG_RESPONSE_BYTES),
             stderr_log: None,
         }
         .open(

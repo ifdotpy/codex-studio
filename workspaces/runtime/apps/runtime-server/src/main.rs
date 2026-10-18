@@ -120,6 +120,9 @@ fn main() {
     ) {
         runtime_builder.worker_threads(worker_threads);
     }
+    runtime_builder
+        .max_blocking_threads(studio_runtime_process::blocking_pool::MAX_THREADS)
+        .thread_keep_alive(studio_runtime_process::blocking_pool::THREAD_KEEP_ALIVE);
     let runtime = match runtime_builder.enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {

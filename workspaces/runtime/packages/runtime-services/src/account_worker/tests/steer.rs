@@ -309,7 +309,7 @@ async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
     let stage = state
         .bridge
         .run(move |store| async move {
-            store::recover(&store, "default", Generation(2)).await?;
+            store::recover(&store, "default", Generation(2), true).await?;
             Ok(store.read()?.query_row(
                 "SELECT json_extract(result,'$.stage') FROM runtime_operation_receipts \
                  WHERE signature='claude-steer'",

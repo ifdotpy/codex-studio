@@ -44,11 +44,14 @@ pub async fn start_late_operation(
     ready: mpsc::Receiver<()>,
     release: mpsc::SyncSender<()>,
 ) {
-    tokio::task::spawn_blocking(move || {
-        ready
-            .recv_timeout(DEADLINE)
-            .expect("caller completed preparation");
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/wave7_p03_gate_tests/support",
+        move || {
+            ready
+                .recv_timeout(DEADLINE)
+                .expect("caller completed preparation");
+        },
+    )
     .await
     .expect("gate observer task");
     store

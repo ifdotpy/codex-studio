@@ -32,9 +32,13 @@ async fn reap_with_deadline<T>(
 }
 
 pub struct StdioProviderTaskFactory {
-    pub deadline: Instant,
+    /// End of a bounded one-off exchange; `None` for a persistent account session.
+    pub deadline: Option<Instant>,
+    /// Bytes in one stdout line, the provider's JSON-RPC frame.
     pub max_frame_bytes: usize,
-    pub max_output_bytes: usize,
+    /// Total stdout bytes of a bounded one-off exchange; `None` for a persistent
+    /// account session, whose stdout is bounded per frame only.
+    pub max_output_bytes: Option<usize>,
     pub stderr_log: Option<OperationalLog>,
 }
 
@@ -60,7 +64,10 @@ impl StdioProviderTaskFactory {
         priority: ChildPriority,
     ) -> OpenFuture<'_> {
         Box::pin(async move {
-            if Instant::now() >= self.deadline {
+            if self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
                 return Err(AdapterError::Timeout);
             }
             let generation = options.expected_generation.unwrap_or(Generation(1));
@@ -68,7 +75,7 @@ impl StdioProviderTaskFactory {
                 return Err(AdapterError::InvalidConfiguration);
             };
             if self.max_frame_bytes == 0
-                || self.max_output_bytes == 0
+                || self.max_output_bytes == Some(0)
                 || generation.0 == 0
                 || options.launch.handled_cursor != 0
                 || !options.launch.retained_response_ids.is_empty()
@@ -143,10 +150,18 @@ impl StdioProviderTaskFactory {
                     )?;
                     Ok(())
                 };
+                let bounded = async {
+                    match deadline {
+                        Some(deadline) => tokio::time::timeout_at(deadline, exchange)
+                            .await
+                            .unwrap_or(Err(AdapterError::Timeout)),
+                        None => exchange.await,
+                    }
+                };
                 let result = tokio::select! {
                     biased;
                     _ = Shutdown::cancelled(&mut stop) => Ok(()),
-                    result = tokio::time::timeout_at(deadline, exchange) => result.unwrap_or(Err(AdapterError::Timeout)),
+                    result = bounded => result,
                 };
                 // Always wait, including when the group already exited (ESRCH).
                 let pid = child.id();
@@ -180,10 +195,13 @@ impl StdioProviderTaskFactory {
                 };
                 // The log writer is a separate thread; completion includes its flush.
                 let stderr_flush = match stderr_log_for_flush {
-                    Some(log) => tokio::task::spawn_blocking(move || log.flush())
-                        .await
-                        .map_err(|_| AdapterError::TaskFailed)
-                        .and_then(|result| result.map_err(process_error)),
+                    Some(log) => crate::blocking_pool::spawn_blocking(
+                        "runtime-process/provider_stdio",
+                        move || log.flush(),
+                    )
+                    .await
+                    .map_err(|_| AdapterError::TaskFailed)
+                    .and_then(|result| result.map_err(process_error)),
                     None => Ok(()),
                 };
                 let cleanup_error = cleanup.as_ref().err().map(ToString::to_string);
@@ -297,7 +315,7 @@ async fn read_entries(
     clock: SessionClock,
     generation: Generation,
     frame_limit: usize,
-    output_limit: usize,
+    output_limit: Option<usize>,
 ) -> Result<(), AdapterError> {
     let mut reader = BufReader::new(stdout);
     let mut total = 0_usize;
@@ -340,12 +358,18 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
     line: &mut Vec<u8>,
     total: &mut usize,
     frame_limit: usize,
-    output_limit: usize,
+    output_limit: Option<usize>,
 ) -> Result<bool, AdapterError> {
     line.clear();
+    let wire_limit = frame_limit
+        .checked_add(studio_runtime_providers::MAX_FRAME_DELIMITER_BYTES)
+        .ok_or(AdapterError::InvalidConfiguration)?;
     loop {
         let available = reader.fill_buf().await.map_err(process_error)?;
         if available.is_empty() {
+            if studio_runtime_providers::frame_payload_bytes(line) > frame_limit {
+                return Err(AdapterError::OutputLimit { limit: frame_limit });
+            }
             return Ok(false);
         }
         let count = available
@@ -355,11 +379,26 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
         *total = total
             .checked_add(count)
             .ok_or(AdapterError::InvalidConfiguration)?;
-        if line.len() + count > frame_limit || *total > output_limit {
-            return Err(AdapterError::InvalidConfiguration);
+        let frame_len = line
+            .len()
+            .checked_add(count)
+            .ok_or(AdapterError::InvalidConfiguration)?;
+        if frame_len > wire_limit {
+            return Err(AdapterError::OutputLimit { limit: frame_limit });
+        }
+        if let Some(limit) = output_limit.filter(|limit| *total > *limit) {
+            return Err(AdapterError::OutputLimit { limit });
         }
         line.extend_from_slice(&available[..count]);
         reader.consume(count);
+        let payload_len = if line.last() == Some(&b'\n') {
+            studio_runtime_providers::frame_payload_bytes(line)
+        } else {
+            studio_runtime_providers::frame_prefix_payload_bytes(line)
+        };
+        if payload_len > frame_limit {
+            return Err(AdapterError::OutputLimit { limit: frame_limit });
+        }
         if line.last() == Some(&b'\n') {
             return Ok(true);
         }
@@ -386,7 +425,7 @@ mod tests {
         let mut total = 0;
 
         assert!(
-            read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+            read_stdout_line(&mut reader, &mut line, &mut total, 16, Some(32))
                 .await
                 .expect("first bounded frame")
         );
@@ -394,13 +433,74 @@ mod tests {
         assert_eq!(line, b"first\n");
 
         assert!(
-            read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+            read_stdout_line(&mut reader, &mut line, &mut total, 16, Some(32))
                 .await
                 .expect("second bounded frame")
         );
         assert_eq!(line, b"second\n");
         assert_eq!((line.as_ptr(), line.capacity()), allocation);
         assert_eq!(total, b"first\nsecond\n".len());
+    }
+
+    #[tokio::test]
+    async fn stdout_frame_limit_handles_lf_crlf_and_oversized_payloads() {
+        let frame_limit = studio_runtime_providers::MAX_FRAME_BYTES;
+        let mut lf_input = vec![b'x'; frame_limit];
+        lf_input.push(b'\n');
+        let mut lf_reader = BufReader::new(lf_input.as_slice());
+        let mut line = Vec::new();
+        let mut total = 0;
+
+        assert!(
+            read_stdout_line(&mut lf_reader, &mut line, &mut total, frame_limit, None,)
+                .await
+                .expect("codec-sized LF frame")
+        );
+        assert_eq!(
+            studio_runtime_providers::frame_payload_bytes(&line),
+            frame_limit
+        );
+        assert_eq!(line.len(), frame_limit + 1);
+        assert_eq!(line.last(), Some(&b'\n'));
+        assert_eq!(total, frame_limit + 1);
+
+        let mut crlf_input = vec![b'x'; frame_limit];
+        crlf_input.extend_from_slice(b"\r\n");
+        // Place CR at the end of the first BufReader fill to exercise CRLF split across reads.
+        let mut crlf_reader = BufReader::with_capacity(frame_limit + 1, crlf_input.as_slice());
+        let mut line = Vec::new();
+        let mut total = 0;
+        assert!(
+            read_stdout_line(&mut crlf_reader, &mut line, &mut total, frame_limit, None,)
+                .await
+                .expect("codec-sized split CRLF frame")
+        );
+        assert_eq!(
+            studio_runtime_providers::frame_payload_bytes(&line),
+            frame_limit
+        );
+        assert_eq!(line.len(), frame_limit + 2);
+        assert_eq!(total, frame_limit + 2);
+
+        let mut oversized = vec![b'x'; frame_limit + 1];
+        oversized.extend_from_slice(b"\r\n");
+        let mut reader = BufReader::with_capacity(frame_limit + 2, oversized.as_slice());
+        let mut line = Vec::new();
+        let mut total = 0;
+        assert!(matches!(
+            read_stdout_line(&mut reader, &mut line, &mut total, frame_limit, None).await,
+            Err(AdapterError::OutputLimit { limit }) if limit == frame_limit
+        ));
+
+        let mut unterminated = vec![b'x'; frame_limit];
+        unterminated.push(b'\r');
+        let mut reader = BufReader::new(unterminated.as_slice());
+        let mut line = Vec::new();
+        let mut total = 0;
+        assert!(matches!(
+            read_stdout_line(&mut reader, &mut line, &mut total, frame_limit, None).await,
+            Err(AdapterError::OutputLimit { limit }) if limit == frame_limit
+        ));
     }
 
     #[tokio::test(start_paused = true)]
@@ -414,10 +514,10 @@ mod tests {
                 SessionClock::default(),
                 Generation(1),
                 16,
-                20
+                Some(20)
             )
             .await,
-            Err(AdapterError::InvalidConfiguration)
+            Err(AdapterError::OutputLimit { limit: 20 })
         ));
         for cursor in [1, 2] {
             let entry = journal.recv().await.expect("bounded raw entry");
@@ -436,11 +536,33 @@ mod tests {
                 SessionClock::default(),
                 Generation(1),
                 8,
-                100
+                Some(100)
             )
             .await,
-            Err(AdapterError::InvalidConfiguration)
+            Err(AdapterError::OutputLimit { limit: 8 })
         ));
         assert!(journal.recv().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persistent_session_output_is_bounded_per_frame_only() {
+        let (entries, mut journal) = mpsc::channel(LANE_CAPACITY);
+        let input = b"not-json\nnot-json\nnot-json\n";
+        assert!(matches!(
+            read_entries(
+                &input[..],
+                entries,
+                SessionClock::default(),
+                Generation(1),
+                16,
+                None
+            )
+            .await,
+            Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+        ));
+        for cursor in [1, 2, 3] {
+            let entry = journal.recv().await.expect("unbounded total entry");
+            assert_eq!(entry.cursor, EventCursor(cursor));
+        }
     }
 }

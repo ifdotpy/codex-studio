@@ -60333,6 +60333,7 @@
             "type": "number"
           },
           "createdBy": {
+            "default": null,
             "title": "Createdby",
             "type": "string"
           },
@@ -60444,7 +60445,6 @@
           "description",
           "created",
           "updated",
-          "createdBy",
           "version",
           "dependencies",
           "decisions",

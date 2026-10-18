@@ -643,9 +643,12 @@ pub struct AccountSessionRuntime {
 async fn spawn_account_driver<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, AccountSessionError> {
-    tokio::task::spawn_blocking(operation)
-        .await
-        .map_err(|_| AccountSessionError::Persistence)
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_session_runtime",
+        operation,
+    )
+    .await
+    .map_err(|_| AccountSessionError::Persistence)
 }
 
 async fn persist_limits(
@@ -2182,8 +2185,11 @@ mod limits_runtime_tests {
         let first = tokio::spawn(async move {
             AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default").await
         });
-        let entered_result =
-            tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(2))).await;
+        let entered_result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_session_runtime",
+            move || entered.recv_timeout(Duration::from_secs(2)),
+        )
+        .await;
 
         let (started, started_rx) = mpsc::channel();
         let runtime = Arc::clone(&fixture.runtime);
@@ -2193,9 +2199,11 @@ mod limits_runtime_tests {
                 .expect("the concurrency test receiver remains alive until the second read starts");
             AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default").await
         });
-        let second_started =
-            tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(2)))
-                .await;
+        let second_started = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_session_runtime",
+            move || started_rx.recv_timeout(Duration::from_secs(2)),
+        )
+        .await;
         gate.release();
 
         let first_result = first.await.unwrap();
@@ -2261,10 +2269,12 @@ mod limits_runtime_tests {
         let runtime = Arc::clone(&fixture.runtime);
         let caller =
             tokio::spawn(async move { AccountSessionPort::login(runtime.as_ref(), request).await });
-        let entered =
-            tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(2)))
-                .await
-                .unwrap();
+        let entered = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_session_runtime",
+            move || entered.recv_timeout(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap();
         assert!(
             entered.is_ok(),
             "login reached its retained provider request"

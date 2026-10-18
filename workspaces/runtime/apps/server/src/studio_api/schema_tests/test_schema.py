@@ -754,6 +754,12 @@ class SchemaContractTests(unittest.TestCase):
             "/components/schemas/WorkViewRecordResponse/properties/results/items",
         ):
             add(pointer, "required")
+        # Work written before creator tracking has no createdBy.
+        for pointer in (
+            "/components/schemas/WorkInboxEntry/properties/work",
+            "/components/schemas/WorkViewRecordResponse",
+        ):
+            add(pointer, "required")
 
         # Stored provider data: an exec call's command can be its argument vector,
         # and a turn error can be the provider's error object.

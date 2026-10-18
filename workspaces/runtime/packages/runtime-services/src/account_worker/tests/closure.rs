@@ -1,18 +1,52 @@
 //! Closure regressions exercise the worker, including fresh store ownership.
 use super::*;
 
+const FLUSH_OPERATION_PROGRESS_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn recover_after_flush_failure(state: &State) {
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute_batch("DROP TRIGGER IF EXISTS no_flush")?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+
+    // A fresh bridge performs process startup recovery, not just lease recovery.
+    let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+    bridge.faults = state.bridge.faults.clone();
+    let peer = Peer::new();
+    let mut replacement = peer.worker(bridge).await;
+    replacement.shutdown().await.unwrap();
+}
+
+async fn item_text(state: &State, item_id: &str) -> String {
+    let pattern = format!("%:{item_id}");
+    state
+        .bridge
+        .run(move |store| async move {
+            Ok(store.read()?.query_row(
+                "SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE ?1",
+                [pattern],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .await
+        .unwrap()
+}
+
 pub(super) async fn pending_text_recovery(stopped: bool) {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    let cursor = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"pending-recovery","delta":"acknowledged full answer"}})).await;
-    peer.acknowledged(cursor).await;
-    state.bridge.run(|store| async move { store.transaction_with(move |tx| {
-        tx.execute_batch("CREATE TRIGGER no_flush BEFORE INSERT ON runtime_items BEGIN SELECT RAISE(ABORT,'flush unavailable'); END;")?;
-        Ok(())
-    }).await }).await.unwrap();
     if stopped {
         worker
             .send(AccountCommand::Stop {
@@ -23,6 +57,14 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
         let interrupt = peer.write("turn/interrupt").await;
         peer.reply(&interrupt, json!({})).await;
     }
+    // In the stopped case, the interrupt reply is not terminal; the submitted
+    // turn remains open for a final provider delta until turn/completed is journaled.
+    state.bridge.run(|store| async move { store.transaction_with(move |tx| {
+        tx.execute_batch("CREATE TRIGGER no_flush BEFORE INSERT ON runtime_items BEGIN SELECT RAISE(ABORT,'flush unavailable'); END;")?;
+        Ok(())
+    }).await }).await.unwrap();
+    let cursor = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"pending-recovery","delta":"acknowledged full answer"}})).await;
+    peer.acknowledged(cursor).await;
     assert!(worker.shutdown().await.is_err());
     if crash_matrix::MATRIX
         .try_with(|context| {
@@ -37,28 +79,11 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
         // owns trigger removal and the first subsequent startup recovery.
         return;
     }
-    state
-        .bridge
-        .run(|store| async move {
-            store
-                .transaction_with(move |tx| {
-                    tx.execute_batch("DROP TRIGGER no_flush")?;
-                    Ok(())
-                })
-                .await
-        })
-        .await
-        .unwrap();
-    // A fresh bridge performs process startup recovery, not just lease recovery.
-    let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
-    bridge.faults = state.bridge.faults.clone();
-    let peer = Peer::new();
-    let mut replacement = peer.worker(bridge).await;
-    replacement.shutdown().await.unwrap();
-    let text = state.bridge.run(|store| async move {
-        Ok(store.read()?.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:pending-recovery'", [], |row| row.get::<_, String>(0))?)
-    }).await.unwrap();
-    assert_eq!(text, "acknowledged full answer");
+    recover_after_flush_failure(&state).await;
+    assert_eq!(
+        item_text(&state, "pending-recovery").await,
+        "acknowledged full answer"
+    );
 }
 
 #[tokio::test]
@@ -68,6 +93,55 @@ async fn stopped_pending_text_survives_fresh_process_recovery() {
 #[tokio::test]
 async fn pending_text_survives_fresh_process_recovery() {
     pending_text_recovery(false).await;
+}
+
+#[tokio::test]
+async fn elapsed_flush_failure_recovers_acknowledged_pending_text() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("flush_streams".into());
+    let cursor = peer
+        .frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"elapsed-flush-recovery","delta":"acknowledged before elapsed flush"}}))
+        .await;
+    peer.acknowledged(cursor).await;
+
+    let flush_paused = state.bridge.faults.paused.notified();
+    tokio::pin!(flush_paused);
+    tokio::time::pause();
+    tokio::time::advance(STREAM_CADENCE).await;
+    tokio::time::resume();
+    tokio::time::timeout(FLUSH_OPERATION_PROGRESS_GUARD, flush_paused)
+        .await
+        .expect("elapsed flush reaches the named operation gate");
+
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute_batch("CREATE TRIGGER no_flush BEFORE INSERT ON runtime_items BEGIN SELECT RAISE(ABORT,'flush unavailable'); END;")?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    state.bridge.faults.release.notify_one();
+    let completion = tokio::time::timeout(FLUSH_OPERATION_PROGRESS_GUARD, worker.completion())
+        .await
+        .expect("forced flush failure completes the worker");
+    assert!(completion.is_err(), "failed stream flush exits the worker");
+
+    recover_after_flush_failure(&state).await;
+    assert_eq!(
+        item_text(&state, "elapsed-flush-recovery").await,
+        "acknowledged before elapsed flush"
+    );
 }
 
 #[tokio::test]

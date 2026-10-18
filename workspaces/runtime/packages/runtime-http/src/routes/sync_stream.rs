@@ -208,13 +208,11 @@ async fn active_panel_agents(
     if agents.is_empty() {
         return Ok(Vec::new());
     }
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_stream",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
+    store
+        .read_async("runtime-http/routes/sync_stream", move |connection| {
             let mut active = Vec::new();
             for id in agents {
-                let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
+                let agent = AgentRepository::get(connection, &AgentId::from(id.as_str()))
                     .map_err(|_| ApiError::internal())?;
                 if agent.is_some_and(|agent| {
                     !agent
@@ -226,10 +224,8 @@ async fn active_panel_agents(
                 }
             }
             Ok(active)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+        })
+        .await
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
@@ -275,16 +271,11 @@ async fn read_entity_sequence(
         return Ok(0);
     }
     let store = store.ok_or_else(ApiError::internal)?;
-    let sequence = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_stream",
-        move || {
-            let connection = store.read()?;
-            SyncDocumentsRepository::entity_sequence(&connection)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(|_| ApiError::internal())?;
+    let sequence = store
+        .read_async("runtime-http/routes/sync_stream", |connection| {
+            SyncDocumentsRepository::entity_sequence(connection).map_err(|_| ApiError::internal())
+        })
+        .await?;
     if !(0..=MAX_SAFE_REVISION).contains(&sequence) {
         return Err(ApiError::internal());
     }

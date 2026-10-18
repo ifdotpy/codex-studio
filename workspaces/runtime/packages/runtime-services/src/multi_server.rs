@@ -250,9 +250,10 @@ pub async fn create_invite(
             MultiServerError::Refused("The Tailscale owner identity is unavailable".into())
         })?;
     let identity_root = store.root().to_path_buf();
-    let stored = tokio::task::spawn_blocking(move || {
-        crate::remote_transport::read_multi_server_identity(&identity_root)
-    })
+    let stored = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/multi_server",
+        move || crate::remote_transport::read_multi_server_identity(&identity_root),
+    )
     .await
     .map_err(|_| MultiServerError::Refused("The local server credentials are unavailable".into()))?
     .map_err(|_| {
@@ -265,27 +266,30 @@ pub async fn create_invite(
     );
     let store_for_read = Arc::clone(&store);
     let request_id_for_read = request_id.to_owned();
-    let prior = tokio::task::spawn_blocking(move || {
-        store_for_read.read_transaction(|tx| {
-            let saved: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
-                    [&request_id_for_read],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            saved
-                .map(|(hash, raw)| {
-                    let record: Value = serde_json::from_str(&raw).map_err(|_| {
-                        StoreError::SchemaMismatch(format!(
-                            "invalid stored object runtime_access_invites/{request_id_for_read}"
-                        ))
-                    })?;
-                    Ok((hash, record))
-                })
-                .transpose()
-        })
-    })
+    let prior = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/multi_server",
+        move || {
+            store_for_read.read_transaction(|tx| {
+                let saved: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
+                        [&request_id_for_read],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                saved
+                    .map(|(hash, raw)| {
+                        let record: Value = serde_json::from_str(&raw).map_err(|_| {
+                            StoreError::SchemaMismatch(format!(
+                                "invalid stored object runtime_access_invites/{request_id_for_read}"
+                            ))
+                        })?;
+                        Ok((hash, record))
+                    })
+                    .transpose()
+            })
+        },
+    )
     .await
     .map_err(|_| MultiServerError::Refused("The invitation store is unavailable".into()))??;
     let invite = if let Some(invite) = prior {

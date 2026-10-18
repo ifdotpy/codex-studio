@@ -110,24 +110,29 @@ impl SchedulerRepository {
     }
 
     /// Preserve native identity and continuation authority without fabricating a completion.
+    /// Returns the agents this disconnect left interrupted.
     pub fn disconnect_account(
         transaction: &Transaction<'_>,
         account: &str,
         generation: u64,
         at: f64,
         restart: bool,
-    ) -> StoreResult<()> {
+    ) -> StoreResult<Vec<String>> {
         // Decide busy-turn input before its `dispatching` rows become `uncertain`.
         Self::abandon_steers(transaction, account, generation.saturating_add(1))?;
+        let mut interrupted = Vec::new();
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             if stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
                 .as_u64()
                 .is_none_or(|g| g == generation)
             {
                 disconnect_agent(transaction, &mut agent, at, restart, restart)?;
+                if agent.status == AgentStatus::Interrupted {
+                    interrupted.push(agent.id.0);
+                }
             }
         }
-        Ok(())
+        Ok(interrupted)
     }
 
     /// Retire one VM actor after its provider session closes, preserving that
@@ -158,18 +163,25 @@ impl SchedulerRepository {
 
     /// A new supervisor generation cannot prove an old turn's outcome. History reconciliation
     /// is a named dependency; preserve the Python recovery receipt and hold the old input.
+    /// `restart` says whether the backend restarted; otherwise only the provider
+    /// process was replaced and an older generation is a provider disconnect.
     pub fn reconcile_generation(
         transaction: &Transaction<'_>,
         account: &str,
         generation: u64,
         at: f64,
-    ) -> StoreResult<()> {
+        restart: bool,
+    ) -> StoreResult<Vec<String>> {
         // Decide busy-turn input before its `dispatching` rows become `uncertain`.
         Self::abandon_steers(transaction, account, generation)?;
+        let mut interrupted = Vec::new();
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             let known = stored_attempt(&agent).and_then(|a| a["connectionGeneration"].as_u64());
             if known != Some(generation) {
-                disconnect_agent(transaction, &mut agent, at, true, false)?;
+                disconnect_agent(transaction, &mut agent, at, restart, false)?;
+                if agent.status == AgentStatus::Interrupted {
+                    interrupted.push(agent.id.0);
+                }
             } else if restart_continuation_allowed(&agent) {
                 let previous_error = agent.extra.get("error").cloned().unwrap_or(Value::Null);
                 agent.status = AgentStatus::Running;
@@ -200,7 +212,7 @@ impl SchedulerRepository {
                 publish_agent(transaction, &agent)?;
             }
         }
-        Ok(())
+        Ok(interrupted)
     }
 
     /// The error and retained cursor use existing fields published to the UI.
@@ -679,50 +691,29 @@ impl SchedulerRepository {
             "EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=runtime_agents.id AND e.status='reserved')",
         )?;
         let mut recovered = 0;
-        for mut agent in records {
-            let attempt = agent
-                .extra
-                .get("startAttempt")
-                .ok_or_else(|| invalid_agent(&agent.id.0))?;
-            if attempt["submitted"] == true {
-                continue;
-            }
-            if attempt["submitted"] != false {
-                return Err(invalid_agent(&agent.id.0));
-            }
-            let events = validated_events(transaction, &agent, attempt)?;
-            let epoch = attempt["epoch"]
-                .as_i64()
-                .ok_or_else(|| invalid_agent(&agent.id.0))?;
-            let exact: bool = transaction.query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id NOT IN(SELECT value FROM json_each(?3))) AND (SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id IN(SELECT value FROM json_each(?3)))=json_array_length(?3)",
-                params![agent.id.0,epoch,events], |r|r.get(0))?;
-            if !exact {
-                if agent.epoch == epoch {
-                    return Err(invalid_agent(&agent.id.0));
-                }
-                continue;
-            }
-            let current = agent.epoch == epoch;
-            if current
-                && (agent.status != AgentStatus::Starting
-                    || agent.extra.get("autoWake") != Some(&json!(true))
-                    || agent.extra.get("inFlight") != Some(&json!(true)))
-            {
-                continue;
-            }
-            let count = transaction.execute(
-                "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL WHERE agent=?2 AND epoch=?3 AND status='reserved' AND id IN(SELECT value FROM json_each(?4))",
-                params![if current {"pending"} else {"cancelled"},agent.id.0,epoch,events])?;
-            if current {
-                agent.extra.remove("startAttempt");
-                agent.extra.insert("inFlight".into(), json!(false));
-                agent.status = AgentStatus::Queued;
-                publish_agent(transaction, &agent)?;
-                recovered += count;
-            }
+        for agent in records {
+            recovered += requeue_unsubmitted(transaction, agent)?.unwrap_or(0);
         }
         Ok(recovered)
+    }
+
+    /// Return one unsubmitted start attempt's reserved input to the queue. Its
+    /// input never reached `turn/start`, so the retry cannot repeat a message.
+    pub fn requeue_unsubmitted_attempt(
+        transaction: &Transaction<'_>,
+        identity: &TurnAttemptIdentity,
+    ) -> StoreResult<bool> {
+        let Some(agent) = load_agent(transaction, &identity.agent_id)? else {
+            return Ok(false);
+        };
+        if agent.extra.get("startAttempt").is_none_or(|attempt| {
+            attempt["id"] != identity.attempt_id
+                || attempt["epoch"] != identity.epoch
+                || attempt["submitted"] != false
+        }) {
+            return Ok(false);
+        }
+        Ok(requeue_unsubmitted(transaction, agent)?.is_some())
     }
 
     /// Restore Python-shaped scoped receipts; the account worker will reattach without replay.
@@ -1647,6 +1638,56 @@ pub(super) fn clear_hold(agent: &mut AgentRecord) {
             .insert("error".into(), hold["previousError"].clone());
     }
 }
+/// Requeue an exact unsubmitted current attempt, or cancel a stale epoch's
+/// reservation. Returns the requeued event count when the agent was requeued.
+fn requeue_unsubmitted(
+    transaction: &Transaction<'_>,
+    mut agent: AgentRecord,
+) -> StoreResult<Option<usize>> {
+    let attempt = agent
+        .extra
+        .get("startAttempt")
+        .ok_or_else(|| invalid_agent(&agent.id.0))?;
+    if attempt["submitted"] == true {
+        return Ok(None);
+    }
+    if attempt["submitted"] != false {
+        return Err(invalid_agent(&agent.id.0));
+    }
+    let events = validated_events(transaction, &agent, attempt)?;
+    let epoch = attempt["epoch"]
+        .as_i64()
+        .ok_or_else(|| invalid_agent(&agent.id.0))?;
+    let exact: bool = transaction.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id NOT IN(SELECT value FROM json_each(?3))) AND (SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id IN(SELECT value FROM json_each(?3)))=json_array_length(?3)",
+        params![agent.id.0,epoch,events], |r|r.get(0))?;
+    if !exact {
+        if agent.epoch == epoch {
+            return Err(invalid_agent(&agent.id.0));
+        }
+        return Ok(None);
+    }
+    let current = agent.epoch == epoch;
+    if current
+        && (agent.status != AgentStatus::Starting
+            || agent.extra.get("autoWake") != Some(&json!(true))
+            || agent.extra.get("inFlight") != Some(&json!(true)))
+    {
+        return Ok(None);
+    }
+    let count = transaction.execute(
+        "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL WHERE agent=?2 AND epoch=?3 AND status='reserved' AND id IN(SELECT value FROM json_each(?4))",
+        params![if current {"pending"} else {"cancelled"},agent.id.0,epoch,events])?;
+    if !current {
+        return Ok(None);
+    }
+    agent.extra.remove("startAttempt");
+    agent.extra.insert("inFlight".into(), json!(false));
+    agent.status = AgentStatus::Queued;
+    publish_agent(transaction, &agent)?;
+    Ok(Some(count))
+}
+
 pub(super) fn disconnect_agent(
     transaction: &Transaction<'_>,
     agent: &mut AgentRecord,
@@ -1771,9 +1812,9 @@ pub(super) fn disconnect_agent(
         agent.extra.insert(
             "error".into(),
             json!(if restart {
-                "Server restarted during a turn. Review history, then send a new instruction."
+                BACKEND_RESTARTED_TURN_ERROR
             } else {
-                "Codex disconnected. Review the transcript before resuming."
+                PROVIDER_DISCONNECTED_TURN_ERROR
             }),
         );
     }
@@ -1886,10 +1927,7 @@ pub(super) fn transport_continuation_allowed(agent: &AgentRecord) -> bool {
         && agent.extra.get("turnId").is_some_and(Value::is_string)
         && matches!(
             agent.extra.get("error").and_then(Value::as_str),
-            Some(
-                "Codex disconnected. Review the transcript before resuming."
-                    | "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming."
-            )
+            Some(PROVIDER_DISCONNECTED_TURN_ERROR | VM_PROVIDER_DISCONNECTED_TURN_ERROR)
         )
         && !matches!(
             agent

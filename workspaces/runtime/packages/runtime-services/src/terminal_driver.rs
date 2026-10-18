@@ -169,11 +169,12 @@ pub async fn history_output(
         return Err(TerminalError::InvalidHistoryRange);
     }
     let terminal_id = id.to_owned();
-    let current = read_store(Arc::clone(&store), move |store| {
-        TerminalsRepository::get(&*store.read()?, &terminal_id)?
-            .ok_or(TerminalError::UnknownTerminal)
-    })
-    .await?;
+    let current = store
+        .read_async("runtime-services/terminal_driver", move |connection| {
+            TerminalsRepository::get(connection, &terminal_id)?
+                .ok_or(TerminalError::UnknownTerminal)
+        })
+        .await?;
     let record = current.record;
     let archive_id = id.to_owned();
     let row = store
@@ -194,23 +195,23 @@ pub async fn history_output(
         })
         .await?;
     let terminal_id = id.to_owned();
-    let (start, available, cursor, chunks) = read_store(Arc::clone(&store), move |store| {
-        let connection = store.read()?;
-        let start =
-            TerminalsRepository::archive_start(&connection, &terminal_id)?.unwrap_or(row.offset);
-        let available = row.offset + row.output.chars().count() as i64;
-        let cursor = requested_offset.clamp(start, available);
-        let end = (cursor + limit).min(available);
-        let chunks = TerminalsRepository::archive_chunks(
-            &connection,
-            &terminal_id,
-            cursor,
-            end,
-            limit / OUTPUT_CHUNK as i64 + 2,
-        )?;
-        Ok((start, available, cursor, chunks))
-    })
-    .await?;
+    let (start, available, cursor, chunks) = store
+        .read_async("runtime-services/terminal_driver", move |connection| {
+            let start =
+                TerminalsRepository::archive_start(connection, &terminal_id)?.unwrap_or(row.offset);
+            let available = row.offset + row.output.chars().count() as i64;
+            let cursor = requested_offset.clamp(start, available);
+            let end = (cursor + limit).min(available);
+            let chunks = TerminalsRepository::archive_chunks(
+                connection,
+                &terminal_id,
+                cursor,
+                end,
+                limit / OUTPUT_CHUNK as i64 + 2,
+            )?;
+            Ok::<_, TerminalError>((start, available, cursor, chunks))
+        })
+        .await?;
     let end = (cursor + limit).min(available);
     let mut text = String::new();
     for (chunk_start, chunk_end, value) in chunks {
@@ -233,14 +234,6 @@ pub async fn history_output(
     });
     add_status(&mut result, &record);
     Ok(result)
-}
-
-async fn read_store<T, F>(store: Arc<RuntimeStore>, operation: F) -> Result<T, TerminalError>
-where
-    T: Send + 'static,
-    F: FnOnce(&RuntimeStore) -> Result<T, TerminalError> + Send + 'static,
-{
-    run_blocking(move || operation(&store)).await
 }
 
 async fn run_blocking<T, F>(operation: F) -> Result<T, TerminalError>
@@ -337,11 +330,13 @@ impl<S: TerminalSession> TerminalDriver<S> {
         }
         let signature = receipt_signature(submitted_request);
         let lookup_request_id = request_id.to_owned();
-        if let Some((prior_signature, result)) = read_store(Arc::clone(&self.store), move |store| {
-            TerminalsRepository::receipt(&*store.read()?, &lookup_request_id)
-                .map_err(TerminalError::from)
-        })
-        .await?
+        if let Some((prior_signature, result)) = self
+            .store
+            .read_async("runtime-services/terminal_driver", move |connection| {
+                TerminalsRepository::receipt(connection, &lookup_request_id)
+                    .map_err(TerminalError::from)
+            })
+            .await?
         {
             if prior_signature != signature {
                 return Err(TerminalError::ReceiptConflict);
@@ -460,12 +455,14 @@ impl<S: TerminalSession> TerminalDriver<S> {
             .ok_or(TerminalError::InvalidRequest)?
             .to_owned();
         let lookup_id = id.clone();
-        let row = read_store(Arc::clone(&self.store), move |store| {
-            TerminalsRepository::get(&*store.read()?, &lookup_id)
-                .map_err(TerminalError::from)?
-                .ok_or(TerminalError::UnknownTerminal)
-        })
-        .await?;
+        let row = self
+            .store
+            .read_async("runtime-services/terminal_driver", move |connection| {
+                TerminalsRepository::get(connection, &lookup_id)
+                    .map_err(TerminalError::from)?
+                    .ok_or(TerminalError::UnknownTerminal)
+            })
+            .await?;
         let record = row.record;
         match action {
             "rename" => {
@@ -805,10 +802,12 @@ impl<S: TerminalSession> TerminalDriver<S> {
     /// Reconcile notifications delivered after reconnecting to the same
     /// supervisor handle. Existing process handles are never spawned again.
     pub async fn reconcile_after_restart(&self) -> Result<usize, TerminalError> {
-        let rows = read_store(Arc::clone(&self.store), |store| {
-            TerminalsRepository::list(&*store.read()?).map_err(TerminalError::from)
-        })
-        .await?;
+        let rows = self
+            .store
+            .read_async("runtime-services/terminal_driver", move |connection| {
+                TerminalsRepository::list(connection).map_err(TerminalError::from)
+            })
+            .await?;
         for record in &rows {
             if let Some(identity) = record.get("_processIdentity") {
                 let identity = identity.clone();
@@ -869,12 +868,14 @@ impl<S: TerminalSession> TerminalDriver<S> {
         if let Some(rest) = outcome.operation_id.strip_prefix("terminal-spawn:") {
             if let Some((request_id, id)) = rest.rsplit_once(':') {
                 let terminal_id = id.to_owned();
-                let row = read_store(Arc::clone(&self.store), move |store| {
-                    TerminalsRepository::get(&*store.read()?, &terminal_id)
-                        .map_err(TerminalError::from)?
-                        .ok_or(TerminalError::UnknownTerminal)
-                })
-                .await?;
+                let row = self
+                    .store
+                    .read_async("runtime-services/terminal_driver", move |connection| {
+                        TerminalsRepository::get(connection, &terminal_id)
+                            .map_err(TerminalError::from)?
+                            .ok_or(TerminalError::UnknownTerminal)
+                    })
+                    .await?;
                 let mut record = row.record;
                 if let Err(error) = outcome.result {
                     record.set("status", json!("exited"));

@@ -79,14 +79,15 @@ impl Worker {
         let actor_lookup = actor_id.clone();
         let is_vm_actor = if let Some(actor) = actor_lookup {
             self.db("retained_actor_mode", move |store| async move {
-                super::super::blocking_store_read(store, move |store| {
-                    let connection = store.read()?;
-                    let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
-                    Ok(record.is_some_and(|record| {
-                        record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
-                    }))
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        let record =
+                            AgentRepository::get(connection, &AgentId::from(actor.as_str()))?;
+                        Ok(record.is_some_and(|record| {
+                            record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                        }))
+                    })
+                    .await
             })
             .await?
         } else {

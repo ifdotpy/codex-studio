@@ -1370,26 +1370,29 @@ mod tests {
         let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
         let (finish_sender, finish_receiver) = tokio::sync::oneshot::channel();
         let account_for_worker = account.clone();
-        let worker = tokio::task::spawn_blocking(move || {
-            super::refresh_account_costs_with(
-                &state_dir,
-                "paused-long-scan",
-                &account_for_worker,
-                &AtomicBool::new(false),
-                move || clock_for_worker.load(std::sync::atomic::Ordering::Relaxed) as f64,
-                move |_, _, _, _| {
-                    started_sender
-                        .send(())
-                        .map_err(|_| super::UsageError::Scan)?;
-                    finish_receiver
-                        .blocking_recv()
-                        .map_err(|_| super::UsageError::Scan)?;
-                    Ok(json!({"todayUSD":2.0,"last30DaysUSD":3.0,"todayTokens":4,
+        let worker = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/usage",
+            move || {
+                super::refresh_account_costs_with(
+                    &state_dir,
+                    "paused-long-scan",
+                    &account_for_worker,
+                    &AtomicBool::new(false),
+                    move || clock_for_worker.load(std::sync::atomic::Ordering::Relaxed) as f64,
+                    move |_, _, _, _| {
+                        started_sender
+                            .send(())
+                            .map_err(|_| super::UsageError::Scan)?;
+                        finish_receiver
+                            .blocking_recv()
+                            .map_err(|_| super::UsageError::Scan)?;
+                        Ok(json!({"todayUSD":2.0,"last30DaysUSD":3.0,"todayTokens":4,
                         "last30DaysTokens":5,"sourceDay":"2026-10-15","coverage":"reported",
                         "unknownModels":[],"historyDays":30}))
-                },
-            )
-        });
+                    },
+                )
+            },
+        );
         started_receiver.await.expect("scanner starts");
         tokio::time::advance(Duration::from_secs(121)).await;
         clock_value.store(1_121, std::sync::atomic::Ordering::Relaxed);
@@ -1424,44 +1427,50 @@ mod tests {
         let marker_for_worker = marker.clone();
         let state_dir_for_worker = state_dir.clone();
         let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
-        let worker = tokio::task::spawn_blocking(move || {
-            super::refresh_account_costs_with(
-                &state_dir_for_worker,
-                "cancelled-scan",
-                &account_for_worker,
-                &cancelled_for_worker,
-                || 1_000.0,
-                move |_, _, _, cancellation| {
-                    started_sender
-                        .send(())
-                        .map_err(|_| super::UsageError::Scan)?;
-                    let mut command = std::process::Command::new("python3");
-                    command
+        let worker = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/usage",
+            move || {
+                super::refresh_account_costs_with(
+                    &state_dir_for_worker,
+                    "cancelled-scan",
+                    &account_for_worker,
+                    &cancelled_for_worker,
+                    || 1_000.0,
+                    move |_, _, _, cancellation| {
+                        started_sender
+                            .send(())
+                            .map_err(|_| super::UsageError::Scan)?;
+                        let mut command = std::process::Command::new("python3");
+                        command
                         .arg("-c")
                         .arg("import os,pathlib,sys,time\nmarker=pathlib.Path(sys.argv[1])\ntemporary=marker.with_suffix('.tmp')\nwith temporary.open('w') as file: file.write(str(os.getpid()))\nos.replace(temporary, marker)\ntime.sleep(60)")
                         .arg(&marker_for_worker);
-                    super::run_cost_command(
-                        command,
-                        Duration::from_secs(900),
-                        1024,
-                        None,
-                        cancellation,
-                    )?;
-                    Ok(json!({}))
-                },
-            )
-        });
+                        super::run_cost_command(
+                            command,
+                            Duration::from_secs(900),
+                            1024,
+                            None,
+                            cancellation,
+                        )?;
+                        Ok(json!({}))
+                    },
+                )
+            },
+        );
         started_receiver.await.expect("fake scanner started");
         let ready_marker = marker.clone();
-        let child_ready = tokio::task::spawn_blocking(move || {
-            for _ in 0..500 {
-                if ready_marker.is_file() {
-                    return true;
+        let child_ready = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/usage",
+            move || {
+                for _ in 0..500 {
+                    if ready_marker.is_file() {
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            false
-        })
+                false
+            },
+        )
         .await
         .expect("marker waiter");
         assert!(child_ready, "fake scanner should create its ready marker");
@@ -1523,28 +1532,34 @@ mod tests {
             .env("FAKE_SWIFTC_PID", &compiler_pid_path);
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
         let worker_cancelled = std::sync::Arc::clone(&cancelled);
-        let worker = tokio::task::spawn_blocking(move || {
-            super::run_cost_command(
-                command,
-                Duration::from_secs(900),
-                1024,
-                Some(1024),
-                &worker_cancelled,
-            )
-        });
+        let worker = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/usage",
+            move || {
+                super::run_cost_command(
+                    command,
+                    Duration::from_secs(900),
+                    1024,
+                    Some(1024),
+                    &worker_cancelled,
+                )
+            },
+        );
         let ready_path = compiler_pid_path.clone();
-        let compiler_pid = tokio::task::spawn_blocking(move || {
-            let deadline = Instant::now() + READY_TIMEOUT;
-            while Instant::now() < deadline {
-                if let Ok(value) = std::fs::read_to_string(&ready_path)
-                    && let Ok(pid) = value.trim().parse::<u32>()
-                {
-                    return Some(pid);
+        let compiler_pid = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/usage",
+            move || {
+                let deadline = Instant::now() + READY_TIMEOUT;
+                while Instant::now() < deadline {
+                    if let Ok(value) = std::fs::read_to_string(&ready_path)
+                        && let Ok(pid) = value.trim().parse::<u32>()
+                    {
+                        return Some(pid);
+                    }
+                    thread::sleep(Duration::from_millis(10));
                 }
-                thread::sleep(Duration::from_millis(10));
-            }
-            None
-        })
+                None
+            },
+        )
         .await
         .expect("fake compiler PID waiter");
         let Some(compiler_pid) = compiler_pid else {

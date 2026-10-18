@@ -150,9 +150,10 @@ pub async fn handle(
         return handle_pair(Arc::clone(&store), request, observed, &body, now).await;
     }
     let store_for_identity = Arc::clone(&store);
-    let identity = tokio::task::spawn_blocking(move || {
-        transport::load_federation_identity(&store_for_identity)
-    })
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_effects",
+        move || transport::load_federation_identity(&store_for_identity),
+    )
     .await
     .map_err(|_| Error::Unavailable("federation/local-identity"))??;
     let identity = Arc::new(identity);
@@ -199,9 +200,10 @@ async fn handle_pair(
 ) -> Result<Value> {
     core::validate("PairRequest", body, "body")?;
     let store_for_identity = Arc::clone(&store);
-    let identity = tokio::task::spawn_blocking(move || {
-        transport::load_federation_identity(&store_for_identity)
-    })
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_effects",
+        move || transport::load_federation_identity(&store_for_identity),
+    )
     .await
     .map_err(|_| Error::Unavailable("federation/local-identity"))??;
     let invite_id = body["inviteId"]
@@ -485,9 +487,10 @@ pub(crate) fn outbound(item: &Value, identity: &RemoteIdentity, now: i64) -> Res
 pub async fn pull(store: Arc<RuntimeStore>, peer: &str, body: &Value, now: f64) -> Result<Value> {
     core::validate("PullRequest", body, "body")?;
     let store_for_identity = Arc::clone(&store);
-    let identity = tokio::task::spawn_blocking(move || {
-        transport::load_federation_identity(&store_for_identity)
-    })
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_effects",
+        move || transport::load_federation_identity(&store_for_identity),
+    )
     .await
     .map_err(|_| Error::Unavailable("federation/local-identity"))??;
     let peer = peer.to_owned();

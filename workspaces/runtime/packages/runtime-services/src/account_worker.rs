@@ -144,21 +144,6 @@ fn vm_account_generation_matches(
         .is_some_and(|scope| scope.generation == request.generation)
 }
 
-/// Keep legacy synchronous raw reads off Tokio workers while the dedicated
-/// async reader migration remains outstanding. This helper must only wrap
-/// read-only operations; all writes use RuntimeStore's async actor API.
-pub(super) async fn blocking_store_read<T: Send + 'static>(
-    store: Arc<RuntimeStore>,
-    operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-) -> Result<T, WorkerError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_read",
-        move || operation(&store),
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)?
-}
-
 /// Share one bridge among all account workers of a runtime. This permit orders
 /// complete logical account operations; SQLite admission and callback lifetime
 /// are owned by RuntimeStore's actor.
@@ -168,6 +153,10 @@ pub struct StoreBridge {
     operation_slot: Arc<Semaphore>,
     preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// Accounts whose worker already recovered in this backend process. A later
+    /// worker for the same account replaces only its provider process, so that
+    /// recovery is a provider disconnect, not a server restart.
+    recovered_accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     continuation_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
@@ -217,6 +206,7 @@ impl StoreBridge {
             operation_slot: Arc::new(Semaphore::new(1)),
             preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
+            recovered_accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             continuation_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
@@ -584,11 +574,16 @@ pub async fn start_account_worker_with_publication_sink(
 ) -> Result<AccountHandle, WorkerError> {
     let lease = AccountLease::acquire(&bridge, &account)?;
     let generation = config.generation;
+    let restart = !bridge
+        .recovered_accounts
+        .lock()
+        .map_err(|_| WorkerError::TaskFailed)?
+        .contains(&account);
     let recovered = loop {
         let recovery_account = account.clone();
         match bridge
             .worker_run("recover", move |store| async move {
-                store::recover(&store, &recovery_account, generation).await
+                store::recover(&store, &recovery_account, generation, restart).await
             })
             .await
         {
@@ -616,6 +611,11 @@ pub async fn start_account_worker_with_publication_sink(
             Err(error) => return Err(error),
         }
     };
+    bridge
+        .recovered_accounts
+        .lock()
+        .map_err(|_| WorkerError::TaskFailed)?
+        .insert(account.clone());
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
     let recovery_account = account.clone();
     let retained = bridge
@@ -642,10 +642,11 @@ pub async fn start_account_worker_with_publication_sink(
     let (effects, streams) = bridge
         .worker_run("restore_effects_streams", move |store| async move {
             let read_account = effect_account.clone();
-            let effects = blocking_store_read(store.clone(), move |store| {
-                store::recover_effects(store, &read_account)
-            })
-            .await?;
+            let effects = store
+                .read_async("runtime-services/account_worker_read", move |connection| {
+                    store::recover_effects(connection, &read_account)
+                })
+                .await?;
             let streams = store::restore_streams(&store, &effect_account).await?;
             Ok((effects, streams))
         })
@@ -1557,10 +1558,11 @@ impl Worker {
         let account = self.account.clone();
         let pending = self
             .db("retry_preparations", move |store| async move {
-                blocking_store_read(store, move |store| {
-                    store::pending_preparations(store, &account)
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        store::pending_preparations(connection, &account)
+                    })
+                    .await
             })
             .await?;
         if !pending.is_empty() {
@@ -2178,51 +2180,53 @@ impl Worker {
         let generation = self.generation.0;
         let launch_request = self
             .db("vm_launch_request", move |store| async move {
-                blocking_store_read(store, move |store| {
-                    let connection = store.read()?;
-                    let Some(record) =
-                        AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
-                    else {
-                        return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
-                    };
-                    if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
-                        return Ok(None);
-                    }
-                    if !crate::linux_vm_provider::vm_actor_matches(
-                        &connection,
-                        &record.id.0,
-                        intent_epoch,
-                        &account_key,
-                        Some(&provider),
-                    )? {
-                        return Err(WorkerError::PreparationRefused(
-                            "vm-agent/identity-changed".into(),
-                        ));
-                    }
-                    let cwd = record
-                        .extra
-                        .get("cwd")
-                        .and_then(Value::as_str)
-                        .or(intent_cwd.as_deref())
-                        .filter(|value| value.starts_with('/'))
-                        .ok_or_else(|| WorkerError::PreparationRefused("vm-agent/cwd".into()))?;
-                    let guest_home = record
-                        .extra
-                        .get("layrHome")
-                        .and_then(Value::as_str)
-                        .filter(|value| value.starts_with('/'))
-                        .unwrap_or("/home/studio");
-                    Ok(Some(preparation::VmProviderLaunchRequest {
-                        agent_id: record.id.0,
-                        epoch: record.epoch,
-                        generation,
-                        account_key,
-                        provider,
-                        cwd: cwd.to_owned(),
-                        guest_home: guest_home.to_owned(),
-                    }))
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        let Some(record) =
+                            AgentRepository::get(connection, &AgentId::from(lookup_id.as_str()))?
+                        else {
+                            return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
+                        };
+                        if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+                            return Ok(None);
+                        }
+                        if !crate::linux_vm_provider::vm_actor_matches(
+                            connection,
+                            &record.id.0,
+                            intent_epoch,
+                            &account_key,
+                            Some(&provider),
+                        )? {
+                            return Err(WorkerError::PreparationRefused(
+                                "vm-agent/identity-changed".into(),
+                            ));
+                        }
+                        let cwd = record
+                            .extra
+                            .get("cwd")
+                            .and_then(Value::as_str)
+                            .or(intent_cwd.as_deref())
+                            .filter(|value| value.starts_with('/'))
+                            .ok_or_else(|| {
+                                WorkerError::PreparationRefused("vm-agent/cwd".into())
+                            })?;
+                        let guest_home = record
+                            .extra
+                            .get("layrHome")
+                            .and_then(Value::as_str)
+                            .filter(|value| value.starts_with('/'))
+                            .unwrap_or("/home/studio");
+                        Ok(Some(preparation::VmProviderLaunchRequest {
+                            agent_id: record.id.0,
+                            epoch: record.epoch,
+                            generation,
+                            account_key,
+                            provider,
+                            cwd: cwd.to_owned(),
+                            guest_home: guest_home.to_owned(),
+                        }))
+                    })
+                    .await
             })
             .await?;
         let Some(request) = launch_request else {
@@ -2259,22 +2263,22 @@ impl Worker {
             let actor = request.agent_id.clone();
             let expected = request.clone();
             self.db("vm_launch_revalidate", move |store| async move {
-                blocking_store_read(store, move |store| {
-                    let connection = store.read()?;
-                    if !crate::linux_vm_provider::vm_actor_matches(
-                        &connection,
-                        &actor,
-                        expected.epoch,
-                        &expected.account_key,
-                        Some(&expected.provider),
-                    )? {
-                        return Err(WorkerError::PreparationRefused(
-                            "vm-agent/identity-changed".into(),
-                        ));
-                    }
-                    Ok(())
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        if !crate::linux_vm_provider::vm_actor_matches(
+                            connection,
+                            &actor,
+                            expected.epoch,
+                            &expected.account_key,
+                            Some(&expected.provider),
+                        )? {
+                            return Err(WorkerError::PreparationRefused(
+                                "vm-agent/identity-changed".into(),
+                            ));
+                        }
+                        Ok(())
+                    })
+                    .await
             })
             .await?;
             let recovery_agent = request.agent_id.clone();
@@ -2282,15 +2286,16 @@ impl Worker {
             let generation = self.generation.0;
             let recovered = self
                 .db("vm_actor_recovery", move |store| async move {
-                    blocking_store_read(store, move |store| {
-                        store::recover_vm_actor_requests(
-                            store,
-                            &recovery_account,
-                            &recovery_agent,
-                            generation,
-                        )
-                    })
-                    .await
+                    store
+                        .read_async("runtime-services/account_worker_read", move |connection| {
+                            store::recover_vm_actor_requests(
+                                connection,
+                                &recovery_account,
+                                &recovery_agent,
+                                generation,
+                            )
+                        })
+                        .await
                 })
                 .await?;
             let factory = Arc::new(crate::linux_vm_provider::GuestProviderTaskFactory::new(
@@ -2451,45 +2456,45 @@ impl Worker {
         let generation = self.generation.0;
         let expected = self
             .db("retained_vm_session_identity", move |store| async move {
-                blocking_store_read(store, move |store| {
-                    let connection = store.read()?;
-                    let Some(record) =
-                        AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
-                    else {
-                        return Ok(None);
-                    };
-                    let provider = record
-                        .extra
-                        .get("provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("codex");
-                    if !crate::linux_vm_provider::vm_actor_matches(
-                        &connection,
-                        &record.id.0,
-                        epoch,
-                        &account_key,
-                        Some(provider),
-                    )? {
-                        return Ok(None);
-                    }
-                    let cwd = record.extra.get("cwd").and_then(Value::as_str);
-                    if cwd.is_some_and(|value| !value.starts_with('/')) {
-                        return Ok(None);
-                    }
-                    let guest_home = record
-                        .extra
-                        .get("layrHome")
-                        .and_then(Value::as_str)
-                        .filter(|value| value.starts_with('/'))
-                        .unwrap_or("/home/studio");
-                    Ok(Some((
-                        record.id.0,
-                        provider.to_owned(),
-                        cwd.map(str::to_owned),
-                        guest_home.to_owned(),
-                    )))
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        let Some(record) =
+                            AgentRepository::get(connection, &AgentId::from(lookup_id.as_str()))?
+                        else {
+                            return Ok(None);
+                        };
+                        let provider = record
+                            .extra
+                            .get("provider")
+                            .and_then(Value::as_str)
+                            .unwrap_or("codex");
+                        if !crate::linux_vm_provider::vm_actor_matches(
+                            connection,
+                            &record.id.0,
+                            epoch,
+                            &account_key,
+                            Some(provider),
+                        )? {
+                            return Ok(None);
+                        }
+                        let cwd = record.extra.get("cwd").and_then(Value::as_str);
+                        if cwd.is_some_and(|value| !value.starts_with('/')) {
+                            return Ok(None);
+                        }
+                        let guest_home = record
+                            .extra
+                            .get("layrHome")
+                            .and_then(Value::as_str)
+                            .filter(|value| value.starts_with('/'))
+                            .unwrap_or("/home/studio");
+                        Ok(Some((
+                            record.id.0,
+                            provider.to_owned(),
+                            cwd.map(str::to_owned),
+                            guest_home.to_owned(),
+                        )))
+                    })
+                    .await
             })
             .await?;
         let Some((id, provider, cwd, guest_home)) = expected else {
@@ -2591,10 +2596,11 @@ impl Worker {
     ) -> Result<(), WorkerError> {
         let intent = self
             .db("interrupt_intent", move |store| async move {
-                blocking_store_read(store, move |store| {
-                    store::interrupt_intent(store, &agent, &thread)
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        store::interrupt_intent(connection, &agent, &thread)
+                    })
+                    .await
             })
             .await?;
         if let Some((intent, stop_epoch)) = intent {
@@ -2842,9 +2848,10 @@ impl Worker {
             };
             let account = self.account.clone();
             let resources = Arc::new(self.resources.clone());
+            let closing = self.closing;
             let (retire, effect) = self
                 .db_identified("outcome", identity, move |store| async move {
-                    store::outcome(store, account, resources, pending, outcome).await
+                    store::outcome(store, account, resources, pending, outcome, closing).await
                 })
                 .await?;
             if retire && let Some(id) = id {
@@ -3390,18 +3397,18 @@ impl Worker {
             let provider = expected.provider.clone();
             if !self
                 .db("vm_callback_revalidate", move |store| async move {
-                    blocking_store_read(store, move |store| {
-                        let connection = store.read()?;
-                        crate::linux_vm_provider::vm_actor_matches(
-                            &connection,
-                            &actor,
-                            epoch,
-                            &account,
-                            Some(&provider),
-                        )
-                        .map_err(WorkerError::from)
-                    })
-                    .await
+                    store
+                        .read_async("runtime-services/account_worker_read", move |connection| {
+                            crate::linux_vm_provider::vm_actor_matches(
+                                connection,
+                                &actor,
+                                epoch,
+                                &account,
+                                Some(&provider),
+                            )
+                            .map_err(WorkerError::from)
+                        })
+                        .await
                 })
                 .await?
             {
@@ -3528,22 +3535,22 @@ impl Worker {
             let actor = actor.to_owned();
             let revalidated = self
                 .db("vm_callback_submit_revalidate", move |store| async move {
-                    blocking_store_read(store, move |store| {
-                        let connection = store.read()?;
-                        if !crate::linux_vm_provider::vm_actor_matches(
-                            &connection,
-                            &actor,
-                            expected.epoch,
-                            &expected.account_key,
-                            Some(&expected.provider),
-                        )? {
-                            return Err(WorkerError::PreparationRefused(
-                                "account-worker/vm-notification-actor-changed".into(),
-                            ));
-                        }
-                        Ok(())
-                    })
-                    .await
+                    store
+                        .read_async("runtime-services/account_worker_read", move |connection| {
+                            if !crate::linux_vm_provider::vm_actor_matches(
+                                connection,
+                                &actor,
+                                expected.epoch,
+                                &expected.account_key,
+                                Some(&expected.provider),
+                            )? {
+                                return Err(WorkerError::PreparationRefused(
+                                    "account-worker/vm-notification-actor-changed".into(),
+                                ));
+                            }
+                            Ok(())
+                        })
+                        .await
                 })
                 .await;
             match revalidated {
@@ -3739,15 +3746,21 @@ impl Worker {
         self.flush().await?;
         let account = self.account.clone();
         let generation = self.generation.0;
-        let cleanup_error = exit.adapter.as_ref().and_then(|a| a.cleanup_error.clone());
+        let (cleanup_error, recovery, provider_result) = match exit.adapter {
+            Some(adapter) => (
+                adapter.cleanup_error,
+                adapter.recovery_needed,
+                Some(adapter.result),
+            ),
+            None => (None, None, None),
+        };
         let identity = format!("account={account};generation={generation}");
-        let recovery = exit.adapter.and_then(|a| a.recovery_needed);
         self.db_identified("finish", identity, move |store| async move {
             if let Some(recovery) = recovery {
                 store::save_recovery(&store, &account, &recovery).await?;
             }
             scheduler::lifecycle_transaction(&store, move |tx| {
-                SchedulerRepository::disconnect_account(tx, &account, generation, now(), false)
+                store::disconnect_provider_generation(tx, &account, generation)
             })
             .await?;
             Ok(())
@@ -3756,7 +3769,13 @@ impl Worker {
         if let Some(error) = cleanup_error {
             return Err(WorkerError::CleanupUnconfirmed(error));
         }
-        exit.result.map_err(Into::into)
+        // An unrequested close reports the provider task's own cause when it has one.
+        match (exit.result, provider_result) {
+            (Err(SessionTaskError::Closed), Some(Err(cause))) if !*self.stop.borrow() => {
+                Err(SessionTaskError::Adapter(cause).into())
+            }
+            (result, _) => result.map_err(Into::into),
+        }
     }
 }
 
