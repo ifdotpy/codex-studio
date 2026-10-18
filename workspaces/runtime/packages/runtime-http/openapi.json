@@ -46592,6 +46592,13 @@
           "holdMs": {
             "$ref": "#/components/schemas/LockMetricSummary"
           },
+          "origins": {
+            "items": {
+              "$ref": "#/components/schemas/RuntimeLockOrigin"
+            },
+            "title": "Origins",
+            "type": "array"
+          },
           "totalHoldMs": {
             "title": "Totalholdms",
             "type": "number"
@@ -46606,6 +46613,7 @@
         },
         "required": [
           "callSite",
+          "origins",
           "count",
           "totalWaitMs",
           "totalHoldMs",
@@ -46613,6 +46621,33 @@
           "holdMs"
         ],
         "title": "RuntimeLockOperation",
+        "type": "object"
+      },
+      "RuntimeLockOrigin": {
+        "additionalProperties": false,
+        "description": "Store writer transactions per `#[track_caller]` call site (`file:line`).",
+        "properties": {
+          "count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "totalHoldMs": {
+            "title": "Totalholdms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "origin",
+          "count",
+          "totalHoldMs"
+        ],
+        "title": "RuntimeLockOrigin",
         "type": "object"
       },
       "RuntimeLockSample": {

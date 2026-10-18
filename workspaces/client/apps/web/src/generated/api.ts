@@ -20567,11 +20567,25 @@ export interface components {
       /** Count */
       count: number;
       holdMs: components["schemas"]["LockMetricSummary"];
+      /** Origins */
+      origins: components["schemas"]["RuntimeLockOrigin"][];
       /** Totalholdms */
       totalHoldMs: number;
       /** Totalwaitms */
       totalWaitMs: number;
       waitMs: components["schemas"]["LockMetricSummary"];
+    };
+    /**
+     * RuntimeLockOrigin
+     * @description Store writer transactions per `#[track_caller]` call site (`file:line`).
+     */
+    RuntimeLockOrigin: {
+      /** Count */
+      count: number;
+      /** Origin */
+      origin: string;
+      /** Totalholdms */
+      totalHoldMs: number;
     };
     /** RuntimeLockSample */
     RuntimeLockSample: {

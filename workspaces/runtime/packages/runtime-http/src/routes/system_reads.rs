@@ -576,6 +576,39 @@ mod diagnostics_http_tests {
         }
     }
 
+    /// The Rust emitters own the wire values and the OpenAPI document owns the
+    /// schema. Validating populated emitter output keeps them from drifting.
+    #[test]
+    fn populated_lock_and_sqlite_diagnostics_satisfy_the_response_schema() {
+        let registry = Registry::compile(&[]).expect("stored diagnostics schema");
+        studio_runtime_services::diagnostics::record_store_writer_transaction(
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(2),
+            std::panic::Location::caller(),
+        );
+        let operations = studio_runtime_services::diagnostics::runtime_lock_operations();
+        assert!(
+            operations
+                .iter()
+                .any(|entry| entry["origins"].as_array().is_some_and(|o| !o.is_empty())),
+            "the fixture must populate per-origin writer counts"
+        );
+        for operation in &operations {
+            assert!(
+                registry.validate_stored("RuntimeLockOperation", operation),
+                "{operation}"
+            );
+        }
+        for sample in studio_runtime_services::diagnostics::runtime_lock_samples() {
+            assert!(registry.validate_stored("RuntimeLockSample", &sample));
+        }
+        let contention = studio_runtime_services::diagnostics::sqlite_contention();
+        assert!(
+            registry.validate_stored("SqliteContention", &contention),
+            "{contention}"
+        );
+    }
+
     #[test]
     fn diagnostics_projects_legacy_execution_extras_without_changing_stored_rows() {
         let connection = Connection::open_in_memory().expect("in-memory read fixture");

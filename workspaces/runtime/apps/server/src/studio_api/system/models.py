@@ -411,8 +411,17 @@ class RuntimeLockSample(ContractModel):
     holder: str | None
 
 
+class RuntimeLockOrigin(ContractModel):
+    """Store writer transactions per `#[track_caller]` call site (`file:line`)."""
+
+    origin: str
+    count: SafeInt
+    totalHoldMs: float
+
+
 class RuntimeLockOperation(ContractModel):
     callSite: str
+    origins: list[RuntimeLockOrigin]
     count: SafeInt
     totalWaitMs: float
     totalHoldMs: float
