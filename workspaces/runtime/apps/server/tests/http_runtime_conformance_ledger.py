@@ -433,7 +433,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/accounts/claude/login"): {
         "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
     },
-    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "2xx"}},
+    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "403", "expected_error": "The identity endpoint requires owner proof through Serve", "reason": "Discovery identity requires Serve owner proof; a direct loopback probe is refused.", "assert_no_write": True}},
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "403", "expected_error": "Status requires a signed paired-server request", "reason": "Status reads require a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
     ("GET", "/api/project-locations"): {
         "primary": {"query": {"project": "ledger-missing-project", "server": "local"}, "expected": "400"},

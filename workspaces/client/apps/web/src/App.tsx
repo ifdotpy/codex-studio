@@ -252,7 +252,8 @@ export default function App({ active = true }: { active?: boolean }) {
     pendingChatCreations,
     saveChatCreation,
     confirmChatCreationResponse,
-    rejectChatCreation,
+    settleFailedChatCreation,
+    dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
   const { watchResourceChanges } = useServerResources();
@@ -1681,8 +1682,16 @@ export default function App({ active = true }: { active?: boolean }) {
       void refresh();
       return a.id;
     } catch (e) {
-      if (e instanceof ApiError && e.outcome === "not_applied") {
-        rejectChatCreation(creationKey, creationRequest.id, errorText(e));
+      // A definitive refusal proves this request ID created nothing; a lost response
+      // keeps the saved request for an exact-ID retry.
+      if (
+        settleFailedChatCreation(
+          creationKey,
+          creationRequest.id,
+          e,
+          errorText(e),
+        )
+      ) {
         setPendingCreations(pendingChatCreations(creationKey));
         creation.current = null;
       }
@@ -3077,7 +3086,8 @@ export default function App({ active = true }: { active?: boolean }) {
                   {request.cwd || "default project"}
                   {request.project_folder ? ` (${request.project_folder})` : ""}
                   . Retrying uses the saved request ID to check whether the chat
-                  was created.
+                  was created. Dismissing stops checking; a chat this request
+                  created still appears in the chat list.
                 </p>
                 <Button
                   onClick={() =>
@@ -3089,6 +3099,23 @@ export default function App({ active = true }: { active?: boolean }) {
                   }
                 >
                   Retry chat request
+                </Button>
+                <Button
+                  onClick={() => {
+                    try {
+                      dismissChatCreation(creationKey, request.id);
+                      if (creation.current?.id === request.id)
+                        creation.current = null;
+                      setPendingCreations(pendingChatCreations(creationKey));
+                    } catch (error) {
+                      notify(
+                        "Cannot dismiss the saved chat request: " +
+                          errorText(error),
+                      );
+                    }
+                  }}
+                >
+                  Dismiss
                 </Button>
               </div>
             ))}

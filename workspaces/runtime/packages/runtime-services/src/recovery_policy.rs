@@ -3,15 +3,15 @@ use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_store::{
+    BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
+    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+};
 
 static NULL_VALUE: Value = Value::Null;
 
 pub const MAX_EVENTS: usize = 32;
 pub const UNKNOWN_START_HOLD_SECONDS: f64 = 600.0;
-const DISCONNECTED: &str = "Codex disconnected. Review the transcript before resuming.";
-const RESTARTED: &str =
-    "Server restarted during a turn. Review history, then send a new instruction.";
-const VM_DISCONNECTED: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
 const SUPERVISOR_UNKNOWN: &str =
     "Cannot verify the existing supervisor child; native outcome remains unknown";
 const ACTIVE_REPAIR: &[&str] = &["preparing", "submitted", "unknown", "ready"];
@@ -250,7 +250,13 @@ fn eligibility(a: &Value) -> Eligibility {
         && stopped
         && !has(a, "startAttempt")
         && !has(a, "turnId")
-        && one(&a["error"], &[DISCONNECTED, VM_DISCONNECTED])
+        && one(
+            &a["error"],
+            &[
+                PROVIDER_DISCONNECTED_TURN_ERROR,
+                VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            ],
+        )
         && has(d, "autoWake")
         && !has(d, "turnId")
         && same(a, d, &["epoch", "accountKey", "threadId"])
@@ -351,7 +357,13 @@ fn eligibility(a: &Value) -> Eligibility {
         && stopped
         && has(a, "threadId")
         && has(a, "turnId")
-        && one(&a["error"], &[DISCONNECTED, VM_DISCONNECTED])
+        && one(
+            &a["error"],
+            &[
+                PROVIDER_DISCONNECTED_TURN_ERROR,
+                VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            ],
+        )
         && clear(a)
         && !has(a, "contextRepairWait")
         && !one(&repair["phase"], ACTIVE_REPAIR)
@@ -384,7 +396,13 @@ fn eligibility(a: &Value) -> Eligibility {
                 .any(|k| has(a, k))
             && has(a, "threadId")
             && has(a, "turnId")
-            && one(&a["error"], &[DISCONNECTED, RESTARTED])
+            && one(
+                &a["error"],
+                &[
+                    PROVIDER_DISCONNECTED_TURN_ERROR,
+                    BACKEND_RESTARTED_TURN_ERROR,
+                ],
+            )
             && !thread_block(a));
     let completed_owner =
         a["status"] == "completed" && inactive && !has(a, "turnId") && !has(a, "startAttempt");

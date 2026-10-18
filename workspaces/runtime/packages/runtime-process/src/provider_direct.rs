@@ -4,26 +4,31 @@
 //! Registered difference (`workspace-state/image-execution`): image-workspace
 //! agents are refused before provider launch, so direct mode uses the unwrapped
 //! command. When the image backend moves to Rust, it must supply this prefix natively.
+//!
+//! A direct child is the account's persistent provider session: it has no
+//! lifetime deadline or total output budget, and each stdout frame is bounded by
+//! the provider codec's frame limit. Its stderr goes to the state directory's
+//! app-server log when the backend supplies one.
 use crate::{
     Generation, ProviderHandle, ProviderLaunchSpec,
     child_priority::ChildPriority,
+    operational_log::OperationalLog,
     provider_seam::{AdapterError, OpenFuture, OpenOptions, ProviderTaskFactory, Shutdown},
     provider_stdio::StdioProviderTaskFactory,
 };
-use tokio::time::Instant;
-
-const DIRECT_LIFETIME: std::time::Duration = std::time::Duration::from_secs(86_400);
-const MAX_FRAME_BYTES: usize = 1024 * 1024;
-const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct DirectProviderTaskFactory {
     priority: ChildPriority,
+    stderr_log: Option<OperationalLog>,
 }
 
 impl DirectProviderTaskFactory {
     #[must_use]
-    pub fn new(priority: ChildPriority) -> Self {
-        Self { priority }
+    pub fn new(priority: ChildPriority, stderr_log: Option<OperationalLog>) -> Self {
+        Self {
+            priority,
+            stderr_log,
+        }
     }
 
     /// Resolve a direct launch before the account worker activates its provider
@@ -59,6 +64,7 @@ impl DirectProviderTaskFactory {
             launch: options.launch,
             clock: options.clock,
             priority: self.priority,
+            stderr_log: self.stderr_log.clone(),
         })
     }
 }
@@ -69,6 +75,7 @@ pub struct PreparedDirectProviderTask {
     launch: ProviderLaunchSpec,
     clock: crate::provider_seam::SessionClock,
     priority: ChildPriority,
+    stderr_log: Option<OperationalLog>,
 }
 
 impl PreparedDirectProviderTask {
@@ -93,10 +100,10 @@ impl ProviderTaskFactory for PreparedDirectProviderTask {
                 return Err(AdapterError::Cancelled);
             }
             let factory = StdioProviderTaskFactory {
-                deadline: Instant::now() + DIRECT_LIFETIME,
-                max_frame_bytes: MAX_FRAME_BYTES,
-                max_output_bytes: MAX_OUTPUT_BYTES,
-                stderr_log: None,
+                deadline: None,
+                max_frame_bytes: studio_runtime_providers::MAX_FRAME_BYTES,
+                max_output_bytes: None,
+                stderr_log: self.stderr_log.clone(),
             };
             factory
                 .open_with_priority(

@@ -925,19 +925,18 @@ async fn auto_pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiErr
     ))
 }
 
-async fn identity(
-    State(state): State<HttpState>,
-) -> Result<Json<crate::generated::ServerIdentityResponse>, ApiError> {
-    let credentials = state.credentials;
-    let origin = state.public_origin;
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = credentials
-        .identity(Arc::clone(&store), origin.as_deref())
-        .await
-        .map_err(map_credential_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::ServerIdentityResponse,
-    >(value)?))
+/// Discovery identity is served only through the Serve boundary with owner
+/// proof (`incoming_multi_server`); a direct local request is refused like
+/// Python `studio_api/multi_server/router.py` `discovery_identity`.
+async fn identity() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({
+            "error": "The identity endpoint requires owner proof through Serve",
+            "code": "serve_required",
+        })),
+    )
+        .into_response()
 }
 
 async fn rename(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
@@ -1069,6 +1068,55 @@ mod tests {
                 }))
             })
         }
+    }
+
+    #[tokio::test]
+    async fn local_identity_request_requires_serve_owner_proof() {
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated identity state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
+        let state = HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            None,
+            root.path().display().to_string(),
+            49171,
+            None,
+            Some(store),
+            None,
+        );
+        let request = axum::http::Request::builder()
+            .uri("/api/multi-server/v1/identity")
+            .header("host", "127.0.0.1:49171")
+            .header("origin", "http://127.0.0.1:49171")
+            .header("x-canvas-token", "fixture-token")
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("fixture peer address parses"),
+            ))
+            .body(axum::body::Body::empty())
+            .expect("identity request builds");
+        let response = crate::router::router(state)
+            .expect("valid router")
+            .oneshot(request)
+            .await
+            .expect("identity response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("small refusal body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("error envelope"),
+            serde_json::json!({
+                "error": "The identity endpoint requires owner proof through Serve",
+                "code": "serve_required",
+            })
+        );
     }
 
     #[tokio::test]

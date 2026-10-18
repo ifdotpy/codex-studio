@@ -42,13 +42,11 @@ class ModelsHttpContract(unittest.TestCase):
         original_registry = registry_path.read_bytes()
         pending = backend.request("GET", "/api/models")
         assert_status(pending, 400)
-        self.assertEqual(pending.json(), {
-            "error": (
-                "Model catalog is pending; no workers were created. "
-                "The existing metadata request remains available for recovery"
-            ),
-            "catalogPending": True,
-        })
+        # The pending flag is the contract; each backend owns its message text.
+        pending_body = pending.json()
+        self.assertEqual(set(pending_body), {"error", "catalogPending"})
+        self.assertIs(pending_body["catalogPending"], True)
+        self.assertIsInstance(pending_body["error"], str)
         backend.wait_until(lambda: backend.provider_gate_started(), "model/list pending gate")
 
         starts_before_replay = backend.provider_start_times()

@@ -161,22 +161,18 @@ fn execute_decision(
             ));
         }
     }
-    // Every action decides only from the complete agent directory and the
-    // history owned by the target's descendant tree. Reading unrelated task
-    // history held the sole writer for seconds on large state directories.
+    // Every action decides from its target's descendant tree, the target's
+    // ancestor chain and the acting agent. Reading every agent record held the
+    // sole writer for about a second on a state with thousands of tombstones.
     let tables = {
-        let mut agents = BTreeMap::new();
-        agents.insert(
+        let topology = repository::read_agent_topology(transaction)?;
+        let (owners, agents) = lifecycle_scope(&topology, action);
+        let mut tables = repository::read_for_agents(transaction, Some(&owners))?;
+        tables.insert(
             "runtime_agents".to_owned(),
-            repository::read_agent_directory(transaction)?,
+            repository::read_agents(transaction, &agents)?,
         );
-        let directory = ManagementSnapshot::from_records(Records { tables: agents })?;
-        let target = action.target();
-        // An unknown target keeps the decision's own refusal and its ordering.
-        let owners = directory
-            .owner_scope(target)
-            .unwrap_or_else(|_| std::collections::BTreeSet::from([target.to_owned()]));
-        repository::read_for_agents(transaction, Some(&owners))?
+        tables
     };
     let snapshot = ManagementSnapshot::from_records(Records { tables })?;
     let decision = if ports.is_some() {
@@ -211,7 +207,7 @@ fn execute_decision(
                 let room: Value =
                     serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
                 if directory.is_none() {
-                    directory = Some(crate::sync_entity_context::RoomDirectory::load(
+                    directory = Some(crate::sync_entity_context::RoomDirectory::load_live(
                         transaction,
                     )?);
                 }
@@ -337,6 +333,45 @@ fn execute_decision(
     Ok(decision.result)
 }
 
+/// Descendant tree of the action target (the owners whose history is read) and
+/// the agents whose records the decision needs: that tree, the target's
+/// ancestor chain and the acting agent. An unknown target scopes to itself.
+fn lifecycle_scope(
+    topology: &[(String, Option<String>)],
+    action: &Action,
+) -> (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    let parents: BTreeMap<&str, Option<&str>> = topology
+        .iter()
+        .map(|(id, parent)| (id.as_str(), parent.as_deref()))
+        .collect();
+    let target = action.target();
+    let mut owners = std::collections::BTreeSet::from([target.to_owned()]);
+    loop {
+        let count = owners.len();
+        for (id, parent) in &parents {
+            if parent.is_some_and(|parent| owners.contains(parent)) {
+                owners.insert((*id).to_owned());
+            }
+        }
+        if count == owners.len() {
+            break;
+        }
+    }
+    let mut agents = owners.clone();
+    let mut current = parents.get(target).copied().flatten();
+    while let Some(parent) = current {
+        if !agents.insert(parent.to_owned()) {
+            break;
+        }
+        current = parents.get(parent).copied().flatten();
+    }
+    agents.extend(action.acting_agent().map(str::to_owned));
+    (owners, agents)
+}
+
 fn written_ids(
     writes: &[crate::agent_management::RowWrite],
     table: &str,
@@ -390,6 +425,46 @@ fn same_attempt_except_interrupt(current: &Value, expected: &Value) -> bool {
         object.remove("interrupt");
     }
     current == expected
+}
+
+#[cfg(test)]
+mod lifecycle_scope_tests {
+    use super::lifecycle_scope;
+    use crate::agent_management::Action;
+
+    #[test]
+    fn scope_is_the_tree_the_ancestors_and_the_actor() {
+        let topology = [
+            ("root", None),
+            ("child", Some("root")),
+            ("grandchild", Some("child")),
+            ("sibling", Some("root")),
+            ("other", None),
+            ("other-child", Some("other")),
+        ]
+        .map(|(id, parent)| (id.to_owned(), parent.map(str::to_owned)));
+        let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect();
+        let (owners, agents) = lifecycle_scope(
+            &topology,
+            &Action::Archive {
+                actor: "root".into(),
+                epoch: 1,
+                target: "child".into(),
+                reason: String::new(),
+                unassign_work: false,
+            },
+        );
+        assert_eq!(owners, ids(&["child", "grandchild"]));
+        assert_eq!(agents, ids(&["child", "grandchild", "root"]));
+        let (owners, agents) = lifecycle_scope(
+            &topology,
+            &Action::Delete {
+                target: "missing".into(),
+            },
+        );
+        assert_eq!(owners, ids(&["missing"]));
+        assert_eq!(agents, ids(&["missing"]));
+    }
 }
 
 #[cfg(test)]

@@ -1219,7 +1219,7 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                     Ok(())
                 }).await?;
 
-                let recovered = store::recover(&store, "default", Generation(1)).await?;
+                let recovered = store::recover(&store, "default", Generation(1), true).await?;
                 let unresolved: i64 = store.read()?.query_row(
                     "SELECT COUNT(*) FROM runtime_operation_receipts \
                      WHERE id='account-worker:account:default:uncertain-start:submitted'",
@@ -5363,4 +5363,273 @@ async fn move_import_pending_keeps_input_queued_without_worker_writes() {
         "claim leaves the actor untouched"
     );
     assert_eq!(state.event_status("input").await, "pending");
+}
+
+/// Give the fixture agent a stored parent so stop notices have a recipient.
+async fn adopt_parent(state: &State) -> String {
+    let child = state.agent.clone();
+    let parent = format!("{child}-parent");
+    let parent_id = parent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(child.as_str()))?
+                        .expect("fixture agent exists");
+                    let mut lead = row.clone();
+                    lead.id = AgentId::from(parent_id.as_str());
+                    lead.extra.insert("isLead".into(), json!(true));
+                    lead.extra
+                        .insert("threadId".into(), json!("fake-parent-thread"));
+                    AgentRepository::put(tx, &lead)?;
+                    row.extra.insert("parentId".into(), json!(parent_id));
+                    row.extra.insert("isLead".into(), json!(false));
+                    AgentRepository::put(tx, &row)
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    parent
+}
+
+async fn child_stop_notices(state: &State, parent: &str) -> i64 {
+    let parent = parent.to_owned();
+    state
+        .bridge
+        .run(move |store| async move {
+            Ok(store.read()?.query_row(
+                "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND kind='child_result' AND id LIKE 'child-stop:%'",
+                [parent],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap()
+}
+
+/// The fake provider ends its session the way a provider process exit does.
+async fn provider_exits(peer: &Peer, worker: &mut AccountHandle) {
+    peer.stop.cancel();
+    let _ended = worker.completion().await;
+}
+
+#[tokio::test]
+async fn provider_exit_while_the_server_runs_is_a_disconnect_reported_once() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    provider_exits(&peer, &mut worker).await;
+
+    let record = state.record().await;
+    assert_eq!(record["status"], "interrupted");
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
+    assert_ne!(record["disconnectRecovery"]["source"], "restart");
+    assert_eq!(child_stop_notices(&state, &parent).await, 1);
+
+    // The registry starts the account's next provider in the same backend.
+    let mut next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    worker_barrier(&replacement).await;
+    let record = state.record().await;
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
+    assert_ne!(record["disconnectRecovery"]["source"], "restart");
+    assert!(record["restartRecovery"].is_null());
+    assert_eq!(child_stop_notices(&state, &parent).await, 1);
+    while let Ok(wire) = next.writes.try_recv() {
+        assert_ne!(
+            wire.value["method"], "turn/start",
+            "unknown input is not resent"
+        );
+    }
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnect_parent_event_local_enqueue_failure_is_propagated() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let before = state.record().await;
+
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch(
+                        "CREATE TRIGGER reject_child_notice BEFORE INSERT ON runtime_events \
+                         WHEN NEW.kind='child_result' \
+                         BEGIN SELECT RAISE(ABORT,'injected local enqueue failure'); END;",
+                    )?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("install local event failure trigger");
+
+    peer.stop.cancel();
+    assert!(worker.completion().await.is_err());
+    assert_eq!(state.record().await, before, "disconnect writes roll back");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch("DROP TRIGGER reject_child_notice")?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("remove local event failure trigger");
+
+    let mut next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    worker_barrier(&replacement).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "interrupted");
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
+    assert_ne!(record["disconnectRecovery"]["source"], "restart");
+    assert_eq!(child_stop_notices(&state, &parent).await, 1);
+    while let Ok(wire) = next.writes.try_recv() {
+        assert_ne!(
+            wire.value["method"], "turn/start",
+            "replacement does not resubmit the previously accepted turn"
+        );
+    }
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_backend_process_still_classifies_the_old_generation_as_a_restart() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    provider_exits(&peer, &mut worker).await;
+
+    let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+    bridge.faults = state.bridge.faults.clone();
+    let next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(bridge).await;
+    worker_barrier(&replacement).await;
+    let record = state.record().await;
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR
+    );
+    assert_eq!(record["disconnectRecovery"]["source"], "restart");
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_request_lost_with_its_provider_retries_without_duplicate_input() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let _resume = peer.write("thread/resume").await;
+    provider_exits(&peer, &mut worker).await;
+
+    let record = state.record().await;
+    assert_eq!(record["status"], "queued");
+    assert!(record["startAttempt"].is_null());
+    assert_eq!(state.event_status("input").await, "pending");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "turn/start was not submitted before thread creation completed"
+    );
+
+    let mut next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    state.wake(&replacement).await;
+    let resume = next.write("thread/resume").await;
+    next.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let start = next.write("turn/start").await;
+    next.accepted(&start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker_barrier(&replacement).await;
+    assert!(
+        next.writes.try_recv().is_err(),
+        "the input is submitted once"
+    );
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("fixture agent exists");
+                    agent.extra.remove("threadId");
+                    AgentRepository::put(tx, &agent)?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("fixture requires a new native thread");
+
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let _thread_start = peer.write("thread/start").await;
+    provider_exits(&peer, &mut worker).await;
+
+    let record = state.record().await;
+    assert_eq!(record["status"], "queued");
+    assert!(record["startAttempt"].is_null());
+    assert_eq!(state.event_status("input").await, "pending");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+
+    let mut next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    state.wake(&replacement).await;
+    let thread_start = next.write("thread/start").await;
+    next.reply(&thread_start, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let turn_start = next.write("turn/start").await;
+    next.accepted(&turn_start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker_barrier(&replacement).await;
+    assert!(
+        next.writes.try_recv().is_err(),
+        "the unsubmitted input is delivered once after thread creation"
+    );
+    replacement.shutdown().await.unwrap();
 }

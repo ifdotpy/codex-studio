@@ -143,6 +143,10 @@ pub struct StoreBridge {
     operation_slot: Arc<Semaphore>,
     preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// Accounts whose worker already recovered in this backend process. A later
+    /// worker for the same account replaces only its provider process, so that
+    /// recovery is a provider disconnect, not a server restart.
+    recovered_accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     continuation_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
@@ -171,6 +175,7 @@ impl StoreBridge {
             operation_slot: Arc::new(Semaphore::new(1)),
             preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
+            recovered_accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             continuation_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
@@ -519,11 +524,16 @@ pub async fn start_account_worker_with_publication_sink(
 ) -> Result<AccountHandle, WorkerError> {
     let lease = AccountLease::acquire(&bridge, &account)?;
     let generation = config.generation;
+    let restart = !bridge
+        .recovered_accounts
+        .lock()
+        .map_err(|_| WorkerError::TaskFailed)?
+        .contains(&account);
     let recovered = loop {
         let recovery_account = account.clone();
         match bridge
             .worker_run("recover", move |store| async move {
-                store::recover(&store, &recovery_account, generation).await
+                store::recover(&store, &recovery_account, generation, restart).await
             })
             .await
         {
@@ -551,6 +561,11 @@ pub async fn start_account_worker_with_publication_sink(
             Err(error) => return Err(error),
         }
     };
+    bridge
+        .recovered_accounts
+        .lock()
+        .map_err(|_| WorkerError::TaskFailed)?
+        .insert(account.clone());
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
     let recovery_account = account.clone();
     let retained = bridge
@@ -2697,9 +2712,10 @@ impl Worker {
             };
             let account = self.account.clone();
             let resources = Arc::new(self.resources.clone());
+            let closing = self.closing;
             let (retire, effect) = self
                 .db_identified("outcome", identity, move |store| async move {
-                    store::outcome(store, account, resources, pending, outcome).await
+                    store::outcome(store, account, resources, pending, outcome, closing).await
                 })
                 .await?;
             if retire && let Some(id) = id {
@@ -3585,15 +3601,21 @@ impl Worker {
         self.flush().await?;
         let account = self.account.clone();
         let generation = self.generation.0;
-        let cleanup_error = exit.adapter.as_ref().and_then(|a| a.cleanup_error.clone());
+        let (cleanup_error, recovery, provider_result) = match exit.adapter {
+            Some(adapter) => (
+                adapter.cleanup_error,
+                adapter.recovery_needed,
+                Some(adapter.result),
+            ),
+            None => (None, None, None),
+        };
         let identity = format!("account={account};generation={generation}");
-        let recovery = exit.adapter.and_then(|a| a.recovery_needed);
         self.db_identified("finish", identity, move |store| async move {
             if let Some(recovery) = recovery {
                 store::save_recovery(&store, &account, &recovery).await?;
             }
             scheduler::lifecycle_transaction(&store, move |tx| {
-                SchedulerRepository::disconnect_account(tx, &account, generation, now(), false)
+                store::disconnect_provider_generation(tx, &account, generation)
             })
             .await?;
             Ok(())
@@ -3602,7 +3624,13 @@ impl Worker {
         if let Some(error) = cleanup_error {
             return Err(WorkerError::CleanupUnconfirmed(error));
         }
-        exit.result.map_err(Into::into)
+        // An unrequested close reports the provider task's own cause when it has one.
+        match (exit.result, provider_result) {
+            (Err(SessionTaskError::Closed), Some(Err(cause))) if !*self.stop.borrow() => {
+                Err(SessionTaskError::Adapter(cause).into())
+            }
+            (result, _) => result.map_err(Into::into),
+        }
     }
 }
 

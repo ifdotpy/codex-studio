@@ -448,7 +448,11 @@ impl ProductionLifecyclePorts {
             .store
             .read_async("runtime-services/lifecycle_effects", |tx| {
                 let mut pending = Vec::new();
-                for (id, raw) in sync_policy::stored_records(tx, "runtime_agents")? {
+                for (id, raw) in
+                    studio_runtime_store::StartupRecoveryRepository::deleted_agents_maybe_unsettled(
+                        tx,
+                    )?
+                {
                     let record: Value = serde_json::from_str(&raw)
                         .map_err(studio_runtime_store::StoreError::from)?;
                     if needs_deleted_settlement(&record) {
@@ -932,37 +936,53 @@ fn cancel_resume(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), M
 }
 
 fn release_work(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
-    let mut owners = HashSet::new();
-    for (_, raw) in sync_policy::stored_records(tx, "runtime_work")? {
-        let work: Value =
-            serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-        if work
-            .get("status")
-            .and_then(Value::as_str)
-            .is_some_and(|status| ["ready", "running", "blocked"].contains(&status))
-            && let Some(owner) = work.get("owner").and_then(Value::as_str)
-        {
-            owners.insert(owner.to_owned());
-        }
+    // Only deleted or failed workers that own unfinished work can be released;
+    // the SQL selection is a superset that the exact test below refines.
+    let mut owners = Vec::new();
+    if sync_policy::table_exists(tx, "runtime_work")? {
+        let mut statement = tx
+            .prepare_cached(
+                "SELECT DISTINCT a.id FROM runtime_work w JOIN runtime_agents a \
+                 ON a.id=json_extract(w.record,'$.owner') \
+                 WHERE json_extract(w.record,'$.status') IN ('ready','running','blocked') \
+                 AND json_extract(a.record,'$.parentId') IS NOT NULL \
+                 AND (COALESCE(json_extract(a.record,'$.deletedAt'),0)!=0 \
+                      OR json_extract(a.record,'$.status')='failed')",
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        owners = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .map_err(studio_runtime_store::StoreError::from)?;
     }
-    let mut agents = Vec::new();
-    for (_, raw) in sync_policy::stored_records(tx, "runtime_agents")? {
-        let value: Value =
-            serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-        let Some(id) = value.get("id").and_then(Value::as_str) else {
+    let mut candidates = Vec::new();
+    for owner in owners {
+        let Some(agent) = AgentRepository::get(tx, &AgentId::from(owner.as_str()))? else {
             continue;
         };
+        let value = agent.value();
         let eligible = value
             .get("parentId")
             .is_some_and(|parent| !parent.is_null())
             && (studio_runtime_store::truthy(value.get("deletedAt"))
                 || value.get("status").and_then(Value::as_str) == Some("failed"));
-        if eligible && owners.contains(id) {
-            agents.push(
-                AgentRecord::from_value(value).map_err(studio_runtime_store::StoreError::from)?,
-            );
+        if eligible {
+            let rowid: i64 = tx
+                .query_row(
+                    "SELECT rowid FROM runtime_agents WHERE id=?1",
+                    [&owner],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            candidates.push((rowid, agent));
         }
     }
+    // Release in stored order, like the former full pass over the agents.
+    candidates.sort_by_key(|(rowid, _)| *rowid);
+    let agents = candidates
+        .into_iter()
+        .map(|(_, agent)| agent)
+        .collect::<Vec<_>>();
     let _ = work_write::release_failed_work(tx, &agents, effect.at())
         .map_err(|_| ManagementError::Invalid("Unable to release deleted worker work"))?;
     Ok(())
@@ -992,6 +1012,27 @@ pub(crate) fn notify_continuation_hold(
     notify_parent_with_id(tx, &effect, Some(&format!("hold:{operation}:{transition}")))
 }
 
+/// Work records owned by `agent`, in rowid order, through the owner index.
+fn owned_work_records(tx: &Transaction<'_>, agent: &str) -> Result<Vec<Value>, ManagementError> {
+    if !sync_policy::table_exists(tx, "runtime_work")? {
+        return Ok(Vec::new());
+    }
+    let mut statement = tx
+        .prepare_cached(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1 \
+             ORDER BY rowid",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let rows = statement
+        .query_map([agent], |row| row.get::<_, String>(0))
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .collect())
+}
+
 fn notify_parent_with_id(
     tx: &Transaction<'_>,
     effect: &LifecycleEffect,
@@ -1009,13 +1050,11 @@ fn notify_parent_with_id(
     let parent_id = required_str(agent, "parentId", "Invalid stopped child parent")?;
     let parent = AgentRepository::get(tx, &AgentId::from(parent_id))?
         .ok_or(ManagementError::Invalid("Invalid stopped child parent"))?;
-    let mut tasks = sync_policy::stored_records(tx, "runtime_work")?
+    let mut tasks = owned_work_records(tx, id)?
         .into_iter()
-        .filter_map(|(_, raw)| serde_json::from_str::<Value>(&raw).ok())
         .filter(|work| {
-            work.get("owner").and_then(Value::as_str) == Some(id)
-                && work.get("rootId").and_then(Value::as_str)
-                    == agent.get("rootId").and_then(Value::as_str)
+            work.get("rootId").and_then(Value::as_str)
+                == agent.get("rootId").and_then(Value::as_str)
                 && work
                     .get("status")
                     .and_then(Value::as_str)
@@ -1126,15 +1165,58 @@ fn notify_parent_with_id(
         payload.to_string(),
         effect.at(),
     )
-    .map_err(|error| {
-        ManagementError::Invalid(match error {
-            event_write::EventWriteError::RemoteEventsUnavailable => {
-                "Remote child event unavailable"
-            }
-            _ => "Unable to write child stop event",
-        })
+    .map_err(|error| match error {
+        event_write::EventWriteError::RemoteEventsUnavailable => {
+            ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
+        }
+        event_write::EventWriteError::Store(error) => ManagementError::Store(error),
+        _ => ManagementError::Invalid("Unable to write child stop event"),
     })?;
     Ok(())
+}
+
+/// Tell a disconnected child's parent that its turn or start attempt stopped.
+///
+/// The id is the one [`notify_parent`] derives for the same stop, so a later
+/// connection-recovery stop notice for this turn is a no-op. A child without a
+/// stored parent has nobody to tell.
+pub(crate) fn notify_parent_of_disconnect(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let Some(raw) = AgentRepository::get_raw(tx, &AgentId::from(agent_id))? else {
+        return Ok(());
+    };
+    let stopped: Value = serde_json::from_str(&raw).map_err(|_| {
+        studio_runtime_store::StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: agent_id.into(),
+        }
+    })?;
+    let Some(parent) = stopped.get("parentId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if AgentRepository::get(tx, &AgentId::from(parent))?.is_none() {
+        return Ok(());
+    }
+    let mut before = stopped.clone();
+    if !studio_runtime_store::truthy(before.get("turnId")) {
+        before["startAttempt"] = stopped["disconnectRecovery"]["startAttempt"].clone();
+    }
+    let effect = LifecycleEffect::new(LifecycleEffectKind::NotifyParent, before, stopped, at);
+    match notify_parent(tx, &effect) {
+        // A remote proxy has no local event queue. Its disconnect still commits.
+        // A local queue write failure remains an error so the transaction rolls back.
+        Ok(())
+        | Err(ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)) => {
+            Ok(())
+        }
+        Err(ManagementError::Store(error)) => Err(error),
+        Err(other) => Err(studio_runtime_store::StoreError::SchemaMismatch(
+            other.to_string(),
+        )),
+    }
 }
 
 /// The fields every `child_result` payload carries (Python `Runtime.parent_event`).
@@ -1338,7 +1420,9 @@ fn needs_deleted_settlement(agent: &Value) -> bool {
             || agent
                 .get("status")
                 .and_then(Value::as_str)
-                .is_some_and(|status| ["running", "starting", "approval"].contains(&status)))
+                .is_some_and(|status| {
+                    studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES.contains(&status)
+                }))
 }
 
 fn required_str<'a>(

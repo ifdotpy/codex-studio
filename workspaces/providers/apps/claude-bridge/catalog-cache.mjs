@@ -91,3 +91,21 @@ export function createCatalogCache({
     },
   };
 }
+
+// Read metadata from a verified live query when one exists. A foreground read
+// falls back to a separate probe when that refresh fails without proving an
+// account change, so a busy or closing query cannot hide the model catalog.
+// A background refresh never spawns a probe.
+export async function loadCatalog({ background, live, refreshLive, probe }) {
+  if (live) {
+    try {
+      return await refreshLive(live);
+    } catch (error) {
+      if (background || error?.claudeAccountValidationFailed === true)
+        throw error;
+    }
+  }
+  if (background)
+    throw new Error("No live Claude query can refresh account metadata");
+  return probe();
+}

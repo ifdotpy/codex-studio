@@ -82,7 +82,8 @@ impl DiscoveryRound {
         if cancel.load(Ordering::Relaxed) {
             return Err(HistoryError::Cancelled);
         }
-        let profile = fs::canonicalize(profile).map_err(|_| HistoryError::Read)?;
+        let profile =
+            fs::canonicalize(profile).map_err(HistoryError::io(super::PROFILE_DIRECTORY))?;
         if self.limit_profiles.contains(&profile) {
             return Err(HistoryError::DiscoveryLimit);
         }
@@ -155,8 +156,10 @@ impl DiscoveryRound {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(HistoryError::Cancelled);
                 }
-                let entry = entry.map_err(|_| HistoryError::Read)?;
-                let kind = entry.file_type().map_err(|_| HistoryError::Read)?;
+                let entry = entry.map_err(HistoryError::io(super::ROLLOUT_DIRECTORY))?;
+                let kind = entry
+                    .file_type()
+                    .map_err(HistoryError::io(super::ROLLOUT_DIRECTORY))?;
                 if kind.is_dir() {
                     directories.push(entry.path());
                 } else if entry

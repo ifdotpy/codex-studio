@@ -1588,8 +1588,8 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     body["prompt"] = "Task"
                 if dependency == "cross-server-driver/project-binding":
                     identity = self.backend.request(
-                        "GET", "/api/multi-server/v1/identity", headers=self.headers()
-                    ).json()
+                        "GET", "/api/multi-server", headers=self.headers()
+                    ).json()["identity"]
                     local_server = identity["serverId"]
                     peer_server = "paired-project-server"
                     with database_connection(self.backend.state / "canvas.sqlite3") as database:

@@ -110,9 +110,9 @@ where
     {
         let factory = Arc::new(
             studio_runtime_process::provider_stdio::StdioProviderTaskFactory {
-                deadline: started + spec.timeout,
+                deadline: Some(started + spec.timeout),
                 max_frame_bytes: MAX_FRAME_BYTES,
-                max_output_bytes: MAX_OUTPUT_BYTES,
+                max_output_bytes: Some(MAX_OUTPUT_BYTES),
                 stderr_log: spec.stderr_log.clone(),
             },
         );

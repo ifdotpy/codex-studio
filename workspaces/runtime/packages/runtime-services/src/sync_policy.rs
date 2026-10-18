@@ -487,7 +487,7 @@ pub fn publish_entity_changes(
     if !liveness_changed.is_empty() {
         maintain_peer_team_entities(
             transaction,
-            &projection_records(transaction, "runtime_agents")?,
+            &live_agent_records(transaction)?,
             &projection_records(transaction, "runtime_projects")?,
             validate,
         )?;
@@ -640,7 +640,7 @@ fn publish_rooms_of(
     roots: &BTreeSet<String>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
-    let directory = crate::sync_entity_context::RoomDirectory::load_for_sync(transaction)?;
+    let directory = crate::sync_entity_context::RoomDirectory::load_live_for_sync(transaction)?;
     for (id, raw) in projection_records(transaction, "runtime_rooms")? {
         let room = serde_json::from_str::<Value>(&raw)?;
         let root = room.get("rootId").and_then(Value::as_str);
@@ -753,22 +753,6 @@ pub(crate) fn table_exists(connection: &Connection, name: &str) -> StoreResult<b
     )?)
 }
 
-pub(crate) fn stored_records(
-    transaction: &Transaction<'_>,
-    table: &str,
-) -> StoreResult<Vec<(String, String)>> {
-    let rows = stored_record_rows(transaction, table)?;
-    for (id, raw) in &rows {
-        if !valid_stored_record(table, id, raw) {
-            return Err(StoreError::InvalidSyncObject {
-                scope: table.to_owned(),
-                id: id.clone(),
-            });
-        }
-    }
-    Ok(rows)
-}
-
 fn projection_records(
     transaction: &Transaction<'_>,
     table: &str,
@@ -787,6 +771,47 @@ pub(crate) fn projection_values(connection: &Connection, table: &str) -> StoreRe
         .filter(|(id, raw)| valid_stored_record(table, id, raw))
         .map(|(_, raw)| serde_json::from_str(&raw))
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Valid stored agent rows without `deletedAt`, in rowid order, skipping
+/// malformed rows like `projection_records`. The `runtime_agent_live_root`
+/// partial index serves the predicate, so tombstones are not read.
+pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
+    if !table_exists(connection, "runtime_agents")? {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare_cached(
+        "SELECT id,record FROM runtime_agents \
+         WHERE json_valid(record) AND json_extract(record,'$.deletedAt') IS NULL \
+         ORDER BY rowid",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
+        .collect())
+}
+
+/// Every stored row of `table`, refusing the first invalid one.
+#[cfg(test)]
+pub(crate) fn stored_records(
+    transaction: &Transaction<'_>,
+    table: &str,
+) -> StoreResult<Vec<(String, String)>> {
+    let rows = stored_record_rows(transaction, table)?;
+    for (id, raw) in &rows {
+        if !valid_stored_record(table, id, raw) {
+            return Err(StoreError::InvalidSyncObject {
+                scope: table.to_owned(),
+                id: id.clone(),
+            });
+        }
+    }
+    Ok(rows)
 }
 
 fn stored_record_rows(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {
