@@ -133,7 +133,7 @@ class ProcessResponseTarget(ContractModel):
 
 
 class ProcessControlRequest(ContractModel):
-    action: Literal["stop_selected", "stop_owned", "stop_response"]
+    action: Literal["stop_selected", "stop_owned", "stop_response", "background_command"]
     requestId: str = Field(min_length=1, max_length=200)
     agent: str = Field(min_length=1, max_length=200)
     accountKey: str = Field(min_length=1, max_length=200)
@@ -142,6 +142,8 @@ class ProcessControlRequest(ContractModel):
     processes: list[ProcessIdentity] = Field(default_factory=list, max_length=500)
     includeDescendants: bool = False
     responseTarget: ProcessResponseTarget | None = None
+    itemId: str | None = Field(default=None, min_length=1, max_length=200,
+                               description="Running command item that moves to the background")
 
     @model_validator(mode="after")
     def validate_action_scope(self) -> "ProcessControlRequest":
@@ -151,17 +153,20 @@ class ProcessControlRequest(ContractModel):
             raise ValueError("Owned process stop accepts a process snapshot")
         if self.action == "stop_owned" and not self.processes:
             raise ValueError("No owned process identities were supplied")
-        if self.action == "stop_response":
+        if self.action in {"stop_response", "background_command"}:
+            name = "Response stop" if self.action == "stop_response" else "Background move"
             if self.process is not None or self.processes:
-                raise ValueError("Response stop does not accept process identities")
+                raise ValueError(f"{name} does not accept process identities")
             if self.responseTarget is None:
-                raise ValueError("Response stop requires the current response identity")
+                raise ValueError(f"{name} requires the current response identity")
             if (self.responseTarget.agent != self.agent
                     or self.responseTarget.accountKey != self.accountKey
                     or self.responseTarget.epoch != self.epoch):
                 raise ValueError("Response identity does not match the process owner")
         elif self.responseTarget is not None:
-            raise ValueError("Response identity applies only to response stop")
+            raise ValueError("Response identity applies only to response stop and background move")
+        if (self.action == "background_command") != (self.itemId is not None):
+            raise ValueError("Background move requires exactly one command item")
         if self.action not in {"stop_owned", "stop_selected"} and self.includeDescendants:
             raise ValueError("Descendant scope applies only to process stop")
         return self

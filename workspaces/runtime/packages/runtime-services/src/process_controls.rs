@@ -349,7 +349,7 @@ pub fn claim(
     let action = text(request, "action", "");
     let mut targets = Vec::new();
     let mut entries = Vec::new();
-    let response = if action == "stop_response" {
+    let response = if matches!(action, "stop_response" | "background_command") {
         if !validate_response(
             owner,
             &request["responseTarget"],

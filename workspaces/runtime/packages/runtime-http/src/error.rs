@@ -148,6 +148,15 @@ impl ApiError {
 }
 
 impl ApiError {
+    /// HTTP status of this error; a 4xx or 503 provider error means the request had no effect.
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     pub(crate) fn stored(error: studio_runtime_store::StoreError) -> Self {
         use studio_runtime_store::StoreError;
         let cause = InternalErrorKind::from_store_error(&error);
