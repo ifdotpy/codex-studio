@@ -14,6 +14,7 @@ from codex_layout import SERVER_TESTS_ROOT
 
 sys.path.insert(0, str(SERVER_TESTS_ROOT))
 import http_backend_harness
+import test_isolation
 
 
 class BackendEnvironmentTests(unittest.TestCase):
@@ -199,6 +200,57 @@ signal.pause()
                 environment = backend._environment()
 
             self.assertNotIn("CODEX_AGENTS_PYTHON", environment)
+
+    def test_environment_only_harness_does_not_seed_schema_cache(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="http-backend-seed-") as temporary, mock.patch.object(
+            test_isolation, "seed_api_schema_cache_for_fixture",
+        ) as seed:
+            backend = http_backend_harness.BackendProcess(
+                Path(temporary), claude_bin=None, initialize_workspace=False,
+            )
+            try:
+                seed.assert_not_called()
+            finally:
+                backend.close()
+
+    def test_python_start_seeds_schema_cache_before_spawning(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="http-backend-seed-") as temporary:
+            scratch = Path(temporary)
+            backend = http_backend_harness.BackendProcess(
+                scratch, claude_bin=None, initialize_workspace=False,
+            )
+            codex = scratch / "codex"
+            codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            codex.chmod(0o700)
+            backend._provider_executable = codex
+            order: list[str] = []
+
+            def fixture_which(command: str, path: str | None = None) -> str | None:
+                if command == "codex":
+                    return str(codex)
+                return None
+
+            def record_seed(cache_home: Path) -> str:
+                order.append("seed")
+                return ""
+
+            def record_spawn(*args: object, **kwargs: object) -> None:
+                order.append("spawn")
+                raise RuntimeError("spawn reached")
+
+            try:
+                with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                    test_isolation, "seed_api_schema_cache_for_fixture", side_effect=record_seed,
+                ) as seed, mock.patch.object(
+                    http_backend_harness.shutil, "which", side_effect=fixture_which,
+                ), mock.patch.object(
+                    http_backend_harness.subprocess, "Popen", side_effect=record_spawn,
+                ), self.assertRaisesRegex(RuntimeError, "spawn reached"):
+                    backend.start()
+                seed.assert_called_once_with(backend.xdg_cache)
+                self.assertEqual(order, ["seed", "spawn"])
+            finally:
+                backend.close()
 
 
 if __name__ == "__main__":
