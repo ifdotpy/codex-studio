@@ -23,6 +23,7 @@ import {
   TOOL_BARRIER_KILL_GRACE_SECONDS,
   TOOL_BARRIER_MAX_SECONDS,
   acquireRunLock,
+  assertConcurrentWorkers,
   assertOwnedEntry,
   assertStoredScaleProfile,
   callbackProcessRetirementDelayMs,
@@ -33,17 +34,21 @@ import {
   createBoundedEventQueue,
   createReadinessMarkerDirectory,
   createStateResourceAdapter,
+  findFifoHolders,
   finishedWorkspaceCleanupIds,
   foreignLiveTeamRows,
   forEachBounded,
   normalizedWorktreePath,
   parseProviderStdinJournalMessage,
+  parseWorkerWorkspace,
+  readinessMarkerName,
   releaseFifoBarriers,
   requestIdentityKey,
   requireScaleModel,
   resumeIntentState,
   RETAINED_INPUT_STATUSES,
   scaleWorkerDefaults,
+  sharedBarrierPaths,
   stateResourceVersion,
   watchReadinessMarkers,
   waitForServedModelEvidence,
@@ -63,6 +68,8 @@ let WORKER = scaleProfile(DEFAULT_WORKER_PROFILE);
 const STDIN_TIMING_DIAGNOSTIC_ENV = "CODEX_RUNTIME_STDIN_TIMING_DIAGNOSTICS";
 const DEFAULT_STAGES = [30, 128, 512];
 let STAGES = DEFAULT_STAGES;
+// Where workers run: `shared` (project checkout) or `worktree` (one per worker).
+let WORKER_WORKSPACE = parseWorkerWorkspace();
 const STAGE_DEADLINE_MS = 5 * 60 * 1000;
 const REQUEST_DEADLINE_MS = 30_000;
 const SETUP_AND_FINAL_REQUESTS_MAX = 8;
@@ -145,7 +152,7 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/verify-rust-chat-scale.mjs --url http://127.0.0.1:4620 --project /existing/project --evidence-dir /outside/checkout/evidence [--lead-profile claude-sonnet] [--worker-profile codex-luna|claude-haiku] [--stages 30,128,512]",
+    "  node scripts/verify-rust-chat-scale.mjs --url http://127.0.0.1:4620 --project /existing/project --evidence-dir /outside/checkout/evidence [--lead-profile claude-sonnet] [--worker-profile codex-luna|claude-haiku] [--stages 30,128,512] [--worker-workspace shared|worktree]",
     "  node scripts/verify-rust-chat-scale.mjs --url http://127.0.0.1:4620 --evidence-dir /outside/checkout/evidence --resume",
     "",
     "This is a live, paid provider load run. Run only as an announced standalone LOAD-class operation.",
@@ -330,8 +337,11 @@ async function verifyDiskPreflight(project) {
     trackedBytes > 0,
     "The selected project has no tracked HEAD content to estimate worktree storage.",
   );
+  // Shared workers add no worktrees; only each stage's orchestrator can own one.
   const maxOwnedWorktrees =
-    STAGES.reduce((sum, workers) => sum + workers, 0) + STAGES.length;
+    (WORKER_WORKSPACE === "shared"
+      ? 0
+      : STAGES.reduce((sum, workers) => sum + workers, 0)) + STAGES.length;
   const estimatedBytesWith25PercentMargin = Math.ceil(
     trackedBytes * maxOwnedWorktrees * 1.25,
   );
@@ -465,13 +475,18 @@ async function waitForCallbackReadiness(
     // Persist the verified lifetime bound before a failed read or process exit.
     owner.callbackReadinessObservedAt = new Date().toISOString();
     await saveJournal(journalPath, journal);
-    const cwd = await currentCwd(agentId);
+    const shared = WORKER_WORKSPACE === "shared";
+    const cwd = shared ? project : await currentCwd(agentId);
     assert.ok(
-      [...ready.values()].every((item) => resolve(item.cwd) !== cwd),
+      shared || [...ready.values()].every((item) => resolve(item.cwd) !== cwd),
       `Worker ${agentId} shares a workspace path with another callback owner.`,
     );
-    const directory = join(cwd, `.codex-scale-${runId}-${index}`);
-    const path = join(directory, "release.fifo");
+    const { directory, path } = shared
+      ? sharedBarrierPaths(await realpath(dirname(journalPath)), workers, index)
+      : {
+          directory: join(cwd, `.codex-scale-${runId}-${index}`),
+          path: join(cwd, `.codex-scale-${runId}-${index}`, "release.fifo"),
+        };
     assertOwnedEntry(
       await lstat(directory),
       directory,
@@ -487,19 +502,19 @@ async function waitForCallbackReadiness(
       path,
       token: tokens[index],
     });
-    owner.worktree = {
-      cwd,
-      cleanup: "pending",
+    const barrier = {
       barrierDirectory: directory,
       barrierPath: path,
       readinessMarkerPath: markers.path(index),
       completionTag: `STUDIO_SCALE_${runId.slice(0, 8)}_${workers}_${index}_TOOL_OK`,
       readinessObservedAt: owner.callbackReadinessObservedAt,
     };
+    if (shared) owner.sharedBarrier = barrier;
+    else owner.worktree = { cwd, cleanup: "pending", ...barrier };
   }
-  assert.equal(
-    new Set([...ready.values()].map((item) => item.cwd)).size,
-    ids.length,
+  assert.ok(
+    WORKER_WORKSPACE === "shared" ||
+      new Set([...ready.values()].map((item) => item.cwd)).size === ids.length,
     "Managed workers do not have unique worktree paths.",
   );
   return ids.map((id) => ready.get(id));
@@ -514,6 +529,7 @@ async function main() {
   assert.ok(options.url, "--url is required.");
   LEAD = scaleProfile(options["lead-profile"] ?? DEFAULT_LEAD_PROFILE);
   WORKER = scaleProfile(options["worker-profile"] ?? DEFAULT_WORKER_PROFILE);
+  WORKER_WORKSPACE = parseWorkerWorkspace(options["worker-workspace"]);
   if (options.stages) {
     STAGES = parseStages(options.stages);
     CLEANUP_API_REQUEST_RESERVE = ownedAgentsCleanupReserve(STAGES);
@@ -596,6 +612,7 @@ async function main() {
     project,
     leadProfile: LEAD,
     workerProfile: WORKER,
+    workerWorkspace: WORKER_WORKSPACE,
     stages: [],
     ownedAgents: [],
     http: [],
@@ -701,7 +718,7 @@ async function main() {
       },
     };
     process.stdout.write(
-      `${JSON.stringify({ loadClass: true, startsAfterThisAnnouncement: true, workersByStage: STAGES, maxWallMs: journal.runBudget.maxWallMs, providerWorkerTurnsMax: journal.runBudget.maxExchanges, providerLeadTurnsMax: STAGES.length, providerTurnsMax: journal.runBudget.maxExchanges + STAGES.length, apiRequestsMax: journal.runBudget.apiRequestsMax, cleanupApiRequestReserve: CLEANUP_API_REQUEST_RESERVE, maxConcurrentToolCallbacks: STAGES.at(-1), toolChildrenWaitOnKernelFifo: true, toolCallbackReadinessOutput: true, providerStdinTimingDiagnostic: STDIN_TIMING_DIAGNOSTIC_ENV, journalEvidenceScope: "backend PID + kernel boot ID + stage wall-clock", worktreeDiskLimitBytes: WORKTREE_DISK_BUDGET_BYTES, trackedSizeEstimateBytes: journal.diskPreflight.estimatedBytesWith25PercentMargin, freeDiskFloorBytes: FREE_DISK_FLOOR_BYTES, initialFreeDiskBytes: journal.diskPreflight.snapshot.availableBytes, diskAccounting: "tracked-size estimate, causal statfs deltas, and owned worktree root metadata; no recursive walk", syntheticCpuMemoryDiskNetworkLoad: false, hostResourceCeilings: journal.runBudget.hostResourceCeilings, leadProfile: LEAD, workerProfile: WORKER, workerAccounts: workerRole.accountKeys })}\n`,
+      `${JSON.stringify({ loadClass: true, startsAfterThisAnnouncement: true, workersByStage: STAGES, maxWallMs: journal.runBudget.maxWallMs, providerWorkerTurnsMax: journal.runBudget.maxExchanges, providerLeadTurnsMax: STAGES.length, providerTurnsMax: journal.runBudget.maxExchanges + STAGES.length, apiRequestsMax: journal.runBudget.apiRequestsMax, cleanupApiRequestReserve: CLEANUP_API_REQUEST_RESERVE, maxConcurrentToolCallbacks: STAGES.at(-1), toolChildrenWaitOnKernelFifo: true, toolCallbackReadinessOutput: true, providerStdinTimingDiagnostic: STDIN_TIMING_DIAGNOSTIC_ENV, journalEvidenceScope: "backend PID + kernel boot ID + stage wall-clock", worktreeDiskLimitBytes: WORKTREE_DISK_BUDGET_BYTES, trackedSizeEstimateBytes: journal.diskPreflight.estimatedBytesWith25PercentMargin, freeDiskFloorBytes: FREE_DISK_FLOOR_BYTES, initialFreeDiskBytes: journal.diskPreflight.snapshot.availableBytes, diskAccounting: "tracked-size estimate, causal statfs deltas, and owned worktree root metadata; no recursive walk", syntheticCpuMemoryDiskNetworkLoad: false, hostResourceCeilings: journal.runBudget.hostResourceCeilings, leadProfile: LEAD, workerProfile: WORKER, workerWorkspace: WORKER_WORKSPACE, workerAccounts: workerRole.accountKeys })}\n`,
     );
     const desktop = await client.get("/api/desktop");
     assert.equal(
@@ -836,6 +853,16 @@ async function main() {
         readinessTokens,
         workloadAbort.signal,
       );
+      // Shared workers keep their FIFOs and command scripts under the owned
+      // evidence directory, one private directory per stage.
+      const barrierRoot = await realpath(evidenceDir);
+      stage.workerScriptDirectory = await createReadinessMarkerDirectory(
+        join(evidenceDir, `worker-scripts-${workers}`),
+      );
+      if (WORKER_WORKSPACE === "shared")
+        stage.sharedBarrierDirectory = await createReadinessMarkerDirectory(
+          join(evidenceDir, `fifos-${workers}`),
+        );
       stage.createLatenciesMs = [];
       stage.createStartedAt = new Date().toISOString();
       const leadAbsent = await client.agentSnapshot(leadId);
@@ -935,15 +962,27 @@ async function main() {
                 workerRole.accountKeys[index % workerRole.accountKeys.length];
               const workerModel = workerRole.modelByAccount.get(workerAccount);
               const tag = `STUDIO_SCALE_${runId.slice(0, 8)}_${workers}_${index}`;
-              const fifoDirectory = `.codex-scale-${runId}-${index}`;
-              const fifoPath = `${fifoDirectory}/release.fifo`;
+              const shared = WORKER_WORKSPACE === "shared";
+              const barrier = shared
+                ? sharedBarrierPaths(barrierRoot, workers, index)
+                : {
+                    directory: `.codex-scale-${runId}-${index}`,
+                    path: `.codex-scale-${runId}-${index}/release.fifo`,
+                  };
               const token = barrierTokens[index];
               const markerPath = readinessWatch.path(index);
               const markerTemp = `${markerPath}.tmp`;
               // The marker is renamed into place only after the FIFO is open.
-              const inner = `set -eu; (umask 077; mkdir ${shellQuote(fifoDirectory)}); mkfifo -m 600 ${shellQuote(fifoPath)}; exec 3<>${shellQuote(fifoPath)}; (umask 077; printf '%s\\n' ${shellQuote(readinessTokens[index])} > ${shellQuote(markerTemp)}; mv -f ${shellQuote(markerTemp)} ${shellQuote(markerPath)}); IFS= read -r release <&3; [ "$release" = ${shellQuote(token)} ]; exec 3>&-; rm ${shellQuote(fifoPath)}; rmdir ${shellQuote(fifoDirectory)}; printf '%s\\n' ${shellQuote(`${tag}_TOOL_OK`)}`;
-              const command = `command -v timeout >/dev/null 2>&1; timeout -k ${TOOL_BARRIER_KILL_GRACE_SECONDS}s ${TOOL_BARRIER_MAX_SECONDS}s sh -c ${shellQuote(inner)}`;
-              const prompt = `Use the shell tool to run this exact command, then reply with only ${tag}: ${command}`;
+              const inner = `set -eu; (umask 077; mkdir ${shellQuote(barrier.directory)}); mkfifo -m 600 ${shellQuote(barrier.path)}; exec 3<>${shellQuote(barrier.path)}; (umask 077; printf '%s\\n' ${shellQuote(readinessTokens[index])} > ${shellQuote(markerTemp)}; mv -f ${shellQuote(markerTemp)} ${shellQuote(markerPath)}); IFS= read -r release <&3; [ "$release" = ${shellQuote(token)} ]; exec 3>&-; rm ${shellQuote(barrier.path)}; rmdir ${shellQuote(barrier.directory)}; printf '%s\\n' ${shellQuote(`${tag}_TOOL_OK`)}`;
+              // The model gets one short command to run unchanged: the
+              // script lives in an owned file, so there is little to rewrite.
+              const scriptPath = join(
+                stage.workerScriptDirectory,
+                `worker-${index}.sh`,
+              );
+              await writeFile(scriptPath, `${inner}\n`, { mode: 0o600 });
+              const command = `timeout -k ${TOOL_BARRIER_KILL_GRACE_SECONDS}s ${TOOL_BARRIER_MAX_SECONDS}s sh ${shellQuote(scriptPath)}`;
+              const prompt = `Run this one shell command exactly as written, without changing, wrapping, or inspecting it. It blocks until it is released and then prints ${tag}_TOOL_OK. When it finishes, reply with only ${tag}. Command: ${command}`;
               const absent = await client.agentSnapshot(id);
               assert.equal(
                 absent,
@@ -957,7 +996,7 @@ async function main() {
                   id,
                   parent: leadId,
                   cwd: project,
-                  workspaceMode: SCALE_WORKSPACE_MODE,
+                  workspaceMode: WORKER_WORKSPACE,
                   prompt,
                   name: `scale-${workers}-${index}`,
                   role: "implementer",
@@ -1030,16 +1069,20 @@ async function main() {
       await saveJournal(journalPath, journal);
 
       stage.state = "waiting-for-concurrent-provider-turns";
-      const [peak, readiness] = await Promise.all([
-        waitForConcurrentTurns(
-          stream,
-          ids,
-          stageDeadline,
-          stage,
-          journal,
-          journalPath,
-        ),
-        waitForCallbackReadiness(
+      // The observer keeps draining state events (turn intervals are evidence
+      // only) until every worker has published its readiness marker.
+      const observer = observeWorkerTurns(
+        stream,
+        ids,
+        stageDeadline,
+        stage,
+        journal,
+        journalPath,
+      );
+      observer.catch(() => {});
+      let readiness;
+      try {
+        readiness = await waitForCallbackReadiness(
           readinessWatch,
           client,
           ids,
@@ -1050,21 +1093,36 @@ async function main() {
           project,
           journal,
           journalPath,
-        ),
-      ]);
-      stage.concurrentProviderTurns = peak;
-      if (peak < workers)
-        throw new Error(
-          `Stage ${workers} did not prove ${workers} concurrent native provider turns; observed peak ${peak}.`,
         );
+      } finally {
+        stream.interrupt();
+      }
+      await observer;
       stage.toolCallbacksReadyCount = readiness.length;
       assert.equal(
         stage.toolCallbacksReadyCount,
         workers,
         "Not every worker reached its blocked tool callback before release.",
       );
-      // All provider turns overlap here: record each provider CLI process's
-      // memory and CPU so the run shows whether the stage fits the host.
+      // Concurrency criterion: every worker turn reached the model and every
+      // tool process is alive at once, still holding its release FIFO.
+      stage.concurrentWorkers = assertConcurrentWorkers({
+        workers,
+        journalEntries: readProviderStdinJournal(
+          journal.backendIdentity,
+          {
+            providerStdinJournalWindow: {
+              startedAt: stage.startedAt,
+              finishedAt: new Date().toISOString(),
+            },
+          },
+          stageDeadline,
+        ).entries,
+        fifoPaths: readiness.map((item) => item.path),
+        holders: findFifoHolders(readiness.map((item) => item.path)),
+      });
+      // Record each provider CLI process's memory and CPU so the run shows
+      // whether the stage fits the host.
       stage.providerProcessesAtPeak = sampleProviderProcesses(
         readProcessTable(),
         stage.backendPid,
@@ -1092,12 +1150,7 @@ async function main() {
         (item) => item.directory,
       );
       stage.toolBarrierState = "ready-in-worker-worktrees";
-      await releaseFifoBarriers(
-        readiness,
-        runId,
-        stageDeadline,
-        barrierProcesses,
-      );
+      await releaseFifoBarriers(readiness, stageDeadline, barrierProcesses);
       stage.toolBarrierRelease.state = "confirmed";
       stage.toolBarrierRelease.confirmedAt = new Date().toISOString();
       stage.barrierReleasedAt = new Date().toISOString();
@@ -1936,9 +1989,17 @@ async function startSyncResourceStream(
       wake?.();
     }
   })();
+  // Wakes a pending `next` with an "interrupted" event so an observer can stop
+  // without leaving an outstanding read behind. The observer is always running
+  // when this is called, so the flag is consumed by its next read.
+  let interrupted = false;
   const nextRaw = async (timeoutAt) => {
     while (!events.length) {
       if (failure) throw failure;
+      if (interrupted) {
+        interrupted = false;
+        return { name: "interrupted" };
+      }
       const remaining = timeoutAt - performance.now();
       if (Number.isFinite(timeoutAt) && remaining <= 0)
         throw new Error("Timed out waiting for an authoritative state event.");
@@ -1996,6 +2057,10 @@ async function startSyncResourceStream(
   return {
     next,
     events,
+    interrupt() {
+      interrupted = true;
+      wake?.();
+    },
     async close() {
       await reader.cancel().catch(() => {});
       timing.close();
@@ -2010,7 +2075,9 @@ async function startSyncResourceStream(
   };
 }
 
-async function waitForConcurrentTurns(
+// Records worker turn intervals from state events until the stream is
+// interrupted. The intervals are evidence; they are not the concurrency gate.
+async function observeWorkerTurns(
   stream,
   ids,
   deadlineAt,
@@ -2024,6 +2091,7 @@ async function waitForConcurrentTurns(
   let max = 0;
   while (performance.now() < deadlineAt) {
     const event = await stream.next(deadlineAt);
+    if (event.name === "interrupted") return max;
     if (event.name !== "resources") continue;
     for (const document of event.stateDocuments || []) {
       const entity = parseStateEntity(document);
@@ -2073,11 +2141,8 @@ async function waitForConcurrentTurns(
           });
           max = Math.max(max, active.size);
           stage.maxConcurrentTurns = max;
-          if (active.size === expected.size) {
+          if (active.size === expected.size && !stage.allWorkersActiveAt)
             stage.allWorkersActiveAt = new Date().toISOString();
-            await saveJournal(journalPath, journal);
-            return max;
-          }
         }
       } else if (active.has(entity.id)) {
         const turnId = active.get(entity.id);
@@ -2899,10 +2964,16 @@ async function waitForWorkspaceCleanup(
 // A callback shell that never got its release (a failed stage) is released now
 // instead of waiting for its full timeout lifetime. A missing FIFO or reader
 // means the shell is gone; either way the short exit bound applies.
+// The release FIFO of a worker, in its worktree or in the shared-workspace
+// scratch directory under the evidence directory.
+function ownerBarrierPath(owner) {
+  return owner.sharedBarrier?.barrierPath ?? owner.worktree?.barrierPath;
+}
+
 function releaseUnfinishedCallbacks(owners, journal) {
   const pending = owners.filter(
     (owner) =>
-      owner.worktree?.barrierPath &&
+      ownerBarrierPath(owner) &&
       owner.callbackReadinessObservedAt &&
       !owner.callbackReleasedAt &&
       !journal.stages
@@ -2914,13 +2985,71 @@ function releaseUnfinishedCallbacks(owners, journal) {
         ),
   );
   const entries = pending.map((owner) => ({
-    path: owner.worktree.barrierPath,
+    path: ownerBarrierPath(owner),
     token: journal.stages.find((stage) => stage.workers === owner.stageWorkers)
       .toolBarrierTokens[owner.stageIndex],
   }));
   releaseBarriersNow(entries);
   const releasedAt = new Date().toISOString();
   for (const owner of pending) owner.callbackReleasedAt = releasedAt;
+}
+
+// The deterministic scratch paths of a shared-workspace worker, so cleanup can
+// find them even when the stage failed before its readiness was journaled.
+async function sharedBarrierRecord(journalPath, owner) {
+  const evidenceDir = await realpath(dirname(journalPath));
+  const { directory, path } = sharedBarrierPaths(
+    evidenceDir,
+    owner.stageWorkers,
+    owner.stageIndex,
+  );
+  return {
+    barrierDirectory: directory,
+    barrierPath: path,
+    readinessMarkerPath: join(
+      evidenceDir,
+      `readiness-markers-${owner.stageWorkers}`,
+      readinessMarkerName(owner.stageIndex),
+    ),
+  };
+}
+
+// Removes the run-owned FIFOs and readiness markers of shared-workspace
+// workers after their tool processes retired. A FIFO that a process still
+// holds open is not removed: that retirement is unproven.
+async function removeSharedBarriers(owners) {
+  const paths = owners.map((owner) => owner.sharedBarrier.barrierPath);
+  const holders = findFifoHolders(paths);
+  const stageDirectories = new Set();
+  for (const owner of owners) {
+    const { barrierDirectory, barrierPath, readinessMarkerPath } =
+      owner.sharedBarrier;
+    assert.equal(
+      holders.get(barrierPath).length,
+      0,
+      `Owned tool process still holds the release FIFO of ${owner.id}.`,
+    );
+    for (const [path, remove] of [
+      [barrierPath, unlink],
+      [barrierDirectory, rmdir],
+      [readinessMarkerPath, unlink],
+    ]) {
+      try {
+        await remove(path);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    stageDirectories.add(dirname(barrierDirectory));
+    stageDirectories.add(dirname(readinessMarkerPath));
+  }
+  for (const directory of stageDirectories) {
+    try {
+      await rmdir(directory);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
 }
 
 async function verifyOwnedWorktreesRemoved(
@@ -2933,7 +3062,12 @@ async function verifyOwnedWorktreesRemoved(
   journalPath,
 ) {
   const worktrees = owners.filter((owner) => owner.worktree?.cwd);
-  if (!worktrees.length) return;
+  const sharedWorkers = owners.filter(
+    (owner) => !owner.isLead && journal.workerWorkspace === "shared",
+  );
+  for (const owner of sharedWorkers)
+    owner.sharedBarrier ??= await sharedBarrierRecord(journalPath, owner);
+  if (!worktrees.length && !sharedWorkers.length) return;
   const byId = new Map(rows.map((row) => [row.id, row]));
   for (const owner of worktrees) {
     const row = byId.get(owner.id);
@@ -2963,8 +3097,9 @@ async function verifyOwnedWorktreesRemoved(
     );
   }
   const processRetirementDeadlines = [];
-  releaseUnfinishedCallbacks(worktrees, journal);
-  for (const owner of worktrees) {
+  const callbackOwners = [...worktrees, ...sharedWorkers];
+  releaseUnfinishedCallbacks(callbackOwners, journal);
+  for (const owner of callbackOwners) {
     if (
       byId.get(owner.id)?.initialInputNotSent === true &&
       owner.exchanges.length === 0
@@ -2991,7 +3126,8 @@ async function verifyOwnedWorktreesRemoved(
         releasedAt: owner.callbackReleasedAt,
         readinessObservedAt:
           owner.callbackReadinessObservedAt ??
-          owner.worktree?.readinessObservedAt,
+          owner.worktree?.readinessObservedAt ??
+          owner.sharedBarrier?.readinessObservedAt,
       }),
     );
   }
@@ -3005,6 +3141,9 @@ async function verifyOwnedWorktreesRemoved(
       setTimeout(resolvePromise, retirementWaitMs),
     );
   }
+
+  await removeSharedBarriers(sharedWorkers);
+  if (!worktrees.length) return;
 
   const timeout = () => {
     const remaining = Math.floor(deadlineAt - performance.now());
@@ -3963,8 +4102,10 @@ function aggregateMetrics(journal) {
     })),
     concurrentProviderTurns: stages.map((stage) => ({
       workers: stage.workers,
-      observedPeak: stage.maxConcurrentTurns || 0,
-      provedAllWorkersOverlap: stage.concurrentProviderTurns === stage.workers,
+      observedPeakOpenTurns: stage.maxConcurrentTurns || 0,
+      provedAllWorkersConcurrent:
+        stage.concurrentWorkers?.workers === stage.workers,
+      criterion: stage.concurrentWorkers || null,
     })),
   };
 }

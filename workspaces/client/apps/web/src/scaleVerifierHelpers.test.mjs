@@ -30,6 +30,7 @@ import {
   SCALE_WORKSPACE_MODE,
   TOOL_BARRIER_PROCESS_BOUND_MS,
   acquireRunLock,
+  assertConcurrentWorkers,
   assertServedModelEvidence,
   assertStoredScaleProfile,
   callbackProcessRetirementDelayMs,
@@ -41,16 +42,19 @@ import {
   createEntityCursorPuller,
   createReadinessMarkerDirectory,
   createStateResourceAdapter,
+  findFifoHolders,
   finishedWorkspaceCleanupIds,
   foreignLiveTeamRows,
   forEachBounded,
   normalizedWorktreePath,
   parseProviderStdinJournalMessage,
+  parseWorkerWorkspace,
   releaseFifoBarriers,
   requestIdentityKey,
   requireScaleModel,
   resumeIntentState,
   scaleWorkerDefaults,
+  sharedBarrierPaths,
   watchReadinessMarkers,
   waitForServedModelEvidence,
 } from "../scripts/scaleVerifierHelpers.mjs";
@@ -526,16 +530,15 @@ describe("scale verifier helpers", () => {
         "11111111-1111-4111-8111-111111111111",
         "22222222-2222-4222-8222-222222222222",
       ];
-      const workers = tokens.map((token, index) => ({
-        cwd: directory,
-        index,
-        token,
-      }));
-      const roots = workers.map((worker) =>
-        join(directory, `.codex-scale-${runId}-${worker.index}`),
+      const roots = tokens.map((_, index) =>
+        join(directory, `.codex-scale-${runId}-${index}`),
       );
       await Promise.all(roots.map((root) => mkdir(root)));
       const releasePaths = roots.map((root) => join(root, "release.fifo"));
+      const workers = tokens.map((token, index) => ({
+        path: releasePaths[index],
+        token,
+      }));
       const created = spawnSync("mkfifo", releasePaths, { timeout: 5_000 });
       expect(created.status).toBe(0);
       const children = releasePaths.map((releasePath, index) =>
@@ -592,7 +595,7 @@ describe("scale verifier helpers", () => {
               }),
           ),
         );
-        await releaseFifoBarriers(workers, runId, stopAt);
+        await releaseFifoBarriers(workers, stopAt);
         const results = await Promise.all(exits);
         expect(results.map((result) => result.code)).toEqual([0, 0]);
         expect(results.map((result) => result.spawnError)).toEqual([
@@ -1410,5 +1413,107 @@ describe("staged run controls", () => {
       totalCpuMs: 2_000,
     });
     expect(sample.rssBytes.max).toBe(30 * 4096);
+  });
+});
+
+describe("scale verifier shared-workspace concurrency criterion", () => {
+  const newRoot = async () => {
+    const root = await mkdtemp(join(tmpdir(), "scale-shared-"));
+    temporaryPaths.push(root);
+    return root;
+  };
+  const turnStarts = (count) =>
+    Array.from({ length: count }, (_, index) => ({
+      method: "turn/start",
+      operationId: `op-${index}`,
+    }));
+
+  it("parses the worker workspace option with shared as the default", () => {
+    expect(parseWorkerWorkspace()).toBe("shared");
+    expect(parseWorkerWorkspace(undefined)).toBe("shared");
+    expect(parseWorkerWorkspace("worktree")).toBe("worktree");
+    expect(() => parseWorkerWorkspace("separate")).toThrow(
+      /--worker-workspace/,
+    );
+  });
+
+  it("places each shared worker FIFO under its own evidence directory", () => {
+    const first = sharedBarrierPaths("/evidence", 512, 0);
+    const second = sharedBarrierPaths("/evidence", 512, 511);
+    expect(first.path).toBe("/evidence/fifos-512/worker-0/release.fifo");
+    expect(second.path).not.toBe(first.path);
+    expect(() => sharedBarrierPaths("/evidence", 2, 2)).toThrow();
+    expect(() => sharedBarrierPaths("relative", 2, 0)).toThrow();
+  });
+
+  it("finds the processes holding a FIFO through a fake /proc", async () => {
+    const root = await newRoot();
+    const fifoA = join(root, "a.fifo");
+    const fifoB = join(root, "b.fifo");
+    await Promise.all([writeFile(fifoA, ""), writeFile(fifoB, "")]);
+    const proc = join(root, "proc");
+    const addFd = async (pid, fd, target) => {
+      await mkdir(join(proc, String(pid), "fd"), { recursive: true });
+      await symlink(target, join(proc, String(pid), "fd", String(fd)));
+    };
+    await addFd(100, 3, fifoA);
+    await addFd(100, 4, "/dev/null");
+    await addFd(200, 3, fifoA);
+    await addFd(300, 0, "/dev/null");
+    await mkdir(join(proc, "self"), { recursive: true });
+    const holders = findFifoHolders([fifoA, fifoB], proc);
+    expect(holders.get(fifoA).sort()).toEqual([100, 200]);
+    expect(holders.get(fifoB)).toEqual([]);
+  });
+
+  it("accepts a stage with every turn started and every tool alive", () => {
+    const paths = ["/f/0", "/f/1", "/f/2"];
+    const holders = new Map(paths.map((path, index) => [path, [10 + index]]));
+    const proof = assertConcurrentWorkers({
+      workers: 3,
+      journalEntries: [
+        ...turnStarts(4),
+        { method: "turn/steer", operationId: "x" },
+      ],
+      fifoPaths: paths,
+      holders,
+    });
+    expect(proof).toMatchObject({
+      workers: 3,
+      physicalTurnStarts: 4,
+      toolProcessesHoldingFifo: 3,
+    });
+  });
+
+  it("rejects missing turn starts, duplicate operations, and dead tools", () => {
+    const paths = ["/f/0", "/f/1"];
+    const alive = new Map(paths.map((path) => [path, [1]]));
+    expect(() =>
+      assertConcurrentWorkers({
+        workers: 2,
+        journalEntries: turnStarts(2),
+        fifoPaths: paths,
+        holders: alive,
+      }),
+    ).toThrow(/turn\/start/);
+    expect(() =>
+      assertConcurrentWorkers({
+        workers: 2,
+        journalEntries: [...turnStarts(2), ...turnStarts(2)],
+        fifoPaths: paths,
+        holders: alive,
+      }),
+    ).toThrow(/turn\/start/);
+    expect(() =>
+      assertConcurrentWorkers({
+        workers: 2,
+        journalEntries: turnStarts(3),
+        fifoPaths: paths,
+        holders: new Map([
+          ["/f/0", [1]],
+          ["/f/1", []],
+        ]),
+      }),
+    ).toThrow(/1 of 2 tool processes/);
   });
 });

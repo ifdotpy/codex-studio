@@ -7,6 +7,8 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   watch,
   writeSync,
 } from "node:fs";
@@ -702,48 +704,27 @@ export async function acquireRunLock(path, runId) {
 
 export function releaseFifoBarriers(
   workers,
-  runId,
   deadlineAt,
   processSet = new Set(),
 ) {
-  assert.match(runId, /^[0-9a-f-]{36}$/i, "Expected the run's UUID.");
-  const paths = workers.map((worker) =>
-    join(
-      resolve(worker.cwd),
-      `.codex-scale-${runId}-${worker.index}`,
-      "release.fifo",
-    ),
-  );
+  const paths = workers.map((worker) => worker.path);
   const tokens = workers.map((worker) => worker.token);
   assert.ok(
     workers.every(
       (worker) =>
-        Number.isSafeInteger(worker.index) &&
-        worker.index >= 0 &&
-        resolve(worker.cwd) === worker.cwd &&
-        /^[0-9a-f-]{36}$/i.test(worker.token),
+        isAbsolute(worker.path) && /^[0-9a-f-]{36}$/i.test(worker.token),
     ),
-    "Workers must contain absolute owned cwd paths, indexes, and UUID release tokens.",
-  );
-  assert.equal(
-    new Set(workers.map((worker) => worker.index)).size,
-    workers.length,
-    "Worker indexes must be unique.",
+    "Workers must contain absolute FIFO paths and UUID release tokens.",
   );
   const remaining = Math.min(240_000, deadlineAt - performance.now());
   assert.ok(remaining > 0, "Stage deadline elapsed before FIFO release.");
   const script = String.raw`
 const fs = require("node:fs");
 const pathModule = require("node:path");
-const runId = process.argv[1];
-if (!/^[0-9a-f-]{36}$/i.test(runId)) throw new Error("Unexpected run ID.");
-for (let index = 2; index < process.argv.length; index += 3) {
-  const cwd = process.argv[index];
-  const workerIndex = process.argv[index + 1];
-  const token = process.argv[index + 2];
-  if (!pathModule.isAbsolute(cwd) || !/^[0-9]+$/.test(workerIndex) || !/^[0-9a-f-]{36}$/i.test(token)) throw new Error("Unexpected worker identity.");
-  const root = pathModule.join(cwd, ".codex-scale-" + runId + "-" + workerIndex);
-  const path = pathModule.join(root, "release.fifo");
+for (let index = 1; index < process.argv.length; index += 2) {
+  const path = process.argv[index];
+  const token = process.argv[index + 1];
+  if (!pathModule.isAbsolute(path) || !/^[0-9a-f-]{36}$/i.test(token)) throw new Error("Unexpected worker identity.");
   if (!fs.lstatSync(path).isFIFO()) throw new Error("Expected an owned FIFO.");
   const fd = fs.openSync(path, "w");
   try { fs.writeSync(fd, token + "\n"); } finally { fs.closeSync(fd); }
@@ -763,12 +744,7 @@ for (let index = 2; index < process.argv.length; index += 3) {
   );
   const child = spawn(
     process.execPath,
-    [
-      "-e",
-      script,
-      runId,
-      ...workers.flatMap((worker) => [worker.cwd, worker.index, worker.token]),
-    ],
+    ["-e", script, ...workers.flatMap((worker) => [worker.path, worker.token])],
     {
       stdio: ["ignore", "ignore", "pipe"],
     },
@@ -1056,5 +1032,121 @@ export function sampleProviderProcesses(table, rootPid, processName) {
       rssBytes,
       cpuMs,
     })),
+  };
+}
+
+// Where the workers of a stage run. `shared` puts every worker in the project
+// checkout (workers do not edit files); `worktree` gives each its own Git
+// worktree. The 512-worker target uses `shared`; separate 30/128 checks use
+// `worktree`.
+export const WORKER_WORKSPACES = Object.freeze(["shared", "worktree"]);
+export const DEFAULT_WORKER_WORKSPACE = "shared";
+
+export function parseWorkerWorkspace(value = DEFAULT_WORKER_WORKSPACE) {
+  assert.ok(
+    WORKER_WORKSPACES.includes(value),
+    `--worker-workspace must be one of ${WORKER_WORKSPACES.join(", ")}.`,
+  );
+  return value;
+}
+
+// Per-worker release FIFO of a shared-workspace stage. It lives under the
+// owned evidence directory, never inside the repository checkout.
+export function sharedBarrierPaths(evidenceDir, workers, index) {
+  assert.ok(isAbsolute(evidenceDir), "Evidence directory must be absolute.");
+  assert.ok(
+    Number.isSafeInteger(workers) && workers > 0,
+    "Expected a positive worker count.",
+  );
+  assert.ok(
+    Number.isSafeInteger(index) && index >= 0 && index < workers,
+    "Expected a worker index inside the stage.",
+  );
+  const directory = join(evidenceDir, `fifos-${workers}`, `worker-${index}`);
+  return { directory, path: join(directory, "release.fifo") };
+}
+
+// Processes holding each FIFO open, read from /proc/<pid>/fd. A FIFO shell
+// keeps its read-write descriptor for as long as it blocks, so a holder proves
+// the tool process is alive and still waiting for its release.
+export function findFifoHolders(paths, procRoot = "/proc") {
+  const wanted = new Map();
+  for (const path of paths) {
+    let real = path;
+    try {
+      real = realpathSync(path);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    wanted.set(real, path);
+  }
+  const holders = new Map(paths.map((path) => [path, []]));
+  for (const entry of readdirSync(procRoot)) {
+    if (!/^[1-9]\d*$/.test(entry)) continue;
+    let fds;
+    try {
+      fds = readdirSync(`${procRoot}/${entry}/fd`);
+    } catch (error) {
+      if (["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error?.code))
+        continue;
+      throw error;
+    }
+    for (const fd of fds) {
+      let target;
+      try {
+        target = readlinkSync(`${procRoot}/${entry}/fd/${fd}`);
+      } catch (error) {
+        if (["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error?.code))
+          continue;
+        throw error;
+      }
+      const original = wanted.get(target);
+      if (original !== undefined) {
+        const pids = holders.get(original);
+        if (!pids.includes(Number(entry))) pids.push(Number(entry));
+      }
+    }
+  }
+  return holders;
+}
+
+// Concurrency criterion for a stage. "Concurrently working" is: every worker
+// turn reached the model (a physical turn/start stdin write per worker; the
+// orchestrator's own turn is the extra one), and every worker's tool process is
+// alive at the same moment, still holding its release FIFO. Open turns are not
+// required: Codex yields a long-running tool after 30 s and the turn may end
+// while the command keeps running.
+export function assertConcurrentWorkers({
+  workers,
+  extraTurnStarts = 1,
+  journalEntries,
+  fifoPaths,
+  holders,
+}) {
+  assert.equal(
+    fifoPaths.length,
+    workers,
+    `Expected ${workers} worker FIFOs; found ${fifoPaths.length}.`,
+  );
+  const turnStarts = new Set(
+    journalEntries
+      .filter((entry) => entry.method === "turn/start")
+      .map((entry) => entry.operationId),
+  ).size;
+  assert.ok(
+    turnStarts >= workers + extraTurnStarts,
+    `Only ${turnStarts} physical turn/start writes reached the model; ${workers + extraTurnStarts} are required.`,
+  );
+  const missing = fifoPaths.filter((path) => !holders.get(path)?.length);
+  assert.equal(
+    missing.length,
+    0,
+    `${missing.length} of ${workers} tool processes are not alive and holding their FIFO.`,
+  );
+  return {
+    workers,
+    physicalTurnStarts: turnStarts,
+    toolProcessesHoldingFifo: workers,
+    provedAt: new Date().toISOString(),
   };
 }
