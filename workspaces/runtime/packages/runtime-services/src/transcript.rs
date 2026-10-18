@@ -1117,7 +1117,7 @@ mod tests {
             let mut statement = connection
                 .prepare("SELECT id,seq,hash,payload,deleted FROM sync_entities WHERE collection='transcript:agent' ORDER BY id")
                 .expect("sync ledger snapshot query");
-            let rows = statement
+            statement
                 .query_map([], |row| {
                     Ok(json!([
                         row.get::<_, String>(0)?,
@@ -1129,8 +1129,7 @@ mod tests {
                 })
                 .expect("sync ledger rows")
                 .collect::<Result<Vec<_>, _>>()
-                .expect("sync ledger snapshot");
-            rows
+                .expect("sync ledger snapshot")
         };
         let committed_sync_state = sync_state();
 
