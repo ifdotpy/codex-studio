@@ -264,12 +264,13 @@ impl Worker {
         let _observed_generation = *self.idle_state_changes.borrow_and_update();
         let delay = self
             .db("idle_unload_delay", |store| async move {
-                blocking_store_read(store, |store| {
-                    Ok(OrchestrationSettingsRepository::idle_session_unload(
-                        &*store.read()?,
-                    )?)
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", |connection| {
+                        Ok(OrchestrationSettingsRepository::idle_session_unload(
+                            connection,
+                        )?)
+                    })
+                    .await
             })
             .await;
         let delay = match delay {
@@ -433,12 +434,13 @@ impl Worker {
     pub(super) async fn idle_setting_changed(&mut self, now: Instant) -> Result<(), WorkerError> {
         let delay = self
             .db("idle_unload_delay", |store| async move {
-                blocking_store_read(store, |store| {
-                    Ok(OrchestrationSettingsRepository::idle_session_unload(
-                        &*store.read()?,
-                    )?)
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", |connection| {
+                        Ok(OrchestrationSettingsRepository::idle_session_unload(
+                            connection,
+                        )?)
+                    })
+                    .await
             })
             .await;
         let delay = match delay {
@@ -556,14 +558,13 @@ impl Worker {
         let thread = thread.to_owned();
         let in_use = self
             .db("idle_unload_thread", move |store| async move {
-                blocking_store_read(store, move |store| {
-                    Ok(SchedulerRepository::idle_unload_thread_in_use(
-                        &*store.read()?,
-                        &account,
-                        &thread,
-                    )?)
-                })
-                .await
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        Ok(SchedulerRepository::idle_unload_thread_in_use(
+                            connection, &account, &thread,
+                        )?)
+                    })
+                    .await
             })
             .await?;
         Ok(!in_use)
@@ -576,16 +577,18 @@ impl Worker {
     ) -> Result<IdleUsageSnapshot, WorkerError> {
         let account = self.account.clone();
         self.db("idle_unload_usage_snapshot", move |store| async move {
-            blocking_store_read(store, move |store| {
-                let db = store.read()?;
-                let (busy_threads, account_in_use) =
-                    SchedulerRepository::idle_unload_usage_snapshot(&db, &account, &threads)?;
-                Ok(IdleUsageSnapshot {
-                    busy_threads,
-                    account_in_use,
+            store
+                .read_async("runtime-services/account_worker_read", move |connection| {
+                    let (busy_threads, account_in_use) =
+                        SchedulerRepository::idle_unload_usage_snapshot(
+                            connection, &account, &threads,
+                        )?;
+                    Ok(IdleUsageSnapshot {
+                        busy_threads,
+                        account_in_use,
+                    })
                 })
-            })
-            .await
+                .await
         })
         .await
     }
@@ -593,13 +596,13 @@ impl Worker {
     async fn account_in_use(&mut self) -> Result<bool, WorkerError> {
         let account = self.account.clone();
         self.db("idle_unload_account", move |store| async move {
-            blocking_store_read(store, move |store| {
-                Ok(SchedulerRepository::idle_unload_account_in_use(
-                    &*store.read()?,
-                    &account,
-                )?)
-            })
-            .await
+            store
+                .read_async("runtime-services/account_worker_read", move |connection| {
+                    Ok(SchedulerRepository::idle_unload_account_in_use(
+                        connection, &account,
+                    )?)
+                })
+                .await
         })
         .await
     }
