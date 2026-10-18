@@ -930,7 +930,10 @@ async function flags(s, p = {}, live = false) {
       : {}),
   };
 }
-const finishingTurns = new WeakSet();
+// A turn whose end is being recorded. active.turn still names it until
+// finishTurn persists, but it accepts no more input. The value settles when
+// finishTurn has cleared the turn, or when recording its end failed.
+const finishingTurns = new WeakMap();
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
@@ -939,7 +942,8 @@ async function finishTurn(s, active, result, error) {
   if (stall?.closed) await stall.closed;
   // One caller finishes a turn; the stall recovery can race the SDK stream.
   if (active.turn !== turn || finishingTurns.has(turn)) return;
-  finishingTurns.add(turn);
+  let finished;
+  finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true) &&
@@ -1099,7 +1103,11 @@ async function finishTurn(s, active, result, error) {
     });
   }
   s.updatedAt = Math.floor(Date.now() / 1000);
-  await persist(s);
+  try {
+    await persist(s);
+  } finally {
+    finished();
+  }
   active.turn = null;
   active.toolClocks.clear();
   if (stall) {
@@ -2392,16 +2400,24 @@ async function handle(method, p) {
     }
     const running = queries.get(s.id)?.turn;
     if (running) {
-      await handle("turn/steer", {
-        threadId: s.id,
-        expectedTurnId: running.id,
-        clientUserMessageId: p.clientUserMessageId,
-        input: p.input,
-      });
-      return {
-        turn: { id: running.id, status: running.status },
-        steered: true,
-      };
+      try {
+        await handle("turn/steer", {
+          threadId: s.id,
+          expectedTurnId: running.id,
+          clientUserMessageId: p.clientUserMessageId,
+          input: p.input,
+        });
+        return {
+          turn: { id: running.id, status: running.status },
+          steered: true,
+        };
+      } catch (error) {
+        // The running turn ended before this input reached Claude. Nothing
+        // was submitted, so the input starts the next turn instead.
+        if (!error.steerNotSubmitted) throw error;
+        await finishingTurns.get(running);
+        if (queries.get(s.id)?.turn) throw error;
+      }
     }
     let nativeCommand;
     if (p.claudeCommand) {
@@ -2591,6 +2607,13 @@ async function handle(method, p) {
         throw new Error("This message identity has different content");
       return { turnId: turn.id };
     }
+    // Errors with steerNotSubmitted: the input was never handed to Claude.
+    const notSubmitted = (message) =>
+      Object.assign(new Error(message), { steerNotSubmitted: true });
+    if (finishingTurns.has(turn))
+      throw notSubmitted(
+        "Claude finished before this steer could be submitted",
+      );
     active.pendingSteers.add(id);
     let item;
     try {
@@ -2600,7 +2623,9 @@ async function handle(method, p) {
         queries.get(s.id) !== active ||
         active.input.closed
       )
-        throw new Error("Claude finished before this steer could be submitted");
+        throw notSubmitted(
+          "Claude finished before this steer could be submitted",
+        );
       item = {
         id,
         type: "userMessage",
@@ -2616,7 +2641,9 @@ async function handle(method, p) {
         queries.get(s.id) !== active ||
         active.input.closed
       )
-        throw new Error("Claude stopped before this steer could be submitted");
+        throw notSubmitted(
+          "Claude stopped before this steer could be submitted",
+        );
       active.input.push(userMessage(s, turn, blocks, id));
       item.deliveryStatus = "submitted";
       return { turnId: turn.id };

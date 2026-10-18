@@ -348,6 +348,44 @@ mod tests {
     }
 
     #[test]
+    fn settled_unsubmitted_attempt_is_not_requeued_again() {
+        // A VM thread/start write can end uncertain, and the same request can
+        // resolve as unknown when its provider session closes. The first
+        // outcome holds the attempt and returns its input to pending.
+        let mut connection = database();
+        let identity = super::TurnAttemptIdentity {
+            agent_id: "agent".into(),
+            epoch: 4,
+            attempt_id: "attempt".into(),
+        };
+        let reason = Some("Provider thread resume outcome is unknown; input remains pending.");
+        let transaction = connection.transaction().expect("claim transaction begins");
+        SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2)
+            .expect("claim executes");
+        SchedulerRepository::settle_start_outcome(&transaction, &identity, "held", reason)
+            .expect("uncertain thread write holds the attempt");
+        transaction.commit().expect("hold commits");
+
+        let transaction = connection.transaction().expect("close transaction begins");
+        assert!(
+            !SchedulerRepository::requeue_unsubmitted_attempt(&transaction, &identity)
+                .expect("a settled attempt is not stored corruption"),
+            "the closed session does not requeue the settled attempt again"
+        );
+        SchedulerRepository::settle_start_outcome(&transaction, &identity, "held", reason)
+            .expect("the repeated hold replays its receipt");
+        transaction.commit().expect("close commits");
+        let statuses: Vec<String> = connection
+            .prepare("SELECT status FROM runtime_events WHERE id IN ('first','tie') ORDER BY id")
+            .expect("status query prepares")
+            .query_map([], |row| row.get(0))
+            .expect("statuses read")
+            .collect::<Result<_, _>>()
+            .expect("statuses decode");
+        assert_eq!(statuses, ["pending", "pending"]);
+    }
+
+    #[test]
     fn submitted_attempt_is_not_recovered() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction begins");
