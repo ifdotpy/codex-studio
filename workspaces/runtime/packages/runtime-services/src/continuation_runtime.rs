@@ -120,6 +120,16 @@ impl ClaudeAccountPin {
     fn value(&self) -> &Value {
         &self.0
     }
+
+    /// End the cached auth status of the pinned account profile.
+    fn invalidate_cached_auth(&self) {
+        use crate::account_driver::{AuthProfile, ProviderAuthReader, SystemProviderAuthReader};
+        SystemProviderAuthReader.invalidate(&AuthProfile {
+            provider: "claude".to_owned(),
+            home: self.0["home"].as_str().unwrap_or_default().into(),
+            claude_options: self.0.get("claudeOptions").filter(|v| !v.is_null()).cloned(),
+        });
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -685,6 +695,13 @@ fn stage_terminal(
             && claude_auth.is_none()
         {
             return Err(ContinuationError::Unavailable("claude-auth/account-pin"));
+        }
+        if cause == UsageCause::Auth
+            && let Some(observation) = claude_auth
+        {
+            // The provider rejected the credentials this turn used, so the cached
+            // account status is stale: the next read probes once.
+            observation.account_pin.invalidate_cached_auth();
         }
         let reset = error.get("resetsAt").and_then(Value::as_f64);
         let decision = usage_resume::record_failure(

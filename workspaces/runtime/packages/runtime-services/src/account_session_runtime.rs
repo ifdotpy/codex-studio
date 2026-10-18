@@ -891,11 +891,14 @@ impl AccountSessionRuntime {
         self.driver.discover_codex().map_err(account_error)?;
         if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
             let home = self.home.join(".claude");
-            let metadata = SystemProviderAuthReader.read(&AuthProfile {
+            let profile = AuthProfile {
                 provider: "claude".into(),
                 home: home.clone(),
                 claude_options: None,
-            });
+            };
+            // Registration must see the credentials as they are now.
+            SystemProviderAuthReader.invalidate(&profile);
+            let metadata = SystemProviderAuthReader.read(&profile);
             self.driver
                 .discover_claude_verified(&home, &metadata)
                 .map_err(mutation_error)?;
@@ -915,11 +918,13 @@ impl AccountSessionRuntime {
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
                 .unwrap_or_else(|| self.home.join(".claude"));
-            let metadata = SystemProviderAuthReader.read(&AuthProfile {
+            let profile = AuthProfile {
                 provider: "claude".into(),
                 home: home.clone(),
                 claude_options: Some(Value::Object(options.clone())),
-            });
+            };
+            SystemProviderAuthReader.invalidate(&profile);
+            let metadata = SystemProviderAuthReader.read(&profile);
             self.driver
                 .register_claude_verified(
                     options,

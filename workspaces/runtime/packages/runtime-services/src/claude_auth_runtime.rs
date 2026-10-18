@@ -285,7 +285,7 @@ where
     let agent = intent.agent_id.clone();
     let capture_pin = before.clone();
     let (settings, capture) = store_copy
-        .transaction_with(move |tx| {
+        .read_async("runtime-services/claude_auth_runtime", move |tx| {
             let state = snapshot(tx, &agent, None)?;
             let settings = preparation_settings(&state.agent);
             let capture = claude_auth_wait::capture(&state, &settings, &capture_pin);

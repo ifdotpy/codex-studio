@@ -5,6 +5,7 @@
 //! the driver's mutex. Credential material is never retained in this module.
 
 pub mod claude;
+mod auth_cache;
 #[cfg(test)]
 #[allow(clippy::duplicate_mod)]
 #[path = "../tests/support/prepared_python.rs"]
@@ -129,6 +130,9 @@ pub struct AuthProfile {
 
 pub trait ProviderAuthReader: Send + Sync {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata;
+
+    /// Forget any cached status of `profile`; the next read probes once.
+    fn invalidate(&self, _profile: &AuthProfile) {}
 }
 
 /// Reads Codex auth files and runs the native Claude metadata command.
@@ -139,8 +143,63 @@ impl ProviderAuthReader for SystemProviderAuthReader {
         if profile.provider == "claude" {
             ClaudeCliAuthReader.read(profile)
         } else {
-            codex_auth_metadata(&profile.home)
+            auth_cache::shared().read(&codex_location(profile), || {
+                codex_auth_metadata(&profile.home)
+            })
         }
+    }
+
+    fn invalidate(&self, profile: &AuthProfile) {
+        let location = if profile.provider == "claude" {
+            claude_location(profile)
+        } else {
+            codex_location(profile)
+        };
+        auth_cache::shared().invalidate(&location);
+    }
+}
+
+/// Credential files whose change ends a cached Claude status.
+const CLAUDE_CREDENTIAL_FILES: &[&str] = &[".credentials.json", ".claude.json"];
+/// Credential files whose change ends a cached Codex status.
+const CODEX_CREDENTIAL_FILES: &[&str] = &["auth.json"];
+
+fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
+    auth_cache::CredentialLocation {
+        identity: "codex".to_owned(),
+        directories: vec![profile.home.clone()],
+        credential_files: CODEX_CREDENTIAL_FILES,
+    }
+}
+
+/// The directory that `claude auth status` reads: the profile's `configDir`,
+/// else `CLAUDE_CONFIG_DIR`, else `~/.claude` (whose account file is `~/.claude.json`).
+fn claude_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
+    let options = profile.claude_options.as_ref();
+    let configured = |name: &str| {
+        options
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+    };
+    let home = env::var_os("HOME").map(PathBuf::from);
+    let config_dir = configured("configDir")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from));
+    let (directories, source) = match (config_dir, home) {
+        (Some(config), _) => (vec![config.clone()], config),
+        (None, Some(home)) => (vec![home.join(".claude"), home.clone()], home),
+        (None, None) => (Vec::new(), PathBuf::new()),
+    };
+    auth_cache::CredentialLocation {
+        identity: format!(
+            "claude\0{}\0{}",
+            configured("binaryPath").unwrap_or_default(),
+            source.display()
+        ),
+        directories,
+        credential_files: CLAUDE_CREDENTIAL_FILES,
     }
 }
 
@@ -285,6 +344,10 @@ fn object_if_truthy(value: Option<&Value>) -> Result<Option<&serde_json::Map<Str
 struct ClaudeCliAuthReader;
 
 impl ProviderAuthReader for ClaudeCliAuthReader {
+    fn invalidate(&self, profile: &AuthProfile) {
+        auth_cache::shared().invalidate(&claude_location(profile));
+    }
+
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
         #[cfg(target_os = "macos")]
         {
@@ -330,12 +393,12 @@ impl ClaudeCliAuthReader {
         ) else {
             return AuthMetadata::signed_out();
         };
-        let output = run_claude_status(&binary, options);
-        let (stdout, succeeded) = match output {
-            Ok(output) => output,
-            Err(kind) => return AuthMetadata::error(Some(kind)),
-        };
-        parse_claude_status(&stdout, succeeded)
+        auth_cache::shared().read(&claude_location(profile), || {
+            match run_claude_status(&binary, options) {
+                Ok((stdout, succeeded)) => parse_claude_status(&stdout, succeeded),
+                Err(kind) => AuthMetadata::error(Some(kind)),
+            }
+        })
     }
 }
 
