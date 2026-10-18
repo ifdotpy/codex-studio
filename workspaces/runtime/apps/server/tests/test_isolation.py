@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import tempfile
-from pathlib import Path
 
 SUPERVISOR_ENV = (
     "CODEX_AGENTS_SUPERVISOR_MODE",
