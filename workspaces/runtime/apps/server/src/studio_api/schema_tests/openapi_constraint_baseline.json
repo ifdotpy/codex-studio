@@ -257,6 +257,12 @@
       "candidate": "accepted property"
     },
     {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/origins",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
       "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/waitMs/properties/p99",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -1026,6 +1032,12 @@
     },
     {
       "pointer": "/components/schemas/RuntimeLockOperation/properties/holdMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/RuntimeLockOperation/properties/origins",
       "constraint": "property",
       "baseline": "absent from closed object",
       "candidate": "accepted property"

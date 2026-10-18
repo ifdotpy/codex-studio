@@ -666,6 +666,9 @@ class SchemaContractTests(unittest.TestCase):
             "/components/schemas/RuntimeLockOperation/properties/holdMs/properties/p99",
             "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/waitMs/properties/p99",
             "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/holdMs/properties/p99",
+            # Per-origin writer transaction counts of the store writer series.
+            "/components/schemas/RuntimeLockOperation/properties/origins",
+            "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/origins",
         ):
             add(pointer, "property")
 
