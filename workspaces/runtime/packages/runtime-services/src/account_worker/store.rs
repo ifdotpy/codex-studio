@@ -89,25 +89,20 @@ pub(super) fn delete_receipt(
     )?;
     Ok(())
 }
-/// Account operations are `account:{account}:…`, so each of their receipts
-/// starts with `receipt_id("account", "")`. The exclusive end replaces that
-/// prefix's final `:` with the next byte, `;`, so one range covers all accounts.
-fn account_operation_receipt_range() -> (String, String) {
-    let prefix = receipt_id("account", "");
-    let end = format!("{};", &prefix[..prefix.len() - 1]);
-    (prefix, end)
+/// Submitted account operations across all accounts, using the receipt-ID owner.
+fn submitted_account_receipt_pattern() -> String {
+    receipt_id("account:*", "submitted")
 }
 /// Unresolved thread start or resume submissions for `agent`, in any account.
-/// The receipt-ID range is an index search; the other predicates are unchanged.
-const PENDING_THREAD_START_SQL: &str = "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id>=?2 AND r.id<?3 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved'))";
+/// GLOB lets SQLite derive an indexed prefix range without manual bound arithmetic.
+const PENDING_THREAD_START_SQL: &str = "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id GLOB ?2 AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved'))";
 fn has_pending_thread_start(
     connection: &rusqlite::Connection,
     agent: &str,
 ) -> rusqlite::Result<bool> {
-    let (start, end) = account_operation_receipt_range();
     connection.query_row(
         PENDING_THREAD_START_SQL,
-        params![agent, start, end],
+        params![agent, submitted_account_receipt_pattern()],
         |row| row.get(0),
     )
 }
@@ -2666,16 +2661,14 @@ mod pending_thread_start_tests {
     fn pending_lookup_uses_the_receipt_id_index() {
         let connection = receipts();
         seed(&connection);
-        let (start, end) = account_operation_receipt_range();
-        assert_eq!(
-            (start.as_str(), end.as_str()),
-            ("account-worker:account:", "account-worker:account;")
-        );
         let mut statement = connection
             .prepare(&format!("EXPLAIN QUERY PLAN {PENDING_THREAD_START_SQL}"))
             .expect("plan statement");
         let details = statement
-            .query_map(params!["lead", start, end], |row| row.get::<_, String>(3))
+            .query_map(
+                params!["lead", submitted_account_receipt_pattern()],
+                |row| row.get::<_, String>(3),
+            )
             .expect("plan rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("plan details");
