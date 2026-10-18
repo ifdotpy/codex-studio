@@ -8,6 +8,8 @@
 use crate::account_driver::{AuthMetadata, AuthStatus};
 use crate::account_worker::WorkerError;
 use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
+use crate::continuation_runtime::classify_usage_failure;
+use crate::usage_resume::Cause as UsageCause;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -53,6 +55,12 @@ pub trait ProviderAdapter: Send + Sync + 'static {
 
     /// Credential file copied into a VM guest profile.
     fn guest_credential_file(&self) -> &'static str;
+
+    /// Usage, rate-limit or auth cause of a provider turn error, if any.
+    fn classify_error(&self, error: &Value) -> Option<UsageCause>;
+
+    /// The peer refused a request because the thread is still running a turn.
+    fn is_busy_error(&self, error: &Value) -> bool;
 }
 
 struct CodexAdapter;
@@ -70,6 +78,9 @@ pub fn adapter(kind: ProviderKind) -> &'static dyn ProviderAdapter {
 const CODEX_APP_SERVER_ARGS: [&str; 3] = ["app-server", "--listen", "stdio://"];
 /// Codex config override that keeps credentials in the account's own home.
 const CODEX_FILE_CREDENTIALS: [&str; 2] = ["-c", "cli_auth_credentials_store=\"file\""];
+/// JSON-RPC error the Claude bridge returns for a request on a busy thread.
+const CLAUDE_BUSY_CODE: i64 = -32000;
+const CLAUDE_BUSY_MESSAGE: &str = "Claude is still working";
 /// Guest path of the Claude bridge inside the VM image.
 const VM_CLAUDE_BRIDGE: &str = "/opt/codex-studio/claude_bridge/bridge.mjs";
 
@@ -115,6 +126,15 @@ impl ProviderAdapter for CodexAdapter {
     fn guest_credential_file(&self) -> &'static str {
         "auth.json"
     }
+
+    fn classify_error(&self, error: &Value) -> Option<UsageCause> {
+        classify_usage_failure(error, None)
+    }
+
+    /// Codex queues or steers input into a running turn; it has no busy refusal.
+    fn is_busy_error(&self, _error: &Value) -> bool {
+        false
+    }
 }
 
 impl ProviderAdapter for ClaudeAdapter {
@@ -149,6 +169,19 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn guest_credential_file(&self) -> &'static str {
         ".credentials.json"
+    }
+
+    fn classify_error(&self, error: &Value) -> Option<UsageCause> {
+        static AUTH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let auth = AUTH.get_or_init(|| {
+            regex::Regex::new(r"(?i)oauth session expired|failed to authenticate")
+                .expect("static Claude auth pattern")
+        });
+        classify_usage_failure(error, Some(auth))
+    }
+
+    fn is_busy_error(&self, error: &Value) -> bool {
+        *error == serde_json::json!({"code": CLAUDE_BUSY_CODE, "message": CLAUDE_BUSY_MESSAGE})
     }
 }
 
@@ -262,5 +295,31 @@ pub fn is_executable(path: &Path) -> bool {
     #[cfg(not(unix))]
     {
         path.is_file()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderKind, UsageCause, adapter};
+    use serde_json::json;
+
+    #[test]
+    fn classifiers_share_the_core_and_differ_only_in_provider_evidence() {
+        let shared = json!({"message": "HTTP 401 from service"});
+        let claude_only = json!({"message": "OAuth session expired"});
+        let busy = json!({"code": -32000, "message": "Claude is still working"});
+        for kind in ProviderKind::ALL {
+            assert_eq!(adapter(kind).kind(), kind);
+            assert_eq!(
+                adapter(kind).classify_error(&shared),
+                Some(UsageCause::Auth)
+            );
+        }
+        let codex = adapter(ProviderKind::Codex);
+        let claude = adapter(ProviderKind::Claude);
+        assert_eq!(codex.classify_error(&claude_only), None);
+        assert_eq!(claude.classify_error(&claude_only), Some(UsageCause::Auth));
+        assert!(!codex.is_busy_error(&busy));
+        assert!(claude.is_busy_error(&busy));
     }
 }

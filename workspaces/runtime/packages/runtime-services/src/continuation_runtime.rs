@@ -560,7 +560,7 @@ fn stage_terminal(
             .unwrap_or(&Value::Null);
         let snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
         if usage_resume::failure_eligible(&snapshot)
-            && classify_usage_failure(error, text(&snapshot.agent, "provider")).is_some()
+            && usage_failure(error, &snapshot.agent).is_some()
         {
             let limits = limits.ok_or(ContinuationError::Unavailable(
                 "usage-policy/limits-snapshot",
@@ -570,8 +570,7 @@ fn stage_terminal(
                     "usage-policy/limits-account-mismatch",
                 ));
             }
-            if classify_usage_failure(error, text(&snapshot.agent, "provider"))
-                == Some(UsageCause::Auth)
+            if usage_failure(error, &snapshot.agent) == Some(UsageCause::Auth)
                 && text(&snapshot.agent, "provider") == "claude"
                 && claude_auth.is_none()
             {
@@ -683,7 +682,7 @@ fn stage_terminal(
     }
     let usage_snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
     if usage_resume::failure_eligible(&usage_snapshot)
-        && let Some(cause) = classify_usage_failure(error, text(&usage_snapshot.agent, "provider"))
+        && let Some(cause) = usage_failure(error, &usage_snapshot.agent)
     {
         let snapshot = usage_snapshot;
         let limits = limits.ok_or(ContinuationError::Unavailable(
@@ -1127,7 +1126,12 @@ fn capacity_failure(error: &Value) -> Option<CapacityFailure> {
     }
 }
 
-pub fn classify_usage_failure(error: &Value, provider: &str) -> Option<UsageCause> {
+/// Shared usage-failure classifier. `provider_auth` is the provider adapter's
+/// extra auth-message pattern; callers go through `ProviderAdapter::classify_error`.
+pub(crate) fn classify_usage_failure(
+    error: &Value,
+    provider_auth: Option<&regex::Regex>,
+) -> Option<UsageCause> {
     match error_kind(error) {
         "usageLimitExceeded" => Some(UsageCause::UsageLimit),
         "rateLimitExceeded" => Some(UsageCause::RateLimit),
@@ -1138,21 +1142,28 @@ pub fn classify_usage_failure(error: &Value, provider: &str) -> Option<UsageCaus
             let auth_evidence = patterns.0.is_match(message);
             (patterns.1.is_match(message)
                 || (patterns.2.is_match(message) && auth_evidence)
-                || (provider == "claude" && patterns.3.is_match(message)))
+                || provider_auth.is_some_and(|pattern| pattern.is_match(message)))
             .then_some(UsageCause::Auth)
         }
     }
 }
 
-fn classifier_patterns() -> &'static (regex::Regex, regex::Regex, regex::Regex, regex::Regex) {
-    static PATTERNS: std::sync::OnceLock<(regex::Regex, regex::Regex, regex::Regex, regex::Regex)> =
+fn classifier_patterns() -> &'static (regex::Regex, regex::Regex, regex::Regex) {
+    static PATTERNS: std::sync::OnceLock<(regex::Regex, regex::Regex, regex::Regex)> =
         std::sync::OnceLock::new();
     PATTERNS.get_or_init(|| (
         regex::Regex::new(r"(?i)\b(?:invalid|expired|revoked).{0,32}\b(?:token|key)\b|\b(?:token|key)\b.{0,32}\b(?:invalid|expired|revoked)\b|\bsign[ -]?in\b|\bauthentication required\b|\bunauthorized\b").expect("static auth evidence pattern"),
         regex::Regex::new(r"(?i)\b401\b").expect("static 401 pattern"),
         regex::Regex::new(r"(?i)\b403\b").expect("static 403 pattern"),
-        regex::Regex::new(r"(?i)oauth session expired|failed to authenticate").expect("static Claude auth pattern"),
     ))
+}
+
+/// Classify a turn error with the agent's provider adapter; an unknown provider
+/// never classifies.
+fn usage_failure(error: &Value, agent: &Value) -> Option<UsageCause> {
+    studio_runtime_providers::ProviderKind::of_record(agent)
+        .ok()
+        .and_then(|kind| crate::provider_adapter::adapter(kind).classify_error(error))
 }
 
 fn error_kind(error: &Value) -> &str {

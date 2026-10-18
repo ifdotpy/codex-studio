@@ -667,7 +667,7 @@ async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_lat
 
 #[tokio::test]
 async fn production_classifier_matches_python_word_boundaries_and_bounded_evidence() {
-    use studio_runtime_services::continuation_runtime::classify_usage_failure;
+    use studio_runtime_services::provider_adapter::adapter;
     let cases = vec![
         (json!({"message":"HTTP 4010 from service"}), "codex"),
         (json!({"message":"HTTP 401 from service"}), "codex"),
@@ -713,11 +713,15 @@ async fn production_classifier_matches_python_word_boundaries_and_bounded_eviden
     let actual: Vec<Option<String>> = cases
         .iter()
         .map(|(error, provider)| {
-            classify_usage_failure(error, provider).map(|cause| match cause {
-                studio_runtime_services::usage_resume::Cause::UsageLimit => "usage_limit".into(),
-                studio_runtime_services::usage_resume::Cause::RateLimit => "rate_limit".into(),
-                studio_runtime_services::usage_resume::Cause::Auth => "auth".into(),
-            })
+            adapter(provider.parse().expect("test provider"))
+                .classify_error(error)
+                .map(|cause| match cause {
+                    studio_runtime_services::usage_resume::Cause::UsageLimit => {
+                        "usage_limit".into()
+                    }
+                    studio_runtime_services::usage_resume::Cause::RateLimit => "rate_limit".into(),
+                    studio_runtime_services::usage_resume::Cause::Auth => "auth".into(),
+                })
         })
         .collect();
     assert_eq!(actual, expected);

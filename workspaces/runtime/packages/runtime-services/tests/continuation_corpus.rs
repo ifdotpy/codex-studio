@@ -28,10 +28,11 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
         "create" => {
             let limits = usage_resume::LimitsObservation::from_record(args["limits"].clone(), None)
                 .expect("limits");
-            let cause = studio_runtime_services::continuation_runtime::classify_usage_failure(
-                &args["error"],
-                case["input"]["agent"]["provider"].as_str().unwrap_or(""),
+            let cause = studio_runtime_services::provider_adapter::adapter(
+                studio_runtime_providers::ProviderKind::of_record(&case["input"]["agent"])
+                    .expect("corpus provider"),
             )
+            .classify_error(&args["error"])
             .unwrap_or_else(|| panic!("Python classified {} but Rust did not", case["name"]));
             usage_resume::record_failure(
                 s,

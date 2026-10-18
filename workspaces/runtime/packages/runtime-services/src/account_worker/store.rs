@@ -2407,7 +2407,7 @@ fn invalidate_auth_on_failure(agent: &Value, account_pin: &Value, turn: &Value) 
         return;
     };
     if turn["status"] != "failed"
-        || crate::continuation_runtime::classify_usage_failure(&turn["error"], provider.key())
+        || crate::provider_adapter::adapter(provider).classify_error(&turn["error"])
             != Some(crate::usage_resume::Cause::Auth)
     {
         return;

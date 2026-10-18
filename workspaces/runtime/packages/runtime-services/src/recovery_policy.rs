@@ -220,18 +220,20 @@ fn eligibility(a: &Value) -> Eligibility {
             && has(t, "events")
             && !has(t, "turnId")
             && !has(t, "observedTurnId");
-    let busy_claude = a["provider"] == "claude"
-        && has(a, "threadId")
+    let busy_provider = has(a, "threadId")
         && a["error"]
             .as_str()
             .and_then(|s| serde_json::from_str::<Value>(s).ok())
-            == Some(json!({"code":-32000,"message":"Claude is still working"}));
+            .zip(studio_runtime_providers::ProviderKind::of_record(a).ok())
+            .is_some_and(|(error, kind)| {
+                crate::provider_adapter::adapter(kind).is_busy_error(&error)
+            });
     let preparation = a["status"] == "failed"
         && has(a, "autoWake")
         && inactive
         && !has(a, "turnId")
         && clear(a)
-        && (busy_claude
+        && (busy_provider
             || one(
                 &a["error"],
                 &[
