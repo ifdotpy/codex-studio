@@ -5,7 +5,8 @@
 //! beside that wire: how the peer process is launched and the provider-specific
 //! decisions that callers used to branch on with provider strings.
 
-use crate::account_driver::{AuthMetadata, AuthStatus, account_server_root};
+use crate::account_driver::auth_cache::CredentialLocation;
+use crate::account_driver::{AuthMetadata, AuthProfile, AuthStatus, account_server_root};
 use crate::account_worker::WorkerError;
 use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
 use crate::continuation_runtime::classify_usage_failure;
@@ -73,6 +74,13 @@ pub trait ProviderAdapter: Send + Sync + 'static {
 
     /// Vendor key of this provider's models in the pricing catalog.
     fn pricing_vendor(&self) -> &'static str;
+
+    /// Auth status of one account profile from the provider's local source,
+    /// through the shared per-account status cache. It never mutates the registry.
+    fn read_auth(&self, profile: &AuthProfile) -> AuthMetadata;
+
+    /// Credential files whose change ends the cached status of `profile`.
+    fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation;
 }
 
 /// The provider whose model family contains `model`, if any.
@@ -177,6 +185,14 @@ impl ProviderAdapter for CodexAdapter {
     fn pricing_vendor(&self) -> &'static str {
         "openai"
     }
+
+    fn read_auth(&self, profile: &AuthProfile) -> AuthMetadata {
+        crate::account_driver::read_codex_auth_cached(profile)
+    }
+
+    fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation {
+        crate::account_driver::codex_location(profile)
+    }
 }
 
 impl ProviderAdapter for ClaudeAdapter {
@@ -238,6 +254,14 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn pricing_vendor(&self) -> &'static str {
         "anthropic"
+    }
+
+    fn read_auth(&self, profile: &AuthProfile) -> AuthMetadata {
+        crate::account_driver::read_claude_auth_cached(profile)
+    }
+
+    fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation {
+        crate::account_driver::claude_location(profile)
     }
 }
 
@@ -400,5 +424,30 @@ mod tests {
         }
         assert_eq!(default_model("claude"), "default");
         assert_eq!(default_model("codex"), "gpt-6-astra");
+    }
+
+    #[test]
+    fn auth_sources_belong_to_the_profile_provider() {
+        use crate::account_driver::{AuthProfile, AuthStatus};
+        let home = tempfile::tempdir().expect("home");
+        let profile = |provider| AuthProfile {
+            provider,
+            home: home.path().to_path_buf(),
+            claude_options: Some(serde_json::json!({"configDir": home.path()})),
+        };
+        let codex = adapter(ProviderKind::Codex).credential_location(&profile(ProviderKind::Codex));
+        assert_eq!(codex.directories, vec![home.path().to_path_buf()]);
+        assert_eq!(codex.credential_files, ["auth.json"]);
+        let claude =
+            adapter(ProviderKind::Claude).credential_location(&profile(ProviderKind::Claude));
+        assert_eq!(claude.directories, vec![home.path().to_path_buf()]);
+        assert!(claude.credential_files.contains(&".credentials.json"));
+        assert_ne!(codex.identity, claude.identity);
+        assert_eq!(
+            adapter(ProviderKind::Codex)
+                .read_auth(&profile(ProviderKind::Codex))
+                .status,
+            AuthStatus::SignedOut
+        );
     }
 }

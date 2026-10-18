@@ -888,21 +888,9 @@ impl AccountSessionRuntime {
         )
     }
     fn discover_sync(&self) -> Result<Value, AccountSessionError> {
-        self.driver.discover_codex().map_err(account_error)?;
-        if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
-            let home = self.home.join(".claude");
-            let profile = AuthProfile {
-                provider: studio_runtime_providers::ProviderKind::Claude,
-                home: home.clone(),
-                claude_options: None,
-            };
-            // Registration must see the credentials as they are now.
-            SystemProviderAuthReader.invalidate(&profile);
-            let metadata = SystemProviderAuthReader.read(&profile);
-            self.driver
-                .discover_claude_verified(&home, &metadata)
-                .map_err(mutation_error)?;
-        }
+        self.driver
+            .discover_local(&self.home)
+            .map_err(mutation_error)?;
         self.accounts()
     }
     fn profile_sync(&self, request: ProfileRequest) -> Result<Value, AccountSessionError> {

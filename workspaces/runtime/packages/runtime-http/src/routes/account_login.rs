@@ -8,9 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 use std::sync::Arc;
-use studio_runtime_services::account_driver::{
-    AccountDriver, AccountDriverError, AuthProfile, ProviderAuthReader, SystemProviderAuthReader,
-};
+use studio_runtime_services::account_driver::{AccountDriver, AccountDriverError};
 use studio_runtime_services::account_session_runtime::{
     AccountSessionError, LoginRequest, ProfileRequest,
 };
@@ -252,28 +250,19 @@ async fn discover(
         return Err(runtime_availability("account-driver/runtime"));
     };
     let snapshot = run_account_operation(&state, driver, |driver| {
-        driver.discover_codex()?;
-        if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
-            let home = std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_default()
-                .join(".claude");
-            let metadata = SystemProviderAuthReader.read(&AuthProfile {
-                provider: studio_runtime_providers::ProviderKind::Claude,
-                home: home.clone(),
-                claude_options: None,
-            });
-            driver
-                .discover_claude_verified(&home, &metadata)
-                .map_err(|error| match error {
-                    studio_runtime_services::account_driver::AccountMutationError::Driver(
-                        error,
-                    ) => error,
-                    studio_runtime_services::account_driver::AccountMutationError::Refused(_) => {
-                        AccountDriverError::InvalidRegistry
-                    }
-                })?;
-        }
+        let user_home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        driver
+            .discover_local(&user_home)
+            .map_err(|error| match error {
+                studio_runtime_services::account_driver::AccountMutationError::Driver(error) => {
+                    error
+                }
+                studio_runtime_services::account_driver::AccountMutationError::Refused(_) => {
+                    AccountDriverError::InvalidRegistry
+                }
+            })?;
         driver.snapshot()
     })
     .await?;

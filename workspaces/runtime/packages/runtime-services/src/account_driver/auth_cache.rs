@@ -28,7 +28,7 @@ pub(crate) fn shared() -> &'static AuthCache {
 
 /// Where one profile keeps the files that decide its auth status.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct CredentialLocation {
+pub struct CredentialLocation {
     /// Provider and probe identity, such as the resolved `claude` executable.
     pub identity: String,
     /// Directories that hold the credential files.

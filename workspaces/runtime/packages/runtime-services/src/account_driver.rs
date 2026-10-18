@@ -4,7 +4,7 @@
 //! validates the resulting document, and atomically persists it while holding
 //! the driver's mutex. Credential material is never retained in this module.
 
-mod auth_cache;
+pub mod auth_cache;
 pub mod claude;
 #[cfg(test)]
 #[allow(clippy::duplicate_mod)]
@@ -148,28 +148,32 @@ pub trait ProviderAuthReader: Send + Sync {
     fn invalidate(&self, _profile: &AuthProfile) {}
 }
 
-/// Reads Codex auth files and runs the native Claude metadata command.
+/// Reads auth status through the profile's provider adapter and the shared
+/// per-account status cache.
 pub struct SystemProviderAuthReader;
 
 impl ProviderAuthReader for SystemProviderAuthReader {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
-        if profile.provider == studio_runtime_providers::ProviderKind::Claude {
-            ClaudeCliAuthReader.read(profile)
-        } else {
-            auth_cache::shared().read(&codex_location(profile), || {
-                codex_auth_metadata(&profile.home)
-            })
-        }
+        crate::provider_adapter::adapter(profile.provider).read_auth(profile)
     }
 
     fn invalidate(&self, profile: &AuthProfile) {
-        let location = if profile.provider == studio_runtime_providers::ProviderKind::Claude {
-            claude_location(profile)
-        } else {
-            codex_location(profile)
-        };
-        auth_cache::shared().invalidate(&location);
+        auth_cache::shared().invalidate(
+            &crate::provider_adapter::adapter(profile.provider).credential_location(profile),
+        );
     }
+}
+
+/// Codex status: `<home>/auth.json` through the shared cache, never a spawn.
+pub(crate) fn read_codex_auth_cached(profile: &AuthProfile) -> AuthMetadata {
+    auth_cache::shared().read(&codex_location(profile), || {
+        codex_auth_metadata(&profile.home)
+    })
+}
+
+/// Claude status: `claude auth status` through the shared cache.
+pub(crate) fn read_claude_auth_cached(profile: &AuthProfile) -> AuthMetadata {
+    ClaudeCliAuthReader.read(profile)
 }
 
 /// Credential files whose change ends a cached Claude status.
@@ -177,7 +181,7 @@ const CLAUDE_CREDENTIAL_FILES: &[&str] = &[".credentials.json", ".claude.json"];
 /// Credential files whose change ends a cached Codex status.
 const CODEX_CREDENTIAL_FILES: &[&str] = &["auth.json"];
 
-fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
+pub(crate) fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
     auth_cache::CredentialLocation {
         identity: "codex".to_owned(),
         directories: vec![profile.home.clone()],
@@ -187,7 +191,7 @@ fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
 
 /// The directory that `claude auth status` reads: the profile's `configDir`,
 /// else `CLAUDE_CONFIG_DIR`, else `~/.claude` (whose account file is `~/.claude.json`).
-fn claude_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
+pub(crate) fn claude_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
     let options = profile.claude_options.as_ref();
     let configured = |name: &str| {
         options
@@ -1311,6 +1315,25 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         if value != state.value {
             self.persist(&mut state, value)?;
+        }
+        Ok(())
+    }
+
+    /// Register local accounts: Codex homes, then the default Claude profile
+    /// at `<user_home>/.claude` when the Claude CLI is installed. Registration
+    /// reads the credentials as they are now, never a cached status.
+    pub fn discover_local(&self, user_home: &Path) -> Result<(), AccountMutationError> {
+        self.discover_codex()?;
+        if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
+            let home = user_home.join(".claude");
+            let profile = AuthProfile {
+                provider: studio_runtime_providers::ProviderKind::Claude,
+                home: home.clone(),
+                claude_options: None,
+            };
+            self.reader.invalidate(&profile);
+            let metadata = self.reader.read(&profile);
+            self.discover_claude_verified(&home, &metadata)?;
         }
         Ok(())
     }
