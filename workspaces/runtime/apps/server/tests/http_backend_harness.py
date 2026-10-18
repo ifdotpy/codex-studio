@@ -786,7 +786,7 @@ class BackendProcess:
         command = self._command()
         environment = self._environment()
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            # Seed only when a Python child is about to read the fixture cache.
+            # Seed the selected Python HTTP backend's cache at its launch.
             # Environment-only owners never reach this boundary.
             from test_isolation import seed_api_schema_cache_for_fixture
 

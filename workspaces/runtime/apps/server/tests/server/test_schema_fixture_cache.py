@@ -17,6 +17,23 @@ isolate_supervisor_environment()
 
 
 class ApiSchemaFixtureCacheTests(unittest.TestCase):
+    def test_schema_fixture_cache_rejects_the_temporary_root_and_external_paths(self):
+        with tempfile.TemporaryDirectory(prefix="studio-test-schema-guard-") as scratch:
+            scratch_root = Path(scratch)
+            temporary_root = scratch_root / "temporary"
+            temporary_root.mkdir()
+            outside = scratch_root / "outside"
+            previous_cache_home = os.environ.get("XDG_CACHE_HOME")
+            with patch("tempfile.gettempdir", return_value=str(temporary_root)):
+                for rejected in (temporary_root, outside):
+                    with self.subTest(cache_home=rejected), self.assertRaisesRegex(
+                        RuntimeError, "fixture API schema cache must stay below the temporary directory",
+                    ):
+                        seed_api_schema_cache_for_fixture(rejected)
+            self.assertEqual(os.environ.get("XDG_CACHE_HOME"), previous_cache_home)
+            self.assertFalse(outside.exists())
+            self.assertEqual(list(temporary_root.iterdir()), [])
+
     def test_generated_schema_identity_matches_runtime_computation(self):
         from studio_api.context import compute_api_schema_hash_in_subprocess
 
