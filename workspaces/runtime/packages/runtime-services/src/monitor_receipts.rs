@@ -188,9 +188,10 @@ pub async fn recover(
     results
 }
 
-/// List the `.json` receipt paths of a recovery directory; `None` when the
-/// directory is absent or unusable (reported, except when absent).
-fn receipt_paths(directory: &Path) -> Option<Vec<PathBuf>> {
+/// Open a recovery directory; `None` when it is absent or unusable (reported,
+/// except when absent). The iterator is consumed incrementally by blocking
+/// tasks so a bounded recovery batch does not materialize the entire directory.
+fn receipt_paths(directory: &Path) -> Option<fs::ReadDir> {
     match fs::symlink_metadata(directory) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
@@ -203,29 +204,49 @@ fn receipt_paths(directory: &Path) -> Option<Vec<PathBuf>> {
         }
         Ok(_) => {}
     }
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
+    match fs::read_dir(directory) {
+        Ok(entries) => Some(entries),
         Err(error) => {
             report_recovery_warning(directory, error);
-            return None;
-        }
-    };
-    let mut paths = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry) => {
-                let path = entry.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-                {
-                    paths.push(path);
-                }
-            }
-            Err(error) => report_recovery_warning(directory, error),
+            None
         }
     }
-    Some(paths)
+}
+
+/// Return the next valid receipt and keep the directory cursor for the next
+/// offloaded step. Invalid entries and receipts are reported and skipped.
+fn next_receipt(
+    mut entries: fs::ReadDir,
+    directory: &Path,
+) -> (fs::ReadDir, Option<(PathBuf, ResultReceipt)>) {
+    loop {
+        let entry = match entries.next() {
+            Some(Ok(entry)) => entry,
+            Some(Err(error)) => {
+                report_recovery_warning(directory, error);
+                continue;
+            }
+            None => return (entries, None),
+        };
+        let receipt_path = entry.path();
+        if receipt_path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let receipt = match read(&receipt_path, None) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    report_recovery_warning(&receipt_path, error);
+                    continue;
+                }
+            };
+            if receipt_path != path(directory, &receipt.key) {
+                report_recovery_warning(&receipt_path, "invalid identity");
+                continue;
+            }
+            return (entries, Some((receipt_path, receipt)));
+        }
+    }
 }
 
 /// Recover at most `limit` valid receipts, scanning past invalid entries so they
@@ -236,23 +257,19 @@ pub async fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize
         return Ok(0);
     }
     let directory = store.root().join("monitor-results");
-    let Some(entries) = blocking(move || Ok(receipt_paths(&directory))).await? else {
+    let scan_directory = directory.clone();
+    let Some(mut entries) = blocking(move || Ok(receipt_paths(&scan_directory))).await? else {
         return Ok(0);
     };
     let mut recovered = 0;
-    for entry in entries {
-        let entry_path = entry.clone();
-        let receipt = match blocking(move || read(&entry_path, None)).await {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                report_recovery_warning(&entry, error);
-                continue;
-            }
+    loop {
+        let warning_directory = directory.clone();
+        let (next_entries, receipt) =
+            blocking(move || Ok(next_receipt(entries, &warning_directory))).await?;
+        entries = next_entries;
+        let Some((entry, receipt)) = receipt else {
+            return Ok(recovered);
         };
-        if entry != path(store.root(), &receipt.key) {
-            report_recovery_warning(&entry, "invalid identity");
-            continue;
-        }
         if let Err(error) = restore(store, &receipt).await {
             if crate::monitor_runtime::startup_store_failure(&error) {
                 return Err(error);
@@ -271,5 +288,34 @@ pub async fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize
             return Ok(recovered);
         }
     }
-    Ok(recovered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receipt_iteration_skips_invalid_files_and_keeps_a_cursor() {
+        let root = tempfile::tempdir().expect("temporary state directory");
+        let directory = prepare_watch_directory(root.path()).expect("receipt directory");
+        fs::write(directory.join("invalid.json"), b"not a receipt").expect("write corrupt receipt");
+        let saved = persist(
+            root.path(),
+            &ResultReceipt {
+                version: 1,
+                key: "valid-receipt".into(),
+                code: Some(0),
+                error: None,
+                operation: None,
+                finished: 1.0,
+            },
+        )
+        .expect("persist valid receipt");
+
+        let entries = receipt_paths(&directory).expect("receipt directory is readable");
+        let (entries, found) = next_receipt(entries, &directory);
+        let (entries, exhausted) = next_receipt(entries, &directory);
+        assert_eq!(found.map(|(_, receipt)| receipt.key), Some(saved.key));
+        assert!(exhausted.is_none());
+    }
 }

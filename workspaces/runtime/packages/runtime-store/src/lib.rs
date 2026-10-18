@@ -1931,6 +1931,8 @@ mod read_pool_tests {
     use super::*;
     use std::sync::mpsc;
 
+    const READ_POOL_TEST_WATCHDOG: Duration = Duration::from_secs(5);
+
     #[tokio::test]
     async fn sequential_reads_reuse_a_bounded_connection() {
         let directory = tempfile::tempdir().expect("temporary state directory");
@@ -2019,6 +2021,286 @@ mod read_pool_tests {
             assert_eq!(task.await.expect("read task joins").expect("read"), 1);
         }
         assert_eq!(peak.load(Ordering::SeqCst), READ_CONNECTION_POOL_CAPACITY);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_cancellation_before_admission_submits_no_work() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let held = Arc::clone(&store.read_admission)
+            .acquire_many_owned(READ_CONNECTION_POOL_CAPACITY as u32)
+            .await
+            .expect("hold all read admission permits");
+        let ran = Arc::new(AtomicBool::new(false));
+        let task_ran = Arc::clone(&ran);
+        let mut read = Box::pin(store.read_async(
+            "runtime-store/tests/read_async_cancel_before_admission",
+            move |_| {
+                task_ran.store(true, Ordering::Release);
+                Ok::<_, StoreError>(())
+            },
+        ));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            matches!(
+                std::future::Future::poll(read.as_mut(), &mut context),
+                std::task::Poll::Pending
+            ),
+            "read waits for admission before submitting blocking work"
+        );
+        drop(read);
+        assert!(!ran.load(Ordering::Acquire));
+        assert_eq!(store.read_admission.available_permits(), 0);
+
+        drop(held);
+        assert_eq!(
+            store.read_admission.available_permits(),
+            READ_CONNECTION_POOL_CAPACITY
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_read_cancellation_after_submission_retains_admission_until_done() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let mut held = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY - 1);
+        for _ in 1..READ_CONNECTION_POOL_CAPACITY {
+            held.push(
+                Arc::clone(&store.read_admission)
+                    .acquire_owned()
+                    .await
+                    .expect("hold a read admission permit"),
+            );
+        }
+
+        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let task_store = Arc::clone(&store);
+        let task = tokio::spawn(async move {
+            task_store
+                .read_async(
+                    "runtime-store/tests/read_async_cancel_after_submission",
+                    move |tx| {
+                        entered_tx.send(()).expect("report submitted read started");
+                        release_rx.recv().expect("release submitted read");
+                        tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                            .map_err(StoreError::from)
+                    },
+                )
+                .await
+        });
+        let read_started = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, entered_rx.recv()).await;
+        if !matches!(read_started, Ok(Some(()))) {
+            release_tx
+                .send(())
+                .expect("release a possibly submitted read");
+            task.abort();
+            let canceled = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, task).await;
+            assert!(matches!(canceled, Ok(Err(error)) if error.is_cancelled()));
+            panic!("blocking read did not start within the test watchdog");
+        }
+        assert_eq!(store.read_admission.available_permits(), 0);
+
+        task.abort();
+        assert!(
+            matches!(
+                tokio::time::timeout(READ_POOL_TEST_WATCHDOG, task).await,
+                Ok(Err(error)) if error.is_cancelled()
+            ),
+            "read caller cancellation completes within the watchdog"
+        );
+        let (waiting_entered_tx, mut waiting_entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (waiting_started_tx, waiting_started_rx) = tokio::sync::oneshot::channel();
+        let waiting_store = Arc::clone(&store);
+        let mut waiting = tokio::spawn(async move {
+            let mut read = Box::pin(waiting_store.read_async(
+                "runtime-store/tests/read_async_after_cancel_waiter",
+                move |tx| {
+                    waiting_entered_tx
+                        .send(())
+                        .expect("report waiting read started");
+                    tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                        .map_err(StoreError::from)
+                },
+            ));
+            let mut waiting_started_tx = Some(waiting_started_tx);
+            std::future::poll_fn(|context| {
+                let result = std::future::Future::poll(read.as_mut(), context);
+                if result.is_pending()
+                    && let Some(sender) = waiting_started_tx.take()
+                {
+                    sender
+                        .send(())
+                        .expect("report waiting read reached admission");
+                }
+                result
+            })
+            .await
+        });
+        let waiting_started =
+            tokio::time::timeout(READ_POOL_TEST_WATCHDOG, waiting_started_rx).await;
+        if !matches!(waiting_started, Ok(Ok(()))) {
+            release_tx
+                .send(())
+                .expect("release the submitted read before failing");
+            waiting.abort();
+            let canceled = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, waiting).await;
+            assert!(matches!(canceled, Ok(Err(error)) if error.is_cancelled()));
+            panic!("waiting read did not reach admission within the test watchdog");
+        }
+        assert!(waiting_entered_rx.try_recv().is_err());
+        assert_eq!(store.read_admission.available_permits(), 0);
+
+        release_tx.send(()).expect("submitted read is gated");
+        let waiting_admitted =
+            tokio::time::timeout(READ_POOL_TEST_WATCHDOG, waiting_entered_rx.recv()).await;
+        if !matches!(waiting_admitted, Ok(Some(()))) {
+            waiting.abort();
+            let canceled = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, waiting).await;
+            assert!(matches!(canceled, Ok(Err(error)) if error.is_cancelled()));
+            panic!("released read admission did not make progress within the watchdog");
+        }
+        let waiting_result = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, &mut waiting).await;
+        if waiting_result.is_err() {
+            waiting.abort();
+            let canceled = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, waiting).await;
+            assert!(matches!(canceled, Ok(Err(error)) if error.is_cancelled()));
+            panic!("waiting read did not complete within the test watchdog");
+        }
+        assert_eq!(
+            waiting_result
+                .expect("checked above")
+                .expect("waiting task joins")
+                .expect("read"),
+            1
+        );
+        drop(held);
+        assert_eq!(
+            store.read_admission.available_permits(),
+            READ_CONNECTION_POOL_CAPACITY
+        );
+    }
+
+    #[test]
+    fn read_admission_preserves_progress_with_server_blocking_pool_limit() {
+        // One extra future exposes a missing admission bound while keeping this
+        // a small, gate-controlled regression test rather than a load run.
+        const READS_TO_EXCEED_BLOCKING_POOL: usize = crate::blocking_pool::MAX_THREADS + 1;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(crate::blocking_pool::MAX_THREADS)
+            .enable_all()
+            .build()
+            .expect("runtime with the server blocking-pool limit builds");
+        runtime.block_on(async {
+            let directory = tempfile::tempdir().expect("temporary state directory");
+            let store = Arc::new(
+                RuntimeStore::open(Some(directory.path()))
+                    .await
+                    .expect("open runtime store"),
+            );
+            let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (polled_tx, mut polled_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            let release_rx = Arc::new(Mutex::new(release_rx));
+            let mut reads = (0..READS_TO_EXCEED_BLOCKING_POOL)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    let entered_tx = entered_tx.clone();
+                    let polled_tx = polled_tx.clone();
+                    let release_rx = Arc::clone(&release_rx);
+                    tokio::spawn(async move {
+                        let mut read = Box::pin(store.read_async(
+                            "runtime-store/tests/read_async_server_pool_progress",
+                            move |tx| {
+                                entered_tx.send(()).expect("report admitted read");
+                                release_rx
+                                    .lock()
+                                    .expect("release gate")
+                                    .recv()
+                                    .expect("release admitted read");
+                                tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                                    .map_err(StoreError::from)
+                            },
+                        ));
+                        let mut reported_pending = false;
+                        std::future::poll_fn(|context| {
+                            let result = std::future::Future::poll(read.as_mut(), context);
+                            if result.is_pending() && !reported_pending {
+                                reported_pending = true;
+                                polled_tx.send(()).expect("report read admission wait");
+                            }
+                            result
+                        })
+                        .await
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let all_reads_polled = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, async {
+                for _ in 0..READS_TO_EXCEED_BLOCKING_POOL {
+                    if polled_rx.recv().await.is_none() {
+                        return false;
+                    }
+                }
+                true
+            })
+            .await;
+            let readers_entered = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, async {
+                for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                    if entered_rx.recv().await.is_none() {
+                        return false;
+                    }
+                }
+                true
+            })
+            .await;
+
+            let (progress_tx, progress_rx) = tokio::sync::oneshot::channel();
+            let mut progress = crate::blocking_pool::spawn_blocking(
+                "runtime-store/tests/read_async_server_pool_progress_witness",
+                move || {
+                    let _receiver_open = progress_tx.send(()).is_ok();
+                },
+            );
+            let made_progress = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, progress_rx).await;
+            for _ in 0..READS_TO_EXCEED_BLOCKING_POOL {
+                release_tx.send(()).expect("read gate is open");
+            }
+            let reads_completed = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, async {
+                for read in &mut reads {
+                    if !matches!(read.await, Ok(Ok(1))) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .await;
+            if !matches!(reads_completed, Ok(true)) {
+                for read in &reads {
+                    read.abort();
+                }
+            }
+            let progress_completed =
+                tokio::time::timeout(READ_POOL_TEST_WATCHDOG, &mut progress).await;
+            if progress_completed.is_err() {
+                progress.abort();
+            }
+            assert!(matches!(all_reads_polled, Ok(true)));
+            assert!(matches!(readers_entered, Ok(true)));
+            assert!(matches!(made_progress, Ok(Ok(()))));
+            assert!(matches!(reads_completed, Ok(true)));
+            assert!(matches!(progress_completed, Ok(Ok(()))));
+        });
     }
 
     #[tokio::test]
