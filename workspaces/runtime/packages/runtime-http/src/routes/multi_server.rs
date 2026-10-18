@@ -4,13 +4,14 @@ use super::extractors::ApiJson;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use studio_runtime_services::federation_credentials::CredentialError;
 use studio_runtime_services::multi_server::{self, MultiServerError};
+use studio_runtime_services::multi_server_auth::SessionAction;
 use studio_runtime_services::remote_transport::{self, MultiServerExchangeInput};
 use studio_runtime_services::resource_notify::ResourceNotifications;
 
@@ -193,6 +194,7 @@ async fn audit(
 
 async fn manage(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Response, ApiError> {
     if !cfg!(unix) {
@@ -206,6 +208,15 @@ async fn manage(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // Signed principals never reach this handler (`incoming_multi_server`
+    // refuses these actions), so only the Serve proxy is checked here. The
+    // owner session through Serve may still call `ui_invite`.
+    if let Some(scope) = SessionAction::of(action)
+        && scope == SessionAction::LocalSession
+        && crate::middleware::forwarded(&headers)
+    {
+        return Ok(super::incoming_multi_server::failure(scope.refusal()));
+    }
     if action == "replace_server" {
         // The Python backend owns this repair (docs/multi-server.md). Refuse before any write.
         return Err(ApiError::new(
@@ -1154,6 +1165,7 @@ mod tests {
         );
         let refusal = manage(
             State(state),
+            HeaderMap::new(),
             ApiJson(serde_json::json!({
                 "action":"replace_server","oldServerId":"lost","newServerId":"successor","requestId":"replace"
             })),
@@ -1193,6 +1205,7 @@ mod tests {
         .with_server_discovery(Arc::new(FakeDiscovery(Arc::clone(&calls))));
         let response = manage(
             State(state),
+            HeaderMap::new(),
             ApiJson(serde_json::json!({"action":"discover","requestId":"discovery-fixture"})),
         )
         .await
@@ -1384,6 +1397,7 @@ mod tests {
         }));
         let response = manage(
             State(state),
+            HeaderMap::new(),
             ApiJson(serde_json::json!({
                 "action":"create_invite",
                 "requestId":"fake-owner-invite",

@@ -56,8 +56,19 @@ fn incoming(case: &Value) -> Request<Body> {
     request
 }
 
-#[tokio::test]
-async fn paired_fake_servers_create_and_recover_the_same_invitation() {
+/// A receiver router that trusts one paired fake caller server. The caller
+/// signs requests with its own state root; both roots live as long as this value.
+struct PairedReceiver {
+    _caller_root: tempfile::TempDir,
+    _receiver_root: tempfile::TempDir,
+    receiver_store: Arc<studio_runtime_store::RuntimeStore>,
+    receiver_identity: Value,
+    caller_signing: studio_runtime_services::remote_transport::RemoteIdentity,
+    origin: &'static str,
+    app: axum::Router,
+}
+
+async fn paired_receiver() -> PairedReceiver {
     let caller_root = tempfile::tempdir().expect("caller state root");
     let caller_store = Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(caller_root.path()))
@@ -135,6 +146,28 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
         Box::pin(async { Some(serde_json::json!({"user":"owner@example.test"})) })
     }));
     let app = router(state).expect("receiver router");
+    PairedReceiver {
+        _caller_root: caller_root,
+        _receiver_root: receiver_root,
+        receiver_store,
+        receiver_identity,
+        caller_signing,
+        origin,
+        app,
+    }
+}
+
+#[tokio::test]
+async fn paired_fake_servers_create_and_recover_the_same_invitation() {
+    let PairedReceiver {
+        _caller_root,
+        _receiver_root,
+        receiver_store,
+        receiver_identity,
+        caller_signing,
+        origin,
+        app,
+    } = paired_receiver().await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
@@ -285,6 +318,139 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
         .expect("invitation count reads");
     assert_eq!(invite_count, 1);
 }
+/// docs/multi-server.md management table: the owner session may call
+/// `ui_invite` locally or through Serve; `discover` and `alias` are local only;
+/// a signed principal may call none of them. Mirrors the Python
+/// `multi-server-discovery-contract.py` phone access tests.
+#[tokio::test]
+async fn phone_owner_session_may_request_ui_access_and_signed_principals_may_not() {
+    let PairedReceiver {
+        _caller_root,
+        _receiver_root,
+        receiver_store,
+        receiver_identity,
+        caller_signing,
+        origin,
+        app,
+    } = paired_receiver().await;
+    let caller_id = caller_signing.id().to_owned();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let url = format!("{origin}/api/multi-server");
+    let actions = [
+        serde_json::json!({"action":"ui_invite","serverId":"unpaired-peer","requestId":"phone-invite"}),
+        serde_json::json!({"action":"discover","requestId":"phone-discover"}),
+        serde_json::json!({"action":"alias","serverId":caller_id,"alias":"PHN","requestId":"phone-alias"}),
+    ];
+    let request = |body: &Value, signed: Option<&'static str>, token: &str| {
+        let raw = serde_json::to_vec(body).expect("management body serializes");
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/multi-server")
+            .header("host", "127.0.0.1:4000")
+            .header("x-forwarded-host", "receiver.fixture.ts.net")
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", "100.64.0.2")
+            .header("tailscale-user-login", "owner@example.test")
+            .header("content-type", "application/json")
+            .header("content-length", raw.len().to_string());
+        match signed {
+            Some(nonce) => {
+                let signed = MultiServerRequest {
+                    server_id: receiver_identity["serverId"].as_str().expect("receiver ID"),
+                    method: "POST",
+                    url: &url,
+                    request_id: body["requestId"].as_str().expect("request ID"),
+                    timestamp: now,
+                    nonce,
+                    body: &raw,
+                };
+                for (name, value) in multi_server_signed_headers(&caller_signing, &signed, now)
+                    .expect("fake caller signs request")
+                {
+                    builder = builder.header(name, value);
+                }
+            }
+            None => {
+                builder = builder
+                    .header("origin", origin)
+                    .header("x-canvas-token", token);
+            }
+        }
+        let mut request = builder.body(Body::from(raw)).expect("request builds");
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:4321"
+                .parse::<std::net::SocketAddr>()
+                .expect("loopback peer address"),
+        ));
+        request
+    };
+    let send = |request: Request<Body>| {
+        let app = app.clone();
+        async move {
+            let response = app.oneshot(request).await.expect("response");
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("response body");
+            (
+                status,
+                serde_json::from_slice::<Value>(&body).expect("JSON response"),
+            )
+        }
+    };
+    let audit_rows = || common::rows(&receiver_store);
+    let before = audit_rows();
+    let nonces = [
+        "abcdefghijklmnopqrstuvwxyz012345",
+        "bcdefghijklmnopqrstuvwxyz0123456",
+        "cdefghijklmnopqrstuvwxyz01234567",
+    ];
+    for (body, nonce) in actions.iter().zip(nonces) {
+        let action = body["action"].as_str().expect("action");
+        let message = if action == "ui_invite" {
+            "This action requires the owner server session"
+        } else {
+            "This action requires the local server session"
+        };
+        assert_eq!(
+            send(request(body, Some(nonce), "")).await,
+            (
+                StatusCode::FORBIDDEN,
+                serde_json::json!({"error":message,"code":"local_session_required"})
+            ),
+            "a paired server credential cannot call {action}"
+        );
+        let (status, refusal) = send(request(body, None, "wrong")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{action}: {refusal}");
+        assert_eq!(refusal["error"], "Local origin and session token required");
+        let owner = send(request(body, None, "token")).await;
+        if action == "ui_invite" {
+            // The owner session through Serve reaches the invitation service,
+            // which refuses only because the selected server is not paired.
+            assert_eq!(
+                owner,
+                (
+                    StatusCode::FORBIDDEN,
+                    serde_json::json!({"error":"The server is not paired or is revoked"})
+                )
+            );
+        } else {
+            assert_eq!(
+                owner,
+                (
+                    StatusCode::FORBIDDEN,
+                    serde_json::json!({"error":message,"code":"local_session_required"})
+                ),
+                "the owner session through Serve cannot call {action}"
+            );
+        }
+    }
+    assert_eq!(audit_rows(), before, "no refused request writes state");
+}
+
 #[tokio::test]
 async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write() {
     let (_root, store) = common::store().await;

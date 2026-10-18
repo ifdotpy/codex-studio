@@ -572,7 +572,7 @@ fn validate_response(
     }
 }
 
-fn failure(error: AccessError) -> Response {
+pub(super) fn failure(error: AccessError) -> Response {
     let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
     // Stored-object locations are operator diagnostics, not remote response data.
     match error {
