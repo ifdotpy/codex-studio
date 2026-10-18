@@ -300,7 +300,7 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
 async fn claude_idle_close_requires_a_loaded_snapshot_and_native_idle_confirmation() {
     let state = State::new().await;
     let mut peer = Peer::new();
-    peer.claude = true;
+    peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let resources = super::claude_preparation::claude_resources(&state);
     let mut worker = peer
         .open_worker_with_resources(state.bridge.clone(), resources)

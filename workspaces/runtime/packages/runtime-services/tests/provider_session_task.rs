@@ -151,7 +151,7 @@ fn config() -> SessionTaskConfig {
     SessionTaskConfig {
         initialize_params: json!({}),
         generation: Generation(1),
-        claude: false,
+        wire: studio_runtime_providers::ProviderKind::Codex.wire(),
         timeout_ms: 1000,
         initialize_operation: OperationId("init:attachment-1".into()),
         request_id_prefix: Some("attachment-1".into()),
@@ -763,7 +763,7 @@ for line in sys.stdin:
 async fn claude_ready() -> (SessionHandle, Peer) {
     let (factory, mut peer) = fake();
     let mut cfg = config();
-    cfg.claude = true;
+    cfg.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut session =
         SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
             .await
@@ -1554,7 +1554,7 @@ async fn recovery_beyond_response_window_restores_every_request() {
 async fn closure_recovered_thread_remains_serialized_until_reply() {
     let (factory, mut peer) = fake();
     let mut cfg = config();
-    cfg.claude = true;
+    cfg.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut r = recovered(RequestId::Number(42), Method::TurnStart, 1000);
     r.thread_id = Some("thread".into());
     cfg.recovered.push(r);
@@ -1678,7 +1678,7 @@ async fn prepared_deadline_is_durable_before_submit_and_never_restarted() {
 async fn recovered_lightweight_request_does_not_reserve_serialized_thread() {
     let (factory, mut peer) = fake();
     let mut cfg = config();
-    cfg.claude = true;
+    cfg.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut r = recovered(RequestId::Number(42), Method::TurnStart, 1000);
     r.thread_id = Some("thread".into());
     r.lightweight = true;

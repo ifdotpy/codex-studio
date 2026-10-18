@@ -28,7 +28,7 @@ const MAX_TIMEOUT_MS: u64 = u32::MAX as u64;
 pub struct SessionTaskConfig {
     pub initialize_params: Value,
     pub generation: Generation,
-    pub claude: bool,
+    pub wire: studio_runtime_providers::WireProfile,
     pub timeout_ms: u64,
     pub initialize_operation: OperationId,
     pub request_id_prefix: Option<String>,
@@ -219,7 +219,7 @@ impl SessionHandle {
         let clock = options.clock.clone();
         let (mut state, initial) = SessionState::new_with_recovered_and_prefix(
             config.generation.0,
-            config.claude,
+            config.wire,
             clock.now_ms(),
             config.timeout_ms,
             config.initialize_params,

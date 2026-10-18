@@ -93,7 +93,7 @@ async fn panic_after_take_after_mutation_and_with_outstanding_receipt_retains_ev
                     studio_runtime_providers::ClientName::AccountSession,
                 ),
                 generation: Generation(1),
-                claude: false,
+                wire: studio_runtime_providers::ProviderKind::Codex.wire(),
                 timeout_ms: 100,
                 initialize_operation: OperationId("init".into()),
                 request_id_prefix: None,
@@ -229,7 +229,7 @@ async fn closure_panic_unknown_batch_does_not_return_unknown_twice() {
         SessionTaskConfig {
             initialize_params: serde_json::json!({}),
             generation: Generation(1),
-            claude: false,
+            wire: studio_runtime_providers::ProviderKind::Codex.wire(),
             timeout_ms: 1000,
             initialize_operation: OperationId("init".into()),
             request_id_prefix: None,

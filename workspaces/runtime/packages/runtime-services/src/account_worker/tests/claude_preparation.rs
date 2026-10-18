@@ -60,7 +60,7 @@ async fn claude_turn_freezes_exact_input_before_native_write() {
         .await
         .unwrap();
     let mut peer = Peer::new();
-    peer.claude = true;
+    peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut worker = peer
         .open_worker_with_resources(state.bridge.clone(), claude_resources(&state))
         .await;

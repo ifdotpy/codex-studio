@@ -2367,7 +2367,15 @@ impl Worker {
                         studio_runtime_providers::ClientName::AccountSession,
                     ),
                     generation,
-                    claude: resolved.provider == "claude",
+                    wire: resolved
+                        .provider
+                        .parse::<studio_runtime_providers::ProviderKind>()
+                        .map_err(|_| {
+                            WorkerError::PreparationRefused(
+                                "provider-session/unsupported-provider".into(),
+                            )
+                        })?
+                        .wire(),
                     timeout_ms: self.timeout_ms,
                     initialize_operation: OperationId(format!(
                         "vm:{}:initialize:{}:{}",

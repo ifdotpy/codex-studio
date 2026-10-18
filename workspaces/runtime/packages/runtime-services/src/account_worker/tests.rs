@@ -358,7 +358,7 @@ struct Wire {
     receipt: oneshot::Sender<CommandReceipt>,
 }
 struct Peer {
-    claude: bool,
+    wire: studio_runtime_providers::WireProfile,
     account: String,
     generation: Generation,
     factory: Arc<Factory>,
@@ -472,7 +472,7 @@ impl Peer {
             ProviderAttachment::from_task(commands, journal, observed, stop.clone(), task),
         ))));
         Self {
-            claude: false,
+            wire: studio_runtime_providers::ProviderKind::Codex.wire(),
             account: account.into(),
             generation,
             factory,
@@ -531,7 +531,7 @@ impl Peer {
             SessionTaskConfig {
                 initialize_params: json!({}),
                 generation: self.generation,
-                claude: self.claude,
+                wire: self.wire,
                 timeout_ms: 60_000,
                 initialize_operation: OperationId("init".into()),
                 request_id_prefix: None,
@@ -4203,7 +4203,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
     resources.guest_rpc = Some(guest.clone());
     resources.vm_provider_launch = Some(resolver.clone());
     let mut peer = Peer::new();
-    peer.claude = true;
+    peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut worker = peer
         .open_worker_with_resources(state.bridge.clone(), resources)
         .await;

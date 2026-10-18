@@ -467,7 +467,7 @@ impl AccountLauncher for Scripted {
                 config: SessionTaskConfig {
                     initialize_params: json!({}),
                     generation: Generation(7),
-                    claude: false,
+                    wire: studio_runtime_providers::ProviderKind::Codex.wire(),
                     timeout_ms: 60_000,
                     initialize_operation: OperationId(format!("init:{account}")),
                     request_id_prefix: None,

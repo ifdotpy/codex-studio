@@ -1775,7 +1775,7 @@ pub(crate) mod tests {
             },
             SessionTaskConfig {
                 generation: Generation(1),
-                claude: false,
+                wire: studio_runtime_providers::ProviderKind::Codex.wire(),
                 timeout_ms: 30_000,
                 initialize_operation: OperationId("initialize".into()),
                 request_id_prefix: None,

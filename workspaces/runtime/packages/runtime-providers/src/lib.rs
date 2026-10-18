@@ -23,5 +23,5 @@ pub use connection::{
     SessionState,
 };
 pub use initialize::{ClientName, initialize_params};
-pub use provider_kind::{ProviderKind, UnknownProvider};
+pub use provider_kind::{ProviderKind, RequestIdScheme, UnknownProvider, WireProfile};
 pub use session::{BookError, PendingBook, RequestState, ResponseMatch};

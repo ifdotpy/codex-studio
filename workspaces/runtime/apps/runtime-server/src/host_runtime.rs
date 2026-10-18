@@ -1954,7 +1954,7 @@ impl AccountLauncher for HostLauncher {
                         studio_runtime_providers::ClientName::AccountSession,
                     ),
                     generation,
-                    claude: kind == ProviderKind::Claude,
+                    wire: kind.wire(),
                     timeout_ms: REQUEST_TIMEOUT_MS,
                     initialize_operation: OperationId(format!(
                         "account:{account}:initialize:{}",
@@ -2489,7 +2489,7 @@ mod voice_composition_tests {
             SessionTaskConfig {
                 initialize_params: json!({}),
                 generation: Generation(42),
-                claude: false,
+                wire: studio_runtime_providers::ProviderKind::Codex.wire(),
                 timeout_ms: 2_000,
                 initialize_operation: OperationId("initialize:voice-account".into()),
                 request_id_prefix: Some("voice-account".into()),

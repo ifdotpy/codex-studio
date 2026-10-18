@@ -1,14 +1,19 @@
 use serde_json::{Value, json};
 use studio_runtime_providers::{
-    Action, Frame, InitializationStatus, Lifecycle, MAX_FRAME_BYTES, Method, RequestFrame,
-    RequestId, RequestOutcome, RequestTicket, ResponseBody, SessionState, encode_line,
-    validate_initialize_params,
+    Action, Frame, InitializationStatus, Lifecycle, MAX_FRAME_BYTES, Method, ProviderKind,
+    RequestFrame, RequestId, RequestOutcome, RequestTicket, ResponseBody, SessionState,
+    encode_line, validate_initialize_params,
 };
 
 fn state(claude: bool) -> SessionState {
     let (mut state, actions) = SessionState::new(
         9,
-        claude,
+        if claude {
+            ProviderKind::Claude
+        } else {
+            ProviderKind::Codex
+        }
+        .wire(),
         0,
         100,
         studio_runtime_providers::initialize_params(
@@ -131,7 +136,7 @@ fn recovered_requests_keep_a_finite_configured_deadline() {
     let recovered_id = RequestId::Number(88);
     let (mut state, _) = SessionState::new_with_recovered(
         9,
-        false,
+        ProviderKind::Codex.wire(),
         10,
         5,
         studio_runtime_providers::initialize_params(
@@ -169,7 +174,7 @@ fn initialization_validation_is_a_pure_refusal_before_session_creation() {
         Err(studio_runtime_providers::CodecError::FrameTooLarge { .. })
     ));
     assert!(matches!(
-        SessionState::new(1, false, 0, 10, invalid),
+        SessionState::new(1, ProviderKind::Codex.wire(), 0, 10, invalid),
         Err(studio_runtime_providers::SessionError::Codec(
             studio_runtime_providers::CodecError::FrameTooLarge { .. }
         ))
@@ -178,8 +183,8 @@ fn initialization_validation_is_a_pure_refusal_before_session_creation() {
 
 #[test]
 fn readiness_waits_for_the_initialized_write_receipt() {
-    let (mut session, _) =
-        SessionState::new(77, false, 0, 10, json!({})).expect("session creation");
+    let (mut session, _) = SessionState::new(77, ProviderKind::Codex.wire(), 0, 10, json!({}))
+        .expect("session creation");
     assert_eq!(
         session.initialization_status(),
         InitializationStatus::AwaitingReply
@@ -216,8 +221,8 @@ fn readiness_waits_for_the_initialized_write_receipt() {
 
 #[test]
 fn initialization_refusal_and_unanswered_transport_have_distinct_readiness() {
-    let (mut refused, _) =
-        SessionState::new(78, false, 0, 10, json!({})).expect("session creation");
+    let (mut refused, _) = SessionState::new(78, ProviderKind::Codex.wire(), 0, 10, json!({}))
+        .expect("session creation");
     refused
         .receive(Frame::Response {
             id: RequestId::Number(1),
@@ -230,12 +235,13 @@ fn initialization_refusal_and_unanswered_transport_have_distinct_readiness() {
         InitializationStatus::Refused
     );
 
-    let (mut lost, _) = SessionState::new(79, false, 0, 10, json!({})).expect("session creation");
+    let (mut lost, _) = SessionState::new(79, ProviderKind::Codex.wire(), 0, 10, json!({}))
+        .expect("session creation");
     lost.transport_lost();
     assert_eq!(lost.initialization_status(), InitializationStatus::Unknown);
 
-    let (mut write_lost, _) =
-        SessionState::new(80, false, 0, 10, json!({})).expect("session creation");
+    let (mut write_lost, _) = SessionState::new(80, ProviderKind::Codex.wire(), 0, 10, json!({}))
+        .expect("session creation");
     write_lost
         .receive(Frame::Response {
             id: RequestId::Number(1),
@@ -489,8 +495,8 @@ fn orderly_close_makes_pending_unknown_and_drops_later_replies() {
 
 #[test]
 fn initialization_error_moves_session_to_lost_without_initialized_notification() {
-    let (mut session, _) =
-        SessionState::new(31, false, 0, 20, json!({})).expect("scripted test operation");
+    let (mut session, _) = SessionState::new(31, ProviderKind::Codex.wire(), 0, 20, json!({}))
+        .expect("scripted test operation");
     let actions = session
         .receive(Frame::Response {
             id: RequestId::Number(1),
@@ -565,8 +571,8 @@ fn frame_encoding_failure_does_not_register_or_claim_the_thread_lane() {
 
 #[test]
 fn every_lifecycle_transition_and_pending_disposition_is_exercised() {
-    let (mut initializing, _) =
-        SessionState::new(41, false, 0, 20, json!({})).expect("scripted test operation");
+    let (mut initializing, _) = SessionState::new(41, ProviderKind::Codex.wire(), 0, 20, json!({}))
+        .expect("scripted test operation");
     assert_eq!(initializing.lifecycle(), Lifecycle::Initializing);
     let ready = initializing
         .receive(Frame::Response {
@@ -623,8 +629,8 @@ fn every_lifecycle_transition_and_pending_disposition_is_exercised() {
             .is_empty()
     );
 
-    let (mut failed_init, _) =
-        SessionState::new(42, false, 0, 20, json!({})).expect("scripted test operation");
+    let (mut failed_init, _) = SessionState::new(42, ProviderKind::Codex.wire(), 0, 20, json!({}))
+        .expect("scripted test operation");
     failed_init
         .receive(Frame::Response {
             id: RequestId::Number(1),
@@ -634,13 +640,13 @@ fn every_lifecycle_transition_and_pending_disposition_is_exercised() {
         .expect("scripted test operation");
     assert_eq!(failed_init.lifecycle(), Lifecycle::Lost);
 
-    let (mut closed_init, _) =
-        SessionState::new(43, false, 0, 20, json!({})).expect("scripted test operation");
+    let (mut closed_init, _) = SessionState::new(43, ProviderKind::Codex.wire(), 0, 20, json!({}))
+        .expect("scripted test operation");
     closed_init.close();
     assert_eq!(closed_init.lifecycle(), Lifecycle::Closed);
 
-    let (mut ready_close, _) =
-        SessionState::new(44, false, 0, 20, json!({})).expect("scripted test operation");
+    let (mut ready_close, _) = SessionState::new(44, ProviderKind::Codex.wire(), 0, 20, json!({}))
+        .expect("scripted test operation");
     ready_close
         .receive(Frame::Response {
             id: RequestId::Number(1),

@@ -2183,7 +2183,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
     ] {
         let state = State::new().await;
         let mut peer = Peer::new();
-        peer.claude = true;
+        peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
         let mut worker = peer.worker(state.bridge.clone()).await;
         let session = RetainedClaudeSession::new(std::sync::Arc::new(
             crate::account_worker::retained::consumers::ClaudePort::new(worker.retained_session())

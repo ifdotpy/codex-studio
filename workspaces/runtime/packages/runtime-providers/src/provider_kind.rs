@@ -66,6 +66,44 @@ impl ProviderKind {
     }
 }
 
+/// How the session numbers the requests it sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestIdScheme {
+    /// Unique JSON numbers.
+    Numeric,
+    /// Strings `{prefix}:{32 hex digits}`, unique per session.
+    PrefixedHex(&'static str),
+}
+
+/// Wire behaviour of a provider's JSON-RPC peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WireProfile {
+    pub ids: RequestIdScheme,
+    /// Thread start/resume/fork/read, turn start and steer wait per thread.
+    pub per_thread_serialized: bool,
+    /// The peer accepts cancellation of a pending request.
+    pub cancellable: bool,
+}
+
+impl ProviderKind {
+    /// Wire behaviour of this provider's peer (the Codex app-server or the Claude bridge).
+    #[must_use]
+    pub const fn wire(self) -> WireProfile {
+        match self {
+            Self::Codex => WireProfile {
+                ids: RequestIdScheme::Numeric,
+                per_thread_serialized: false,
+                cancellable: false,
+            },
+            Self::Claude => WireProfile {
+                ids: RequestIdScheme::PrefixedHex("claude"),
+                per_thread_serialized: true,
+                cancellable: true,
+            },
+        }
+    }
+}
+
 impl FromStr for ProviderKind {
     type Err = UnknownProvider;
 

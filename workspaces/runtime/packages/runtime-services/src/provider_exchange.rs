@@ -170,7 +170,7 @@ where
         },
         SessionTaskConfig {
             generation: Generation(1),
-            claude: false,
+            wire: studio_runtime_providers::ProviderKind::Codex.wire(),
             timeout_ms: u64::try_from(spec.timeout.as_millis()).unwrap_or(u64::MAX),
             initialize_operation: spec.initialize_operation,
             request_id_prefix: None,

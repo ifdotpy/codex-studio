@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
 use crate::{
-    BookError, CodecError, Frame, Method, PendingBook, RequestFrame, RequestId, RequestState,
-    ResponseBody, ResponseMatch, encode_line, validate_initialize_params,
+    BookError, CodecError, Frame, Method, PendingBook, RequestFrame, RequestId, RequestIdScheme,
+    RequestState, ResponseBody, ResponseMatch, WireProfile, encode_line,
+    validate_initialize_params,
 };
 
 /// Provider request or notification delivered to the account session owner.
@@ -99,8 +100,8 @@ struct Pending {
 /// `receive`, `expire`, `cancel`, or `transport_lost`, then execute returned actions.
 pub struct SessionState {
     generation: u64,
-    claude: bool,
-    next_claude_id: u64,
+    wire: WireProfile,
+    next_prefixed_id: u64,
     request_id_prefix: Option<String>,
     next_request_sequence: u64,
     lifecycle: Lifecycle,
@@ -114,14 +115,14 @@ pub struct SessionState {
 impl SessionState {
     pub fn new(
         generation: u64,
-        claude: bool,
+        wire: WireProfile,
         now_ms: u64,
         timeout_ms: u64,
         initialize_params: Value,
     ) -> Result<(Self, Vec<Action>), SessionError> {
         Self::new_with_recovered(
             generation,
-            claude,
+            wire,
             now_ms,
             timeout_ms,
             initialize_params,
@@ -131,7 +132,7 @@ impl SessionState {
 
     pub fn new_with_recovered(
         generation: u64,
-        claude: bool,
+        wire: WireProfile,
         now_ms: u64,
         timeout_ms: u64,
         initialize_params: Value,
@@ -139,7 +140,7 @@ impl SessionState {
     ) -> Result<(Self, Vec<Action>), SessionError> {
         Self::new_with_recovered_and_prefix(
             generation,
-            claude,
+            wire,
             now_ms,
             timeout_ms,
             initialize_params,
@@ -152,7 +153,7 @@ impl SessionState {
     /// late replies from an older attachment from matching fresh requests.
     pub fn new_with_recovered_and_prefix(
         generation: u64,
-        claude: bool,
+        wire: WireProfile,
         now_ms: u64,
         timeout_ms: u64,
         initialize_params: Value,
@@ -162,8 +163,8 @@ impl SessionState {
         validate_initialize_params(&initialize_params)?;
         let mut state = Self {
             generation,
-            claude,
-            next_claude_id: 1,
+            wire,
+            next_prefixed_id: 1,
             request_id_prefix,
             next_request_sequence: 1,
             lifecycle: Lifecycle::Initializing,
@@ -215,7 +216,8 @@ impl SessionState {
         if ticket.generation != self.generation {
             return Err(SessionError::StaleGeneration);
         }
-        let serialized = self.claude && !lightweight && is_thread_serialized(ticket.method);
+        let serialized =
+            self.wire.per_thread_serialized && !lightweight && is_thread_serialized(ticket.method);
         if serialized {
             let thread = thread_id.as_ref().ok_or(SessionError::MissingThreadId)?;
             if self.active_threads.contains_key(thread) {
@@ -370,7 +372,8 @@ impl SessionState {
         if self.lifecycle != Lifecycle::Ready {
             return Err(SessionError::NotReady);
         }
-        let serialized = self.claude && !lightweight_read && is_thread_serialized(method);
+        let serialized =
+            self.wire.per_thread_serialized && !lightweight_read && is_thread_serialized(method);
         if serialized && thread_id.is_none() {
             return Err(SessionError::MissingThreadId);
         }
@@ -391,7 +394,8 @@ impl SessionState {
         if self.lifecycle != Lifecycle::Ready {
             return Err(SessionError::NotReady);
         }
-        let serialized = self.claude && !lightweight_read && is_thread_serialized(method);
+        let serialized =
+            self.wire.per_thread_serialized && !lightweight_read && is_thread_serialized(method);
         if serialized && thread_id.is_none() {
             return Err(SessionError::MissingThreadId);
         }
@@ -446,15 +450,15 @@ impl SessionState {
             validate_request_encoding(id.clone(), method, &params)?;
             self.book.register(id.clone(), method)?;
             id
-        } else if self.claude {
-            let id = RequestId::String(format!("claude:{:032x}", self.next_claude_id));
+        } else if let RequestIdScheme::PrefixedHex(prefix) = self.wire.ids {
+            let id = RequestId::String(format!("{prefix}:{:032x}", self.next_prefixed_id));
             let next_id = self
-                .next_claude_id
+                .next_prefixed_id
                 .checked_add(1)
                 .ok_or(BookError::IdExhausted)?;
             validate_request_encoding(id.clone(), method, &params)?;
             self.book.register(id.clone(), method)?;
-            self.next_claude_id = next_id;
+            self.next_prefixed_id = next_id;
             id
         } else {
             let id = self.book.next_numeric_candidate()?;
@@ -653,7 +657,7 @@ impl SessionState {
         if ticket.generation != self.generation {
             return Err(SessionError::StaleGeneration);
         }
-        if !self.claude {
+        if !self.wire.cancellable {
             return Err(SessionError::Book(BookError::UnknownId));
         }
         self.book.cancel(&ticket.id)?;
