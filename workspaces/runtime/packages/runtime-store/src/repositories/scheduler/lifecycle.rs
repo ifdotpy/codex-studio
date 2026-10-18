@@ -1332,7 +1332,16 @@ impl SchedulerRepository {
             && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
             && Self::has_pending_continuation_event(transaction, agent_id, epoch)?
         {
-            agent.status = AgentStatus::Queued;
+            // Python queues the worker here, and its next scheduler pass sets an
+            // empty `pending_batch` to `waiting`. Rust wakes a queued worker
+            // only for pending input, so a worker that has only unclaimable
+            // (`uncertain`) input goes to `waiting` directly instead of staying
+            // `queued` for good (agent 841ebc0e in rehearsal 8).
+            agent.status = if Self::has_claimable_input(transaction, agent_id, epoch)? {
+                AgentStatus::Queued
+            } else {
+                AgentStatus::Waiting
+            };
         }
         if native_status == "completed" && current_attempt {
             agent.extra.insert("complaintMisses".into(), json!(0));
@@ -1366,6 +1375,20 @@ impl SchedulerRepository {
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND (status IN ('pending','reserved') OR (id<>?3 AND status IN ('dispatching','uncertain'))))",
             params![agent_id, epoch, format!("{agent_id}:initial")],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
+    /// Input that a claim owns or can still take. Python `pending_batch` reads
+    /// `pending` rows of the current epoch; `reserved` rows belong to a claim.
+    fn has_claimable_input(
+        connection: &Connection,
+        agent_id: &str,
+        epoch: i64,
+    ) -> StoreResult<bool> {
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved'))",
+            params![agent_id, epoch],
             |row| row.get::<_, bool>(0),
         )?)
     }

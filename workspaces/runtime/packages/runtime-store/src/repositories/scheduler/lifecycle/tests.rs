@@ -246,3 +246,58 @@ fn an_old_uncertain_input_does_not_block_a_new_message() {
         .expect("old input reads");
     assert_eq!(old, "uncertain", "the unknown input is never sent again");
 }
+
+#[test]
+fn a_finished_turn_with_only_an_old_uncertain_input_waits_instead_of_queueing() {
+    // Agent 841ebc0e in rehearsal 8: after its turn it showed `queued` with no
+    // pending input, and no wake ever came. Python's next scheduler pass turns
+    // an empty batch into `waiting`; new pending input still queues the agent.
+    for (extra_input, expected) in [(None, "waiting"), (Some("next"), "queued")] {
+        let mut connection = database();
+        put(
+            &connection,
+            json!({
+                "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-now",
+                "turnEpoch": 0, "error": null,
+                "startAttempt": {
+                    "id": "now", "epoch": 0, "submitted": true, "turnId": "turn-now",
+                    "threadId": "thread", "accountKey": ACCOUNT, "events": ["message"],
+                    "connectionGeneration": 1, "requestTicket": "ticket"
+                }
+            }),
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_events VALUES('old','agent','user','old','uncertain',1,0,NULL,'Server restarted before delivery acknowledgement');
+                 INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);",
+            )
+            .expect("events write");
+        if let Some(id) = extra_input {
+            connection
+                .execute(
+                    "INSERT INTO runtime_events VALUES(?1,'agent','user',?1,'pending',3,0,NULL,NULL)",
+                    [id],
+                )
+                .expect("pending input writes");
+        }
+        let settled = with(&mut connection, |tx| {
+            SchedulerRepository::settle_terminal(
+                tx,
+                AGENT,
+                0,
+                "now",
+                "turn-now",
+                AgentStatus::Completed,
+                None,
+                "completed",
+                None,
+                &[],
+            )
+            .expect("settlement runs")
+        });
+        assert!(settled);
+        let agent = stored(&connection);
+        assert_eq!(agent["status"], expected, "{agent}");
+        assert_eq!(agent["lastCompletedTurn"], "turn-now");
+    }
+}
