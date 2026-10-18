@@ -121,6 +121,7 @@ pub mod progress_watch;
 pub mod project_locations;
 pub mod project_secrets;
 pub mod projects;
+pub mod provider_adapter;
 pub mod provider_binaries;
 pub mod provider_callbacks;
 pub(crate) mod provider_exchange;

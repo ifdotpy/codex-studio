@@ -323,11 +323,12 @@ pub(crate) struct LiveProviderConnections {
     pub changes: tokio::sync::watch::Receiver<u64>,
 }
 
-#[derive(Clone, Debug, Default)]
+/// The provider executable a retained account session was launched with.
+#[derive(Clone, Debug)]
 pub(crate) struct SessionExecutables {
     pub generation: u64,
-    pub codex: Option<String>,
-    pub claude: Option<String>,
+    pub kind: studio_runtime_providers::ProviderKind,
+    pub executable: Option<String>,
 }
 
 impl ActiveProviderConnections for LiveProviderConnections {
@@ -348,32 +349,26 @@ impl ActiveProviderConnections for LiveProviderConnections {
                 if scope.account != account_key || scope.connection.is_empty() {
                     return None;
                 }
-                let provider = studio_runtime_providers::ProviderKind::of_record(account)
-                    .ok()?
-                    .key()
-                    .to_owned();
-                let configured_binary = if provider == "claude" {
-                    studio_runtime_services::account_driver::claude::resolve_claude_binary(account)
-                } else {
-                    leased_session_binary(
-                        &self.session_binaries,
-                        &account_key,
-                        scope.generation,
-                        false,
-                    )
-                };
+                let kind = studio_runtime_providers::ProviderKind::of_record(account).ok()?;
                 let launched_binary = leased_session_binary(
                     &self.session_binaries,
                     &account_key,
                     scope.generation,
-                    provider == "claude",
+                    kind,
                 );
-                // A Claude account without launch-time executable metadata is
-                // not a probeable retained session; never substitute today's
-                // profile setting for the binary used by that session.
-                if provider == "claude" && launched_binary.is_none() {
-                    return None;
-                }
+                let configured_binary = match kind {
+                    studio_runtime_providers::ProviderKind::Codex => launched_binary.clone(),
+                    // A Claude account without launch-time executable metadata is
+                    // not a probeable retained session; never substitute today's
+                    // profile setting for the binary used by that session.
+                    studio_runtime_providers::ProviderKind::Claude => {
+                        launched_binary.as_ref()?;
+                        studio_runtime_services::account_driver::claude::resolve_claude_binary(
+                            account,
+                        )
+                    }
+                };
+                let provider = kind.key().to_owned();
                 Some(ProviderProfile {
                     account_key,
                     provider,
@@ -391,17 +386,12 @@ fn leased_session_binary(
     binaries: &std::sync::Mutex<std::collections::BTreeMap<String, SessionExecutables>>,
     account: &str,
     generation: u64,
-    claude: bool,
+    kind: studio_runtime_providers::ProviderKind,
 ) -> Option<String> {
     let executables = binaries.lock().ok()?.get(account)?.clone();
-    if executables.generation != generation {
-        return None;
-    }
-    if claude {
-        executables.claude
-    } else {
-        executables.codex
-    }
+    (executables.generation == generation && executables.kind == kind)
+        .then_some(executables.executable)
+        .flatten()
 }
 
 /// Uses the account's already-retained provider session. It never launches a
@@ -963,27 +953,31 @@ mod tests {
 
     #[test]
     fn version_probe_uses_binary_captured_for_live_session() {
+        use studio_runtime_providers::ProviderKind;
         let binaries = Mutex::new(std::collections::BTreeMap::from([(
             "account-a".to_owned(),
             super::SessionExecutables {
                 generation: 7,
-                codex: Some("/immutable/leased/codex".to_owned()),
-                claude: Some("/immutable/leased/claude".to_owned()),
+                kind: ProviderKind::Claude,
+                executable: Some("/immutable/leased/claude".to_owned()),
             },
         )]));
         assert_eq!(
-            leased_session_binary(&binaries, "account-a", 7, false).as_deref(),
-            Some("/immutable/leased/codex")
-        );
-        assert_eq!(
-            leased_session_binary(&binaries, "account-a", 7, true).as_deref(),
+            leased_session_binary(&binaries, "account-a", 7, ProviderKind::Claude).as_deref(),
             Some("/immutable/leased/claude")
         );
         assert_eq!(
-            leased_session_binary(&binaries, "account-a", 8, false),
+            leased_session_binary(&binaries, "account-a", 7, ProviderKind::Codex),
             None
         );
-        assert_eq!(leased_session_binary(&binaries, "account-b", 7, true), None);
+        assert_eq!(
+            leased_session_binary(&binaries, "account-a", 8, ProviderKind::Claude),
+            None
+        );
+        assert_eq!(
+            leased_session_binary(&binaries, "account-b", 7, ProviderKind::Claude),
+            None
+        );
     }
 
     #[test]
