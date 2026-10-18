@@ -426,12 +426,11 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         } else {
             CatalogSource::Current
         });
-    if source != s.catalog.source
-        || s.catalog
-            .saved_thread_id
-            .as_ref()
-            .is_some_and(|id| Some(id) != s.actor.thread_id.as_ref())
-    {
+    // `nativeToolSource` selects the definitions. The saved catalog thread only
+    // tells Python's idle refresh gate that the catalog may be stale: context
+    // repair moves an agent to a new thread and keeps the old catalog record
+    // (`codex_context_repair.py`), and Python resumes that thread unchanged.
+    if source != s.catalog.source {
         return Outcome::Refuse(Refusal::CatalogIdentity);
     }
     if role_text(s).is_empty() {
