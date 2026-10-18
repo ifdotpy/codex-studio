@@ -1,6 +1,7 @@
 import type { Agent, Snapshot } from "../../types";
 import type { components } from "../../generated/api";
 import { isCommandTask } from "../backgroundTaskModel";
+import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
 
 export type ChatIndicatorKind =
   | "working"
@@ -347,7 +348,10 @@ export function chatIndicators(
           label,
         };
       } else if (agent.status === "failed")
-        indicator = { kind: "error", label: "Failed" };
+        // A turn that failed because the disk was full waits for free space.
+        indicator = diskFullHold(agent)
+          ? { kind: "paused", label: DISK_FULL_WAIT_LABEL }
+          : { kind: "error", label: "Failed" };
       else if (
         ["paused", "interrupted"].includes(agent.status || "") ||
         (agent.autoWake === false && !agent.empty)

@@ -45,7 +45,11 @@ import {
 } from "react";
 import { errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
-import { currentCapacityRetry } from "../capacityRetry";
+import {
+  currentCapacityRetry,
+  DISK_FULL_CAUSE,
+  DISK_FULL_WAIT_LABEL,
+} from "../capacityRetry";
 import {
   isCyberPolicyRefusal,
   nativeErrorKind,
@@ -680,7 +684,9 @@ export default function Conversation(p: {
         : threadBlock
           ? "Chat stopped as a precaution"
           : capacityRetry?.status === "scheduled"
-            ? "Waiting to retry model"
+            ? capacityRetry.cause === DISK_FULL_CAUSE
+              ? DISK_FULL_WAIT_LABEL
+              : "Waiting to retry model"
             : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
               (["starting", "running"].includes(agent?.status || "")
                 ? "Working"

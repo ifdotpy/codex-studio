@@ -24,6 +24,20 @@ describe("desktopNotices", () => {
     ]);
   });
 
+  it("shows the one disk-full notice first", () => {
+    const text =
+      "Disk is full: 130 MiB free. Studio starts no new turns and resumes held agents when 2 GiB is free. Free disk space now.";
+    expect(
+      desktopNotices({
+        supervisorNotice: "Supervisor stopped.",
+        diskSpace: { level: "full", message: text },
+      }),
+    ).toEqual([
+      { id: "disk", text, level: "full" },
+      { id: "supervisor", text: "Supervisor stopped.", level: "warning" },
+    ]);
+  });
+
   it("keeps a low disk warning", () => {
     expect(
       desktopNotices({

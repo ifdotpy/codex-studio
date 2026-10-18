@@ -15,3 +15,15 @@ export function currentCapacityRetry(agent: Agent): CapacityRetry | null {
     return null;
   return retry;
 }
+
+// The cause of a capacity retry that waits for free disk space.
+export const DISK_FULL_CAUSE = "diskFull";
+export const DISK_FULL_WAIT_LABEL = "Waiting for disk space";
+
+// A held agent whose turn failed because the disk was full.
+export function diskFullHold(agent: Agent): CapacityRetry | null {
+  const retry = currentCapacityRetry(agent);
+  return retry?.cause === DISK_FULL_CAUSE && retry.status === "scheduled"
+    ? retry
+    : null;
+}

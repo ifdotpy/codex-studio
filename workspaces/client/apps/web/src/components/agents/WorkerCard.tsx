@@ -20,6 +20,7 @@ import { useCommittedCallback } from "../../hooks";
 import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
 import "../../api";
 import { nativeErrorView } from "../../nativeErrors";
+import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
 import { setupModelName } from "./AgentSetupPicker";
 import { TeamModelCatalog } from "./WorkerOverview";
 import { ProviderMark } from "../AccountTiles";
@@ -182,6 +183,7 @@ const WorkerCardView = memo(function WorkerCardView({
     .join(" · ");
   const overview = agent.overview;
   const errorView = nativeErrorView(agent.error);
+  const diskHeld = Boolean(diskFullHold(agent));
   const error = agent.error ? agentErrorLabel(agent) : "";
   const stopReason = agentStopReason(agent);
   const errorSummary =
@@ -213,7 +215,9 @@ const WorkerCardView = memo(function WorkerCardView({
                   agent.status === "completed"
                     ? "Finished"
                     : agent.status === "failed"
-                      ? "Failed"
+                      ? diskHeld
+                        ? DISK_FULL_WAIT_LABEL
+                        : "Failed"
                       : agent.status === "running" && agent.inFlight
                         ? "Working"
                         : statusLabel(
@@ -251,7 +255,7 @@ const WorkerCardView = memo(function WorkerCardView({
                 aria-label={statusDetail}
                 title={statusDetail}
               >
-                {agent.status === "failed" ||
+                {(agent.status === "failed" && !diskHeld) ||
                 indicator?.kind === "error" ||
                 awaitingAnswer ? (
                   <CircleAlert size={14} aria-hidden="true" />

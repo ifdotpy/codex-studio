@@ -10,7 +10,11 @@ import {
   Wrench,
 } from "lucide-react";
 import type { Agent } from "../../types";
-import { currentCapacityRetry } from "../../capacityRetry";
+import {
+  currentCapacityRetry,
+  DISK_FULL_WAIT_LABEL,
+  diskFullHold,
+} from "../../capacityRetry";
 import { nativeThreadError } from "../../nativeErrors";
 import { displayError, errorDetails } from "../../errorPresentation";
 import ErrorDescription from "../ErrorDescription";
@@ -75,7 +79,9 @@ export default function AgentPhase({
     "folder-prepare": "Preparing folder",
     acknowledgement: "Waiting for Codex",
     retrying: "Codex is retrying",
-    "capacity-retry": "Waiting to retry model",
+    "capacity-retry": diskFullHold(agent)
+      ? DISK_FULL_WAIT_LABEL
+      : "Waiting to retry model",
     blocked: "Chat stopped as a precaution",
     auth: "Restoring sign-in",
     safety: "Codex is checking this request",
