@@ -429,7 +429,7 @@ pub async fn collect_one(
 ) -> Result<bool, HistoryError> {
     let path_profile = profile.clone();
     let thread = text(&agent["threadId"]).to_owned();
-    let is_live_only = agent["provider"] == "claude";
+    let is_live_only = !crate::provider_adapter::native_history(&agent);
     let path_cancel = Arc::clone(&cancel);
     let path = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/analytics_history_discovery",
@@ -730,7 +730,7 @@ pub fn prepare(
         return Err(HistoryError::Cancelled);
     }
     snapshot.state["deletedAt"] = snapshot.agent["deletedAt"].clone();
-    if snapshot.agent["provider"] == "claude" {
+    if !crate::provider_adapter::native_history(&snapshot.agent) {
         return Ok(refused(snapshot, "liveOnly", None));
     }
     let path = match path {
@@ -1262,7 +1262,7 @@ impl HistoryCollector {
         let cancel_discovery = Arc::clone(&cancel);
         let account_key = agent["accountKey"].as_str().unwrap_or("default").to_owned();
         let thread = text(&agent["threadId"]).to_owned();
-        let live_only = agent["provider"] == "claude";
+        let live_only = !crate::provider_adapter::native_history(&agent);
         let (home, path) = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/analytics_history_discovery",
             move || {

@@ -410,7 +410,7 @@ fn eligibility(a: &Value) -> Eligibility {
     let completed_owner =
         a["status"] == "completed" && inactive && !has(a, "turnId") && !has(a, "startAttempt");
     let task_owner = !has(a, "deletedAt")
-        && a.get("provider").is_none_or(|p| p == "codex")
+        && crate::provider_adapter::native_history(a)
         && has(a, "threadId")
         && !has(a, "accountTransferId")
         && !has(a, "workspaceOperation")

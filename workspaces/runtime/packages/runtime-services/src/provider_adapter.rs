@@ -50,6 +50,9 @@ pub struct ProviderLaunch {
 /// testing for a provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
+    /// The provider writes a native rollout per thread that Studio can read
+    /// and repair; otherwise history is the live transcript only.
+    pub native_history: bool,
     /// `dynamicTools` is resent on every resume and turn, not only on thread start.
     pub tools_on_every_turn: bool,
     /// `orchestration_speak` and `orchestration_review` are offered.
@@ -112,6 +115,13 @@ pub trait ProviderAdapter: Send + Sync + 'static {
     fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation;
 }
 
+/// The agent's provider keeps a native rollout history. An unknown provider
+/// does not: its history is never read or repaired.
+#[must_use]
+pub fn native_history(agent: &Value) -> bool {
+    ProviderKind::of_record(agent).is_ok_and(|kind| adapter(kind).capabilities().native_history)
+}
+
 /// The provider whose model family contains `model`, if any.
 #[must_use]
 pub fn model_provider(model: &str) -> Option<ProviderKind> {
@@ -160,6 +170,7 @@ impl ProviderAdapter for CodexAdapter {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            native_history: true,
             tools_on_every_turn: false,
             voice_and_review_tools: true,
             daybreak: true,
@@ -248,6 +259,7 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            native_history: false,
             tools_on_every_turn: true,
             voice_and_review_tools: false,
             daybreak: false,

@@ -734,7 +734,7 @@ pub fn decide(snapshot: &RecoverySnapshot, history: &NativeHistory) -> Vec<Input
                 }
             } else if valid
                 && meta_scope
-                && a["provider"] != "claude"
+                && crate::provider_adapter::native_history(a)
                 && turns.is_none()
                 && !preparing.contains(&event.id)
                 && supported
@@ -1040,7 +1040,7 @@ pub async fn repair_idle(
                 "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)
             }));
         }
-        if agent["provider"] == "claude"
+        if !crate::provider_adapter::native_history(&agent)
             || agent["threadId"].is_null()
             || agent["threadId"] == ""
         {
@@ -1162,7 +1162,7 @@ async fn repair_idle_with_broker_inner(
     .await
     .map_err(|_| RepairError::Worker)??;
     let initial_account = string_default(&initial, "accountKey", "default")?.to_owned();
-    let scope_before = if initial["provider"] != "claude"
+    let scope_before = if crate::provider_adapter::native_history(&initial)
         && initial["threadId"]
             .as_str()
             .is_some_and(|thread| !thread.is_empty())
@@ -1180,7 +1180,7 @@ async fn repair_idle_with_broker_inner(
     let tool_receipt_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/context_repair",
         move || {
-            if receipt_agent["provider"] != "claude"
+            if crate::provider_adapter::native_history(&receipt_agent)
                 && receipt_agent["threadId"]
                     .as_str()
                     .is_some_and(|thread| !thread.is_empty())
@@ -1228,7 +1228,7 @@ async fn repair_idle_with_broker_inner(
             ContextRepairRepository::put_agent(tx, &agent)?;
             return Ok((agent, Vec::new(), Vec::new(), Vec::new(), None, String::new()));
         }
-        if agent["provider"] == "claude"
+        if !crate::provider_adapter::native_history(&agent)
             || agent["threadId"].as_str().is_none_or(str::is_empty)
         {
             return Ok((agent, Vec::new(), Vec::new(), Vec::new(), None, String::new()));
