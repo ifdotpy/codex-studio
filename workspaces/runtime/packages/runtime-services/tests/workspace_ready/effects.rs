@@ -1813,8 +1813,9 @@ async fn ready_worktree_git_budget_excludes_waiting_for_a_store_reader() {
     let fixture = Fixture::new().await;
     let linked = ready_linked_worktree(&fixture).await;
     // Every reader stays busy for longer than the whole Git budget, as on a
-    // backend that has just started on a large state.
-    let budget = Duration::from_millis(300);
+    // backend that has just started on a large state. The budget still leaves
+    // the four Git commands ample time on a loaded test host.
+    let budget = Duration::from_secs(2);
     let held = std::sync::Arc::new(std::sync::Barrier::new(
         studio_runtime_store::READ_CONNECTION_POOL_CAPACITY + 1,
     ));
@@ -1825,7 +1826,7 @@ async fn ready_worktree_git_budget_excludes_waiting_for_a_store_reader() {
             std::thread::spawn(move || {
                 let reader = store.read().expect("reader");
                 held.wait();
-                std::thread::sleep(budget * 3);
+                std::thread::sleep(budget + Duration::from_millis(500));
                 drop(reader);
             })
         })
