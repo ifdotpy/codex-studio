@@ -435,10 +435,7 @@ impl RetainedMonitorPort {
             "liveness_command":"",
             "wake_on":"exit",
         });
-        let log_root = self
-            .store
-            .root()
-            .join("monitors")
+        let log_root = studio_runtime_services::monitor_output::log_root(self.store.root())
             .to_string_lossy()
             .into_owned();
         let check = check.clone();
@@ -1442,4 +1439,51 @@ fn apply_turn_permissions(
         params["sandboxPolicy"] = sandbox.cloned().unwrap_or(Value::Null);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use studio_runtime_services::rules_engine::RuleSnapshot;
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuleRecord, RulesRepository};
+
+    struct NoSession;
+    impl AccountSessionPort for NoSession {}
+
+    /// Rehearsal 9: a rule monitor of agent 4c360fa0 named its log under
+    /// `<state>/monitors`, but output delivery accepts only the monitor log
+    /// directory, so the rule's output could never be delivered.
+    #[tokio::test]
+    async fn a_rule_monitor_names_its_log_in_the_monitor_log_directory() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let cwd = root.path().to_string_lossy().into_owned();
+        let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
+            "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
+        let rule = json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,
+            "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
+            "path":null,"event":"worker_completed","command":"true","text":"Report.",
+            "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
+            "fingerprint":null,"lastAt":1.0,"lastExitCode":null,"error":null,
+            "lastOutput":"","lastFinished":1.0});
+        let check = RuleSnapshot::from_records(rule.clone(), owner.clone())
+            .expect("rule snapshot")
+            .check();
+        store
+            .transaction_with(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                RulesRepository::put(tx, &RuleRecord::from_value(rule)?)?;
+                Ok::<(), studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed rule and owner");
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+        let monitor = port
+            .persist_rule_monitor(&check)
+            .await
+            .expect("rule monitor");
+        let expected = studio_runtime_services::monitor_output::log_root(root.path())
+            .join(format!("{}.log", check.monitor_id));
+        assert_eq!(monitor["log"].as_str(), expected.to_str());
+    }
 }

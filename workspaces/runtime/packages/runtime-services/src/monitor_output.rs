@@ -15,6 +15,18 @@ use tokio::sync::Mutex;
 
 const OUTPUT_LOCKS: usize = 64;
 
+/// Directory under the state root that holds each monitor's output log,
+/// `<id>.log`. Python owns the same layout (`codex_runtime.py`, `monitor-logs`).
+/// Every monitor record names its log in this directory; delivery refuses any
+/// other path.
+pub const MONITOR_LOG_DIR: &str = "monitor-logs";
+
+/// The monitor log directory of a state root.
+#[must_use]
+pub fn log_root(state_root: &std::path::Path) -> std::path::PathBuf {
+    state_root.join(MONITOR_LOG_DIR)
+}
+
 pub struct MonitorOutput {
     locks: [Mutex<()>; OUTPUT_LOCKS],
 }
@@ -88,7 +100,7 @@ impl MonitorOutput {
         if path.components().count() != 1 || path.file_name().and_then(|s| s.to_str()) != Some(id) {
             return Err(MonitorError::InvalidOutputReceipt("invalid log identity"));
         }
-        let root = store.root().join("monitor-logs");
+        let root = log_root(store.root());
         if !root.exists() {
             #[cfg(unix)]
             {

@@ -219,7 +219,7 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                     .await
                     .map_err(monitor_error);
             }
-            let log_root = store.root().join("monitor-logs");
+            let log_root = crate::monitor_output::log_root(store.root());
             let log_root = log_root
                 .to_str()
                 .ok_or(Error::Invalid("Monitor log directory is invalid"))?;
