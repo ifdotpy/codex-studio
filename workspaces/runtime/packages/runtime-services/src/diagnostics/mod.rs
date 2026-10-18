@@ -20,8 +20,12 @@
 //! sysinfo values use the schema's null form. HTTP response bytes use the response body's exact size hint
 //! and otherwise zero. SQLite profile durations and writer wait/hold aggregates
 //! are bounded in memory; slow profile rows use `firstStatement: other` because
-//! SQL is discarded. Python stack frames, holder identity, transaction journals,
-//! and SQLite busy-error counters are not available. Startup marks capture
+//! SQL is discarded. Python stack frames, holder identity, and transaction
+//! journals are not available. Rust counts terminal SQLite busy/locked errors
+//! crossing the RuntimeStore typed error boundary; raw rusqlite errors handled
+//! directly through `ReadConnection` and service-specific error conversions are
+//! outside that boundary. A zero count means none were observed at that boundary,
+//! not that all-process count is zero. Startup marks capture
 //! opt-in Linux current RSS; peak RSS and allocation traces are unavailable.
 
 use futures_util::future::BoxFuture;
@@ -123,6 +127,9 @@ pub fn observe_store_event(event: studio_runtime_store::StoreDiagnosticsEvent) {
                 studio_runtime_store::StoreDatabaseKind::Other => DatabaseKind::Other,
             };
             record_commit_profile(database, elapsed);
+        }
+        studio_runtime_store::StoreDiagnosticsEvent::SqliteLockError { total } => {
+            record_sqlite_lock_error_snapshot(total);
         }
         studio_runtime_store::StoreDiagnosticsEvent::WalCheckpoint {
             database,

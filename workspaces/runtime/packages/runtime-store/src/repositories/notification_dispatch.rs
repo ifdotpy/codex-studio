@@ -287,7 +287,7 @@ impl NotificationDispatchRepository {
                 | rusqlite::Error::FromSqlConversionFailure(..) => {
                     invalid_record("runtime_events", event_id)
                 }
-                error => StoreError::Sqlite(error),
+                error => StoreError::from(error),
             })?;
         if event
             .as_ref()
@@ -391,7 +391,7 @@ fn validate_item(item: &TranscriptItem, agent: &str, include_notices: bool) -> S
 fn map_transcript_error(error: TranscriptStoreError, table: &'static str, id: &str) -> StoreError {
     match error {
         TranscriptStoreError::Store(error) => error,
-        TranscriptStoreError::Sqlite(error) => StoreError::Sqlite(error),
+        TranscriptStoreError::Sqlite(error) => StoreError::from(error),
         TranscriptStoreError::InvalidStoredObject { .. } | TranscriptStoreError::ActiveTurn => {
             invalid_record(table, id)
         }

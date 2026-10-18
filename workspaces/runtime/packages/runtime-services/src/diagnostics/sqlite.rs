@@ -69,6 +69,7 @@ struct SqliteState {
     wal_checkpoint_by_database: BTreeMap<DatabaseKind, Value>,
     transaction_count: u64,
     long_transactions: u64,
+    lock_error_snapshot: u64,
     write_waits: u64,
     write_wait_ms: f64,
     write_wait_durations_ns: Ring,
@@ -101,6 +102,7 @@ impl Default for SqliteState {
             wal_checkpoint_by_database: BTreeMap::new(),
             transaction_count: 0,
             long_transactions: 0,
+            lock_error_snapshot: 0,
             write_waits: 0,
             write_wait_ms: 0.0,
             write_wait_durations_ns: Ring::new(HISTORY_LIMIT),
@@ -283,6 +285,17 @@ pub fn record_commit_profile(database: DatabaseKind, elapsed: Duration) {
     });
 }
 
+/// Count one terminal SQLite busy or locked error reported by RuntimeStore.
+pub(super) fn record_sqlite_lock_error_snapshot(total: u64) {
+    let _ = try_with_state(state(), |state| {
+        record_sqlite_lock_error_snapshot_in_state(state, total);
+    });
+}
+
+fn record_sqlite_lock_error_snapshot_in_state(state: &mut SqliteState, total: u64) {
+    state.lock_error_snapshot = state.lock_error_snapshot.max(total);
+}
+
 /// Retain the latest bounded WAL size and passive-checkpoint result per file.
 pub fn record_wal_checkpoint(
     database: DatabaseKind,
@@ -441,55 +454,80 @@ pub fn sqlite_contention() -> Value {
         "commitProfile": {},
     });
     let _ = try_with_state(state(), |state| {
-        let (_, durations) = state.transaction_durations_ns.snapshot();
-        let metric = json!({
-            "transactions": state.transaction_count,
-            "longTransactions": state.long_transactions,
-            "writeWaits": state.write_waits,
-            "writeWaitMs": state.write_wait_ms,
-            "lockErrors": 0,
-            "longestTransactionMs": state.longest_transaction_ms,
-            "p50TransactionMs": quantile_ms(&durations, 50),
-            "p95TransactionMs": quantile_ms(&durations, 95),
-            "p99TransactionMs": quantile_ms(&durations, 99),
-            "sites": {
-                "runtime_store.writer_transaction": {
-                    "transactions": state.transaction_count,
-                    "longTransactions": state.long_transactions,
-                    "writeWaits": state.write_waits,
-                    "writeWaitMs": state.write_wait_ms,
-                    "lockErrors": 0,
-                    "longestTransactionMs": state.longest_transaction_ms,
-                    "p50TransactionMs": quantile_ms(&durations, 50),
-                    "p95TransactionMs": quantile_ms(&durations, 95),
-                    "p99TransactionMs": quantile_ms(&durations, 99),
-                    "sites": {}
-                }
-            }
-        });
-        result["transaction"] = metric;
-        result["walTelemetry"] = wal_telemetry_from_state(state);
-        result["storeAdmission"] = json!({
-            "reads": admission_metric(&state.read_admission),
-            "writes": admission_metric(&state.writer_admission),
-        });
-        result["sqlProfile"] = profile_metrics(&state.profile_by_database);
-        result["commitProfile"] = profile_metrics(&state.commit_profile_by_database);
-        let (_, waits) = state.write_wait_durations_ns.snapshot();
-        result["writeWait"] = json!({
-            "transactions": 0,
-            "longTransactions": 0,
-            "writeWaits": state.write_waits,
-            "writeWaitMs": state.write_wait_ms,
-            "lockErrors": 0,
-            "longestTransactionMs": waits.iter().max().copied().unwrap_or_default() as f64 / 1_000_000.0,
-            "p50TransactionMs": quantile_ms(&waits, 50),
-            "p95TransactionMs": quantile_ms(&waits, 95),
-            "p99TransactionMs": quantile_ms(&waits, 99),
-            "sites": {}
-        });
+        let lock_errors =
+            studio_runtime_store::sqlite_lock_error_count().max(state.lock_error_snapshot);
+        result = sqlite_contention_from_state(state, lock_errors);
     });
     result
+}
+
+fn sqlite_contention_from_state(state: &SqliteState, lock_errors: u64) -> Value {
+    let (_, durations) = state.transaction_durations_ns.snapshot();
+    let transaction = json!({
+        "transactions": state.transaction_count,
+        "longTransactions": state.long_transactions,
+        "writeWaits": state.write_waits,
+        "writeWaitMs": state.write_wait_ms,
+        "lockErrors": lock_errors,
+        "longestTransactionMs": state.longest_transaction_ms,
+        "p50TransactionMs": quantile_ms(&durations, 50),
+        "p95TransactionMs": quantile_ms(&durations, 95),
+        "p99TransactionMs": quantile_ms(&durations, 99),
+        "sites": {
+            "runtime_store.writer_transaction": {
+                "transactions": state.transaction_count,
+                "longTransactions": state.long_transactions,
+                "writeWaits": state.write_waits,
+                "writeWaitMs": state.write_wait_ms,
+                "lockErrors": lock_errors,
+                "longestTransactionMs": state.longest_transaction_ms,
+                "p50TransactionMs": quantile_ms(&durations, 50),
+                "p95TransactionMs": quantile_ms(&durations, 95),
+                "p99TransactionMs": quantile_ms(&durations, 99),
+                "sites": {}
+            }
+        }
+    });
+    let (_, waits) = state.write_wait_durations_ns.snapshot();
+    let write_wait = json!({
+        "transactions": 0,
+        "longTransactions": 0,
+        "writeWaits": state.write_waits,
+        "writeWaitMs": state.write_wait_ms,
+        "lockErrors": lock_errors,
+        "longestTransactionMs": waits.iter().max().copied().unwrap_or_default() as f64 / 1_000_000.0,
+        "p50TransactionMs": quantile_ms(&waits, 50),
+        "p95TransactionMs": quantile_ms(&waits, 95),
+        "p99TransactionMs": quantile_ms(&waits, 99),
+        "sites": {}
+    });
+    let lock_error = json!({
+        "transactions": 0,
+        "longTransactions": 0,
+        "writeWaits": 0,
+        "writeWaitMs": 0.0,
+        "lockErrors": lock_errors,
+        "longestTransactionMs": 0.0,
+        "p50TransactionMs": null,
+        "p95TransactionMs": null,
+        "p99TransactionMs": null,
+        "sites": {}
+    });
+    json!({
+        "activeTransactions": [],
+        "activeTransactionScan": {"threads": 0, "frames": 0, "locals": 0, "truncated": false},
+        "slowTransactions": sqlite_history_from_state(state),
+        "transaction": transaction,
+        "writeWait": write_wait,
+        "lockError": lock_error,
+        "walTelemetry": wal_telemetry_from_state(state),
+        "storeAdmission": {
+            "reads": admission_metric(&state.read_admission),
+            "writes": admission_metric(&state.writer_admission),
+        },
+        "sqlProfile": profile_metrics(&state.profile_by_database),
+        "commitProfile": profile_metrics(&state.commit_profile_by_database),
+    })
 }
 
 fn empty_store_admission() -> Value {
@@ -637,6 +675,22 @@ mod tests {
             assert!(admission[side]["waitMs"]["p99Ms"].is_null());
             assert_eq!(admission[side]["waitMs"]["maxMs"], 0.0);
         }
+    }
+
+    #[test]
+    fn lock_error_projections_share_the_reported_count() {
+        let mut state = SqliteState::default();
+        record_sqlite_lock_error_snapshot_in_state(&mut state, 2);
+        record_sqlite_lock_error_snapshot_in_state(&mut state, 1);
+
+        let value = sqlite_contention_from_state(&state, 2);
+        assert_eq!(value["lockError"]["lockErrors"], 2);
+        assert_eq!(value["transaction"]["lockErrors"], 2);
+        assert_eq!(
+            value["transaction"]["sites"]["runtime_store.writer_transaction"]["lockErrors"],
+            2
+        );
+        assert_eq!(value["writeWait"]["lockErrors"], 2);
     }
 
     #[test]

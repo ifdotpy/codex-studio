@@ -75,7 +75,7 @@ impl SqliteActor {
         let connection =
             tokio_rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
                 .await
-                .map_err(StoreError::Sqlite)?;
+                .map_err(StoreError::from)?;
         Ok(Self {
             connection,
             admission: Arc::new(Semaphore::new(MAX_PENDING_WRITES)),

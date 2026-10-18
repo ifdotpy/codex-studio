@@ -226,7 +226,7 @@ impl RuntimeStore {
             match operation(&tx, canvas) {
                 Ok(result) => {
                     let commit_started = diagnostics_enabled.then(std::time::Instant::now);
-                    tx.commit().map_err(StoreError::CommitOutcomeUnknown)?;
+                    tx.commit().map_err(StoreError::commit_outcome_unknown)?;
                     if let Some(started) = commit_started {
                         crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
                             database: crate::StoreDatabaseKind::Analytics,

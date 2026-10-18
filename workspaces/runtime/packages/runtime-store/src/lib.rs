@@ -328,6 +328,8 @@ pub enum StoreDiagnosticsEvent {
         database: StoreDatabaseKind,
         elapsed: Duration,
     },
+    /// Snapshot after one terminal SQLite busy or locked error crossed a typed store boundary.
+    SqliteLockError { total: u64 },
     WalCheckpoint {
         database: StoreDatabaseKind,
         wal_size_bytes: u64,
@@ -350,6 +352,7 @@ pub type StoreDiagnosticsCallback = fn(StoreDiagnosticsEvent);
 
 static DIAGNOSTICS_CALLBACK: OnceLock<Mutex<Option<StoreDiagnosticsCallback>>> = OnceLock::new();
 static DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
+static SQLITE_LOCK_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 
 fn diagnostics_callback() -> &'static Mutex<Option<StoreDiagnosticsCallback>> {
     DIAGNOSTICS_CALLBACK.get_or_init(|| Mutex::new(None))
@@ -604,7 +607,7 @@ pub enum StoreError {
         reason: String,
     },
     #[error("SQLite operation failed: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(#[source] rusqlite::Error),
     #[error("SQLite commit outcome is unknown: {0}")]
     CommitOutcomeUnknown(rusqlite::Error),
     #[error("stored JSON record is invalid: {0}")]
@@ -631,11 +634,75 @@ pub enum StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
+/// Number of terminal SQLite busy/locked errors observed at typed store boundaries.
+/// Zero means none were observed at this boundary, not that all-process count is zero:
+/// service-specific conversions and raw errors handled directly through `ReadConnection`
+/// are not included.
+pub fn sqlite_lock_error_count() -> u64 {
+    SQLITE_LOCK_ERROR_COUNT.load(Ordering::Acquire)
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        observe_sqlite_lock_error(&error);
+        Self::Sqlite(error)
+    }
+}
+
+fn is_sqlite_lock_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+fn observe_sqlite_lock_error(error: &rusqlite::Error) {
+    if is_sqlite_lock_error(error) {
+        let mut total = SQLITE_LOCK_ERROR_COUNT.load(Ordering::Relaxed);
+        while total < u64::MAX {
+            match SQLITE_LOCK_ERROR_COUNT.compare_exchange_weak(
+                total,
+                total + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    total += 1;
+                    break;
+                }
+                Err(observed) => total = observed,
+            }
+        }
+        emit_diagnostic(StoreDiagnosticsEvent::SqliteLockError { total });
+    }
+}
+
+impl StoreError {
+    fn writer_actor_control(error: tokio_rusqlite::Error) -> Self {
+        match &error {
+            tokio_rusqlite::Error::Error(error) | tokio_rusqlite::Error::Close((_, error)) => {
+                observe_sqlite_lock_error(error)
+            }
+            tokio_rusqlite::Error::ConnectionClosed => {}
+            _ => {}
+        }
+        Self::WriterActorControl(error)
+    }
+
+    pub(crate) fn commit_outcome_unknown(error: rusqlite::Error) -> Self {
+        observe_sqlite_lock_error(&error);
+        Self::CommitOutcomeUnknown(error)
+    }
+}
+
 /// Convert the actor's transport channel error to the store's typed unknown
 /// outcome. `call_raw` only reports a closed channel today; retain a typed close
 /// error if a future control path returns one. Application errors are carried
 /// inside the response value and must not pass through this conversion.
 pub(crate) fn actor_transport_outcome_unknown<E>(error: tokio_rusqlite::Error<E>) -> StoreError {
+    if let tokio_rusqlite::Error::Close((_, error)) = &error {
+        observe_sqlite_lock_error(error);
+    }
     let transport = match error {
         tokio_rusqlite::Error::ConnectionClosed => tokio_rusqlite::Error::ConnectionClosed,
         tokio_rusqlite::Error::Close((connection, error)) => {
@@ -1075,7 +1142,7 @@ impl RuntimeStore {
                 tokio_rusqlite::Error::ConnectionClosed => {
                     StoreError::WriterActorInitialization(tokio_rusqlite::Error::ConnectionClosed)
                 }
-                tokio_rusqlite::Error::Close((_, error)) => StoreError::Sqlite(error),
+                tokio_rusqlite::Error::Close((_, error)) => StoreError::from(error),
                 _ => StoreError::WriterActorInitialization(tokio_rusqlite::Error::ConnectionClosed),
             })?;
         let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
@@ -1275,7 +1342,7 @@ impl RuntimeStore {
                 Ok::<(), rusqlite::Error>(())
             })
             .await
-            .map_err(StoreError::WriterActorControl)?;
+            .map_err(StoreError::writer_actor_control)?;
         let mut analytics = self
             .analytics
             .lock()
@@ -1305,7 +1372,7 @@ impl RuntimeStore {
                 Self::checkpoint_connection(writer, StoreDatabaseKind::Canvas, &canvas_wal_path)
             })
             .await
-            .map_err(StoreError::WriterActorControl)?;
+            .map_err(StoreError::writer_actor_control)?;
 
         let analytics = self
             .analytics
@@ -1555,7 +1622,7 @@ impl RuntimeStore {
                         let commit_started = diagnostics_enabled.then(Instant::now);
                         if let Err(error) = transaction.commit() {
                             return Ok(WriterTransactionOutcome::CommitOutcomeUnknown {
-                                error: StoreError::CommitOutcomeUnknown(error),
+                                error: StoreError::commit_outcome_unknown(error),
                                 possible_table_changes: table_change_flags
                                     .swap(0, Ordering::AcqRel),
                                 possible_resource_change: true,
@@ -2719,6 +2786,182 @@ mod diagnostics_hook_tests {
             "sync-pull maintenance completion must not checkpoint after its commit"
         );
         assert!(store.wal_checkpoint_requested.load(Ordering::Acquire));
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
+    }
+
+    fn sqlite_failure(code: i32) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+    }
+
+    #[test]
+    fn sqlite_lock_error_classifier_includes_primary_and_extended_codes_only() {
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_BUSY_RECOVERY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE,
+        ] {
+            assert!(is_sqlite_lock_error(&sqlite_failure(code)));
+        }
+        assert!(!is_sqlite_lock_error(&sqlite_failure(
+            rusqlite::ffi::SQLITE_CONSTRAINT
+        )));
+        assert!(!is_sqlite_lock_error(&rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    fn sqlite_store_error_preserves_rusqlite_source() {
+        let error = StoreError::from(sqlite_failure(rusqlite::ffi::SQLITE_BUSY));
+        let source = std::error::Error::source(&error).expect("SQLite error is the source");
+        assert!(source.downcast_ref::<rusqlite::Error>().is_some());
+    }
+
+    #[tokio::test]
+    async fn sqlite_lock_errors_emit_once_at_each_typed_error_boundary() {
+        let _test_guard = TEST_LOCK.lock().await;
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
+
+        let before = sqlite_lock_error_count();
+        let _store_error = StoreError::from(sqlite_failure(rusqlite::ffi::SQLITE_BUSY));
+        let _unknown_commit =
+            StoreError::commit_outcome_unknown(sqlite_failure(rusqlite::ffi::SQLITE_LOCKED));
+        let _control_error = StoreError::writer_actor_control(tokio_rusqlite::Error::Error(
+            sqlite_failure(rusqlite::ffi::SQLITE_BUSY_RECOVERY),
+        ));
+        let close_connection = tokio_rusqlite::Connection::open_in_memory()
+            .await
+            .expect("open connection for typed actor-close error");
+        let close_error =
+            actor_transport_outcome_unknown::<StoreError>(tokio_rusqlite::Error::Close((
+                close_connection,
+                sqlite_failure(rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE),
+            )));
+        assert!(matches!(
+            close_error,
+            StoreError::CommitActorOutcomeUnknown(tokio_rusqlite::Error::Close((_, _)))
+        ));
+        let _closed_actor =
+            StoreError::writer_actor_control(tokio_rusqlite::Error::ConnectionClosed);
+        let _non_lock_error = StoreError::from(rusqlite::Error::InvalidQuery);
+
+        let events = EVENTS.lock().expect("diagnostic events lock");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, StoreDiagnosticsEvent::SqliteLockError { .. }))
+                .count(),
+            4
+        );
+        let totals: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                StoreDiagnosticsEvent::SqliteLockError { total } => Some(*total),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(totals, vec![before + 1, before + 2, before + 3, before + 4]);
+        drop(events);
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
+    }
+
+    #[tokio::test]
+    async fn sqlite_lock_count_survives_disabled_and_contended_observer() {
+        let _test_guard = TEST_LOCK.lock().await;
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("disable diagnostics callback");
+
+        let before_disabled = sqlite_lock_error_count();
+        observe_sqlite_lock_error(&sqlite_failure(rusqlite::ffi::SQLITE_BUSY));
+        assert_eq!(sqlite_lock_error_count(), before_disabled + 1);
+
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
+        let before_contended = sqlite_lock_error_count();
+        let callback_guard = diagnostics_callback()
+            .lock()
+            .expect("hold diagnostics callback lock");
+        observe_sqlite_lock_error(&sqlite_failure(rusqlite::ffi::SQLITE_LOCKED));
+        assert_eq!(sqlite_lock_error_count(), before_contended + 1);
+        drop(callback_guard);
+        assert!(
+            EVENTS.lock().expect("diagnostic events lock").is_empty(),
+            "the observer intentionally drops an event while contended"
+        );
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
+    }
+
+    #[tokio::test]
+    async fn terminal_writer_busy_error_is_observed_once() {
+        let _test_guard = TEST_LOCK.lock().await;
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
+
+        let path = store.root.join("canvas.sqlite3");
+        let blocker = Connection::open(path).expect("open competing test connection");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold one test-only writer lock");
+        store
+            .writer
+            .call(|writer| {
+                writer.busy_timeout(Duration::ZERO)?;
+                Ok::<(), rusqlite::Error>(())
+            })
+            .await
+            .expect("set test-only zero busy timeout");
+
+        let result = store.transaction(|_| Ok::<(), StoreError>(())).await;
+        assert!(matches!(
+            result,
+            Err(StoreError::Sqlite(error))
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+        ));
+        blocker
+            .execute_batch("ROLLBACK")
+            .expect("release test-only writer lock");
+
+        assert_eq!(
+            EVENTS
+                .lock()
+                .expect("diagnostic events lock")
+                .iter()
+                .filter(|event| matches!(event, StoreDiagnosticsEvent::SqliteLockError { .. }))
+                .count(),
+            1
+        );
         store
             .set_diagnostics_callback(None)
             .await
