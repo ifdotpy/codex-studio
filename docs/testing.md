@@ -32,13 +32,14 @@ selected API unit files and type-check scripts, while the tooling package owns
 repository contract checks. Prepare the web WASM artifact once with
 `pnpm --filter codex-agents-web run build:wasm`; this generated artifact is a
 warm-checkout prerequisite and its cold build is outside the 30-second target.
-The warm target is 30 seconds; measurement on the equipped checkout is pending.
+The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
+passed in 23.759 seconds; cold setup was excluded.
 The short tier does not build the browser or contact a model provider.
 
 `just test-comprehensive` preserves the previous broad local recipe: default
 server suites, server bridge, workspace Rust nextest, web type and unit checks,
-tooling tests, and browser smoke. Use it before a direct push to `main` until
-the short-tier budget is measured and accepted. Hosted CI continues its
+tooling tests, and browser smoke. Run it locally on the exact commit before
+every push to `main`; the short tier does not replace this gate. Hosted CI continues its
 comprehensive check composition, split across server and Rust partitions,
 non-Rust checks, and browser smoke. The
 `just test-fast-rest-non-rust` name is retained for the existing hosted CI
@@ -180,8 +181,8 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 2. **One change:** `just check <package>` runs that package's local checks;
    `just check <package> --dry-run` prints the planned commands.
 3. **Pre-PR gate:** run `just test-fast` and report its result. A focused
-   hypothesis does not replace this gate. Until its warm budget is validated,
-   direct pushes use `just test-comprehensive`.
+   hypothesis does not replace this gate. Every push to `main` also requires
+   a local `just test-comprehensive` pass on the exact commit.
 
 The repository checks add three focused commands: `just contracts-check` runs
 the generated API and persisted-state checks in read-only mode; `just boundaries-check`

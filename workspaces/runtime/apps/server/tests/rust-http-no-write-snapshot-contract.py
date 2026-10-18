@@ -24,6 +24,92 @@ from http_backend_harness import (
 
 
 class NoWriteSnapshotContract(unittest.TestCase):
+    def test_agent_projection_sequence_ignores_only_scheduler_start_attempt(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="no-write-agent-projection-") as directory:
+            state = Path(directory)
+            database_path = state / "canvas.sqlite3"
+            owned_field = "payload.value.startAttempt"
+            self.assertIn(owned_field, BACKGROUND_OWNED_FIELDS["sync_entities"])
+            payload = {
+                "collection": "agent",
+                "id": "agent-a",
+                "value": {
+                    "id": "agent-a",
+                    "name": "worker",
+                    "status": "paused",
+                    "startAttempt": {"id": "attempt-before"},
+                },
+            }
+            with closing(sqlite3.connect(database_path)) as database, database:
+                database.execute(
+                    "CREATE TABLE sync_entities ("
+                    "collection TEXT, id TEXT, seq INTEGER, hash TEXT, "
+                    "payload TEXT, deleted INTEGER)"
+                )
+                database.execute(
+                    "INSERT INTO sync_entities VALUES(?,?,?,?,?,?)",
+                    (
+                        "agent",
+                        "agent-a",
+                        20,
+                        "hash-before",
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                        0,
+                    ),
+                )
+            before = no_write_snapshot(state)
+
+            payload["value"]["startAttempt"] = {"id": "attempt-after"}
+            with closing(sqlite3.connect(database_path)) as database, database:
+                database.execute(
+                    "UPDATE sync_entities SET seq=?, hash=?, payload=? "
+                    "WHERE collection='agent' AND id='agent-a'",
+                    (
+                        21,
+                        "hash-after-start-attempt",
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+            self.assertEqual(
+                no_write_snapshot(state, baseline_snapshot=before), before
+            )
+
+            payload["value"]["status"] = "running"
+            with closing(sqlite3.connect(database_path)) as database, database:
+                database.execute(
+                    "UPDATE sync_entities SET seq=?, hash=?, payload=? "
+                    "WHERE collection='agent' AND id='agent-a'",
+                    (
+                        22,
+                        "hash-after-status",
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+            self.assertNotEqual(
+                no_write_snapshot(state, baseline_snapshot=before), before
+            )
+            status_snapshot = no_write_snapshot(
+                state, baseline_snapshot=before
+            )
+
+            payload["id"] = "agent-b"
+            payload["value"]["id"] = "agent-b"
+            with closing(sqlite3.connect(database_path)) as database, database:
+                database.execute(
+                    "UPDATE sync_entities SET id=?, seq=?, hash=?, payload=? "
+                    "WHERE collection='agent' AND id='agent-a'",
+                    (
+                        "agent-b",
+                        23,
+                        "hash-after-identity",
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+            self.assertNotEqual(
+                no_write_snapshot(state, baseline_snapshot=status_snapshot),
+                status_snapshot,
+            )
+
     def test_ignores_only_accepted_archive_tick_receipt_metadata(self) -> None:
         with tempfile.TemporaryDirectory(prefix="no-write-archive-receipt-") as directory:
             state = Path(directory)
