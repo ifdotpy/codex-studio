@@ -302,7 +302,7 @@ print(json.dumps(value))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["clientId"], "browser-1")
 
-    def test_discover_and_ui_invite_are_local_only_and_identity_is_serve_only(self):
+    def test_phone_ui_access_preserves_discovery_and_signed_device_boundaries(self):
         self.assertEqual(self.a.client.get(IDENTITY_PATH).status_code, 403)
         self.discover()
         for action in ({"action": "discover", "requestId": "remote-discover"},
@@ -313,7 +313,29 @@ print(json.dumps(value))
                 response = self.a.client.post("/api/multi-server", content=raw, headers={**headers,
                     "X-Forwarded-Host": "a.example.ts.net", "X-Forwarded-Proto": "https", "X-Forwarded-For": self.b.address,
                     "Tailscale-User-Login": fixture.OWNER, "Content-Type": "application/json"})
+                expected = 200 if action["action"] == "ui_invite" and not signed else 403
+                self.assertEqual(response.status_code, expected, response.text)
+                if expected == 200:
+                    self.assertEqual(response.json()["invitation"]["serverId"], self.b.server_id)
+
+    def test_phone_ui_invite_requires_owner_origin_token_and_active_pair(self):
+        self.discover()
+        body = {"action": "ui_invite", "serverId": self.b.server_id, "requestId": "phone-invite"}
+        headers = {"X-Canvas-Token": "test-token", "Origin": self.a.origin,
+                   "X-Forwarded-Host": "a.example.ts.net", "X-Forwarded-Proto": "https",
+                   "X-Forwarded-For": self.b.address, "Tailscale-User-Login": fixture.OWNER}
+        for invalid in ({"X-Canvas-Token": "wrong"}, {"Origin": self.b.origin},
+                        {"X-Forwarded-Host": "other.example.ts.net"}, {"Sec-Fetch-Site": "cross-site"}):
+            with self.subTest(invalid=invalid):
+                response = self.a.client.post("/api/multi-server", json=body, headers={**headers, **invalid})
                 self.assertEqual(response.status_code, 403, response.text)
+        first = self.a.client.post("/api/multi-server", json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        retry = self.a.client.post("/api/multi-server", json=body, headers=headers)
+        self.assertEqual(retry.json(), first.json())
+        self.a.local({"action": "revoke", "clientId": self.b.server_id, "requestId": "phone-revoke"})
+        refused = self.a.client.post("/api/multi-server", json=body, headers=headers)
+        self.assertEqual(refused.status_code, 403, refused.text)
 
     def test_known_unpaired_peer_becomes_unreachable_and_disabled_setting_persists(self):
         self.a.local({"action": "settings", "autoPair": False})

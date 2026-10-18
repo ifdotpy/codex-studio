@@ -121,3 +121,107 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
     await Promise.all([local.close(), remote.close()]);
   }
 });
+
+test("direct screens automatically include paired servers on phones", async ({
+  page,
+  context,
+}, testInfo) => {
+  const local = await fixture("Local");
+  const remote = await fixture("Remote", true);
+  // The page has the real non-loopback HTTPS shape of a phone using Serve.
+  // Only fixture transport is redirected; discovery and credentials are real UI code.
+  const home = "https://lumina.tailnet.ts.net";
+  try {
+    local.discoverPeer(remote);
+    // HTTPS fixture requests are redirected to loopback, unlike real Serve traffic.
+    await context.grantPermissions(["local-network-access"], { origin: home });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await context.addInitScript(
+      (origins) => {
+        const NativeEventSource = window.EventSource;
+        window.EventSource = class extends NativeEventSource {
+          constructor(input, options) {
+            const url = new URL(input, location.href);
+            const destination = origins[url.origin];
+            super(
+              destination ? destination + url.pathname + url.search : url.href,
+              options,
+            );
+          }
+        };
+        const original = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          const destination = origins[url.origin];
+          if (!destination) return original(request);
+          const bytes = await request.clone().arrayBuffer();
+          return original(destination + url.pathname + url.search, {
+            method: request.method,
+            headers: request.headers,
+            ...(bytes.byteLength ? { body: bytes } : {}),
+            signal: request.signal,
+            redirect: "error",
+            credentials: "omit",
+          });
+        };
+      },
+      { [home]: local.origin, [remote.invitation.origin]: remote.origin },
+    );
+    await page.route(home + "/**", async (route) => {
+      const url = new URL(route.request().url());
+      const response = await route.fetch({
+        url: local.origin + url.pathname + url.search,
+      });
+      await route.fulfill({ response });
+    });
+    const chat = (server) =>
+      page.locator("#chat-list [data-chat]").filter({
+        has: page.getByText(`${server} chat`, { exact: true }),
+      });
+    const openChats = () =>
+      page
+        .getByRole("button", { name: "Servers and chats", exact: true })
+        .click();
+    await page.goto(home);
+    await openChats();
+    await expect(chat("Remote")).toBeVisible();
+    await expect(chat("Local")).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("shared-phone-chats.png"),
+    });
+    expect(remote.pairs).toHaveLength(1);
+    expect(
+      local.accessRequests.filter((row) => row.action === "discover"),
+    ).toHaveLength(0);
+    await chat("Local").click();
+    await page.locator("#message").fill("keep local phone draft");
+    await openChats();
+    await chat("Remote").click();
+    await page.locator("#message").fill("phone message for remote");
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
+    await expect.poll(() => remote.writes.length).toBe(1);
+    expect(remote.writes[0].text).toBe("phone message for remote");
+    expect(local.writes).toHaveLength(0);
+    await openChats();
+    await chat("Local").click();
+    await expect(page.locator("#message")).toHaveValue(
+      "keep local phone draft",
+    );
+    await expect(
+      page.getByRole("alert").filter({ hasText: "RxDB" }),
+    ).toHaveCount(0);
+    await page.reload();
+    await openChats();
+    await expect(chat("Remote")).toBeVisible();
+    await chat("Local").click();
+    await expect(page.locator("#message")).toHaveValue(
+      "keep local phone draft",
+    );
+    expect(remote.pairs).toHaveLength(1);
+  } finally {
+    await Promise.all([local.close(), remote.close()]);
+  }
+});
