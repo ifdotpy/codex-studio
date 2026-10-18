@@ -51,7 +51,6 @@ async fn settings_default_persist_and_refuse_out_of_range_values() {
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         store.root().to_string_lossy().into(),
         49171,
         None,

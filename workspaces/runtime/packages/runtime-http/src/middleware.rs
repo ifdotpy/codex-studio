@@ -565,7 +565,6 @@ mod response_safety_tests {
         let mut state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             directory.path().to_string_lossy().into_owned(),
             1,
             None,
@@ -878,7 +877,6 @@ mod tests {
                 HttpState::new(
                     "token".to_owned(),
                     "workspace".to_owned(),
-                    None,
                     directory.path().to_string_lossy().into_owned(),
                     1,
                     None,

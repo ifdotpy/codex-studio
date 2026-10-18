@@ -1076,9 +1076,8 @@ mod resource_tests {
 
     #[test]
     fn guidance_points_at_the_progress_layout_command() {
-        let resources =
-            PreparationResources::bundled(String::new(), ModelCatalogService::new(None))
-                .expect("runtime resources");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources");
         let bundle = guidance(
             &resources,
             &json!({"id":"lead", "isLead":true}),
@@ -1099,7 +1098,7 @@ mod resource_tests {
     #[test]
     fn layr_sessions_get_the_layr_guidance_and_skill() {
         let mut resources =
-            PreparationResources::bundled(String::new(), ModelCatalogService::new(None))
+            PreparationResources::bundled(String::new(), ModelCatalogService::new())
                 .expect("runtime resources");
         let skill = resources.role_guidance[Path::new("layr/SKILL.md")].clone();
         let reference =

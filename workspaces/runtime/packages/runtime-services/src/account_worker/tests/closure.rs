@@ -711,8 +711,12 @@ async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
         .unwrap();
     let resources = test_resources().unwrap();
     let catalog = resources.model_catalog.clone();
-    let mut catalog_peer = Peer::new();
-    crate::model_catalog::tests::set_refresh_factory(&catalog, catalog_peer.factory.clone());
+    let catalog_pages = crate::model_catalog::tests::serve_pages(
+        &catalog,
+        crate::model_catalog::tests::AccountSessionPages::gated(vec![
+            json!({"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
+        ]),
+    );
     let mut peer = Peer::new();
     let mut worker = peer
         .open_worker_with_resources(state.bridge.clone(), resources)
@@ -725,9 +729,8 @@ async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
         "model-catalog/refresh-pending"
     );
     // The pending preparation starts the refresh itself and wakes on its result.
-    let list = catalog_peer.write("model/list").await;
-    // The one-off exchange does not require journal ACK for its final response.
-    catalog_peer.frame(json!({"id":list["id"],"result":{"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}})).await;
+    // The refresh reads the catalog over the account's retained session.
+    catalog_pages.release();
     let resume = peer.write("thread/resume").await;
     peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
         .await;

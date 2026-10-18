@@ -152,7 +152,6 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         store.root().to_string_lossy().into(),
         49171,
         None,
@@ -250,7 +249,6 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         store.root().to_string_lossy().into(),
         49171,
         None,

@@ -424,7 +424,6 @@ mod tests {
         let state = HttpState::new(
             String::new(),
             String::new(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             0,
             None,
@@ -451,7 +450,6 @@ mod tests {
         let state = HttpState::new(
             String::new(),
             String::new(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             0,
             None,
@@ -487,7 +485,6 @@ mod tests {
         let state = HttpState::new(
             String::new(),
             String::new(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             0,
             None,
@@ -546,7 +543,6 @@ mod tests {
         let mut state = HttpState::new(
             String::new(),
             String::new(),
-            None,
             directory.to_string_lossy().into_owned(),
             0,
             None,

@@ -13,7 +13,6 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
     let state = crate::router::HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         "isolated".into(),
         4620,
         None,
@@ -55,7 +54,6 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
     let state = crate::router::HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         "isolated".into(),
         4620,
         None,
@@ -206,7 +204,6 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let state = crate::router::HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         "isolated".into(),
         4620,
         None,

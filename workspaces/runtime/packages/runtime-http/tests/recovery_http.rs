@@ -79,7 +79,6 @@ async fn connection_recovery_http_returns_the_synchronous_worker_status() {
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         49171,
         None,
@@ -119,7 +118,6 @@ async fn connection_recovery_without_history_capability_returns_not_implemented(
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         49171,
         None,
@@ -153,7 +151,6 @@ async fn connection_recovery_unknown_outcome_is_service_unavailable() {
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         49171,
         None,
@@ -190,7 +187,6 @@ async fn connection_recovery_superseded_outcome_is_successful_http_result() {
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         49171,
         None,

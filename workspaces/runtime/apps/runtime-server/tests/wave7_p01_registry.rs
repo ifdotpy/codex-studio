@@ -475,7 +475,7 @@ impl AccountLauncher for Scripted {
                 },
                 resources: PreparationResources::bundled(
                     String::new(),
-                    ModelCatalogService::new(None),
+                    ModelCatalogService::new(),
                 )
                 .unwrap(),
                 publication_sink: Arc::new(
@@ -1368,7 +1368,6 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     let state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         fixture._root.path().to_string_lossy().into(),
         49171,
         None,
@@ -1503,58 +1502,6 @@ mod host_runtime;
 mod provider_ports;
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
-    use std::os::unix::fs::PermissionsExt;
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    let fixture = Fixture::new().await;
-    let socket = fixture._root.path().join("probe.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let executable = fixture._root.path().join("probe");
-    std::fs::write(&executable, format!(
-        "#!/usr/bin/env python3\nimport os,socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall((str(os.getpid())+'\\n').encode())\nfor line in sys.stdin: pass\n",
-        serde_json::to_string(&socket.to_string_lossy()).unwrap(),
-    )).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let state = studio_runtime_http::HttpState::new(
-        "fixture-token".into(),
-        "fixture".into(),
-        Some(executable.to_string_lossy().into_owned()),
-        fixture._root.path().to_string_lossy().into_owned(),
-        49171,
-        None,
-        Some(fixture.store.clone()),
-        None,
-    );
-    let (launcher, _writes) = scripted();
-    let runtime = host_runtime::HostRuntime::with_launcher(
-        fixture.store.clone(),
-        launcher,
-        state.event_wake_handle(),
-        test_registry_config(),
-    )
-    .await
-    .unwrap();
-    let _pending = state
-        .model_catalog_handle()
-        .read("default", "", "codex", false)
-        .await;
-    let (peer, _) = tokio::time::timeout(TEST_HANG_GUARD, listener.accept())
-        .await
-        .expect("catalog start hang guard")
-        .unwrap();
-    let mut peer = BufReader::new(peer);
-    let mut pid = String::new();
-    peer.read_line(&mut pid).await.unwrap();
-    let pid: u32 = pid.trim().parse().unwrap();
-    runtime_shutdown::close(runtime, &state).await.unwrap();
-    assert!(
-        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
-        "backend-owned probe must be reaped before shutdown returns"
-    );
-}
 
 #[tokio::test]
 async fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_records() {
@@ -2466,7 +2413,6 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     let mut state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        Some(executable.to_string_lossy().into_owned()),
         fixture._root.path().to_string_lossy().into_owned(),
         49171,
         None,
@@ -2824,7 +2770,6 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     let mut state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         fixture._root.path().to_string_lossy().into(),
         49171,
         None,
@@ -3127,7 +3072,6 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
     let mut state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        Some(executable.to_string_lossy().into_owned()),
         fixture._root.path().to_string_lossy().into_owned(),
         49171,
         None,
@@ -3332,7 +3276,6 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
     let mut state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        Some(executable.to_string_lossy().into_owned()),
         fixture._root.path().to_string_lossy().into_owned(),
         49171,
         None,
@@ -3472,7 +3415,6 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
     let mut state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        Some(executable.to_string_lossy().into_owned()),
         fixture._root.path().to_string_lossy().into_owned(),
         49171,
         None,
@@ -3628,7 +3570,6 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     let mut state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        Some(executable.to_string_lossy().into_owned()),
         fixture._root.path().to_string_lossy().into_owned(),
         49171,
         None,

@@ -1627,7 +1627,7 @@ mod retained_executor_tests {
             queue_has_input: true,
             native_path: None,
         });
-        let catalog = ModelCatalogService::new(None);
+        let catalog = ModelCatalogService::new();
         catalog.retain_accounts(&[
             json!({"id":"source","home":"/tmp/source","provider":"codex"}),
             json!({"id":"target","home":"/tmp/target","provider":"codex"}),
@@ -1749,7 +1749,7 @@ mod retained_executor_tests {
         .await
         .expect("durable transfer request succeeds");
 
-        let catalog = ModelCatalogService::new(None);
+        let catalog = ModelCatalogService::new();
         catalog.retain_accounts(&[
             json!({"id":"source","home":source_home,"provider":"codex"}),
             json!({"id":"target","home":target_home,"provider":"codex"}),
@@ -1948,7 +1948,7 @@ mod retained_executor_tests {
                 .await
                 .expect("store reopens after worker restart"),
         );
-        let recovered_catalog = ModelCatalogService::new(None);
+        let recovered_catalog = ModelCatalogService::new();
         recovered_catalog.retain_accounts(&[
             json!({"id":"source","home":source_home,"provider":"codex"}),
             json!({"id":"target","home":target_home,"provider":"codex"}),

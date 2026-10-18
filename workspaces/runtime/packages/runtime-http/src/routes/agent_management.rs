@@ -1002,7 +1002,7 @@ mod native_review_preflight_tests {
             .expect("repository root");
         let resources = PreparationResources::bundled_at(
             String::new(),
-            ModelCatalogService::new(None),
+            ModelCatalogService::new(),
             root.clone(),
             root.join("workspaces/runtime/apps/server/src"),
         )
@@ -1401,7 +1401,7 @@ mod native_review_preflight_tests {
             .unwrap();
         let resources = PreparationResources::bundled_at(
             String::new(),
-            ModelCatalogService::new(None),
+            ModelCatalogService::new(),
             root.clone(),
             root.join("workspaces/runtime/apps/server/src"),
         )
@@ -1534,7 +1534,7 @@ mod native_review_preflight_tests {
             .unwrap();
         let resources = PreparationResources::bundled_at(
             String::new(),
-            ModelCatalogService::new(None),
+            ModelCatalogService::new(),
             root.clone(),
             root.join("workspaces/runtime/apps/server/src"),
         )
@@ -1627,7 +1627,7 @@ mod native_review_preflight_tests {
             .unwrap();
         let resources = PreparationResources::bundled_at(
             String::new(),
-            ModelCatalogService::new(None),
+            ModelCatalogService::new(),
             root.clone(),
             root.join("workspaces/runtime/apps/server/src"),
         )

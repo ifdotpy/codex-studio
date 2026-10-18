@@ -471,7 +471,6 @@ mod tests {
         let mut state = crate::router::HttpState::new(
             "reset-test-token".into(),
             "reset-test-workspace".into(),
-            None,
             root.path().to_string_lossy().into_owned(),
             49_172,
             None,

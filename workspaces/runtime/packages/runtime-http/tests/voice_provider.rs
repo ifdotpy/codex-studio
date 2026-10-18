@@ -205,7 +205,6 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         _root.path().to_string_lossy().into_owned(),
         4620,
         None,
@@ -374,7 +373,6 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     let app_without_runtime = router(HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         root.path().to_string_lossy().into_owned(),
         4620,
         None,
@@ -395,7 +393,6 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         root.path().to_string_lossy().into_owned(),
         4620,
         None,
@@ -485,7 +482,6 @@ async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         _root.path().to_string_lossy().into_owned(),
         4620,
         None,

@@ -443,7 +443,7 @@ mod tests {
         for status in ["changed", "error"] {
             let snapshot = snapshot(json!({"id":"default", "home":"/missing", "status":status}));
             let error = account_catalog(
-                &ModelCatalogService::new(None),
+                &ModelCatalogService::new(),
                 &snapshot,
                 "default",
                 true,
@@ -461,7 +461,7 @@ mod tests {
         let snapshot =
             snapshot(json!({"id":"claude-account", "provider":"claude", "status":"ready"}));
         let error = account_catalog(
-            &ModelCatalogService::new(None),
+            &ModelCatalogService::new(),
             &snapshot,
             "claude-account",
             false,
@@ -486,7 +486,7 @@ mod tests {
             dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
         > = std::sync::Arc::new(EnsuredSession(calls.clone()));
         let error = account_catalog(
-            &ModelCatalogService::new(None),
+            &ModelCatalogService::new(),
             &snapshot,
             "default",
             false,
@@ -518,7 +518,7 @@ mod tests {
             })]),
             requests: calls.clone(),
         });
-        let catalog = ModelCatalogService::new(None);
+        let catalog = ModelCatalogService::new();
         catalog.set_account_session(Some(session.clone()));
 
         let (first, second) = tokio::join!(
@@ -560,7 +560,7 @@ mod tests {
             pages: std::sync::Mutex::new(Vec::new()),
             requests: calls.clone(),
         });
-        let catalog = ModelCatalogService::new(None);
+        let catalog = ModelCatalogService::new();
         catalog.set_account_session(Some(session.clone()));
 
         let error = account_catalog(&catalog, &snapshot, "claude-account", false, Some(session))

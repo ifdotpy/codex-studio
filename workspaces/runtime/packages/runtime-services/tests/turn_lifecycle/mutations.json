@@ -833,20 +833,6 @@
     "lifecycleCombinations": []
   },
   {
-    "id": "A5",
-    "description": "A5-closure-regression",
-    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
-    "edits": [
-      {
-        "before": "event = session.events.recv() => {\n                // recv is cancellation safe; settlement owns the event only\n                // after this branch wins, so a command cannot drop its outcomes.\n                let event = settle_catalog_event(session, event.ok_or(())?).await?;",
-        "after": "event = next_event(session) => {\n                let event = event?;"
-      }
-    ],
-    "witnesses": [],
-    "workerWitnesses": ["command_receipt_cannot_cancel_a_taken_catalog_event"],
-    "lifecycleCombinations": []
-  },
-  {
     "id": "L3Generation",
     "description": "L3Generation-closure-regression",
     "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",

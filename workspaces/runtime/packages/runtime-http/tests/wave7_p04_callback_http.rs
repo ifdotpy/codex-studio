@@ -41,7 +41,6 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
     let state = HttpState::new(
         "token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         49171,
         None,
@@ -98,7 +97,6 @@ async fn pending_native_delete_sends_only_cancellation_and_unknown_is_held() {
         let state = HttpState::new(
             "token".into(),
             "fixture".into(),
-            None,
             root.path().to_string_lossy().into(),
             49171,
             None,
@@ -149,7 +147,6 @@ async fn enabled_native_backend_serves_success_and_null_refusal_over_tcp() {
     let state = HttpState::new(
         "token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         address.port(),
         None,

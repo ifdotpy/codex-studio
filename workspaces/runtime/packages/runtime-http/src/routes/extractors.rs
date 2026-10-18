@@ -277,7 +277,6 @@ mod tests {
         let app = crate::router::validation_probe_router(crate::router::HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             12345,
             None,

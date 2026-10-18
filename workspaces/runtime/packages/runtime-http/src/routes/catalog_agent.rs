@@ -8,7 +8,6 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::Path;
 use std::time::{Duration, Instant as StdInstant};
 use studio_runtime_services::catalog_reads::{
     CapabilityAgentSnapshot, ProviderRequest, append_capability_error, apply_capability_result,
@@ -91,8 +90,6 @@ async fn account_provider_exchange(
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
-    native_path: Option<String>,
-    app_server_log: Option<studio_runtime_process::operational_log::OperationalLog>,
     account: AccountContext,
     requests: Vec<ProviderRequest>,
     timeout: Duration,
@@ -104,33 +101,20 @@ async fn account_provider_exchange(
     if !account.known || !account.available {
         return Err(CatalogReadError::ProviderExchangeFailed);
     }
-    if account.provider == "claude" {
-        let session = session.ok_or(CatalogReadError::ProviderExchangeFailed)?;
-        let account_key = account.key;
-        session
-            .ensure_session(&account_key)
-            .await
-            .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
-        return studio_runtime_services::catalog_reads::account_session_exchange(
-            session.as_ref(),
-            &account_key,
-            requests,
-            timeout,
-        )
-        .await;
-    }
-    if account.provider == "codex" {
-        return studio_runtime_services::catalog_reads::provider_exchange(
-            native_path.as_deref().map(Path::new),
-            &account.home,
-            account.key != "default",
-            requests,
-            timeout,
-            app_server_log,
-        )
-        .await;
-    }
-    Err(CatalogReadError::ProviderExchangeFailed)
+    // Both providers answer catalog reads over the account's retained session;
+    // no read launches a provider process of its own.
+    let session = session.ok_or(CatalogReadError::ProviderExchangeFailed)?;
+    session
+        .ensure_session(&account.key)
+        .await
+        .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+    studio_runtime_services::catalog_reads::account_session_exchange(
+        session.as_ref(),
+        &account.key,
+        requests,
+        timeout,
+    )
+    .await
 }
 
 async fn skills(
@@ -147,8 +131,6 @@ async fn skills(
     let account = account_context(&state, &agent)?;
     let responses = account_provider_exchange(
         state.account_session.clone(),
-        state.native_path.clone(),
-        state.app_server_log.clone(),
         account,
         vec![ProviderRequest {
             method: "skills/list".to_owned(),
@@ -220,16 +202,12 @@ async fn capabilities(
     let mut result = capabilities_base(agent_id, &capability_agent, managed, observed, at);
     let cache = std::sync::Arc::clone(&state.capabilities_cache);
     let session = state.account_session.clone();
-    let native_path = state.native_path.clone();
-    let app_server_log = state.app_server_log.clone();
     let cwd = cwd.to_owned();
     let thread_id = agent.get("threadId").cloned();
     let result = cache
         .get_or_fetch(agent_id, || async move {
             let responses = account_provider_exchange(
                 session,
-                native_path,
-                app_server_log,
                 account,
                 vec![
                     ProviderRequest {
@@ -747,8 +725,7 @@ fn ensure_live_agent(agent: &Value) -> Result<(), ApiError> {
 #[derive(Clone)]
 struct AccountContext {
     key: String,
-    home: String,
-    provider: String,
+    /// The registry has this account with a known provider.
     known: bool,
     available: bool,
 }
@@ -772,16 +749,8 @@ fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, A
         .find(|row| row.get("id").and_then(Value::as_str) == Some(key));
     Ok(AccountContext {
         key: key.to_owned(),
-        home: account
-            .and_then(|row| row.get("home"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        provider: account
-            .and_then(|row| studio_runtime_providers::ProviderKind::of_record(row).ok())
-            .map_or("", studio_runtime_providers::ProviderKind::key)
-            .to_owned(),
-        known: account.is_some(),
+        known: account
+            .is_some_and(|row| studio_runtime_providers::ProviderKind::of_record(row).is_ok()),
         available: account.is_some_and(|row| {
             row.get("disconnected") != Some(&Value::Bool(true))
                 && row.get("deleted") != Some(&Value::Bool(true))

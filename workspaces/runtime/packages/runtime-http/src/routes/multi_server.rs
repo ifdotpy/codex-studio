@@ -1100,7 +1100,6 @@ mod tests {
         let state = HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
-            None,
             root.path().display().to_string(),
             49171,
             None,
@@ -1156,7 +1155,6 @@ mod tests {
         let state = HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().display().to_string(),
             12345,
             None,
@@ -1195,7 +1193,6 @@ mod tests {
         let state = HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().display().to_string(),
             12345,
             Some("https://local.example".into()),
@@ -1290,7 +1287,6 @@ mod tests {
         let state = HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().display().to_string(),
             12345,
             Some("https://local.example".into()),
@@ -1382,7 +1378,6 @@ mod tests {
         let state = HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().display().to_string(),
             12345,
             Some("https://local.example.ts.net".into()),

@@ -133,7 +133,6 @@ async fn paired_receiver() -> PairedReceiver {
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         receiver_root.path().display().to_string(),
         4000,
         Some(origin.into()),
@@ -459,7 +458,6 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         _root.path().to_string_lossy().into_owned(),
         4000,
         Some("https://local.fixture.ts.net".into()),
@@ -532,7 +530,6 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
     let auto_state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         auto_root.path().to_string_lossy().into_owned(),
         4000,
         Some("https://local.fixture.ts.net".into()),
@@ -700,7 +697,6 @@ async fn browser_forward_opens_local_window_without_database_writes() {
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         root.path().display().to_string(),
         4000,
         None,
@@ -804,7 +800,6 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         root.path().display().to_string(),
         4000,
         Some("https://local.fixture.ts.net".into()),
@@ -927,7 +922,6 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
-        None,
         receiver_root.path().display().to_string(),
         4000,
         Some(origin.into()),

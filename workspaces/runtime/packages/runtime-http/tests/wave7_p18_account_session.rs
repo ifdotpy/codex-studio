@@ -132,7 +132,6 @@ fn fixture(
     let mut state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         root.path().to_string_lossy().into(),
         49171,
         None,

@@ -1185,7 +1185,6 @@ mod vault_maintenance_tests {
         let state = Arc::new(crate::router::HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             state_dir.clone(),
             4620,
             None,

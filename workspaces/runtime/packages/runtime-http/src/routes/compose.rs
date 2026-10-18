@@ -188,7 +188,6 @@ mod tests {
         let state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             1,
             None,

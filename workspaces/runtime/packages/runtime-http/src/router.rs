@@ -110,7 +110,6 @@ pub struct HttpState {
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
-    pub(crate) native_path: Option<String>,
     pub(crate) state_dir: String,
     pub(crate) cost_scan_cancelled: Arc<std::sync::atomic::AtomicBool>,
     cost_refresh_workers: Arc<CostRefreshWorkers>,
@@ -150,11 +149,10 @@ impl HttpState {
     pub fn open_app_server_log(mut self) -> Self {
         let log = OperationalLog::app_server(std::path::Path::new(&self.state_dir)).ok();
         let changes = Arc::clone(&self.sync_changes);
-        self.model_catalog = studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
-            self.native_path.clone(),
-            Arc::new(move || changes.notify_one()),
-            log.clone(),
-        );
+        self.model_catalog =
+            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
+                Arc::new(move || changes.notify_one()),
+            );
         self.app_server_log = log;
         self
     }
@@ -163,7 +161,6 @@ impl HttpState {
     pub fn new(
         token: String,
         workspace_id: String,
-        native_path: Option<String>,
         state_dir: String,
         port: u16,
         public_origin: Option<String>,
@@ -214,10 +211,8 @@ impl HttpState {
         ));
         let model_changes = Arc::clone(&sync_changes);
         let model_catalog =
-            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
-                native_path.clone(),
+            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
                 Arc::new(move || model_changes.notify_one()),
-                None,
             );
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
@@ -249,7 +244,6 @@ impl HttpState {
             peer_link_advert: Arc::new(std::sync::RwLock::new(None)),
             token,
             workspace_id,
-            native_path,
             state_dir,
             cost_scan_cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cost_refresh_workers: Arc::new(CostRefreshWorkers::default()),
@@ -906,7 +900,6 @@ mod tests {
             HttpState::new(
                 "token".to_owned(),
                 "workspace".to_owned(),
-                None,
                 directory.path().to_string_lossy().into_owned(),
                 4620,
                 None,
@@ -927,7 +920,6 @@ mod tests {
         let state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             directory.path().to_string_lossy().into_owned(),
             4620,
             None,
@@ -1096,7 +1088,6 @@ mod tests {
         let state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             directory.path().to_string_lossy().into_owned(),
             4620,
             Some("https://studio-test.ts.net".to_owned()),
@@ -1398,7 +1389,6 @@ mod tests {
         let state = Arc::new(HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             directory.path().to_string_lossy().into_owned(),
             4620,
             None,
@@ -1652,7 +1642,6 @@ mod cost_refresh_worker_tests {
         let state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
-            None,
             directory.path().to_string_lossy().into_owned(),
             4620,
             None,

@@ -1802,7 +1802,6 @@ mod title_http_tests {
         let mut state = crate::router::HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             directory.path().to_string_lossy().into_owned(),
             4620,
             None,

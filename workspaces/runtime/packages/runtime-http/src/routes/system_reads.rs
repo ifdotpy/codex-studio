@@ -764,7 +764,6 @@ mod diagnostics_http_tests {
         let state = HttpState::new(
             "fixture-token".to_owned(),
             "fixture-workspace".to_owned(),
-            None,
             directory.path().display().to_string(),
             4321,
             None,
@@ -792,7 +791,6 @@ mod diagnostics_http_tests {
         let state = HttpState::new(
             "fixture-token".to_owned(),
             "fixture-workspace".to_owned(),
-            None,
             directory.path().display().to_string(),
             4321,
             None,
@@ -874,7 +872,6 @@ mod diagnostics_http_tests {
         let state = HttpState::new(
             "fixture-token".to_owned(),
             "fixture-workspace".to_owned(),
-            None,
             directory.path().display().to_string(),
             4321,
             None,

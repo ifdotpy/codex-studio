@@ -365,7 +365,6 @@ mod tests {
         let state = crate::router::HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().to_string_lossy().into_owned(),
             12345,
             None,

@@ -20,12 +20,7 @@ const FIXTURE_LOCK_HANG_GUARD: std::time::Duration = std::time::Duration::from_s
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
     preparation::PreparationResources::bundled(
         String::new(),
-        crate::model_catalog::ModelCatalogService::new(Some(
-            std::env::temp_dir()
-                .join("absent-provider-for-test")
-                .to_string_lossy()
-                .into_owned(),
-        )),
+        crate::model_catalog::ModelCatalogService::new(),
     )
 }
 const CREATE_AGENTS: &str = r#"

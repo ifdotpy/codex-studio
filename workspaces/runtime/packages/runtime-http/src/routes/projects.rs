@@ -1336,7 +1336,6 @@ mod local_registration_tests {
         let state = crate::router::HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().to_string_lossy().into_owned(),
             4621,
             None,
@@ -1414,7 +1413,6 @@ mod local_registration_tests {
         let mut state = crate::router::HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             root.path().to_string_lossy().into_owned(),
             4621,
             None,

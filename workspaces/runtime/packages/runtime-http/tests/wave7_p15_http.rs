@@ -123,7 +123,6 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         store.root().to_string_lossy().into(),
         49171,
         None,
@@ -209,7 +208,6 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         store.root().to_string_lossy().into(),
         49171,
         None,
@@ -314,7 +312,6 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         let state = HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
-            None,
             store.root().to_string_lossy().into(),
             49171,
             None,

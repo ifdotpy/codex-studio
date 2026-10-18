@@ -198,7 +198,7 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
             }
             let mut resources = PreparationResources::bundled_at(
                 String::new(),
-                studio_runtime_services::model_catalog::ModelCatalogService::new(None),
+                studio_runtime_services::model_catalog::ModelCatalogService::new(),
                 guidance_root.path().to_path_buf(),
                 guidance_root.path().to_path_buf(),
             )

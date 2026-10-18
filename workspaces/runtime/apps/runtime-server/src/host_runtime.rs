@@ -2101,7 +2101,6 @@ mod install_root_tests {
         let mut state = HttpState::new(
             "no-python-test-token".into(),
             "no-python-test-workspace".into(),
-            None,
             root.path().to_string_lossy().into_owned(),
             address.port(),
             None,
@@ -2464,7 +2463,7 @@ mod voice_composition_tests {
             legacy_tools: Vec::new(),
             skills_root: directory.to_path_buf(),
             role_guidance: BTreeMap::new(),
-            model_catalog: ModelCatalogService::new(None),
+            model_catalog: ModelCatalogService::new(),
             account_home: String::new(),
             server_source_root: directory.to_path_buf(),
             claude_account_pin: serde_json::Value::Null,
@@ -2561,7 +2560,6 @@ mod voice_composition_tests {
         let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
-            None,
             directory.path().display().to_string(),
             4620,
             None,

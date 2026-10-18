@@ -135,7 +135,6 @@ mod tests {
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             49171,
             None,
@@ -241,7 +240,6 @@ mod tests {
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
-            None,
             state_dir.path().to_string_lossy().into_owned(),
             49171,
             None,

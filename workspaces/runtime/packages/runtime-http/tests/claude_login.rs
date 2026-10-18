@@ -103,7 +103,6 @@ async fn five_login_routes_drive_retained_actor_and_reauth_cancel() {
     let mut state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
-        None,
         f.directory.to_string_lossy().into(),
         49171,
         None,

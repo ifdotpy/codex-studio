@@ -554,7 +554,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let mut state = HttpState::new(
         token,
         workspace_id,
-        native_path.clone(),
         state_dir.clone(),
         address.port(),
         public_origin.clone(),

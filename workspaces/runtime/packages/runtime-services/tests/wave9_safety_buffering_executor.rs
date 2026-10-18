@@ -32,7 +32,7 @@ fn test_resources() -> Arc<PreparationResources> {
     Arc::new(
         PreparationResources::bundled(
             String::new(),
-            studio_runtime_services::model_catalog::ModelCatalogService::new(None),
+            studio_runtime_services::model_catalog::ModelCatalogService::new(),
         )
         .expect("bundled preparation resources"),
     )

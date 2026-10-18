@@ -1280,7 +1280,6 @@ mod tests {
         let state = HttpState::new(
             "test-token".to_owned(),
             "test-workspace".to_owned(),
-            None,
             state_dir.to_string_lossy().into_owned(),
             TEST_HTTP_PORT,
             None,
@@ -1521,7 +1520,6 @@ mod tests {
         let mut state_http = HttpState::new(
             "test-token".to_owned(),
             "test-workspace".to_owned(),
-            None,
             state.path().to_string_lossy().into_owned(),
             TEST_HTTP_PORT,
             None,
@@ -1728,7 +1726,6 @@ mod tests {
         let mut state_http = HttpState::new(
             "test-token".to_owned(),
             "test-workspace".to_owned(),
-            None,
             state.path().to_string_lossy().into_owned(),
             TEST_HTTP_PORT,
             None,
@@ -1769,7 +1766,6 @@ mod tests {
             let mut state_http = HttpState::new(
                 "test-token".to_owned(),
                 "test-workspace".to_owned(),
-                None,
                 state.path().to_string_lossy().into_owned(),
                 TEST_HTTP_PORT,
                 None,
