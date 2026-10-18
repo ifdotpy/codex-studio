@@ -1317,12 +1317,31 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
+        // The provider read can take seconds, so it runs on a copy outside the lock.
+        let copied = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?
+            .value
+            .clone();
+        let mut refreshed = copied.clone();
+        let read_status = self.refresh_value(&mut refreshed, account, false)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut updated = state.value.clone();
-        let status = self.refresh_value(&mut updated, account, false)?;
+        let row_unchanged =
+            registry_account(&state.value, account)? == registry_account(&copied, account)?;
+        let status = if row_unchanged {
+            // Only this row was read, so its result still applies to the registry.
+            *registry_account_mut(&mut updated, account)? =
+                registry_account(&refreshed, account)?.clone();
+            read_status
+        } else {
+            // The row changed during the read, so its result may describe an old profile.
+            self.refresh_value(&mut updated, account, false)?
+        };
         if updated != state.value {
             self.persist(&mut state, updated)?;
         }
@@ -1414,12 +1433,15 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
 
     /// Refresh the response projection from credentials without persisting it.
     pub fn listing_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut updated = state.value.clone();
-        for key in &state.order.accounts {
+        // Provider reads run on this copy, so the registry lock is not held during I/O.
+        let (mut updated, order) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| AccountDriverError::Poisoned)?;
+            (state.value.clone(), state.order.clone())
+        };
+        for key in &order.accounts {
             let stored = registry_account(&updated, key)?.clone();
             if self.refresh_value(&mut updated, key, false)? == AccountStatus::Error {
                 // A listing cannot replace persisted status with an error when
@@ -1427,7 +1449,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 *registry_account_mut(&mut updated, key)? = stored;
             }
         }
-        project_snapshot(&updated, &state.order)
+        project_snapshot(&updated, &order)
     }
 
     pub fn set_default(
@@ -1755,7 +1777,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 claude_options: row.get("claudeOptions").cloned(),
             }
         };
-        let metadata = self.reader.read(&profile);
+        let metadata =
+            crate::diagnostics::measure_runtime_stage("account_driver.auth_metadata", || {
+                self.reader.read(&profile)
+            });
         let row = registry_account_mut(value, account)?
             .as_object_mut()
             .ok_or(AccountDriverError::InvalidRegistry)?;
@@ -2747,6 +2772,44 @@ exit 0
         }
     }
 
+    /// Announces each read start, then returns the next metadata the test sends.
+    struct GatedReader {
+        started: Mutex<std::sync::mpsc::Sender<()>>,
+        released: Mutex<std::sync::mpsc::Receiver<AuthMetadata>>,
+    }
+
+    impl ProviderAuthReader for GatedReader {
+        fn read(&self, _profile: &AuthProfile) -> AuthMetadata {
+            self.started
+                .lock()
+                .expect("read start sender")
+                .send(())
+                .expect("report read start");
+            self.released
+                .lock()
+                .expect("read release receiver")
+                .recv_timeout(Duration::from_secs(10))
+                .expect("test releases the auth read")
+        }
+    }
+
+    fn gated_reader() -> (
+        GatedReader,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<AuthMetadata>,
+    ) {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        (
+            GatedReader {
+                started: Mutex::new(started_tx),
+                released: Mutex::new(release_rx),
+            },
+            started_rx,
+            release_tx,
+        )
+    }
+
     struct TestDir {
         path: PathBuf,
         _directory: tempfile::TempDir,
@@ -3044,6 +3107,107 @@ print(store.path)
             driver.get("default").expect("admission status"),
             AccountStatus::Unavailable
         );
+    }
+
+    #[test]
+    fn pending_auth_read_does_not_block_other_registry_reads() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(&path, registry(&fixture.path)).expect("write registry");
+        let (reader, started, release) = gated_reader();
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open registry");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let getter = scope.spawn(|| driver.get("default"));
+            started
+                .recv_timeout(Duration::from_secs(10))
+                .expect("auth read started");
+            scope.spawn(|| done_tx.send(driver.snapshot().is_ok()));
+            let progressed = done_rx.recv_timeout(Duration::from_secs(10));
+            release
+                .send(metadata(
+                    AuthStatus::Ready,
+                    Some("original"),
+                    Some("chatgpt:original"),
+                ))
+                .expect("release auth read");
+            assert!(progressed.expect("snapshot finished during the auth read"));
+            assert_eq!(getter.join().expect("get thread"), Ok(AccountStatus::Ready));
+        });
+    }
+
+    #[test]
+    fn disconnect_during_pending_auth_read_discards_the_stale_result() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(&path, registry(&fixture.path)).expect("write registry");
+        let (reader, started, release) = gated_reader();
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open registry");
+        std::thread::scope(|scope| {
+            let getter = scope.spawn(|| driver.get("default"));
+            started
+                .recv_timeout(Duration::from_secs(10))
+                .expect("auth read started");
+            // Set the flag directly: disconnect() would re-read through this gated reader.
+            driver.state.lock().expect("registry lock").value["accounts"]["default"]["disconnected"] =
+                Value::Bool(true);
+            release
+                .send(metadata(
+                    AuthStatus::Ready,
+                    Some("stale"),
+                    Some("chatgpt:stale"),
+                ))
+                .expect("release stale auth read");
+            assert_eq!(
+                getter.join().expect("get thread"),
+                Ok(AccountStatus::Unavailable)
+            );
+        });
+        let row = driver.internal_record("default").expect("account row");
+        assert_eq!(row["disconnected"], Value::Bool(true));
+        assert!(row.get("accountId").is_none_or(Value::is_null));
+    }
+
+    #[test]
+    fn profile_change_during_pending_auth_read_rereads_the_current_profile() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(&path, registry(&fixture.path)).expect("write registry");
+        let (reader, started, release) = gated_reader();
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open registry");
+        let moved_home = fixture.path.join("moved-home");
+        std::thread::scope(|scope| {
+            let getter = scope.spawn(|| driver.get("default"));
+            started
+                .recv_timeout(Duration::from_secs(10))
+                .expect("auth read started");
+            driver.state.lock().expect("registry lock").value["accounts"]["default"]["home"] =
+                Value::String(moved_home.to_string_lossy().into_owned());
+            release
+                .send(metadata(
+                    AuthStatus::Ready,
+                    Some("stale"),
+                    Some("chatgpt:stale"),
+                ))
+                .expect("release stale auth read");
+            // The stale read is discarded, so the get repeats the read under the lock.
+            release
+                .send(metadata(
+                    AuthStatus::Ready,
+                    Some("current"),
+                    Some("chatgpt:current"),
+                ))
+                .expect("release current auth read");
+            assert_eq!(getter.join().expect("get thread"), Ok(AccountStatus::Ready));
+        });
+        let row = driver.internal_record("default").expect("account row");
+        assert_eq!(row["accountId"], Value::String("current".into()));
     }
 
     #[test]
