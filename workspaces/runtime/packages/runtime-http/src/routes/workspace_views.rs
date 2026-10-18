@@ -545,9 +545,7 @@ async fn workspace_tasks(
         "runtime-http/routes/workspace_views",
         move || -> Result<Value, ApiError> {
             let connection = store.read().map_err(|_| ApiError::internal())?;
-            WorkspaceViewsRepository::validate_task_records(&connection)
-                .map_err(map_store_error)?;
-
+            // Each served row is decoded and checked below; rows outside the page are not read.
             let agents = parse_records(
                 &validators,
                 "AgentRecordResponse",
@@ -684,6 +682,29 @@ mod tests {
         });
         super::super::generated_json::<crate::generated::WorkspaceView>(view)
             .expect("a legacy result without resultFile is part of the view");
+    }
+
+    #[test]
+    fn review_work_from_before_creator_tracking_keeps_the_workspace_view_available() {
+        // Work written before createdBy existed reaches the inbox without a creator.
+        let legacy = serde_json::json!({
+            "id": "work-1", "rootId": "lead-1", "title": "Task", "description": "Old row",
+            "status": "review", "created": 1.0, "updated": 2.0, "version": 3,
+            "dependencies": [], "decisions": [], "results": [],
+            "blockedBy": [], "displayStatus": "review"
+        });
+        let view = serde_json::json!({
+            "work": [legacy.clone()], "annotations": [], "checkpoints": [], "plans": [],
+            "rules": [], "tasks": [], "tasksHistoryLimit": 100, "monitors": [],
+            "inbox": [{
+                "id": "work-1", "kind": "work", "agent": "lead-1", "title": "Task",
+                "text": "Result awaits acceptance", "work": legacy
+            }]
+        });
+        let typed = super::super::generated_json::<crate::generated::WorkspaceView>(view)
+            .expect("review work without createdBy is part of the view");
+        let wire = serde_json::to_value(typed).expect("the view serializes");
+        assert!(wire["inbox"][0]["work"].get("createdBy").is_none());
     }
 }
 

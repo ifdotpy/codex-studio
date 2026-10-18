@@ -26738,8 +26738,11 @@ export interface components {
       blockedBy: string[];
       /** Created */
       created: number;
-      /** Createdby */
-      createdBy: string;
+      /**
+       * Createdby
+       * @default null
+       */
+      createdBy?: string;
       /** Decisions */
       decisions: components["schemas"]["WorkDecisionRecordResponse"][];
       /** Dependencies */
