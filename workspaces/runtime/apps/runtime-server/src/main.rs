@@ -337,6 +337,22 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("progress-layout") {
+        let (file, wait) = match &args[1..] {
+            [file] => (file, 0.0),
+            [file, flag, wait] if flag == "--wait" => (file, wait.parse::<f64>()?),
+            _ => return Err("usage: progress-layout <PROGRESS.md> [--wait <seconds>]".into()),
+        };
+        if !(0.0..=studio_runtime_services::progress_panel::LAYOUT_CHECK_MAX_WAIT_SECONDS)
+            .contains(&wait)
+        {
+            return Err("--wait must be between 0 and 5 seconds".into());
+        }
+        let (result, code) =
+            studio_runtime_services::progress_panel::layout_check(Path::new(file), wait);
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        std::process::exit(code);
+    }
     let port = parse_port(args.into_iter())?;
     startup_trace("backend-identity-started");
     let backend_build = studio_runtime_process::blocking_pool::spawn_blocking(

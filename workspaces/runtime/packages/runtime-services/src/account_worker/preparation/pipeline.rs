@@ -758,10 +758,7 @@ pub(crate) async fn prepare_monitor_command(
     let (filesystem, observed) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_monitor_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture_for_thread_snapshot(
-                &snapshot_store,
-                &snapshot_agent_id,
-            )?;
+            let filesystem = FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent_id)?;
             let observed = AgentRepository::get(
                 &*snapshot_store.read()?,
                 &AgentId::from(snapshot_agent_id.as_str()),
@@ -1074,10 +1071,7 @@ async fn prepare_native_snapshot(
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_native_snapshot_filesystem",
         move || {
-            FilesystemSnapshot::capture_for_authorized_thread_snapshot(
-                &filesystem_store,
-                &filesystem_intent,
-            )
+            FilesystemSnapshot::capture_for_authorization(&filesystem_store, &filesystem_intent)
         },
     )
     .await
@@ -1161,9 +1155,7 @@ pub(crate) async fn prepare_safety_retry(
     let filesystem_agent_id = request.agent_id.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_safety_retry_filesystem",
-        move || {
-            FilesystemSnapshot::capture_for_thread_snapshot(&filesystem_store, &filesystem_agent_id)
-        },
+        move || FilesystemSnapshot::capture(&filesystem_store, &filesystem_agent_id),
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
@@ -1285,10 +1277,8 @@ pub(crate) async fn prepare_ready(
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_ready_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture_for_authorized_thread_snapshot(
-                &snapshot_store,
-                &snapshot_intent,
-            )?;
+            let filesystem =
+                FilesystemSnapshot::capture_for_authorization(&snapshot_store, &snapshot_intent)?;
             let prepared_host = if radio_authorized {
                 let host = crate::host_project_runtime::PreparedHost::load(&snapshot_store)
                     .map_err(|error| refusal(error.to_string()))?;
@@ -1354,7 +1344,6 @@ pub(crate) async fn prepare_ready(
             &frozen,
             &intent_for_snapshot,
             &state_root,
-            &filesystem.thread_inputs,
         )?;
         let mut prepared_intent = intent_for_snapshot.clone();
         prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
@@ -1585,7 +1574,6 @@ pub(crate) fn commit(
             &current,
             &context.intent,
             &guard.state_root,
-            &guard.filesystem.thread_inputs,
         )?;
         // Recompile with the exact operation, clock and verified artifact paths.
         // The compiler's manifest and output record the effective dependencies;
