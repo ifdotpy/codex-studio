@@ -12,6 +12,7 @@
 //! `thread/resume` reloads the thread with its history. A request whose reply
 //! is lost leaves the thread loaded; unsubscribe is never assumed.
 use super::*;
+use crate::provider_session_task::SessionStatus;
 use std::time::Duration;
 use studio_runtime_store::OrchestrationSettingsRepository;
 use tokio::time::Instant;
@@ -842,7 +843,12 @@ mod tests {
             },
         };
         assert!(!session_status_invalidates_snapshot(&status, generation));
-        status.attachment.info.as_mut().unwrap().acknowledged = EventCursor(1);
+        status
+            .attachment
+            .info
+            .as_mut()
+            .expect("ready session has attachment metadata")
+            .acknowledged = EventCursor(1);
         assert!(!session_status_invalidates_snapshot(&status, generation));
         status.initialization = InitializationStatus::AwaitingReply;
         assert!(session_status_invalidates_snapshot(&status, generation));
