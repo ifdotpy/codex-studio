@@ -31,7 +31,7 @@ the app carries (`Resources/workspace/bin/layr-desk`):
 
    ```sh
    layr-desk deploy --project <prefix> --profile <aws profile> --region <region> \
-     --writer "<studio python> <scripts>/codex_vault.py configure <project folder>"
+     --writer "<runtime-server> vault-configure <vm data dir> <project folder>"
    ```
 
    The writer's access key and signing key go through the pipe; a key that the command does

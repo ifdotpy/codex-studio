@@ -358,11 +358,9 @@ impl HttpState {
         self
     }
 
-    /// Attach the optional host tool location used for vault setup.
-    pub fn with_vault_host_command(mut self, server_source: std::path::PathBuf) -> Self {
-        self.vault_host_command = Some(studio_runtime_services::vault::VaultHostCommand::new(
-            server_source,
-        ));
+    /// Attach the optional host tool used for vault setup.
+    pub fn with_vault_host_command(mut self) -> Self {
+        self.vault_host_command = Some(studio_runtime_services::vault::VaultHostCommand::new());
         self
     }
 
