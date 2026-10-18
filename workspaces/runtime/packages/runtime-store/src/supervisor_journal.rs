@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(journal.ensure_journal_id("journalId").expect("same id"), id);
         assert_eq!(journal.epoch("account:a", &id).expect("missing row"), None);
         journal
-            .reserve("account:a", "signature", 1792051725.8936651)
+            .reserve("account:a", "signature", 1792051725.893665)
             .expect("reserve handle");
         // codex_process_supervisor.journal_epoch builds the same literal.
         assert_eq!(
