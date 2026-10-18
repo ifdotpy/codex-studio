@@ -72,11 +72,79 @@ fn transfer_pending(connection: &Connection, account: &str) -> StoreResult<bool>
     )
 }
 
+fn transfer_pending_predicate(connection: &Connection) -> StoreResult<String> {
+    if !table_exists(connection, "runtime_account_transfers")? {
+        return Ok("0".to_owned());
+    }
+    Ok("EXISTS(SELECT 1 FROM runtime_account_transfers t \
+        WHERE json_extract(t.record,'$.status')='pending' \
+        AND (json_extract(t.record,'$.targetAccountKey')=?1 OR EXISTS(SELECT 1 FROM \
+        json_each(t.record,'$.members') m WHERE json_extract(m.value,'$.sourceAccountKey')=?1)))"
+        .to_owned())
+}
+
 const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
      COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
      AND json_extract(record,'$.deletedAt') IS NULL";
 
 impl SchedulerRepository {
+    /// Read the durable status of known loaded threads and the account in one
+    /// bounded query. The candidate list comes from one provider snapshot.
+    pub fn idle_unload_usage_snapshot(
+        connection: &Connection,
+        account: &str,
+        threads: &std::collections::BTreeSet<String>,
+    ) -> StoreResult<(std::collections::BTreeSet<String>, bool)> {
+        let transfer = transfer_pending_predicate(connection)?;
+        let in_use = agent_in_use(connection)?;
+        let account_in_use = format!("({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} AND ({in_use})))");
+        let thread_in_use = format!(
+            "({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} \
+               AND json_extract(record,'$.threadId')=c.thread_id AND ({in_use})) \
+             OR EXISTS(SELECT 1 FROM runtime_agents WHERE \
+               json_extract(record,'$.contextRepair.sourceCleanup.phase') \
+                 IN ({ACTIVE_SOURCE_CLEANUP_PHASES}) \
+               AND json_extract(record,'$.contextRepair.sourceCleanup.accountKey')=?1 \
+               AND json_extract(record,'$.contextRepair.sourceCleanup.threadId')=c.thread_id))"
+        );
+        let sql = format!(
+            "WITH candidates(thread_id) AS (SELECT value FROM json_each(?2)), \
+             account_usage(in_use) AS (SELECT {account_in_use}), \
+             candidate_usage AS (SELECT c.thread_id, \
+               CASE WHEN {thread_in_use} THEN 1 ELSE 0 END AS busy \
+               FROM candidates c) \
+             SELECT candidate_usage.thread_id,candidate_usage.busy,account_usage.in_use \
+             FROM account_usage LEFT JOIN candidate_usage ON 1=1 \
+             ORDER BY candidate_usage.thread_id"
+        );
+        let encoded_threads = serde_json::Value::Array(
+            threads
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        )
+        .to_string();
+        let mut statement = connection.prepare_cached(&sql)?;
+        let rows = statement.query_map([account, &encoded_threads], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<bool>>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        })?;
+        let mut busy_threads = std::collections::BTreeSet::new();
+        let mut account_in_use = false;
+        for row in rows {
+            let (thread, busy, busy_account) = row?;
+            account_in_use = busy_account;
+            if let (Some(thread), Some(true)) = (thread, busy) {
+                busy_threads.insert(thread);
+            }
+        }
+        Ok((busy_threads, account_in_use))
+    }
+
     /// Whether `thread` on `account` must stay loaded: an agent that owns it
     /// is in use, a context repair still cleans it up, or a transfer touches
     /// the account. A thread no live agent owns holds nothing by itself.
@@ -303,5 +371,47 @@ mod tests {
             thread_in_use(&connection),
             "source cleanup still owns the thread"
         );
+    }
+
+    #[test]
+    fn missing_transfer_table_is_a_clear_idle_state() {
+        let connection = database();
+        connection
+            .execute("DROP TABLE runtime_account_transfers", [])
+            .expect("legacy schema drops transfer table");
+
+        assert!(!thread_in_use(&connection));
+        assert!(!account_in_use(&connection));
+    }
+
+    #[test]
+    fn one_usage_snapshot_checks_only_the_supplied_threads_and_their_account() {
+        let connection = database();
+        agent(&connection, "busy", json!({"status":"running"}));
+        agent(
+            &connection,
+            "other-thread",
+            json!({"threadId":"other","status":"running"}),
+        );
+        let candidates = std::collections::BTreeSet::from(["thread".to_owned(), "cold".to_owned()]);
+        let (busy, account_busy) =
+            SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &candidates)
+                .expect("usage snapshot reads");
+        assert_eq!(
+            busy,
+            std::collections::BTreeSet::from(["thread".to_owned()])
+        );
+        assert!(
+            account_busy,
+            "another thread keeps the account process in use"
+        );
+
+        agent(&connection, "busy", json!({}));
+        agent(&connection, "other-thread", json!({"threadId":"other"}));
+        let (busy, account_busy) =
+            SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &candidates)
+                .expect("usage snapshot rereads authoritative state");
+        assert!(busy.is_empty());
+        assert!(!account_busy);
     }
 }

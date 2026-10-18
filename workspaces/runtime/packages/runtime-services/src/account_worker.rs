@@ -49,6 +49,15 @@ impl From<rusqlite::Error> for WorkerError {
 }
 
 pub const COMMAND_CAPACITY: usize = 16;
+/// Canvas tables whose committed changes may alter idle-unload eligibility.
+const IDLE_STATE_OBSERVED_TABLES: [ObservedTable; 6] = [
+    ObservedTable::Agents,
+    ObservedTable::Events,
+    ObservedTable::Monitors,
+    ObservedTable::AccountTransfers,
+    ObservedTable::RuntimeRequests,
+    ObservedTable::RuntimeToolRequests,
+];
 // Maximum provider events per journal transaction; bounds transaction work and ACK delay.
 const JOURNAL_BATCH_MAX_EVENTS: usize = 32;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
@@ -163,6 +172,8 @@ pub struct StoreBridge {
     continuation_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     auth_wait_generation: Arc<watch::Sender<u64>>,
+    idle_state_generation: Arc<watch::Sender<u64>>,
+    idle_setting_generation: Arc<watch::Sender<u64>>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
     #[cfg(test)]
@@ -182,6 +193,25 @@ impl StoreBridge {
                 generation.send_modify(|value| *value = value.wrapping_add(1));
             }
         });
+        let (idle_state_generation, _) = watch::channel(0_u64);
+        let idle_state_generation = Arc::new(idle_state_generation);
+        let observed_idle_generation = Arc::downgrade(&idle_state_generation);
+        for table in IDLE_STATE_OBSERVED_TABLES {
+            let observed = observed_idle_generation.clone();
+            store.add_table_change_observer(table, move || {
+                if let Some(generation) = observed.upgrade() {
+                    generation.send_modify(|value| *value = value.wrapping_add(1));
+                }
+            });
+        }
+        let (idle_setting_generation, _) = watch::channel(0_u64);
+        let idle_setting_generation = Arc::new(idle_setting_generation);
+        let observed_idle_setting = Arc::downgrade(&idle_setting_generation);
+        store.add_table_change_observer(ObservedTable::OrchestrationSettings, move || {
+            if let Some(generation) = observed_idle_setting.upgrade() {
+                generation.send_modify(|value| *value = value.wrapping_add(1));
+            }
+        });
         let bridge = Self {
             store,
             operation_slot: Arc::new(Semaphore::new(1)),
@@ -191,6 +221,8 @@ impl StoreBridge {
             continuation_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             auth_wait_generation,
+            idle_state_generation,
+            idle_setting_generation,
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             faults: Arc::default(),
@@ -257,6 +289,12 @@ impl StoreBridge {
     }
     fn auth_wait_changes(&self) -> watch::Receiver<u64> {
         self.auth_wait_generation.subscribe()
+    }
+    fn idle_state_changes(&self) -> watch::Receiver<u64> {
+        self.idle_state_generation.subscribe()
+    }
+    fn idle_setting_changes(&self) -> watch::Receiver<u64> {
+        self.idle_setting_generation.subscribe()
     }
     async fn run<T, F, Fut>(&self, operation: F) -> Result<T, WorkerError>
     where
@@ -386,6 +424,9 @@ pub enum AccountCommand {
     /// Run the idle sweep now as if the clock read the given instant.
     #[cfg(test)]
     IdleSweep(tokio::time::Instant),
+    /// Re-evaluate idle candidates as if a durable blocker commit notified the worker.
+    #[cfg(test)]
+    IdleStateChange(tokio::time::Instant),
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
     Wake {
         agent_id: String,
@@ -411,6 +452,7 @@ pub struct AccountHandle {
     stop: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
     finished: watch::Receiver<bool>,
+    idle_exit: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -419,6 +461,10 @@ pub struct AccountHandle {
 impl AccountHandle {
     pub fn completion_signal(&self) -> watch::Receiver<bool> {
         self.finished.clone()
+    }
+    /// Whether the account worker closed normally after its idle deadline.
+    pub fn planned_idle_exit(&self) -> bool {
+        self.idle_exit.load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn retained_session(&self) -> retained::RetainedSessionPort {
         retained::RetainedSessionPort {
@@ -624,6 +670,9 @@ pub async fn start_account_worker_with_publication_sink(
     // Subscribe before the worker's initial due/deadline snapshot. A commit
     // before this point is visible in that snapshot; later commits advance it.
     let auth_wait_changes = bridge.auth_wait_changes();
+    let idle_state_changes = bridge.idle_state_changes();
+    let idle_setting_changes = bridge.idle_setting_changes();
+    let idle_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker = Worker {
         resources,
         retained_port,
@@ -646,9 +695,13 @@ pub async fn start_account_worker_with_publication_sink(
         resolving_vm_actors: BTreeSet::new(),
         vm_event_forwarders: Vec::new(),
         request_waiters: BTreeMap::new(),
-        idle_sweep_at: tokio::time::Instant::now() + idle_unload::IDLE_SWEEP_INTERVAL,
         idle_clocks: idle_unload::IdleClocks::default(),
-        idle_stopped: false,
+        idle_delay: None,
+        idle_deadline: None,
+        idle_initialized: false,
+        idle_state_changes,
+        idle_setting_changes,
+        idle_exit: Arc::clone(&idle_exit),
         stop: stop.subscribe(),
         inbox,
         commands: commands.clone(),
@@ -718,6 +771,7 @@ pub async fn start_account_worker_with_publication_sink(
         stop,
         task,
         finished,
+        idle_exit,
         #[cfg(test)]
         faults: bridge.faults.clone(),
         #[cfg(test)]
@@ -800,10 +854,13 @@ struct Worker {
     vm_event_forwarders: Vec<JoinHandle<()>>,
     /// Replies to requests the worker sends for itself, by operation.
     request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
-    idle_sweep_at: tokio::time::Instant,
     idle_clocks: idle_unload::IdleClocks,
-    /// The worker closed its session because nothing used it.
-    idle_stopped: bool,
+    idle_delay: Option<std::time::Duration>,
+    idle_deadline: Option<tokio::time::Instant>,
+    idle_initialized: bool,
+    idle_state_changes: watch::Receiver<u64>,
+    idle_setting_changes: watch::Receiver<u64>,
+    idle_exit: Arc<std::sync::atomic::AtomicBool>,
     stop: watch::Receiver<bool>,
     inbox: mpsc::Receiver<AccountCommand>,
     commands: mpsc::Sender<AccountCommand>,
@@ -861,6 +918,8 @@ enum ServeSignal {
     ManagedCallback(Option<Result<ManagedCallbackResult, tokio::task::JoinError>>),
     SessionStatusChanged(bool),
     IdleSweep,
+    IdleStateChanged(Result<(), watch::error::RecvError>),
+    IdleSettingChanged(Result<(), watch::error::RecvError>),
 }
 
 struct ActorProviderSession {
@@ -1064,7 +1123,8 @@ impl Worker {
         let cleanup = cleanup.and_then(|()| vm_cleanup_error.map_or(Ok(()), Err));
         match cleanup.and(result) {
             Err(WorkerError::Session(SessionTaskError::Closed))
-                if *self.stop.borrow() || self.idle_stopped =>
+                if *self.stop.borrow()
+                    || self.idle_exit.load(std::sync::atomic::Ordering::Acquire) =>
             {
                 Ok(())
             }
@@ -1105,6 +1165,20 @@ impl Worker {
                 && let Some(effect) = self.effects.pop_front()
             {
                 self.run_effect(effect).await?;
+                continue;
+            }
+            if self.session.status.borrow().initialization == InitializationStatus::Ready
+                && !self.idle_initialized
+                && self.idle_deadline.is_none()
+                && self.pending.is_empty()
+                && self.retained_requests.is_empty()
+                && self.effects.is_empty()
+                && self.retry_at.is_none()
+                && self.queued_commands.is_empty()
+                && self.inbox.is_empty()
+            {
+                self.idle_initialized = true;
+                self.idle_initialize(tokio::time::Instant::now()).await?;
                 continue;
             }
             #[cfg(test)]
@@ -1170,7 +1244,9 @@ impl Worker {
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
             callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
             changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
-            _ = tokio::time::sleep_until(self.idle_sweep_at) => ServeSignal::IdleSweep,
+            _ = tokio::time::sleep_until(self.idle_deadline.unwrap_or_else(tokio::time::Instant::now)), if self.idle_deadline.is_some() => ServeSignal::IdleSweep,
+            changed = self.idle_state_changes.changed(), if self.idle_clocks.has_blocked_candidates() => ServeSignal::IdleStateChanged(changed),
+            changed = self.idle_setting_changes.changed() => ServeSignal::IdleSettingChanged(changed),
         }
     }
     async fn dispatch_serve_signal(&mut self, signal: ServeSignal) -> Result<bool, WorkerError> {
@@ -1202,8 +1278,29 @@ impl Worker {
                 }
             }
             ServeSignal::SessionStatusChanged(false) => return Ok(false),
-            ServeSignal::SessionStatusChanged(true) => {}
-            ServeSignal::IdleSweep => self.idle_sweep(tokio::time::Instant::now()).await?,
+            ServeSignal::SessionStatusChanged(true) => {
+                self.idle_initialized = false;
+                self.idle_clocks = idle_unload::IdleClocks::default();
+                self.idle_deadline = None;
+            }
+            ServeSignal::IdleSweep => {
+                if self.idle_initialized {
+                    self.idle_sweep(tokio::time::Instant::now()).await?;
+                } else {
+                    self.idle_initialize(tokio::time::Instant::now()).await?;
+                }
+            }
+            ServeSignal::IdleStateChanged(changed) => {
+                changed.map_err(|_| WorkerError::TaskFailed)?;
+                let _ = self.idle_state_changes.borrow_and_update();
+                self.idle_state_changed(tokio::time::Instant::now()).await?;
+            }
+            ServeSignal::IdleSettingChanged(changed) => {
+                changed.map_err(|_| WorkerError::TaskFailed)?;
+                let _ = self.idle_setting_changes.borrow_and_update();
+                self.idle_setting_changed(tokio::time::Instant::now())
+                    .await?;
+            }
         }
         Ok(true)
     }
@@ -1220,6 +1317,8 @@ impl Worker {
             }
             #[cfg(test)]
             AccountCommand::IdleSweep(now) => self.idle_sweep(now).await?,
+            #[cfg(test)]
+            AccountCommand::IdleStateChange(now) => self.idle_state_changed(now).await?,
             AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
             AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
             AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
@@ -1708,7 +1807,7 @@ impl Worker {
             return Ok(());
         }
         if let Some(thread) = intent.thread_id.as_deref() {
-            self.idle_clocks.touch(thread);
+            self.idle_thread_touched(thread);
         }
         // A recovered durable effect may outlive its submitted request. Check
         // that receipt before preparation, which requires an unsubmitted owner.
@@ -1995,7 +2094,7 @@ impl Worker {
         let params = steer::params(&intent, &turn);
         let thread_id = intent.thread_id.clone();
         if let Some(thread) = thread_id.as_deref() {
-            self.idle_clocks.touch(thread);
+            self.idle_thread_touched(thread);
         }
         let context = Pending {
             thread: None,
@@ -3012,6 +3111,15 @@ impl Worker {
         source: Option<&VmActorIdentity>,
         settle: bool,
     ) -> Result<(), WorkerError> {
+        if source.is_none()
+            && let JournalPayload::Frame(Frame::Notification(notification)) = &entry.payload
+        {
+            self.idle_provider_notification(
+                notification.method.as_str(),
+                notification.params.as_ref(),
+            )
+            .await?;
+        }
         let actor_id = source.map(|source| source.actor_id.as_str());
         let actor_epoch = source.map(|source| source.epoch);
         let actor_incarnation = source.map(|source| source.incarnation);

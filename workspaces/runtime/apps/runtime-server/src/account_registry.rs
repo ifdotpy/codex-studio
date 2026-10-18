@@ -41,6 +41,17 @@ fn next_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_DELAY)
 }
 
+fn allow_dormant_reconcile(
+    idle_dormant: &mut BTreeSet<String>,
+    account: &str,
+    has_pending_work: bool,
+) -> bool {
+    if !idle_dormant.contains(account) {
+        return true;
+    }
+    has_pending_work && idle_dormant.remove(account)
+}
+
 fn defer_wake(
     last_error: Option<&str>,
     now: tokio::time::Instant,
@@ -191,6 +202,7 @@ pub(crate) struct AccountRegistry {
     worker_completion_ids: BTreeMap<String, u64>,
     worker_retry_at: BTreeMap<String, tokio::time::Instant>,
     worker_retry_delay: BTreeMap<String, Duration>,
+    idle_dormant: BTreeSet<String>,
     accepted_archive_batch_full: bool,
     next_worker_completion_id: u64,
     worker_completions: FuturesUnordered<WorkerCompletion>,
@@ -844,6 +856,7 @@ impl AccountRegistry {
             worker_completion_ids: BTreeMap::new(),
             worker_retry_at: BTreeMap::new(),
             worker_retry_delay: BTreeMap::new(),
+            idle_dormant: BTreeSet::new(),
             accepted_archive_batch_full: false,
             next_worker_completion_id: 0,
             worker_completions: FuturesUnordered::new(),
@@ -918,6 +931,9 @@ impl AccountRegistry {
         account: &str,
     ) -> Result<studio_runtime_services::account_session_runtime::ConnectionScope, WorkerError>
     {
+        // An explicit session request is fresh demand, even when no agent wake
+        // row exists (for example, a model-catalog request).
+        self.idle_dormant.remove(account);
         if let Some(scope) = self.session_broker.live_scope(account) {
             return Ok(scope);
         }
@@ -944,6 +960,10 @@ impl AccountRegistry {
         pending_agents: Vec<(String, i64, Option<String>)>,
         shutdown: Option<&Shutdown>,
     ) -> Result<AccountPageDispatch, WorkerError> {
+        if !allow_dormant_reconcile(&mut self.idle_dormant, account, !pending_agents.is_empty()) {
+            self.after_agent.remove(account);
+            return Ok(AccountPageDispatch::Exhausted);
+        }
         let page_was_full = pending_agents.len() == WAKE_PAGE;
         let (image_agents, agents, image_recovery) =
             classify_pending_agents(self.store.clone(), account.to_owned(), pending_agents).await?;
@@ -1300,23 +1320,33 @@ impl AccountRegistry {
                     if self.worker_completion_ids.get(&account) == Some(&id) =>
                 {
                     self.worker_completion_ids.remove(&account);
-                    let result = if let Some(mut worker) = self.workers.remove(&account) {
-                        worker.completion().await
-                    } else {
-                        Ok(())
-                    };
+                    let (result, planned_idle_exit) =
+                        if let Some(mut worker) = self.workers.remove(&account) {
+                            let result = worker.completion().await;
+                            (result, worker.planned_idle_exit())
+                        } else {
+                            (Ok(()), false)
+                        };
                     if let Err(error) = self.session_broker.remove_session(&account) {
                         eprintln!("account session registry update failed: {error}");
                     }
+                    let clean_exit = result.is_ok();
                     if let Err(error) = result {
                         eprintln!("account worker ended: {error}");
                     }
-                    // Do not reconnect in a hot loop after an unavailable provider.
+                    if planned_idle_exit && clean_exit {
+                        self.idle_dormant.insert(account.clone());
+                        self.worker_retry_at.remove(&account);
+                        self.worker_retry_delay.remove(&account);
+                        continue;
+                    }
+                    self.idle_dormant.remove(&account);
                     let delay = self
                         .worker_retry_delay
                         .get(&account)
                         .copied()
                         .unwrap_or(RETRY_DELAY);
+                    // Do not reconnect in a hot loop after an unavailable provider.
                     let deadline = tokio::time::Instant::now() + delay;
                     self.worker_retry_at.insert(account.clone(), deadline);
                     self.worker_retry_delay
@@ -1891,10 +1921,13 @@ mod bounded_reconcile_tests {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        AccountSessionBroker, MAX_RETRY_DELAY, RETRY_DELAY, archive_deadline_read_deferred,
-        defer_wake, next_registry_retry_at, next_retry_delay,
+        AccountSessionBroker, MAX_RETRY_DELAY, RETRY_DELAY, allow_dormant_reconcile,
+        archive_deadline_read_deferred, defer_wake, next_registry_retry_at, next_retry_delay,
     };
-    use std::{collections::BTreeMap, time::Duration};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        time::Duration,
+    };
     use studio_runtime_services::account_session_runtime::{
         NotSentReason, ProviderRequest, RequestCertainty, RetainedAccountSession,
     };
@@ -1914,6 +1947,21 @@ mod tests {
             [1, 2, 4, 8, 16, 30, 30, 30].map(Duration::from_secs),
         );
         assert_eq!(next_retry_delay(MAX_RETRY_DELAY), MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn planned_idle_exit_stays_dormant_until_new_work_wakes_it() {
+        let mut dormant = BTreeSet::from(["account-a".to_owned()]);
+        assert!(
+            !allow_dormant_reconcile(&mut dormant, "account-a", false),
+            "an unrelated reconciliation with no queued work must not reopen the provider"
+        );
+        assert!(dormant.contains("account-a"));
+        assert!(
+            allow_dormant_reconcile(&mut dormant, "account-a", true),
+            "new queued work is an immediate wake and clears dormancy"
+        );
+        assert!(!dormant.contains("account-a"));
     }
 
     #[test]

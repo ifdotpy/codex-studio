@@ -176,6 +176,10 @@ pub enum ObservedTable {
     AccessReceipts,
     Budget,
     BudgetUsage,
+    AccountTransfers,
+    OrchestrationSettings,
+    RuntimeRequests,
+    RuntimeToolRequests,
 }
 
 type ChangeObserver = Arc<dyn Fn() + Send + Sync>;
@@ -206,6 +210,10 @@ impl ObservedTable {
             Self::AccessReceipts => "runtime_access_receipts",
             Self::Budget => "runtime_budget",
             Self::BudgetUsage => "runtime_budget_usage",
+            Self::AccountTransfers => "runtime_account_transfers",
+            Self::OrchestrationSettings => "runtime_orchestration_settings",
+            Self::RuntimeRequests => "runtime_requests",
+            Self::RuntimeToolRequests => "runtime_tool_requests",
         }
     }
 
@@ -233,6 +241,10 @@ impl ObservedTable {
             Self::AccessReceipts => 1 << 18,
             Self::Budget => 1 << 20,
             Self::BudgetUsage => 1 << 21,
+            Self::AccountTransfers => 1 << 22,
+            Self::OrchestrationSettings => 1 << 23,
+            Self::RuntimeRequests => 1 << 24,
+            Self::RuntimeToolRequests => 1 << 25,
         }
     }
 
@@ -244,7 +256,7 @@ impl ObservedTable {
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 22] = [
+const OBSERVED_TABLES: [ObservedTable; 26] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
@@ -267,6 +279,10 @@ const OBSERVED_TABLES: [ObservedTable; 22] = [
     ObservedTable::AccessReceipts,
     ObservedTable::Budget,
     ObservedTable::BudgetUsage,
+    ObservedTable::AccountTransfers,
+    ObservedTable::OrchestrationSettings,
+    ObservedTable::RuntimeRequests,
+    ObservedTable::RuntimeToolRequests,
 ];
 
 /// Value-free observations emitted by the optional diagnostics callback.
@@ -2508,6 +2524,46 @@ mod commit_notification_tests {
                 "only named internal receipts count toward the resource filter"
             );
         }
+    }
+
+    #[test]
+    fn observed_table_names_and_change_bits_are_unique_and_fit_the_mask() {
+        let mut names = std::collections::BTreeSet::new();
+        let mut bits = std::collections::BTreeSet::new();
+        assert!(OBSERVED_TABLES.len() <= u32::BITS as usize);
+        for table in OBSERVED_TABLES {
+            assert!(names.insert(table.name()), "duplicate observer table name");
+            let bit = table.change_bit();
+            assert_eq!(bit.count_ones(), 1, "observer table must own one mask bit");
+            assert!(bits.insert(bit), "duplicate observer table mask bit");
+        }
+        assert_eq!(
+            [
+                (
+                    ObservedTable::AccountTransfers.name(),
+                    ObservedTable::AccountTransfers.change_bit()
+                ),
+                (
+                    ObservedTable::OrchestrationSettings.name(),
+                    ObservedTable::OrchestrationSettings.change_bit()
+                ),
+                (
+                    ObservedTable::RuntimeRequests.name(),
+                    ObservedTable::RuntimeRequests.change_bit()
+                ),
+                (
+                    ObservedTable::RuntimeToolRequests.name(),
+                    ObservedTable::RuntimeToolRequests.change_bit()
+                ),
+            ],
+            [
+                ("runtime_account_transfers", 1 << 22),
+                ("runtime_orchestration_settings", 1 << 23),
+                ("runtime_requests", 1 << 24),
+                ("runtime_tool_requests", 1 << 25),
+            ],
+            "idle-unload observer owners keep their exact table and change-mask contracts"
+        );
     }
 
     #[tokio::test]

@@ -335,7 +335,7 @@ impl Worker {
     }
     pub(in crate::account_worker) async fn complete_retained(&mut self) -> Result<(), WorkerError> {
         if self.retained_requests.is_empty() && self.retained_barriers.is_empty() {
-            return Ok(());
+            return self.idle_local_work_completed().await;
         }
         // Only a live managed callback can make the checkpoint wait cyclically:
         // its provider reply is later in the journal, while the earlier callback
@@ -436,7 +436,7 @@ impl Worker {
             true
         });
         if self.retained_barriers.is_empty() {
-            return Ok(());
+            return self.idle_local_work_completed().await;
         }
         self.retained_barriers.retain_mut(|pending| {
             let result = if pending.cursor <= checkpoints.get(&account).copied().unwrap_or(0) {
@@ -457,7 +457,7 @@ impl Worker {
                 !pending.command.reply.is_closed()
             }
         });
-        Ok(())
+        self.idle_local_work_completed().await
     }
     pub(in crate::account_worker) async fn retained_barrier(
         &mut self,
