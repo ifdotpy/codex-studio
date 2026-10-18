@@ -38,8 +38,9 @@ in the pull request. This short local tier selects deterministic request,
 recovery, schema, and boundary witnesses. Hosted CI continues to run the full
 server, Rust, web, tooling, and browser-smoke checks in parallel jobs.
 
-Until the short tier's warm-run budget is validated and adopted, run
-`just test-comprehensive` before a direct push to `main`. It preserves the
+Run `just test-comprehensive` locally on the exact commit before every push
+to `main`. A successful short tier does not replace this publication gate.
+The comprehensive command preserves the
 previous broad local gate, including the default server suites, workspace Rust
 tests, web type and unit checks, tooling tests, and browser smoke. Run
 heavy-tier checks by hand as announced runs; they are not in hosted CI for now.

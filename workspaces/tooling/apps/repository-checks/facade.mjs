@@ -1009,7 +1009,7 @@ export function recipePlan(root, name) {
     notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
     costCategory: fast
       ? name === "test-fast"
-        ? "short safety witnesses; warm 30 s target, not yet measured"
+        ? "short safety witnesses; warm 30 s target"
         : "comprehensive repository regression checks"
       : "manual heavy checks; browser cap 900 s",
     executesNothing: true,
