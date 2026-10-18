@@ -219,8 +219,17 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
         )
         self.assertNotEqual(rejected.status, 200, self._error_detail(rejected))
         self.assertEqual(self._agent_count(), before + 1)
+        # The imported agent's first turn starts asynchronously (its queued
+        # initial input), so its own thread/start can land in this window. The
+        # rejected replay itself must not read or touch any provider thread.
+        frames = self.backend.received_provider_frames()
+        self.assertEqual(frames[:len(frames_before_changed_replay)], frames_before_changed_replay)
+        new_frames = frames[len(frames_before_changed_replay):]
         self.assertEqual(
-            self.backend.received_provider_frames(), frames_before_changed_replay,
+            [frame for frame in new_frames
+             if frame.get("method") != "thread/start"
+             or "different-source-thread" in json.dumps(frame)],
+            [],
         )
 
     def test_import_metadata_and_initial_event_commit_atomically(self) -> None:
