@@ -26,6 +26,7 @@ import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
@@ -37,6 +38,14 @@ import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
+import {
+  declaredTimeoutMs,
+  durationText,
+  findStall,
+  recordedInputIds,
+  stallLimits,
+  stallMessage,
+} from "./stall-watch.mjs";
 
 import {
   movePrompt,
@@ -186,15 +195,43 @@ const queryBusy = (id, active) =>
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const emit = (method, params) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
-const request = (method, params, signal) =>
+const limits = stallLimits();
+// Outstanding Studio requests per thread. While Studio owns a wait (an
+// approval, a question, a Studio tool call), no Claude tool call can stall.
+const studioWaits = new Map();
+function studioWait(threadId) {
+  if (!threadId) return () => {};
+  studioWaits.set(threadId, (studioWaits.get(threadId) || 0) + 1);
+  let open = true;
+  return () => {
+    if (!open) return;
+    open = false;
+    const left = studioWaits.get(threadId) - 1;
+    if (left > 0) studioWaits.set(threadId, left);
+    else studioWaits.delete(threadId);
+    // The tool budget starts again once Studio answers.
+    const active = queries.get(threadId);
+    if (!active) return;
+    const now = Date.now();
+    active.lastEventAt = now;
+    for (const clock of active.toolClocks.values())
+      clock.startedAt = Math.max(clock.startedAt, now);
+  };
+}
+const request = (method, params, signal, onSent) =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Claude request cancelled"));
     const id = "claude:" + randomUUID();
+    const settled = studioWait(params?.threadId);
     const abort = () => {
       pending.delete(id);
+      settled();
       reject(new Error("Claude request cancelled"));
     };
-    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const cleanup = () => {
+      settled();
+      signal?.removeEventListener("abort", abort);
+    };
     pending.set(id, {
       resolve: (value) => {
         cleanup();
@@ -207,6 +244,7 @@ const request = (method, params, signal) =>
     });
     signal?.addEventListener("abort", abort, { once: true });
     send({ id, method, params });
+    onSent?.(id);
   });
 const persist = sessionStore.persist;
 async function session(id) {
@@ -573,19 +611,75 @@ async function permissions(s, turn, name, input, options) {
     );
     return { behavior: "allow", updatedInput: { ...input, answers } };
   }
-  const result = await request(
-    "item/commandExecution/requestApproval",
-    {
-      threadId: s.id,
-      turnId: turn.id,
-      itemId: options.toolUseID,
-      command:
-        name === "Bash" ? input.command : JSON.stringify({ tool: name, input }),
-      cwd: s.cwd,
-      reason: "Claude requests permission to use " + name,
-    },
-    options.signal,
-  );
+  // Claude Code asks even in bypassPermissions mode for ask rules, removals on
+  // critical paths and tools that need the user. Such an agent runs without
+  // approvals, so nobody watches for this one: decline it when it stays
+  // unanswered, instead of blocking the turn and every later message.
+  const unexpected = queries.get(s.id)?.permissionMode === "bypassPermissions";
+  // The SDK marks the reason render-unsafe: it can carry ANSI escapes.
+  const why =
+    typeof options.decisionReason === "string"
+      ? stripVTControlCharacters(options.decisionReason).trim() || null
+      : null;
+  const waiting = new AbortController();
+  const cancel = () => waiting.abort();
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  if (options.signal?.aborted) cancel();
+  let requestId,
+    expired = false;
+  const timer = unexpected
+    ? setTimeout(() => {
+        expired = true;
+        waiting.abort();
+      }, limits.unexpectedApprovalMs)
+    : null;
+  let result;
+  try {
+    result = await request(
+      "item/commandExecution/requestApproval",
+      {
+        threadId: s.id,
+        turnId: turn.id,
+        itemId: options.toolUseID,
+        command:
+          name === "Bash"
+            ? input.command
+            : JSON.stringify({ tool: name, input }),
+        cwd: s.cwd,
+        reason:
+          "Claude requests permission to use " +
+          name +
+          (unexpected ? " although this agent runs without approvals" : "") +
+          (why ? ": " + why : ""),
+      },
+      waiting.signal,
+      (id) => (requestId = id),
+    );
+  } catch (error) {
+    if (!expired) throw error;
+    // Close Studio's card the way Codex does after a turn transition. A
+    // resolved request never counts as an approval.
+    emit("serverRequest/resolved", { threadId: s.id, requestId });
+    const message =
+      "Nobody answered the approval for this " +
+      name +
+      " call in " +
+      durationText(limits.unexpectedApprovalMs) +
+      ", so Studio declined it. The command did not run.";
+    const owner = queries.get(s.id)?.turn;
+    if (owner)
+      finishItem(s, owner, {
+        id: "approval-expired:" + options.toolUseID,
+        type: "agentMessage",
+        phase: "commentary",
+        studioNotice: true,
+        text: message,
+      });
+    return { behavior: "deny", message };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
+  }
   return ["accept", "acceptForSession"].includes(result.decision)
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
@@ -831,9 +925,16 @@ async function flags(s, p = {}, live = false) {
       : {}),
   };
 }
+const finishingTurns = new WeakSet();
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
+  const stall = active.stall?.turnId === turn.id ? active.stall : null;
+  // A closed CLI can write its history until it exits; read it only then.
+  if (stall?.closed) await stall.closed;
+  // One caller finishes a turn; the stall recovery can race the SDK stream.
+  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  finishingTurns.add(turn);
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true) &&
@@ -856,7 +957,8 @@ async function finishTurn(s, active, result, error) {
     : error || result?.is_error || result?.subtype !== "success"
       ? "failed"
       : "completed";
-  if (error || turn.status === "failed")
+  if (turn.stallError) turn.error = turn.stallError;
+  else if (error || turn.status === "failed")
     turn.error = {
       message:
         error?.message ||
@@ -898,6 +1000,7 @@ async function finishTurn(s, active, result, error) {
       (i) =>
         i.type === "agentMessage" &&
         !i.nativeSubagent &&
+        !i.studioNotice &&
         !i.thinking &&
         !i.id.endsWith(":thinking"),
     )
@@ -919,6 +1022,7 @@ async function finishTurn(s, active, result, error) {
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
+  if (stall?.closed) await reconcileClosedSteers(s, turn, unappliedSteers);
   for (const response of active.responseUsages.values()) {
     const total =
       response.requestUsage.inputTokens +
@@ -992,6 +1096,11 @@ async function finishTurn(s, active, result, error) {
   s.updatedAt = Math.floor(Date.now() / 1000);
   await persist(s);
   active.turn = null;
+  active.toolClocks.clear();
+  if (stall) {
+    active.stall = null;
+    stall.ended();
+  }
   catalogCache.activityChanged();
   active.pendingSteers.clear();
   active.assistantBlocks.clear();
@@ -1012,6 +1121,152 @@ async function finishTurn(s, active, result, error) {
     },
   });
 }
+// Steer input handed to a CLI that the watchdog closed. The dead process can no
+// longer apply it, and Claude Code records a queued message without its text,
+// so a resume cannot restore it. Native history decides: recorded input is
+// delivered; the rest returns to Studio once as unapplied.
+async function reconcileClosedSteers(s, turn, unapplied) {
+  const open = turn.items.filter(
+    (item) =>
+      item.type === "userMessage" &&
+      item.delivery === "steer" &&
+      item.deliveryStatus === "submitted",
+  );
+  if (!open.length) return;
+  let recorded;
+  try {
+    const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
+    recorded = recordedInputIds((await fs.readFile(file, "utf8")).split("\n"));
+  } catch (error) {
+    // Without history the outcome stays unknown; it is never sent again.
+    process.stderr.write(
+      "Claude stall: steer outcome unknown: " + error.message + "\n",
+    );
+    return;
+  }
+  for (const item of open) {
+    if (recorded.has(item.nativeId)) {
+      item.deliveryStatus = "delivered";
+      turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
+    } else {
+      item.deliveryStatus = "not_applied";
+      item.error = "Claude stopped before reading this steer";
+      unapplied.push(item.id);
+    }
+  }
+}
+// Interrupt a turn whose tool call stalled; close the CLI if it cannot end the
+// turn. The turn ends as interrupted with the stall as its error, so Studio
+// shows it and starts the next turn from queued input.
+async function recoverStall(s, active, found) {
+  const turn = active.turn;
+  const item = active.tools.get(found.id);
+  const message = stallMessage({ ...found, tool: item?.tool || found.tool });
+  let ended;
+  const finished = new Promise((resolve) => (ended = resolve));
+  active.stall = { turnId: turn.id, ended, closed: null };
+  turn.interrupted = true;
+  turn.stallError = {
+    message,
+    data: {
+      claudeToolStall: {
+        toolUseId: found.id,
+        tool: item?.tool || found.tool,
+        timeoutMs: found.timeoutMs,
+        elapsedMs: found.elapsedMs,
+        silentMs: found.silentMs,
+      },
+    },
+  };
+  if (item)
+    finishItem(s, turn, {
+      ...item,
+      status: "failed",
+      stalled: true,
+      result: { content: message },
+      ...(item.type === "commandExecution"
+        ? { aggregatedOutput: message, exitCode: null }
+        : {}),
+    });
+  // A notice, not Claude's answer: finishTurn never marks it final.
+  finishItem(s, turn, {
+    id: "stall:" + found.id,
+    type: "agentMessage",
+    phase: "commentary",
+    studioNotice: true,
+    text: message,
+  });
+  process.stderr.write("Claude stall: " + s.id + " " + message + "\n");
+  try {
+    await persist(s);
+  } catch (error) {
+    process.stderr.write(
+      "Claude stall: persist failed: " + error.message + "\n",
+    );
+  }
+  let timer;
+  const deadline = new Promise(
+    (resolve) => (timer = setTimeout(resolve, limits.interruptWaitMs)),
+  );
+  // An interrupt keeps queued steers: Claude Code runs them next.
+  Promise.resolve()
+    .then(() => active.q?.interrupt())
+    .catch((error) =>
+      process.stderr.write(
+        "Claude stall: interrupt failed: " + error.message + "\n",
+      ),
+    );
+  await Promise.race([finished, deadline]);
+  clearTimeout(timer);
+  if (
+    active.turn !== turn ||
+    finishingTurns.has(turn) ||
+    queries.get(s.id) !== active
+  )
+    return;
+  // The CLI did not end the turn. Close it; finishTurn waits for its exit.
+  const stall = active.stall;
+  stall.closed = new Promise((resolve) =>
+    setTimeout(resolve, limits.exitWaitMs),
+  );
+  active.input.close();
+  active.q?.close();
+  await stall.closed;
+  // Closing normally ends the SDK stream, and its owner finishes the turn.
+  // If the stream still has not ended, finish it here and drop the query.
+  await new Promise((resolve) => setImmediate(resolve));
+  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  discardQuery(s, active);
+  await finishTurn(
+    s,
+    active,
+    null,
+    new Error("Claude did not stop after Studio closed it"),
+  );
+}
+const stallSweep = setInterval(
+  () => {
+    const now = Date.now();
+    for (const [id, active] of queries) {
+      if (
+        !active.turn ||
+        active.stall ||
+        !active.session ||
+        studioWaits.get(id)
+      )
+        continue;
+      const found = findStall(
+        active.toolClocks,
+        now,
+        active.lastEventAt,
+        limits,
+      );
+      if (found) void recoverStall(active.session, active, found);
+    }
+  },
+  Math.max(50, Math.min(5_000, limits.graceMs / 4)),
+);
+stallSweep.unref();
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
@@ -1148,6 +1403,8 @@ async function startSession(s, active, p) {
       },
     });
     active.q = q;
+    active.session = s;
+    active.permissionMode = mode;
     active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
     const accountProof = await verifiedAccount(
       q,
@@ -1180,6 +1437,7 @@ async function startSession(s, active, p) {
     admit();
     active.readyResolve();
     for await (const m of q) {
+      active.lastEventAt = Date.now();
       if (m.type === "system" && m.subtype === "init") {
         s.started = true;
         s.claudeVersion = m.claude_code_version;
@@ -1540,6 +1798,11 @@ async function startSession(s, active, p) {
         )) {
           const item = nativeItem(b, s.cwd);
           active.tools.set(b.id, item);
+          active.toolClocks.set(b.id, {
+            tool: b.name,
+            startedAt: Date.now(),
+            timeoutMs: declaredTimeoutMs(b),
+          });
           turn.items.push(item);
           turnEvent(s, turn, "item/started", item, tokenRateUsage);
           if (b.name === "TodoWrite")
@@ -1558,6 +1821,7 @@ async function startSession(s, active, p) {
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_result",
         )) {
+          active.toolClocks.delete(b.tool_use_id);
           const old = active.tools.get(b.tool_use_id);
           if (!old) continue;
           const text =
@@ -1628,6 +1892,11 @@ function newActive(turn) {
     reportedOutput: 0,
     reportedTurnOutput: 0,
     lastUsage: null,
+    // Stall watchdog state: the newest CLI message time, the running tool
+    // calls of the current turn, and the recovery of a stalled turn.
+    lastEventAt: Date.now(),
+    toolClocks: new Map(),
+    stall: null,
   };
   active.ready = new Promise((resolve, reject) => {
     active.readyResolve = resolve;
@@ -2194,6 +2463,7 @@ async function handle(method, p) {
           () => active.q.setPermissionMode(permissionMode(s, p)),
           "permissions_set",
         );
+        active.permissionMode = permissionMode(s, p);
         const flagSettings = await control(
           () => flags(s, p, true),
           "catalog_flags",

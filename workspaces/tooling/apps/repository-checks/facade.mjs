@@ -700,11 +700,15 @@ function serverCategoryOptions(category, suite = "") {
     selector:
       category === "expensive"
         ? `one exact load-class suite path: ${suite}`
-        : `server runner category: ${category}`,
+        : category === "fast"
+          ? "server runner FAST_SUITES selection"
+          : `server runner category: ${category}`,
     reason:
       category === "expensive"
         ? "Run one explicitly selected load-class suite as a separately announced manual run."
-        : "Select the server runner's registered opt-in category without duplicating its suite list.",
+        : category === "fast"
+          ? "Run the server runner's deterministic fast witnesses without discovering the full server inventory."
+          : "Select the server runner's registered opt-in category without duplicating its suite list.",
     costCategory:
       category === "expensive"
         ? "load-class; manual single-suite run"
@@ -792,6 +796,82 @@ function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
   const web = packageTarget(packages, "codex-agents-web");
+  const tooling = packageTarget(packages, "codex-studio-tooling");
+  const facade = path.join(
+    root,
+    "workspaces/tooling/apps/repository-checks/facade.mjs",
+  );
+  return [
+    {
+      item: { name: "schema and dependency guards", ecosystem: "pnpm" },
+      label: "schema and dependency guards",
+      commands: [
+        ["node", [facade, "contracts-check"]],
+        ["node", [facade, "boundaries-check"]],
+      ],
+      options: {
+        selector: "generated contract and workspace boundary checks",
+        reason: "Run the existing read-only schema and dependency guards.",
+        allowZeroTests: true,
+      },
+    },
+    {
+      item: server,
+      label: "server safety witnesses",
+      options: serverCategoryOptions("fast"),
+    },
+    {
+      item: { name: "studio-runtime-store", ecosystem: "cargo" },
+      label: "Rust state schema parity",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-store",
+            "--test",
+            "fresh_state",
+            "rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "runtime-store fresh_state::rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration",
+        reason:
+          "Check the existing Rust and Python fresh-state schema parity witness.",
+      },
+    },
+    {
+      item: web,
+      label: "web focused type check",
+      options: { script: "typecheck:fast", allowZeroTests: true },
+    },
+    {
+      item: web,
+      label: "web API contract type check",
+      options: { script: "test:api-contract-types", allowZeroTests: true },
+    },
+    {
+      item: web,
+      label: "web API unit witnesses",
+      options: { script: "test:unit:fast" },
+    },
+    { item: tooling, label: "tooling tests" },
+  ];
+}
+
+function comprehensiveTierCommands(root) {
+  const packages = discover(root);
+  const server = serverPackage();
+  const web = packageTarget(packages, "codex-agents-web");
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
@@ -844,7 +924,7 @@ function fastTierCommands(root) {
 }
 
 function fastTierRestCommands(root) {
-  return fastTierCommands(root)
+  return comprehensiveTierCommands(root)
     .slice(1)
     .filter(({ label }) => label !== "browser smoke subset");
 }
@@ -871,21 +951,24 @@ function heavyTierCommands(root) {
   ];
 }
 
-function recipePlan(root, name) {
+export function recipePlan(root, name) {
   const commands =
     name === "test-fast"
       ? fastTierCommands(root)
-      : name === "test-fast-rest"
-        ? fastTierRestCommands(root)
-        : name === "test-fast-rest-non-rust"
-          ? fastTierRestNonRustCommands(root)
-          : heavyTierCommands(root);
+      : name === "test-comprehensive"
+        ? comprehensiveTierCommands(root)
+        : name === "test-fast-rest"
+          ? fastTierRestCommands(root)
+          : name === "test-fast-rest-non-rust"
+            ? fastTierRestNonRustCommands(root)
+            : heavyTierCommands(root);
   const commandLists = commands.map(
     ({ item, options = {}, commands: override }) =>
       override ?? commandFor(root, item, "test", "", options),
   );
   const fast =
     name === "test-fast" ||
+    name === "test-comprehensive" ||
     name === "test-fast-rest" ||
     name === "test-fast-rest-non-rust";
   return {
@@ -893,31 +976,41 @@ function recipePlan(root, name) {
     case: null,
     target: fast
       ? name === "test-fast"
-        ? "repository fast tier"
-        : name === "test-fast-rest"
-          ? "fast tier excluding the default server suites"
-          : "non-Rust fast-tier remainder"
+        ? "repository short safety tier"
+        : name === "test-comprehensive"
+          ? "repository comprehensive regression tier"
+          : name === "test-fast-rest"
+            ? "comprehensive remainder excluding default server suites and browser smoke"
+            : "comprehensive non-Rust remainder excluding default server suites and browser smoke"
       : "server heavy suites followed by full browser project",
     workingDirectory: root,
     invocationDirectory: root,
     command: reproduction(root, commandLists.flat()),
     selector: fast
       ? name === "test-fast"
-        ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
-        : name === "test-fast-rest"
-          ? "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
-          : "server bridge, web type checks and unit tests, tooling tests"
+        ? "fixture-backed server retry and recovery witnesses, Rust/Python state schema parity, web API safety witnesses, tooling and shared contract guards"
+        : name === "test-comprehensive"
+          ? "the previous broad default server, server bridge, Rust workspace, web type and unit checks, tooling tests, browser smoke subset"
+          : name === "test-fast-rest"
+            ? "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+            : "server bridge, web type checks and unit tests, tooling tests"
       : "server --only heavy, then codex-agents-web test:browser",
     requiredSetup:
-      "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
+      name === "test-fast"
+        ? "Prepared checkout: pnpm install --frozen-lockfile and pnpm --filter codex-agents-web run build:wasm; managed Python runtime and development dependencies, Rust toolchain and cargo-nextest; no browser or model provider"
+        : "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
     reason: fast
       ? name === "test-fast"
-        ? "Run the deterministic fast-tier checks across the repository in one sequential command."
-        : "Run the non-server checks from the fast tier in one sequential command."
+        ? "Run selected deterministic safety witnesses and read-only contract guards in one sequential command."
+        : name === "test-comprehensive"
+          ? "Run the previous broad local regression recipe in one sequential command."
+          : "Run the non-server checks from the comprehensive tier in one sequential command."
       : "Run the complete heavy tier sequentially; load-class server suites are excluded.",
     notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
     costCategory: fast
-      ? "fast repository checks"
+      ? name === "test-fast"
+        ? "short safety witnesses; warm 30 s target, not yet measured"
+        : "comprehensive repository regression checks"
       : "manual heavy checks; browser cap 900 s",
     executesNothing: true,
   };
@@ -1438,7 +1531,7 @@ function formatServerRunDiagnostics(output) {
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-fast-rest-non-rust | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -2038,6 +2131,14 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return result.exitCode;
   }
+  if (action === "test-comprehensive") {
+    const result = await executeRecipe(
+      root,
+      "test-comprehensive",
+      comprehensiveTierCommands(root),
+    );
+    return result.exitCode;
+  }
   if (action === "test-fast-rest") {
     const result = await executeRecipe(
       root,
@@ -2090,7 +2191,11 @@ export async function main(argv = process.argv.slice(2)) {
     return action ? 2 : 0;
   }
   if (action === "test-plan") {
-    if (packageName === "test-fast" || packageName === "test-heavy") {
+    if (
+      packageName === "test-fast" ||
+      packageName === "test-comprehensive" ||
+      packageName === "test-heavy"
+    ) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }
