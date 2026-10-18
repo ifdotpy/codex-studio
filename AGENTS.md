@@ -33,23 +33,20 @@ repository or change its license without explicit authorization.
 Write everything in this repository in English: code, comments, commit messages,
 pull requests, issues, and documentation.
 
-Run the fast tier before every pull request and merge, and state its results in
-the pull request. Run heavy-tier checks by hand as announced runs; they are not
-in hosted CI for now. Each heavy run has a Just command. A test that needs
-repeated runs to be trusted is defective and must be rewritten or moved to the
-heavy tier. New tests must fit the fast tier. See [docs/testing.md](docs/testing.md)
-for the tier commands and suite lists.
-A direct push to `main` is allowed, but it skips the pull-request checks, so run
-the same fast tier locally first: `just test-fast` (four server shards plus the
-remaining checks: Rust tests, web unit tests, type checks, and browser smoke; a
-few minutes). Push only when it passes on the exact commit being pushed.
-`just test-server-opt-in` alone is not enough: it covers neither the convention
-guards in the server shards nor the Rust and web suites, and both gaps have
-broken `main`. Browser smoke is included in that fast tier and runs in hosted
-CI.
-The `just test-fast` checks run in hosted CI on every pull request and push to
-`main`; CI splits the server tier across four parallel jobs and runs browser
-smoke in its own job.
+Run `just test-fast` before every pull request and merge, and state its result
+in the pull request. This short local tier selects deterministic request,
+recovery, schema, and boundary witnesses. Hosted CI continues to run the full
+server, Rust, web, tooling, and browser-smoke checks in parallel jobs.
+
+Until the short tier's warm-run budget is validated and adopted, run
+`just test-comprehensive` before a direct push to `main`. It preserves the
+previous broad local gate, including the default server suites, workspace Rust
+tests, web type and unit checks, tooling tests, and browser smoke. Run
+heavy-tier checks by hand as announced runs; they are not in hosted CI for now.
+Each heavy run has a Just command. A test that needs repeated runs to be trusted
+is defective and must be rewritten or moved to the heavy tier. New tests must
+fit the short tier. See [docs/testing.md](docs/testing.md) for the tier commands
+and selection owner.
 
 ## Load testing
 

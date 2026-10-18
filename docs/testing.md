@@ -20,25 +20,41 @@ of the same tests to this document.
 
 ## Fast and heavy tiers
 
-The fast tier is deterministic. Each server suite is expected to finish in at
-most 10 seconds when run alone; browser smoke targets under 120 seconds total.
-It is the default developer loop, the required
-pre-PR and pre-merge check, and runs in hosted CI on every pull request and push
-to `main`, with the server and Rust workspace tiers split across parallel jobs
-and browser smoke in its own job. A direct push to `main` is preceded by
-`just test-fast`, which includes browser smoke. Use
-`just test-fast` for the whole repository. For one
-server suite between edits, use
+`just test-fast` is the short deterministic local safety tier. Its server
+selection is owned by `FAST_SUITES` in the
+[server runner](../workspaces/runtime/apps/server/tests/server/run.py); the
+selection guard lives beside that runner. The witnesses cover request retry
+identity, uncertain outcomes, permission-aware recovery, reset-request replay
+against a fake provider, and Python/Rust fresh-state schema parity. The reset
+fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
+and real credit redemption require separate evidence. The web package owns the two
+selected API unit files and type-check scripts, while the tooling package owns
+repository contract checks. Prepare the web WASM artifact once with
+`pnpm --filter codex-agents-web run build:wasm`; this generated artifact is a
+warm-checkout prerequisite and its cold build is outside the 30-second target.
+The warm target is 30 seconds; measurement on the equipped checkout is pending.
+The short tier does not build the browser or contact a model provider.
+
+`just test-comprehensive` preserves the previous broad local recipe: default
+server suites, server bridge, workspace Rust nextest, web type and unit checks,
+tooling tests, and browser smoke. Use it before a direct push to `main` until
+the short-tier budget is measured and accepted. Hosted CI continues its
+comprehensive check composition, split across server and Rust partitions,
+non-Rust checks, and browser smoke. The
+`just test-fast-rest-non-rust` name is retained for the existing hosted CI
+partition command; it continues to select the previous broad non-Rust checks.
+
+For one server suite between edits, use
 `just test server <exact-suite-path>`; exact paths automatically include suites
 from the automated or heavy list. At the end of a default run, the runner reports
 suite durations over 10 seconds measured inside that parallel run. These values
 are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
-Before the server tier, build its Rust HTTP fixture with
+Before the comprehensive server tier, build its Rust HTTP fixture with
 `cargo build --locked --release -p studio-runtime-server`. Hosted server jobs do
-this explicitly. Local `just test-fast` also needs that binary for the historical
-state upgrade contract; building a native desktop package does not produce it.
+this explicitly. The short local tier does not require that fixture binary;
+building a native desktop package does not produce it.
 
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them
@@ -46,20 +62,22 @@ without maintaining a second suite inventory.
 
 | Tier or purpose          | What it runs                                                                                                                              | Just command                               |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Fast                     | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests, browser smoke subset                      | `just test-fast`                           |
-| Fast browser smoke       | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
+| Short local safety tier  | Selected fixture-backed server witnesses, Rust/Python schema parity, API unit and type checks, tooling and shared contract guards         | `just test-fast`                           |
+| Comprehensive local tier | Previous broad default server run, bridge, Rust nextest, web type and unit checks, tooling tests, browser smoke                           | `just test-comprehensive`                  |
+| Hosted CI comprehensive  | Server shards, Rust partitions, broad non-Rust checks, and browser smoke                                                                  | Existing parallel workflow                 |
+| Browser smoke            | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
 | Heavy server             | All suites in the heavy server list                                                                                                       | `just test-server-heavy`                   |
 | Heavy crash matrix       | All 31 account-worker scenarios at every before/after bridge boundary                                                                     | `just test-crash-matrix-full`              |
 | Heavy browser            | Full web browser project, capped at 900 seconds                                                                                           | `just test-browser`                        |
 | All heavy                | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
-| Other server opt-in      | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
+| Other server selection   | One runner category: `fast`, `automated`, `native`, `browser`, `live`, or `vm`                                                            | `just test-server-opt-in <category>`       |
 | Native profile migration | Isolated Electron profile round trip with hidden windows; manual heavy run                                                                | `just test-native-profile-migration`       |
 | Native file events       | Compiled Swift helper and real macOS FSEvents delivery; manual heavy run                                                                  | `just test-native-file-events`             |
 | Native WebView           | Rust host build and isolated hidden WebView scenarios; manual heavy run                                                                   | `just test-native-webview`                 |
 | Load-class               | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
 
 The native file event check depends on the host FSEvents service and is manual.
-The fast tier covers watcher readiness, path collection, full-rescan requests,
+The comprehensive server tier covers watcher readiness, path collection, full-rescan requests,
 and scoped scanning with a deterministic helper. A native delivery timeout is
 reported as a failed manual check; it is not converted into a skip or a retry.
 
@@ -162,7 +180,8 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 2. **One change:** `just check <package>` runs that package's local checks;
    `just check <package> --dry-run` prints the planned commands.
 3. **Pre-PR gate:** run `just test-fast` and report its result. A focused
-   hypothesis does not replace this gate.
+   hypothesis does not replace this gate. Until its warm budget is validated,
+   direct pushes use `just test-comprehensive`.
 
 The repository checks add three focused commands: `just contracts-check` runs
 the generated API and persisted-state checks in read-only mode; `just boundaries-check`

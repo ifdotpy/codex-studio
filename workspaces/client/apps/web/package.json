@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:unit": "pnpm run build:wasm && vitest run --config vitest.unit.config.ts",
+    "test:unit:fast": "vitest run --config vitest.unit.config.ts src/api.test.ts src/apiSchema.test.ts",
     "test:api-contract-types": "tsc --noEmit -p tsconfig.api-contract.json",
     "test:browser": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client",
     "test:browser:smoke": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --grep \"execution settings ui|Mobile composer 320px setup renders the settled action row|Message receipt pagination browser|a real built renderer uses a new projection cache and preserves drafts|accounts settings show per-server state and provider choices|direct screens keep overlapping chat drafts and sends with their owner\"",
@@ -39,6 +40,7 @@
     "build-storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook build --config-dir .storybook --disable-telemetry",
     "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 vitest run --config vitest.config.ts --project=storybook",
     "typecheck:focused": "pnpm run build:wasm && tsc --noEmit",
+    "typecheck:fast": "tsc --noEmit",
     "build:wasm": "node scripts/build-client-wasm.mjs",
     "test:wasm": "pnpm run build:wasm && node scripts/check-client-wasm.mjs"
   },

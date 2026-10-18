@@ -13,6 +13,7 @@ import {
   parseCounts,
   parseSelection,
   pruneLogs,
+  recipePlan,
   serverRunDiagnostics,
   serverShardRunOptions,
   unsafeRustFindings,
@@ -30,6 +31,33 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+
+test("short and comprehensive recipes preserve their owned test boundaries", () => {
+  const fast = recipePlan(process.cwd(), "test-fast");
+  const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
+
+  assert.match(fast.command, /--only fast/);
+  assert.match(fast.command, /contracts-check/);
+  assert.match(fast.command, /boundaries-check/);
+  assert.match(
+    fast.command,
+    /rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration/,
+  );
+  assert.match(fast.command, /test:unit:fast/);
+  assert.doesNotMatch(
+    fast.command,
+    /test:browser:smoke|--workspace|test-server-load|mutations/,
+  );
+
+  assert.match(comprehensive.command, /test-server\.py/);
+  assert.match(comprehensive.command, /--workspace/);
+  assert.match(comprehensive.command, /test:unit/);
+  assert.match(comprehensive.command, /test:browser:smoke/);
+  assert.doesNotMatch(
+    comprehensive.command,
+    /test-server-load|runtime_load|mutations/,
+  );
+});
 
 test("unsafe Rust is limited to the purpose-listed modules", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-unsafe-rust-policy-"));
