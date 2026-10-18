@@ -301,3 +301,47 @@ fn a_finished_turn_with_only_an_old_uncertain_input_waits_instead_of_queueing() 
         assert_eq!(agent["lastCompletedTurn"], "turn-now");
     }
 }
+
+#[test]
+fn an_observed_turn_without_acceptance_stays_unknown_after_a_restart() {
+    // An activity notice is not a receipt for the input batch: a turn that the
+    // provider reported but never accepted for this attempt stays held, so a
+    // restart cannot treat the input as delivered (the scripted Claude `wait`
+    // turn in wave7_p01_registry, and the radio fixture's Python attempt).
+    for (generation, request_ticket, reason) in [
+        (
+            Some(1),
+            Some("ticket"),
+            "Native input submission has no confirmed turn identity.",
+        ),
+        (None, None, LEGACY_RECOVERY),
+    ] {
+        let mut connection = database();
+        let mut attempt = json!({
+            "id": "seen", "epoch": 0, "submitted": true, "observedTurnId": "turn-seen",
+            "threadId": "thread", "accountKey": ACCOUNT, "events": ["message"]
+        });
+        if let (Some(generation), Some(ticket)) = (generation, request_ticket) {
+            attempt["connectionGeneration"] = json!(generation);
+            attempt["requestTicket"] = json!(ticket);
+        }
+        put(
+            &connection,
+            json!({
+                "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-seen",
+                "turnEpoch": 0, "error": null, "startAttempt": attempt
+            }),
+        );
+        connection
+            .execute(
+                "INSERT INTO runtime_events VALUES('message','agent','user','message','delivered',1,0,'turn-seen',NULL)",
+                [],
+            )
+            .expect("event writes");
+        restart_and_reconnect(&mut connection, 2);
+        let agent = stored(&connection);
+        assert_eq!(agent["restartRecovery"]["stage"], "held", "{agent}");
+        assert_eq!(agent["restartRecovery"]["reason"], reason, "{agent}");
+        assert_eq!(agent["autoWake"], false);
+    }
+}

@@ -1772,15 +1772,18 @@ pub(super) fn disconnect_agent(
             .ok_or_else(|| invalid_agent(&agent.id.0))?
     };
     let paused = agent.status == AgentStatus::Paused;
-    // Python `codex_restart_recovery.restore` takes the turn from the attempt,
-    // its observed turn, or the agent. A known turn makes the outcome provable
-    // from native history, whichever runtime submitted the input.
-    let turn = attempt["turnId"]
-        .as_str()
-        .or_else(|| attempt["observedTurnId"].as_str())
-        .or_else(|| agent.extra.get("turnId").and_then(Value::as_str))
-        .filter(|turn| !turn.is_empty())
-        .map(str::to_owned);
+    // A turn that accepted this attempt makes its outcome provable from native
+    // history, whichever runtime submitted the input. Without an attempt (a
+    // turn that Python's supervisor restored) the agent's turn is that identity.
+    // An observed turn is activity, not a receipt for the input batch, so an
+    // attempt without an accepted turn stays unknown.
+    let turn = if attempt.is_null() {
+        agent.extra.get("turnId").and_then(Value::as_str)
+    } else {
+        attempt["turnId"].as_str()
+    }
+    .filter(|turn| !turn.is_empty())
+    .map(str::to_owned);
     let unknown = turn.is_none();
     // Without a turn, only a Rust receipt can still identify the request.
     let legacy = unknown
