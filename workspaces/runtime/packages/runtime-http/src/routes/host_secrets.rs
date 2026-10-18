@@ -347,7 +347,7 @@ async fn pull(
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "The Desk site of this vault is not known; run codex_vault.py site",
+                "The Desk site of this vault is not known; set it with layr-desk deploy",
             )
         })?;
     let prefix = view
@@ -408,7 +408,6 @@ async fn setup(
         .vault_host_command
         .as_ref()
         .ok_or_else(ApiError::internal)?;
-    let python_tool = host_command.python_tool().map_err(vault_error)?;
     let settings = settings_dir(&state.state_dir);
     let vm_state_dir = state.vm_state_dir.clone();
     let (source, prefix) = studio_runtime_services::vault::prepare_new_vault(
@@ -420,7 +419,9 @@ async fn setup(
         &region,
     )
     .map_err(vault_error)?;
-    let writer = host_command.writer(&source, &python_tool);
+    let writer = host_command
+        .writer(&source, &vm_state_dir)
+        .map_err(vault_error)?;
     let initial = serde_json::json!({"requestId":request_id,"state":"running","prefix":prefix});
     let (job, started) =
         reserve_job(&job_client, VaultJobKind::Setup, &request_id, initial).await?;
@@ -1305,10 +1306,7 @@ mod tests {
         let executable = directory.join("layr-desk");
         std::fs::write(&executable, format!("#!/bin/sh\n{script_body}\n")).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        studio_runtime_services::vault::VaultHostCommand::new(std::path::PathBuf::from(
-            "/tmp/server",
-        ))
-        .with_desk_program(executable)
+        studio_runtime_services::vault::VaultHostCommand::new().with_desk_program(executable)
     }
 
     fn test_request_id(label: &str) -> String {

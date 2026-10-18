@@ -229,7 +229,7 @@ impl HostRuntime {
         let server_source = install_root.server_source();
         *state = state
             .clone()
-            .with_vault_host_command(server_source.clone())
+            .with_vault_host_command()
             .with_cost_scanner_build_script(install_root.cost_scanner_build_script());
         let mut resources = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/host_runtime",
