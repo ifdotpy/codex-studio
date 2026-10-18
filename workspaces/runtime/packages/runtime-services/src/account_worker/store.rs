@@ -1340,6 +1340,11 @@ fn journal_one(
                             NotificationDispatchRepository::agent_record(tx, &identity.agent_id)?
                                 .ok_or_else(|| invalid(&identity.agent_id))?;
                         if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
+                            invalidate_auth_on_failure(
+                                &agent_before,
+                                claude_account_pin,
+                                &params["turn"],
+                            );
                             let claude_auth = if agent_before["provider"] == "claude"
                                 && claude_account_pin.is_object()
                             {
@@ -2387,6 +2392,31 @@ pub(super) fn pending_preparations(
             Ok((id, row.epoch))
         })
         .collect()
+}
+
+/// A failed turn whose error proves the account's credentials rejected ends
+/// the account's cached auth status, for every provider; the next read probes
+/// once. `account_pin` is the worker account's auth pin (provider and home).
+fn invalidate_auth_on_failure(agent: &Value, account_pin: &Value, turn: &Value) {
+    use crate::account_driver::{AuthProfile, ProviderAuthReader, SystemProviderAuthReader};
+    let provider = agent["provider"].as_str().unwrap_or("codex");
+    if turn["status"] != "failed"
+        || crate::continuation_runtime::classify_usage_failure(&turn["error"], provider)
+            != Some(crate::usage_resume::Cause::Auth)
+    {
+        return;
+    }
+    let Some(home) = account_pin["home"].as_str() else {
+        return;
+    };
+    SystemProviderAuthReader.invalidate(&AuthProfile {
+        provider: provider.to_owned(),
+        home: home.into(),
+        claude_options: account_pin
+            .get("claudeOptions")
+            .filter(|options| !options.is_null())
+            .cloned(),
+    });
 }
 
 /// Outcome of one preparation stage.
