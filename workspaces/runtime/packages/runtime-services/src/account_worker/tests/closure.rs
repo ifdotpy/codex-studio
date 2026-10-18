@@ -628,7 +628,7 @@ pub(super) async fn unresolved_thread_receipt_survives_replacement(rejected: boo
         let held = state.record().await;
         assert_eq!(
             held["startOutcomeHold"]["reason"],
-            "Provider thread resume failed; input remains pending."
+            "Provider thread resume failed (thread refused); input remains pending."
         );
         assert_eq!(held["error"], held["startOutcomeHold"]["reason"]);
     }

@@ -868,7 +868,21 @@ pub(super) async fn outcome(
                         {
                             effect = Some(next);
                         } else {
-                            let reason = "Provider thread resume failed; input remains pending.";
+                            // Name the provider's own error; a rejected reply names
+                            // the identity check. The input is never sent here.
+                            let detail = match &body {
+                                ResponseBody::Error(error) => error["message"]
+                                    .as_str()
+                                    .map(|message| message.chars().take(300).collect::<String>())
+                                    .unwrap_or_else(|| "provider error".to_owned()),
+                                ResponseBody::Result(_) => {
+                                    "the reply does not match the prepared thread".to_owned()
+                                }
+                            };
+                            let reason = format!(
+                                "Provider thread resume failed ({detail}); input remains pending."
+                            );
+                            let reason = reason.as_str();
                             let current =
                                 AgentRepository::get(tx, &AgentId::from(i.agent_id.as_str()))?;
                             if current.as_ref().is_some_and(|a| {
