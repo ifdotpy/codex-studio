@@ -1,0 +1,48 @@
+.tool-background {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tool-background-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid light-dark(#18244726, #ffffff26);
+  border-radius: 4px;
+  background: transparent;
+  color: light-dark(#252b3b, #d9d9e3);
+  font: inherit;
+  font-size: var(--studio-text-meta);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tool-background-button:hover:not(:disabled) {
+  background: light-dark(#1824470b, #ffffff0b);
+}
+.tool-background-button:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 1px;
+}
+.tool-background-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.tool-background-message {
+  font-size: var(--studio-text-meta);
+  white-space: normal;
+}
+.tool-background[data-background-result="failed"] .tool-background-message,
+.tool-background[data-background-result="uncertain"] .tool-background-message {
+  color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-4));
+}
+.tool-background-state {
+  font-size: var(--studio-text-meta);
+  color: light-dark(#3e51aa, #aaa4e6);
+}
+.tool-background-note {
+  margin: 0 0 10px;
+}

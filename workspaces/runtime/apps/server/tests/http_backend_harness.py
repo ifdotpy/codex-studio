@@ -589,10 +589,6 @@ class BackendProcess:
         # sequential backends in this one runner-owned scratch root.
         self.xdg_cache = self.scratch_root / "http-boundary-xdg-cache"
         self.xdg_cache.mkdir(exist_ok=True)
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            from test_isolation import seed_api_schema_cache_for_fixture
-
-            seed_api_schema_cache_for_fixture(self.xdg_cache)
         self.xdg_config = self._directory("xdg-config")
         self.cwd = self._directory("workspace")
         if initialize_workspace:
@@ -789,6 +785,12 @@ class BackendProcess:
             (self.root / "provider-gate-release").unlink(missing_ok=True)
         command = self._command()
         environment = self._environment()
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Seed the selected Python HTTP backend's cache at its launch.
+            # Environment-only owners never reach this boundary.
+            from test_isolation import seed_api_schema_cache_for_fixture
+
+            seed_api_schema_cache_for_fixture(self.xdg_cache)
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and not (self.state / "canvas.sqlite3").is_file():
             self._bootstrap_python_state(environment)
         if self.supervisor_protocol and self._supervisor_process is None:

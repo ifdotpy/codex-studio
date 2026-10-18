@@ -282,6 +282,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadItemsList
                 | Method::ThreadBackgroundTerminalsList
                 | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadCommandExecutionBackground
                 | Method::ThreadStart
                 | Method::TurnStart
                 | Method::ThreadFork
@@ -352,6 +353,8 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
             && !valid_background_terminals_list(&request.params))
         || (request.method == Method::ThreadBackgroundTerminalsTerminate
             && !valid_background_terminals_terminate(&request.params))
+        || (request.method == Method::ThreadCommandExecutionBackground
+            && !valid_command_background(&request.params))
         || (request.method == Method::ThreadSettingsUpdate && !valid_settings_update(request))
         || (request.method == Method::OperationStatus
             && !request
@@ -413,6 +416,20 @@ fn valid_background_terminals_terminate(params: &Value) -> bool {
             .get("processId")
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty())
+}
+
+/// `thread/commandExecution/background` names exactly one item of one turn.
+fn valid_command_background(params: &Value) -> bool {
+    let Some(params) = params.as_object() else {
+        return false;
+    };
+    params.len() == 3
+        && ["threadId", "turnId", "itemId"].iter().all(|key| {
+            params
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
 }
 
 fn valid_settings_update(request: &SessionRequest) -> bool {
@@ -758,6 +775,25 @@ mod validation_tests {
                 "itemsView":items_view
             }),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn command_background_names_exactly_one_item_of_one_turn() {
+        let request = |params: Value, actor: bool| SessionRequest {
+            method: Method::ThreadCommandExecutionBackground,
+            params,
+            ..turns_request("full", 1, actor)
+        };
+        let exact = json!({"threadId":"thread","turnId":"turn","itemId":"item"});
+        assert!(validate(&request(exact.clone(), true)).is_ok());
+        assert_eq!(validate(&request(exact, false)), Err(PortError::Invalid));
+        for params in [
+            json!({"threadId":"thread","turnId":"turn"}),
+            json!({"threadId":"thread","turnId":"turn","itemId":""}),
+            json!({"threadId":"thread","turnId":"turn","itemId":"item","extra":1}),
+        ] {
+            assert_eq!(validate(&request(params, true)), Err(PortError::Invalid));
         }
     }
 

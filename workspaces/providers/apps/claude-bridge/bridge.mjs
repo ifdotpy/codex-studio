@@ -46,6 +46,11 @@ import {
   stallLimits,
   stallMessage,
 } from "./stall-watch.mjs";
+import {
+  foregroundCommandUpdate,
+  backgroundedCommandFields,
+  moveCommandToBackground,
+} from "./command-background.mjs";
 
 import {
   movePrompt,
@@ -1569,6 +1574,8 @@ async function startSession(s, active, p) {
         } else if (m.subtype?.startsWith("task_")) {
           const id = m.task_id || m.uuid;
           const task = { ...active.tasks.get(id), ...m };
+          const command = foregroundCommandUpdate(active, task, m);
+          if (command && turn) turnEvent(s, turn, "item/started", command);
           if (
             m.subtype === "task_notification" ||
             ["completed", "failed", "killed"].includes(m.status)
@@ -1828,14 +1835,28 @@ async function startSession(s, active, p) {
             typeof b.content === "string"
               ? b.content
               : JSON.stringify(b.content);
-          finishItem(s, turn, {
+          const background =
+            old.type === "commandExecution" && !b.is_error
+              ? backgroundedCommandFields(m.tool_use_result)
+              : null;
+          const finished = {
             ...old,
             status: b.is_error ? "failed" : "completed",
             result: { content: b.content },
             ...(old.type === "commandExecution"
-              ? { aggregatedOutput: text, exitCode: b.is_error ? 1 : 0 }
+              ? background
+                ? { aggregatedOutput: text, ...background }
+                : {
+                    aggregatedOutput: text,
+                    exitCode: b.is_error ? 1 : 0,
+                    ...(old.canMoveToBackground
+                      ? { canMoveToBackground: false }
+                      : {}),
+                  }
               : {}),
-          });
+          };
+          active.tools.set(b.tool_use_id, finished);
+          finishItem(s, turn, finished);
         }
         await persist(s);
       } else if (m.type === "result") {
@@ -2665,6 +2686,8 @@ async function handle(method, p) {
     );
     return { data, items: data, nextCursor: null };
   }
+  if (method === "thread/commandExecution/background")
+    return moveCommandToBackground(queries.get(p.threadId), p);
   if (method === "claude/stopTask") {
     const active = queries.get(p.threadId);
     if (!active?.q || !active.tasks.has(p.taskId))
