@@ -3332,9 +3332,12 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
                     if state.exit_primary_on_next && !sibling_handle {
                         state.exit_primary_on_next = false;
                         self.changed.notify_one();
-                        return Err(crate::linux_vm_guest::GuestError::Transport {
-                            message: "simulated VM adapter exit".into(),
-                            uncertain: true,
+                        // The guest no longer has the handle. An unproven transport error
+                        // is read again, so the exit uses this proven guest answer.
+                        return Err(crate::linux_vm_guest::GuestError::Rejected {
+                            code: Some("not_found".into()),
+                            detail: Some("The native provider handle does not exist".into()),
+                            uncertain: false,
                         });
                     }
                     let owner_matches = state.events.front().is_some_and(|event| {

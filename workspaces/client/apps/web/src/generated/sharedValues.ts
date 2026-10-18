@@ -12,3 +12,9 @@ export const CHILD_RESULT_COALESCE_MAX_SECONDS = 300;
 export const IDLE_SESSION_UNLOAD_DEFAULT_MINUTES = 15;
 export const IDLE_SESSION_UNLOAD_MIN_MINUTES = 0;
 export const IDLE_SESSION_UNLOAD_MAX_MINUTES = 1440;
+export const PROVIDER_DISCONNECTED_TURN_ERROR =
+  "Codex disconnected. Review the transcript before resuming.";
+export const BACKEND_RESTARTED_TURN_ERROR =
+  "Server restarted during a turn. Review history, then send a new instruction.";
+export const VM_PROVIDER_DISCONNECTED_TURN_ERROR =
+  "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";

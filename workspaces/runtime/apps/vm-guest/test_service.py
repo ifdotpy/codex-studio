@@ -889,5 +889,20 @@ class SupervisorReasons(unittest.IsolatedAsyncioTestCase):
                     owner.db.close()
 
 
+class NativeEvidence(unittest.IsolatedAsyncioTestCase):
+    async def test_an_unproven_supervisor_request_leaves_a_journal_line(self):
+        # 2026-10-18: a `next` poll got outcome_unknown and the guest kept no record of why.
+        from native import Native
+
+        with tempfile.TemporaryDirectory() as temporary, patch("sys.stderr", io.StringIO()) as stderr:
+            native = Native(Path(temporary))
+            with self.assertRaises(GuestError) as raised:
+                await native.call("status", handle="linux-worker:secret-agent")
+        self.assertEqual(raised.exception.code, "outcome_unknown")
+        line = stderr.getvalue()
+        self.assertIn("native supervisor status connect has no proven result after", line)
+        self.assertNotIn("secret-agent", line)
+
+
 if __name__ == "__main__":
     unittest.main()

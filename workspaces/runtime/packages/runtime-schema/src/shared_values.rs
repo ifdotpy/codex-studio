@@ -46,3 +46,9 @@ pub const CHILD_RESULT_COALESCE_MAX_SECONDS: u64 = 300;
 pub const IDLE_SESSION_UNLOAD_DEFAULT_MINUTES: u64 = 15;
 pub const IDLE_SESSION_UNLOAD_MIN_MINUTES: u64 = 0;
 pub const IDLE_SESSION_UNLOAD_MAX_MINUTES: u64 = 1440;
+pub const PROVIDER_DISCONNECTED_TURN_ERROR: &str =
+    "Codex disconnected. Review the transcript before resuming.";
+pub const BACKEND_RESTARTED_TURN_ERROR: &str =
+    "Server restarted during a turn. Review history, then send a new instruction.";
+pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+pub const GUEST_PROVIDER_READ_RETRY_SECONDS: u64 = 30;

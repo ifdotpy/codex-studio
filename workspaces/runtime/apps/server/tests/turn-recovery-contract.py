@@ -616,6 +616,61 @@ class TurnRecoveryContract(unittest.TestCase):
             self.assertEqual(self.runtime.records(db, 'tasks')[0]['status'], 'running')
         self.assertFalse(any(n in {'command/exec/terminate', 'turn/interrupt'} for n, _ in self.server.calls))
 
+    def until(self, condition, message):
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
+        while not condition():
+            if time.monotonic() >= deadline:
+                self.fail(message)
+            time.sleep(0.02)
+
+    def lose_transport_at_start(self, *, disconnect_first):
+        """2026-10-18 incident: a monitor exit dispatched in the moment after the provider
+        reader failed. AppServer.write refused the start before native I/O, but the
+        attempt stayed saved as submitted, so no recovery could return it to the queue."""
+        self.server.complete(self.a['threadId'], self.turn)
+        self.until(lambda: self.runtime.agent(self.key)['status'] == 'completed', 'turn did not complete')
+        server = self.server
+        connection = self.runtime.connection_ids.get('default')
+        original = server.submit
+        refused = []
+
+        def offline(method, params):
+            if method != 'turn/start' or refused:
+                return original(method, params)
+            refused.append(params['clientUserMessageId'])
+            server.transport_error = 'Native provider transport failed; outcome unknown: fixture'
+            if disconnect_first:
+                self.runtime.disconnected('default', connection)
+            raise RuntimeError('Codex app-server is offline')
+        server.submit = offline
+        self.runtime.start_receipt_finished.clear()
+        self.runtime.send(self.key, 'After the monitor', message_id='lost-start')
+        self.until(lambda: refused, 'the start was not dispatched')
+        if not disconnect_first:
+            self.until(lambda: (self.runtime.agent(self.key).get('startAttempt') or {}).get('executionOutcome') == 'unsent',
+                       'the refused start was not saved as unsent')
+            self.runtime.disconnected('default', connection)
+        # Connection recovery returns the exact batch once; nobody presses a button.
+        self.assertTrue(self.runtime.start_receipt_finished.wait(HANG_GUARD_SECONDS))
+        def delivered():
+            with self.runtime.read_db() as db:
+                return db.execute("SELECT status FROM runtime_events WHERE id='lost-start'").fetchone()[0] == 'delivered'
+        self.until(delivered, 'the restored input was not delivered')
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['connectionRecovery']['source'], 'disconnected_preparation')
+        self.assertEqual(agent['connectionRecovery']['eventIds'], ['lost-start'])
+        current = self.runtime.server_for('default', self.runtime.connection_ids.get('default'))
+        calls = server.calls + (current.calls if current is not server else [])
+        starts = [params for method, params in calls
+                  if method == 'turn/start' and params.get('clientUserMessageId') == 'lost-start']
+        self.assertEqual((refused, len(starts)), (['lost-start'], 1))
+
+    def test_start_refused_by_a_lost_transport_returns_its_input_once(self):
+        self.lose_transport_at_start(disconnect_first=False)
+
+    def test_start_refused_after_the_disconnect_was_saved_returns_its_input_once(self):
+        self.lose_transport_at_start(disconnect_first=True)
+
     def test_existing_pending_message_delivered_once(self):
         self.runtime.start_receipt_finished.clear()
         self.runtime.send(self.key, 'Next task', message_id='next-task')

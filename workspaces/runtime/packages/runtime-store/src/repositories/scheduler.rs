@@ -13,14 +13,12 @@ use crate::{
 
 pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
-/// Persisted turn error when its provider process disconnects while the server stays up.
-pub const PROVIDER_DISCONNECTED_TURN_ERROR: &str =
-    "Codex disconnected. Review the transcript before resuming.";
-/// Persisted turn error when the backend restarts during provider work.
-pub const BACKEND_RESTARTED_TURN_ERROR: &str =
-    "Server restarted during a turn. Review history, then send a new instruction.";
-/// Persisted turn error for an unknown outcome from a Linux VM provider session.
-pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+/// Persisted turn errors for a provider disconnect, a backend restart, and an
+/// unknown Linux VM provider outcome. `codex_shared_values.py` owns the texts.
+pub use studio_runtime_schema::shared_values::{
+    BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
+    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+};
 
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
