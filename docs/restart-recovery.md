@@ -319,6 +319,9 @@ that Python wrote:
 - Only an input without a turn identity stays held. A new user message clears
   that hold, and later generations do not apply it again.
 - An `uncertain` input is never sent again, and it does not stop new input.
+- The Claude bridge of a non-default account runs in
+  `<state>/account-servers/<account>`, as in Python, so its session snapshots
+  are found.
 - A ready worktree needs only its Git registration. Its Git budget starts with
   the first Git command, and a failure names that command and the Git error.
 
