@@ -86,15 +86,21 @@ async fn reconcile_first_pass(
             break;
         }
         for job in jobs {
-            let RecoveryJob::Turn(snapshot) = &job else {
-                continue;
+            // Python's connection recovery service reconciles each restart turn
+            // automatically from native history (`codex_connection_recovery.tick`).
+            let restart_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
+                if snapshot.eligibility().restart_turn);
+            let snapshot = match &job {
+                RecoveryJob::Turn(snapshot)
+                    if snapshot.record()["restartRecovery"]["stage"] == "held"
+                        && !snapshot.record()["contextRepairWait"].is_null()
+                        && snapshot.eligibility().unconfirmed_start =>
+                {
+                    snapshot
+                }
+                RecoveryJob::Connection { snapshot, .. } if restart_turn => snapshot,
+                _ => continue,
             };
-            if snapshot.record()["restartRecovery"]["stage"] != "held"
-                || snapshot.record()["contextRepairWait"].is_null()
-                || !snapshot.eligibility().unconfirmed_start
-            {
-                continue;
-            }
             let agent = snapshot.record()["id"]
                 .as_str()
                 .ok_or(RecoveryError::CommitFailed)?
@@ -133,8 +139,17 @@ async fn reconcile_first_pass(
             );
             let mut reader =
                 RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
-            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> =
-                Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())));
+            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> = if restart_turn {
+                super::connection_recovery::lifecycle_completion(
+                    &store,
+                    account,
+                    snapshot.connection_recovery_id(),
+                    observation.at,
+                )
+                .await?
+            } else {
+                Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())))
+            };
             let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
             let mut runtime = RecoveryRuntime {
                 store: Arc::clone(&store),
@@ -150,7 +165,15 @@ async fn reconcile_first_pass(
                 .reconcile(&selected, scope.clone(), &mut reader)
                 .await;
             scan.finish(&selected, std::time::Instant::now(), &outcome)?;
-            let outcome = outcome?;
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                // An unreadable restart turn keeps its interrupted state and its
+                // error; the user's next message still runs. Later rows proceed.
+                Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) if restart_turn => {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
                 recovered.push((agent, epoch));
                 if let Some(streams) = outcome.stream_update {

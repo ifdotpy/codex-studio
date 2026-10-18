@@ -19,7 +19,7 @@
   },
   "durable_reconciliation_hold": {
     "approvedClass": "b",
-    "reason": "Paused, no-attempt, and generation-change recovery retain a named durable hold; automatic exact native-history reconciliation is implemented for submitted unpaused restart input.",
+    "reason": "Paused and generation-change recovery retain a named durable hold, and Rust recovery receipts keep their transport fields. A restart turn with a known turn identity, including a Python-submitted one, matches Python and is reconciled automatically from native history; submitted unpaused restart input without a turn identity is reconciled from exact native history.",
     "entrypoints": [],
     "fields": [
       "/runtime_agents/*/record/autoWake",

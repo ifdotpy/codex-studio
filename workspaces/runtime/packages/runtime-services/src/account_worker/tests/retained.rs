@@ -1110,6 +1110,125 @@ async fn startup_first_pass_reconciles_exact_history_without_replaying_unknown_i
     }
 }
 
+/// A turn that ran when the backend and its providers were replaced, as in the
+/// 18 October 2026 cutover (agents a5fa7930 and be102fa0). Restart recovery
+/// left it interrupted with a pending marker. The first worker of the new
+/// backend reads native history and continues it, as Python's connection
+/// recovery does, without submitting the old input again.
+async fn seed_restart_turn(state: &State) {
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("seed agent");
+                    let receipt = json!({
+                        "epoch":epoch,"accountKey":"default","threadId":"fake-thread-0",
+                        "turnId":"old-turn","autoWake":true,"at":1.0,"startAttempt":null
+                    });
+                    let mut disconnect = receipt.clone();
+                    disconnect["source"] = json!("restart");
+                    let mut marker = receipt;
+                    marker["stage"] = json!("pending");
+                    agent.status = studio_runtime_store::AgentStatus::Interrupted;
+                    agent.extra.insert("threadId".into(), json!("fake-thread-0"));
+                    agent.extra.insert("turnId".into(), json!("old-turn"));
+                    agent.extra.insert("turnEpoch".into(), json!(epoch));
+                    agent.extra.insert("autoWake".into(), json!(false));
+                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.extra.insert(
+                        "error".into(),
+                        json!(studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR),
+                    );
+                    agent.extra.insert("disconnectRecovery".into(), disconnect);
+                    agent.extra.insert("restartRecovery".into(), marker);
+                    agent.extra.remove("startAttempt");
+                    AgentRepository::put(tx, &agent)?;
+                    // The earlier input reached the old turn.
+                    tx.execute(
+                        "UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'",
+                        [],
+                    )?;
+                    Ok::<(), WorkerError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("seed restart turn");
+}
+
+async fn reply_restart_turn_history(peer: &mut Peer, status: &str) {
+    for method in ["thread/read", "thread/turns/list", "thread/read"] {
+        let request = peer.write(method).await;
+        let result = if method == "thread/read" {
+            json!({"thread":{"id":"fake-thread-0","status":{"type":"notLoaded"}}})
+        } else {
+            json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":status,
+                "items":[{"id":"answer","type":"agentMessage","text":"before restart"}]}]})
+        };
+        peer.reply(&request, result).await;
+    }
+}
+
+#[tokio::test]
+async fn startup_first_pass_continues_an_interrupted_restart_turn_from_native_history() {
+    let state = State::new().await;
+    seed_restart_turn(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    reply_restart_turn_history(&mut peer, "interrupted").await;
+    // The continuation wakes the worker: it resumes the thread and submits only
+    // the restart follow-up. The old input stays delivered.
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let start = peer.write("turn/start").await;
+    let input = start["params"]["input"].to_string();
+    assert!(
+        input.contains("Studio restarted. The previous native turn is confirmed interrupted."),
+        "{input}"
+    );
+    assert!(!input.contains("annotation:input"), "{input}");
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["restartRecovery"]["stage"], "continued");
+    assert_eq!(
+        record["restartRecovery"]["eventId"],
+        format!("restart:{}:{}:old-turn", state.agent, state.epoch)
+    );
+    assert_eq!(record["lastCompletedTurn"], "old-turn");
+    assert_eq!(record["connectionRecovery"]["continued"], true);
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn startup_first_pass_finishes_a_completed_restart_turn_without_new_input() {
+    let state = State::new().await;
+    seed_restart_turn(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    reply_restart_turn_history(&mut peer, "completed").await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "completed");
+    assert_eq!(record["restartRecovery"]["stage"], "finished");
+    assert_eq!(record["lastCompletedTurn"], "old-turn");
+    assert_eq!(record["lastAnswer"], "before restart");
+    assert_eq!(record["autoWake"], true);
+    assert!(record["error"].is_null(), "{record}");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "a completed restart turn submits nothing"
+    );
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let state = State::new().await;

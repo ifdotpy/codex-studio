@@ -563,17 +563,16 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 native_state,
                 mode,
             } => {
-                if matches!(
-                    mode,
-                    CompletionMode::Restart | CompletionMode::QueuedRestart
-                ) {
+                if *mode == CompletionMode::QueuedRestart {
                     return Err(RecoveryError::Dependency(
-                        "turn-recovery/restart-completion",
+                        "turn-recovery/queued-restart-completion",
                     ));
                 }
+                let restart = *mode == CompletionMode::Restart;
                 if (*mode == CompletionMode::ObservedTurn
                     && (a["inFlight"] != true || crate::event_write::truthy(a.get("deletedAt"))))
                     || (*mode != CompletionMode::ObservedTurn && !expected.eligibility().connection)
+                    || (restart && !expected.eligibility().restart_turn)
                 {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                 }
@@ -581,8 +580,13 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     turn["status"].as_str(),
                     Some("completed" | "failed" | "interrupted")
                 );
+                let exact_turn = if restart {
+                    &a["restartRecovery"]["turnId"]
+                } else {
+                    &a["turnId"]
+                };
                 if !terminal
-                    || !valid_turn(turn, a, Some(&a["turnId"]))
+                    || !valid_turn(turn, a, Some(exact_turn))
                     || !matches!(native_state.as_str(), "idle" | "notLoaded" | "active")
                 {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
@@ -718,12 +722,41 @@ impl CompletionWriter for LifecycleCompletionWriter {
                         updated["connectionRecovery"]["completionDelivered"] = json!(true);
                     }
                 }
-                let result =
+                let mut result =
                     json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
+                let continuation = if restart {
+                    let continuation = (turn["status"] == "interrupted"
+                        && restart_can_continue(a, turn_id)
+                        && !uncertain(tx, id, epoch)?)
+                    .then(|| restart_continuation(tx, a, turn, turn_id))
+                    .transpose()?;
+                    let completed = turn["status"] == "completed"
+                        && crate::recovery::completion_permission(
+                            expected,
+                            turn,
+                            unresolved_turn_receipts(tx, a, turn_id)?,
+                        );
+                    settle_restart(
+                        &mut updated,
+                        continuation.as_ref().map(|(event_id, _)| event_id.as_str()),
+                        completed,
+                        self.at,
+                    )?;
+                    if continuation.is_some() {
+                        result["continued"] = json!(true);
+                    }
+                    continuation
+                } else {
+                    None
+                };
                 persist_request_result(a, &mut updated, &result);
-                // This hook includes unresolved-operation holds and parent/work
-                // intents. A missing owner fails the whole transaction visibly.
-                self.delivery.terminal(tx, &mut updated, turn, *mode)?;
+                // A continued restart turn stays with this worker, as in Python:
+                // no stopped-child notice and no work release.
+                if continuation.is_none() {
+                    // This hook includes unresolved-operation holds and parent/work
+                    // intents. A missing owner fails the whole transaction visibly.
+                    self.delivery.terminal(tx, &mut updated, turn, *mode)?;
+                }
                 if let Some(streams) = stream_update.as_mut() {
                     let batch = streams
                         .take_post_commit()
@@ -737,7 +770,18 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     crate::account_worker::store::persist_streams(tx, &scope.account, streams)
                         .map_err(|_| RecoveryError::CommitFailed)?;
                 }
+                let continued_agent = continuation
+                    .is_some()
+                    .then(|| AgentRecord::from_value(updated.clone()))
+                    .transpose()
+                    .map_err(|_| RecoveryError::CommitFailed)?;
                 put_agent(tx, updated)?;
+                if let (Some((event_id, text)), Some(agent)) = (continuation, continued_agent) {
+                    crate::event_write::enqueue_event(
+                        tx, &agent, event_id, "followup", text, self.at,
+                    )
+                    .map_err(|_| RecoveryError::CommitFailed)?;
+                }
                 Ok(RecoveryEffectResult {
                     outcome: RecoveryOutcome::Applied(result),
                     stream_update,
@@ -746,6 +790,119 @@ impl CompletionWriter for LifecycleCompletionWriter {
             _ => Err(RecoveryError::EffectsUnavailable),
         }
     }
+}
+
+/// Python `codex_restart_recovery.can_continue`: the exact restart turn is
+/// confirmed interrupted and the worker kept its continuation permission.
+fn restart_can_continue(agent: &Value, turn_id: &str) -> bool {
+    let marker = &agent["restartRecovery"];
+    matches!(marker["stage"].as_str(), Some("pending" | "superseded"))
+        && marker["autoWake"] == true
+        && marker["turnId"] == turn_id
+        && ["epoch", "accountKey", "threadId"]
+            .iter()
+            .all(|key| marker[*key] == agent[*key])
+        && !crate::event_write::truthy(agent.get("nativeFailureHold"))
+}
+
+/// Close the restart marker after native history decided its turn. The
+/// reconciled attempt becomes history, so a later provider generation cannot
+/// interrupt the worker for it again.
+fn settle_restart(
+    agent: &mut Value,
+    continuation_event: Option<&str>,
+    completed: bool,
+    at: f64,
+) -> Result<(), RecoveryError> {
+    let fields = agent.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
+    fields.remove("startAttempt");
+    let marker = fields
+        .get_mut("restartRecovery")
+        .and_then(Value::as_object_mut)
+        .ok_or(RecoveryError::CommitFailed)?;
+    marker.insert("reconciledAt".into(), json!(at));
+    if let Some(event_id) = continuation_event {
+        marker.insert("stage".into(), json!("continued"));
+        marker.insert("eventId".into(), json!(event_id));
+        fields.insert("autoWake".into(), json!(true));
+        fields.insert("error".into(), Value::Null);
+        fields.insert("status".into(), json!("queued"));
+        if let Some(receipt) = fields
+            .get_mut("connectionRecovery")
+            .and_then(Value::as_object_mut)
+        {
+            receipt.insert("automatic".into(), json!(true));
+            receipt.insert("continued".into(), json!(true));
+        }
+    } else {
+        marker.insert("stage".into(), json!("finished"));
+        if completed {
+            // The exact turn finished before the restart and its operations are
+            // settled: the worker keeps the permission it had (Python delivers
+            // this completion through normal turn recovery).
+            fields.insert("autoWake".into(), json!(true));
+        }
+    }
+    Ok(())
+}
+
+/// Python `codex_restart_recovery.continue_interrupted`: one follow-up with a
+/// stable id asks the worker to continue from its saved history and to check
+/// the commands that the restart stopped.
+fn restart_continuation(
+    tx: &Transaction<'_>,
+    agent: &Value,
+    turn: &Value,
+    turn_id: &str,
+) -> Result<(String, String), RecoveryError> {
+    let id = text(agent, "id")?;
+    let epoch = agent["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?;
+    let mut work = Vec::new();
+    if studio_runtime_store::system_reads::exists(tx, "runtime_tasks")? {
+        let mut statement = tx.prepare(
+            "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 \
+             AND json_extract(record,'$.status') IN ('lost','running','starting','approval') \
+             ORDER BY json_extract(record,'$.created') DESC LIMIT 5",
+        )?;
+        let rows = statement
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for raw in rows {
+            let task: Value =
+                serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)?;
+            let name = ["command", "tool", "kind", "id"]
+                .iter()
+                .find_map(|key| task[*key].as_str().filter(|value| !value.is_empty()))
+                .unwrap_or_default();
+            work.push(name.chars().take(160).collect::<String>());
+        }
+    }
+    for item in turn["items"].as_array().into_iter().flatten() {
+        if work.len() >= 5 {
+            break;
+        }
+        if item["type"] == "commandExecution"
+            && !matches!(
+                item["status"].as_str(),
+                Some("completed" | "failed" | "declined")
+            )
+        {
+            let name = item["command"]
+                .as_str()
+                .or_else(|| item["id"].as_str())
+                .unwrap_or_default();
+            work.push(name.chars().take(160).collect::<String>());
+        }
+    }
+    let mut message = "Studio restarted. The previous native turn is confirmed interrupted. \
+        Continue the existing authorized task from its saved history. \
+        Check existing results before repeating any operation."
+        .to_owned();
+    if !work.is_empty() {
+        message.push_str(" The restart stopped these commands; check their effects first: ");
+        message.push_str(&work.join("; "));
+    }
+    Ok((format!("restart:{id}:{epoch}:{turn_id}"), message))
 }
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, RecoveryError> {
     value[key]
