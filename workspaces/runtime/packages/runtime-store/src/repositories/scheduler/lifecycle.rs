@@ -710,6 +710,12 @@ impl SchedulerRepository {
             attempt["id"] != identity.attempt_id
                 || attempt["epoch"] != identity.epoch
                 || attempt["submitted"] != false
+                // An earlier outcome of the same request (an uncertain write,
+                // then the resolution when its provider session closes)
+                // already settled this attempt and released its input.
+                || attempt["executionOutcome"]
+                    .as_str()
+                    .is_some_and(|outcome| outcome != "unknown")
         }) {
             return Ok(false);
         }

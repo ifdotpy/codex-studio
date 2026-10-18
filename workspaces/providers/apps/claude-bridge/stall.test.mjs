@@ -26,6 +26,9 @@ const GRACE_MS = 300;
 // approval: the CLI asks canUseTool first; after an allow it stalls as in
 //   "stall", after a deny it reports the denial and ends the turn.
 // heartbeat: the tool sends progress past its timeout, then returns.
+// answer: a reply without a tool call.
+// In every scenario, the tool call starts only after the test removes its
+// .hold file; until then the CLI queues the steers it reads.
 const FAKE_SDK = String.raw`
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,6 +50,12 @@ export function query({prompt,options}){
   if(!input.done)fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');
   return input;});
  const tool={type:'tool_use',id:'toolu_stall',name:'Bash',input:{command:'kubectl get cc',timeout:100}};
+ // Hold a steer like the CLI queue: no echo until the turn ends.
+ const hold=value=>{
+  queued.push(value);
+  if(value.message.content[0].text.includes('recorded'))
+   fs.appendFileSync(history,JSON.stringify({type:'attachment',attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
+ };
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
   supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
@@ -65,15 +74,34 @@ export function query({prompt,options}){
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     yield {type:'system',subtype:'init'};
     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-'+text}}};
+    // While the test keeps a .hold file, steers queue before the tool call.
+    while(fs.existsSync(cwd+'/.hold')){
+     const next=await Promise.race([read(),sleep(5).then(()=>null)]);
+     if(next?.done)return;
+     if(next)hold(next.value);
+    }
+    if(text==='answer'){
+     yield {type:'assistant',uuid:'assistant-'+text,message:{id:'message-'+text,content:[{type:'text',text:'done'}],usage}};
+     yield {type:'result',subtype:'success',usage,result:'done'};
+     continue;
+    }
+    // The CLI sends its permission request beside the stream, as the SDK
+    // control channel does; it does not wait for the bridge to read the tool call.
+    const asked=text==='approval'?options.canUseTool('Bash',tool.input,{signal:abort.signal,toolUseID:tool.id,decisionReason:'[1mrm on a critical path[0m'}):null;
+    asked?.catch(()=>{});
     yield {type:'assistant',uuid:'assistant-'+text,message:{id:'message-'+text,content:[tool],usage}};
     if(text==='heartbeat'){
-     for(let i=0;i<20;i++){await sleep(50);yield {type:'tool_progress',tool_use_id:tool.id,elapsed_time_seconds:i};}
+     // Progress every 50 ms for the timeout plus twice the stall grace: past
+     // the stall budget and the watchdog check after it, so only the progress
+     // events keep the call alive.
+     const until=Date.now()+tool.input.timeout+2*Number(process.env.STUDIO_CLAUDE_TOOL_STALL_GRACE_MS);
+     for(let i=0;Date.now()<until;i++){await sleep(50);yield {type:'tool_progress',tool_use_id:tool.id,elapsed_time_seconds:i};}
      yield {type:'user',message:{role:'user',content:[{type:'tool_result',tool_use_id:tool.id,content:'ok'}]}};
      yield {type:'result',subtype:'success',usage,result:'done'};
      continue;
     }
     if(text==='approval'){
-     const decision=await options.canUseTool('Bash',tool.input,{signal:abort.signal,toolUseID:tool.id,decisionReason:'[1mrm on a critical path[0m'});
+     const decision=await asked;
      fs.writeFileSync(cwd+'/.approved',decision.behavior);
      if(decision.behavior==='deny'){
       yield {type:'user',message:{role:'user',content:[{type:'tool_result',tool_use_id:tool.id,is_error:true,content:decision.message}]}};
@@ -83,15 +111,12 @@ export function query({prompt,options}){
     }
     wedged=text==='wedged'||text==='deaf';
     deaf=text==='deaf';
-    // Hold steers like the CLI queue: read them without an echo.
     for(;;){
      const next=await Promise.race([read(),interrupt.then(()=>null),new Promise(r=>abort.signal.addEventListener('abort',()=>r(null),{once:true}))]);
      if(abort.signal.aborted)return;
      if(!next)break;
      if(next.done)return;
-     queued.push(next.value);
-     if(next.value.message.content[0].text.includes('recorded'))
-      fs.appendFileSync(history,JSON.stringify({type:'attachment',attachment:{type:'queued_command',source_uuid:next.value.uuid}})+'\n');
+     hold(next.value);
     }
     yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['interrupted']};
     // Claude Code runs the messages that survived the interrupt next.
@@ -218,7 +243,12 @@ const acks = (bridge, id) =>
   );
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function start(bridge, scenario) {
+// Start a scenario turn. Each steer in `steers` ([id, text] pairs) is in the
+// CLI queue before its tool call starts: the stall clock starts with the tool
+// call, so it cannot end the turn while a steer is still on its way.
+async function start(bridge, scenario, steers = []) {
+  const hold = path.join(bridge.root, ".hold");
+  if (steers.length) await fs.writeFile(hold, "");
   const turn = (
     await bridge.call("turn/start", {
       threadId: bridge.thread,
@@ -226,6 +256,11 @@ async function start(bridge, scenario) {
       input: text(scenario),
     })
   ).turn.id;
+  for (const [id, value] of steers) await steer(bridge, turn, id, value);
+  if (steers.length) {
+    await read(bridge, steers.at(-1)[1]);
+    await fs.rm(hold);
+  }
   await bridge.note(
     (n) => n.method === "item/started" && n.params.item.id === "toolu_stall",
   );
@@ -257,9 +292,9 @@ async function read(bridge, value) {
 
 test("a tool call that never returns ends the turn as a stall and keeps held steers", async () => {
   const bridge = await startBridge();
-  const turn = await start(bridge, "stall");
-  await steer(bridge, turn, "late-question", "question during the stall");
-  await read(bridge, "question during the stall");
+  const turn = await start(bridge, "stall", [
+    ["late-question", "question during the stall"],
+  ]);
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(done.params.turn.error.message, /Bash call did not return/);
@@ -292,7 +327,7 @@ test("a tool call that never returns ends the turn as a stall and keeps held ste
     await bridge.call("turn/start", {
       threadId: bridge.thread,
       clientUserMessageId: "start-after",
-      input: text("heartbeat"),
+      input: text("answer"),
     })
   ).turn.id;
   assert.equal((await completed(bridge, next)).params.turn.status, "completed");
@@ -300,10 +335,10 @@ test("a tool call that never returns ends the turn as a stall and keeps held ste
 
 test("a CLI that ignores the interrupt is closed and its steers are settled from native history", async () => {
   const bridge = await startBridge();
-  const turn = await start(bridge, "wedged");
-  await steer(bridge, turn, "steer-recorded", "recorded steer");
-  await steer(bridge, turn, "steer-lost", "steer the CLI dropped");
-  await read(bridge, "steer the CLI dropped");
+  const turn = await start(bridge, "wedged", [
+    ["steer-recorded", "recorded steer"],
+    ["steer-lost", "steer the CLI dropped"],
+  ]);
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(done.params.turn.error.message, /Studio stopped this turn/);
@@ -317,7 +352,7 @@ test("a CLI that ignores the interrupt is closed and its steers are settled from
     await bridge.call("turn/start", {
       threadId: bridge.thread,
       clientUserMessageId: "start-fresh",
-      input: text("heartbeat"),
+      input: text("answer"),
     })
   ).turn.id;
   assert.equal((await completed(bridge, next)).params.turn.status, "completed");
@@ -341,7 +376,7 @@ test("a CLI whose stream outlives its close still ends the stalled turn once", a
     await bridge.call("turn/start", {
       threadId: bridge.thread,
       clientUserMessageId: "start-replaced",
-      input: text("heartbeat"),
+      input: text("answer"),
     })
   ).turn.id;
   assert.equal((await completed(bridge, next)).params.turn.status, "completed");
@@ -376,7 +411,12 @@ test("an unanswered approval is not a stall, and the tool budget restarts at the
 
 test("an approval nobody answers in a no-approval agent is declined and its card closed", async () => {
   const bridge = await startBridge({
-    env: { STUDIO_CLAUDE_UNEXPECTED_APPROVAL_WAIT_MS: "400" },
+    env: {
+      STUDIO_CLAUDE_UNEXPECTED_APPROVAL_WAIT_MS: "400",
+      // The decline restarts the tool budget. Keep the stall watchdog out of
+      // this test, so a slow CLI answer to the decline cannot end the turn.
+      STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "600000",
+    },
     thread: { approvalPolicy: "never" },
   });
   const turn = await start(bridge, "approval");
@@ -423,7 +463,12 @@ test("an approval nobody answers in a no-approval agent is declined and its card
 });
 
 test("progress events keep a tool call alive past its timeout", async () => {
-  const bridge = await startBridge();
+  // The bridge and this fake CLI share one event loop. A pause of the whole
+  // process longer than the grace looks like silence, so the grace here is
+  // 20 times the 50 ms progress interval.
+  const bridge = await startBridge({
+    env: { STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "1000" },
+  });
   const turn = await start(bridge, "heartbeat");
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "completed");
