@@ -3,6 +3,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+pub(crate) use studio_runtime_process::clock::monotonic_ns;
+
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -679,7 +682,8 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
     }
 }
 
-/// System monotonic nanoseconds, sharing the clock base of Python monotonic_ns.
+/// Preserve the pre-existing non-Unix implementation; local pipe timing is Unix-only.
+#[cfg(not(unix))]
 pub(crate) fn monotonic_ns() -> u128 {
     let time = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
     time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128

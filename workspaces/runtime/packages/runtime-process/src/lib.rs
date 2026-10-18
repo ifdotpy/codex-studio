@@ -3,6 +3,8 @@
 pub use studio_runtime_store::blocking_pool;
 pub mod child_priority;
 mod client;
+#[cfg(unix)]
+pub mod clock;
 pub mod operational_log;
 #[cfg(unix)]
 mod owned_process_group;

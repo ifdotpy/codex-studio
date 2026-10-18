@@ -3,8 +3,15 @@
 //! reports the child identity; it does not prove termination or cap surviving children.
 use crate::{child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
-use std::{io, process::Stdio};
-use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry_borrowed};
+use serde::Serialize;
+use std::{
+    io::{self, Write as IoWrite},
+    process::Stdio,
+    sync::OnceLock,
+};
+use studio_runtime_providers::{
+    DecodedJournalPayload, Method, RequestId, decode_journal_entry_borrowed,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     process::Command,
@@ -16,6 +23,75 @@ use tokio::{
 const NO_SUCH_PROCESS: i32 = 3;
 const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const STDERR_LINE_LIMIT: usize = 64 * 1024;
+// Set to 1 only for the announced provider stdin timing profile.
+const STDIN_TIMING_DIAGNOSTICS_ENV: &str = "CODEX_RUNTIME_STDIN_TIMING_DIAGNOSTICS";
+const STDIN_TIMING_DIAGNOSTIC_PREFIX: &[u8] = b"studio_provider_stdin_write ";
+
+static STDIN_TIMING_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StdinTimingDiagnostic<'a> {
+    provider_handle: &'a str,
+    generation: Generation,
+    operation_id: &'a OperationId,
+    request_id: RequestId,
+    method: &'static str,
+    stdin_flushed_at_ns: u128,
+}
+
+fn stdin_timing_diagnostics_enabled() -> bool {
+    *STDIN_TIMING_DIAGNOSTICS_ENABLED
+        .get_or_init(|| std::env::var(STDIN_TIMING_DIAGNOSTICS_ENV).is_ok_and(|value| value == "1"))
+}
+
+fn is_turn_start(write: &PreparedWrite) -> bool {
+    write
+        .message()
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .and_then(Method::from_wire)
+        == Some(Method::TurnStart)
+}
+
+fn stdin_timing_diagnostic_line(
+    handle: &ProviderHandle,
+    generation: Generation,
+    write: &PreparedWrite,
+    stdin_flushed_at_ns: u128,
+) -> Option<Vec<u8>> {
+    let method = write
+        .message()
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .and_then(Method::from_wire)?;
+    if method != Method::TurnStart {
+        return None;
+    }
+    let request_id = serde_json::from_value(write.message().get("id")?.clone()).ok()?;
+    let diagnostic = StdinTimingDiagnostic {
+        provider_handle: handle.as_str(),
+        generation,
+        operation_id: write.operation_id(),
+        request_id,
+        method: method.as_str(),
+        stdin_flushed_at_ns,
+    };
+    let payload = serde_json::to_vec(&diagnostic).ok()?;
+    let mut line = Vec::with_capacity(STDIN_TIMING_DIAGNOSTIC_PREFIX.len() + payload.len() + 1);
+    line.extend_from_slice(STDIN_TIMING_DIAGNOSTIC_PREFIX);
+    line.extend_from_slice(&payload);
+    line.push(b'\n');
+    Some(line)
+}
+
+fn write_stdin_timing_diagnostic_best_effort(line: &[u8]) {
+    // The verifier treats a missing diagnostic as incomplete; diagnostic I/O
+    // errors must never alter provider write or receipt behavior.
+    match io::stderr().lock().write_all(line) {
+        Ok(()) | Err(_) => {}
+    }
+}
 
 async fn reap_with_deadline<T>(
     pid: Option<u32>,
@@ -99,6 +175,7 @@ impl StdioProviderTaskFactory {
             let mut child = wrapped.spawn().map_err(process_error)?;
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (entries, journal) = mpsc::channel(LANE_CAPACITY);
+            let diagnostic_handle = handle.clone();
             let (state, status) = watch::channel(AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: true,
@@ -138,7 +215,7 @@ impl StdioProviderTaskFactory {
                         return Err(AdapterError::InvalidConfiguration);
                     }
                     tokio::try_join!(
-                        write_commands(stdin, inbox),
+                        write_commands(stdin, inbox, diagnostic_handle, generation,),
                         read_entries(
                             stdout,
                             entries,
@@ -275,6 +352,8 @@ fn process_error(error: io::Error) -> AdapterError {
 async fn write_commands(
     mut stdin: impl AsyncWrite + Unpin,
     mut commands: mpsc::Receiver<AdapterCommand>,
+    handle: ProviderHandle,
+    generation: Generation,
 ) -> Result<(), AdapterError> {
     while let Some(command) = commands.recv().await {
         match command {
@@ -283,21 +362,20 @@ async fn write_commands(
                 reply,
                 observed,
             } => {
-                let mut bytes = serde_json::to_vec(&write.message)
-                    .map_err(|_| AdapterError::InvalidConfiguration)?;
-                bytes.push(b'\n');
-                stdin.write_all(&bytes).await.map_err(process_error)?;
-                stdin.flush().await.map_err(process_error)?;
-                if reply
-                    .send(CommandReceipt::Written {
-                        remote_id: None,
-                        duplicate: false,
-                    })
-                    .is_err()
-                {
-                    return Err(AdapterError::ConsumerClosed);
-                }
-                observed.await.map_err(|_| AdapterError::ConsumerClosed)?;
+                write_one_command(
+                    &mut stdin,
+                    write,
+                    reply,
+                    observed,
+                    WriterTimingDiagnostics {
+                        handle: &handle,
+                        generation,
+                        enabled: stdin_timing_diagnostics_enabled(),
+                        sample_timestamp: crate::clock::monotonic_ns,
+                        emit_diagnostic: write_stdin_timing_diagnostic_best_effort,
+                    },
+                )
+                .await?;
             }
             AdapterCommand::Ack { cursor, reply } => {
                 if reply.send(CommandReceipt::Acknowledged(cursor)).is_err() {
@@ -307,6 +385,55 @@ async fn write_commands(
         }
     }
     Err(AdapterError::ConsumerClosed)
+}
+
+struct WriterTimingDiagnostics<'a, Sample, Emit> {
+    handle: &'a ProviderHandle,
+    generation: Generation,
+    enabled: bool,
+    sample_timestamp: Sample,
+    emit_diagnostic: Emit,
+}
+
+async fn write_one_command<Sample, Emit>(
+    stdin: &mut (impl AsyncWrite + Unpin),
+    write: PreparedWrite,
+    reply: tokio::sync::oneshot::Sender<CommandReceipt>,
+    observed: tokio::sync::oneshot::Receiver<()>,
+    timing: WriterTimingDiagnostics<'_, Sample, Emit>,
+) -> Result<(), AdapterError>
+where
+    Sample: FnOnce() -> u128,
+    Emit: FnOnce(&[u8]),
+{
+    let mut bytes =
+        serde_json::to_vec(&write.message).map_err(|_| AdapterError::InvalidConfiguration)?;
+    bytes.push(b'\n');
+    stdin.write_all(&bytes).await.map_err(process_error)?;
+    stdin.flush().await.map_err(process_error)?;
+    let stdin_flushed_at_ns = if timing.enabled && is_turn_start(&write) {
+        Some((timing.sample_timestamp)())
+    } else {
+        None
+    };
+    let receipt_sent = reply.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    if let Some(stdin_flushed_at_ns) = stdin_flushed_at_ns
+        && let Some(line) = stdin_timing_diagnostic_line(
+            timing.handle,
+            timing.generation,
+            &write,
+            stdin_flushed_at_ns,
+        )
+    {
+        (timing.emit_diagnostic)(&line);
+    }
+    if receipt_sent.is_err() {
+        return Err(AdapterError::ConsumerClosed);
+    }
+    observed.await.map_err(|_| AdapterError::ConsumerClosed)
 }
 
 async fn read_entries(
@@ -407,6 +534,82 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
+    use tokio::io::AsyncWrite;
+
+    struct FlushWitness {
+        flushed: Arc<AtomicBool>,
+        fail_write: bool,
+    }
+
+    impl AsyncWrite for FlushWitness {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if self.fail_write {
+                Poll::Ready(Err(io::Error::other("injected write failure")))
+            } else {
+                Poll::Ready(Ok(bytes.len()))
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flushed.store(true, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn turn_start_write() -> PreparedWrite {
+        let decoded = decode_journal_entry_borrowed(
+            1,
+            7,
+            br#"{"jsonrpc":"2.0","id":"request-1","method":"turn/start","params":{}}"#,
+        );
+        let DecodedJournalPayload::Frame(frame) = decoded.payload else {
+            panic!("test request decodes as a frame");
+        };
+        PreparedWrite::new(OperationId("attempt-op".into()), &frame).expect("test request prepares")
+    }
+
+    #[test]
+    fn provider_stdin_timing_line_matches_shared_golden_contract() {
+        let decoded = decode_journal_entry_borrowed(
+            1,
+            7,
+            br#"{"jsonrpc":"2.0","id":"request-1","method":"turn/start","params":{}}"#,
+        );
+        let DecodedJournalPayload::Frame(frame) = decoded.payload else {
+            panic!("golden request decodes as a frame");
+        };
+        let write =
+            PreparedWrite::new(OperationId("attempt-op".into()), &frame).expect("request prepares");
+        let line = stdin_timing_diagnostic_line(
+            &ProviderHandle::for_account("default"),
+            Generation(7),
+            &write,
+            1_234_567_890,
+        )
+        .expect("TurnStart produces timing evidence");
+        assert_eq!(
+            line,
+            include_str!("../tests/fixtures/provider-stdin-timing-diagnostic.log").as_bytes()
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn failed_reap_reports_the_unconfirmed_child() {
         let error = super::reap_with_deadline::<()>(Some(12345), std::future::pending())
@@ -417,7 +620,94 @@ mod tests {
         assert!(error.to_string().contains("termination is unconfirmed"));
     }
 
-    use super::*;
+    #[tokio::test]
+    async fn stdin_timing_diagnostic_follows_flush_even_if_receipt_receiver_closed() {
+        let flushed = Arc::new(AtomicBool::new(false));
+        let samples = Arc::new(AtomicUsize::new(0));
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let mut stdin = FlushWitness {
+            flushed: Arc::clone(&flushed),
+            fail_write: false,
+        };
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        drop(receiver);
+        let (_observation, observed) = tokio::sync::oneshot::channel();
+        let sample_flushed = Arc::clone(&flushed);
+        let sample_count = Arc::clone(&samples);
+        let emit_flushed = Arc::clone(&flushed);
+        let emitted_count = Arc::clone(&emitted);
+
+        let result = write_one_command(
+            &mut stdin,
+            turn_start_write(),
+            reply,
+            observed,
+            WriterTimingDiagnostics {
+                handle: &ProviderHandle::for_account("default"),
+                generation: Generation(7),
+                enabled: true,
+                sample_timestamp: move || {
+                    assert!(sample_flushed.load(Ordering::SeqCst));
+                    sample_count.fetch_add(1, Ordering::SeqCst);
+                    123
+                },
+                emit_diagnostic: move |line| {
+                    assert!(emit_flushed.load(Ordering::SeqCst));
+                    assert!(line.starts_with(STDIN_TIMING_DIAGNOSTIC_PREFIX));
+                    emitted_count.fetch_add(1, Ordering::SeqCst);
+                },
+            },
+        )
+        .await;
+
+        assert!(matches!(result, Err(AdapterError::ConsumerClosed)));
+        assert_eq!(samples.load(Ordering::SeqCst), 1);
+        assert_eq!(emitted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_stdin_write_does_not_sample_or_emit_timing() {
+        let flushed = Arc::new(AtomicBool::new(false));
+        let samples = Arc::new(AtomicUsize::new(0));
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let mut stdin = FlushWitness {
+            flushed: Arc::clone(&flushed),
+            fail_write: true,
+        };
+        let (reply, _receiver) = tokio::sync::oneshot::channel();
+        let (_observation, observed) = tokio::sync::oneshot::channel();
+        let sample_count = Arc::clone(&samples);
+        let emitted_count = Arc::clone(&emitted);
+
+        let result = write_one_command(
+            &mut stdin,
+            turn_start_write(),
+            reply,
+            observed,
+            WriterTimingDiagnostics {
+                handle: &ProviderHandle::for_account("default"),
+                generation: Generation(7),
+                enabled: true,
+                sample_timestamp: move || {
+                    sample_count.fetch_add(1, Ordering::SeqCst);
+                    123
+                },
+                emit_diagnostic: move |_| {
+                    emitted_count.fetch_add(1, Ordering::SeqCst);
+                },
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(AdapterError::Supervisor(SupervisorError::Io(_)))
+        ));
+        assert_eq!(samples.load(Ordering::SeqCst), 0);
+        assert_eq!(emitted.load(Ordering::SeqCst), 0);
+        assert!(!flushed.load(Ordering::SeqCst));
+    }
+
     #[tokio::test]
     async fn stdout_line_buffer_reuses_its_allocation_between_frames() {
         let mut reader = BufReader::new(&b"first\nsecond\n"[..]);
