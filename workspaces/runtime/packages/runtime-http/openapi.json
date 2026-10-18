@@ -7581,6 +7581,19 @@
             "title": "Id",
             "type": "string"
           },
+          "itemId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "description": "Provider transcript item that asked the question, when known.",
+            "title": "Itemid"
+          },
           "method": {
             "enum": [
               "agent/asyncQuestion",
@@ -7611,6 +7624,19 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "turnId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "description": "Native turn that asked the question, when known.",
+            "title": "Turnid"
           }
         },
         "required": [
@@ -40394,13 +40420,68 @@
       "QuestionEntry": {
         "additionalProperties": false,
         "properties": {
+          "header": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "description": "Short topic label of a native or asynchronous question.",
+            "title": "Header"
+          },
           "id": {
             "title": "Id",
             "type": "string"
           },
+          "isOther": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The provider also accepts a free-text answer.",
+            "title": "Isother"
+          },
           "isSecret": {
             "title": "Issecret",
             "type": "boolean"
+          },
+          "multiSelect": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The question accepts more than one choice.",
+            "title": "Multiselect"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/QuestionOption"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Choices offered by a native or asynchronous question; absent for form elicitation.",
+            "title": "Options"
           },
           "question": {
             "title": "Question",
@@ -40459,6 +40540,32 @@
           "items"
         ],
         "title": "QuestionHistory",
+        "type": "object"
+      },
+      "QuestionOption": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "QuestionOption",
         "type": "object"
       },
       "QueueCancelBody": {

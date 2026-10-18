@@ -39,8 +39,59 @@ import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
 import HistoryWindow from "./HistoryWindow";
 import { windowHistoryRows } from "./historyWindowModel";
+import type { components } from "../../../generated/api";
+import QuestionCard from "../../questions/QuestionCard";
+import { openRequestAnswer } from "../../questions/Requests";
+import {
+  isQuestionToolItem,
+  type QuestionCardModel,
+} from "../../questions/questionCardModel";
+import { useQuestionCards } from "../../questions/useQuestionCards";
 
 type CommandVisibility = boolean | ReadonlyMap<string, boolean>;
+type QuestionCards = (item: Message) => QuestionCardModel | undefined;
+type RequestDto = components["schemas"]["RequestEntityDto"];
+const NO_REQUESTS: RequestDto[] = [];
+
+const answerQuestion = (requestId: string) => {
+  openRequestAnswer(requestId);
+};
+
+/** A transcript row: a question card replaces its tool row and follows its message. */
+function row(
+  item: Message,
+  render: (message: Message) => ReactNode,
+  questions: QuestionCards,
+  agentId?: string,
+  cwd?: string,
+) {
+  if (isFileChange(item))
+    return <ToolCard item={item} agentId={agentId} cwd={cwd} />;
+  if (item.role === "reasoning") return <ReasoningDuration item={item} />;
+  const card = questions(item);
+  if (!card) return render(item);
+  const question = (
+    <QuestionCard
+      card={card}
+      messageId={item.id}
+      messageText={card.source === "message" ? item.text : undefined}
+      onAnswer={answerQuestion}
+    />
+  );
+  if (card.source === "tool") return question;
+  return (
+    <>
+      {render(item)}
+      {question}
+    </>
+  );
+}
+
+/** Rows that join the collapsible work log. Question cards stay visible. */
+const workRow = (item: Message) =>
+  ["tool", "output"].includes(item.role) &&
+  !isFileChange(item) &&
+  !isQuestionToolItem(item);
 
 function messageGroups(
   items: Message[],
@@ -60,9 +111,7 @@ function messageGroups(
     const item = items[index];
     if (isEmptyAssistantMessage(item)) continue;
     if (!showItem(item) && isPastCommand(item)) continue;
-    const isTool =
-      ["tool", "output"].includes(item.role) && !isFileChange(item);
-    if (isTool || (includeReasoning && item.role === "reasoning")) {
+    if (workRow(item) || (includeReasoning && item.role === "reasoning")) {
       const run = [item];
       while (index + 1 < items.length) {
         const next = items[index + 1];
@@ -73,12 +122,7 @@ function messageGroups(
           index++;
           continue;
         }
-        if (
-          !(
-            (includeReasoning && next.role === "reasoning") ||
-            (["tool", "output"].includes(next.role) && !isFileChange(next))
-          )
-        )
+        if (!((includeReasoning && next.role === "reasoning") || workRow(next)))
           break;
         run.push(next);
         index++;
@@ -94,6 +138,7 @@ function messageGroups(
 function messages(
   items: Message[],
   render: (message: Message) => ReactNode,
+  questions: QuestionCards,
   agentId?: string,
   cwd?: string,
   revealedMessage?: string,
@@ -103,13 +148,7 @@ function messages(
       <Activity key={item[0].id} items={item} agentId={agentId} />
     ) : (
       <Fragment key={messageRenderKey(item)}>
-        {isFileChange(item) ? (
-          <ToolCard item={item} agentId={agentId} cwd={cwd} />
-        ) : item.role === "reasoning" ? (
-          <ReasoningDuration item={item} />
-        ) : (
-          render(item)
-        )}
+        {row(item, render, questions, agentId, cwd)}
       </Fragment>
     ),
   );
@@ -225,10 +264,12 @@ function Turn({
   failureLookupFailed,
   retryFailure,
   revealedMessage,
+  questions,
 }: {
   group: HistoryGroup;
   storageKey: string;
   render: (message: Message) => ReactNode;
+  questions: QuestionCards;
   agentId?: string;
   cwd?: string;
   onJump: (id: string) => void;
@@ -303,13 +344,7 @@ function Turn({
             key={item.id}
             className={item.id === result?.id ? "turn-answer" : undefined}
           >
-            {isFileChange(item) ? (
-              <ToolCard item={item} agentId={agentId} cwd={cwd} />
-            ) : item.role === "reasoning" ? (
-              <ReasoningDuration item={item} />
-            ) : (
-              render(item)
-            )}
+            {row(item, render, questions, agentId, cwd)}
           </div>
         ),
       )}
@@ -367,9 +402,12 @@ export default function TurnHistory({
   scrollContainer,
   rememberScroll,
   hasRecentScrollInput,
+  requests = NO_REQUESTS,
 }: {
   items: Message[];
   agent?: Agent;
+  /** Live request entities; pending questions get an Answer action. */
+  requests?: RequestDto[];
   currentTurn?: string;
   enabled: boolean;
   storageKey: string;
@@ -385,6 +423,12 @@ export default function TurnHistory({
     sourceItems,
     enabled ? agent : undefined,
     storageKey,
+  );
+  const questions = useQuestionCards(
+    enabled ? agentId : undefined,
+    storageKey,
+    items,
+    requests,
   );
   const previousGroups = useRef<{
     items: Message[];
@@ -462,6 +506,7 @@ export default function TurnHistory({
               {messages(
                 group.items,
                 renderMessage,
+                questions,
                 agentId,
                 agent?.cwd ?? undefined,
                 revealedMessage,
@@ -479,6 +524,7 @@ export default function TurnHistory({
             failureReason={failureReasons.get(turnId) || ""}
             storageKey={storageKey}
             render={renderMessage}
+            questions={questions}
             agentId={agentId}
             cwd={agent?.cwd ?? undefined}
             onJump={onJump}

@@ -801,6 +801,18 @@ class SchemaContractTests(unittest.TestCase):
                         "/components/schemas/AccessSnapshot/properties/servers/items/properties/tailscaleUser",
                         "/components/schemas/DiscoveredServer/properties/tailscaleUser"):
             add(pointer, "@nullable", "@nullableBranch")
+        # Question history links each question to its transcript item and turn
+        # and carries its choices, so the chat can draw a question card.
+        for prefix in ("/components/schemas/AgentRequest/properties",
+                       "/components/schemas/QuestionHistory/properties/items/items/properties"):
+            for field in ("itemId", "turnId"):
+                add(f"{prefix}/{field}", "property", "@nullable", "@nullableBranch")
+        for prefix in ("/components/schemas/QuestionEntry/properties",
+                       "/components/schemas/AgentRequest/properties/questions/items/properties",
+                       "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties"):
+            for field in ("header", "options", "multiSelect", "isOther"):
+                add(f"{prefix}/{field}", "property", "@nullable", "@nullableBranch")
+        add("/components/schemas/QuestionOption/properties/description", "@nullable", "@nullableBranch")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

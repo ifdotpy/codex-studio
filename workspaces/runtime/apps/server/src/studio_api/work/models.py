@@ -497,10 +497,19 @@ class PlanView(ResponseModel):
     native: NativePlanPayload | None = None
 
 
+class QuestionOption(ContractModel):
+    label: StrictStr
+    description: StrictStr | None = None
+
+
 class QuestionEntry(ContractModel):
     id: StrictStr
     question: StrictStr
     isSecret: StrictBool
+    header: StrictStr | None = Field(default=None, description="Short topic label of a native or asynchronous question.")
+    options: list[QuestionOption] | None = Field(default=None, description="Choices offered by a native or asynchronous question; absent for form elicitation.")
+    multiSelect: StrictBool | None = Field(default=None, description="The question accepts more than one choice.")
+    isOther: StrictBool | None = Field(default=None, description="The provider also accepts a free-text answer.")
 
 
 class AnswerHistoryEntry(ContractModel):
@@ -522,6 +531,8 @@ class AgentRequest(ResponseModel):
     deferred: StrictBool | None = None
     deferredAt: SafeInt | StrictFloat | None = None
     deferredBy: StrictStr | None = None
+    itemId: StrictStr | None = Field(default=None, description="Provider transcript item that asked the question, when known.")
+    turnId: StrictStr | None = Field(default=None, description="Native turn that asked the question, when known.")
     questions: list[QuestionEntry] = Field(default_factory=list)
     answerHistory: list[AnswerHistoryEntry] | None = None
     answerError: StrictStr | None = None

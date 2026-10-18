@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "vitest";
 import {
   usageLimits,
@@ -120,6 +121,25 @@ test("native tools preserve commands and file edits", () => {
     ).type,
     "mcpToolCall",
   );
+});
+test("AskUserQuestion starts as the stored question item contract", () => {
+  const { item } = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../client/contracts/agent-question-item.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const started = nativeItem(
+    { id: item.id, name: item.tool, input: item.arguments },
+    "/work",
+  );
+  const { status, result, ...fields } = item;
+  assert.equal(status, "completed");
+  assert.ok(result.content);
+  assert.deepEqual(started, { ...fields, status: "inProgress" });
 });
 test("persistent queue preserves order and close releases an idle consumer", async () => {
   const queue = new InputQueue(),

@@ -5277,6 +5277,12 @@ export interface components {
       /** Id */
       id: string;
       /**
+       * Itemid
+       * @description Provider transcript item that asked the question, when known.
+       * @default null
+       */
+      itemId?: null | string;
+      /**
        * Method
        * @enum {string}
        */
@@ -5302,6 +5308,12 @@ export interface components {
         | "expired"
         | "declined"
         | "failed";
+      /**
+       * Turnid
+       * @description Native turn that asked the question, when known.
+       * @default null
+       */
+      turnId?: null | string;
     };
     /**
      * AgentResponse
@@ -18225,10 +18237,34 @@ export interface components {
     };
     /** QuestionEntry */
     QuestionEntry: {
+      /**
+       * Header
+       * @description Short topic label of a native or asynchronous question.
+       * @default null
+       */
+      header?: null | string;
       /** Id */
       id: string;
+      /**
+       * Isother
+       * @description The provider also accepts a free-text answer.
+       * @default null
+       */
+      isOther?: boolean | null;
       /** Issecret */
       isSecret: boolean;
+      /**
+       * Multiselect
+       * @description The question accepts more than one choice.
+       * @default null
+       */
+      multiSelect?: boolean | null;
+      /**
+       * Options
+       * @description Choices offered by a native or asynchronous question; absent for form elicitation.
+       * @default null
+       */
+      options?: components["schemas"]["QuestionOption"][] | null;
       /** Question */
       question: string;
     };
@@ -18246,6 +18282,16 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["AgentRequest"][];
+    };
+    /** QuestionOption */
+    QuestionOption: {
+      /**
+       * Description
+       * @default null
+       */
+      description?: null | string;
+      /** Label */
+      label: string;
     };
     /** QueueCancelBody */
     QueueCancelBody: {

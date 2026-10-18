@@ -431,6 +431,8 @@ class AccountSnapshotRecord(TypedDict):
 class RequestQuestionFieldRecord(TypedDict):
     id: NotRequired[str]
     question: NotRequired[str]
+    header: NotRequired[str]
+    isOther: NotRequired[bool]
     options: NotRequired[list[JsonValue]]
     multiSelect: NotRequired[bool]
     isSecret: NotRequired[bool]

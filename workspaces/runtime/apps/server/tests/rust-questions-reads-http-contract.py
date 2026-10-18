@@ -85,8 +85,17 @@ try:
         }}, sync_rooms=False)
         runtime.put(db, "requests", {{
             "id": "questions-read-tie-first", "agent": lead["id"],
-            "method": "agent/asyncQuestion", "status": "answered", "createdAt": now + 10,
-            "params": {{"questions": [{{"id": "first"}}]}},
+            "method": "item/tool/requestUserInput", "status": "answered", "createdAt": now + 10,
+            "params": {{"itemId": "toolu_parity", "turnId": "turn-parity", "questions": [{{
+                "id": "first", "header": "Pick", "question": "Which?", "multiSelect": True, "isOther": True,
+                "options": [{{"label": "A", "description": "First"}}, {{"label": "B"}}, "C", 3],
+            }}]}},
+        }}, sync_rooms=False)
+        runtime.put(db, "requests", {{
+            "id": lead["id"] + ":question:call_parity", "agent": lead["id"], "turnId": "turn-async",
+            "method": "agent/asyncQuestion", "status": "answered", "createdAt": now - 50,
+            "params": {{"questions": [{{"id": "0", "question": "Scope?", "options": [{{"label": "One"}}],
+                                       "multiSelect": False, "isSecret": False}}]}},
         }}, sync_rooms=False)
         runtime.put(db, "requests", {{
             "id": "questions-read-tie-second", "agent": lead["id"],
@@ -184,7 +193,7 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         items = questions.json()["items"]
         self.assertEqual([item["id"] for item in items], [
             "questions-read-tie-first", "questions-read-tie-second", "questions-read-zero-answer", "questions-read-new",
-            "questions-read-old", "questions-read-answered-early",
+            "questions-read-old", "questions-read-answered-early", "questions-read-lead:question:call_parity",
         ])
         by_id = {item["id"]: item for item in items}
         fields = {field["id"]: field for field in by_id["questions-read-new"]["questions"]}
@@ -195,6 +204,19 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertTrue(fields["password"]["isSecret"])
         self.assertFalse(fields["color"]["isSecret"])
         self.assertEqual(by_id["questions-read-old"]["answerHistory"][0]["answer"], 9007199254740993)
+        # Chat question cards join history rows to transcript items by item id.
+        native = by_id["questions-read-tie-first"]
+        self.assertEqual((native["itemId"], native["turnId"]), ("toolu_parity", "turn-parity"))
+        self.assertEqual(native["questions"][0]["options"], [
+            {"label": "A", "description": "First"}, {"label": "B", "description": None},
+            {"label": "C", "description": None},
+        ])
+        self.assertEqual(native["questions"][0]["header"], "Pick")
+        self.assertTrue(native["questions"][0]["multiSelect"])
+        asynchronous = by_id["questions-read-lead:question:call_parity"]
+        self.assertEqual((asynchronous["itemId"], asynchronous["turnId"]), ("call_parity", "turn-async"))
+        self.assertIsNone(by_id["questions-read-old"]["itemId"])
+        self.assertNotIn("options", fields["color"])
 
         complaint = self._read("GET", "/api/complaint?id=questions-read-complaint", headers)
         self.assertEqual(complaint.status, 200, complaint.body[:1000])

@@ -1,4 +1,5 @@
 import type { Message } from "../types";
+import { isQuestionToolItem } from "./questions/questionCardModel";
 
 // Native turns can finish without a reply, for example after a worker event.
 // Retain their records for turn status, but do not draw an empty message.
@@ -26,7 +27,7 @@ function activityRow(item: Message): boolean {
   if (item.pending || item.nativeNotice || item.nativeError) return false;
   if (item.role === "reasoning") return true;
   if (["tool", "output"].includes(item.role)) {
-    if (item.title === "fileChange") return false;
+    if (item.title === "fileChange" || isQuestionToolItem(item)) return false;
     try {
       return JSON.parse(item.text)?.type !== "fileChange";
     } catch {

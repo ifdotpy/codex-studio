@@ -120,6 +120,7 @@ import ComposerAttachments, {
 import "./chat-controls.css";
 import "./conversation/empty-chat-settings.css";
 import { copyText } from "../clipboard/clipboard";
+import { isPendingQuestionRequest } from "./questions/questionCardModel";
 
 function isJsonObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1027,6 +1028,17 @@ export default function Conversation(p: {
     (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
   const runtime = p.data.runtime;
+  // Snapshots replace the request array often; keep one identity per question state.
+  const pendingQuestionList = (runtime?.requests || []).filter(
+    isPendingQuestionRequest,
+  );
+  const pendingQuestionKey = JSON.stringify(
+    pendingQuestionList.map((request) => [request.id, request.agent]),
+  );
+  const pendingQuestions = useMemo(
+    () => pendingQuestionList,
+    [pendingQuestionKey],
+  );
   const requests = (runtime?.requests || []).filter(
     (r) =>
       !r.agent ||
@@ -1369,10 +1381,12 @@ export default function Conversation(p: {
         }
         agentId={managed ? agent?.id : undefined}
         onJump={jumpToPrompt}
+        requests={pendingQuestions}
       />
     ),
     [
       items,
+      pendingQuestions,
       agent,
       managed,
       p.room,

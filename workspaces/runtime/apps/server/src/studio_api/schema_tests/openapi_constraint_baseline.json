@@ -155,6 +155,114 @@
       "candidate": "['archived', 'archiving', 'fallback', 'read_only', 'ready', 'removed']"
     },
     {
+      "pointer": "/components/schemas/AgentRequest/properties/itemId",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/itemId",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/itemId",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/header",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/header",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/header",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/isOther",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/isOther",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/isOther",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/multiSelect",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/multiSelect",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/multiSelect",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/options",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/options",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/questions/items/properties/options",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"$ref\":\"#/components/schemas/QuestionOption\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/turnId",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/turnId",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentRequest/properties/turnId",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/AnalyticsItemRecord/properties/command",
       "constraint": "type",
       "baseline": "'string'",
@@ -1011,6 +1119,198 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/ProcessActionResult\"}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/header",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/header",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/header",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/isOther",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/isOther",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/isOther",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/multiSelect",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/multiSelect",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/multiSelect",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/options",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/options",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionEntry/properties/options",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"$ref\":\"#/components/schemas/QuestionOption\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/itemId",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/itemId",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/itemId",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/header",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/header",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/header",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/isOther",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/isOther",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/isOther",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/multiSelect",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/multiSelect",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/multiSelect",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/options",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/options",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/questions/items/properties/options",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"$ref\":\"#/components/schemas/QuestionOption\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/turnId",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/turnId",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionHistory/properties/items/items/properties/turnId",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/QuestionOption/properties/description",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/QuestionOption/properties/description",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/components/schemas/ResourceChangeEvent/properties/resources/items",
