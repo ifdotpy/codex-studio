@@ -734,7 +734,8 @@ class SchemaContractTests(unittest.TestCase):
             "/components/schemas/ProcessControlRequest/properties",
             "/paths/~1api~1processes~1action/post/requestBody/content/application~1json/schema/properties",
         ):
-            for field in ("process", "responseTarget"):
+            # itemId names the running command of a background_command action.
+            for field in ("process", "responseTarget", "itemId"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
 
         # The orchestration settings response carries the standard sync envelope.

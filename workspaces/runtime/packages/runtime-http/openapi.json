@@ -37242,7 +37242,8 @@
             "enum": [
               "stop_selected",
               "stop_owned",
-              "stop_response"
+              "stop_response",
+              "background_command"
             ],
             "title": "Action",
             "type": "string"
@@ -37263,6 +37264,21 @@
             "default": false,
             "title": "Includedescendants",
             "type": "boolean"
+          },
+          "itemId": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Running command item that moves to the background",
+            "title": "Itemid"
           },
           "process": {
             "anyOf": [

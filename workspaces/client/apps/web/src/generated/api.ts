@@ -17096,7 +17096,11 @@ export interface components {
        * Action
        * @enum {string}
        */
-      action: "stop_selected" | "stop_owned" | "stop_response";
+      action:
+        | "stop_selected"
+        | "stop_owned"
+        | "stop_response"
+        | "background_command";
       /** Agent */
       agent: string;
       /** Epoch */
@@ -17106,6 +17110,12 @@ export interface components {
        * @default false
        */
       includeDescendants?: boolean;
+      /**
+       * Itemid
+       * @description Running command item that moves to the background
+       * @default null
+       */
+      itemId?: string | null;
       /** @default null */
       process?: components["schemas"]["ProcessIdentity"] | null;
       /**

@@ -23,6 +23,8 @@ class FakeNativeServer:
         self.fail_terminate = False
         self.on_state: Any = None
         self.wait_count = 0
+        self.background_reply: Any = {"status": "backgrounded"}
+        self.on_background: Any = None
 
     def wait(self, _submitted: Any, timeout: float | None = None) -> dict[str, Any]:
         self.wait_count += 1
@@ -48,6 +50,12 @@ class FakeNativeServer:
         if method == "claude/stopTask":
             self.task_running = False
             return {}
+        if method == "thread/commandExecution/background":
+            if self.on_background:
+                self.on_background()
+            if isinstance(self.background_reply, BaseException):
+                raise self.background_reply
+            return cast(dict[str, Any], self.background_reply)
         raise AssertionError(f"Unexpected native call: {method}")
 
 
@@ -163,6 +171,12 @@ def fixture() -> FakeRuntime:
                            "threadId": "thread-1"},
         })
     return rt
+
+
+def background_request(rt: FakeRuntime, request_id: str, item_id: str = "toolu-1") -> dict[str, Any]:
+    target = listing(rt, "lead")["responseTarget"]
+    return {"action": "background_command", "requestId": request_id, "agent": "lead",
+            "accountKey": "acct", "epoch": 4, "responseTarget": target, "itemId": item_id}
 
 
 def response_request(rt: FakeRuntime, request_id: str) -> dict[str, Any]:
@@ -682,6 +696,104 @@ class ProcessControlsTests(unittest.TestCase):
             "claude/state", "claude/stopTask", "claude/state",
         ])
         self.assertNotIn("turn/interrupt", [call[0] for call in rt.native_server.calls])
+
+
+class BackgroundCommandTests(unittest.TestCase):
+    def make_runtime(self, provider: str = "claude") -> FakeRuntime:
+        rt = fixture()
+        rt.accounts["acct"]["provider"] = provider
+        self.addCleanup(rt.connection.close)
+        return rt
+
+    def background_calls(self, rt: FakeRuntime) -> list[dict[str, Any]]:
+        return [params for method, params in rt.native_server.calls
+                if method == "thread/commandExecution/background"]
+
+    def test_moves_the_exact_item_once_and_replays_the_receipt(self) -> None:
+        rt = self.make_runtime()
+        request = background_request(rt, "background-1")
+        ProcessControlRequest.model_validate(request)
+        first = action(rt, request)
+        replay = action(rt, request)
+        self.assertEqual(first, replay)
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(first["response"], {"agent": "lead", "itemId": "toolu-1",
+                                             "status": "backgrounded"})
+        self.assertEqual(self.background_calls(rt), [
+            {"threadId": "thread-1", "turnId": "turn-1", "itemId": "toolu-1"}])
+        self.assertEqual(receipt(rt, {"requestId": "background-1", "agent": "lead",
+                                      "accountKey": "acct", "epoch": 4}),
+                         {"found": True, "result": first})
+        # The response and its processes keep running.
+        self.assertTrue(rt.agent("lead")["inFlight"])
+        self.assertEqual(rt.stop_calls, [])
+        self.assertEqual(rt.cancel_calls, [])
+
+    def test_lost_reply_stays_uncertain_and_is_not_sent_again(self) -> None:
+        rt = self.make_runtime()
+        rt.native_server.background_reply = TimeoutError("reply was lost")
+        request = background_request(rt, "background-lost")
+        first = action(rt, request)
+        replay = action(rt, request)
+        self.assertEqual(first["status"], "uncertain")
+        self.assertEqual(first["response"]["status"], "uncertain")
+        self.assertEqual(first, replay)
+        self.assertEqual(len(self.background_calls(rt)), 1)
+
+    def test_explicit_rejection_is_a_known_failure(self) -> None:
+        from codex_native_errors import NativeRpcError
+
+        rt = self.make_runtime()
+        rt.native_server.background_reply = NativeRpcError(
+            {"code": -32000, "message": "This command cannot move to the background yet"})
+        result = action(rt, background_request(rt, "background-rejected"))
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["response"]["status"], "failed")
+        self.assertEqual(result["response"]["error"], "This command cannot move to the background yet")
+
+    def test_finished_command_reports_not_running(self) -> None:
+        rt = self.make_runtime()
+        rt.native_server.background_reply = {"status": "not_running"}
+        result = action(rt, background_request(rt, "background-finished"))
+        self.assertEqual(result["response"]["status"], "not_running")
+
+    def test_provider_without_the_control_is_refused_before_any_native_call(self) -> None:
+        rt = self.make_runtime(provider="codex")
+        result = action(rt, background_request(rt, "background-codex"))
+        self.assertEqual(result["response"]["status"], "failed")
+        self.assertIn("cannot move a running command", result["response"]["error"])
+        self.assertEqual(rt.native_server.calls, [])
+
+    def test_changed_turn_before_dispatch_is_stale_without_a_native_call(self) -> None:
+        rt = self.make_runtime()
+        request = background_request(rt, "background-race")
+        original = rt.agent_connection
+
+        def replace_turn_at_dispatch(owner: dict[str, Any]) -> str:
+            # The claim snapshot passes; the dispatch check sees the next turn.
+            if rt.connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='runtime_process_actions'").fetchone():
+                current = rt.agent("lead")
+                if current["turnId"] == "turn-1":
+                    current["turnId"] = "turn-2"
+                    rt.put("runtime_agents", "lead", current)
+            return original(owner)
+
+        with patch.object(rt, "agent_connection", replace_turn_at_dispatch):
+            result = action(rt, request)
+        self.assertEqual(result["response"]["status"], "stale")
+        self.assertEqual(self.background_calls(rt), [])
+
+    def test_request_needs_the_response_identity_and_one_item(self) -> None:
+        rt = self.make_runtime()
+        request = background_request(rt, "background-schema")
+        with self.assertRaises(ValueError):
+            ProcessControlRequest.model_validate({k: v for k, v in request.items() if k != "itemId"})
+        with self.assertRaises(ValueError):
+            ProcessControlRequest.model_validate(
+                {k: v for k, v in request.items() if k != "responseTarget"})
+        with self.assertRaises(ValueError):
+            ProcessControlRequest.model_validate({**response_request(rt, "stop-item"), "itemId": "toolu-1"})
 
 
 if __name__ == "__main__":

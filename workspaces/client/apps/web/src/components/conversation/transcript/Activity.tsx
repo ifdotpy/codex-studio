@@ -22,6 +22,8 @@ import {
 } from "../../tool-images/toolImages";
 import FileChangeCard from "../../FileChangeCard";
 import { useVisualActivityRef } from "../../../hooks/useVisualActivity";
+import MoveToBackgroundButton from "./MoveToBackgroundButton";
+import { backgroundTaskId, canMoveToBackground } from "./commandBackground";
 
 const names: Record<string, string> = {
   commandExecution: "Run command",
@@ -232,7 +234,8 @@ export const ToolCard = memo(function ToolCard({
 }) {
   const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const p = payload(item),
-    state = status(item, p),
+    background = backgroundTaskId(p),
+    state = background ? "background" : status(item, p),
     kind = stringValue(p.type) || item.title || "",
     read = describe(item, p);
   const Icon =
@@ -306,6 +309,16 @@ export const ToolCard = memo(function ToolCard({
           )}
         </span>
         <span className="tool-meta">
+          {agentId && canMoveToBackground(p, state) && (
+            <MoveToBackgroundButton
+              agentId={agentId}
+              turnId={item.turnId || undefined}
+              itemId={stringValue(p.id) || ""}
+            />
+          )}
+          {background && (
+            <small className="tool-background-state">In background</small>
+          )}
           {typeof p.durationMs === "number" && (
             <small>{(p.durationMs / 1000).toFixed(1)}s</small>
           )}
@@ -360,6 +373,13 @@ export const ToolCard = memo(function ToolCard({
           )}
           {typeof p.cwd === "string" && (
             <div className="tool-directory">{p.cwd}</div>
+          )}
+          {background && (
+            <p className="tool-background-note">
+              Moved to the background. The command keeps running and the agent
+              gets its result when it ends. Current activity shows it while it
+              runs.
+            </p>
           )}
           {typeof p.query === "string" && (
             <div className="tool-section">
@@ -494,6 +514,13 @@ export default memo(function Activity({
   const [open, setOpen] = useState(() => items.length < 3);
   const [visited, setVisited] = useState(open);
   const hasLimit = items.some((item) => toolLimitNotice(item));
+  // A closed group still offers the control for its latest running command.
+  const movable = open
+    ? undefined
+    : [...items].reverse().find((item) => {
+        const p = payload(item);
+        return canMoveToBackground(p, status(item, p));
+      });
   return (
     <details
       ref={visualRef}
@@ -532,6 +559,13 @@ export default memo(function Activity({
           </span>
         )}
         <span className="activity-state">
+          {agentId && movable && (
+            <MoveToBackgroundButton
+              agentId={agentId}
+              turnId={movable.turnId || undefined}
+              itemId={stringValue(payload(movable).id) || ""}
+            />
+          )}
           {running > 0 && (
             <span className="activity-running">{running} running</span>
           )}

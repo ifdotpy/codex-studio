@@ -11,6 +11,10 @@ from codex_entity_contracts import ACTIVE_MONITOR_STATUSES
 from codex_shared_values import NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES
 from codex_workspace import active_monitors, active_task_records
 
+# Providers whose adapter implements `thread/commandExecution/background`.
+# Codex app-server has no request that ends a running exec wait early.
+BACKGROUND_COMMAND_PROVIDERS = frozenset({"claude"})
+
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -230,7 +234,7 @@ def _snapshot(rt: Any, db: Any, request: dict[str, Any]) -> tuple[list[dict[str,
     if (root.get("accountKey", "default") != request["accountKey"]
             or root.get("epoch") != request["epoch"]):
         raise ValueError("The process owner changed. Refresh the process list")
-    if request["action"] == "stop_response":
+    if request["action"] in {"stop_response", "background_command"}:
         identity = request["responseTarget"]
         current = {"agent": scope, "accountKey": root.get("accountKey", "default"),
                    "epoch": root.get("epoch"), "connectionId": rt.agent_connection(root),
@@ -405,6 +409,43 @@ def _stop_process(rt: Any, process: dict[str, Any]) -> dict[str, Any]:
     return {"status": "uncertain", "error": "The provider did not confirm that the process stopped"}
 
 
+def _background_command(rt: Any, request: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    """Ask the provider to move one running command of the current turn to the background."""
+    item_id = request["itemId"]
+    with rt.lock, rt.db() as db:
+        current = rt.agent(request["agent"], db)
+        account_key = current.get("accountKey", "default")
+        connection_id = rt.agent_connection(current)
+        if (account_key != target["accountKey"] or current.get("epoch") != target["epoch"]
+                or connection_id != target["connectionId"]
+                or current.get("threadId") != target["threadId"]
+                or current.get("turnId") != target["turnId"] or not current.get("inFlight")):
+            return {"status": "stale", "error": "The response changed. Refresh the conversation"}
+        account = rt.accounts.get(account_key)
+        provider = account.get("provider") if account else None
+        if provider not in BACKGROUND_COMMAND_PROVIDERS:
+            return {"status": "failed",
+                    "error": "This provider cannot move a running command to the background"}
+        server = rt.server_for(account_key, connection_id)
+    if server is None:
+        return {"status": "failed", "error": "The response connection is unavailable"}
+    from codex_native_errors import NativeRpcError
+    try:
+        result = server.call("thread/commandExecution/background",
+                             {"threadId": target["threadId"], "turnId": target["turnId"],
+                              "itemId": item_id}, timeout=20)
+    except NativeRpcError as error:
+        # An explicit rejection did not move the command.
+        message = error.error.get("message") if isinstance(error.error, dict) else None
+        return {"status": "failed", "error": str(message or error)}
+    except Exception as error:
+        return {"status": "uncertain", "error": "The background move outcome is unknown: " + str(error)}
+    status = result.get("status") if isinstance(result, dict) else None
+    if status not in {"backgrounded", "not_running"}:
+        return {"status": "uncertain", "error": "The provider returned an unknown background move result"}
+    return {"status": status}
+
+
 def _receipt_table(db: Any) -> None:
     db.execute("CREATE TABLE IF NOT EXISTS runtime_process_actions (id TEXT PRIMARY KEY, signature TEXT NOT NULL, record TEXT NOT NULL)")
 
@@ -480,6 +521,23 @@ def action(rt: Any, request: dict[str, Any]) -> dict[str, Any]:
         db.execute("INSERT INTO runtime_process_actions(id,signature,record) VALUES(?,?,?)",
                    (request_id, signature, _json(record)))
     rt.changed.set()
+    if request["action"] == "background_command":
+        if response_target is None:
+            raise ValueError("The response identity is unavailable")
+        try:
+            moved = _background_command(rt, request, response_target)
+        except Exception as exception:
+            moved = {"status": "uncertain", "error": str(exception)}
+        status = moved["status"]
+        result = {
+            "requestId": request_id,
+            "status": "uncertain" if status == "uncertain" else "completed",
+            "processes": [],
+            "response": {"agent": request["agent"], "itemId": request["itemId"], **moved},
+        }
+        record.update(phase="uncertain" if status == "uncertain" else "completed", result=result)
+        _save_receipt(rt, request_id, record)
+        return result
     if request["action"] == "stop_response":
         if response_target is None:
             raise ValueError("The response identity is unavailable")

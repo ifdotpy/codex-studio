@@ -123,6 +123,15 @@ fn validate(request: &Value) -> Result<(), ApiError> {
         .is_some_and(|a| !a.is_empty());
     let process = !request["process"].is_null();
     let response = !request["responseTarget"].is_null();
+    let item = !request["itemId"].is_null();
+    if (text(request, "action") == "background_command")
+        != request["itemId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.len() <= 200)
+        || (item && !request["itemId"].is_string())
+    {
+        return Err(invalid("Background move requires exactly one command item"));
+    }
     match text(request, "action") {
         "stop_selected" if !process || processes => {
             return Err(invalid("Select exactly one process to stop"));
@@ -133,13 +142,22 @@ fn validate(request: &Value) -> Result<(), ApiError> {
         "stop_owned" if !processes => {
             return Err(invalid("No owned process identities were supplied"));
         }
-        "stop_response" => {
+        "stop_response" | "background_command" => {
+            let name = if text(request, "action") == "stop_response" {
+                "Response stop"
+            } else {
+                "Background move"
+            };
             if process || processes {
-                return Err(invalid("Response stop does not accept process identities"));
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("{name} does not accept process identities"),
+                ));
             }
             if !response {
-                return Err(invalid(
-                    "Response stop requires the current response identity",
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("{name} requires the current response identity"),
                 ));
             }
             if ["agent", "accountKey", "epoch"]
@@ -156,8 +174,14 @@ fn validate(request: &Value) -> Result<(), ApiError> {
         }
         _ => {}
     }
-    if text(request, "action") != "stop_response" && response {
-        return Err(invalid("Response identity applies only to response stop"));
+    if !matches!(
+        text(request, "action"),
+        "stop_response" | "background_command"
+    ) && response
+    {
+        return Err(invalid(
+            "Response identity applies only to response stop and background move",
+        ));
     }
     Ok(())
 }
@@ -201,7 +225,30 @@ async fn execute(
         controls::Claim::Replay(value) => return Ok(value),
         controls::Claim::New { record, targets } => (record, targets),
     };
-    if request["action"] == "stop_response" {
+    if request["action"] == "background_command" {
+        let outcome = match background_command(
+            &state,
+            &record["responseTarget"],
+            text(&request, "itemId"),
+            text(&request, "requestId"),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                json!({"status":"uncertain","error":"The background move outcome is unknown. Inspect its receipt before retrying"})
+            }
+        };
+        record["phase"] = json!(if outcome["status"] == "uncertain" {
+            "uncertain"
+        } else {
+            "completed"
+        });
+        let mut response = outcome;
+        response["agent"] = request["agent"].clone();
+        response["itemId"] = request["itemId"].clone();
+        record["result"] = json!({"requestId":request["requestId"],"status":record["phase"],"processes":[],"response":response});
+    } else if request["action"] == "stop_response" {
         let outcome = match stop_response(
             &state,
             &record["responseTarget"],
@@ -531,5 +578,90 @@ async fn stop_response(
     )
     .await?;
     Ok(json!({"status":"requested"}))
+}
+/// Providers whose adapter implements `thread/commandExecution/background`.
+/// Codex app-server has no request that ends a running exec wait early.
+const BACKGROUND_COMMAND_PROVIDERS: &[&str] = &["claude"];
+
+async fn background_command(
+    state: &HttpState,
+    target: &Value,
+    item_id: &str,
+    request_id: &str,
+) -> Result<Value, ApiError> {
+    let state = state.clone();
+    let expected = target.clone();
+    let request_id = request_id.to_owned();
+    let binding = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/process_controls",
+        move || {
+            let store = store(&state)?;
+            let connection = store.read().map_err(ApiError::stored)?;
+            let owners = controls::owners(&connection, text(&expected, "agent")).map_err(error)?;
+            let owner = &owners[0];
+            let supported = BACKGROUND_COMMAND_PROVIDERS.contains(&text(owner, "provider"));
+            let port = provider(&state, owner)?;
+            let scope = port
+                .current_scope(text(&expected, "accountKey"))
+                .ok_or_else(|| invalid("The response connection is unavailable"))?;
+            if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
+                return Err(invalid("The response changed. Refresh the conversation"));
+            }
+            let ticket = ProviderTicket {
+                operation: request_id.clone(),
+                request: format!("process-action:{request_id}:background"),
+                agent: text(&expected, "agent").to_owned(),
+                epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+                account: scope.account.clone(),
+                thread: Some(text(&expected, "threadId").to_owned()),
+                connection: scope.connection.clone(),
+                generation: scope.generation,
+            };
+            Ok((port, scope, ticket, supported))
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
+    let (port, scope, ticket, supported) = match binding {
+        Ok(binding) => binding,
+        Err(_) => {
+            return Ok(
+                json!({"status":"stale","error":"The response changed. Refresh the conversation"}),
+            );
+        }
+    };
+    if !supported {
+        return Ok(
+            json!({"status":"failed","error":"This provider cannot move a running command to the background"}),
+        );
+    }
+    let result = match super::catalog_agent::provider_call(
+        &port,
+        &scope,
+        &ticket,
+        &ticket.request,
+        "thread/commandExecution/background",
+        json!({"threadId":target["threadId"],"turnId":target["turnId"],"itemId":item_id}),
+    )
+    .await
+    {
+        Ok(result) => result,
+        // A rejected or unsent request did not move the command.
+        Err(error)
+            if matches!(
+                error.status(),
+                StatusCode::BAD_REQUEST | StatusCode::SERVICE_UNAVAILABLE
+            ) =>
+        {
+            return Ok(json!({"status":"failed","error":error.message()}));
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(match result["status"].as_str() {
+        Some(status @ ("backgrounded" | "not_running")) => json!({"status":status}),
+        _ => {
+            json!({"status":"uncertain","error":"The provider returned an unknown background move result"})
+        }
+    })
 }
 inventory::submit! {crate::routes::manifest::RouteModuleRegistration {name:"process_controls",routes:Some(routes),dependencies:&["provider-session/native-request","provider-session/monitor-commands"]}}
