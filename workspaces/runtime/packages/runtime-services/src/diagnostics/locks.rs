@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -12,6 +13,9 @@ struct WriterSamples {
     total_hold_ns: u128,
     wait_ns: Ring,
     hold_ns: Ring,
+    /// Transactions and total hold time per `#[track_caller]` call site. The
+    /// key set is bounded by the number of call sites in the source.
+    by_origin: HashMap<(&'static str, u32), (u64, u128)>,
 }
 
 impl Default for WriterSamples {
@@ -22,6 +26,7 @@ impl Default for WriterSamples {
             total_hold_ns: 0,
             wait_ns: Ring::new(LOCK_SAMPLE_LIMIT),
             hold_ns: Ring::new(LOCK_SAMPLE_LIMIT),
+            by_origin: HashMap::new(),
         }
     }
 }
@@ -43,6 +48,12 @@ pub fn record_store_writer_transaction(
         samples.count = samples.count.saturating_add(1);
         samples.total_wait_ns = samples.total_wait_ns.saturating_add(wait.as_nanos());
         samples.total_hold_ns = samples.total_hold_ns.saturating_add(hold.as_nanos());
+        let site = samples
+            .by_origin
+            .entry((origin.file(), origin.line()))
+            .or_default();
+        site.0 = site.0.saturating_add(1);
+        site.1 = site.1.saturating_add(hold.as_nanos());
         samples
             .wait_ns
             .record(wait.as_nanos().min(u128::from(u64::MAX)) as u64);
@@ -63,8 +74,21 @@ pub fn runtime_lock_operations() -> Vec<Value> {
         }
         let (_, waits) = samples.wait_ns.snapshot();
         let (_, holds) = samples.hold_ns.snapshot();
+        let mut origins: Vec<_> = samples.by_origin.iter().collect();
+        origins.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
+        let origins: Vec<Value> = origins
+            .into_iter()
+            .map(|((file, line), (count, hold_ns))| {
+                json!({
+                    "origin": format!("{file}:{line}"),
+                    "count": count,
+                    "totalHoldMs": *hold_ns as f64 / 1_000_000.0,
+                })
+            })
+            .collect();
         result.push(json!({
             "callSite": "runtime_store.writer_transaction",
+            "origins": origins,
             "count": samples.count,
             "totalWaitMs": samples.total_wait_ns as f64 / 1_000_000.0,
             "totalHoldMs": samples.total_hold_ns as f64 / 1_000_000.0,
@@ -89,4 +113,29 @@ pub fn runtime_lock_samples() -> Vec<Value> {
             );
         });
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_transactions_are_counted_per_call_site() {
+        let first = std::panic::Location::caller();
+        record_store_writer_transaction(Duration::ZERO, Duration::from_millis(2), first);
+        record_store_writer_transaction(Duration::ZERO, Duration::from_millis(2), first);
+        let operations = runtime_lock_operations();
+        let writer = operations
+            .iter()
+            .find(|entry| entry["callSite"] == "runtime_store.writer_transaction")
+            .expect("writer operation");
+        let origin = format!("{}:{}", first.file(), first.line());
+        let site = writer["origins"]
+            .as_array()
+            .expect("origins")
+            .iter()
+            .find(|site| site["origin"] == origin)
+            .expect("call site entry");
+        assert!(site["count"].as_u64().is_some_and(|count| count >= 2));
+    }
 }
