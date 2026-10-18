@@ -5365,10 +5365,6 @@ async fn move_import_pending_keeps_input_queued_without_worker_writes() {
     assert_eq!(state.event_status("input").await, "pending");
 }
 
-const PROVIDER_DISCONNECTED: &str = "Codex disconnected. Review the transcript before resuming.";
-const SERVER_RESTARTED: &str =
-    "Server restarted during a turn. Review history, then send a new instruction.";
-
 /// Give the fixture agent a stored parent so stop notices have a recipient.
 async fn adopt_parent(state: &State) -> String {
     let child = state.agent.clone();
@@ -5432,7 +5428,10 @@ async fn provider_exit_while_the_server_runs_is_a_disconnect_reported_once() {
 
     let record = state.record().await;
     assert_eq!(record["status"], "interrupted");
-    assert_eq!(record["error"], PROVIDER_DISCONNECTED);
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
     assert_ne!(record["disconnectRecovery"]["source"], "restart");
     assert_eq!(child_stop_notices(&state, &parent).await, 1);
 
@@ -5441,7 +5440,10 @@ async fn provider_exit_while_the_server_runs_is_a_disconnect_reported_once() {
     let mut replacement = next.worker(state.bridge.clone()).await;
     worker_barrier(&replacement).await;
     let record = state.record().await;
-    assert_eq!(record["error"], PROVIDER_DISCONNECTED);
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
     assert_ne!(record["disconnectRecovery"]["source"], "restart");
     assert!(record["restartRecovery"].is_null());
     assert_eq!(child_stop_notices(&state, &parent).await, 1);
@@ -5482,16 +5484,8 @@ async fn disconnect_parent_event_local_enqueue_failure_is_propagated() {
         .await
         .expect("install local event failure trigger");
 
-    let failure = state
-        .bridge
-        .run(move |store| async move {
-            Ok(store
-                .transaction(move |tx| store::disconnect_provider_generation(tx, "default", 1))
-                .await)
-        })
-        .await
-        .expect("observe the failed disconnect transaction");
-    assert!(matches!(failure, Err(StoreError::Sqlite(_))));
+    peer.stop.cancel();
+    assert!(worker.completion().await.is_err());
     assert_eq!(state.record().await, before, "disconnect writes roll back");
     assert_eq!(child_stop_notices(&state, &parent).await, 0);
 
@@ -5504,16 +5498,29 @@ async fn disconnect_parent_event_local_enqueue_failure_is_propagated() {
                     Ok(())
                 })
                 .await?;
-            store
-                .transaction(move |tx| store::disconnect_provider_generation(tx, "default", 1))
-                .await?;
             Ok(())
         })
         .await
-        .expect("disconnect retries after local storage is available");
-    assert_eq!(state.record().await["status"], "interrupted");
+        .expect("remove local event failure trigger");
+
+    let mut next = Peer::identity("default", 2, None);
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    worker_barrier(&replacement).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "interrupted");
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
+    assert_ne!(record["disconnectRecovery"]["source"], "restart");
     assert_eq!(child_stop_notices(&state, &parent).await, 1);
-    worker.shutdown().await.unwrap();
+    while let Ok(wire) = next.writes.try_recv() {
+        assert_ne!(
+            wire.value["method"], "turn/start",
+            "replacement does not resubmit the previously accepted turn"
+        );
+    }
+    replacement.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -5531,7 +5538,10 @@ async fn a_new_backend_process_still_classifies_the_old_generation_as_a_restart(
     let mut replacement = next.worker(bridge).await;
     worker_barrier(&replacement).await;
     let record = state.record().await;
-    assert_eq!(record["error"], SERVER_RESTARTED);
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR
+    );
     assert_eq!(record["disconnectRecovery"]["source"], "restart");
     replacement.shutdown().await.unwrap();
 }

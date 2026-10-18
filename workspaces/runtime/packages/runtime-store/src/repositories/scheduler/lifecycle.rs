@@ -171,13 +171,17 @@ impl SchedulerRepository {
         generation: u64,
         at: f64,
         restart: bool,
-    ) -> StoreResult<()> {
+    ) -> StoreResult<Vec<String>> {
         // Decide busy-turn input before its `dispatching` rows become `uncertain`.
         Self::abandon_steers(transaction, account, generation)?;
+        let mut interrupted = Vec::new();
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             let known = stored_attempt(&agent).and_then(|a| a["connectionGeneration"].as_u64());
             if known != Some(generation) {
                 disconnect_agent(transaction, &mut agent, at, restart, false)?;
+                if agent.status == AgentStatus::Interrupted {
+                    interrupted.push(agent.id.0);
+                }
             } else if restart_continuation_allowed(&agent) {
                 let previous_error = agent.extra.get("error").cloned().unwrap_or(Value::Null);
                 agent.status = AgentStatus::Running;
@@ -208,7 +212,7 @@ impl SchedulerRepository {
                 publish_agent(transaction, &agent)?;
             }
         }
-        Ok(())
+        Ok(interrupted)
     }
 
     /// The error and retained cursor use existing fields published to the UI.
@@ -1806,9 +1810,9 @@ pub(super) fn disconnect_agent(
         agent.extra.insert(
             "error".into(),
             json!(if restart {
-                "Server restarted during a turn. Review history, then send a new instruction."
+                BACKEND_RESTARTED_TURN_ERROR
             } else {
-                "Codex disconnected. Review the transcript before resuming."
+                PROVIDER_DISCONNECTED_TURN_ERROR
             }),
         );
     }
@@ -1921,10 +1925,7 @@ pub(super) fn transport_continuation_allowed(agent: &AgentRecord) -> bool {
         && agent.extra.get("turnId").is_some_and(Value::is_string)
         && matches!(
             agent.extra.get("error").and_then(Value::as_str),
-            Some(
-                "Codex disconnected. Review the transcript before resuming."
-                    | "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming."
-            )
+            Some(PROVIDER_DISCONNECTED_TURN_ERROR | VM_PROVIDER_DISCONNECTED_TURN_ERROR)
         )
         && !matches!(
             agent

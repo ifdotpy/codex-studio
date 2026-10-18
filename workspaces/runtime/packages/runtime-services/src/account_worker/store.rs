@@ -122,7 +122,21 @@ pub(super) async fn recover(
     let account = account.to_owned();
     scheduler::lifecycle_transaction_with(store, move |tx| {
         SchedulerRepository::recover_unsubmitted_for_account(tx, &account)?;
-        SchedulerRepository::reconcile_generation(tx, &account, generation.0, now(), restart)?;
+        let at = now();
+        let interrupted = SchedulerRepository::reconcile_generation(
+            tx,
+            &account,
+            generation.0,
+            at,
+            restart,
+        )?;
+        // A provider replacement in this backend is a disconnect. Actual backend
+        // restarts keep their separate history-reconciliation notification path.
+        if !restart {
+            for agent_id in interrupted {
+                crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent_id, at)?;
+            }
+        }
         retire_generations(tx, &account, generation.0)?;
         // The repository preserves Python recovery records. Journal delivery needs
         // the scoped attempt restored before notifications can be acknowledged.
