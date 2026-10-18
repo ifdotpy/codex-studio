@@ -27,8 +27,8 @@ selection guard lives beside that runner. The witnesses cover request retry
 identity, uncertain outcomes, permission-aware recovery, reset-request replay
 against a fake provider, and Python/Rust fresh-state schema parity. The reset
 fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
-and real credit redemption require separate evidence. The web package owns the two
-selected API unit files and type-check scripts, while the tooling package owns
+and real credit redemption require separate evidence. The web package owns selected
+API and verifier unit witnesses and type-check scripts, while the tooling package owns
 repository contract checks. Prepare the web WASM artifact once with
 `pnpm --filter codex-agents-web run build:wasm`; this generated artifact is a
 warm-checkout prerequisite and its cold build is outside the 30-second target.

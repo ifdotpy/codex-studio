@@ -861,7 +861,7 @@ function fastTierCommands(root) {
     },
     {
       item: web,
-      label: "web API unit witnesses",
+      label: "web unit safety witnesses",
       options: { script: "test:unit:fast" },
     },
     { item: tooling, label: "tooling tests" },

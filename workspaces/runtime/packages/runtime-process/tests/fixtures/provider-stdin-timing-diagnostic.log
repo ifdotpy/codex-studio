@@ -1,0 +1,1 @@
+studio_provider_stdin_write {"providerHandle":"account:default","generation":7,"operationId":"attempt-op","requestId":"request-1","method":"turn/start","stdinFlushedAtNs":1234567890}
