@@ -1079,7 +1079,7 @@ enum WriterTransactionOutcome<T, E> {
         generation: u64,
         changed: bool,
         changed_tables: u32,
-        changed_rows: ChangedRowHints,
+        changed_rows: Box<ChangedRowHints>,
         resource_change: bool,
     },
     CommitOutcomeUnknown {
@@ -1765,7 +1765,7 @@ impl RuntimeStore {
                             generation: commit_generation,
                             changed,
                             changed_tables,
-                            changed_rows: transaction_rows,
+                            changed_rows: Box::new(transaction_rows),
                             resource_change,
                         })
                     }
@@ -1779,7 +1779,7 @@ impl RuntimeStore {
                             generation: generation.load(Ordering::Acquire),
                             changed: false,
                             changed_tables: 0,
-                            changed_rows: ChangedRowHints::default(),
+                            changed_rows: Box::default(),
                             resource_change: false,
                         })
                     }
@@ -1849,7 +1849,7 @@ impl RuntimeStore {
                             fire_table_change_observers(
                                 &table_commit_observers,
                                 changed_tables,
-                                changed_rows,
+                                changed_rows.map(|rows| &**rows),
                             );
                         }));
                     let post_commit_result = value.map(|value| {

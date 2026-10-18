@@ -334,7 +334,8 @@ impl SchedulerRepository {
     ) -> StoreResult<AccountWakePage> {
         let held_after = child_result_held_after(connection, now)?;
         validate_account_wake_targets(connection, held_after)?;
-        let mut target_statement = connection.prepare_cached(&account_wake_account_target_query())?;
+        let mut target_statement =
+            connection.prepare_cached(&account_wake_account_target_query())?;
         let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
         let mut result = BTreeMap::new();
         for account in accounts {
