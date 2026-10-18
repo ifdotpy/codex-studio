@@ -27,7 +27,9 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
 # This corpus calls it directly without a pending supervisor event, so that
 # cursor-commit branch is outside the cases below; keep the full-source guard
 # current while the corpus verifies the direct notification path.
-_NOTIFICATION_GUARD_DIGEST = '58fcc4d8d2997f63df3f9f5bd9df79b8d581e887f18842b35a15bf331cb594c1'
+# release_unapplied_steers acts only on a turn that carries unappliedSteers from the
+# Claude bridge; no corpus case has that field, so the cases below are unchanged.
+_NOTIFICATION_GUARD_DIGEST = '2e930d6fcb8976f6a2a0ca8d3ff0d54db46df5c960f6d2a9936b57387cd5ad0e'
 assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
     'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:
