@@ -5,9 +5,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -79,18 +81,24 @@ class InstallUpdate(unittest.TestCase):
         self.config = {"port": 4620, "resources": str(REPOSITORY_ROOT), "supervisorEnabled": True}
         self.mac = FakeMac()
         self.stops = []
+        self.verified = []
         environment = patch.dict(os.environ, {"CODEX_LINUX_VM_STATE_DIR": str(self.state / "linux-vm")})
         environment.start()
         self.addCleanup(environment.stop)
 
-    def stop(self, config, state):
-        self.stops.append((config["port"], state))
+    def verify(self, config, state):
+        # The build at the installed path when the backend is proved.
+        self.verified.append(updates.read_build(self.installed))
+        return {"pid": 12345, "started": "Sun Oct 18 08:00:00 2026"}
+
+    def stop(self, config, state, backend):
+        self.stops.append((config["port"], state, backend["pid"]))
         return "stopped"
 
     def install(self):
         return installer.install(self.state, self.config, applications=self.applications,
-                                 run=self.mac.run, stop=self.stop, sleep=lambda seconds: None,
-                                 clock=lambda: 1_800_000_000.0)
+                                 run=self.mac.run, verify=self.verify, stop=self.stop,
+                                 sleep=lambda seconds: None, clock=lambda: 1_800_000_000.0)
 
     def receipt(self):
         return json.loads((self.state / updates.RECEIPT_FILE).read_text())
@@ -103,7 +111,9 @@ class InstallUpdate(unittest.TestCase):
         self.assertEqual(updates.read_build(self.applications / "Codex Studio.previous.app"), OLD)
         self.assertEqual(sorted(p.name for p in self.applications.iterdir()),
                          ["Codex Studio.app", "Codex Studio.previous.app"])
-        self.assertEqual(self.stops, [(4620, self.state)])
+        # The backend is proved against the app that started it and stopped after the swap.
+        self.assertEqual(self.verified, [OLD])
+        self.assertEqual(self.stops, [(4620, self.state, 12345)])
         self.assertEqual(len(self.mac.ran("osascript", "to quit")), 1)
         self.assertEqual(self.mac.ran("open"), [["/usr/bin/open", "-g", str(self.installed)]])
         receipt = self.receipt()
@@ -179,7 +189,8 @@ class InstallUpdate(unittest.TestCase):
             return result
 
         code, reason = installer.install(self.state, self.config, applications=self.applications,
-                                         run=broken_copy, stop=self.stop, sleep=lambda seconds: None)
+                                         run=broken_copy, verify=self.verify, stop=self.stop,
+                                         sleep=lambda seconds: None)
         self.assertEqual(code, installer.FAILED)
         self.assertTrue(reason.startswith("The signature check failed"))
         self.assertEqual([p.name for p in self.applications.iterdir()], ["Codex Studio.app"])
@@ -194,14 +205,123 @@ class InstallUpdate(unittest.TestCase):
         self.assertFalse((self.state / updates.PENDING_FILE).exists())
 
     def test_backend_that_cannot_stop_keeps_the_new_app(self):
+        def refuse(config, state, backend):
+            raise RuntimeError("The backend changed during the install; it was not verified.")
+
+        code, _ = installer.install(self.state, self.config, applications=self.applications,
+                                    run=self.mac.run, verify=self.verify, stop=refuse,
+                                    sleep=lambda seconds: None)
+        self.assertEqual(code, installer.INSTALLED)
+        self.assertEqual(updates.read_build(self.installed), NEW)
+        self.assertTrue(self.receipt()["backend"].startswith("not restarted"))
+
+    def test_unverified_backend_keeps_the_new_app_and_is_not_signalled(self):
         def refuse(config, state):
             raise RuntimeError("The reported backend PID is not the packaged Codex Canvas process.")
 
         code, _ = installer.install(self.state, self.config, applications=self.applications,
-                                    run=self.mac.run, stop=refuse, sleep=lambda seconds: None)
+                                    run=self.mac.run, verify=refuse, stop=self.stop,
+                                    sleep=lambda seconds: None)
         self.assertEqual(code, installer.INSTALLED)
         self.assertEqual(updates.read_build(self.installed), NEW)
-        self.assertTrue(self.receipt()["backend"].startswith("not restarted"))
+        self.assertEqual(self.stops, [])
+        self.assertEqual(self.receipt()["backend"],
+                         "not restarted: The reported backend PID is not the packaged Codex Canvas process.")
+
+
+SERVER_SOURCE = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src"
+CHECK_OUTPUT = subprocess.check_output
+# A fixture backend: serves the /api/desktop identity of this state directory. Its arguments name
+# the packaged codex-canvas script, as the backend that the installed app starts.
+FIXTURE_BACKEND = """
+import http.server, json, os, sys
+state = sys.argv[2]
+class Identity(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"application": "codex-agents", "protocol": 1, "stateDir": state,
+                           "pid": os.getpid()}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", 0), Identity)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+"""
+
+
+def make_packaged_app(app, build, changes=None):
+    """An app with the packaged backend scripts; `changes` appends text to named scripts."""
+    make_app(app, build)
+    scripts = app / "Contents/Resources/workspace/scripts"
+    scripts.mkdir(parents=True)
+    for source in SERVER_SOURCE.iterdir():
+        if source.is_file():
+            shutil.copy2(source, scripts / source.name)
+    for name, text in (changes or {}).items():
+        with (scripts / name).open("a") as stream:
+            stream.write(text)
+    return scripts
+
+
+class BackendRestartAfterSwap(unittest.TestCase):
+    """The real backend check runs while the new app is in place and this run's modules are old."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="studio-install-restart-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.state = root / "state"
+        self.applications = root / "Applications"
+        self.state.mkdir()
+        self.applications.mkdir()
+        self.installed = self.applications / "Codex Studio.app"
+        scripts = make_packaged_app(self.installed, OLD)
+        # The new build adds a shared value and a module that this run has not imported uses it.
+        staged = self.state / "updates" / str(NEW["builtAt"]) / "Codex Studio.app"
+        make_packaged_app(staged, NEW, {
+            "codex_shared_values.py": "\nSWAP_TEST_NEW_VALUE = 1\n",
+            "codex_process_supervisor.py": "\nfrom codex_shared_values import SWAP_TEST_NEW_VALUE\n",
+        })
+        updates.write_json(self.state / updates.PENDING_FILE,
+                           {"id": "update-1", "app": str(staged), "build": NEW, "from": "server"})
+        self.backend = subprocess.Popen(
+            [sys.executable, "-c", FIXTURE_BACKEND, str(scripts / "codex-canvas"), str(self.state)],
+            stdout=subprocess.PIPE, text=True)
+        self.addCleanup(self.backend.wait, 10)
+        self.addCleanup(self.backend.kill)
+        port = int(self.backend.stdout.readline())
+        self.backend.stdout.close()
+        # Reap the backend when it exits, so the installer sees the exit.
+        threading.Thread(target=self.backend.wait, daemon=True).start()
+        self.config = {"port": port, "resources": str(scripts.parent), "supervisorEnabled": True}
+        environment = patch.dict(os.environ, {"CODEX_LINUX_VM_STATE_DIR": str(self.state / "linux-vm")})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def listeners(self, argv, **options):
+        """lsof is not at the same path on every host; the backend owns its listener."""
+        if argv[0] == "/usr/sbin/lsof":
+            return f"{self.backend.pid}\n"
+        return CHECK_OUTPUT(argv, **options)
+
+    def test_backend_restarts_after_a_swap_that_changes_shared_modules(self):
+        # Start like the installer process: no packaged module is imported yet.
+        with patch.dict(sys.modules), patch.object(sys, "path", list(sys.path)), \
+                patch.object(installer.recovery.subprocess, "check_output", self.listeners):
+            for name, module in list(sys.modules.items()):
+                if Path(getattr(module, "__file__", None) or "/").parent == SERVER_SOURCE:
+                    del sys.modules[name]
+            code, _ = installer.install(self.state, self.config, applications=self.applications,
+                                        run=FakeMac().run, sleep=lambda seconds: None)
+        self.assertEqual(code, installer.INSTALLED)
+        self.assertEqual(updates.read_build(self.installed), NEW)
+        receipt = json.loads((self.state / updates.RECEIPT_FILE).read_text())
+        self.assertEqual(receipt["backend"], "stopped")
+        self.assertEqual(self.backend.wait(10), -signal.SIGTERM)
 
 
 class RecoveryHook(unittest.TestCase):
