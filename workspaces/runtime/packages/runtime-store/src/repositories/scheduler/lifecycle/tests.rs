@@ -345,3 +345,69 @@ fn an_observed_turn_without_acceptance_stays_unknown_after_a_restart() {
         assert_eq!(agent["autoWake"], false);
     }
 }
+
+#[test]
+fn a_later_finished_turn_closes_a_pending_restart_marker() {
+    // Rehearsal 9, agent 3a35babb: a turn ran at the backend swap, so restart
+    // recovery left a pending marker. Its history was never read; the user's
+    // next turn finished and startup cleanup removed that settled attempt. The
+    // next restart must not interrupt the idle agent for the old turn again.
+    let mut connection = database();
+    put(
+        &connection,
+        json!({
+            "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-old",
+            "turnEpoch": 0, "error": null,
+            "startAttempt": python_attempt("old", Some("turn-old"), false)
+        }),
+    );
+    restart_and_reconnect(&mut connection, 1);
+    let mut next = stored(&connection);
+    assert_eq!(next["restartRecovery"]["stage"], "pending");
+    // The user's message runs a new turn on the same thread.
+    next["status"] = json!("running");
+    next["autoWake"] = json!(true);
+    next["inFlight"] = json!(true);
+    next["error"] = Value::Null;
+    next["turnId"] = json!("turn-next");
+    next["startAttempt"] = json!({
+        "id": "next", "epoch": 0, "submitted": true, "turnId": "turn-next",
+        "threadId": "thread", "accountKey": ACCOUNT, "events": ["message"],
+        "connectionGeneration": 1, "requestTicket": "ticket"
+    });
+    put(&connection, next);
+    connection
+        .execute_batch(
+            "INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);",
+        )
+        .expect("event writes");
+    let settled = with(&mut connection, |tx| {
+        SchedulerRepository::settle_terminal(
+            tx,
+            AGENT,
+            0,
+            "next",
+            "turn-next",
+            AgentStatus::Completed,
+            None,
+            "completed",
+            None,
+            &[],
+        )
+        .expect("settlement runs")
+    });
+    assert!(settled);
+    let mut idle = stored(&connection);
+    // Startup cleanup removes the settled attempt.
+    idle.as_object_mut()
+        .expect("record object")
+        .remove("startAttempt");
+    put(&connection, idle);
+    let expected = stored(&connection);
+    restart_and_reconnect(&mut connection, 1);
+    let agent = stored(&connection);
+    assert_eq!(agent, expected);
+    assert_eq!(agent["status"], "completed");
+    assert_eq!(agent["restartRecovery"]["stage"], "finished", "{agent}");
+    assert_eq!(agent["restartRecovery"]["replacedByTurn"], "turn-next");
+}

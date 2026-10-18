@@ -184,11 +184,36 @@ impl RecoveryJob {
 /// Each load examines at most 32 rows and hands off at most one eligible row;
 /// unread rows stay after the cursor regardless of the scan's backoff eviction.
 /// The account owner loads again only when its prior recovery has finished.
+///
+/// An empty load does not mean that the account has no eligible row: a full
+/// page without an eligible row also returns nothing. A caller that must visit
+/// every row once uses [`RecoveryCursor::sweep`] and loads until
+/// [`RecoveryCursor::swept`].
 #[derive(Default)]
 pub struct RecoveryCursor {
     agents: String,
     tasks: String,
     task_page: bool,
+    /// One pass: a table that reached its end is not read again.
+    single_pass: bool,
+    agents_ended: bool,
+    tasks_ended: bool,
+}
+impl RecoveryCursor {
+    /// A cursor that reads each table once, from its first row to its end.
+    #[must_use]
+    pub fn sweep() -> Self {
+        Self {
+            single_pass: true,
+            ..Self::default()
+        }
+    }
+
+    /// Both the agent table and the task table were read to their end.
+    #[must_use]
+    pub fn swept(&self) -> bool {
+        self.agents_ended && self.tasks_ended
+    }
 }
 pub fn load_recovery_jobs(
     store: &RuntimeStore,
@@ -200,6 +225,14 @@ pub fn load_recovery_jobs(
     let task_page = cursor.task_page;
     // A located row refusal must not pin either table's disposable scan state.
     cursor.task_page = !task_page;
+    let ended = if task_page {
+        cursor.tasks_ended
+    } else {
+        cursor.agents_ended
+    };
+    if cursor.single_pass && ended {
+        return Ok(jobs);
+    }
     if task_page {
         let mut stmt=db.prepare_cached("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
         let rows = stmt
@@ -234,6 +267,7 @@ pub fn load_recovery_jobs(
         }
         if jobs.is_empty() && !full {
             cursor.tasks.clear();
+            cursor.tasks_ended = true;
         }
     } else {
         let mut stmt=db.prepare_cached("SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
@@ -265,6 +299,7 @@ pub fn load_recovery_jobs(
         }
         if jobs.is_empty() && !full {
             cursor.agents.clear();
+            cursor.agents_ended = true;
         }
     }
     Ok(jobs)

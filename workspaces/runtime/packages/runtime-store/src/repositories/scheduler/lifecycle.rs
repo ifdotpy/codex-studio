@@ -1267,6 +1267,21 @@ impl SchedulerRepository {
             marker["reconciledAt"] = json!(timestamp());
             marker["outcome"] = json!(native_status);
         }
+        // A later turn of the same thread finished, so the restart turn can no
+        // longer continue. An open marker would let the next restart interrupt
+        // this idle agent again (rehearsal 9, agent 3a35babb).
+        let thread = agent.extra.get("threadId").cloned();
+        if let Some(marker) = agent.extra.get_mut("restartRecovery")
+            && restart_marker_open(marker)
+            && marker["turnId"].as_str().is_some_and(|old| old != turn_id)
+            && marker["epoch"] == epoch
+            && thread.is_some_and(|thread| marker["threadId"] == thread)
+        {
+            marker["stage"] = json!("finished");
+            marker["reconciledAt"] = json!(timestamp());
+            marker["outcome"] = json!("replaced");
+            marker["replacedByTurn"] = json!(turn_id);
+        }
         let clears_unknown = agent
             .extra
             .get("startOutcomeHold")
