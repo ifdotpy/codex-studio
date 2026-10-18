@@ -18,7 +18,7 @@ from studio_api.multi_server.models import (
     AccessAuditResponse, AccessSnapshot, AcceptInvite, CreateInvite, DevicePairRequest,
     DevicePairResponse, InvitationResponse, ManagementRequest, RevokeClient,
     ServerOperationRequest, ServerOperationResponse, DiscoveryIdentity, AutoPairRequest,
-    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer, SetServerAlias, SetServerName, RenameServer, ServerIdentityResponse,
+    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer, SetServerAlias, SetServerName, RenameServer, ServerIdentityResponse, ReplaceServer,
 )
 from studio_api.models import ErrorResponse
 
@@ -104,6 +104,13 @@ def create_router(context: ApiContext) -> APIRouter:
                     service.rename(body.label, body.requestId, actor)
                     return service.snapshot()
                 return service.set_server_name(body.serverId, body.label, body.requestId, actor)
+            if isinstance(body, ReplaceServer):
+                # The owner session, or the owner's paired UI; never a server credential.
+                proxied = any(request.headers.get(name) is not None for name in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"))
+                allowed = principal.get("kind") == "ui" and not principal.get("pairing") if principal else not proxied
+                if not allowed:
+                    raise AccessError(403, "local_session_required", "Use the owner session to replace a server identity.")
+                return service.replace_server(body.oldServerId, body.newServerId, body.requestId, actor)
             if isinstance(body, (DiscoverServers, UiInvite, SetServerAlias)):
                 if principal or any(request.headers.get(name) is not None for name in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto")):
                     raise AccessError(403, "local_session_required", "This action requires the local server session")

@@ -47,6 +47,8 @@ export type SidebarServices = {
   byOwner: (ownerId: string) => SidebarBackend;
   serverForChat: (id: string) => string;
   available?: (target: SidebarTarget) => boolean;
+  /** Why actions on the target are disabled, or null when they are available. */
+  unavailable?: (target: SidebarTarget) => string | null;
   project?: (path: string, target: SidebarTarget) => Project;
   displayPath?: (path: string, target?: SidebarTarget) => string;
   chatPath?: (id: string) => string;

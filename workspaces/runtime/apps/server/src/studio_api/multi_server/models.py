@@ -57,6 +57,7 @@ class AccessClient(ContractModel):
     lastSeen: float | None = None
     autoPair: bool | None = None
     alias: str | None = None
+    replacedBy: str | None = Field(default=None, description="The server identity that succeeds this lost identity.")
 
 
 class DiscoveredServer(AccessClient):
@@ -84,6 +85,16 @@ class DiscoveryIdentity(ServerIdentity, ResponseModel):
     autoPair: bool
 
 
+class IdentityAlert(ContractModel):
+    """A server identity change that leaves live references to the lost identity."""
+
+    code: Literal["peer_identity_changed", "local_identity_changed"]
+    oldServerId: str
+    newServerId: str
+    origin: str | None
+    detail: str
+
+
 class AccessSnapshot(ResponseModel):
     protocol: AccessProtocolVersion
     identity: ServerIdentity
@@ -91,13 +102,15 @@ class AccessSnapshot(ResponseModel):
     servers: list[DiscoveredServer]
     invites: list[InviteSummary]
     settings: AccessSettings
+    identityAlerts: list[IdentityAlert] = Field(
+        default_factory=list, description="Fix each alert with the replace_server action.")
 
 
 class AccessAudit(ContractModel):
     sequence: SafeInt
     clientId: str
     actorId: str
-    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings", "alias", "name"]
+    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings", "alias", "name", "replace_server"]
     created: float
 
 
@@ -160,6 +173,15 @@ class RenameServer(ContractModel):
     requestId: str = Field(min_length=1, max_length=128)
 
 
+class ReplaceServer(ContractModel):
+    """Record that a paired server, or this server, succeeds a lost server identity."""
+
+    action: Literal["replace_server"]
+    oldServerId: str = Field(min_length=1, max_length=128)
+    newServerId: str = Field(min_length=1, max_length=128)
+    requestId: str = Field(min_length=1, max_length=128)
+
+
 class UnrevokeServer(ContractModel):
     action: Literal["unrevoke"]
     clientId: str = Field(min_length=1, max_length=128)
@@ -175,7 +197,7 @@ class AutoPairRequest(ContractModel):
     requestId: str = Field(min_length=1, max_length=128)
 
 
-ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer | SetServerAlias | SetServerName, Field(discriminator="action")]
+ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer | SetServerAlias | SetServerName | ReplaceServer, Field(discriminator="action")]
 
 
 class DevicePairRequest(ContractModel):

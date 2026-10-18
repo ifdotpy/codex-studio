@@ -116,6 +116,12 @@ def _check_response_identity(value: dict[str, Any], server_id: str, public_key: 
             raise AccessError(403, "server_mismatch", "The server response identity does not match the paired server")
 
 
+def _credential_state(record: dict[str, Any] | None) -> tuple[Any, ...]:
+    """The fields a replacement depends on; activity times can change concurrently."""
+    record = record or {}
+    return tuple(record.get(key) for key in ("status", "kind", "origin", "publicKey", "replacedBy"))
+
+
 def _ed25519_key(value: object) -> bool:
     if not isinstance(value, str) or len(value) > 4096:
         return False
@@ -561,7 +567,7 @@ class MultiServerService:
     @staticmethod
     def _public(client: dict[str, Any]) -> dict[str, Any]:
         return {key: client.get(key) for key in ("id", "clientId", "serverId", "label", "kind", "origin", "publicKey",
-                                                "tailscaleUser", "status", "created", "lastAccess", "revoked", "alias")}
+                                                "tailscaleUser", "status", "created", "lastAccess", "revoked", "alias", "replacedBy")}
 
     def server_aliases(self) -> dict[str, str]:
         from codex_server_aliases import ensure_aliases
@@ -596,18 +602,143 @@ class MultiServerService:
                 self._audit(db, target, "alias", actor)
         return self.snapshot()
 
+    def replace_server(self, old: str, new: str, request_id: str, actor: str) -> dict[str, Any]:
+        """Record that server identity `new` succeeds the lost identity `old` and rewrite live
+        references (docs/multi-server.md, "Replace a lost server identity")."""
+        from codex_server_replacement import ReplacementConflict, replace_references
+        _id(old, "old server ID")
+        _id(new, "new server ID")
+        _id(request_id, "request ID")
+        local = self.local_server_id
+        if old == new or old == local:
+            raise AccessError(400, "invalid_replacement", "Select a lost server identity and a different successor.")
+        discovery = self.discovery()  # It owns the discovery table that this operation reads.
+        with self.runtime.read_db() as db:
+            done = self._replaced(db, old, new, request_id)
+            lost, credential = ({}, None) if done else self._lost_identity(db, old, new, local)
+        if done:
+            return self.snapshot()
+        successor: dict[str, Any] | None = None
+        if new != local:
+            successor = self.paired_server(new)
+            owner = self._login()
+            if (lost.get("origin") != successor["origin"]
+                    or str(lost.get("tailscaleUser") or "").strip().lower() != owner
+                    or str(successor.get("tailscaleUser") or "").strip().lower() != owner):
+                raise AccessError(403, "identity_mismatch", "Both identities need the same origin and Tailscale owner.")
+            # The live proof: the shared origin now presents the successor, not the lost identity.
+            presented = discovery.probe(successor["origin"])
+            if (presented["serverId"] != new or presented["publicKey"] != successor["publicKey"]
+                    or presented["tailscaleUser"].strip().lower() != owner):
+                raise AccessError(403, "identity_mismatch", "The origin does not present the successor identity.")
+        # A local succession has no saved key or name for the old identity.
+        defaults = {"label": (self._keys()["label"] + " (previous identity)")[:80], "publicKey": "",
+                    "origin": self.public_origin, "tailscaleUser": None, "lastAccess": None}
+        # The runtime lock comes first, as in other writers of agents and projects.
+        with getattr(self.runtime, "lock", self.lock), self._write() as db:
+            if not self._replaced(db, old, new, request_id):
+                current = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (old,)).fetchone())
+                peer = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (new,)).fetchone())
+                if (_credential_state(current) != _credential_state(credential)
+                        or (successor is not None and _credential_state(peer) != _credential_state(successor))):
+                    raise AccessError(409, "request_pending", "The server records changed. Try again with the same request ID.")
+                try:
+                    changes = replace_references(self.runtime, db, old, new)
+                except ReplacementConflict as error:
+                    raise AccessError(409, "replacement_conflict", str(error)) from None
+                now = time.time()
+                record: dict[str, Any] = {**defaults, "created": now}
+                record.update({key: lost[key] for key in ("label", "origin", "publicKey", "tailscaleUser", "created", "lastAccess")
+                               if key in lost})
+                record.update(current or {})
+                alias = record.pop("alias", None)
+                record.update(id=old, clientId=old, serverId=old, kind="server", status="revoked",
+                              revoked=record.get("revoked") or now, replacedBy=new,
+                              replacement={"requestId": request_id, "actorId": actor, "created": now, **changes})
+                if alias and successor is not None:
+                    db.execute("UPDATE runtime_access_clients SET record=json_set(record,'$.alias',?) WHERE id=?", (alias, new))
+                db.execute("INSERT INTO runtime_access_clients VALUES(?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                           (old, _json(record)))
+                db.execute("DELETE FROM runtime_access_discovered WHERE id=?", (old,))
+                db.execute("DELETE FROM runtime_access_auto_attempts WHERE id=?", (old,))
+                self._audit(db, old, "replace_server", actor)
+        return self.snapshot()
+
+    @staticmethod
+    def _replaced(db: sqlite3.Connection, old: str, new: str, request_id: str) -> bool:
+        """True when this replacement is already recorded; a conflicting one fails."""
+        saved = _record(db.execute(
+            "SELECT record FROM runtime_access_clients WHERE json_extract(record,'$.replacement.requestId')=?",
+            (request_id,)).fetchone())
+        if saved and (saved["id"], saved.get("replacedBy")) != (old, new):
+            raise AccessError(409, "request_conflict", "The request ID has different content.")
+        current = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (old,)).fetchone())
+        replaced_by = (current or {}).get("replacedBy")
+        if replaced_by and replaced_by != new:
+            raise AccessError(409, "already_replaced", "Another server already succeeds this identity.")
+        return bool(replaced_by)
+
+    @staticmethod
+    def _lost_identity(db: sqlite3.Connection, old: str, new: str,
+                       local: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """The saved identity of `old` and its credential record, if any."""
+        from codex_server_replacement import previous_local_identities
+        credential = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (old,)).fetchone())
+        if credential and credential.get("kind") != "server":
+            raise AccessError(409, "unknown_server", "The old identity is not a server.")
+        if new == local:
+            if credential and credential.get("status") == "paired":
+                raise AccessError(409, "server_still_paired", "A paired server uses this identity. Revoke it first.")
+            if old not in previous_local_identities(db, local):
+                raise AccessError(409, "unknown_server", "Local state does not name this identity as this server.")
+            return credential or {}, credential
+        lost = credential or _record(db.execute("SELECT record FROM runtime_access_discovered WHERE id=?", (old,)).fetchone())
+        if not lost:
+            raise AccessError(409, "unknown_server", "This server has no saved identity for the old server.")
+        return lost, credential
+
+    def identity_alerts(self, db: sqlite3.Connection, local: str) -> list[dict[str, Any]]:
+        """Identity changes that leave live references to a lost server (derived, never stored)."""
+        from codex_server_replacement import previous_local_identities
+        records = [cast(dict[str, Any], _record(row)) for row in db.execute(
+            "SELECT record FROM runtime_access_clients WHERE json_extract(record,'$.kind')='server'")]
+        replaced = {record["id"] for record in records if record.get("replacedBy")}
+        known = {record["id"]: record for record in records}
+        for row in db.execute("SELECT record FROM runtime_access_discovered"):
+            record = cast(dict[str, Any], _record(row))
+            known.setdefault(record["id"], record)
+        alerts = []
+        for successor in sorted((record for record in records if record.get("status") == "paired"), key=lambda r: r["id"]):
+            for old in sorted(known):
+                peer = known[old]
+                if old != successor["id"] and old not in replaced and successor.get("origin") and peer.get("origin") == successor["origin"]:
+                    alerts.append({"code": "peer_identity_changed", "oldServerId": old, "newServerId": successor["id"],
+                                   "origin": successor["origin"],
+                                   "detail": f"{successor['origin']} now presents server {successor['id']}. Run replace_server "
+                                             f"with oldServerId {old} after the old identity is gone."})
+        for old in sorted(previous_local_identities(db, local) - replaced):
+            alerts.append({"code": "local_identity_changed", "oldServerId": old, "newServerId": local,
+                           "origin": self.public_origin,
+                           "detail": f"Local state still names this server {old}. Run replace_server here, and on each "
+                                     f"paired server that names {old}, with newServerId {local}."})
+        return alerts
+
     def snapshot(self) -> dict[str, Any]:
         aliases = self.server_aliases()
+        discovery = self.discovery()
+        local = self.local_server_id
         with self.runtime.read_db() as db:
             clients = [self._public(cast(dict[str, Any], _record(row))) for row in db.execute("SELECT record FROM runtime_access_clients ORDER BY id")]
             invites = []
             for row in db.execute("SELECT record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100"):
                 record = cast(dict[str, Any], _record(row))
                 invites.append({key: record.get(key) for key in ("inviteId", "expires", "created", "status")})
+            alerts = self.identity_alerts(db, local)
         return {"protocol": PROTOCOL, "identity": self.identity(), "clients": clients,
                 "servers": self.servers(), "invites": invites,
-                "settings": {"autoPair": self.discovery().enabled(),
-                             "autoUpdate": self.discovery().auto_update_enabled(), "aliases": aliases}}
+                "settings": {"autoPair": discovery.enabled(),
+                             "autoUpdate": discovery.auto_update_enabled(), "aliases": aliases},
+                "identityAlerts": alerts}
 
     def create_invite(self, body: dict[str, Any], actor: str = "local") -> dict[str, Any]:
         request_id = _id(body.get("requestId"), "request ID")

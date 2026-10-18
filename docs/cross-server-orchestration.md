@@ -106,6 +106,12 @@ a fetch receipt can leave its result unknown; inspect `FETCH_HEAD` before use.
 A stop marker does not prove a native stop. The stop receipt stays unknown until
 the worker has no active native turn or input.
 
+A server that lost its identity file gets a new server ID. Links, workers, and
+project aliases on its peers keep the old ID until the owner runs
+`replace_server` (see the multi-server contract). That operation moves the live
+routes to the new ID and closes queued requests to the old ID as `unknown`.
+It never resends them.
+
 ## Checks
 
 Run `python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/multi-server-orchestration-contract.py`.

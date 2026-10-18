@@ -22,6 +22,7 @@ import {
   Menu,
   Modal,
   TextInput,
+  Tooltip,
   UnstyledButton,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
@@ -171,6 +172,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const services = p.services;
   const canEdit = (target: SidebarTarget) =>
     services.available?.(target) ?? true;
+  /** Why an action on this target is disabled, or null when it is available. */
+  const unavailableReason = (target: SidebarTarget) =>
+    canEdit(target)
+      ? null
+      : services.unavailable?.(target) || "The server is unavailable.";
   const projectTarget = (
     path: string,
     folder?: string,
@@ -1461,16 +1467,32 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   {closed ? <Folder size={18} /> : <FolderOpen size={18} />}
                   <span title={group.name}>{group.name}</span>
                 </UnstyledButton>
-                {!archive && (!compact || !!group.path) && (
-                  <ActionIcon
-                    className="project-tree-action"
-                    aria-label={`New chat in ${group.name}`}
-                    onClick={() => p.newChat(group.path || undefined)}
-                    disabled={p.creating || !canEdit(projectTarget(group.path))}
-                  >
-                    <Plus size={15} />
-                  </ActionIcon>
-                )}
+                {!archive &&
+                  (!compact || !!group.path) &&
+                  (() => {
+                    const blocked = unavailableReason(
+                      projectTarget(group.path),
+                    );
+                    // A disabled button gets no pointer events, so an unavailable
+                    // owner keeps events to show its reason and ignores the click.
+                    return (
+                      <Tooltip label={blocked} disabled={!blocked} withinPortal>
+                        <ActionIcon
+                          className="project-tree-action"
+                          aria-label={`New chat in ${group.name}`}
+                          aria-description={blocked || undefined}
+                          aria-disabled={blocked ? true : undefined}
+                          data-disabled={blocked ? true : undefined}
+                          onClick={() => {
+                            if (!blocked) p.newChat(group.path || undefined);
+                          }}
+                          disabled={p.creating}
+                        >
+                          <Plus size={15} />
+                        </ActionIcon>
+                      </Tooltip>
+                    );
+                  })()}
                 {!!group.path && (
                   <Menu withinPortal position="bottom-end">
                     <Menu.Target>

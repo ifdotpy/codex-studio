@@ -91,6 +91,33 @@ export default function ServerManager({
           Retry saved request
         </ActionButton>
       )}
+      {localEnabled && !!discovery.snapshot?.identityAlerts?.length && (
+        <SettingsSection title="Server identity changes">
+          {discovery.snapshot.identityAlerts.map((alert) => (
+            <Group
+              key={`${alert.oldServerId}:${alert.newServerId}`}
+              justify="space-between"
+              wrap="nowrap"
+              role="alert"
+            >
+              <Text size="sm">{alert.detail}</Text>
+              <ActionButton
+                actionRole="secondary"
+                size="xs"
+                disabled={busy || discovery.busy}
+                onClick={() =>
+                  void discovery.replaceServer(
+                    alert.oldServerId,
+                    alert.newServerId,
+                  )
+                }
+              >
+                Replace {alert.oldServerId.slice(0, 8)}
+              </ActionButton>
+            </Group>
+          ))}
+        </SettingsSection>
+      )}
       <SettingsSection title="Servers">
         <div className="server-card-grid">
           {serverRows(servers, discovery.snapshot?.servers || [], statuses).map(
@@ -196,16 +223,18 @@ export default function ServerManager({
                           Revoke
                         </ActionButton>
                       )}
-                      {peer?.status === "revoked" && localEnabled && (
-                        <ActionButton
-                          actionRole="secondary"
-                          size="xs"
-                          disabled={busy || discovery.busy}
-                          onClick={() => discovery.allowAgain(peer.id)}
-                        >
-                          Allow again
-                        </ActionButton>
-                      )}
+                      {peer?.status === "revoked" &&
+                        !peer.replacedBy &&
+                        localEnabled && (
+                          <ActionButton
+                            actionRole="secondary"
+                            size="xs"
+                            disabled={busy || discovery.busy}
+                            onClick={() => discovery.allowAgain(peer.id)}
+                          >
+                            Allow again
+                          </ActionButton>
+                        )}
                     </Group>
                   </header>
                   <dl className="server-settings-facts">

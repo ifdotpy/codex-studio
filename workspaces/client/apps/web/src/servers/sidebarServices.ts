@@ -351,6 +351,8 @@ export function createMergedSidebarServices(
         return false;
       }
     },
+    unavailable: (target: SidebarTarget) =>
+      sidebarUnavailableReason(model, target, online, aliases),
     project: (path: string, target: SidebarTarget) =>
       sidebarProject(model, sidebarOwner(model, target), path),
     displayPath: (path: string, target?: SidebarTarget) =>
@@ -363,6 +365,30 @@ export function createMergedSidebarServices(
     layrSync: (path: string) => sidebarLayrSync(model, aliases, path),
     vault: (path: string) => sidebarVault(model, aliases, path),
   };
+}
+
+/** Why actions on a target are disabled, or null when its owner is online. Project
+ * metadata belongs to the project's home server, so a home that no connected server
+ * reports keeps the actions disabled and names that server. */
+export function sidebarUnavailableReason(
+  model: MergedSidebar,
+  target: SidebarTarget,
+  online: (owner: string) => boolean,
+  aliases: Record<string, string>,
+): string | null {
+  let owner: string;
+  try {
+    owner = sidebarOwner(model, target);
+  } catch {
+    return "This item is unavailable on its server.";
+  }
+  if (online(owner)) return null;
+  if (model.sourceById.has(owner))
+    return `Server ${aliases[owner] || owner} is offline.`;
+  return (
+    `The project's home server ${owner} is not connected. ` +
+    "If that server lost its identity, run replace_server on the server that still names it."
+  );
 }
 
 /** Each server reports layr readiness for its own folder of the project; Linux servers report
