@@ -181,6 +181,14 @@ pub struct VoiceDeleteIntent {
 }
 
 const DELETE_VOICE_RECEIPT_SIGNATURE: &str = "voice-agent-delete-v1";
+/// SQL predicate over a delete-voice receipt row: nothing is held and every captured
+/// session ended in a final result (`written` or `rejected`), so no stop is owed or
+/// replayable. An intent with no sessions is settled. `unknown` and `not_sent` are not final.
+const DELETE_VOICE_SETTLED: &str = "signature='voice-agent-delete-v1' \
+    AND json_array_length(COALESCE(json_extract(result,'$.voiceEndHeldUncertain'),'[]'))=0 \
+    AND (SELECT COUNT(*) FROM json_each(result,'$.voiceEndResults') \
+         WHERE value IN ('written','rejected')) \
+        >= json_array_length(json_extract(result,'$.voiceEndSessions'))";
 
 async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceRequestReceipt {
     provider
@@ -389,6 +397,16 @@ pub fn stage_delete_sessions(
     }
 
     let (sessions, held_uncertain) = capture_delete_voice_sessions(transaction, agent_id)?;
+    if sessions.is_empty() && held_uncertain.is_empty() {
+        // No stop is owed, so no receipt: an empty intent carries no recovery obligation.
+        return Ok(VoiceDeleteIntent {
+            id: receipt_id,
+            agent_id: agent_id.to_owned(),
+            epoch: agent.epoch,
+            sessions,
+            held_uncertain,
+        });
+    }
     let result = json!({
         "agent": agent_id,
         "epoch": agent.epoch,
@@ -499,6 +517,17 @@ pub async fn pending_delete_intents(
 async fn reconcile_proven_unsent_held_sessions(
     store: &RuntimeStore,
 ) -> Result<(), VoiceProviderError> {
+    // Most passes find nothing held; only a held session needs a write transaction.
+    let any_held: bool = store.read()?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts \
+         WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' \
+           AND json_array_length(COALESCE(json_extract(result,'$.voiceEndHeldUncertain'),'[]'))>0)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !any_held {
+        return Ok(());
+    }
     store
         .transaction_with_error(move |tx| {
             let mut statement = tx.prepare_cached(
@@ -713,11 +742,40 @@ pub async fn end_deleted_sessions_tracked(
                         DELETE_VOICE_RECEIPT_SIGNATURE
                     ],
                 )?;
+                settle_delete_receipt(tx, &deletion_intent_for_update)?;
                 Ok(())
             })
             .await?;
     }
     Ok(())
+}
+
+/// Removes one delete-voice receipt when its intent is settled.
+fn settle_delete_receipt(tx: &Connection, id: &str) -> Result<(), VoiceProviderError> {
+    tx.execute(
+        &format!("DELETE FROM runtime_operation_receipts WHERE id=?1 AND {DELETE_VOICE_SETTLED}"),
+        [id],
+    )?;
+    Ok(())
+}
+
+/// One-time startup cleanup of delete-voice receipts that are already settled, including
+/// the empty ones written before empty intents stopped getting a receipt.
+pub async fn purge_settled_delete_intents(
+    store: &RuntimeStore,
+) -> Result<usize, VoiceProviderError> {
+    store
+        .transaction_with_error(|tx| -> Result<usize, VoiceProviderError> {
+            Ok(tx.execute(
+                &format!(
+                    "DELETE FROM runtime_operation_receipts \
+                     WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' \
+                       AND {DELETE_VOICE_SETTLED}"
+                ),
+                [],
+            )?)
+        })
+        .await
 }
 
 /// Stop all current account/thread voice sessions for an agent. Use this for

@@ -791,6 +791,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             )
             .with_continuation_wake(Arc::clone(&continuation_scheduler_wake)),
         );
+    match studio_runtime_services::voice::provider::purge_settled_delete_intents(&store).await {
+        Ok(purged) if purged > 0 => eprintln!("removed {purged} settled voice deletion receipts"),
+        Ok(_) => {}
+        Err(error) => eprintln!("settled voice deletion receipts remain: {error}"),
+    }
     if let Err(error) = studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts::committed(
         lifecycle_ports.as_ref(),
     )

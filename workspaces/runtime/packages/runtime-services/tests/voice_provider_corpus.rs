@@ -659,23 +659,84 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
     );
     let completed = voice::provider::pending_delete_intents(&store)
         .await
-        .expect("reload completed deletion")
-        .into_iter()
-        .find(|intent| intent.id == intent_id)
-        .expect("completed receipt remains durable");
-    assert!(completed.sessions.is_empty());
+        .expect("reload completed deletion");
+    assert!(
+        completed.iter().all(|intent| intent.id != intent_id),
+        "a written stop settles the intent and removes its receipt"
+    );
     let connection = store.read().expect("read completed receipt");
-    let raw: String = connection
+    let remaining: i64 = connection
         .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
             [&intent_id],
             |row| row.get(0),
         )
-        .expect("delete receipt retained");
-    let result: serde_json::Value = serde_json::from_str(&raw).expect("valid receipt JSON");
+        .expect("count settled receipt");
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn empty_delete_intents_write_no_receipt_and_startup_purges_only_settled_ones() {
+    let (_root, store) = seeded_store().await;
+    let empty = store
+        .transaction_with_error(
+            |transaction| -> Result<_, voice::provider::VoiceProviderError> {
+                voice::provider::stage_delete_sessions(transaction, "agent")
+            },
+        )
+        .await
+        .expect("an agent without voice sessions stages an empty intent");
+    assert!(empty.sessions.is_empty() && empty.held_uncertain.is_empty());
+    let receipts = |store: &RuntimeStore| -> Vec<String> {
+        let connection = store.read().expect("read receipts");
+        let mut statement = connection
+            .prepare("SELECT id FROM runtime_operation_receipts WHERE id LIKE 'agent-delete-voice:%' ORDER BY id")
+            .expect("prepare receipt ids");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query receipt ids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("receipt ids")
+    };
+    assert!(
+        receipts(&store).is_empty(),
+        "no receipt for an empty intent"
+    );
+
+    // Receipts as older builds left them: empty, written, rejected, unknown and not yet sent.
+    store
+        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+            let session = |id: &str| json!({"sessionId":id,"agentId":"a","epoch":0,"accountKey":"account","threadId":"thread","connectionId":"7","generation":1});
+            for (id, sessions, results) in [
+                ("agent-delete-voice:a-empty:0", vec![], json!({})),
+                ("agent-delete-voice:a-written:0", vec!["s1"], json!({"s1":"written"})),
+                ("agent-delete-voice:a-rejected:0", vec!["s1"], json!({"s1":"rejected"})),
+                ("agent-delete-voice:a-unknown:0", vec!["s1"], json!({"s1":"unknown"})),
+                ("agent-delete-voice:a-unsent:0", vec!["s1", "s2"], json!({"s1":"written"})),
+            ] {
+                let agent = id.trim_start_matches("agent-delete-voice:").trim_end_matches(":0");
+                let sessions = sessions.into_iter().map(session).collect::<Vec<_>>();
+                let result = json!({"agent":agent,"epoch":0,"voiceEndSessions":sessions,
+                    "voiceEndHeldUncertain":[],"voiceEndResults":results});
+                transaction.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'voice-agent-delete-v1',?2)",
+                    rusqlite::params![id, result.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("seed legacy receipts");
+    let purged = voice::provider::purge_settled_delete_intents(&store)
+        .await
+        .expect("startup purge");
+    assert_eq!(purged, 3);
     assert_eq!(
-        result["voiceEndResults"]["delete-retry-written-session"],
-        "written"
+        receipts(&store),
+        [
+            "agent-delete-voice:a-unknown:0",
+            "agent-delete-voice:a-unsent:0"
+        ]
     );
 }
 
