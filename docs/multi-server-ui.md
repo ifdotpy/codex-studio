@@ -69,9 +69,13 @@ Removal does not revoke the server pair.
 These actions apply only to the local server's peer records.
 Use the target server's UI access controls to revoke a particular UI client.
 
-UI-only hosts and phone pages through Serve keep manual invitation pairing.
-They do not call local discovery or `ui_invite`.
-A UI-only host has no local server or automatic server setting.
+Every owner UI follows the server's paired-server list, including phones opened
+through its configured Tailscale Serve HTTPS address. The phone uses its existing
+owner session to obtain UI access automatically; it does not run discovery or
+change server pairing settings. Each client keeps its own private UI key.
+
+UI-only hosts without an owner server session keep manual invitation pairing.
+They have no local server or automatic server setting.
 
 ## Pair a UI
 

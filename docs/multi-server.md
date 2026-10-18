@@ -218,7 +218,9 @@ revocation, restart receipts, and authenticated sync.
 ## Auto-discovery
 
 Servers of the same Tailscale owner discover and pair without an invitation.
-Browsers and phones keep the invitation flow. Discovery never changes Serve.
+Owner browser sessions, including phones through Serve, automatically obtain UI
+access to already paired servers. UI-only hosts without an owner session keep
+the manual invitation flow. Discovery never changes Serve.
 Auto-pair is enabled by default on each server.
 
 ### Public identity and mutual server proof
@@ -274,7 +276,7 @@ The existing session authenticates these `POST /api/multi-server` actions:
 | `{action:"settings",autoPair,requestId?}`                     | Access snapshot                | Local session or signed owner    |
 | `{action:"unrevoke",clientId,requestId}`                      | Access snapshot                | Local session or signed owner    |
 | `{action:"alias",serverId,alias,requestId}`                   | Access snapshot                | Local session only               |
-| `{action:"ui_invite",serverId,requestId}`                     | `{invitation,expires}`         | Local session only               |
+| `{action:"ui_invite",serverId,requestId}`                     | `{invitation,expires}`         | Owner session (local or Serve)   |
 | `{action:"replace_server",oldServerId,newServerId,requestId}` | Access snapshot                | Local session or signed owner UI |
 
 An access snapshot adds `settings:{autoPair}`. Its `servers` list contains the

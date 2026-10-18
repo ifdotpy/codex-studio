@@ -58,6 +58,36 @@ pub fn refused(status: u16, code: &'static str, message: &'static str) -> Access
         message,
     }
 }
+/// Who may call a session-only `POST /api/multi-server` action
+/// (docs/multi-server.md, "Auto-discovery"). No signed principal may call one:
+/// neither a paired server nor a paired UI device. Mirrors the Python
+/// `studio_api/multi_server/router.py` `manage` gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionAction {
+    /// The owner session, local or through the configured Serve origin (`ui_invite`).
+    OwnerSession,
+    /// The local session only; a forwarded Serve request is refused (`discover`, `alias`).
+    LocalSession,
+}
+impl SessionAction {
+    pub fn of(action: &str) -> Option<Self> {
+        match action {
+            "ui_invite" => Some(Self::OwnerSession),
+            "discover" | "alias" => Some(Self::LocalSession),
+            _ => None,
+        }
+    }
+    pub fn refusal(self) -> AccessError {
+        refused(
+            403,
+            "local_session_required",
+            match self {
+                Self::OwnerSession => "This action requires the owner server session",
+                Self::LocalSession => "This action requires the local server session",
+            },
+        )
+    }
+}
 pub(crate) fn schema(schema: &str, value: &Value) -> Result<(), AccessError> {
     match studio_runtime_schema::first_error(schema, value) {
         Ok(None) => Ok(()),
@@ -181,6 +211,9 @@ impl SignedRequest {
         }
         if request.method == "POST" && request.target.split('?').next() == Some("/api/multi-server")
         {
+            if let Some(action) = SessionAction::of(text(&request.body, "action")) {
+                return Err(action.refusal());
+            }
             schema("CreateInvite", &request.body)?;
         }
         if request.is_auto_pairing()

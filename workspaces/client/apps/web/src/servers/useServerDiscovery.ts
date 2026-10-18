@@ -210,7 +210,9 @@ export function useServerDiscovery(
     setSnapshot(next);
     setCheckedAt(Date.now() / 1000);
     setExcluded(excludedServers());
-    if (next && enabled)
+    // Every owner UI, including a phone through Serve, follows the same
+    // paired-server snapshot. Discovery management remains local-only.
+    if (next && localAvailable)
       void controller.current!.reconcile(next).then(
         () => {
           if (active.current) setAccessError("");
@@ -269,13 +271,13 @@ export function useServerDiscovery(
     };
   }, [localAvailable]);
   useEffect(() => {
-    if (!enabled) return;
+    if (!localAvailable) return;
     active.current = true;
     return () => {
       active.current = false;
       controller.current?.stop();
     };
-  }, [enabled]);
+  }, [localAvailable]);
   const run = async (request: ServerAccessRequest) => {
     if ((!enabled && request.action !== "name") || busyRef.current)
       return false;

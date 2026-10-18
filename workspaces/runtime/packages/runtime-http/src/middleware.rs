@@ -647,6 +647,18 @@ fn query_values(query: &str) -> std::collections::BTreeMap<String, Vec<String>> 
     values
 }
 
+/// Headers that Tailscale Serve adds to a forwarded request. Any one of them
+/// marks the request as proxied rather than a local loopback session.
+pub(crate) const FORWARDED_HEADERS: [&str; 3] =
+    ["x-forwarded-host", "x-forwarded-proto", "x-forwarded-for"];
+
+/// True when the request came through the Serve proxy.
+pub(crate) fn forwarded(headers: &HeaderMap) -> bool {
+    FORWARDED_HEADERS
+        .iter()
+        .any(|name| headers.contains_key(*name))
+}
+
 pub(crate) fn trusted(
     headers: &HeaderMap,
     write: bool,
@@ -661,7 +673,7 @@ pub(crate) fn trusted(
     }
     let host = headers.get_all(header::HOST);
     if host.iter().count() != 1
-        || ["x-forwarded-host", "x-forwarded-proto", "x-forwarded-for"]
+        || FORWARDED_HEADERS
             .iter()
             .any(|name| headers.get_all(*name).iter().count() > 1)
     {
@@ -673,9 +685,7 @@ pub(crate) fn trusted(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let local_hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
-    let forwarded = ["x-forwarded-host", "x-forwarded-proto", "x-forwarded-for"]
-        .iter()
-        .any(|name| headers.contains_key(*name));
+    let forwarded = forwarded(headers);
     if is_frame_account_path(path) && !forwarded && frame_account_origin(headers, host, port) {
         if write {
             let supplied = headers
