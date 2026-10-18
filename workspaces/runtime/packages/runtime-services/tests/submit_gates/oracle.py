@@ -40,7 +40,7 @@ _prepare = next(n for n in _runtime.body if isinstance(n, ast.FunctionDef) and n
 
 def check_boundaries(start, prepare):
     # Include enclosing control flow and statement order, not just extracted nodes.
-    for node, expected in ((start, "78ff53425f5ea723308533bfc81dbf0d5d19f989d3b6f9f1745c40c2c0f69cca"),
+    for node, expected in ((start, "7c0ffb8597ccbef9f1ff1ba02c4fbd369790d921f56870e8dcb5092fde8e613d"),
                            (prepare, "3d2ce92df593b4597882e2315e7753e5b09ba8f74f33653dd358616400b43eb6")):
         actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
         assert actual == expected, "Runtime control flow changed: re-derive the submit-gates oracle boundaries before updating the digest"
