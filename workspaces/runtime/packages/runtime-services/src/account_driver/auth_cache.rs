@@ -110,7 +110,8 @@ impl Entry {
 fn watch_directory(
     directory: &Path,
     credential_files: &'static [&'static str],
-    generation: &Arc<AtomicU64>) -> Option<RecommendedWatcher> {
+    generation: &Arc<AtomicU64>,
+) -> Option<RecommendedWatcher> {
     let watched = directory.to_owned();
     let counter = Arc::clone(generation);
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
@@ -134,9 +135,7 @@ fn watch_directory(
         }
     })
     .ok()?;
-    watcher
-        .watch(directory, RecursiveMode::NonRecursive)
-        .ok()?;
+    watcher.watch(directory, RecursiveMode::NonRecursive).ok()?;
     Some(watcher)
 }
 

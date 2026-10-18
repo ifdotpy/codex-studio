@@ -127,7 +127,11 @@ impl ClaudeAccountPin {
         SystemProviderAuthReader.invalidate(&AuthProfile {
             provider: "claude".to_owned(),
             home: self.0["home"].as_str().unwrap_or_default().into(),
-            claude_options: self.0.get("claudeOptions").filter(|v| !v.is_null()).cloned(),
+            claude_options: self
+                .0
+                .get("claudeOptions")
+                .filter(|v| !v.is_null())
+                .cloned(),
         });
     }
 }

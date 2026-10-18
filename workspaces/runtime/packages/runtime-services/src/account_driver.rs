@@ -4,8 +4,8 @@
 //! validates the resulting document, and atomically persists it while holding
 //! the driver's mutex. Credential material is never retained in this module.
 
-pub mod claude;
 mod auth_cache;
+pub mod claude;
 #[cfg(test)]
 #[allow(clippy::duplicate_mod)]
 #[path = "../tests/support/prepared_python.rs"]
