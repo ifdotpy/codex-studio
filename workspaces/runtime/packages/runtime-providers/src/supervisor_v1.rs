@@ -1,5 +1,5 @@
 //! Pure protocol-v1 admission and journal decisions. No I/O or clock access.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -10,6 +10,37 @@ pub const MAX_HANDLE_CHARACTERS: usize = 180;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("{0}")]
 pub struct Refusal(pub &'static str);
+
+/// The provider JSON-RPC message id of one supervisor write: the `nativeId` request field,
+/// the `remoteId` result field, and the `operations.native_id` journal column.
+///
+/// This type owns that contract for every Rust reader and writer. Codex app-server ids are
+/// integers. The Claude bridge gives its server requests string ids (`claude:<uuid>`), and a
+/// reply to one carries that string. The Python supervisor
+/// (`codex_process_supervisor.Child.write`) journals the id it receives without conversion,
+/// so one journal can hold integer, text and null ids. Only an integer is an RPC identity
+/// that the supervisor renumbers and that `operationStatus` can prove. The parity check is
+/// `supervisor_python_written_text_native_ids_stay_exact` in the runtime-services tests.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum NativeId {
+    Integer(i64),
+    Text(String),
+}
+impl NativeId {
+    /// The integer RPC identity, or `None` for a text id.
+    pub fn rpc(&self) -> Option<i64> {
+        match self {
+            Self::Integer(id) => Some(*id),
+            Self::Text(_) => None,
+        }
+    }
+}
+impl From<i64> for NativeId {
+    fn from(id: i64) -> Self {
+        Self::Integer(id)
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +117,7 @@ pub enum Command {
         #[serde(rename = "operationId")]
         operation_id: String,
         #[serde(rename = "nativeId")]
-        native_id: Option<u64>,
+        native_id: Option<NativeId>,
         message: serde_json::Map<String, Value>,
     },
     #[serde(rename = "next")]
@@ -219,7 +250,7 @@ impl HandleSnapshot {
         &self,
         prior: Option<&ReceiptSnapshot>,
         digest: &str,
-        native_id: Option<u64>,
+        native_id: Option<&NativeId>,
         message: &Value,
         buffered: u64,
     ) -> Result<WriteDecision, Refusal> {
@@ -230,7 +261,7 @@ impl HandleSnapshot {
                 ));
             }
             return Ok(WriteDecision::Duplicate {
-                remote_id: prior.record.native_id,
+                remote_id: prior.record.native_id.clone(),
             });
         }
         if buffered >= HANDLE_LIMIT {
@@ -238,18 +269,21 @@ impl HandleSnapshot {
                 "Supervisor output journal is full; waiting for backend replay acknowledgement",
             ));
         }
-        let rpc = message.get("method").is_some() && native_id.is_some();
+        // Python renumbers only an integer id; a text id is journaled and written unchanged.
+        let rpc = message.get("method").is_some() && native_id.and_then(NativeId::rpc).is_some();
         if rpc && self.record.rpc_sequence + 1 >= i64::MAX as u64 {
             return Err(Refusal("Supervisor RPC sequence exhausted"));
         }
         let remote_id = if rpc {
-            Some(self.record.rpc_sequence + 1)
+            // The bound above keeps the next sequence inside i64.
+            Some(NativeId::Integer((self.record.rpc_sequence + 1) as i64))
         } else {
-            native_id
+            native_id.cloned()
         };
         let mut outbound = message.clone();
         if rpc {
-            outbound["id"] = Value::from(remote_id);
+            outbound["id"] = serde_json::to_value(&remote_id)
+                .map_err(|_| Refusal("Invalid supervisor native id"))?;
         }
         Ok(WriteDecision::Accept {
             remote_id,
@@ -265,7 +299,7 @@ impl HandleSnapshot {
 #[derive(Deserialize)]
 struct ReceiptRecord {
     digest: String,
-    native_id: Option<u64>,
+    native_id: Option<NativeId>,
     generation: Option<u64>,
     response: Option<String>,
     response_sequence: Option<u64>,
@@ -277,8 +311,7 @@ impl ReceiptSnapshot {
     pub fn from_record(record: Value) -> Result<Self, Refusal> {
         let record: ReceiptRecord = serde_json::from_value(record)
             .map_err(|_| Refusal("Invalid supervisor operations record"))?;
-        if record.native_id.is_some_and(|id| id > i64::MAX as u64)
-            || record.generation.is_some_and(|id| id > i64::MAX as u64)
+        if record.generation.is_some_and(|id| id > i64::MAX as u64)
             || record
                 .response_sequence
                 .is_some_and(|id| id > i64::MAX as u64)
@@ -296,9 +329,10 @@ impl ReceiptSnapshot {
         if self.record.generation != Some(current.record.generation) {
             return Ok(json!({"accepted":false,"reason":"native_generation_changed"}));
         }
-        if self.record.native_id.is_none() {
+        // Like Python, only an integer id proves the RPC identity of a monitor request.
+        let Some(native_id) = self.record.native_id.as_ref().and_then(NativeId::rpc) else {
             return Ok(json!({"accepted":false,"reason":"rpc_identity_missing"}));
-        }
+        };
         let response = match (&self.record.response, self.record.response_sequence) {
             (Some(raw), Some(seq)) if seq <= current.record.acknowledged => {
                 serde_json::from_str(raw)
@@ -306,15 +340,15 @@ impl ReceiptSnapshot {
             }
             _ => Value::Null,
         };
-        Ok(json!({"accepted":true,"nativeId":self.record.native_id,"response":response}))
+        Ok(json!({"accepted":true,"nativeId":native_id,"response":response}))
     }
 }
 pub enum WriteDecision {
     Duplicate {
-        remote_id: Option<u64>,
+        remote_id: Option<NativeId>,
     },
     Accept {
-        remote_id: Option<u64>,
+        remote_id: Option<NativeId>,
         rpc_sequence: u64,
         outbound: Value,
     },

@@ -496,7 +496,7 @@ impl Supervisor {
                 let decision = self.journal.accept(
                     &handle,
                     &operation_id,
-                    native_id,
+                    native_id.as_ref(),
                     &Value::Object(message),
                     now()?,
                 )?;

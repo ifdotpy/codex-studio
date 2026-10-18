@@ -64,7 +64,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         let result = slow_supervisor.child_action(Command::Write {
             handle: slow_handle.into(),
             operation_id: "monitor:blocked-child-write".into(),
-            native_id: Some(1),
+            native_id: Some(1.into()),
             message: json!({"method":"finish"}).as_object().unwrap().clone(),
         });
         slow_done_tx.send(result).unwrap();
@@ -110,7 +110,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
     let finish_other = supervisor.child_action(Command::Write {
         handle: other_handle.into(),
         operation_id: "monitor:finish-other-child".into(),
-        native_id: Some(1),
+        native_id: Some(1.into()),
         message: json!({"method":"finish"}).as_object().unwrap().clone(),
     });
     assert!(write_is_gated);

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use strum::Display;
+pub use studio_runtime_providers::supervisor_v1::NativeId;
 
 pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
 pub const SUPERVISOR_NEXT_BATCH_MAX_EVENTS: usize = 64;
@@ -158,7 +159,7 @@ pub struct WriteRequest {
     #[serde(rename = "operationId")]
     pub operation_id: OperationId,
     #[serde(rename = "nativeId")]
-    pub native_id: Option<u64>,
+    pub native_id: Option<NativeId>,
     pub message: Value,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -402,7 +403,7 @@ pub struct WriteResult {
     pub accepted: bool,
     pub duplicate: bool,
     #[serde(rename = "remoteId")]
-    pub remote_id: Option<u64>,
+    pub remote_id: Option<NativeId>,
     #[serde(rename = "durableMs")]
     pub durable_ms: f64,
     #[serde(flatten)]
@@ -414,7 +415,7 @@ pub struct OperationStatusResult {
     pub accepted: bool,
     pub reason: Option<String>,
     #[serde(rename = "nativeId")]
-    pub native_id: Option<u64>,
+    pub native_id: Option<NativeId>,
     pub response: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,

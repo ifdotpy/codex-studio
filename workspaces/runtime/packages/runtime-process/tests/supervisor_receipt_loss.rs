@@ -78,7 +78,7 @@ for line in sys.stdin:
         .write(WriteRequest {
             handle: handle.clone(),
             operation_id: OperationId("monitor:lost".into()),
-            native_id: Some(999),
+            native_id: Some(999.into()),
             message: json!({"method":"echo","params":{"text":"one"}}),
             extra: BTreeMap::new(),
         })
@@ -89,7 +89,7 @@ for line in sys.stdin:
         .write(WriteRequest {
             handle: handle.clone(),
             operation_id: OperationId("monitor:stop".into()),
-            native_id: Some(18),
+            native_id: Some(18.into()),
             message: json!({"method":"stop"}),
             extra: BTreeMap::new(),
         })

@@ -1,6 +1,9 @@
 //! The supervisor's independent FULL-sync journal. Never opens the runtime DB.
 use crate::{python_json, python_json_with_separators, sha256_hex};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, params,
+    types::{Value as SqlValue, ValueRef},
+};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -8,7 +11,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 use studio_runtime_providers::supervisor_v1::{
-    HANDLE_LIMIT, HandleSnapshot, ReceiptSnapshot, Refusal, WriteDecision,
+    HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, Refusal, WriteDecision,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -58,13 +61,34 @@ fn snapshot(db: &Connection, handle: &str) -> Result<HandleSnapshot> {
     })?;
     Ok(HandleSnapshot::from_record(raw)?)
 }
+/// Read `operations.native_id` exactly as stored. The column is declared INTEGER, but the
+/// Python supervisor also stores text ids there (see [`NativeId`]).
+fn stored_native_id(value: ValueRef<'_>) -> Result<Option<NativeId>> {
+    match value {
+        ValueRef::Null => Ok(None),
+        ValueRef::Integer(id) => Ok(Some(NativeId::Integer(id))),
+        ValueRef::Text(text) => std::str::from_utf8(text)
+            .map(|text| Some(NativeId::Text(text.to_owned())))
+            .map_err(|_| Refusal("Invalid supervisor operations native id").into()),
+        ValueRef::Real(_) | ValueRef::Blob(_) => {
+            Err(Refusal("Invalid supervisor operations native id").into())
+        }
+    }
+}
+fn native_sql(id: &NativeId) -> SqlValue {
+    match id {
+        NativeId::Integer(id) => SqlValue::Integer(*id),
+        NativeId::Text(text) => SqlValue::Text(text.clone()),
+    }
+}
 fn receipt(db: &Connection, handle: &str, operation: &str) -> Result<Option<ReceiptSnapshot>> {
     let raw = db.query_row("SELECT digest,native_id,generation,response,response_sequence FROM operations WHERE handle=? AND operation_id=?", params![handle,operation], |row| {
-        Ok(json!({"digest":row.get::<_,String>(0)?,"native_id":row.get::<_,Option<i64>>(1)?,"generation":row.get::<_,Option<i64>>(2)?,"response":row.get::<_,Option<String>>(3)?,"response_sequence":row.get::<_,Option<i64>>(4)?}))
+        Ok((row.get::<_,String>(0)?,stored_native_id(row.get_ref(1)?),row.get::<_,Option<i64>>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<i64>>(4)?))
     }).optional()?;
-    raw.map(ReceiptSnapshot::from_record)
-        .transpose()
-        .map_err(Into::into)
+    raw.map(|(digest, native_id, generation, response, response_sequence)| {
+        Ok(ReceiptSnapshot::from_record(json!({"digest":digest,"native_id":native_id?,"generation":generation,"response":response,"response_sequence":response_sequence}))?)
+    })
+    .transpose()
 }
 fn buffered_sizes(db: &Connection) -> Result<HashMap<String, u64>> {
     let mut statement =
@@ -247,7 +271,7 @@ impl SupervisorJournal {
         &self,
         handle: &str,
         operation: &str,
-        native: Option<u64>,
+        native: Option<&NativeId>,
         message: &Value,
         now: f64,
     ) -> Result<WriteDecision> {
@@ -269,7 +293,13 @@ impl SupervisorJournal {
             )?;
             if let WriteDecision::Accept{remote_id,rpc_sequence,..} = &decision {
                 tx.execute("UPDATE handles SET rpc_sequence=? WHERE id=?",params![sql(*rpc_sequence)?,handle])?;
-                tx.execute("INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) VALUES (?,?,?,?,?,?)",params![handle,operation,digest,remote_id.map(sql).transpose()?,now,sql(state.generation())?])?;
+                tx.execute("INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) VALUES (?,?,?,?,?,?)",params![handle,operation,digest,remote_id.as_ref().map(native_sql),now,sql(state.generation())?])?;
+                // INTEGER affinity turns numeric text such as "42" into a number. Refuse a
+                // write whose receipt would not return the same id, before it commits.
+                let stored = tx.query_row("SELECT native_id FROM operations WHERE handle=? AND operation_id=?",params![handle,operation],|row| Ok(stored_native_id(row.get_ref(0)?)))??;
+                if stored != *remote_id {
+                    return Err(Refusal("Supervisor native id cannot be journaled exactly").into());
+                }
             }
             Ok((decision, None))
         })

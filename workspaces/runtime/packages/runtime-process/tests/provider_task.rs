@@ -785,6 +785,110 @@ for line in sys.stdin:
     }).await;
 }
 
+/// The Claude bridge uses string JSON-RPC ids: `claude:<uuid>` for its own server requests,
+/// and Studio's Claude connection sends `claude:<hex>` requests. Both pass the real Rust
+/// supervisor unchanged, and a retried reply is a duplicate that never reaches the child twice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn real_supervisor_keeps_claude_string_ids_and_writes_a_reply_once() {
+    let state = DisposableState::new();
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start_v2(&state);
+    real_watchdog(async {
+    let bridge = "claude:803e6306-e6a7-4116-bcd3-bb677560a582";
+    let script = r#"
+import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='initialized':
+  print(json.dumps({'id':sys.argv[1],'method':'item/tool/call','params':{'threadId':'t','turnId':'u','callId':'c','tool':'echo','arguments':{}}}),flush=True)
+ elif m.get('method')=='thread/read': print(json.dumps({'id':m['id'],'result':{'echo':m['id']}}),flush=True)
+ elif 'method' not in m: print(json.dumps({'method':'test/reply','params':{'id':m['id'],'result':m['result']}}),flush=True)
+"#;
+    let launch = ProviderLaunchSpec::new(
+        vec![
+            python,
+            "-u".into(),
+            "-c".into(),
+            script.into(),
+            bridge.into(),
+        ],
+        support::child_environment(&state.0),
+        state.0.clone(),
+    );
+    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let mut attachment = factory
+        .open(
+            ProviderHandle::for_account("claude-string-ids"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                launch,
+                expected_generation: None,
+            },
+            Shutdown::default(),
+        )
+        .await
+        .unwrap();
+    let info = real_info(&mut attachment).await;
+    supervisor.own_child(info.pid);
+    real_write(
+        &attachment,
+        "caller:init",
+        json!({"id":"claude-init","method":"initialize","params":{}}),
+    )
+    .await;
+    attachment.journal.recv().await.unwrap();
+    real_write(
+        &attachment,
+        "initialized:account:claude-string-ids",
+        json!({"method":"initialized"}),
+    )
+    .await;
+    let request = attachment.journal.recv().await.unwrap();
+    assert!(
+        matches!(&request.payload, JournalPayload::Frame(Frame::Request(frame)) if frame.id == RequestId::String(bridge.into()))
+    );
+    let reply = json!({"id":bridge,"result":{"contentItems":[],"success":true}});
+    let written = real_write(&attachment, "tool-reply:claude", reply.clone()).await;
+    assert!(matches!(
+        written,
+        CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false
+        }
+    ));
+    let delivered = attachment.journal.recv().await.unwrap();
+    let JournalPayload::Frame(Frame::UnknownMethod(frame)) = &delivered.payload else {
+        panic!("the reply must reach the child once");
+    };
+    assert_eq!(frame.method, "test/reply");
+    assert_eq!(frame.fields["params"]["id"], bridge);
+    // A retry after a lost receipt is a duplicate; the child sees the reply once.
+    assert!(matches!(
+        real_write(&attachment, "tool-reply:claude", reply).await,
+        CommandReceipt::Written {
+            duplicate: true,
+            ..
+        }
+    ));
+    let studio = "claude:00000000000000000000000000000001";
+    real_write(
+        &attachment,
+        "studio-request",
+        json!({"id":studio,"method":"thread/read","params":{"threadId":"t"}}),
+    )
+    .await;
+    let response = attachment.journal.recv().await.unwrap();
+    assert!(
+        matches!(&response.payload, JournalPayload::Frame(Frame::Response { id: RequestId::String(id), .. }) if id == studio),
+        "a second reply would appear here first"
+    );
+    assert!(attachment.shutdown().await.recovery_needed.is_none());
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn lost_ack_receipt_is_unknown_and_does_not_retry() {
     watchdog(async {
