@@ -8,6 +8,14 @@ use studio_runtime_store::{
 };
 
 const THREAD: &str = "fake-thread-0";
+/// A fixture protocol step must make progress without waiting for the production timeout.
+const PROGRESS_GUARD: Duration = Duration::from_secs(5);
+
+async fn progress<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(PROGRESS_GUARD, future)
+        .await
+        .expect("idle protocol progress deadline")
+}
 /// Longer than the longest accepted unload delay.
 const BEYOND_ANY_DELAY: Duration = Duration::from_secs((IDLE_SESSION_UNLOAD_SETTING.max + 1) * 60);
 
@@ -16,13 +24,13 @@ async fn sweep(worker: &AccountHandle, at: tokio::time::Instant) {
 }
 
 async fn answer(peer: &mut Peer, method: &str, params: Value, result: Value) {
-    let request = peer.write(method).await;
+    let request = progress(peer.write(method)).await;
     assert_eq!(request["params"], params, "{method}");
-    peer.reply(&request, result).await;
+    progress(peer.reply(&request, result)).await;
 }
 
 async fn loaded(peer: &mut Peer) {
-    let wire = tokio::time::timeout(Duration::from_secs(5), peer.writes.recv())
+    let wire = tokio::time::timeout(PROGRESS_GUARD, peer.writes.recv())
         .await
         .expect("loaded-thread snapshot is event-driven")
         .expect("provider session remains open");
@@ -32,8 +40,7 @@ async fn loaded(peer: &mut Peer) {
         remote_id: None,
         duplicate: false,
     });
-    peer.reply(&wire.value, json!({"data": [THREAD], "nextCursor": null}))
-        .await;
+    progress(peer.reply(&wire.value, json!({"data": [THREAD], "nextCursor": null}))).await;
 }
 
 async fn idle_checks(peer: &mut Peer) {
@@ -153,16 +160,16 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     sweep(&worker, base + BEYOND_ANY_DELAY).await;
     idle_checks(&mut peer).await;
     // A failed unsubscribe proves nothing; the thread stays loaded.
-    let unsubscribe = peer.write("thread/unsubscribe").await;
+    let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     let cursor = peer
         .frame(json!({"id": unsubscribe["id"], "error": {"code": -32000, "message": "busy"}}))
         .await;
-    peer.acknowledged(cursor).await;
+    progress(peer.acknowledged(cursor)).await;
     worker_barrier(&worker).await;
 
     sweep(&worker, base + BEYOND_ANY_DELAY * 2).await;
     idle_checks(&mut peer).await;
-    let unsubscribe = peer.write("thread/unsubscribe").await;
+    let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
     // The provider reports the unload; an idle thread's unload is no failure.
     for notification in [
@@ -171,12 +178,11 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
         json!({"method": "thread/closed", "params": {"threadId": THREAD}}),
     ] {
         let cursor = peer.frame(notification).await;
-        peer.acknowledged(cursor).await;
+        progress(peer.acknowledged(cursor)).await;
     }
-    peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))
-        .await;
+    progress(peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))).await;
     // With no loaded thread left in use, the worker closes its session.
-    worker.completion().await.unwrap();
+    progress(worker.completion()).await.unwrap();
 
     // A message that arrives while no session runs queues the agent; the new
     // provider generation must not treat the completed turn as unresolved.
@@ -186,13 +192,13 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     worker_barrier(&worker).await;
     assert_eq!(state.record().await["status"], "queued");
     state.wake(&worker).await;
-    let resume = peer.write("thread/resume").await;
+    let resume = progress(peer.write("thread/resume")).await;
     assert_eq!(
         resume["params"]["threadId"], THREAD,
         "the same thread reloads"
     );
     peer.reply(&resume, json!({"thread": {"id": THREAD}})).await;
-    let next = peer.write("turn/start").await;
+    let next = progress(peer.write("turn/start")).await;
     assert_eq!(next["params"]["threadId"], THREAD);
     assert!(
         next["params"]["input"][0]["text"]
@@ -204,6 +210,42 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
 }
 
 #[tokio::test]
+async fn input_arriving_during_native_checks_prevents_unsubscribe() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    peer.completed().await;
+    loaded(&mut peer).await;
+
+    sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
+    answer(
+        &mut peer,
+        "thread/read",
+        json!({"threadId": THREAD, "includeTurns": false}),
+        json!({"thread": {"id": THREAD, "status": {"type": "idle"}}}),
+    )
+    .await;
+    answer(
+        &mut peer,
+        "thread/backgroundTerminals/list",
+        json!({"threadId": THREAD, "limit": 100}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    let queue = progress(peer.write("thread/queue/list")).await;
+    state.enqueue("arrived-during-idle-checks").await;
+    progress(peer.reply(&queue, json!({"data": [], "nextCursor": null}))).await;
+    progress(worker_barrier(&worker)).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "new input keeps its thread loaded"
+    );
+    progress(worker.shutdown()).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_loaded_thread_blocked_at_attach_gets_a_deadline_after_durable_completion() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -212,10 +254,9 @@ async fn a_loaded_thread_blocked_at_attach_gets_a_deadline_after_durable_complet
     peer.accepted(&start).await;
     peer.completed().await;
 
-    let inventory = peer.write("thread/loaded/list").await;
+    let inventory = progress(peer.write("thread/loaded/list")).await;
     set_thread_in_use(&state, true).await;
-    peer.reply(&inventory, json!({"data": [THREAD], "nextCursor": null}))
-        .await;
+    progress(peer.reply(&inventory, json!({"data": [THREAD], "nextCursor": null}))).await;
     worker_barrier(&worker).await;
     assert!(peer.writes.try_recv().is_err());
 
@@ -226,11 +267,10 @@ async fn a_loaded_thread_blocked_at_attach_gets_a_deadline_after_durable_complet
         .unwrap();
     sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
     idle_checks(&mut peer).await;
-    let unsubscribe = peer.write("thread/unsubscribe").await;
+    let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
-    peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))
-        .await;
-    worker.completion().await.unwrap();
+    progress(peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))).await;
+    progress(worker.completion()).await.unwrap();
 }
 
 #[tokio::test]
@@ -246,10 +286,9 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
 
     sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
     idle_checks(&mut peer).await;
-    let unsubscribe = peer.write("thread/unsubscribe").await;
+    let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
-    peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))
-        .await;
+    progress(peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))).await;
     worker_barrier(&worker).await;
     assert!(
         peer.writes.try_recv().is_err(),
@@ -262,7 +301,7 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
         .await
         .unwrap();
     sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
-    worker.completion().await.unwrap();
+    progress(worker.completion()).await.unwrap();
 }
 
 #[cfg(unix)]
@@ -321,13 +360,13 @@ async fn committed_setting_and_agent_changes_wake_idle_reconciliation() {
     let mut changes = state.bridge.idle_state_changes();
 
     set_delay(&state, 0).await;
-    tokio::time::timeout(Duration::from_secs(5), settings.changed())
+    tokio::time::timeout(PROGRESS_GUARD, settings.changed())
         .await
         .expect("setting commit wakes idle workers")
         .expect("idle change watch remains open");
 
     state.enqueue("new input").await;
-    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+    tokio::time::timeout(PROGRESS_GUARD, changes.changed())
         .await
         .expect("agent and event commits wake idle workers")
         .expect("idle change watch remains open");

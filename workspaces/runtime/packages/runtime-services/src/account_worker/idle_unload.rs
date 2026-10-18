@@ -35,6 +35,8 @@ const UNSUBSCRIBED_STATUSES: [&str; 3] = ["unsubscribed", "notSubscribed", "notL
 struct IdleUsageSnapshot {
     busy_threads: BTreeSet<String>,
     account_in_use: bool,
+    /// Watch generation before the authoritative database read.
+    state_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -309,7 +311,7 @@ impl Worker {
                 delay,
             );
         }
-        self.idle_check_process(now, delay, Some(usage.account_in_use), false)
+        self.idle_check_process(now, delay, Some(usage), false)
             .await
     }
 
@@ -348,7 +350,7 @@ impl Worker {
         &mut self,
         now: Instant,
         delay: Duration,
-        account_in_use_snapshot: Option<bool>,
+        usage_snapshot: Option<IdleUsageSnapshot>,
         retry: bool,
     ) -> Result<(), WorkerError> {
         let locally_unused = !self.closing
@@ -359,23 +361,24 @@ impl Worker {
                 .all(|thread| self.idle_clocks.released(thread))
             && self.quiescent()
             && self.inbox.is_empty();
-        let account_in_use = if locally_unused {
-            match account_in_use_snapshot {
-                Some(in_use) => in_use,
-                None => self.account_in_use().await?,
-            }
+        let (account_in_use, observed_generation) = if locally_unused {
+            let usage = match usage_snapshot {
+                Some(usage) => usage,
+                None => self.idle_usage_snapshot(BTreeSet::new()).await?,
+            };
+            (usage.account_in_use, usage.state_generation)
         } else {
-            false
+            (false, *self.idle_state_changes.borrow())
         };
         let process_unused = locally_unused && !account_in_use;
         self.idle_clocks.process_blocked = locally_unused && account_in_use;
         if self.idle_clocks.process_due(process_unused, now, delay) {
-            if self.idle_state_changes.has_changed().unwrap_or(true)
+            let state_changed = *self.idle_state_changes.borrow() != observed_generation;
+            if state_changed
                 || self.idle_setting_changes.has_changed().unwrap_or(true)
                 || !self.inbox.is_empty()
             {
-                self.idle_clocks.process_blocked =
-                    self.idle_state_changes.has_changed().unwrap_or(true);
+                self.idle_clocks.process_blocked = state_changed;
                 self.idle_clocks.process_due(false, now, delay);
                 self.idle_deadline = Some(tokio::time::Instant::now() + IDLE_RETRY_BACKOFF);
             } else {
@@ -408,7 +411,7 @@ impl Worker {
                 delay,
             );
         }
-        self.idle_check_process(now, delay, Some(usage.account_in_use), false)
+        self.idle_check_process(now, delay, Some(usage), false)
             .await
     }
 
@@ -438,7 +441,7 @@ impl Worker {
                 delay,
             );
         }
-        self.idle_check_process(now, delay, Some(usage.account_in_use), false)
+        self.idle_check_process(now, delay, Some(usage), false)
             .await
     }
 
@@ -587,6 +590,7 @@ impl Worker {
         threads: BTreeSet<String>,
     ) -> Result<IdleUsageSnapshot, WorkerError> {
         let account = self.account.clone();
+        let state_generation = *self.idle_state_changes.borrow();
         self.db("idle_unload_usage_snapshot", move |store| async move {
             store
                 .read_async("runtime-services/account_worker_read", move |connection| {
@@ -597,21 +601,8 @@ impl Worker {
                     Ok(IdleUsageSnapshot {
                         busy_threads,
                         account_in_use,
+                        state_generation,
                     })
-                })
-                .await
-        })
-        .await
-    }
-
-    async fn account_in_use(&mut self) -> Result<bool, WorkerError> {
-        let account = self.account.clone();
-        self.db("idle_unload_account", move |store| async move {
-            store
-                .read_async("runtime-services/account_worker_read", move |connection| {
-                    Ok(SchedulerRepository::idle_unload_account_in_use(
-                        connection, &account,
-                    )?)
                 })
                 .await
         })
@@ -747,14 +738,13 @@ impl Worker {
         let Ok(prepared) = prepared else {
             return Ok(None);
         };
+        let observed_generation = *self.idle_state_changes.borrow();
         if let Some(thread) = unsubscribe_thread.as_deref() {
-            let observed_generation = *self.idle_state_changes.borrow();
             if !self.queued_commands.is_empty()
                 || !self.inbox.is_empty()
                 || self.closing
                 || !self.thread_unused(thread).await?
                 || *self.idle_state_changes.borrow() != observed_generation
-                || self.idle_state_changes.has_changed().unwrap_or(true)
                 || self.idle_setting_changes.has_changed().unwrap_or(true)
             {
                 return Ok(None);
@@ -766,7 +756,7 @@ impl Worker {
             && (self.closing
                 || !self.queued_commands.is_empty()
                 || !self.inbox.is_empty()
-                || self.idle_state_changes.has_changed().unwrap_or(true)
+                || *self.idle_state_changes.borrow() != observed_generation
                 || self.idle_setting_changes.has_changed().unwrap_or(true))
         {
             self.request_waiters.remove(&operation);
