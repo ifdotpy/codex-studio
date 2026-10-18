@@ -9,6 +9,10 @@ from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
+from codex_shared_values import SUPERVISOR_JOURNAL_ID_KEY
+
+# The journal creates its identity row itself; fixtures count only their own rows.
+FIXTURE_STATE_COUNT = "SELECT COUNT(*) FROM supervisor_state WHERE key!='" + SUPERVISOR_JOURNAL_ID_KEY + "'"
 isolate_supervisor_environment()
 
 from contextlib import contextmanager
@@ -278,7 +282,7 @@ class JournalConnectionReuse(unittest.TestCase):
                     raise ValueError("fixture failure")
             self.assertEqual(len(connections.closed), 1)
             with journal.db() as db:
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM supervisor_state").fetchone()[0], 0)
+                self.assertEqual(db.execute(FIXTURE_STATE_COUNT).fetchone()[0], 0)
                 self.assertFalse(db.in_transaction)
             self.assertEqual(len(connections.opened), 2)
 
@@ -304,7 +308,7 @@ class JournalConnectionReuse(unittest.TestCase):
                     db.execute("INSERT INTO supervisor_state VALUES('failed','not-durable')")
                     raise ValueError("fixture failure")
             with journal.db() as db:
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM supervisor_state").fetchone()[0], 0)
+                self.assertEqual(db.execute(FIXTURE_STATE_COUNT).fetchone()[0], 0)
             self.assertEqual(len(connections.opened), 2)
             self.assertEqual(len(connections.closed), 1)
 
@@ -322,7 +326,7 @@ class JournalConnectionReuse(unittest.TestCase):
             journal.close()
         db = sqlite3.connect(journal.path)
         try:
-            self.assertEqual(db.execute("SELECT value FROM supervisor_state").fetchone()[0], "durable")
+            self.assertEqual(db.execute("SELECT value FROM supervisor_state WHERE key!=?", (SUPERVISOR_JOURNAL_ID_KEY,)).fetchone()[0], "durable")
         finally:
             db.close()
 
@@ -352,7 +356,7 @@ class JournalConnectionReuse(unittest.TestCase):
                         raise error()
             self.assertEqual(len(connections.closed), 2)
             with journal.db() as db:
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM supervisor_state").fetchone()[0], 0)
+                self.assertEqual(db.execute(FIXTURE_STATE_COUNT).fetchone()[0], 0)
                 self.assertFalse(db.in_transaction)
 
     def test_schema_change_is_visible_on_a_reused_connection(self):
@@ -368,7 +372,7 @@ class JournalConnectionReuse(unittest.TestCase):
             external.close()
         with journal.db() as second:
             self.assertIs(second, first)
-            self.assertEqual(tuple(second.execute("SELECT * FROM supervisor_state").fetchone()),
+            self.assertEqual(tuple(second.execute("SELECT * FROM supervisor_state WHERE key!=?", (SUPERVISOR_JOURNAL_ID_KEY,)).fetchone()),
                              ("new-schema", "durable", 7))
 
     def test_ack_with_lost_response_can_retry_the_exact_cursor(self):

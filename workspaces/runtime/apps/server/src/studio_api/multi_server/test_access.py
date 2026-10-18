@@ -245,6 +245,18 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(missing.status_code, 404, missing.text)
         self.assertEqual(self.client.post("/api/multi-server", json={**body, "requestId": "alias-no-token"}).status_code, 403)
 
+    def test_replace_server_accepts_only_the_owner_ui_or_session(self) -> None:
+        body = {"action": "replace_server", "oldServerId": "lost", "newServerId": "successor"}
+        for client_id, kind in (("owner-ui", "ui"), ("peer-server", "server")):
+            with self.subTest(kind=kind):
+                paired = self.pair(self.pair_body(self.invitation("invite-" + kind), kind, client_id, "pair-" + kind))
+                self.assertEqual(paired.status_code, 200, paired.text)
+                raw = json.dumps({**body, "requestId": "replace-" + kind}).encode()
+                reply = self.client.post("/api/multi-server", content=raw, headers=self.signed(
+                    "POST", "/api/multi-server", raw, "replace-" + kind, client_id))
+                # The owner UI reaches the operation, which finds no saved identity.
+                self.assertEqual(reply.json()["code"], "unknown_server" if kind == "ui" else "local_session_required")
+
     def proxy(self) -> dict[str, str]:
         return {"X-Forwarded-Host": "server.example.ts.net", "X-Forwarded-Proto": "https",
                 "X-Forwarded-For": "100.64.0.12"}

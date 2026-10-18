@@ -371,6 +371,14 @@ Its receipt retains source and copy hashes, event IDs, and the resulting native 
 The operation requires free space for the source copy and native fork.
 Unsupported or ambiguous history remains unchanged.
 
+A supervisor event sequence is meaningful only inside one journal epoch.
+A new supervisor journal and a recreated handle row both number their events from one again.
+The supervisor open receipt names the epoch (`journalEpoch`): the journal's random ID and the handle row's creation time.
+Studio saves its applied-event cursor with that epoch, in the same transaction as the event's effects.
+At attach, a cursor from another epoch is void, and Studio starts from the journal's acknowledged sequence.
+A cursor saved before epochs existed, or from a supervisor that reports no epoch, is void only when it is above the journal's latest sequence.
+Each attach that changes the cursor, or that has no epoch, writes one `supervisorCursorAttach` line to the account's `app-server.log`.
+
 ## Agent chat
 
 Select the **Agents** tab in the sidebar to read private conversations and broadcasts.

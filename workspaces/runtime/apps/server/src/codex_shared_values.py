@@ -23,6 +23,12 @@ SYNC_RESOURCE_HEARTBEAT_SECONDS = 15
 # Native history pages and command results can exceed the former 1 MiB cap.
 # This bounds one encoded transport envelope, including its JSON escaping.
 MAX_SUPERVISOR_FRAME_BYTES = 32 * 1024 * 1024
+# Open-receipt field that names one journal handle instance: the supervisor journal's
+# random identity plus the handle row's creation time. Event sequences and saved
+# applied-event cursors are meaningful only inside one journal epoch.
+SUPERVISOR_JOURNAL_EPOCH_FIELD = "journalEpoch"
+# supervisor_state key of the random identity created with each supervisor journal.
+SUPERVISOR_JOURNAL_ID_KEY = "journalId"
 PROGRESS_LAYOUT_FRESH_SECONDS = 90
 PROGRESS_LAYOUT_MAX_CLIENTS = 32
 PROGRESS_LAYOUT_MAX_BYTES = 65_536

@@ -2575,7 +2575,8 @@ export interface components {
         | "unrevoke"
         | "settings"
         | "alias"
-        | "name";
+        | "name"
+        | "replace_server";
       /** Actorid */
       actorId: string;
       /** Clientid */
@@ -2641,6 +2642,12 @@ export interface components {
        * @default null
        */
       reachability?: ("reachable" | "unreachable" | "unknown") | null;
+      /**
+       * Replacedby
+       * @description The server identity that succeeds this lost identity.
+       * @default null
+       */
+      replacedBy?: null | string;
       /** Revoked */
       revoked: null | number;
       /** Serverid */
@@ -2710,6 +2717,12 @@ export interface components {
       /** Clients */
       clients: components["schemas"]["AccessClient"][];
       identity: components["schemas"]["ServerIdentity"];
+      /**
+       * Identityalerts
+       * @description Fix each alert with the replace_server action.
+       * @default []
+       */
+      identityAlerts?: components["schemas"]["IdentityAlert"][];
       /** Invites */
       invites: components["schemas"]["InviteSummary"][];
       /**
@@ -11816,6 +11829,12 @@ export interface components {
        * @default null
        */
       reachability?: ("reachable" | "unreachable" | "unknown") | null;
+      /**
+       * Replacedby
+       * @description The server identity that succeeds this lost identity.
+       * @default null
+       */
+      replacedBy?: null | string;
       /** Revoked */
       revoked: null | number;
       /** Serverid */
@@ -13068,6 +13087,25 @@ export interface components {
       responseBytes: components["schemas"]["HttpMetricSummary"];
       /** Route */
       route: string;
+    };
+    /**
+     * IdentityAlert
+     * @description A server identity change that leaves live references to the lost identity.
+     */
+    IdentityAlert: {
+      /**
+       * Code
+       * @enum {string}
+       */
+      code: "peer_identity_changed" | "local_identity_changed";
+      /** Detail */
+      detail: string;
+      /** Newserverid */
+      newServerId: string;
+      /** Oldserverid */
+      oldServerId: string;
+      /** Origin */
+      origin: null | string;
     };
     /** IdRequest */
     IdRequest: {
@@ -18871,6 +18909,23 @@ export interface components {
     RenameServer: {
       /** Label */
       label: string;
+      /** Requestid */
+      requestId: string;
+    };
+    /**
+     * ReplaceServer
+     * @description Record that a paired server, or this server, succeeds a lost server identity.
+     */
+    ReplaceServer: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "replace_server";
+      /** Newserverid */
+      newServerId: string;
+      /** Oldserverid */
+      oldServerId: string;
       /** Requestid */
       requestId: string;
     };
@@ -31655,6 +31710,7 @@ export interface operations {
           | components["schemas"]["AcceptInvite"]
           | components["schemas"]["CreateInvite"]
           | components["schemas"]["DiscoverServers"]
+          | components["schemas"]["ReplaceServer"]
           | components["schemas"]["RevokeClient"]
           | components["schemas"]["SetAccessSettings"]
           | components["schemas"]["SetServerAlias"]

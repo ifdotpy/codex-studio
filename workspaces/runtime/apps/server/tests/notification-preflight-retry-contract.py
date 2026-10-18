@@ -308,7 +308,7 @@ class NotificationPreflightRetry(unittest.TestCase):
 
                 def execute(sql, parameters=(), /):
                     nonlocal injected
-                    if (not injected and "INSERT INTO runtime_supervisor_cursor VALUES" in str(sql)):
+                    if (not injected and "INSERT INTO runtime_supervisor_cursor(" in str(sql)):
                         injected = True
                         injected_busy.set()
                         error = sqlite3.OperationalError("database is locked")

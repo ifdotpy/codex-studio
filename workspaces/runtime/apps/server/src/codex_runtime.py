@@ -497,7 +497,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, notification_dispatcher_closed=None, process_factory=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, notification_dispatcher_closed=None, process_factory=None, supervisor_cursor_attach=None):
         import queue
         self.supervisor_mode = process_factory is not None or os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -578,6 +578,8 @@ class AppServer:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
             try:
+                if supervisor_cursor_attach is not None:
+                    self.attach_supervisor_cursor(supervisor_cursor_attach)
                 monitor_bindings = (supervisor_monitor_bindings(self.proc) if self.supervisor_resumed
                                     and supervisor_monitor_bindings else [])
             except Exception:
@@ -1269,6 +1271,29 @@ class AppServer:
         # The reader has ended and all preceding events have drained.
         callback(message)
 
+    def attach_supervisor_cursor(self, attach):
+        """Give the runtime this journal's epoch and range before any event dispatches.
+
+        The runtime skips an event at or below its saved cursor; the cursor is valid
+        only inside the journal epoch that issued it (codex_supervisor_cursor).
+        """
+        sequence = getattr(self.proc, "sequence", None)
+        acknowledged = getattr(self.proc, "cursor", None)
+        epoch = getattr(self.proc, "journal_epoch", None)
+        if (type(sequence) is not int or type(acknowledged) is not int
+                or not 0 <= acknowledged <= sequence or not (epoch is None or isinstance(epoch, str))):
+            raise RuntimeError("The supervisor open receipt has no valid event sequence range")
+        result = self.persistence_retry(lambda: attach(epoch, sequence, acknowledged))
+        if epoch is None or (isinstance(result, dict) and result.get("outcome") not in {"none", "kept"}):
+            # One line per attach that changed the cursor or could not prove its journal.
+            diagnostic = {"kind": "supervisorCursorAttach", "at": time.time(), **(result or {})}
+            try:
+                self.log.write((json.dumps(diagnostic) + "\n").encode())
+                self.log.flush()
+            except (OSError, ValueError):
+                pass
+        return result
+
     def persistence_retry(self, operation):
         """Retry only journal persistence, never a native request or callback."""
         deadline = time.monotonic() + 60
@@ -1695,7 +1720,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                   UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
                 END;
                 CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL, epoch TEXT);
                 CREATE INDEX IF NOT EXISTS runtime_agent_native_scope ON runtime_agents(
                     json_extract(record,'$.threadId'),
                     CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
@@ -1792,6 +1817,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
             self.install_scheduler_change_tracking(db)
+            from codex_supervisor_cursor import ensure_schema as ensure_supervisor_cursor
+            ensure_supervisor_cursor(db)
             from codex_turn_item_links import ensure_tables as ensure_turn_item_links
             ensure_turn_item_links(db)
             from codex_execution import ensure_tables as ensure_execution_tables
@@ -2790,9 +2817,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Commit a journal cursor with its lifecycle effects exactly once."""
         with self.write_db() as db:
             if supervisor_cursor is not None:
-                db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) "
-                           "DO UPDATE SET sequence=max(sequence,excluded.sequence)",
-                           supervisor_cursor)
+                from codex_supervisor_cursor import save as save_supervisor_cursor
+                handle, sequence = supervisor_cursor
+                save_supervisor_cursor(db, handle, sequence, self.supervisor_cursor_epoch(handle))
             yield db
         if supervisor_cursor is not None:
             _SUPERVISOR_EVENT.committed = supervisor_cursor
@@ -3859,6 +3886,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                       "account:" + account_key, message, sequence, account_key, connection_id),
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
                                                       "account:" + account_key, sequence),
+                                                  supervisor_cursor_attach=lambda epoch, sequence, acknowledged: self.attach_supervisor_cursor(
+                                                      "account:" + account_key, epoch, sequence, acknowledged),
                                                   supervisor_reattached=lambda resumed: self.supervisor_reattached(
                                                       account_key, connection_id, resumed),
                                                   supervisor_monitor_bindings=lambda proxy: self.supervisor_monitor_bindings(
@@ -4334,12 +4363,29 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             # Autocommit: this one statement reads one committed snapshot.
             # fetchall() completes the statement, so no read snapshot stays open.
-            rows = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchall()
+            rows = db.execute("SELECT sequence,epoch FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchall()
         except BaseException:
             local.cursor_reader = None
             db.close()
             raise
-        return bool(rows and sequence <= rows[0][0])
+        # A cursor names an event only inside the journal epoch that issued it.
+        return bool(rows and rows[0][1] == self.supervisor_cursor_epoch(handle) and sequence <= rows[0][0])
+
+    def supervisor_cursor_epoch(self, handle):
+        """Return the journal epoch of the attached handle, or None when it is unknown."""
+        return self.__dict__.get("_supervisor_cursor_epochs", {}).get(handle)
+
+    def attach_supervisor_cursor(self, handle, epoch, journal_sequence, journal_acknowledged):
+        """Align the saved cursor with the attached journal before its events dispatch.
+
+        See codex_supervisor_cursor for the epoch rules. Returns the outcome record.
+        """
+        from codex_supervisor_cursor import attach
+        with self.db(busy_timeout=50) as db:
+            result = attach(db, handle, epoch, journal_sequence, journal_acknowledged)
+        # Later cursor writes and lookups for this handle use the attached epoch.
+        self.__dict__.setdefault("_supervisor_cursor_epochs", {})[handle] = epoch
+        return result
 
     def commit_supervisor_event(self, handle, message, sequence, account, connection):
         method = message.get("method")
@@ -4369,9 +4415,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if committed == (handle, sequence):
             # The notification transaction already made this cursor durable.
             return
+        from codex_supervisor_cursor import save as save_supervisor_cursor
         with self.db(busy_timeout=50) as db:
-            db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
-                       (handle, sequence))
+            save_supervisor_cursor(db, handle, sequence, self.supervisor_cursor_epoch(handle))
 
     def capture_stream_analytics(self, capture):
         deadline = time.monotonic() + 60
@@ -10680,19 +10726,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             if (isinstance(supervisor_handle, str) and supervisor_handle
                     and type(supervisor_sequence) is int and supervisor_sequence > 0):
-                cursor = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?",
-                                    (supervisor_handle,)).fetchone()
-                if cursor and supervisor_sequence <= cursor[0]:
+                from codex_supervisor_cursor import applied as supervisor_event_applied
+                if supervisor_event_applied(db, supervisor_handle, supervisor_sequence,
+                                            self.supervisor_cursor_epoch(supervisor_handle)):
                     return
 
             def commit_output_cursor():
                 if (isinstance(supervisor_handle, str) and supervisor_handle
                         and type(supervisor_sequence) is int and supervisor_sequence > 0):
-                    db.execute(
-                        "INSERT INTO runtime_supervisor_cursor VALUES (?,?) "
-                        "ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
-                        (supervisor_handle, supervisor_sequence),
-                    )
+                    from codex_supervisor_cursor import save as save_supervisor_cursor
+                    save_supervisor_cursor(db, supervisor_handle, supervisor_sequence,
+                                           self.supervisor_cursor_epoch(supervisor_handle))
 
             if not self.connection_current(account_key, connection_id):
                 commit_output_cursor()

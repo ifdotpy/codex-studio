@@ -931,7 +931,8 @@
               "unrevoke",
               "settings",
               "alias",
-              "name"
+              "name",
+              "replace_server"
             ],
             "title": "Action",
             "type": "string"
@@ -1116,6 +1117,19 @@
             ],
             "default": null,
             "title": "Reachability"
+          },
+          "replacedBy": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "description": "The server identity that succeeds this lost identity.",
+            "title": "Replacedby"
           },
           "revoked": {
             "anyOf": [
@@ -1311,6 +1325,15 @@
           },
           "identity": {
             "$ref": "#/components/schemas/ServerIdentity"
+          },
+          "identityAlerts": {
+            "default": [],
+            "description": "Fix each alert with the replace_server action.",
+            "items": {
+              "$ref": "#/components/schemas/IdentityAlert"
+            },
+            "title": "Identityalerts",
+            "type": "array"
           },
           "invites": {
             "items": {
@@ -24437,6 +24460,19 @@
             "default": null,
             "title": "Reachability"
           },
+          "replacedBy": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "description": "The server identity that succeeds this lost identity.",
+            "title": "Replacedby"
+          },
           "revoked": {
             "anyOf": [
               {
@@ -27728,6 +27764,52 @@
           "id"
         ],
         "title": "IdRequest",
+        "type": "object"
+      },
+      "IdentityAlert": {
+        "additionalProperties": false,
+        "description": "A server identity change that leaves live references to the lost identity.",
+        "properties": {
+          "code": {
+            "enum": [
+              "peer_identity_changed",
+              "local_identity_changed"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "newServerId": {
+            "title": "Newserverid",
+            "type": "string"
+          },
+          "oldServerId": {
+            "title": "Oldserverid",
+            "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Origin"
+          }
+        },
+        "required": [
+          "code",
+          "oldServerId",
+          "newServerId",
+          "origin",
+          "detail"
+        ],
+        "title": "IdentityAlert",
         "type": "object"
       },
       "ImageWorkspaceCleanupResultRecordResponse": {
@@ -42176,6 +42258,43 @@
           "requestId"
         ],
         "title": "RenameServer",
+        "type": "object"
+      },
+      "ReplaceServer": {
+        "additionalProperties": false,
+        "description": "Record that a paired server, or this server, succeeds a lost server identity.",
+        "properties": {
+          "action": {
+            "const": "replace_server",
+            "title": "Action",
+            "type": "string"
+          },
+          "newServerId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Newserverid",
+            "type": "string"
+          },
+          "oldServerId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Oldserverid",
+            "type": "string"
+          },
+          "requestId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Requestid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "oldServerId",
+          "newServerId",
+          "requestId"
+        ],
+        "title": "ReplaceServer",
         "type": "object"
       },
       "RequestAnswerRecordResponse": {
@@ -70865,6 +70984,7 @@
                     "create_invite": "#/components/schemas/CreateInvite",
                     "discover": "#/components/schemas/DiscoverServers",
                     "name": "#/components/schemas/SetServerName",
+                    "replace_server": "#/components/schemas/ReplaceServer",
                     "revoke": "#/components/schemas/RevokeClient",
                     "settings": "#/components/schemas/SetAccessSettings",
                     "ui_invite": "#/components/schemas/UiInvite",
@@ -70881,6 +71001,9 @@
                   },
                   {
                     "$ref": "#/components/schemas/DiscoverServers"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ReplaceServer"
                   },
                   {
                     "$ref": "#/components/schemas/RevokeClient"
