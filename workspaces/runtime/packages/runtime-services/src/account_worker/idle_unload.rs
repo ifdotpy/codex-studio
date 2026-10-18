@@ -41,8 +41,15 @@ const IDLE_THREAD_STATUSES: [&str; 2] = ["idle", "notLoaded"];
 /// `thread/unsubscribe` statuses that leave this connection unsubscribed.
 const UNSUBSCRIBED_STATUSES: [&str; 3] = ["unsubscribed", "notSubscribed", "notLoaded"];
 
+/// A durable usage read for idle eligibility that runs off the serialized
+/// worker; its result is applied when it completes.
+pub(super) type IdleSnapshotTask = tokio::task::JoinHandle<IdleSnapshotResult>;
+/// When the re-check started, the candidates it read, and their usage.
+pub(super) type IdleSnapshotResult =
+    Result<(Instant, BTreeSet<String>, IdleUsageSnapshot), WorkerError>;
+
 #[derive(Default)]
-struct IdleUsageSnapshot {
+pub(super) struct IdleUsageSnapshot {
     busy_threads: BTreeSet<String>,
     account_in_use: bool,
     /// Watch generation before the authoritative database read.
@@ -420,16 +427,51 @@ impl Worker {
         Ok(())
     }
 
-    pub(super) async fn idle_state_changed(&mut self, now: Instant) -> Result<(), WorkerError> {
+    /// Start the durable re-check of blocked idle candidates off the worker;
+    /// one read is in flight at a time and later changes coalesce into the next.
+    pub(super) fn idle_state_changed(&mut self, now: Instant) {
         let _ = self.idle_state_changes.borrow_and_update();
         let blocked = self.idle_clocks.blocked_by(IdleBlocker::Durable);
-        if blocked.is_empty() && self.idle_clocks.process_blocked != Some(IdleBlocker::Durable) {
-            return Ok(());
+        if self.idle_delay.is_none()
+            || (blocked.is_empty()
+                && self.idle_clocks.process_blocked != Some(IdleBlocker::Durable))
+        {
+            return;
         }
+        let store = Arc::clone(&self.bridge.store);
+        let account = self.account.clone();
+        let state_generation = *self.idle_state_changes.borrow();
+        self.idle_snapshot = Some(tokio::spawn(async move {
+            let usage = store
+                .read_async("runtime-services/account_worker_read", move |connection| {
+                    let (busy_threads, account_in_use) =
+                        SchedulerRepository::idle_unload_usage_snapshot(
+                            connection, &account, &blocked,
+                        )?;
+                    Ok::<_, WorkerError>((
+                        blocked,
+                        IdleUsageSnapshot {
+                            busy_threads,
+                            account_in_use,
+                            state_generation,
+                        },
+                    ))
+                })
+                .await?;
+            Ok((now, usage.0, usage.1))
+        }));
+    }
+
+    /// Apply a completed off-worker usage read to the idle clocks.
+    pub(super) async fn idle_snapshot_ready(
+        &mut self,
+        now: Instant,
+        blocked: BTreeSet<String>,
+        usage: IdleUsageSnapshot,
+    ) -> Result<(), WorkerError> {
         let Some(delay) = self.idle_delay else {
             return Ok(());
         };
-        let usage = self.idle_usage_snapshot(blocked.clone()).await?;
         for thread in blocked {
             let requested = self.thread_requested(&thread);
             self.idle_clocks.eligibility_changed(
@@ -509,7 +551,8 @@ impl Worker {
             self.idle_snapshot(now, delay).await
         } else {
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
-            self.idle_state_changed(now).await
+            self.idle_state_changed(now);
+            Ok(())
         }
     }
 
@@ -718,6 +761,7 @@ impl Worker {
             && self.connection_recovery.is_empty()
             && !self.resume_preparations
             && self.preparation_waits.is_empty()
+            && self.preparations.is_empty()
     }
 
     /// Close the session; requests that arrive from now on were never sent.

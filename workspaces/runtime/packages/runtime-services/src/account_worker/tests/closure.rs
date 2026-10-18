@@ -766,6 +766,57 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     assert!(state.record().await.get("lastWorkspaceWait").is_none());
     replacement.shutdown().await.unwrap();
 }
+/// One agent's preparation never blocks another's: while A is held inside
+/// its workspace pass, B is prepared and written to the provider.
+#[tokio::test]
+async fn agent_preparations_run_concurrently() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    let b = "concurrent-neighbor".to_owned();
+    let neighbor = b.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(a.as_str()))?.unwrap();
+                    row.id = AgentId::from(neighbor.as_str());
+                    row.extra
+                        .insert("threadId".into(), json!("neighbor-thread"));
+                    AgentRepository::put(tx, &row)?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    state.enqueue_for(&b, "neighbor-input").await;
+    let mut peer = Peer::new();
+    let worker = peer.worker(state.bridge.clone()).await;
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("workspace".into());
+    state.wake(&worker).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("first preparation reaches its workspace pass");
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    worker
+        .send(AccountCommand::Wake {
+            agent_id: b.clone(),
+            epoch: state.epoch,
+        })
+        .await
+        .unwrap();
+    let neighbor = peer.write("thread/resume").await;
+    assert_eq!(neighbor["params"]["threadId"], "neighbor-thread");
+    state.bridge.faults.release.notify_one();
+    let held = peer.write("thread/resume").await;
+    assert_ne!(held["id"], neighbor["id"]);
+    drop(worker);
+}
+
 /// A workspace-pending preparation wakes on the blocker's commit in the same
 /// worker: no timer, no restart, and one prepareError write per blocker.
 #[tokio::test]

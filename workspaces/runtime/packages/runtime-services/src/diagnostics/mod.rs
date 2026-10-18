@@ -29,6 +29,8 @@
 //! opt-in Linux current RSS; peak RSS and allocation traces are unavailable.
 
 use futures_util::future::BoxFuture;
+use std::future::Future;
+use std::time::Instant;
 
 mod allocator;
 mod host;
@@ -38,25 +40,50 @@ mod sqlite;
 mod startup;
 mod store;
 
-/// Record one fixed-name runtime stage duration only when explicitly enabled.
-/// The flag is evaluated once; measurements contain no request, account, or
-/// record identities. Unit for `elapsed_ms`: milliseconds.
-pub(crate) fn measure_runtime_stage<T>(name: &'static str, operation: impl FnOnce() -> T) -> T {
+/// Opt-in switch for runtime stage timings: `CODEX_RUNTIME_STAGE_TIMINGS=1`.
+/// The environment is read once.
+fn runtime_stage_timings_enabled() -> bool {
     use std::sync::OnceLock;
-    use std::time::Instant;
 
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !*ENABLED.get_or_init(|| {
+    *ENABLED.get_or_init(|| {
         std::env::var("CODEX_RUNTIME_STAGE_TIMINGS").is_ok_and(|value| value == "1")
-    }) {
-        return operation();
-    }
-    let started = Instant::now();
-    let result = operation();
+    })
+}
+
+/// The only writer of the `runtime_stage` line. Unit for `elapsed_ms`: milliseconds.
+fn log_runtime_stage(name: &'static str, started: Instant) {
     eprintln!(
         "runtime_stage name={name} elapsed_ms={}",
         started.elapsed().as_millis()
     );
+}
+
+/// Record one fixed-name runtime stage duration only when explicitly enabled.
+/// The flag is evaluated once; measurements contain no request, account, or
+/// record identities. Unit for `elapsed_ms`: milliseconds.
+pub(crate) fn measure_runtime_stage<T>(name: &'static str, operation: impl FnOnce() -> T) -> T {
+    if !runtime_stage_timings_enabled() {
+        return operation();
+    }
+    let started = Instant::now();
+    let result = operation();
+    log_runtime_stage(name, started);
+    result
+}
+
+/// Async form of [`measure_runtime_stage`] for awaited phases. The operation is
+/// awaited exactly once; its output and error are returned unchanged.
+pub(crate) async fn measure_runtime_stage_async<T>(
+    name: &'static str,
+    operation: impl Future<Output = T>,
+) -> T {
+    if !runtime_stage_timings_enabled() {
+        return operation.await;
+    }
+    let started = Instant::now();
+    let result = operation.await;
+    log_runtime_stage(name, started);
     result
 }
 
@@ -269,7 +296,7 @@ fn try_with_state<T>(state: &std::sync::Mutex<T>, f: impl FnOnce(&mut T)) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::Ring;
+    use super::{Ring, measure_runtime_stage, measure_runtime_stage_async};
 
     #[test]
     fn ring_keeps_only_the_newest_fixed_capacity_samples() {
@@ -283,5 +310,33 @@ mod tests {
         assert_eq!(samples.len(), 512);
         assert_eq!(samples.first(), Some(&1));
         assert_eq!(samples.last(), Some(&512));
+    }
+
+    #[test]
+    fn sync_stage_wrapper_runs_once_and_returns_value_and_error() {
+        let mut calls = 0;
+        let value = measure_runtime_stage("test.sync", || {
+            calls += 1;
+            7
+        });
+        assert_eq!((calls, value), (1, 7));
+
+        let failed: Result<u8, &str> = measure_runtime_stage("test.sync", || Err("failed"));
+        assert_eq!(failed, Err("failed"));
+    }
+
+    #[tokio::test]
+    async fn async_stage_wrapper_awaits_once_and_returns_value_and_error() {
+        let mut calls = 0;
+        let value = measure_runtime_stage_async("test.async", async {
+            calls += 1;
+            7
+        })
+        .await;
+        assert_eq!((calls, value), (1, 7));
+
+        let failed: Result<u8, &str> =
+            measure_runtime_stage_async("test.async", async { Err("failed") }).await;
+        assert_eq!(failed, Err("failed"));
     }
 }

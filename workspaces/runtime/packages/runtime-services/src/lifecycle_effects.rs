@@ -14,7 +14,6 @@
 //! `release_failed_work` in `codex_work.py:1313-1355`.
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,6 +32,7 @@ use crate::{
     account_worker::retained::RequestActor,
     agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind, LifecyclePorts},
     agent_management::{Action, ManagementError},
+    diagnostics::measure_runtime_stage_async,
     event_write,
     monitor_lifecycle::MonitorLifecyclePorts,
     multi_server_transport::{
@@ -101,27 +101,6 @@ const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
 // Ordinary voice stops can remain in flight until their 30-second deadline.
 const VOICE_DELETE_HELD_WAIT: Duration = Duration::from_secs(35);
-
-async fn measure_runtime_stage_async<T>(
-    name: &'static str,
-    operation: impl Future<Output = T>,
-) -> T {
-    use std::sync::OnceLock;
-
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !*ENABLED.get_or_init(|| {
-        std::env::var("CODEX_RUNTIME_STAGE_TIMINGS").is_ok_and(|value| value == "1")
-    }) {
-        return operation.await;
-    }
-    let started = Instant::now();
-    let result = operation.await;
-    eprintln!(
-        "runtime_stage name={name} elapsed_ms={}",
-        started.elapsed().as_millis()
-    );
-    result
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {

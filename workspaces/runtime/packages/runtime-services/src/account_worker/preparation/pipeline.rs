@@ -17,6 +17,13 @@ pub(crate) struct CommitGuard {
     filesystem: FilesystemSnapshot,
     prepared_host: Option<crate::host_project_runtime::PreparedHost>,
 }
+impl CommitGuard {
+    /// The validated workspace token this preparation was built on.
+    pub(crate) fn workspace_token(&self) -> crate::workspace_ready::ReadyToken {
+        self.token.clone()
+    }
+}
+#[derive(Clone)]
 pub(crate) struct Admission {
     selection: gates::ExecutionSelection,
 }
@@ -213,6 +220,8 @@ fn preconditions_for_purpose(
     }
     Ok(record)
 }
+/// Refusal of a ready snapshot whose workspace token no longer validates.
+pub(crate) const WORKSPACE_TOKEN_STALE: &str = "workspace-readiness/token-stale";
 /// Pending reason of a turn that waits for a model catalog refresh.
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
@@ -1094,7 +1103,7 @@ async fn prepare_native_snapshot(
         let cwd = if let Some(token) = &token {
             token
                 .validate(tx)?
-                .map_err(|_| refusal("workspace-readiness/token-stale".into()))?
+                .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?
         } else {
             restore_cwd
                 .as_ref()
@@ -1322,7 +1331,7 @@ pub(crate) async fn prepare_ready(
             .map_err(|e| refusal(e.to_string()))?;
         let cwd = token_for_snapshot
             .validate(tx)?
-            .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
+            .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
         let vm_reviewer = frozen["executionMode"] == "vm" && frozen["role"] == "reviewer";
         if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
             frozen["cwd"] = json!(execution_cwd);
@@ -1557,7 +1566,7 @@ pub(crate) fn commit(
     let cwd = guard
         .token
         .validate(tx)?
-        .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
+        .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
     if context.intent.cwd.as_deref() != cwd.to_str() {
         return Err(refusal("workspace-readiness/cwd-changed".into()));
     }

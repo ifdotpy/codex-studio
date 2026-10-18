@@ -41,6 +41,7 @@ pub mod retained;
 pub mod retained_frame;
 mod steer;
 pub(crate) mod store;
+mod turn_preparation;
 
 impl From<rusqlite::Error> for WorkerError {
     fn from(error: rusqlite::Error) -> Self {
@@ -150,7 +151,6 @@ fn vm_account_generation_matches(
 pub struct StoreBridge {
     store: Arc<RuntimeStore>,
     operation_slot: Arc<Semaphore>,
-    preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// Accounts whose worker already recovered in this backend process. A later
     /// worker for the same account replaces only its provider process, so that
@@ -214,7 +214,6 @@ impl StoreBridge {
         let bridge = Self {
             store,
             operation_slot: Arc::new(Semaphore::new(1)),
-            preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
             recovered_accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
@@ -331,14 +330,7 @@ impl StoreBridge {
         self.faults.pause(index).await;
         #[cfg(not(test))]
         let _ = name;
-        let permit = self
-            .preparation_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| WorkerError::Closed)?;
         let result = operation(self.store.clone()).await;
-        drop(permit);
         #[cfg(test)]
         self.faults.after(index, result.is_ok())?;
         result
@@ -722,6 +714,13 @@ pub async fn start_account_worker_with_publication_sink(
         queued_commands: VecDeque::new(),
         resume_preparations: true,
         preparation_waits: BTreeMap::new(),
+        preparations: JoinSet::new(),
+        preparing: BTreeMap::new(),
+        thread_workspaces: BTreeMap::new(),
+        effect_in_hand: None,
+        idle_snapshot: None,
+        #[cfg(test)]
+        barriers: Vec::new(),
         pending: recovered
             .into_iter()
             .map(|(context, record)| (record.ticket.id, context))
@@ -880,6 +879,20 @@ struct Worker {
     resume_preparations: bool,
     /// One event-driven wake per agent whose preparation is pending.
     preparation_waits: BTreeMap<String, tokio::task::AbortHandle>,
+    /// Concurrent per-agent turn preparations (see `turn_preparation`).
+    preparations: JoinSet<Box<turn_preparation::Done>>,
+    /// Agents with a preparation in flight, and the epoch of a wake that
+    /// arrived meanwhile (re-run when that preparation is handled).
+    preparing: BTreeMap<String, Option<i64>>,
+    /// Workspace token of each agent's last thread preparation, by attempt.
+    thread_workspaces: BTreeMap<String, (String, crate::workspace_ready::ReadyToken)>,
+    /// Durable key of the effect being run; a spawned preparation takes it and
+    /// completes it once handled.
+    effect_in_hand: Option<String>,
+    /// In-flight durable idle re-check (see `idle_unload::IdleSnapshotTask`).
+    idle_snapshot: Option<idle_unload::IdleSnapshotTask>,
+    #[cfg(test)]
+    barriers: Vec<tokio::sync::oneshot::Sender<usize>>,
     pending: BTreeMap<RequestId, Pending>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
@@ -928,9 +941,11 @@ enum ServeSignal {
     VmEvent(Option<VmForwardedMessage>),
     ConnectionRecovery,
     ManagedCallback(Option<Result<ManagedCallbackResult, tokio::task::JoinError>>),
+    Prepared(Option<Result<Box<turn_preparation::Done>, tokio::task::JoinError>>),
     SessionStatusChanged(bool),
     IdleSweep,
     IdleStateChanged(Result<(), watch::error::RecvError>),
+    IdleSnapshot(Result<idle_unload::IdleSnapshotResult, tokio::task::JoinError>),
     IdleSettingChanged(Result<(), watch::error::RecvError>),
 }
 
@@ -1074,6 +1089,13 @@ impl Worker {
         for wait in std::mem::take(&mut self.preparation_waits).into_values() {
             wait.abort();
         }
+        // An unsubmitted preparation holds no provider evidence; its claim is
+        // recovered like any other unsubmitted attempt.
+        if let Some(snapshot) = self.idle_snapshot.take() {
+            snapshot.abort();
+        }
+        self.preparations.abort_all();
+        while self.preparations.join_next().await.is_some() {}
         #[cfg(test)]
         self.bridge
             .faults
@@ -1206,6 +1228,7 @@ impl Worker {
                 && self.effects.is_empty()
                 && !self.resume_preparations
                 && self.preparation_waits.is_empty()
+                && self.preparations.is_empty()
                 && self.queued_commands.is_empty()
                 && self.inbox.is_empty()
             {
@@ -1234,7 +1257,7 @@ impl Worker {
         }
     }
     async fn run_effect(&mut self, effect: Effect) -> Result<(), WorkerError> {
-        let durable = store::effect_key(&self.account, &effect);
+        self.effect_in_hand = store::effect_key(&self.account, &effect);
         match effect {
             Effect::Callback(cursor, frame, actor, epoch) => {
                 match self.answer_callback(cursor, frame, actor, epoch).await {
@@ -1250,9 +1273,13 @@ impl Worker {
             } => self.interrupt(agent, thread, turn).await?,
             Effect::Wake(agent_id, epoch) => self.wake(agent_id, epoch).await?,
         }
-        if !self.closing
-            && let Some(key) = durable
-        {
+        if let Some(key) = self.effect_in_hand.take() {
+            self.complete_effect(key).await?;
+        }
+        Ok(())
+    }
+    async fn complete_effect(&mut self, key: String) -> Result<(), WorkerError> {
+        if !self.closing {
             self.db("complete_effect", move |store| async move {
                 store::complete_effect(&store, &key).await
             })
@@ -1274,9 +1301,11 @@ impl Worker {
             vm_event = self.vm_events.recv() => ServeSignal::VmEvent(vm_event),
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
             callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
+            prepared = self.preparations.join_next(), if !self.preparations.is_empty() => ServeSignal::Prepared(prepared),
             changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
             _ = tokio::time::sleep_until(self.idle_deadline.unwrap_or_else(tokio::time::Instant::now)), if self.idle_deadline.is_some() => ServeSignal::IdleSweep,
-            changed = self.idle_state_changes.changed(), if self.idle_clocks.has_blocked_candidates() => ServeSignal::IdleStateChanged(changed),
+            changed = self.idle_state_changes.changed(), if self.idle_snapshot.is_none() && self.idle_clocks.has_blocked_candidates() => ServeSignal::IdleStateChanged(changed),
+            snapshot = async { match self.idle_snapshot.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.idle_snapshot.is_some() => ServeSignal::IdleSnapshot(snapshot),
             changed = self.idle_setting_changes.changed() => ServeSignal::IdleSettingChanged(changed),
         }
     }
@@ -1307,6 +1336,17 @@ impl Worker {
                     self.push(Effect::Callback(cursor, response, actor, epoch));
                 }
             }
+            ServeSignal::Prepared(done) => {
+                // A preparation is part of this worker: its panic is the worker's.
+                let done = match done.ok_or(WorkerError::TaskFailed)? {
+                    Ok(done) => done,
+                    Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                    Err(_) => return Err(WorkerError::TaskFailed),
+                };
+                Box::pin(self.prepared(*done)).await?;
+                #[cfg(test)]
+                self.release_barriers();
+            }
             ServeSignal::SessionStatusChanged(false) => return Ok(false),
             ServeSignal::SessionStatusChanged(true) => {
                 if idle_unload::session_status_invalidates_snapshot(
@@ -1316,6 +1356,9 @@ impl Worker {
                     self.idle_initialized = false;
                     self.idle_clocks = idle_unload::IdleClocks::default();
                     self.idle_deadline = None;
+                    if let Some(snapshot) = self.idle_snapshot.take() {
+                        snapshot.abort();
+                    }
                 }
             }
             ServeSignal::IdleSweep => {
@@ -1327,7 +1370,14 @@ impl Worker {
             }
             ServeSignal::IdleStateChanged(changed) => {
                 changed.map_err(|_| WorkerError::TaskFailed)?;
-                self.idle_state_changed(tokio::time::Instant::now()).await?;
+                self.idle_state_changed(tokio::time::Instant::now());
+            }
+            ServeSignal::IdleSnapshot(snapshot) => {
+                self.idle_snapshot = None;
+                let (now, blocked, usage) = snapshot.map_err(|_| WorkerError::TaskFailed)??;
+                self.idle_snapshot_ready(now, blocked, usage).await?;
+                #[cfg(test)]
+                self.release_barriers();
             }
             ServeSignal::IdleSettingChanged(changed) => {
                 changed.map_err(|_| WorkerError::TaskFailed)?;
@@ -1342,15 +1392,12 @@ impl Worker {
         match command {
             #[cfg(test)]
             AccountCommand::Barrier(reply) => {
-                let _ignored = reply.send(
-                    self.bridge
-                        .faults
-                        .journal_count
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                );
+                // A test barrier also waits for in-flight preparations.
+                self.barriers.push(reply);
+                self.release_barriers();
             }
             #[cfg(test)]
-            AccountCommand::IdleStateChange(now) => self.idle_state_changed(now).await?,
+            AccountCommand::IdleStateChange(now) => self.idle_state_changed(now),
             AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
             AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
             AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
@@ -1463,39 +1510,6 @@ impl Worker {
             result = &mut job => result,
         }
     }
-    async fn prepare<T, F, Fut>(
-        &mut self,
-        name: &'static str,
-        operation: F,
-    ) -> Result<T, WorkerError>
-    where
-        T: Send + 'static,
-        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
-    {
-        let bridge = self.bridge.clone();
-        let job = bridge.prepare_run(name, operation);
-        tokio::pin!(job);
-        loop {
-            tokio::select! { biased;
-                _ = Shutdown::cancelled(&mut self.stop), if !self.closing => {
-                    self.closing = true;
-                    self.control.cancel();
-                },
-                result = &mut job => return result,
-                event = self.events.recv(), if !self.closing => match event {
-                    Some(event) => self.event(event).await?,
-                    None => { self.closing = true; self.control.cancel(); }
-                },
-                command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
-                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
-                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
-                    Some(command) => self.queued_commands.push_back(command),
-                    None => { self.closing = true; self.control.cancel(); }
-                },
-            }
-        }
-    }
     // Session commands can wait behind event backpressure. Keep settling events
     // while waiting; the future is retained exactly once, including shutdown.
     async fn drive<T, E: Into<WorkerError>>(
@@ -1543,43 +1557,6 @@ impl Worker {
                     Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
                     Some(command) => self.queued_commands.push_back(command),
                     None => return Err(WorkerError::Closed),
-                },
-            }
-        }
-    }
-    /// Progress retained bridge requests while an owner waits for a reply from
-    /// that same account worker (Claude's outbound account/read auth proof).
-    async fn drive_retained<T>(
-        &mut self,
-        future: impl Future<Output = crate::continuation::Result<T>>,
-    ) -> crate::continuation::Result<T> {
-        tokio::pin!(future);
-        loop {
-            tokio::select! { biased;
-                _ = Shutdown::cancelled(&mut self.stop), if !self.closing => {
-                    self.closing = true;
-                    self.control.cancel();
-                    return Err(crate::continuation::ContinuationError::Unavailable("claude-auth/worker-stopped"));
-                },
-                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => {
-                    self.flush().await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-flush"))?;
-                },
-                result = &mut future => return result,
-                event = self.events.recv(), if !self.closing => match event {
-                    Some(event) => self.event(event).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
-                    None => { self.closing=true; self.control.cancel(); }
-                },
-                vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
-                    Some(event) => self.handle_vm_message(event).await
-                        .map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
-                    None => { self.closing=true; self.control.cancel(); }
-                },
-                command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
-                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/vm-notification"))?,
-                    Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-request"))?,
-                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-stop"))?,
-                    Some(command) => self.queued_commands.push_back(command),
-                    None => { self.closing=true; self.control.cancel(); }
                 },
             }
         }
@@ -1793,6 +1770,11 @@ impl Worker {
         if self.closing {
             return Ok(());
         }
+        // One preparation per agent; a wake meanwhile re-runs after it.
+        if let Some(rewake) = self.preparing.get_mut(&agent) {
+            *rewake = Some(epoch);
+            return Ok(());
+        }
         let account = self.account.clone();
         let steer_agent = agent.clone();
         match self
@@ -1846,28 +1828,6 @@ impl Worker {
         }
         Ok(())
     }
-    async fn require_claude_auth(
-        &mut self,
-        driver: Arc<crate::account_driver::AccountDriver>,
-        intent: &TurnIntent,
-    ) -> Result<bool, WorkerError> {
-        let port = self.retained_port.clone();
-        crate::claude_auth_runtime::require_before_start(
-            self.bridge.store.clone(),
-            driver,
-            self.resources.claude_account_pin.clone(),
-            intent,
-            |actor, deadline| {
-                let port = port.clone();
-                async move {
-                    let request = crate::claude_auth_runtime::account_read(&port, actor, deadline);
-                    self.drive_retained(request).await
-                }
-            },
-        )
-        .await
-        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
-    }
     fn submit<'a>(
         &'a mut self,
         intent: TurnIntent,
@@ -1888,8 +1848,12 @@ impl Worker {
         if let Some(thread) = intent.thread_id.as_deref() {
             self.idle_thread_touched(thread);
         }
+        if method == Method::TurnInterrupt {
+            return Box::pin(self.submit_prepared(intent, method, interrupt_turn, None)).await;
+        }
         // A recovered durable effect may outlive its submitted request. Check
-        // that receipt before preparation, which requires an unsubmitted owner.
+        // that receipt before later events can settle it, and before
+        // preparation, which requires an unsubmitted owner.
         if method == Method::TurnStart {
             let operation = format!(
                 "account:{}:{}:{}",
@@ -1906,90 +1870,84 @@ impl Worker {
                 return Ok(());
             }
         }
-        if method == Method::TurnStart && intent.provider == "claude" {
-            let Some(driver) = self.resources.account_driver.clone() else {
-                return Err(WorkerError::PreparationRefused(
-                    "claude-auth/account-driver-unavailable".into(),
-                ));
-            };
-            if !self.require_claude_auth(driver, &intent).await? {
-                return Ok(());
+        let thread_workspace = if method == Method::TurnStart {
+            self.thread_workspaces
+                .remove(&intent.agent_id)
+                .filter(|(attempt, _)| *attempt == intent.attempt_id)
+                .map(|(_, token)| token)
+        } else {
+            None
+        };
+        self.preparing.insert(intent.agent_id.clone(), None);
+        let run = turn_preparation::Run {
+            bridge: self.bridge.clone(),
+            resources: self.resources.clone(),
+            retained_port: self.retained_port.clone(),
+            generation: self.generation.0,
+            connection_id: self.connection_id.clone(),
+            agent_changes: self.bridge.agent_changes(),
+            effect: self.effect_in_hand.take(),
+            thread_workspace,
+            intent,
+            method,
+        };
+        self.preparations.spawn(turn_preparation::run(run));
+        Ok(())
+    }
+    #[cfg(test)]
+    fn release_barriers(&mut self) {
+        if self.preparations.is_empty() && self.idle_snapshot.is_none() {
+            for reply in std::mem::take(&mut self.barriers) {
+                let _ignored = reply.send(
+                    self.bridge
+                        .faults
+                        .journal_count
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                );
             }
         }
+    }
+    /// Handle one finished preparation on the serialized worker.
+    async fn prepared(&mut self, done: turn_preparation::Done) -> Result<(), WorkerError> {
+        let turn_preparation::Done {
+            intent,
+            agent_changes,
+            effect,
+            outcome,
+        } = done;
+        let rewake = self.preparing.remove(&intent.agent_id).flatten();
+        if let Some(prepared) = self.preparation_ready(outcome?, &intent, &agent_changes) {
+            if matches!(prepared.method, Method::ThreadStart | Method::ThreadResume) {
+                self.thread_workspaces.insert(
+                    intent.agent_id.clone(),
+                    (intent.attempt_id.clone(), prepared.guard.workspace_token()),
+                );
+            }
+            let method = prepared.method;
+            Box::pin(self.submit_prepared(prepared.intent.clone(), method, None, Some(prepared)))
+                .await?;
+        }
+        if let Some(key) = effect {
+            self.complete_effect(key).await?;
+        }
+        if let Some(epoch) = rewake {
+            self.wake(intent.agent_id, epoch).await?;
+        }
+        Ok(())
+    }
+    /// The serialized submission: FULL submitted commit, then the provider write.
+    async fn submit_prepared(
+        &mut self,
+        intent: TurnIntent,
+        method: Method,
+        interrupt_turn: Option<(String, i64)>,
+        prepared: Option<preparation::RequestPreparation>,
+    ) -> Result<(), WorkerError> {
+        if self.closing {
+            return Ok(());
+        }
         let turn = interrupt_turn.clone();
-        let generation = self.generation.0;
         let connection_id = self.connection_id.clone();
-        let preparation_connection_id = connection_id.clone();
-        let prepared = if method == Method::TurnInterrupt {
-            None
-        } else {
-            let agent_changes = self.bridge.agent_changes();
-            let i = intent.clone();
-            let resources = self.resources.clone();
-            let step = self
-                .prepare("preparation", move |s| async move {
-                    if method == Method::TurnStart {
-                        crate::account_transfer_executor::before_start(
-                            Arc::clone(&s),
-                            resources.account_session.clone(),
-                            &resources.model_catalog,
-                            &resources,
-                            &i.agent_id,
-                            now(),
-                        )
-                        .await
-                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                    }
-                    store::preparation_step(
-                        &s,
-                        &i,
-                        preparation::admit(Arc::clone(&s), &resources, &i),
-                    )
-                    .await
-                })
-                .await?;
-            let Some(selection) = self.preparation_ready(step, &intent, &agent_changes) else {
-                return Ok(());
-            };
-            let i = intent.clone();
-            let resources = self.resources.clone();
-            let step = self
-                .prepare("workspace", move |s| async move {
-                    store::preparation_step(
-                        &s,
-                        &i,
-                        preparation::workspace(Arc::clone(&s), &resources, &i),
-                    )
-                    .await
-                })
-                .await?;
-            let Some(token) = self.preparation_ready(step, &intent, &agent_changes) else {
-                return Ok(());
-            };
-            let i = intent.clone();
-            let resources = self.resources.clone();
-            let step = self
-                .prepare("preparation", move |s| async move {
-                    store::preparation_step(&s, &i, {
-                        preparation::prepare_ready(
-                            Arc::clone(&s),
-                            &resources,
-                            &i,
-                            method,
-                            generation,
-                            &preparation_connection_id,
-                            selection,
-                            token,
-                        )
-                    })
-                    .await
-                })
-                .await?;
-            let Some(prepared) = self.preparation_ready(step, &intent, &agent_changes) else {
-                return Ok(());
-            };
-            Some(prepared)
-        };
         let (intent, method, params, submission, guard, thread, compiled) = if let Some(prepared) =
             prepared
         {
@@ -2069,8 +2027,9 @@ impl Worker {
                     .map(|session| session.control.clone())
             })
             .unwrap_or_else(|| self.control.clone());
-        let prepared = match self
-            .drive(control.prepare(RequestSpec {
+        let prepared = match crate::diagnostics::measure_runtime_stage_async(
+            "turn_submission.response_slot",
+            self.drive(control.prepare(RequestSpec {
                 id: id.clone(),
                 operation_id: OperationId(operation),
                 method,
@@ -2078,8 +2037,9 @@ impl Worker {
                 thread_id: context.intent.thread_id.clone(),
                 lightweight: method == Method::TurnInterrupt,
                 timeout_ms: self.timeout_ms,
-            }))
-            .await
+            })),
+        )
+        .await
         {
             Ok(prepared) => prepared,
             Err(WorkerError::Session(SessionTaskError::Closed)) if actor_session.is_some() => {
@@ -2093,8 +2053,9 @@ impl Worker {
         let recovery = prepared.recovery_record();
         let save_context = context.clone();
         let account = self.account.clone();
-        let authorized = self
-            .db("submitted", move |store| async move {
+        let authorized = crate::diagnostics::measure_runtime_stage_async(
+            "turn_submission.submitted",
+            self.db("submitted", move |store| async move {
                 store::submitted(
                     &store,
                     save_context,
@@ -2108,8 +2069,9 @@ impl Worker {
                     },
                 )
                 .await
-            })
-            .await?;
+            }),
+        )
+        .await?;
         if !authorized || self.closing {
             return Ok(());
         }
@@ -2130,7 +2092,12 @@ impl Worker {
             }
             receipt
         };
-        match self.drive(admission).await {
+        match crate::diagnostics::measure_runtime_stage_async(
+            "turn_submission.admission",
+            self.drive(admission),
+        )
+        .await
+        {
             Ok(_ticket) => {}
             Err(WorkerError::Session(SessionTaskError::Closed)) if actor_session.is_some() => {
                 return Ok(());

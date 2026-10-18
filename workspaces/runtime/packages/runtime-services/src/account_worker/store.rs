@@ -2397,6 +2397,16 @@ pub(super) enum PreparationStep<T> {
     /// The start outcome was settled (refused); nothing further to do.
     Settled,
 }
+impl<T> PreparationStep<T> {
+    /// The ready value, or this non-ready step for a later stage.
+    pub(super) fn into_ready<U>(self) -> Result<T, PreparationStep<U>> {
+        match self {
+            Self::Ready(value) => Ok(value),
+            Self::Pending(reason) => Err(PreparationStep::Pending(reason)),
+            Self::Settled => Err(PreparationStep::Settled),
+        }
+    }
+}
 
 pub(super) async fn preparation_step<T: Send + 'static>(
     store: &RuntimeStore,
