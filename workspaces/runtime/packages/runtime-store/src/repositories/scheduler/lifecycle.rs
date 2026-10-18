@@ -725,7 +725,7 @@ impl SchedulerRepository {
     /// Restore Python-shaped scoped receipts; the account worker will reattach without replay.
     pub fn recover_submitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
         let query = format!(
-            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL})"
+            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL}) AND NOT ({SETTLED_IDLE_TURN_SQL})"
         );
         let mut statement = transaction.prepare_cached(&query)?;
         let rows = statement
@@ -1567,8 +1567,15 @@ fn unresolved_base_sql() -> String {
 // A queued agent whose saved attempt completed has new input but no new claim:
 // its earlier turn is settled, so a new provider generation must not interrupt it.
 const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.submitted'),0)=1 AND json_extract(record,'$.startAttempt.action') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.activeAtReservation'),0)=0 AND json_extract(record,'$.startOutcomeHold') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.responseError'),'')='' AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'')!='unknown' AND COALESCE(json_type(record,'$.startAttempt.turnId'),'')='text' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),'')!='' AND json_extract(record,'$.startAttempt.turnId')=COALESCE(json_extract(record,'$.lastCompletedTurn'),'') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'')='completed'";
+// An idle agent whose attempt turn is its last finished turn has nothing to
+// recover, also when the attempt was reserved during an active turn
+// (`activeAtReservation`). Python restart recovery never touches an idle agent.
+const SETTLED_IDLE_TURN_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'),'')!='' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'))=json_extract(record,'$.lastCompletedTurn') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'') IN ('completed','failed','interrupted')";
 pub(super) fn unresolved_sql() -> String {
-    format!("{} AND NOT ({COMPLETED_START_SQL})", unresolved_base_sql())
+    format!(
+        "{} AND NOT ({COMPLETED_START_SQL}) AND NOT ({SETTLED_IDLE_TURN_SQL})",
+        unresolved_base_sql()
+    )
 }
 pub(super) fn account_agents(
     connection: &Connection,

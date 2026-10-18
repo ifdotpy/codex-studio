@@ -216,7 +216,9 @@ async fn python_written_completed_start_recovery_exclusion_matches_rust_scans() 
         let expected = oracle.call(json!({"command":"normalize","value":result["after"]}));
         let mut paths = Vec::new();
         diff_paths(&actual, &expected, "", &mut paths);
-        if matches!(*id, "unknown_outcome" | "in_flight") {
+        // A completed turn settles its attempt also when the start outcome was
+        // recorded as unknown: the idle agent stays untouched, as in Python.
+        if *id == "in_flight" {
             let deviation = &registry["durable_reconciliation_hold"];
             let fields = deviation["fields"].as_array().expect("registered fields");
             assert!(!paths.is_empty(), "{id}: registered difference disappeared");

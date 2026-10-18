@@ -195,3 +195,54 @@ fn a_held_restart_is_not_applied_again_after_the_user_sends_a_message() {
     });
     assert_eq!(stored(&connection), expected);
 }
+
+#[test]
+fn a_finished_python_turn_reserved_during_activity_stays_settled() {
+    // Agents 50f9a796 and 83e59e82 in rehearsal 8: the attempt was reserved
+    // while the agent was active, and its turn is the last completed turn.
+    let mut connection = database();
+    let mut record = waiting_with_finished_marker();
+    record["lastCompletedTurn"] = json!("turn-busy");
+    record["startAttempt"] = python_attempt("busy", Some("turn-busy"), true);
+    put(&connection, record);
+    let expected = stored(&connection);
+    restart_and_reconnect(&mut connection, 1);
+    assert_eq!(stored(&connection), expected);
+}
+
+#[test]
+fn an_old_uncertain_input_does_not_block_a_new_message() {
+    // Agent 841ebc0e kept one `uncertain` input from 10 days before the cutover
+    // and ran many later turns under Python. Rust never claimed its next message.
+    let mut connection = database();
+    put(
+        &connection,
+        json!({"status": "queued", "autoWake": true, "inFlight": false, "turnId": null, "error": null}),
+    );
+    connection
+        .execute_batch(
+            "INSERT INTO runtime_events VALUES('old','agent','user','old','uncertain',1,0,NULL,'Server restarted before delivery acknowledgement');
+             INSERT INTO runtime_events VALUES('new','agent','user','new','pending',2,0,NULL,NULL);",
+        )
+        .expect("events write");
+    let claimed = with(&mut connection, |tx| {
+        SchedulerRepository::claim(tx, AGENT, 0, "attempt", 3.0, 4).expect("claim runs")
+    })
+    .expect("the new message is claimed");
+    assert_eq!(
+        claimed
+            .events
+            .iter()
+            .map(|event| event.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["new"]
+    );
+    let old: String = connection
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("old input reads");
+    assert_eq!(old, "uncertain", "the unknown input is never sent again");
+}
