@@ -59,8 +59,8 @@ pub(super) struct IdleClocks {
     released: BTreeSet<String>,
     /// When the process was first seen with every loaded thread released.
     process: Option<Instant>,
-    /// The process is otherwise quiescent but a durable account-wide owner remains.
-    process_blocked: bool,
+    /// The event source that can recheck the idle process's remaining owner.
+    process_blocked: Option<IdleBlocker>,
     initialized: bool,
 }
 
@@ -72,14 +72,14 @@ impl IdleClocks {
         self.blocked.remove(thread);
         self.released.remove(thread);
         self.process = None;
-        self.process_blocked = false;
+        self.process_blocked = None;
     }
 
     fn replace_loaded(&mut self, loaded: BTreeSet<String>) {
         self.initialized = true;
         self.loaded = loaded;
         self.process = None;
-        self.process_blocked = false;
+        self.process_blocked = None;
         self.threads
             .retain(|thread, _| self.loaded.contains(thread));
         self.blocked
@@ -108,7 +108,11 @@ impl IdleClocks {
     }
 
     pub(super) fn has_blocked_candidates(&self) -> bool {
-        self.has_blocked(IdleBlocker::Durable) || self.process_blocked
+        self.has_blocked(IdleBlocker::Durable) || self.process_blocked == Some(IdleBlocker::Durable)
+    }
+
+    pub(super) fn has_local_blockers(&self) -> bool {
+        self.process_blocked == Some(IdleBlocker::Local) || self.has_blocked(IdleBlocker::Local)
     }
 
     fn has_blocked(&self, reason: IdleBlocker) -> bool {
@@ -211,7 +215,11 @@ impl IdleClocks {
                 !self.released.contains(*thread) && !self.blocked.contains_key(*thread)
             })
             .map(|(_, since)| *since + delay)
-            .chain(self.process.map(|since| since + delay))
+            .chain(
+                self.process
+                    .filter(|_| self.process_blocked.is_none())
+                    .map(|since| since + delay),
+            )
             .min()
     }
 }
@@ -254,6 +262,9 @@ impl Worker {
         if !self.pending.is_empty() || !self.retained_requests.is_empty() {
             for thread in &due {
                 self.idle_clocks.block(thread, IdleBlocker::Local);
+            }
+            if self.idle_clocks.process.is_some() {
+                self.idle_clocks.process_blocked = Some(IdleBlocker::Local);
             }
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
             return Ok(());
@@ -353,14 +364,17 @@ impl Worker {
         usage_snapshot: Option<IdleUsageSnapshot>,
         retry: bool,
     ) -> Result<(), WorkerError> {
-        let locally_unused = !self.closing
-            && self
-                .idle_clocks
-                .loaded()
-                .iter()
-                .all(|thread| self.idle_clocks.released(thread))
-            && self.quiescent()
-            && self.inbox.is_empty();
+        let all_released = self
+            .idle_clocks
+            .loaded()
+            .iter()
+            .all(|thread| self.idle_clocks.released(thread));
+        if !self.closing && all_released && !self.provider_quiescent() {
+            self.idle_clocks.process_blocked = Some(IdleBlocker::Local);
+            self.idle_deadline = next_deadline(&self.idle_clocks, Some(delay));
+            return Ok(());
+        }
+        let locally_unused = !self.closing && all_released;
         let (account_in_use, observed_generation) = if locally_unused {
             let usage = match usage_snapshot {
                 Some(usage) => usage,
@@ -371,16 +385,19 @@ impl Worker {
             (false, *self.idle_state_changes.borrow())
         };
         let process_unused = locally_unused && !account_in_use;
-        self.idle_clocks.process_blocked = locally_unused && account_in_use;
+        self.idle_clocks.process_blocked =
+            (locally_unused && account_in_use).then_some(IdleBlocker::Durable);
         if self.idle_clocks.process_due(process_unused, now, delay) {
             let state_changed = *self.idle_state_changes.borrow() != observed_generation;
-            if state_changed
-                || self.idle_setting_changes.has_changed().unwrap_or(true)
-                || !self.inbox.is_empty()
-            {
-                self.idle_clocks.process_blocked = state_changed;
-                self.idle_clocks.process_due(false, now, delay);
-                self.idle_deadline = Some(tokio::time::Instant::now() + IDLE_RETRY_BACKOFF);
+            if state_changed || self.idle_setting_changes.has_changed().unwrap_or(true) {
+                self.idle_clocks.process_blocked = state_changed.then_some(IdleBlocker::Durable);
+                // The pending watch event will recheck ownership. An unrelated
+                // state change must not erase time the provider spent idle.
+                self.idle_deadline = None;
+            } else if !self.inbox.is_empty() || !self.queued_commands.is_empty() {
+                // Commands take priority over the due timer in the serve loop.
+                // Keep the clock so draining the queue cannot lose its wake.
+                self.idle_deadline = next_deadline(&self.idle_clocks, Some(delay));
             } else {
                 self.stop_idle_session();
                 self.idle_deadline = None;
@@ -396,7 +413,7 @@ impl Worker {
     pub(super) async fn idle_state_changed(&mut self, now: Instant) -> Result<(), WorkerError> {
         let _ = self.idle_state_changes.borrow_and_update();
         let blocked = self.idle_clocks.blocked_by(IdleBlocker::Durable);
-        if blocked.is_empty() && !self.idle_clocks.process_blocked {
+        if blocked.is_empty() && self.idle_clocks.process_blocked != Some(IdleBlocker::Durable) {
             return Ok(());
         }
         let Some(delay) = self.idle_delay else {
@@ -419,13 +436,12 @@ impl Worker {
     pub(super) async fn idle_local_work_completed(&mut self) -> Result<(), WorkerError> {
         if self.closing
             || self.session.status.borrow().initialization != InitializationStatus::Ready
-            || !self.pending.is_empty()
-            || !self.retained_requests.is_empty()
+            || !self.provider_quiescent()
         {
             return Ok(());
         }
         let blocked = self.idle_clocks.take_blocked(IdleBlocker::Local);
-        if blocked.is_empty() {
+        if blocked.is_empty() && self.idle_clocks.process_blocked != Some(IdleBlocker::Local) {
             return Ok(());
         }
         let Some(delay) = self.idle_delay else {
@@ -671,7 +687,9 @@ impl Worker {
 
     /// The worker holds no provider request, callback, effect, recovery, or
     /// VM session. Buffered stream text needs no provider; closing flushes it.
-    fn quiescent(&self) -> bool {
+    // Queued commands are fenced at the final stop decision; they do not erase
+    // the provider's idle clock before those commands have been processed.
+    fn provider_quiescent(&self) -> bool {
         self.pending.is_empty()
             && self.retained_requests.is_empty()
             && self.retained_frames.is_empty()
@@ -681,7 +699,6 @@ impl Worker {
             && self.managed_callbacks.is_empty()
             && self.effects.is_empty()
             && self.deferred.is_empty()
-            && self.queued_commands.is_empty()
             && self.vm_sessions.is_empty()
             && self.resolving_vm_actors.is_empty()
             && self.vm_notification_waiters.is_empty()
@@ -835,6 +852,21 @@ mod tests {
         clocks.release("u");
         clocks.replace_loaded(BTreeSet::new());
         assert!(!clocks.released("u"), "an unlisted thread is forgotten");
+    }
+
+    #[test]
+    fn a_local_process_owner_parks_the_due_timer_until_its_completion_event() {
+        let start = Instant::now();
+        let mut clocks = IdleClocks::default();
+        assert!(!clocks.process_due(true, start, DELAY));
+        clocks.process_blocked = Some(IdleBlocker::Local);
+        assert!(clocks.has_local_blockers());
+        assert!(!clocks.has_blocked_candidates());
+        assert_eq!(clocks.next_deadline(DELAY), None);
+
+        clocks.process_blocked = None;
+        assert_eq!(clocks.next_deadline(DELAY), Some(start + DELAY));
+        assert!(clocks.process_due(true, start + DELAY, DELAY));
     }
 
     #[test]

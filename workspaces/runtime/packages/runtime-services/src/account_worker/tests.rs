@@ -633,6 +633,23 @@ struct State {
     root: PathBuf,
     retained: bool,
 }
+
+/// Native protocol fixtures opt into idle inventory only in its dedicated tests.
+async fn test_bridge(store: Arc<RuntimeStore>) -> StoreBridge {
+    store
+        .transaction(|tx| {
+            studio_runtime_store::OrchestrationSettingsRepository::set(
+                tx,
+                studio_runtime_store::IDLE_SESSION_UNLOAD_SETTING,
+                0,
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    StoreBridge::new(store).await.unwrap()
+}
+
 impl State {
     async fn new() -> Self {
         let (agent, epoch, root) = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -663,20 +680,7 @@ impl State {
         .await
         .unwrap();
         let store = Arc::new(RuntimeStore::open(Some(&root)).await.unwrap());
-        // Idle unloading has its own protocol fixtures. Other account tests
-        // must not receive optional inventory requests during their scenarios.
-        store
-            .transaction(|tx| {
-                studio_runtime_store::OrchestrationSettingsRepository::set(
-                    tx,
-                    studio_runtime_store::IDLE_SESSION_UNLOAD_SETTING,
-                    0,
-                )?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        let mut bridge = StoreBridge::new(store).await.unwrap();
+        let mut bridge = test_bridge(store).await;
         let retained = MATRIX
             .try_with(|context| {
                 bridge.faults = context.faults.clone();
@@ -2988,19 +2992,19 @@ async fn stream_base_and_metadata_rollback_together() {
     worker.shutdown().await.unwrap();
 }
 
-async fn transfer_at_admission(call: usize, interrupt: bool) {
+async fn transfer_at_admission(operation: &str, interrupt: bool) {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
-    state.bridge.faults.arm(None);
     if interrupt {
         let start = state.start(&mut peer, &worker).await;
         peer.reply(&start, json!({"turn":{"id":"turn"}})).await;
         worker_barrier(&worker).await;
-        state.bridge.faults.arm(None);
     }
-    *state.bridge.faults.pause_at.lock().unwrap() = Some(call);
+    // Background initialization can finish across a command barrier. Preserve
+    // its in-flight trace and target the actual ownership fence by name.
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some(operation.into());
     if interrupt {
         worker
             .send(AccountCommand::Stop {
@@ -3033,6 +3037,7 @@ async fn transfer_at_admission(call: usize, interrupt: bool) {
         })
         .await
         .unwrap();
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
     state.bridge.faults.release.notify_one();
     worker_barrier(&worker).await;
     assert!(
@@ -3044,15 +3049,15 @@ async fn transfer_at_admission(call: usize, interrupt: bool) {
 
 #[tokio::test]
 async fn transfer_after_claim_before_resume_submission_is_refused() {
-    transfer_at_admission(1, false).await;
+    transfer_at_admission("submitted", false).await;
 }
 #[tokio::test]
 async fn transfer_before_claim_transaction_leaves_input_pending() {
-    transfer_at_admission(0, false).await;
+    transfer_at_admission("claim", false).await;
 }
 #[tokio::test]
 async fn transfer_after_stop_before_interrupt_submission_is_refused() {
-    transfer_at_admission(1, true).await;
+    transfer_at_admission("submitted", true).await;
 }
 
 async fn scenario_new_thread_freezes_settings_and_accepts_context() {

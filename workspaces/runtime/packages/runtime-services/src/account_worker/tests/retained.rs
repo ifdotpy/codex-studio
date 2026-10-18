@@ -127,7 +127,7 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     let broker_store = studio_runtime_store::RuntimeStore::open(Some(&broker_root))
         .await
         .unwrap();
-    let bridge = StoreBridge::new(Arc::new(broker_store)).await.unwrap();
+    let bridge = test_bridge(Arc::new(broker_store)).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(bridge).await;
     let port = worker.retained_session();

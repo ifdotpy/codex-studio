@@ -1165,6 +1165,15 @@ impl Worker {
                 self.run_effect(effect).await?;
                 continue;
             }
+            if self.idle_delay.is_some()
+                && self.session.status.borrow().initialization == InitializationStatus::Ready
+                && self.idle_clocks.has_local_blockers()
+            {
+                self.idle_local_work_completed().await?;
+                if self.closing {
+                    continue;
+                }
+            }
             if self.session.status.borrow().initialization == InitializationStatus::Ready
                 && !self.idle_initialized
                 && self.idle_deadline.is_none()

@@ -343,6 +343,19 @@ that exact batch only while its agent, account, connection and settings still ma
 Steer, Compact and Review also retain unknown outcomes after response timeouts.
 Late acknowledgements cannot resume a stopped agent or replace a newer turn.
 
+### Idle provider sessions
+
+Orchestration settings control [idle session unloading](../workspaces/runtime/packages/runtime-store/src/repositories/orchestration_settings.rs).
+The setting can keep sessions loaded or give unused threads an unload deadline.
+Studio checks ownership before unsubscribing a thread and stops the provider
+process only when all loaded threads have been released and no work remains.
+An unknown unsubscribe result keeps the thread loaded.
+
+Idle checks follow provider events, committed ownership changes, and the next
+idle deadline. Pending local requests park the deadline until their completion
+event. Queued commands prevent process shutdown without erasing its idle time.
+The worker loop owns this reconciliation; it does not start periodic scans.
+
 ## Token accounting and saved context
 
 A finite team budget checks durable usage before each new submission.
