@@ -709,10 +709,9 @@ impl ModelCatalogService {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
-                let provider = account
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex")
+                let provider = studio_runtime_providers::ProviderKind::of_record(account)
+                    .ok()?
+                    .key()
                     .to_owned();
                 Some((id, (home, provider)))
             }));
@@ -726,7 +725,8 @@ impl ModelCatalogService {
                 accounts.iter().any(|account| {
                     account["id"].as_str() == Some(key.0.as_str())
                         && account["home"].as_str().unwrap_or("") == key.1
-                        && account["provider"].as_str().unwrap_or("codex") == key.2
+                        && studio_runtime_providers::ProviderKind::key_of(account)
+                            == Some(key.2.as_str())
                 })
             });
         self.0.refresh_changed.notify_waiters();

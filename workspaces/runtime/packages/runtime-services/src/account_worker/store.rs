@@ -713,17 +713,19 @@ pub(super) async fn submitted(
             preparation::commit(tx, &context, guard)?;
         }
         let authorized = match context.method()? {
-            Method::TurnStart if i.provider == "claude" => preparation::commit_claude(
-                tx,
-                i,
-                &id_string(&request.ticket.id),
-                request.ticket.generation,
-                &connection_id,
-                submission.as_ref().ok_or_else(|| invalid(&i.attempt_id))?,
-                guard
-                    .as_ref()
-                    .ok_or_else(|| invalid("Claude commit guard"))?,
-            )?,
+            Method::TurnStart if i.provider == studio_runtime_providers::ProviderKind::Claude => {
+                preparation::commit_claude(
+                    tx,
+                    i,
+                    &id_string(&request.ticket.id),
+                    request.ticket.generation,
+                    &connection_id,
+                    submission.as_ref().ok_or_else(|| invalid(&i.attempt_id))?,
+                    guard
+                        .as_ref()
+                        .ok_or_else(|| invalid("Claude commit guard"))?,
+                )?
+            }
             Method::TurnStart => commit_prepared_turn(
                 tx,
                 i,
@@ -1544,6 +1546,8 @@ pub(super) fn interrupt_intent(
     let Some(a) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(None);
     };
+    let provider = studio_runtime_providers::ProviderKind::of_field(a.extra.get("provider"))
+        .map_err(|_| WorkerError::PreparationRefused("agent/provider".into()))?;
     let attempt = &a.extra.get("startAttempt").unwrap_or(&Value::Null);
     let interrupt = &attempt["interrupt"];
     if interrupt["threadId"] == thread
@@ -1567,7 +1571,7 @@ pub(super) fn interrupt_intent(
                         .as_str()
                         .unwrap_or("default")
                         .into(),
-                    provider: "codex".into(),
+                    provider,
                     thread_id: Some(thread.into()),
                     cwd: None,
                     model: None,
@@ -2399,9 +2403,11 @@ pub(super) fn pending_preparations(
 /// once. `account_pin` is the worker account's auth pin (provider and home).
 fn invalidate_auth_on_failure(agent: &Value, account_pin: &Value, turn: &Value) {
     use crate::account_driver::{AuthProfile, ProviderAuthReader, SystemProviderAuthReader};
-    let provider = agent["provider"].as_str().unwrap_or("codex");
+    let Ok(provider) = studio_runtime_providers::ProviderKind::of_record(agent) else {
+        return;
+    };
     if turn["status"] != "failed"
-        || crate::continuation_runtime::classify_usage_failure(&turn["error"], provider)
+        || crate::continuation_runtime::classify_usage_failure(&turn["error"], provider.key())
             != Some(crate::usage_resume::Cause::Auth)
     {
         return;
@@ -2410,7 +2416,7 @@ fn invalidate_auth_on_failure(agent: &Value, account_pin: &Value, turn: &Value) 
         return;
     };
     SystemProviderAuthReader.invalidate(&AuthProfile {
-        provider: provider.to_owned(),
+        provider,
         home: home.into(),
         claude_options: account_pin
             .get("claudeOptions")

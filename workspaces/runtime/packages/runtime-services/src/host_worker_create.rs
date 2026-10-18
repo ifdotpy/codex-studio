@@ -107,7 +107,7 @@ fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountIdentity {
-    pub provider: Option<String>,
+    pub provider: studio_runtime_providers::ProviderKind,
     pub home: Option<String>,
     pub account_id: Option<String>,
     pub email: Option<String>,
@@ -179,13 +179,6 @@ pub fn prepare(
         {
             return Err(CreateError::InvalidCreation("account key is invalid"));
         }
-        if accounts[index]
-            .provider
-            .as_deref()
-            .is_none_or(str::is_empty)
-        {
-            return Err(CreateError::IdentityChanged);
-        }
         let settings =
             catalog.resolve(account_key, &accounts[index], model, effort, false, false)?;
         let mut value = build_agent_record(
@@ -194,7 +187,7 @@ pub fn prepare(
             "",
             &path,
             account_key,
-            accounts[index].provider.as_deref().unwrap_or(""),
+            accounts[index].provider.key(),
             true,
             "orchestrator",
             true,
@@ -281,7 +274,7 @@ pub fn prepare_work_item(
             .trim(),
         &path,
         account_key,
-        account.provider.as_deref().unwrap_or(""),
+        account.provider.key(),
         true,
         role,
         false,
@@ -377,7 +370,7 @@ pub fn recheck(
         let observed = identity_value(&accounts[index]);
         if frozen != &observed
             || field(draft, "provider").and_then(Value::as_str)
-                != accounts[index].provider.as_deref()
+                != Some(accounts[index].provider.key())
         {
             return Err(CreateError::IdentityChanged);
         }
@@ -415,7 +408,7 @@ pub fn recheck_worker(
     recheck_record(transaction, draft)?;
     let observed = identity_value(account);
     if field(draft, "_p02CreationIdentity") != Some(&observed)
-        || field(draft, "provider").and_then(Value::as_str) != account.provider.as_deref()
+        || field(draft, "provider").and_then(Value::as_str) != Some(account.provider.key())
     {
         return Err(CreateError::IdentityChanged);
     }
@@ -703,13 +696,13 @@ mod tests {
     fn accounts() -> [AccountIdentity; 2] {
         [
             AccountIdentity {
-                provider: Some("codex".to_owned()),
+                provider: studio_runtime_providers::ProviderKind::Codex,
                 home: Some("/home/one".to_owned()),
                 account_id: Some("account-one".to_owned()),
                 email: Some("one@example.test".to_owned()),
             },
             AccountIdentity {
-                provider: Some("codex".to_owned()),
+                provider: studio_runtime_providers::ProviderKind::Codex,
                 home: Some("/home/two".to_owned()),
                 account_id: Some("account-two".to_owned()),
                 email: Some("two@example.test".to_owned()),

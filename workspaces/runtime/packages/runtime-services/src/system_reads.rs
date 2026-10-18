@@ -186,8 +186,8 @@ pub fn ui_summary(
     account_snapshot: Option<crate::account_policy::AccountsSnapshot>,
 ) -> Result<Value, StoreError> {
     let accounts=account_snapshot.map_or_else(Vec::new,|snapshot|snapshot.accounts.iter().filter_map(|account|{
-        let provider=account["provider"].as_str().unwrap_or("codex");
-        matches!(provider,"codex"|"claude").then(||json!({"provider":provider,"email":account["email"],"plan":account["plan"],"status":if truthy(account.get("disconnected")){"signedOut"}else{account["status"].as_str().unwrap_or("error")},"label":account["label"].as_str().unwrap_or("Account"),"isDefault":account["id"]==snapshot.default_account_key}))
+        let provider=studio_runtime_providers::ProviderKind::of_record(account).ok()?.key();
+        Some(json!({"provider":provider,"email":account["email"],"plan":account["plan"],"status":if truthy(account.get("disconnected")){"signedOut"}else{account["status"].as_str().unwrap_or("error")},"label":account["label"].as_str().unwrap_or("Account"),"isDefault":account["id"]==snapshot.default_account_key}))
     }).collect::<Vec<_>>());
     let system = if cfg!(target_os = "macos") {
         "Darwin"

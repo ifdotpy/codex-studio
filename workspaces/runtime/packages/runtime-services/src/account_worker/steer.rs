@@ -55,7 +55,10 @@ pub(super) fn claim(
         epoch,
         attempt_id: steer_id.into(),
         account_key: field("accountKey").unwrap_or("default").into(),
-        provider: field("provider").unwrap_or("codex").into(),
+        provider: studio_runtime_providers::ProviderKind::of_field(
+            claimed.agent.extra.get("provider"),
+        )
+        .map_err(|_| StoreError::RecordContract("agent provider"))?,
         thread_id: Some(claimed.thread_id.clone()),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),

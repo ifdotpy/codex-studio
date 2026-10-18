@@ -574,7 +574,7 @@ pub(crate) async fn spawn_agents(
                 default_model,
             )?;
         }
-        let provider = account.provider.as_deref().unwrap_or("codex");
+        let provider = account.provider.key();
         let model = if requested_model == "gpt-6-astra"
             && root_value.get("model").is_none()
             && defaults.get("model").is_none()
@@ -1294,12 +1294,8 @@ pub(crate) async fn request_review(
             crate::managed_host_tools::Error::Unavailable("workspace-state/vm-workspace").into(),
         );
     }
-    if actor_record
-        .extra
-        .get("provider")
-        .and_then(Value::as_str)
-        .unwrap_or("codex")
-        != "codex"
+    if studio_runtime_providers::ProviderKind::of_field(actor_record.extra.get("provider"))
+        != Ok(studio_runtime_providers::ProviderKind::Codex)
     {
         return Err(crate::managed_host_tools::Error::Invalid(
             "Native review requires a Codex agent",

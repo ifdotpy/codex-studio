@@ -130,11 +130,8 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         .iter()
                         .filter_map(|account| {
                             let key = account.get("id")?.as_str()?.to_owned();
-                            let provider = account
-                                .get("provider")
-                                .and_then(Value::as_str)
-                                .unwrap_or("codex")
-                                .to_owned();
+                            let provider =
+                                studio_runtime_providers::ProviderKind::of_record(account).ok()?.key().to_owned();
                             let scope = session.current_scope(&key)?;
                             (scope.account == key && !scope.connection.is_empty())
                                 .then_some((key, provider, scope))
@@ -351,10 +348,9 @@ impl ActiveProviderConnections for LiveProviderConnections {
                 if scope.account != account_key || scope.connection.is_empty() {
                     return None;
                 }
-                let provider = account
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex")
+                let provider = studio_runtime_providers::ProviderKind::of_record(account)
+                    .ok()?
+                    .key()
                     .to_owned();
                 let configured_binary = if provider == "claude" {
                     studio_runtime_services::account_driver::claude::resolve_claude_binary(account)

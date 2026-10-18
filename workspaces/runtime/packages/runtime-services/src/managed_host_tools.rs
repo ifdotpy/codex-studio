@@ -666,7 +666,7 @@ pub(crate) fn execute(
         ManagedHostTool::Watch => ports.watch(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Monitor => ports.monitor(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Review => {
-            if actor.provider.as_deref().unwrap_or("codex") != "codex" {
+            if !matches!(actor.provider.as_deref(), None | Some("codex")) {
                 return Err(Error::Invalid("Native review requires a Codex agent"));
             }
             if truthy(actor.record.extra.get("nativeReview")) {

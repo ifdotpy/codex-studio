@@ -778,9 +778,8 @@ fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, A
             .unwrap_or_default()
             .to_owned(),
         provider: account
-            .and_then(|row| row.get("provider"))
-            .and_then(Value::as_str)
-            .unwrap_or("codex")
+            .and_then(|row| studio_runtime_providers::ProviderKind::of_record(row).ok())
+            .map_or("", studio_runtime_providers::ProviderKind::key)
             .to_owned(),
         known: account.is_some(),
         available: account.is_some_and(|row| {

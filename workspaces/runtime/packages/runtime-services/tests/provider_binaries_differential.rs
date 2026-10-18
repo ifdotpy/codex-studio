@@ -8,7 +8,7 @@ mod prepared_python;
 use std::fs;
 use std::path::{Path, PathBuf};
 use studio_runtime_services::provider_binaries::{
-    BinaryIdentityError, BinaryResolutionError, DiscoveryInputs, NativePlatform, Provider,
+    BinaryIdentityError, BinaryResolutionError, DiscoveryInputs, NativePlatform, ProviderKind,
     ProviderVersionInput, ProviderVersionSnapshot, SemanticVersion, VersionEvidence, VersionSource,
     binary_file_identity, bundle_digest, companion_identities, compare_versions,
     decide_provider_version, discovery_paths, parse_native_version, parse_version,
@@ -319,10 +319,10 @@ fn version_key_json(version: SemanticVersion) -> Value {
     ])
 }
 
-fn provider(value: &str) -> Provider {
+fn provider(value: &str) -> ProviderKind {
     match value {
-        "codex" => Provider::Codex,
-        "claude" => Provider::Claude,
+        "codex" => ProviderKind::Codex,
+        "claude" => ProviderKind::Claude,
         _ => unreachable!("corpus provider is a closed fixture enum"),
     }
 }

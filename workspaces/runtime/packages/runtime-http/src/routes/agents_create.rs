@@ -44,9 +44,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), Some(provider)) =
-                (account.home.as_deref(), account.provider.as_deref())
-            else {
+            let (Some(home), provider) = (account.home.as_deref(), account.provider.key()) else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
             // Worker selection reads every candidate's catalog synchronously, so
@@ -65,7 +63,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 })
                 .filter_map(|row| {
                     let worker = host_account_identity(&row.identity);
-                    Some((row.account_key, worker.home?, worker.provider?))
+                    Some((row.account_key, worker.home?, worker.provider.key()))
                 })
                 .collect::<Vec<_>>();
             let (parent, _) = futures_util::future::join(
@@ -181,7 +179,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 || model == "sonnet"
                 || model == "opus"
                 || model == "haiku"
-                || account.provider.as_deref() == Some("claude")
+                || account.provider == studio_runtime_providers::ProviderKind::Claude
             {
                 "anthropic"
             } else {
@@ -352,10 +350,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
                 Some(Candidate {
                     account_key: key,
                     identity: ManagedAccountIdentity {
-                        provider: row
-                            .get("provider")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
+                        provider: studio_runtime_providers::ProviderKind::of_record(row).ok()?,
                         home: row.get("home").and_then(Value::as_str).map(str::to_owned),
                         account_id: row
                             .get("accountId")
@@ -407,10 +402,9 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
         }
         Ok(
             studio_runtime_services::provider_callbacks::ManagedAccountIdentity {
-                provider: row
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                provider: studio_runtime_providers::ProviderKind::of_record(row).map_err(|_| {
+                    studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Unknown
+                })?,
                 home: row.get("home").and_then(Value::as_str).map(str::to_owned),
                 account_id: row
                     .get("accountId")
@@ -441,9 +435,7 @@ fn host_account_identity(
     identity: &studio_runtime_services::provider_callbacks::ManagedAccountIdentity,
 ) -> studio_runtime_services::host_worker_create::AccountIdentity {
     studio_runtime_services::host_worker_create::AccountIdentity {
-        // Older/default Codex registry rows omit provider; the account registry
-        // contract treats that representation as Codex.
-        provider: Some(identity.provider.as_deref().unwrap_or("codex").to_owned()),
+        provider: identity.provider,
         home: identity.home.clone(),
         account_id: identity.account_id.clone(),
         email: identity.email.clone(),
@@ -634,12 +626,7 @@ impl RouteCreationCatalog {
             .ok_or(CreateError::CapabilityUnavailable(
                 "provider-session/model-list",
             ))?;
-        let provider = account
-            .provider
-            .as_deref()
-            .ok_or(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ))?;
+        let provider = account.provider.key();
         let (value, fresh_key, fresh_home, fresh_provider, expires_at) =
             match self.service.read_for_admission(account_key, home, provider) {
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
@@ -700,8 +687,7 @@ impl RouteCreationCatalog {
     ) -> Result<String, studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>
     {
         use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
-        let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref())
-        else {
+        let (Some(home), provider) = (account.home.as_deref(), account.provider.key()) else {
             return Err(E::Unavailable("provider-session/model-list"));
         };
         let catalog = match self.service.read_for_admission(account_key, home, provider) {
@@ -1111,10 +1097,9 @@ fn catalog_admission_candidates(
             {
                 return None;
             }
-            let provider = row
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("codex");
+            let provider = studio_runtime_providers::ProviderKind::of_record(row)
+                .ok()?
+                .key();
             if !account_is_pinned && expected_provider.is_some_and(|wanted| wanted != provider) {
                 return None;
             }
@@ -1238,9 +1223,8 @@ async fn wait_for_agent_catalog(
                                 .accounts
                                 .iter()
                                 .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
-                                .and_then(|row| row.get("provider").and_then(Value::as_str))
-                                .unwrap_or("codex")
-                                == expected
+                                .and_then(studio_runtime_providers::ProviderKind::key_of)
+                                == Some(expected)
                         })
                     {
                         keys.push(key.to_owned());
@@ -1611,10 +1595,9 @@ async fn finish_title_request(
                     .and_then(Value::as_str)
                     .unwrap_or("default")
                     .to_owned(),
-                record
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex")
+                studio_runtime_providers::ProviderKind::of_record(&record)
+                    .map_err(|_| ApiError::internal())?
+                    .key()
                     .to_owned(),
             ))
         },

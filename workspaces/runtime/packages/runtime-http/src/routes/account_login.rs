@@ -259,7 +259,7 @@ async fn discover(
                 .unwrap_or_default()
                 .join(".claude");
             let metadata = SystemProviderAuthReader.read(&AuthProfile {
-                provider: "claude".into(),
+                provider: studio_runtime_providers::ProviderKind::Claude,
                 home: home.clone(),
                 claude_options: None,
             });

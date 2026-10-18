@@ -319,35 +319,23 @@ fn number(bytes: &[u8], start: usize) -> Option<(VersionNumber, usize)> {
     ))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Provider {
-    Codex,
-    Claude,
+pub use studio_runtime_providers::ProviderKind;
+
+/// Product name of the provider's executable in version notices.
+#[must_use]
+pub const fn executable_label(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Codex => "Codex CLI",
+        ProviderKind::Claude => "Claude Code",
+    }
 }
 
-impl Provider {
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-        }
-    }
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Codex => "Codex CLI",
-            Self::Claude => "Claude Code",
-        }
-    }
-
-    #[must_use]
-    pub const fn tested_baseline(self) -> &'static str {
-        match self {
-            Self::Codex => "0.153.4",
-            Self::Claude => "2.1.278",
-        }
+/// Newest provider executable version this runtime was tested against.
+#[must_use]
+pub const fn tested_baseline(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Codex => "0.153.4",
+        ProviderKind::Claude => "2.1.278",
     }
 }
 
@@ -389,7 +377,7 @@ pub enum VersionEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VersionWarning {
-    pub provider: Provider,
+    pub provider: ProviderKind,
     pub version: String,
     pub baseline: &'static str,
     pub message: String,
@@ -397,27 +385,27 @@ pub struct VersionWarning {
 
 #[must_use]
 pub fn version_warning(
-    provider: Provider,
+    provider: ProviderKind,
     version: &str,
     evidence: VersionEvidence,
 ) -> Option<VersionWarning> {
     let current = parse_version(version)?;
-    let baseline = provider.tested_baseline();
+    let baseline = tested_baseline(provider);
     if current >= parse_version(baseline)? {
         return None;
     }
     let detail = match evidence {
         VersionEvidence::Running => format!(
             "The running {} version {version} is below",
-            provider.label()
+            executable_label(provider)
         ),
         VersionEvidence::LaunchedExecutable => format!(
             "The executable configured for this {} connection currently reports {version}, below",
-            provider.label()
+            executable_label(provider)
         ),
         VersionEvidence::ConfiguredProfile => format!(
             "The current {} profile executable reports {version}, below",
-            provider.label()
+            executable_label(provider)
         ),
     };
     let running_caveat = if evidence == VersionEvidence::Running {
@@ -438,7 +426,7 @@ pub fn version_warning(
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderVersionSnapshot {
     account_key: String,
-    provider: Provider,
+    provider: ProviderKind,
     running_version: Option<String>,
     installed_version: Option<String>,
     configured_version: Option<String>,
@@ -452,7 +440,7 @@ pub struct ProviderVersionSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderVersionInput {
     pub account_key: String,
-    pub provider: Provider,
+    pub provider: ProviderKind,
     pub running_version: Option<String>,
     pub installed_version: Option<String>,
     pub configured_version: Option<String>,
@@ -506,7 +494,7 @@ pub enum CheckStatus {
 pub struct ProviderVersionDecision {
     pub id: String,
     pub account_key: String,
-    pub provider: Provider,
+    pub provider: ProviderKind,
     pub status: CheckStatus,
     pub running_version: Option<String>,
     pub installed_version: Option<String>,
@@ -852,7 +840,7 @@ pub fn decide_provider_version(snapshot: ProviderVersionSnapshot) -> ProviderVer
                     version_warning(provider, version, VersionEvidence::ConfiguredProfile)
                 })
         });
-    let baseline_key = parse_version(provider.tested_baseline());
+    let baseline_key = parse_version(tested_baseline(provider));
     let outdated = [
         snapshot.running_version.as_deref(),
         snapshot.installed_version.as_deref(),
@@ -907,7 +895,7 @@ pub fn decide_provider_version(snapshot: ProviderVersionSnapshot) -> ProviderVer
         installed_version: snapshot.installed_version,
         configured_version: snapshot.configured_version,
         notices,
-        baseline: provider.tested_baseline(),
+        baseline: tested_baseline(provider),
         error: snapshot.error,
         message,
         at: snapshot.at,
@@ -1145,7 +1133,7 @@ fn header_value<'a>(headers: &'a BTreeMap<String, String>, name: &str) -> Option
 mod tests {
     use super::{
         BinaryCandidate, CandidateStatus, CheckStatus, ClaudeVersionError, DiscoveryInputs,
-        NativePlatform, Provider, ProviderVersionInput, ProviderVersionSnapshot,
+        NativePlatform, ProviderKind, ProviderVersionInput, ProviderVersionSnapshot,
         ProviderVersionSnapshotError, RegistryResponse, SemanticVersion, UpstreamReleaseChecker,
         VersionEvidence, VersionReadError, VersionSource, bundle_digest, claude_cli_version,
         codex_cli_version, companion_identities, compare_versions, decide_provider_version,
@@ -1201,7 +1189,7 @@ mod tests {
 
     #[test]
     fn warning_distinguishes_a_running_cli_from_a_selected_executable() {
-        let running = version_warning(Provider::Codex, "0.153.3", VersionEvidence::Running)
+        let running = version_warning(ProviderKind::Codex, "0.153.3", VersionEvidence::Running)
             .expect("version is below tested baseline");
         assert!(
             !running
@@ -1209,7 +1197,7 @@ mod tests {
                 .contains("exact version already running may be different")
         );
         let selected = version_warning(
-            Provider::Codex,
+            ProviderKind::Codex,
             "0.153.3",
             VersionEvidence::LaunchedExecutable,
         )
@@ -1219,7 +1207,9 @@ mod tests {
                 .message
                 .contains("exact version already running may be different")
         );
-        assert!(version_warning(Provider::Codex, "0.153.4", VersionEvidence::Running).is_none());
+        assert!(
+            version_warning(ProviderKind::Codex, "0.153.4", VersionEvidence::Running).is_none()
+        );
     }
 
     #[test]
@@ -1227,7 +1217,7 @@ mod tests {
         let result = decide_provider_version(
             ProviderVersionSnapshot::new(ProviderVersionInput {
                 account_key: "default".to_owned(),
-                provider: Provider::Codex,
+                provider: ProviderKind::Codex,
                 running_version: Some("0.153.3".to_owned()),
                 installed_version: Some("0.153.5".to_owned()),
                 configured_version: None,
@@ -1255,7 +1245,7 @@ mod tests {
     fn checked_version_snapshot_refuses_empty_identity_and_nonfinite_time() {
         let mut input = ProviderVersionInput {
             account_key: String::new(),
-            provider: Provider::Codex,
+            provider: ProviderKind::Codex,
             running_version: None,
             installed_version: None,
             configured_version: None,
@@ -1282,7 +1272,7 @@ mod tests {
         let result = decide_provider_version(
             ProviderVersionSnapshot::new(ProviderVersionInput {
                 account_key: "worker-1".to_owned(),
-                provider: Provider::Claude,
+                provider: ProviderKind::Claude,
                 running_version: None,
                 installed_version: None,
                 configured_version: None,

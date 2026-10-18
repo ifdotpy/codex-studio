@@ -127,7 +127,7 @@ fn intent(state: &Value) -> TurnIntent {
         epoch: 2,
         attempt_id: a["startAttempt"]["id"].as_str().expect("id").into(),
         account_key: "account".into(),
-        provider: "claude".into(),
+        provider: studio_runtime_providers::ProviderKind::Claude,
         thread_id: Some("thread".into()),
         cwd: Some("/fixture".into()),
         model: Some(a["model"].as_str().expect("model").into()),

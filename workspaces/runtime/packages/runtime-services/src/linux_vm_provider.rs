@@ -59,12 +59,8 @@ pub fn vm_actor_matches(
     Ok(record.epoch == epoch
         && record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
         && provider.is_none_or(|provider| {
-            record
-                .extra
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("codex")
-                == provider
+            studio_runtime_providers::ProviderKind::of_field(record.extra.get("provider"))
+                .is_ok_and(|kind| kind.key() == provider)
         })
         && record
             .extra

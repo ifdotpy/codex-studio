@@ -32,11 +32,6 @@ const MAX_DIRECTORY_ENTRIES: usize = 65_536;
 const COPY_DIRECTORY: &str = ".studio-context-repairs";
 const REQUIRED_FREE_SPACE_OVERHEAD: u64 = 64 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HistoryProvider {
-    Codex,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistorySegment {
     pub path: PathBuf,
@@ -188,14 +183,10 @@ struct HistoryRecord {
 }
 
 /// Find one Codex rollout by its registered thread ID.
-pub fn locate_provider_history(
-    provider: HistoryProvider,
+pub fn locate_codex_history(
     provider_home: &Path,
     thread_id: &str,
 ) -> Result<PathBuf, HistoryFileError> {
-    match provider {
-        HistoryProvider::Codex => {}
-    }
     validate_thread_id(thread_id)?;
     let home = canonical_directory(provider_home)?;
     let mut matches = Vec::new();
@@ -1706,8 +1697,7 @@ mod tests {
     fn history_lookup_and_rewrite_match_python_bytes() {
         let (root, home, source, events) = fixture();
         assert_eq!(
-            locate_provider_history(HistoryProvider::Codex, &home, THREAD)
-                .expect("unique provider history"),
+            locate_codex_history(&home, THREAD).expect("unique provider history"),
             source
         );
         let (expected_report, expected_copy) =
@@ -2012,8 +2002,8 @@ mod tests {
     #[test]
     fn history_path_and_ancestry_refusals_fail_closed() {
         let (root, home, source, _) = fixture();
-        assert!(locate_provider_history(HistoryProvider::Codex, &home, "../escape").is_err());
-        assert!(locate_provider_history(HistoryProvider::Codex, &home, "missing").is_err());
+        assert!(locate_codex_history(&home, "../escape").is_err());
+        assert!(locate_codex_history(&home, "missing").is_err());
         let outside = root.path().join("outside.jsonl");
         fs::write(&outside, b"{}\n").expect("outside fixture file");
         assert!(matches!(
@@ -2050,7 +2040,7 @@ mod tests {
         )
         .expect("history symlink");
         assert!(matches!(
-            locate_provider_history(HistoryProvider::Codex, &home, THREAD),
+            locate_codex_history(&home, THREAD),
             Err(HistoryFileError::OutsideHome)
         ));
         run_python_refusal(

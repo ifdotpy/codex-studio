@@ -22,14 +22,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::sha256_hex;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provider {
-    Codex,
-    Claude,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,7 +102,7 @@ pub struct Actor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub key: String,
-    pub provider: Provider,
+    pub provider: ProviderKind,
     pub connection_id: String,
     pub available: bool,
     pub supervisor_identity: Option<SupervisorIdentity>,
@@ -310,7 +304,7 @@ pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
     let mut result = Vec::new();
     for mut tool in s.catalog.definitions.clone() {
         let name = tool.name.as_str();
-        if (s.account.provider == Provider::Claude
+        if (s.account.provider == ProviderKind::Claude
             && matches!(name, "orchestration_speak" | "orchestration_review"))
             || (!s.settings.is_lead
                 && matches!(name, "orchestration_speak" | "orchestration_servers"))
@@ -509,7 +503,7 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         }
         None => {}
     }
-    if s.account.provider == Provider::Claude {
+    if s.account.provider == ProviderKind::Claude {
         instructions.push_str("\nThis session uses Claude Code and its native tools. The native Agent tool is off. Studio managed agents replace it, and native agent type lists do not apply. Use Studio command monitors for long-running commands that need output, input, or cancellation. Use Bash for other commands. Studio voice is unavailable. Do not tell the user that an MCP server or connector needs authentication unless the user asks for work that needs it.\n");
         params.insert("claude".into(), json!(s.settings.claude_options));
     }
@@ -531,7 +525,7 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         }
     }
     params.insert("developerInstructions".into(), json!(instructions));
-    let tool_catalog = if method == Method::Start || s.account.provider == Provider::Claude {
+    let tool_catalog = if method == Method::Start || s.account.provider == ProviderKind::Claude {
         params.insert("dynamicTools".into(), json!(tools));
         Some(tools)
     } else {
@@ -658,7 +652,7 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
         );
         params.insert("sandboxPolicy".into(), sandbox);
     }
-    if s.account.provider == Provider::Claude {
+    if s.account.provider == ProviderKind::Claude {
         params.insert("dynamicTools".into(), json!(tool_definitions(s)?));
         if let [event] = input.events.as_slice()
             && event.kind == "user"
@@ -834,7 +828,7 @@ pub fn reduce_receipt(
             receipt.fields.get(source).cloned().unwrap_or(Value::Null),
         );
     }
-    if !(current.account.provider == Provider::Claude
+    if !(current.account.provider == ProviderKind::Claude
         && (receipt.reattached || receipt.claude_read_submitted))
     {
         set.insert("preparedContext".into(), json!({"epoch":[thread_id,current.actor.compactions],"versions":attempt.context_versions}));
@@ -928,7 +922,7 @@ fn unsubmitted_inspection(s: &Snapshot, thread_id: Option<&str>) -> bool {
         return false;
     };
     let phase = release.get("phase").and_then(Value::as_str);
-    s.account.provider == Provider::Codex
+    s.account.provider == ProviderKind::Codex
         && s.actor.auto_wake
         && s.account.available
         && !s.closed

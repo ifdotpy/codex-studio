@@ -733,8 +733,13 @@ impl TransferExecutor for AccountTransferExecutor {
             let target_account = operation["targetAccountKey"]
                 .as_str()
                 .ok_or(TransferError::Refused("Invalid transfer target"))?;
-            let source_provider = member["provider"].as_str().unwrap_or("codex");
-            let target_provider = operation["targetProvider"].as_str().unwrap_or("codex");
+            let source_provider = studio_runtime_providers::ProviderKind::of_record(member)
+                .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
+                .key();
+            let target_provider =
+                studio_runtime_providers::ProviderKind::of_field(operation.get("targetProvider"))
+                    .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
+                    .key();
             let (home, registered_provider) =
                 self.catalog
                     .account_profile(target_account)

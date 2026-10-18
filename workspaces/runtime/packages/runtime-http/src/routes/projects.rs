@@ -30,16 +30,12 @@ impl CreationCatalog for RadioCreationAdapter {
     fn resolve(
         &self,
         account_key: &str,
-        account: &AccountIdentity,
+        _account: &AccountIdentity,
         model: &str,
         effort: Option<&str>,
         fast_mode: bool,
         daybreak_enabled: bool,
     ) -> Result<ExecutionSettings, CreateError> {
-        account
-            .provider
-            .as_deref()
-            .ok_or(CreateError::InvalidCreation("provider"))?;
         let value = self
             .model_lists
             .get(account_key)
@@ -144,12 +140,8 @@ impl studio_runtime_services::radio_runtime::RadioCreation for RadioCreationAdap
                     ));
                 }
                 Ok(AccountIdentity {
-                    provider: Some(
-                        row.get("provider")
-                            .and_then(Value::as_str)
-                            .unwrap_or("codex")
-                            .to_owned(),
-                    ),
+                    provider: studio_runtime_providers::ProviderKind::of_record(row)
+                        .map_err(|_| ProjectsError::Invalid("Unknown account provider"))?,
                     home: row.get("home").and_then(Value::as_str).map(str::to_owned),
                     account_id: row
                         .get("accountId")
@@ -207,10 +199,11 @@ async fn radio_model_lists(
         }) else {
             continue;
         };
-        let provider = row
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex");
+        let Ok(provider) =
+            studio_runtime_providers::ProviderKind::of_record(row).map(|kind| kind.key())
+        else {
+            continue;
+        };
         if let Ok(value) = studio_runtime_services::model_catalog::ModelListPort::list(
             service,
             key,

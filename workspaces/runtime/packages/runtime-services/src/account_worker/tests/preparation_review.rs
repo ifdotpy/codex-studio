@@ -512,7 +512,7 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
                         epoch,
                         attempt_id: held["startAttempt"]["id"].as_str().unwrap().into(),
                         account_key: "default".into(),
-                        provider: "codex".into(),
+                        provider: studio_runtime_providers::ProviderKind::Codex,
                         thread_id: held["threadId"].as_str().map(str::to_owned),
                         cwd: held["cwd"].as_str().map(str::to_owned),
                         model: held["model"].as_str().map(str::to_owned),

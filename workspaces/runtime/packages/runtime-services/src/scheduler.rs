@@ -24,7 +24,7 @@ pub struct TurnIntent {
     pub epoch: i64,
     pub attempt_id: String,
     pub account_key: String,
-    pub provider: String,
+    pub provider: studio_runtime_providers::ProviderKind,
     pub thread_id: Option<String>,
     pub cwd: Option<String>,
     pub model: Option<String>,
@@ -876,7 +876,10 @@ pub(crate) fn claim_radio_turn_in_transaction(
         epoch,
         attempt_id: attempt_id.to_owned(),
         account_key: field("accountKey").unwrap_or("default").to_owned(),
-        provider: field("provider").unwrap_or("codex").to_owned(),
+        provider: studio_runtime_providers::ProviderKind::of_field(
+            claimed.agent.extra.get("provider"),
+        )
+        .map_err(|_| StoreError::RecordContract("agent provider"))?,
         thread_id: field("threadId").map(str::to_owned),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),
@@ -935,7 +938,10 @@ fn claim_intent_selected(
         epoch,
         attempt_id: attempt_id.to_owned(),
         account_key: field("accountKey").unwrap_or("default").to_owned(),
-        provider: field("provider").unwrap_or("codex").to_owned(),
+        provider: studio_runtime_providers::ProviderKind::of_field(
+            claimed.agent.extra.get("provider"),
+        )
+        .map_err(|_| StoreError::RecordContract("agent provider"))?,
         thread_id: field("threadId").map(str::to_owned),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),

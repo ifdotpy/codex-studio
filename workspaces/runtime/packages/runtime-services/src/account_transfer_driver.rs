@@ -200,7 +200,7 @@ pub async fn request(
                     continue;
                 }
                 let source_account = value.get("accountKey").and_then(Value::as_str).unwrap_or("default").to_owned();
-                let provider = value.get("provider").and_then(Value::as_str).unwrap_or("codex").to_owned();
+                let provider = studio_runtime_providers::ProviderKind::of_record(&value).map_err(|_| TransferError::Refused("Unknown agent provider"))?.key().to_owned();
                 let source_thread = value.get("threadId").cloned().filter(|thread| !thread.is_null());
                 if member_id != lead && provider != target_provider {
                     operation["members"][&member_id] = json!({"phase":"left","sourceAccountKey":source_account,
@@ -329,7 +329,7 @@ pub async fn request(
             "members":{},"requests":Value::Object(requests)});
         for (agent_id, value) in &mut agents {
             let source_account = value.get("accountKey").and_then(Value::as_str).unwrap_or("default").to_owned();
-            let provider = value.get("provider").and_then(Value::as_str).unwrap_or("codex").to_owned();
+            let provider = studio_runtime_providers::ProviderKind::of_record(value).map_err(|_| TransferError::Refused("Unknown agent provider"))?.key().to_owned();
             let source_thread = value.get("threadId").cloned().filter(|thread| !thread.is_null());
             if agent_id.as_str() != lead.as_str() && provider != target_provider {
                 operation["members"][agent_id] = json!({"phase":"left","sourceAccountKey":source_account,

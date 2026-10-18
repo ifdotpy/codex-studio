@@ -123,7 +123,7 @@ impl AuthMetadata {
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuthProfile {
-    pub provider: String,
+    pub provider: studio_runtime_providers::ProviderKind,
     pub home: PathBuf,
     pub claude_options: Option<Value>,
 }
@@ -140,7 +140,7 @@ pub struct SystemProviderAuthReader;
 
 impl ProviderAuthReader for SystemProviderAuthReader {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
-        if profile.provider == "claude" {
+        if profile.provider == studio_runtime_providers::ProviderKind::Claude {
             ClaudeCliAuthReader.read(profile)
         } else {
             auth_cache::shared().read(&codex_location(profile), || {
@@ -150,7 +150,7 @@ impl ProviderAuthReader for SystemProviderAuthReader {
     }
 
     fn invalidate(&self, profile: &AuthProfile) {
-        let location = if profile.provider == "claude" {
+        let location = if profile.provider == studio_runtime_providers::ProviderKind::Claude {
             claude_location(profile)
         } else {
             codex_location(profile)
@@ -891,11 +891,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .as_str()
             .ok_or(AccountDriverError::InvalidRegistry)?
             .to_owned();
-        if registry_account(&state.value, &account)?
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex")
-            != "codex"
+        if studio_runtime_providers::ProviderKind::key_of(registry_account(&state.value, &account)?)
+            != Some("codex")
         {
             return Err(AccountMutationError::Refused(
                 "Select a Codex sign-in request",
@@ -943,11 +940,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let mut receipt = serde_json::json!({"requestId":request.login_id,"accountKey":key,"status":"starting","createdAt":now});
         if let Some(account) = &request.account_key {
             let row = registry_account(&value, account)?;
-            if row
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("codex")
-                != "codex"
+            if studio_runtime_providers::ProviderKind::key_of(row) != Some("codex")
                 || !row.get("accountId").is_some_and(truthy_value)
                 || row.get("duplicateOf").is_some_and(truthy_value)
             {
@@ -1831,11 +1824,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 return Ok(status_from_value(row.get("status")));
             }
             AuthProfile {
-                provider: row
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex")
-                    .to_owned(),
+                provider: studio_runtime_providers::ProviderKind::of_record(row)
+                    .map_err(|_| AccountDriverError::InvalidRegistry)?,
                 home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
                 claude_options: row.get("claudeOptions").cloned(),
             }
@@ -3335,7 +3325,7 @@ print(store.path)
             let override_value = binary.to_str().expect("fixture path").to_owned();
             let environment = BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), override_value)]);
             let profile = AuthProfile {
-                provider: "claude".into(),
+                provider: studio_runtime_providers::ProviderKind::Claude,
                 home: fixture.path.clone(),
                 claude_options: None,
             };

@@ -710,7 +710,7 @@ impl crate::provider_callbacks::ManagedCreationAccountRead for EligibleAccountRe
             accounts: vec![crate::provider_callbacks::ManagedCreationAccountCandidate {
                 account_key: "primary".into(),
                 identity: crate::provider_callbacks::ManagedAccountIdentity {
-                    provider: Some("codex".into()),
+                    provider: studio_runtime_providers::ProviderKind::Codex,
                     home: None,
                     account_id: None,
                     email: None,
@@ -2395,7 +2395,7 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         Ok((
             key.to_owned(),
             crate::host_worker_create::AccountIdentity {
-                provider: Some(provider.to_owned()),
+                provider: provider.parse().expect("test provider"),
                 home: None,
                 account_id: None,
                 email: None,

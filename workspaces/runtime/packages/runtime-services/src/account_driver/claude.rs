@@ -295,7 +295,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     pub(crate) fn revalidate_claude(&self, key: &str) -> Result<Value, ClaudeAccountError> {
         let expected = self.claude_profile(key)?;
         let metadata = self.reader.read(&AuthProfile {
-            provider: "claude".into(),
+            provider: studio_runtime_providers::ProviderKind::Claude,
             home: expected
                 .get("home")
                 .and_then(Value::as_str)

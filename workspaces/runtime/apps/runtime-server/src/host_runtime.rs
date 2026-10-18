@@ -742,16 +742,11 @@ async fn resolve_vm_launch_inputs(
             "account-driver/unavailable".into(),
         ));
     }
-    let provider = account
-        .get("provider")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("codex")
-        .to_owned();
-    if provider != "codex" && provider != "claude" {
-        return Err(WorkerError::PreparationRefused(
-            "provider-session/unsupported-provider".into(),
-        ));
-    }
+    let provider = studio_runtime_providers::ProviderKind::of_record(account)
+        .map_err(|_| {
+            WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+        })?
+        .key();
     let account_digest =
         data_encoding::HEXLOWER.encode(&Sha256::digest(request.account_key.as_bytes()));
     let profile_relative = format!(
@@ -893,7 +888,7 @@ async fn resolve_vm_launch_inputs(
         };
     let launch = ProviderLaunchSpec::new(command, environment, PathBuf::from(&request.cwd));
     Ok((
-        provider,
+        provider.to_owned(),
         profile_relative,
         launch,
         credential_path,
@@ -2817,12 +2812,7 @@ pub(crate) fn account_home<R: ProviderAuthReader>(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if initial_profile
-        .get("provider")
-        .and_then(|value| value.as_str())
-        .unwrap_or("codex")
-        != "codex"
-    {
+    if studio_runtime_providers::ProviderKind::key_of(initial_profile) != Some("codex") {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -2844,12 +2834,7 @@ pub(crate) fn account_home<R: ProviderAuthReader>(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if profile
-        .get("provider")
-        .and_then(|value| value.as_str())
-        .unwrap_or("codex")
-        != "codex"
-    {
+    if studio_runtime_providers::ProviderKind::key_of(profile) != Some("codex") {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -2880,10 +2865,11 @@ fn selected_account(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    let provider = profile
-        .get("provider")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("codex")
+    let provider = studio_runtime_providers::ProviderKind::of_record(profile)
+        .map_err(|_| {
+            WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+        })?
+        .key()
         .to_owned();
     if provider == "codex" {
         let (home, isolated) = account_home(accounts, key)?;

@@ -1502,11 +1502,7 @@ async fn repair_idle_with_broker_inner(
             Ok::<(), RepairError>(())
         })
         .await?;
-    let located = crate::context_repair_files::locate_provider_history(
-        crate::context_repair_files::HistoryProvider::Codex,
-        provider_home,
-        &thread,
-    )?;
+    let located = crate::context_repair_files::locate_codex_history(provider_home, &thread)?;
     if Path::new(native_path).canonicalize().ok().as_deref()
         != located.canonicalize().ok().as_deref()
     {

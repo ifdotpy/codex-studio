@@ -158,7 +158,7 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                 let agent=AgentRepository::get(tx,&AgentId::from("agent"))?.expect("seed agent").value();
                 let event=QueueEventRepository::get(tx,&QueueEventId::from("event"))?.expect("seed input");
                 let metadata=studio_runtime_store::NotificationDispatchRepository::event_metadata(tx,"event")?.unwrap_or_else(||json!({}));
-                Ok((TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:"codex".into(),thread_id:agent["threadId"].as_str().map(str::to_owned),cwd:agent["cwd"].as_str().map(str::to_owned),model:agent["model"].as_str().map(str::to_owned),radio_authorized:false,events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata}]},agent["startAttempt"]["submitted"]==true))
+                Ok((TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:studio_runtime_providers::ProviderKind::Codex,thread_id:agent["threadId"].as_str().map(str::to_owned),cwd:agent["cwd"].as_str().map(str::to_owned),model:agent["model"].as_str().map(str::to_owned),radio_authorized:false,events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata}]},agent["startAttempt"]["submitted"]==true))
             }).await.map_err(|e|e.to_string())?;
             // Replays test the durable identity boundary without recompiling delivered input.
             if submitted {

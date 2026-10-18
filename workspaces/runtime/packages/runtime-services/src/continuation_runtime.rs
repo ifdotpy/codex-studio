@@ -125,7 +125,7 @@ impl ClaudeAccountPin {
     fn invalidate_cached_auth(&self) {
         use crate::account_driver::{AuthProfile, ProviderAuthReader, SystemProviderAuthReader};
         SystemProviderAuthReader.invalidate(&AuthProfile {
-            provider: "claude".to_owned(),
+            provider: studio_runtime_providers::ProviderKind::Claude,
             home: self.0["home"].as_str().unwrap_or_default().into(),
             claude_options: self
                 .0

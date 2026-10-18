@@ -688,7 +688,7 @@ async fn create(
     };
     let account = account_key(context, request.account.clone(), cwd.clone()).await?;
     let identity = account_identity(context, &account).await?;
-    let provider = identity.provider.as_deref().unwrap_or("codex").to_owned();
+    let provider = identity.provider.key().to_owned();
     let settings = if request.catalog || request.worker_catalog {
         let model = request
             .intent
@@ -920,11 +920,7 @@ async fn create(
                 .and_then(Value::as_str)
                 .unwrap_or("worktree")
                 == workspace_for_write.as_str()
-            && prior
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("codex")
-                == provider.as_str()
+            && studio_runtime_providers::ProviderKind::key_of(&prior) == Some(provider.as_str())
             && crate::sync_entity_context::agent_view_context(tx, &prior, None)?.empty_lead
         {
             let mut reused = prior;
@@ -1130,7 +1126,7 @@ async fn create_child(
     {
         return Err(MutationError::IdentityChanged.into());
     }
-    let provider = identity.provider.as_deref().unwrap_or("codex").to_owned();
+    let provider = identity.provider.key().to_owned();
     let model = execution_intent
         .get("model")
         .and_then(Value::as_str)
@@ -1926,7 +1922,7 @@ pub async fn conversation(
         old_account.clone()
     };
     let identity = account_identity(context, &account).await?;
-    let provider = identity.provider.as_deref().unwrap_or("codex").to_owned();
+    let provider = identity.provider.key().to_owned();
     let provider_changed =
         initial.get("provider").and_then(Value::as_str) != Some(provider.as_str());
     let execution_requested = request.model.is_some()
@@ -2532,7 +2528,8 @@ fn account_identity_blocking(
     let can_attempt_native_proof = can_attempt_native_proof_projection(&row);
     Ok((
         AccountIdentity {
-            provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
+            provider: studio_runtime_providers::ProviderKind::of_record(&row)
+                .map_err(|_| OperationError::Invalid("Account provider is unknown"))?,
             home: string_field("home"),
             account_id: string_field("accountId"),
             email: string_field("email"),
@@ -3024,7 +3021,8 @@ mod tests {
             {
                 return Err(CreateError::ModelUnavailable);
             }
-            if daybreak_enabled && account.provider.as_deref() != Some("codex") {
+            if daybreak_enabled && account.provider != studio_runtime_providers::ProviderKind::Codex
+            {
                 return Err(CreateError::InvalidCreation("daybreak_enabled"));
             }
             Ok(ExecutionSettings {
@@ -3096,7 +3094,7 @@ mod tests {
                                  identity: &crate::provider_callbacks::ManagedAccountIdentity,
                                  model: &str| {
                 let account = AccountIdentity {
-                    provider: identity.provider.clone(),
+                    provider: identity.provider,
                     home: identity.home.clone(),
                     account_id: identity.account_id.clone(),
                     email: identity.email.clone(),
@@ -3185,7 +3183,7 @@ mod tests {
         let candidate = |key: &str, provider: &str, ready: bool| Candidate {
             account_key: key.to_owned(),
             identity: ManagedAccountIdentity {
-                provider: Some(provider.to_owned()),
+                provider: provider.parse().expect("test provider"),
                 home: Some(format!("/profiles/{key}")),
                 account_id: None,
                 email: None,
@@ -3254,7 +3252,7 @@ mod tests {
             std::sync::Arc::new(validate),
         );
         let claude = AccountIdentity {
-            provider: Some("claude".to_owned()),
+            provider: studio_runtime_providers::ProviderKind::Claude,
             home: Some("/profiles/claude-local".to_owned()),
             account_id: None,
             email: None,
@@ -3340,7 +3338,7 @@ mod tests {
             std::sync::Arc::new(validate),
         );
         let claude = AccountIdentity {
-            provider: Some("claude".to_owned()),
+            provider: studio_runtime_providers::ProviderKind::Claude,
             home: Some("/profiles/claude-local".to_owned()),
             account_id: None,
             email: None,

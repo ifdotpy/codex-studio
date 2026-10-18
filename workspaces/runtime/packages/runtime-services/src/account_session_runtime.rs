@@ -892,7 +892,7 @@ impl AccountSessionRuntime {
         if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
             let home = self.home.join(".claude");
             let profile = AuthProfile {
-                provider: "claude".into(),
+                provider: studio_runtime_providers::ProviderKind::Claude,
                 home: home.clone(),
                 claude_options: None,
             };
@@ -919,7 +919,7 @@ impl AccountSessionRuntime {
                 .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
                 .unwrap_or_else(|| self.home.join(".claude"));
             let profile = AuthProfile {
-                provider: "claude".into(),
+                provider: studio_runtime_providers::ProviderKind::Claude,
                 home: home.clone(),
                 claude_options: Some(Value::Object(options.clone())),
             };

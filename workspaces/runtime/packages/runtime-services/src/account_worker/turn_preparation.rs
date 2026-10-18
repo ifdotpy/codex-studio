@@ -51,7 +51,7 @@ async fn prepare(
     } = run;
     let method = *method;
     if method == Method::TurnStart
-        && intent.provider == "claude"
+        && intent.provider == studio_runtime_providers::ProviderKind::Claude
         && !stage("turn_preparation.claude_auth", require_claude_auth(run)).await?
     {
         return Ok(store::PreparationStep::Settled);

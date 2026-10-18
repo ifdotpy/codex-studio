@@ -170,10 +170,14 @@ fn account_context(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        provider: account
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex")
+        provider: studio_runtime_providers::ProviderKind::of_record(account)
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
+                )
+            })?
+            .key()
             .to_owned(),
     })
 }

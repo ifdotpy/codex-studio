@@ -48,7 +48,7 @@ pub enum ManagedCreationAccountError {
 /// converts it at the final integration boundary.
 #[derive(Clone, Debug)]
 pub struct ManagedAccountIdentity {
-    pub provider: Option<String>,
+    pub provider: studio_runtime_providers::ProviderKind,
     pub home: Option<String>,
     pub account_id: Option<String>,
     pub email: Option<String>,

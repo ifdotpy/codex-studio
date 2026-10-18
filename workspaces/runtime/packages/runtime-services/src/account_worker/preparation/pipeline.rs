@@ -68,7 +68,7 @@ fn catalog(
     match resources.model_catalog.read_for_admission(
         &intent.account_key,
         &resources.account_home,
-        &intent.provider,
+        intent.provider.key(),
     ) {
         AdmissionCatalogRead::Fresh {
             value,
@@ -145,7 +145,7 @@ fn catalog(
             gates::CatalogIdentity {
                 account_key: intent.account_key.clone(),
                 home: resources.account_home.clone(),
-                provider: intent.provider.clone(),
+                provider: intent.provider.key().to_owned(),
                 generation: 0,
             },
             None,
@@ -182,10 +182,9 @@ fn preconditions_for_purpose(
     {
         return Err(refusal("preparation/ownership-changed".into()));
     }
-    if !matches!(intent.provider.as_str(), "codex" | "claude")
-        || ["claudePreInputRetry", "claudeAuthWait"]
-            .iter()
-            .any(|k| record.get(*k).is_some_and(|v| !v.is_null()))
+    if ["claudePreInputRetry", "claudeAuthWait"]
+        .iter()
+        .any(|k| record.get(*k).is_some_and(|v| !v.is_null()))
     {
         return Err(refusal(
             "preparation/claude-frozen-input-recovery-required".into(),
@@ -243,7 +242,7 @@ fn daybreak_program(
     resources: &PreparationResources,
     snapshot: &thread::Snapshot,
 ) -> Result<Option<String>, WorkerError> {
-    if snapshot.account.provider == thread::Provider::Claude {
+    if snapshot.account.provider == studio_runtime_providers::ProviderKind::Claude {
         if snapshot.settings.daybreak_enabled == thread::Stored::Present(Some(true)) {
             return Err(refusal("daybreak/provider-unsupported".into()));
         }
@@ -1031,11 +1030,8 @@ async fn prepare_native_snapshot(
             .and_then(Value::as_str)
             .unwrap_or("default")
             .into(),
-        provider: record
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex")
-            .into(),
+        provider: studio_runtime_providers::ProviderKind::of_record(&record)
+            .map_err(|_| invalid("agent/provider"))?,
         thread_id: record
             .get("threadId")
             .and_then(Value::as_str)
@@ -1501,7 +1497,7 @@ pub(crate) async fn prepare_ready(
         assets: json!(compiled.transcript.assets),
         radio_authorized: intent.radio_authorized,
     };
-    if intent.provider == "claude" {
+    if intent.provider == studio_runtime_providers::ProviderKind::Claude {
         let agent_id = intent.agent_id.clone();
         let attempt_id = intent.attempt_id.clone();
         let account_key = intent.account_key.clone();
@@ -1802,7 +1798,7 @@ mod daybreak_tests {
             },
             account: thread::Account {
                 key: "account".into(),
-                provider: thread::Provider::Codex,
+                provider: studio_runtime_providers::ProviderKind::Codex,
                 connection_id: "connection".into(),
                 available: true,
                 supervisor_identity: None,

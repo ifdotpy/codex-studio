@@ -734,11 +734,8 @@ pub(super) fn thread_snapshot(
         },
         account: thread::Account {
             key: text(record, "accountKey")?.unwrap_or_else(|| "default".into()),
-            provider: match record["provider"].as_str().unwrap_or("codex") {
-                "codex" => thread::Provider::Codex,
-                "claude" => thread::Provider::Claude,
-                _ => return Err(invalid("agent/provider")),
-            },
+            provider: studio_runtime_providers::ProviderKind::of_record(record)
+                .map_err(|_| invalid("agent/provider"))?,
             connection_id: connection.into(),
             available: true,
             supervisor_identity: None,

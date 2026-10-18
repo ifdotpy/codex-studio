@@ -66,19 +66,10 @@ impl SelectionSnapshot {
             remove(&mut agent, &["projectFolder"])?;
             agent["projectFolderRevision"] = json!(revision);
         }
-        let provider = account
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex");
-        if !matches!(provider, "codex" | "claude") {
-            return Err(TransferError::Refused("Unknown account provider"));
-        }
-        if agent
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex")
-            != provider
-        {
+        let provider = studio_runtime_providers::ProviderKind::of_record(account)
+            .map_err(|_| TransferError::Refused("Unknown account provider"))?
+            .key();
+        if studio_runtime_providers::ProviderKind::key_of(&agent) != Some(provider) {
             agent["provider"] = json!(provider);
             agent["model"] = json!(if provider == "claude" {
                 "default"

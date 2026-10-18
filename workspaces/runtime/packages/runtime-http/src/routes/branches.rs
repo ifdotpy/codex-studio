@@ -776,10 +776,9 @@ async fn ensure_branch_model_catalog(state: &HttpState, account_key: &str) -> Re
         .get("home")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let provider = account
-        .get("provider")
-        .and_then(Value::as_str)
-        .unwrap_or("codex");
+    let provider = studio_runtime_providers::ProviderKind::of_record(account)
+        .map_err(|_| bad_request("Account provider is unknown"))?
+        .key();
     match state
         .model_catalog
         .read_until_fresh(account_key, home, provider)

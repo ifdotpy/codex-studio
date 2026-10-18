@@ -1597,7 +1597,7 @@ impl Worker {
                 self.resources.model_catalog.clone(),
                 self.account.clone(),
                 self.resources.account_home.clone(),
-                intent.provider.clone(),
+                intent.provider.key().to_owned(),
             )
         });
         let task = tokio::spawn(async move {
@@ -2217,7 +2217,7 @@ impl Worker {
         let lookup_id = agent_id.clone();
         let intent_cwd = intent.cwd.clone();
         let account_key = intent.account_key.clone();
-        let provider = intent.provider.clone();
+        let provider = intent.provider.key().to_owned();
         let intent_epoch = intent.epoch;
         let generation = self.generation.0;
         let launch_request = self
@@ -2505,11 +2505,12 @@ impl Worker {
                         else {
                             return Ok(None);
                         };
-                        let provider = record
-                            .extra
-                            .get("provider")
-                            .and_then(Value::as_str)
-                            .unwrap_or("codex");
+                        let Ok(provider) = studio_runtime_providers::ProviderKind::of_field(
+                            record.extra.get("provider"),
+                        )
+                        .map(|kind| kind.key()) else {
+                            return Ok(None);
+                        };
                         if !crate::linux_vm_provider::vm_actor_matches(
                             connection,
                             &record.id.0,

@@ -77,9 +77,7 @@ pub fn select_worker_account(
     let mut saw_eligible = false;
     let mut saw_catalog = false;
     for candidate in candidates {
-        if provider.is_some_and(|provider| {
-            candidate.identity.provider.as_deref().unwrap_or("codex") != provider
-        }) {
+        if provider.is_some_and(|provider| candidate.identity.provider.key() != provider) {
             continue;
         }
         saw_eligible = true;
@@ -805,7 +803,7 @@ mod account_identity_tests {
         Candidate {
             account_key: key.to_owned(),
             identity: ManagedAccountIdentity {
-                provider: Some("codex".to_owned()),
+                provider: studio_runtime_providers::ProviderKind::Codex,
                 home: None,
                 account_id: None,
                 email: None,

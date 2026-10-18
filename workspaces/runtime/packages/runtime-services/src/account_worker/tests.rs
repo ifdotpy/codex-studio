@@ -5241,7 +5241,7 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
         epoch: 3,
         attempt_id: attempt_id.into(),
         account_key: "default".into(),
-        provider: "codex".into(),
+        provider: studio_runtime_providers::ProviderKind::Codex,
         thread_id: Some("guest-thread".into()),
         cwd: Some(source.to_string_lossy().into_owned()),
         model: Some("fixture-model".into()),
