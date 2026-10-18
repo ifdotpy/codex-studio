@@ -139,10 +139,14 @@ def full_free_bytes(rt: Any, now: float | None = None) -> int | None:
 
     The full state starts below DISK_FULL_ENTER or after an observed disk-full error, and ends at
     or above DISK_FULL_EXIT. An unreadable volume does not block work."""
+    root = getattr(rt, 'root', None)
+    if root is None:
+        # A host without a state directory (an oracle or fixture) has no volume to check.
+        return None
     now = time.monotonic() if now is None else now
     state = _state(rt)
     if state['sampledAt'] is None or now - state['sampledAt'] >= SAMPLE_SECONDS:
-        state['free'] = free_bytes(Path(rt.root))
+        state['free'] = free_bytes(Path(root))
         state['sampledAt'] = now
     free = state['free']
     if free is None:

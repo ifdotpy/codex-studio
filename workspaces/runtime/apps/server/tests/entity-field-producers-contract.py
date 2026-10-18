@@ -73,7 +73,7 @@ class EntityFieldProducers(unittest.TestCase):
             self.runtime.put(db, "agents", agent)
         actual = self.entity("agent", self.lead["id"])[field]
         if field == "capacityRetry":
-            value = {key: value[key] for key in ("id", "threadId", "epoch", "accountKey", "status",
+            value = {key: value[key] for key in ("id", "threadId", "epoch", "accountKey", "status", "cause",
                                                   "acceptedTurnId", "updatedAt", "dueAt", "claimedAt", "reason")
                      if key in value}
         elif field == "usageResume":
@@ -152,7 +152,7 @@ class EntityFieldProducers(unittest.TestCase):
     def test_agent_capacity_retry(self):
         self.write_agent_field("capacityRetry", capacity_retry())
         value = self.entity("agent", self.lead["id"])["capacityRetry"]
-        self.assertEqual(set(value), {"id", "threadId", "epoch", "accountKey", "status",
+        self.assertEqual(set(value), {"id", "threadId", "epoch", "accountKey", "status", "cause",
                                      "updatedAt", "dueAt"})
 
     def test_agent_usage_resume(self):
