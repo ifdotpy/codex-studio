@@ -217,13 +217,13 @@ fn receipt_paths(directory: &Path) -> Option<fs::ReadDir> {
 /// offloaded step. Invalid entries and receipts are reported and skipped.
 fn next_receipt(
     mut entries: fs::ReadDir,
-    directory: &Path,
+    root: &Path,
 ) -> (fs::ReadDir, Option<(PathBuf, ResultReceipt)>) {
     loop {
         let entry = match entries.next() {
             Some(Ok(entry)) => entry,
             Some(Err(error)) => {
-                report_recovery_warning(directory, error);
+                report_recovery_warning(root, error);
                 continue;
             }
             None => return (entries, None),
@@ -240,7 +240,7 @@ fn next_receipt(
                     continue;
                 }
             };
-            if receipt_path != path(directory, &receipt.key) {
+            if receipt_path != path(root, &receipt.key) {
                 report_recovery_warning(&receipt_path, "invalid identity");
                 continue;
             }
@@ -257,15 +257,16 @@ pub async fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize
         return Ok(0);
     }
     let directory = store.root().join("monitor-results");
+    let root = store.root().to_path_buf();
     let scan_directory = directory.clone();
     let Some(mut entries) = blocking(move || Ok(receipt_paths(&scan_directory))).await? else {
         return Ok(0);
     };
     let mut recovered = 0;
     loop {
-        let warning_directory = directory.clone();
+        let receipt_root = root.clone();
         let (next_entries, receipt) =
-            blocking(move || Ok(next_receipt(entries, &warning_directory))).await?;
+            blocking(move || Ok(next_receipt(entries, &receipt_root))).await?;
         entries = next_entries;
         let Some((entry, receipt)) = receipt else {
             return Ok(recovered);
@@ -313,8 +314,9 @@ mod tests {
         .expect("persist valid receipt");
 
         let entries = receipt_paths(&directory).expect("receipt directory is readable");
-        let (entries, found) = next_receipt(entries, &directory);
-        let (entries, exhausted) = next_receipt(entries, &directory);
+        let (entries, found) = next_receipt(entries, root.path());
+        let (entries, exhausted) = next_receipt(entries, root.path());
+        drop(entries);
         assert_eq!(found.map(|(_, receipt)| receipt.key), Some(saved.key));
         assert!(exhausted.is_none());
     }
