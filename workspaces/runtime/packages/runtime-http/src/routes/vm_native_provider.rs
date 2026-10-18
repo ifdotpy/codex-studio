@@ -233,6 +233,17 @@ impl VmNativeProvider {
                     uncertain: true,
                 })?;
 
+        // One guest journal has one owner for each event. This action owns
+        // the notifications it delivers and its own reply. The agent's
+        // provider session owns every other event (a server request such as
+        // an approval or a tool call, a reply to its own request, stderr and
+        // exit): it delivers, answers and settles that event before its ACK.
+        // An ACK covers every earlier event and the guest deletes them, so
+        // this action delivers and acknowledges only while each event so far
+        // is its own. After the first event that it does not own, it only
+        // scans for its reply and leaves that event and all later events in
+        // the journal for the session, which reads them in order.
+        let mut owned_prefix = true;
         while Instant::now() < deadline {
             let next = self
                 .guest_call(
@@ -275,21 +286,36 @@ impl VmNativeProvider {
                     self.scope.generation,
                     payload.as_bytes().to_vec(),
                 );
-                let studio_runtime_providers::DecodedJournalPayload::Frame(frame) = decoded.payload
-                else {
-                    return Err(GuestError::Protocol {
-                        message: "invalid native provider event frame",
-                        uncertain: true,
-                    });
-                };
-                let is_notification = match &frame {
-                    studio_runtime_providers::Frame::Notification(_) => true,
-                    studio_runtime_providers::Frame::UnknownMethod(frame) => {
-                        !frame.fields.contains_key("id")
-                    }
-                    _ => false,
-                };
-                if is_notification {
+                match decoded.payload {
+                    studio_runtime_providers::DecodedJournalPayload::Frame(frame) => Some((
+                        frame,
+                        serde_json::from_str::<Value>(payload).map_err(|_| {
+                            GuestError::Protocol {
+                                message: "invalid native provider event frame",
+                                uncertain: true,
+                            }
+                        })?,
+                    )),
+                    // Raw stdout belongs to the session's journal.
+                    studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => None,
+                }
+            } else {
+                None
+            };
+            let reply = frame.as_ref().is_some_and(|(_, value)| {
+                value.get("method").is_none()
+                    && value.get("id").and_then(Value::as_u64) == Some(remote_id)
+            });
+            let notification = frame.as_ref().is_some_and(|(frame, _)| match frame {
+                studio_runtime_providers::Frame::Notification(_) => true,
+                studio_runtime_providers::Frame::UnknownMethod(frame) => {
+                    !frame.fields.contains_key("id")
+                }
+                _ => false,
+            });
+            owned_prefix &= reply || notification;
+            if owned_prefix {
+                if notification && let Some((frame, _)) = &frame {
                     self.notification_sink
                         .deliver_vm_notification(
                             &self.scope.account,
@@ -304,24 +330,11 @@ impl VmNativeProvider {
                             uncertain: true,
                         })?;
                 }
-                Some((
-                    frame,
-                    serde_json::from_str::<Value>(payload).map_err(|_| GuestError::Protocol {
-                        message: "invalid native provider event frame",
-                        uncertain: true,
-                    })?,
-                ))
-            } else {
-                None
-            };
-            self.ack_event(&scope, cursor, deadline).await?;
-            let Some((_, frame)) = frame else {
-                continue;
-            };
-            if frame.get("id").and_then(Value::as_u64) != Some(remote_id) {
-                continue;
+                self.ack_event(&scope, cursor, deadline).await?;
             }
-            return reply_body(frame);
+            if reply && let Some((_, value)) = frame {
+                return reply_body(value);
+            }
         }
         Err(GuestError::Protocol {
             message: "native provider reply timed out",
@@ -640,5 +653,93 @@ mod tests {
         assert_eq!(receipt.certainty, RequestCertainty::Written);
         assert_eq!(deliveries.lock().unwrap().len(), 1);
         assert_eq!(*order.lock().unwrap(), ["notification", "ack", "ack"]);
+    }
+
+    /// Answers `next` from a fixed journal; the write gets remote ID 7.
+    struct ScriptedGuest {
+        events: Vec<Value>,
+        acks: Mutex<Vec<u64>>,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl GuestRpc for ScriptedGuest {
+        fn stream(
+            &self,
+            _method: &str,
+            params: &Value,
+            _request_id: Option<&str>,
+            _timeout: std::time::Duration,
+            _on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+        ) -> Result<Value, GuestError> {
+            Ok(match params["action"].as_str() {
+                Some("info") => json!({"lastSeq":0,"acknowledged":0,"state":"running"}),
+                Some("write") => json!({"remoteId":7,"accepted":true}),
+                Some("next") => {
+                    let cursor = usize::try_from(params["cursor"].as_u64().unwrap()).unwrap();
+                    let event = self.events.get(cursor).map(|payload| {
+                        json!({"sequence":cursor + 1,"kind":"stdout","payload":payload.to_string()})
+                    });
+                    json!({"event":event,"returnCode":null})
+                }
+                Some("ack") => {
+                    self.acks
+                        .lock()
+                        .unwrap()
+                        .push(params["sequence"].as_u64().unwrap());
+                    self.order.lock().unwrap().push("ack");
+                    json!({"acknowledged":params["sequence"]})
+                }
+                _ => json!({"ok":true}),
+            })
+        }
+    }
+
+    // The guest deletes every event up to an ACK. A server request that the
+    // action acknowledged was lost: the agent's provider session could no
+    // longer read, answer or settle it.
+    #[tokio::test]
+    async fn server_requests_stay_in_the_guest_journal_for_the_session_in_order() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let guest = Arc::new(ScriptedGuest {
+            events: vec![
+                json!({"method":"account/updated","params":{}}),
+                json!({"id":"approval-1","method":"item/commandExecution/requestApproval",
+                    "params":{"threadId":"guest-thread","itemId":"item-1"}}),
+                json!({"method":"item/started","params":{}}),
+                // A provider request ID can equal the remote ID of this write.
+                json!({"id":7,"method":"item/tool/call","params":{"threadId":"guest-thread"}}),
+                json!({"id":7,"result":{"ok":true}}),
+            ],
+            acks: Mutex::new(Vec::new()),
+            order: order.clone(),
+        });
+        let (sink, deliveries) = notification_sink(order.clone());
+        let provider = VmNativeProvider::new(guest.clone(), sink, "acct", "vm-agent", 4);
+        let receipt = provider
+            .provider_request(ProviderRequest {
+                account: "acct".into(),
+                operation: "op-server-requests".into(),
+                actor: None,
+                expected_scope: provider.current_scope("acct"),
+                deleted_actor_session: None,
+                method: Method::ThreadCompactStart,
+                params: json!({"threadId":"guest-thread"}),
+                deadline: Instant::now() + std::time::Duration::from_secs(3),
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipt.certainty, RequestCertainty::Written);
+        assert_eq!(
+            receipt.result,
+            Some(ProviderResponse::Reply(json!({"ok":true})))
+        );
+        // Only the notification before the first server request is delivered
+        // and acknowledged. The approval and every later event stay
+        // unacknowledged, so the session reads them once, in journal order.
+        let deliveries = deliveries.lock().unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].3, 1);
+        assert_eq!(*guest.acks.lock().unwrap(), [1]);
+        assert_eq!(*order.lock().unwrap(), ["notification", "ack"]);
     }
 }
