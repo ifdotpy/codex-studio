@@ -9,7 +9,9 @@ use rusqlite::{OptionalExtension, params};
 use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
-pub(super) const MAX_PENDING_PUBLICATION_RECEIPTS: usize = 256;
+/// Pending receipts above which best-effort stream captures are shed or reclaimed.
+/// Complete analytics notifications are durable and may exceed this count.
+pub(super) const MAX_BEST_EFFORT_PUBLICATION_RECEIPTS: usize = 256;
 pub(super) const MAX_COALESCED_TOKEN_RATE_EFFECTS: usize = 64;
 const MAX_COALESCED_TOKEN_RATE_BYTES: usize = 256 * 1024;
 
@@ -1912,19 +1914,27 @@ pub(crate) fn persist_publication_batch(
         |row| row.get(0),
     )?;
     let pending = usize::try_from(pending).map_err(|_| WorkerError::Capacity)?;
-    let mut available = MAX_PENDING_PUBLICATION_RECEIPTS.saturating_sub(pending);
+    let mut available = MAX_BEST_EFFORT_PUBLICATION_RECEIPTS.saturating_sub(pending);
     let mut retained = 0;
     let mut overflow = batch.analytics_overflow;
     let publication_overflow = 0_u64;
     let mut last_saved = None;
     for (index, effect) in batch.effects.iter().enumerate() {
-        if retained == available {
-            if is_analytics_effect(effect) {
+        if retained >= available {
+            if NotificationStreamBuffer::is_best_effort_analytics(effect) {
                 overflow = overflow.saturating_add(1);
-            } else if let Some(id) = oldest_analytics_receipt(tx, &prefix)? {
+            } else if matches!(
+                effect,
+                crate::notification_dispatch::NotificationPostCommit::Analytics { .. }
+            ) {
+                // Complete usage is provider-committed. It persists beyond the
+                // best-effort bound rather than being shed or reclaimed.
+                last_saved = Some(save_publication_effect(tx, account, batch, index, effect)?);
+                retained += 1;
+            } else if let Some(id) = oldest_best_effort_receipt(tx, &prefix)? {
                 // Python drops captures at its analytics queue bound, but its
                 // token-rate observer continues to receive committed events.
-                // Reclaim only an analytics receipt to keep that behavior.
+                // Reclaim only a best-effort stream receipt to keep that behavior.
                 tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [&id])?;
                 overflow = overflow.saturating_add(1);
                 available += 1;
@@ -2029,7 +2039,9 @@ fn save_publication_effect(
     Ok(operation)
 }
 
-fn oldest_analytics_receipt(
+/// Oldest receipt holding a best-effort stream capture. Durable complete
+/// analytics notifications are never reclaimed to admit later effects.
+fn oldest_best_effort_receipt(
     tx: &studio_runtime_store::Transaction<'_>,
     prefix: &str,
 ) -> Result<Option<String>, WorkerError> {
@@ -2048,7 +2060,7 @@ fn oldest_analytics_receipt(
         };
         let effect: crate::notification_dispatch::NotificationPostCommit =
             serde_json::from_value(effect.clone()).map_err(|_| invalid(&id))?;
-        if is_analytics_effect(&effect) {
+        if NotificationStreamBuffer::is_best_effort_analytics(&effect) {
             return Ok(Some(id));
         }
     }
@@ -2124,14 +2136,6 @@ fn coalesce_token_rate_receipt(
         return Err(WorkerError::Capacity);
     }
     Ok(())
-}
-
-fn is_analytics_effect(effect: &crate::notification_dispatch::NotificationPostCommit) -> bool {
-    matches!(
-        effect,
-        crate::notification_dispatch::NotificationPostCommit::Analytics { .. }
-            | crate::notification_dispatch::NotificationPostCommit::AnalyticsStream { .. }
-    )
 }
 
 /// Drain in sequence/index order. Publication is outside SQLite; deleting each

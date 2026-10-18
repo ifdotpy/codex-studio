@@ -16,6 +16,13 @@ use serde_json::Value;
 
 const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
 const MAX_CLOSED_STREAMS: usize = 8_192;
+/// Best-effort stream statistics staged in one journal batch. Matches Python's
+/// 64-capture analytics queue; complete analytics notifications are not counted.
+const MAX_POST_COMMIT_STREAM_EFFECTS: usize = 64;
+/// Retained JSON bytes of best-effort stream statistics staged in one journal batch.
+const MAX_POST_COMMIT_STREAM_BYTES: usize = 8 * 1024 * 1024;
+/// Retained bytes of stream captures awaiting their flush.
+const MAX_STAGED_ANALYTICS_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct StreamKey {
@@ -255,12 +262,11 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
-    fn is_analytics_effect(effect: &NotificationPostCommit) -> bool {
-        matches!(
-            effect,
-            NotificationPostCommit::Analytics { .. }
-                | NotificationPostCommit::AnalyticsStream { .. }
-        )
+    /// Only intermediate stream statistics are best-effort. Complete analytics
+    /// notifications are durable publication receipts and never enter the stream
+    /// bounds. The store's receipt policy uses this same owner.
+    pub(crate) fn is_best_effort_analytics(effect: &NotificationPostCommit) -> bool {
+        matches!(effect, NotificationPostCommit::AnalyticsStream { .. })
     }
 
     fn capture_size(
@@ -298,7 +304,7 @@ impl NotificationStreamBuffer {
         self.post_commit_analytics_count = 0;
         self.post_commit_analytics_bytes = 0;
         for effect in &self.post_commit {
-            if Self::is_analytics_effect(effect) {
+            if Self::is_best_effort_analytics(effect) {
                 self.post_commit_analytics_count += 1;
                 self.post_commit_analytics_bytes = self.post_commit_analytics_bytes.saturating_add(
                     serde_json::to_vec(effect.value()).map_or(usize::MAX, |v| v.len()),
@@ -387,18 +393,16 @@ impl NotificationStreamBuffer {
             || shared_entries_changed(&self.analytics_skipped, &previous.analytics_skipped)
     }
     pub(super) fn queue_effect(&mut self, effect: NotificationPostCommit) {
-        // As in Python, excess analytics captures are dropped, counted and never
+        // As in Python, excess stream captures are dropped, counted and never
         // allowed to refuse a notification, lose a receipt or cancel a session.
-        // Counts match Python's 64-capture queue. Rust measures retained JSON
-        // bytes (8 MiB), rather than CPython heap object sizes.
-        if matches!(
-            effect,
-            NotificationPostCommit::Analytics { .. }
-                | NotificationPostCommit::AnalyticsStream { .. }
-        ) {
+        // Complete analytics notifications are never dropped here: the store
+        // persists them as durable receipts in the same journal transaction.
+        // Rust measures retained JSON bytes, rather than CPython heap sizes.
+        if Self::is_best_effort_analytics(&effect) {
             let size = serde_json::to_vec(&effect).map_or(usize::MAX, |bytes| bytes.len());
-            if self.post_commit_analytics_count >= 64
-                || self.post_commit_analytics_bytes.saturating_add(size) > 8 * 1024 * 1024
+            if self.post_commit_analytics_count >= MAX_POST_COMMIT_STREAM_EFFECTS
+                || self.post_commit_analytics_bytes.saturating_add(size)
+                    > MAX_POST_COMMIT_STREAM_BYTES
             {
                 self.analytics_overflow = self.analytics_overflow.saturating_add(1);
                 return;
@@ -526,7 +530,7 @@ impl NotificationStreamBuffer {
                 .insert(key.clone(), index);
             self.analytics_bytes = self.analytics_bytes.saturating_add(size);
         }
-        if self.analytics_bytes > 8 * 1024 * 1024 {
+        if self.analytics_bytes > MAX_STAGED_ANALYTICS_BYTES {
             // Drop this whole analytics capture, never its transcript or receipt.
             // Suppress its later samples until flush instead of counting each as
             // a separate overflowed capture.
@@ -1033,5 +1037,50 @@ mod tests {
         let _batch = restored.take_post_commit().unwrap();
         assert_eq!(restored.post_commit_analytics_count, 0);
         assert_eq!(restored.post_commit_analytics_bytes, 0);
+    }
+
+    fn analytics_observation(method: &str, cursor: u64) -> NotificationObservation {
+        NotificationObservation {
+            agent: None,
+            method: method.into(),
+            params: crate::notification_dispatch::SharedJson::new(json!({"delta":"x"})),
+            delivery: crate::notification_dispatch::ProviderDeliveryIdentity {
+                provider_handle: "account:default".into(),
+                generation: 1,
+                cursor,
+            },
+            observed_at: 3600.0,
+            provider_at: 3600.0,
+        }
+    }
+
+    #[test]
+    fn complete_analytics_bypasses_the_stream_queue_bound() {
+        let mut streams = NotificationStreamBuffer::default();
+        for cursor in 0..MAX_POST_COMMIT_STREAM_EFFECTS as u64 {
+            streams.queue_effect(NotificationPostCommit::AnalyticsStream {
+                observation: analytics_observation("item/agentMessage/delta", cursor),
+                metrics: NotificationStreamMetrics::default(),
+            });
+        }
+        streams.queue_effect(NotificationPostCommit::Analytics {
+            observation: analytics_observation("thread/tokenUsage/updated", 1_000),
+            budget_capture_value: Some(12),
+        });
+        streams.queue_effect(NotificationPostCommit::AnalyticsStream {
+            observation: analytics_observation("item/agentMessage/delta", 1_001),
+            metrics: NotificationStreamMetrics::default(),
+        });
+        let batch = streams.take_post_commit().expect("take staged batch");
+        // The 65th stream capture is shed and counted; the complete usage is kept.
+        assert_eq!(batch.analytics_overflow, 1);
+        assert_eq!(batch.effects.len(), MAX_POST_COMMIT_STREAM_EFFECTS + 1);
+        assert!(batch.effects.iter().any(|effect| matches!(
+            effect,
+            NotificationPostCommit::Analytics {
+                budget_capture_value: Some(12),
+                ..
+            }
+        )));
     }
 }

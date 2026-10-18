@@ -1,7 +1,7 @@
 use super::*;
 use crate::notification_dispatch::{
     NotificationObservation, NotificationPostCommit, NotificationPublicationBatch,
-    ProviderDeliveryIdentity, SharedJson,
+    NotificationStreamMetrics, ProviderDeliveryIdentity, SharedJson,
 };
 use crate::notification_runtime_effects::{
     NotificationPostCommitSink, RuntimeNotificationPostCommitSink,
@@ -65,6 +65,26 @@ fn analytics_effect_for(
             provider_at: 10.0 + cursor as f64,
         },
         budget_capture_value: None,
+    }
+}
+
+fn analytics_stream_effect(cursor: u64) -> NotificationPostCommit {
+    NotificationPostCommit::AnalyticsStream {
+        observation: NotificationObservation {
+            agent: None,
+            method: "item/agentMessage/delta".into(),
+            params: SharedJson::new(
+                json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"sample"}),
+            ),
+            delivery: ProviderDeliveryIdentity {
+                provider_handle: "account:default".into(),
+                generation: 7,
+                cursor,
+            },
+            observed_at: 10.0 + cursor as f64,
+            provider_at: 10.0 + cursor as f64,
+        },
+        metrics: NotificationStreamMetrics::default(),
     }
 }
 
@@ -403,12 +423,12 @@ async fn long_stream_keeps_the_publication_table_bounded() {
 }
 
 #[tokio::test]
-async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
+async fn analytics_stream_backlog_at_receipt_bound_drops_capture_without_failing_write() {
     let (root, store) = test_store();
     let first = NotificationPublicationBatch {
         sequence: 1,
-        effects: (1..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64)
-            .map(|cursor| analytics_effect(cursor, "turn/started", json!({"turnId":"turn"})))
+        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
+            .map(analytics_stream_effect)
             .collect(),
         analytics_overflow: 0,
     };
@@ -418,15 +438,11 @@ async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write(
         .expect("fill bounded pending table");
     assert_eq!(
         pending_count(&store),
-        store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
     );
     let extra = NotificationPublicationBatch {
         sequence: 2,
-        effects: vec![analytics_effect(
-            300,
-            "turn/started",
-            json!({"turnId":"turn"}),
-        )],
+        effects: vec![analytics_stream_effect(300)],
         analytics_overflow: 0,
     };
     store
@@ -435,7 +451,7 @@ async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write(
         .expect("publication pressure must not fail the provider write");
     assert_eq!(
         pending_count(&store),
-        store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
     );
     let overflow: i64 = store
         .read()
@@ -448,7 +464,7 @@ async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write(
     assert_eq!(overflow, 1);
     let sink = Arc::new(RecordingSink::default());
     let mut before_delete_calls = 0;
-    for _ in 0..(store::MAX_PENDING_PUBLICATION_RECEIPTS / store::PUBLICATION_DRAIN_LIMIT) - 1 {
+    for _ in 0..(store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS / store::PUBLICATION_DRAIN_LIMIT) - 1 {
         assert_eq!(
             store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
                 .await
@@ -464,7 +480,7 @@ async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write(
             Arc::clone(&sink),
             || {
                 before_delete_calls += 1;
-                if before_delete_calls == store::MAX_PENDING_PUBLICATION_RECEIPTS {
+                if before_delete_calls == store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS {
                     Err(WorkerError::TaskFailed)
                 } else {
                     Ok(())
@@ -510,6 +526,236 @@ async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write(
 }
 
 #[tokio::test]
+async fn complete_analytics_usage_persists_beyond_the_best_effort_bound() {
+    let (root, store) = test_store().await;
+    let backlog = NotificationPublicationBatch {
+        sequence: 1,
+        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
+            .map(analytics_stream_effect)
+            .collect(),
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &backlog))
+        .await
+        .expect("fill best-effort receipts to the bound");
+    let usage = NotificationPublicationBatch {
+        sequence: 2,
+        effects: vec![analytics_effect(
+            300,
+            "thread/tokenUsage/updated",
+            json!({"turnId":"turn","tokenUsage":{
+                "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+                "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+            }}),
+        )],
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &usage))
+        .await
+        .expect("complete usage persists under best-effort pressure");
+    assert_eq!(
+        pending_count(&store),
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64 + 1
+    );
+    let (durable_usage, shed): (i64, i64) = store
+        .read()
+        .expect("read durable usage")
+        .query_row(
+            "SELECT \
+             count(CASE WHEN json_extract(result,'$.effect.Analytics.observation.delivery.cursor')=300 THEN 1 END), \
+             count(CASE WHEN json_extract(result,'$.analyticsOverflow')>0 THEN 1 END) \
+             FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .expect("count durable usage and shed captures");
+    assert_eq!((durable_usage, shed), (1, 0));
+    let sink = Arc::new(RecordingSink::default());
+    while store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+        .await
+        .expect("drain publications")
+        > 0
+    {}
+    assert_eq!(pending_count(&store), 0);
+    assert!(
+        sink.seen
+            .lock()
+            .expect("recording state")
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                NotificationPostCommit::Analytics { observation, .. }
+                    if observation.delivery.cursor == 300
+            ))
+    );
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn durable_usage_fills_the_bound_and_best_effort_stream_is_shed() {
+    let (root, store) = test_store().await;
+    let usage = NotificationPublicationBatch {
+        sequence: 1,
+        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
+            .map(|cursor| analytics_effect(cursor, "turn/started", json!({"turnId":"turn"})))
+            .collect(),
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &usage))
+        .await
+        .expect("fill the bound with durable usage");
+    assert_eq!(
+        pending_count(&store),
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
+    );
+    let stream = NotificationPublicationBatch {
+        sequence: 2,
+        effects: vec![analytics_stream_effect(300)],
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &stream))
+        .await
+        .expect("best-effort pressure must not fail the provider write");
+    assert_eq!(
+        pending_count(&store),
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
+    );
+    let overflow: i64 = store
+        .read()
+        .expect("read overflow")
+        .query_row(
+            "SELECT json_extract(result,'$.analyticsOverflow') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:1:%' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("record the shed stream capture");
+    assert_eq!(overflow, 1);
+    let durable: i64 = store
+        .read()
+        .expect("read durable usage")
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_type(result,'$.effect.Analytics') IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count durable usage");
+    assert_eq!(durable, store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn best_effort_reclamation_never_evicts_durable_usage() {
+    let (root, store) = test_store().await;
+    let backlog = NotificationPublicationBatch {
+        sequence: 1,
+        effects: std::iter::once(analytics_effect(
+            1,
+            "turn/started",
+            json!({"turnId":"turn"}),
+        ))
+        .chain(
+            (2..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64).map(analytics_stream_effect),
+        )
+        .collect(),
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &backlog))
+        .await
+        .expect("fill the bound with one durable usage and stream captures");
+    let token_rate = NotificationPublicationBatch {
+        sequence: 2,
+        effects: vec![publication_effect(1_000)],
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &token_rate))
+        .await
+        .expect("token-rate effect reclaims a best-effort stream capture");
+    assert_eq!(
+        pending_count(&store),
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
+    );
+    let (durable_usage, reclaimed, token_rate_saved): (i64, i64, i64) = store
+        .read()
+        .expect("read reclamation")
+        .query_row(
+            "SELECT \
+             count(CASE WHEN json_type(result,'$.effect.Analytics') IS NOT NULL THEN 1 END), \
+             count(CASE WHEN json_extract(result,'$.effect.AnalyticsStream.observation.delivery.cursor')=2 THEN 1 END), \
+             count(CASE WHEN id LIKE 'account-worker:notification-publication:default:2:%' AND json_type(result,'$.effect.TokenRateStream') IS NOT NULL THEN 1 END) \
+             FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .expect("count reclaimed receipts");
+    assert_eq!((durable_usage, reclaimed, token_rate_saved), (1, 0, 1));
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn durable_usage_survives_a_failed_drain_and_replays_once() {
+    let (root, store) = test_store().await;
+    let usage = NotificationPublicationBatch {
+        sequence: 1,
+        effects: vec![analytics_effect(
+            7,
+            "thread/tokenUsage/updated",
+            json!({"turnId":"turn","tokenUsage":{
+                "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+                "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+            }}),
+        )],
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &usage))
+        .await
+        .expect("persist durable usage");
+    let sink = Arc::new(RecordingSink::default());
+    *sink.fail_cursor.lock().expect("failure state") = Some(7);
+    assert!(
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(pending_count(&store), 1);
+    *sink.fail_cursor.lock().expect("failure state") = None;
+    assert_eq!(
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("replay durable usage"),
+        1
+    );
+    assert_eq!(pending_count(&store), 0);
+    let delivered = sink
+        .seen
+        .lock()
+        .expect("recording state")
+        .iter()
+        .filter(|effect| {
+            matches!(
+                effect,
+                NotificationPostCommit::Analytics { observation, .. }
+                    if observation.delivery.cursor == 7
+            )
+        })
+        .count();
+    assert_eq!(delivered, 1);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
 async fn publication_overflow_receipt_records_only_newly_attached_counts() {
     let (root, store) = test_store();
     crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow".into(), 1, 0)
@@ -547,7 +793,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
 
     let backlog = NotificationPublicationBatch {
         sequence: 10_000,
-        effects: (1..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64)
+        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
             .map(publication_effect)
             .collect(),
         analytics_overflow: 0,
@@ -587,7 +833,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
         })
         .await
         .expect("count bounded receipts");
-    assert!(pending <= store::MAX_PENDING_PUBLICATION_RECEIPTS as i64);
+    assert!(pending <= store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64);
     // Every acknowledged journal turn drains one bounded batch. These no-op
     // provider frames are gates for the three remaining drain passes.
     for index in 0..3 {
@@ -635,7 +881,7 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     let backlog = NotificationPublicationBatch {
         sequence: 1,
         effects: std::iter::once(token_rate_started_effect(1))
-            .chain((2..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64).map(publication_effect))
+            .chain((2..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64).map(publication_effect))
             .collect(),
         analytics_overflow: 0,
     };
@@ -646,14 +892,8 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     let pressured = NotificationPublicationBatch {
         sequence: 2,
         effects: vec![
-            analytics_effect(
-                300,
-                "thread/tokenUsage/updated",
-                json!({"turnId":"turn","tokenUsage":{
-                    "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-                    "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
-                }}),
-            ),
+            // A shed stream capture is what raises the state invalidation below.
+            analytics_stream_effect(300),
             token_rate_usage_effect(300),
             token_rate_association_effect(300),
         ],
@@ -665,7 +905,7 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         .expect("preserve token-rate observation under analytics pressure");
     assert_eq!(
         pending_count(&store),
-        store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
     );
     let coalesced_effects: String = store
         .read()
@@ -736,7 +976,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound() {
     let backlog = NotificationPublicationBatch {
         sequence: 1,
         effects: std::iter::once(token_rate_started_effect(1))
-            .chain((2..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64).map(publication_effect))
+            .chain((2..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64).map(publication_effect))
             .collect(),
         analytics_overflow: 0,
     };
@@ -759,7 +999,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound() {
     );
     assert_eq!(
         pending_count(&store),
-        store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
     );
     let coalesced: i64 = store
         .read()
