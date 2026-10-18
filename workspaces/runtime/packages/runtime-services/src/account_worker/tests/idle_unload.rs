@@ -147,16 +147,17 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
+    // Acknowledge the single attach inventory before sending later provider events.
+    loaded(&mut peer).await;
     let base = tokio::time::Instant::now();
 
-    // In flight work has no idle deadline or provider discovery scan.
+    // In-flight work never starts a periodic inventory or an unload request.
     sweep(&worker, base + BEYOND_ANY_DELAY).await;
+    progress(worker_barrier(&worker)).await;
     assert!(peer.writes.try_recv().is_err());
-    peer.completed().await;
+    progress(peer.completed()).await;
 
-    // Completion changes durable agent state and starts an idle clock from the
-    // provider's authoritative loaded-thread snapshot.
-    loaded(&mut peer).await;
+    // Completion makes the already-known loaded thread eligible for its idle clock.
     sweep(&worker, base + BEYOND_ANY_DELAY).await;
     idle_checks(&mut peer).await;
     // A failed unsubscribe proves nothing; the thread stays loaded.
@@ -216,8 +217,8 @@ async fn input_arriving_during_native_checks_prevents_unsubscribe() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    peer.completed().await;
     loaded(&mut peer).await;
+    progress(peer.completed()).await;
 
     sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
     answer(
@@ -252,9 +253,8 @@ async fn a_loaded_thread_blocked_at_attach_gets_a_deadline_after_durable_complet
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    peer.completed().await;
-
     let inventory = progress(peer.write("thread/loaded/list")).await;
+    progress(peer.completed()).await;
     set_thread_in_use(&state, true).await;
     progress(peer.reply(&inventory, json!({"data": [THREAD], "nextCursor": null}))).await;
     worker_barrier(&worker).await;
@@ -280,8 +280,8 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    peer.completed().await;
     loaded(&mut peer).await;
+    progress(peer.completed()).await;
     set_unloaded_agent_in_use(&state, true).await;
 
     sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
@@ -316,11 +316,11 @@ async fn claude_idle_close_requires_a_loaded_snapshot_and_native_idle_confirmati
         .await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    peer.completed().await;
+    loaded(&mut peer).await;
+    progress(peer.completed()).await;
 
     // Claude goes through the same authoritative loaded snapshot. A busy
     // native thread must keep the account session alive despite durable idle.
-    loaded(&mut peer).await;
     sweep(&worker, tokio::time::Instant::now() + BEYOND_ANY_DELAY).await;
     answer(
         &mut peer,
@@ -344,7 +344,7 @@ async fn zero_minutes_never_unloads() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    peer.completed().await;
+    progress(peer.completed()).await;
     worker_barrier(&worker).await;
     assert!(
         peer.writes.try_recv().is_err(),
