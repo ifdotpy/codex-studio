@@ -88,6 +88,8 @@ are checked as regular files before and after opening
 (`workspaces/runtime/apps/server/src/codex_progress_layout.py:36-59`). Layout
 writes flush the temporary file and recheck the progress revision before
 replacement (`workspaces/runtime/apps/server/src/codex_progress_layout.py:203-231`).
+Agents check visibility with `studio-runtime-server progress-layout <PROGRESS.md> [--wait <seconds>]`
+(`progress_panel::layout_check`); the Python script is no longer launched.
 This Rust implementation uses ordinary path operations and does not use
 anchored `openat` access. On Windows, progress
 read and layout write report the named 501 dependency
