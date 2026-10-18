@@ -315,8 +315,10 @@ that Python wrote:
   marker, as in Python. The first account worker reads that turn from native
   history. An interrupted turn gets one restart follow-up; a completed or failed
   turn is recorded and reported. The old input is not sent again.
+- An idle agent whose attempt turn is its last finished turn is not changed.
 - Only an input without a turn identity stays held. A new user message clears
   that hold, and later generations do not apply it again.
+- An `uncertain` input is never sent again, and it does not stop new input.
 - A ready worktree needs only its Git registration. Its Git budget starts with
   the first Git command, and a failure names that command and the Git error.
 
