@@ -779,16 +779,17 @@ fn supervisor_python_written_text_native_ids_stay_exact() {
             .unwrap(),
         WriteDecision::Duplicate { remote_id: Some(id) } if id == reply
     ));
-    assert!(matches!(
-        journal.accept(
-            "fixture",
-            "reply:numeric",
-            Some(&numeric),
-            &json!({"id":"42","result":{}}),
-            400.0
-        ),
-        Err(_)
-    ));
+    assert!(
+        journal
+            .accept(
+                "fixture",
+                "reply:numeric",
+                Some(&numeric),
+                &json!({"id":"42","result":{}}),
+                400.0
+            )
+            .is_err()
+    );
     let db = rusqlite::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
     let missing: i64 = db
         .query_row(
