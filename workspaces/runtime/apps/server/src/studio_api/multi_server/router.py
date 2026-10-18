@@ -104,14 +104,20 @@ def create_router(context: ApiContext) -> APIRouter:
                     service.rename(body.label, body.requestId, actor)
                     return service.snapshot()
                 return service.set_server_name(body.serverId, body.label, body.requestId, actor)
-            if isinstance(body, (DiscoverServers, UiInvite, SetServerAlias)):
+            if isinstance(body, UiInvite):
+                # RequestBoundary has already checked the owner session token
+                # and exact origin, including same-origin phones through Serve.
+                # A paired device must not delegate access to another server.
+                if principal:
+                    raise AccessError(403, "local_session_required", "This action requires the owner server session")
+                return service.ui_invite(body.serverId, body.requestId)
+            if isinstance(body, (DiscoverServers, SetServerAlias)):
                 if principal or any(request.headers.get(name) is not None for name in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto")):
                     raise AccessError(403, "local_session_required", "This action requires the local server session")
                 if isinstance(body, DiscoverServers):
                     return service.discovery().discover()
                 if isinstance(body, SetServerAlias):
                     return service.set_server_alias(body.serverId, body.alias, body.requestId, actor)
-                return service.ui_invite(body.serverId, body.requestId)
             if isinstance(body, SetAccessSettings):
                 if body.autoPair is None and body.autoUpdate is None:
                     raise AccessError(400, "invalid_settings", "Supply autoPair or autoUpdate")

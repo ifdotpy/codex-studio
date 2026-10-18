@@ -218,7 +218,9 @@ revocation, restart receipts, and authenticated sync.
 ## Auto-discovery
 
 Servers of the same Tailscale owner discover and pair without an invitation.
-Browsers and phones keep the invitation flow. Discovery never changes Serve.
+Owner browser sessions, including phones through Serve, automatically obtain UI
+access to already paired servers. UI-only hosts without an owner session keep
+the manual invitation flow. Discovery never changes Serve.
 Auto-pair is enabled by default on each server.
 
 ### Public identity and mutual server proof
@@ -268,13 +270,13 @@ A pass does not overlap another pass on the same server.
 
 The existing session authenticates these `POST /api/multi-server` actions:
 
-| Body                                        | Response                       | Access                        |
-| ------------------------------------------- | ------------------------------ | ----------------------------- |
-| `{action:"discover",requestId}`             | Access snapshot after the pass | Local session only            |
-| `{action:"settings",autoPair,requestId?}`   | Access snapshot                | Local session or signed owner |
-| `{action:"unrevoke",clientId,requestId}`    | Access snapshot                | Local session or signed owner |
-| `{action:"alias",serverId,alias,requestId}` | Access snapshot                | Local session only            |
-| `{action:"ui_invite",serverId,requestId}`   | `{invitation,expires}`         | Local session only            |
+| Body                                        | Response                       | Access                         |
+| ------------------------------------------- | ------------------------------ | ------------------------------ |
+| `{action:"discover",requestId}`             | Access snapshot after the pass | Local session only             |
+| `{action:"settings",autoPair,requestId?}`   | Access snapshot                | Local session or signed owner  |
+| `{action:"unrevoke",clientId,requestId}`    | Access snapshot                | Local session or signed owner  |
+| `{action:"alias",serverId,alias,requestId}` | Access snapshot                | Local session only             |
+| `{action:"ui_invite",serverId,requestId}`   | `{invitation,expires}`         | Owner session (local or Serve) |
 
 An access snapshot adds `settings:{autoPair}`. Its `servers` list contains the
 existing server fields and `lastSeen` (Unix seconds or null) and `autoPair`
