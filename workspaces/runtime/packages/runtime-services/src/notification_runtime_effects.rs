@@ -247,9 +247,14 @@ impl RuntimeNotificationPostCommitSink {
                     })?;
                 return Ok(());
             }
-            NotificationPostCommit::TokenRateStream(_)
-            | NotificationPostCommit::TokenRateAssociation(_)
-            | NotificationPostCommit::TokenRateUsage(_) => {
+            NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => {
+                // Unmanaged provider threads have no agent to project. Retire
+                // their committed observation instead of retrying it forever.
+                if observation.agent.is_none() {
+                    return Ok(());
+                }
                 self.project_token_rate(effect)?;
                 // The token-rate hub owns this volatile update and its SSE frame.
                 // No durable state changed here, so a state reset would only

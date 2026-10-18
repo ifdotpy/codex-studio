@@ -1077,26 +1077,38 @@ async fn deleted_agent_observation_does_not_recreate_identity() {
 
 #[tokio::test]
 async fn stale_analytics_receipt_does_not_block_later_observations() {
+    assert_drains_before_current_receipt(analytics_effect_for(
+        agent_at_epoch(0),
+        50,
+        "turn/started",
+        json!({"turnId":"turn"}),
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn unmapped_token_rate_receipts_do_not_block_later_observations() {
+    for mut effect in [
+        publication_effect(50),
+        token_rate_association_effect(50),
+        token_rate_usage_effect(50),
+    ] {
+        match &mut effect {
+            NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation.agent = None,
+            _ => panic!("the fixture must be a token-rate observation"),
+        }
+        assert_drains_before_current_receipt(effect).await;
+    }
+}
+
+async fn assert_drains_before_current_receipt(first: NotificationPostCommit) {
     let (root, store) = test_store();
     seed_analytics_agent(&store).await;
     advance_agent_epoch(&store, 1).await;
     let (_changes, sink) = production_sink(&store);
-    stage(
-        &store,
-        1,
-        0,
-        value(
-            1,
-            0,
-            analytics_effect_for(
-                agent_at_epoch(0),
-                50,
-                "turn/started",
-                json!({"turnId":"turn"}),
-            ),
-        ),
-    )
-    .await;
+    stage(&store, 1, 0, value(1, 0, first)).await;
     stage(
         &store,
         2,
@@ -1123,6 +1135,7 @@ async fn stale_analytics_receipt_does_not_block_later_observations() {
     );
     assert_eq!(pending_count(&store), 0);
     assert_eq!(analytics_counts(&root).2, before.2 + 1);
+    drop(store);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
