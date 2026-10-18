@@ -292,6 +292,19 @@ async fn store_with_change_signal(
     root: &std::path::Path,
 ) -> (Arc<RuntimeStore>, watch::Receiver<u64>) {
     let store = Arc::new(RuntimeStore::open(Some(root)).await.unwrap());
+    // Registry protocol fixtures do not implement idle thread inventory.
+    // Dedicated account-worker idle tests exercise that provider protocol.
+    store
+        .transaction(|tx| {
+            studio_runtime_store::OrchestrationSettingsRepository::set(
+                tx,
+                studio_runtime_store::IDLE_SESSION_UNLOAD_SETTING,
+                0,
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let (sender, changes) = watch::channel(0_u64);
     store.add_commit_observer(move || {
         sender.send_modify(|generation| *generation = generation.wrapping_add(1));
