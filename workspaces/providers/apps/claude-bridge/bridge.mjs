@@ -33,6 +33,7 @@ import { thinkingFlag } from "./thinking.mjs";
 import {
   createSessionStore,
   ephemeralSessionOptions,
+  isDiskFull,
 } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
@@ -252,6 +253,37 @@ const request = (method, params, signal, onSent) =>
     onSent?.(id);
   });
 const persist = sessionStore.persist;
+// A full disk must not end a running turn: the session stays in memory and the
+// store saves it again when space returns. One notice in the turn says so.
+const DISK_FULL_TURN_NOTICE =
+  "Disk is full. Studio keeps this turn in memory and saves it when free space returns.";
+const DISK_FULL_INPUT_ERROR =
+  "Disk is full. Claude did not receive this input. Studio sends it when free space returns.";
+async function persistLive(s, turn) {
+  if (!(await sessionStore.persistOrDefer(s)) || !turn) return;
+  const id = "disk-full:" + turn.id;
+  if (turn.items.some((item) => item.id === id)) return;
+  finishItem(s, turn, {
+    id,
+    type: "agentMessage",
+    phase: "commentary",
+    studioNotice: true,
+    text: DISK_FULL_TURN_NOTICE,
+  });
+  process.stderr.write(
+    "Claude session save deferred: disk is full " + s.id + "\n",
+  );
+}
+// The durable pre-input receipt could not be written, so no input reached Claude.
+function diskFullInputError(error) {
+  return Object.assign(new Error(DISK_FULL_INPUT_ERROR, { cause: error }), {
+    data: {
+      turnStartOutcome: "not_applied",
+      inputSubmitted: false,
+      diskFull: true,
+    },
+  });
+}
 async function session(id) {
   return sessionStore.get(id);
 }
@@ -1107,7 +1139,7 @@ async function finishTurn(s, active, result, error) {
   }
   s.updatedAt = Math.floor(Date.now() / 1000);
   try {
-    await persist(s);
+    await persistLive(s, turn);
   } finally {
     finished();
   }
@@ -1458,7 +1490,7 @@ async function startSession(s, active, p) {
         s.started = true;
         s.claudeVersion = m.claude_code_version;
         active.commands = m.slash_commands || [];
-        await persist(s);
+        await persistLive(s, active.turn);
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
@@ -1491,7 +1523,7 @@ async function startSession(s, active, p) {
             ...steer.item,
             clientId: steer.item.id,
           });
-          await persist(s);
+          await persistLive(s, active.turn);
         }
         continue;
       }
@@ -1563,7 +1595,7 @@ async function startSession(s, active, p) {
           };
           finishItem(s, turn, item);
           active.lastUsage = null;
-          await persist(s);
+          await persistLive(s, active.turn);
         } else if (
           m.subtype === "status" &&
           m.status === "compacting" &&
@@ -1621,7 +1653,7 @@ async function startSession(s, active, p) {
                 ],
               },
             });
-          await persist(s);
+          await persistLive(s, active.turn);
         } else if (
           turn &&
           ((m.subtype === "notification" &&
@@ -1662,7 +1694,7 @@ async function startSession(s, active, p) {
                 text: "Subagent: " + text,
               });
           }
-        await persist(s);
+        await persistLive(s, active.turn);
         continue;
       }
       if (m.type === "tool_progress") {
@@ -1834,7 +1866,7 @@ async function startSession(s, active, p) {
                 })) || [],
             });
         }
-        await persist(s);
+        await persistLive(s, active.turn);
       } else if (m.type === "user" && Array.isArray(m.message?.content)) {
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_result",
@@ -1869,7 +1901,7 @@ async function startSession(s, active, p) {
           active.tools.set(b.tool_use_id, finished);
           finishItem(s, turn, finished);
         }
-        await persist(s);
+        await persistLive(s, active.turn);
       } else if (m.type === "result") {
         if (
           (active.pendingSteers.size || active.reservingInput) &&
@@ -2549,7 +2581,7 @@ async function handle(method, p) {
       }
       s.turns = s.turns.filter((t) => t !== turn);
       pendingTurnReceipts.delete(turn.id);
-      throw error;
+      throw isDiskFull(error) ? diskFullInputError(error) : error;
     }
     if (active) {
       active.reservingInput = false;
@@ -2559,7 +2591,7 @@ async function handle(method, p) {
         turn.startOutcome = "not_applied";
         turn.error = { message: error.message };
         pendingTurnReceipts.delete(turn.id);
-        await persist(s);
+        await persistLive(s);
         throw Object.assign(error, {
           data: { turnStartOutcome: "not_applied" },
         });
@@ -2580,7 +2612,8 @@ async function handle(method, p) {
     );
     turn.startOutcome = "accepted";
     try {
-      await persist(s);
+      // Claude has this input. A full disk only delays its saved receipt.
+      await persistLive(s, turn);
     } catch (error) {
       throw Object.assign(
         new Error(
@@ -2638,7 +2671,11 @@ async function handle(method, p) {
         deliveryStatus: "preparing",
       };
       turn.items.push(item);
-      await persist(s);
+      try {
+        await persist(s);
+      } catch (error) {
+        throw isDiskFull(error) ? diskFullInputError(error) : error;
+      }
       if (
         active.turn !== turn ||
         queries.get(s.id) !== active ||
@@ -2655,7 +2692,7 @@ async function handle(method, p) {
       if (item) {
         item.deliveryStatus = "not_applied";
         item.error = error.message;
-        await persist(s);
+        await persistLive(s);
       }
       if (
         active.deferredResult &&
