@@ -792,6 +792,12 @@ class SchemaContractTests(unittest.TestCase):
                         "/components/schemas/IdentityAlert/properties/origin"):
             add(pointer, "@nullable", "@nullableBranch")
         add("/components/schemas/AccessSnapshot/properties/identityAlerts", "property")
+        # The saved previous identity of this server has no Tailscale owner.
+        for pointer in ("/components/schemas/AccessClient/properties/tailscaleUser",
+                        "/components/schemas/AccessSnapshot/properties/clients/items/properties/tailscaleUser",
+                        "/components/schemas/AccessSnapshot/properties/servers/items/properties/tailscaleUser",
+                        "/components/schemas/DiscoveredServer/properties/tailscaleUser"):
+            add(pointer, "@nullable", "@nullableBranch")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

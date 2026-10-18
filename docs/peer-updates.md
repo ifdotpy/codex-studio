@@ -81,11 +81,15 @@ The backend never replaces the installed app itself.
 2. Stop as obsolete when the installed app is this build or a newer one. Verify the staged app
    again, as in step 5 above.
 3. Note whether the desktop window runs. Quit it (`osascript`, by bundle ID).
-4. `ditto` the staged app to `Codex Studio.next.app`, verify it, move the installed app to
-   `Codex Studio.previous.app` (replace the older one), move `.next.app` into place.
-5. Send SIGTERM to the verified backend process. The recovery loop starts the new backend. If
-   the backend cannot be verified, the new app stays in place and the old backend runs until its
-   next restart.
+4. `ditto` the staged app to `Codex Studio.next.app` and verify it. Verify the backend process
+   against the installed app that started it: its packaged process reader, script path and,
+   for Rust, executable hash. Then move the installed app to `Codex Studio.previous.app`
+   (replace the older one) and move `.next.app` into place. After the move the installer
+   imports no packaged module: the new build can need names that the old modules lack.
+5. Send SIGTERM to the verified backend process when the same process (PID and start time)
+   still reports this state directory and owns the listener. The recovery loop starts the new
+   backend. If the backend cannot be verified, the new app stays in place and the old backend
+   runs until its next restart.
 6. Write `<state>/update-receipt.json` (`{id, build, from, at, outcome, reason, backend, window}`,
    with `installedAt` after an install), remove the pending file and the staged copy, and open
    the window again with `open -g` if it ran.
