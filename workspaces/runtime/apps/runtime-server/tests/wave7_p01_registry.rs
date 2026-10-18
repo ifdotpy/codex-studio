@@ -2311,7 +2311,8 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     let launch = host_runtime::claude_launch(
         profile,
         &bridge_dir,
-        root.path().to_owned(),
+        root.path(),
+        "claude-fixture-account",
         BTreeMap::from([
             (
                 "STUDIO_NODE_BIN".into(),
@@ -2331,7 +2332,14 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
         launch.command[1],
         bridge_dir.join("bridge.mjs").to_string_lossy()
     );
-    assert_eq!(launch.command[2], root.path().to_string_lossy());
+    // Python's per-account server directory holds the bridge session snapshots,
+    // so a Claude agent that Python started resumes after the cutover.
+    assert_eq!(
+        launch.command[2],
+        root.path()
+            .join("account-servers/claude-fixture-account")
+            .to_string_lossy()
+    );
     assert_eq!(
         launch.environment["STUDIO_CLAUDE_BIN"],
         claude.to_string_lossy()
