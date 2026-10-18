@@ -412,3 +412,63 @@ def recover_rejected_start(
     else:
         agent.update(status='failed', nativeFailureHold=True)  # type: ignore[call-arg]  # typed-update
     return 'retry' if retry else 'held'
+
+
+def release_unapplied_steers(runtime: "Runtime", db: "sqlite3.Connection",
+                             agent: "AgentRecord", turn: Any) -> int:
+    """Queue again, once, steer input the Claude bridge proves it never applied.
+
+    A busy turn/start that the bridge accepted as a steer marks its batch
+    delivered. At turn end the bridge lists in `unappliedSteers` the first input
+    id of each steer that Claude never read (or that a closed, stalled CLI never
+    recorded). Only events still delivered to that exact turn return to pending,
+    so a repeated completion cannot queue them twice.
+    """
+    ids = turn.get('unappliedSteers') if isinstance(turn, dict) else None
+    turn_id = turn.get('id') if isinstance(turn, dict) else None
+    if not isinstance(ids, list) or not isinstance(turn_id, str) or not turn_id:
+        return 0
+    released = 0
+    for first in ids:
+        if not isinstance(first, str) or not first:
+            continue
+        batch = [first]
+        row = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                         (agent['id'] + ':' + first,)).fetchone()
+        if row:
+            inputs = json.loads(row[0]).get('inputs') or []
+            batch = [entry['id'] for entry in inputs
+                     if isinstance(entry, dict) and isinstance(entry.get('id'), str)] or batch
+        for event_id in batch:
+            changed = db.execute(
+                "UPDATE runtime_events SET status='pending', turn_id=NULL, error=NULL "
+                "WHERE id=? AND agent=? AND epoch=? AND status='delivered' AND turn_id=?",
+                (event_id, agent['id'], agent['epoch'], turn_id)).rowcount
+            if not changed:
+                continue
+            released += 1
+            if event_id.startswith('chat:'):
+                _unsync_chat_delivery(db, event_id, agent['id'])
+    if released:
+        runtime._stage_event_resources(db, str(agent['id']))
+    return released
+
+
+def _unsync_chat_delivery(db: "sqlite3.Connection", event_id: str, recipient_id: str) -> None:
+    """Undo Runtime.sync_chat_delivery for input that returned to the queue."""
+    event = db.execute("SELECT kind,text FROM runtime_events WHERE id=? AND agent=?",
+                       (event_id, recipient_id)).fetchone()
+    if not event or event[0] != 'agent_message':
+        return
+    try:
+        message_id = json.loads(event[1])['message_id']
+    except (TypeError, ValueError, KeyError):
+        return
+    row = db.execute('SELECT deliveries FROM runtime_chat_messages WHERE id=?', (message_id,)).fetchone()
+    if not row:
+        return
+    deliveries = json.loads(row[0])
+    if deliveries.get(recipient_id) == 'delivered':
+        deliveries[recipient_id] = 'queued'
+        db.execute('UPDATE runtime_chat_messages SET deliveries=? WHERE id=?',
+                   (json.dumps(deliveries), message_id))

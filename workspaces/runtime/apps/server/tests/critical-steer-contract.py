@@ -80,6 +80,61 @@ class CriticalDelivery(unittest.TestCase):
         self.assertEqual(self.starts()[-1]['clientUserMessageId'], 'busy-exact')
         self.assertFalse(any(method == 'turn/steer' for method, _ in self.server.calls))
 
+    def pending_requests(self):
+        with self.runtime.db() as db:
+            return [r for r in self.runtime.records(db, 'requests') if r.get('status') == 'pending']
+
+    def test_busy_input_keeps_an_open_approval_visible(self):
+        # Guard for 2026-10-17: thirteen steers reached a turn that waited 15
+        # hours for an approval. Each accepted steer must leave it visible.
+        a = self.runtime.agent(self.agent)
+        self.runtime.request({'id': 201, 'method': 'item/commandExecution/requestApproval',
+                              'params': {'threadId': a['threadId'], 'turnId': a['turnId'],
+                                         'itemId': 'toolu-wait', 'command': 'kubectl get cc',
+                                         'cwd': self.temp.name,
+                                         'reason': 'Claude requests permission to use Bash'}})
+        self.assertEqual(self.runtime.agent(self.agent)['status'], 'approval')
+        self.runtime.send(self.agent, 'Question while the approval waits', 'approval-busy')
+        fixture.eventually(lambda: self.event('approval-busy')['status'] == 'delivered')
+        self.assertEqual(self.runtime.agent(self.agent)['status'], 'approval')
+        [request] = self.pending_requests()
+        self.runtime.answer(request['id'], {'decision': 'accept'})
+        self.assertEqual(self.runtime.agent(self.agent)['status'], 'running')
+
+    def test_unapplied_steer_returns_to_the_queue_once(self):
+        a = self.runtime.agent(self.agent)
+        turn = a['turnId']
+        self.runtime.send(self.agent, 'Steer the stalled turn', 'stalled-steer')
+        fixture.eventually(lambda: self.event('stalled-steer')['status'] == 'delivered')
+        self.assertEqual(self.event('stalled-steer')['turn_id'], turn)
+        starts = len(self.starts())
+        completion = {'method': 'turn/completed', 'params': {'threadId': a['threadId'],
+            'turn': {'id': turn, 'status': 'interrupted', 'unappliedSteers': ['stalled-steer'],
+                     'error': {'message': 'Studio stopped this turn: the Bash call did not return'}}}}
+        self.server.notify(completion)
+        fixture.eventually(lambda: len(self.starts()) == starts + 1)
+        self.assertEqual(self.starts()[-1]['clientUserMessageId'], 'stalled-steer')
+        fixture.eventually(lambda: self.event('stalled-steer')['status'] == 'delivered')
+        self.assertNotEqual(self.event('stalled-steer')['turn_id'], turn)
+        # A repeated completion cannot queue the input a second time.
+        self.server.notify(completion)
+        self.runtime.dispatch()
+        self.assertEqual(sum(p.get('clientUserMessageId') == 'stalled-steer' for p in self.starts()), 2)
+
+    def test_unapplied_steer_of_a_superseded_turn_returns_to_the_queue(self):
+        a = self.runtime.agent(self.agent)
+        old = a['turnId']
+        self.runtime.send(self.agent, 'Steer the old turn', 'old-steer')
+        fixture.eventually(lambda: self.event('old-steer')['status'] == 'delivered')
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.agent, db)
+            current['turnId'] = 'newer-turn'
+            self.runtime.put(db, 'agents', current)
+        self.server.notify({'method': 'turn/completed', 'params': {'threadId': a['threadId'],
+            'turn': {'id': old, 'status': 'interrupted', 'unappliedSteers': ['old-steer']}}})
+        self.assertEqual(self.runtime.agent(self.agent)['turnId'], 'newer-turn')
+        self.assertNotEqual(self.event('old-steer')['turn_id'], old)
+
     def test_native_started_turn_is_busy_and_receives_input_at_once(self):
         a = self.runtime.agent(self.agent)
         self.server.notify({'method': 'turn/completed', 'params': {'threadId': a['threadId'],
