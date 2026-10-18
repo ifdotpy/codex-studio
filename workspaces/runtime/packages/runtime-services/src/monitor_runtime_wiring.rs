@@ -160,6 +160,8 @@ struct Scan {
 }
 
 pub struct MonitorRuntime {
+    /// Wall time (unix seconds) after which unresolved reattach recoveries settle.
+    reattach_window_end: f64,
     store: Arc<RuntimeStore>,
     port: Arc<dyn MonitorPort>,
     output: MonitorOutput,
@@ -220,6 +222,9 @@ impl MonitorRuntime {
             hint_wake.notify_one();
         });
         Self {
+            reattach_window_end: event_write::unix_time().map_or(f64::INFINITY, |now| {
+                now + crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS
+            }),
             store,
             port,
             output: MonitorOutput::default(),
@@ -339,9 +344,11 @@ impl MonitorRuntime {
         );
         let connection = self.store.read()?;
         let rules: bool = connection
-            .query_row("SELECT EXISTS(SELECT 1 FROM runtime_rules)", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_rules WHERE json_extract(record,'$.status')='active')",
+                [],
+                |row| row.get(0),
+            )
             .map_err(studio_runtime_store::StoreError::from)?;
         if rules {
             return Ok(true);
@@ -549,7 +556,20 @@ impl MonitorRuntime {
                 |row| row.get(0),
             )
             .map_err(studio_runtime_store::StoreError::from)?;
-        Ok(earliest_deadline([monitor_deadline, rule_deadline]))
+        // An unresolved reattach recovery settles once its window ends.
+        let reattach_deadline = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?
+            .then_some(self.reattach_window_end);
+        Ok(earliest_deadline([
+            monitor_deadline,
+            rule_deadline,
+            reattach_deadline,
+        ]))
     }
 
     fn record_runtime_error(&self, error: &MonitorError) {
@@ -786,14 +806,22 @@ impl MonitorRuntime {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(studio_runtime_store::StoreError::from)?
         };
+        let expired = now >= self.reattach_window_end;
         for id in &ids {
-            let id_for_read = id.clone();
-            let (snapshot, _) = self
-                .store
-                .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id_for_read))
-                .await?;
-            if let Some(proof) = self.port.reattach(&snapshot).await? {
-                monitor_runtime::reattach(&self.store, id, &proof, now).await?;
+            if expired {
+                monitor_runtime::settle_reattach(&self.store, id, "reattach_window_expired", now)
+                    .await?;
+            } else {
+                let id_for_read = id.clone();
+                let (snapshot, _) = self
+                    .store
+                    .read_async("runtime-services/monitor_reattach", move |tx| {
+                        monitor_runtime::snapshot(tx, &id_for_read)
+                    })
+                    .await?;
+                if let Some(proof) = self.port.reattach(&snapshot).await? {
+                    monitor_runtime::reattach(&self.store, id, &proof, now).await?;
+                }
             }
             scan.monitor.clone_from(id);
         }
@@ -1461,6 +1489,7 @@ mod tests {
         queued_results: AtomicUsize,
         drained_results: AtomicUsize,
         probes: AtomicUsize,
+        reattach_calls: AtomicUsize,
         next_call_times: Mutex<Vec<tokio::time::Instant>>,
         next_error_times: Mutex<Vec<tokio::time::Instant>>,
         called: Notify,
@@ -1541,7 +1570,10 @@ mod tests {
             _snapshot: &'a MonitorSnapshot,
         ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>>
         {
-            Box::pin(async { Ok(None) })
+            Box::pin(async {
+                self.reattach_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            })
         }
         fn probe<'a>(
             &'a self,
@@ -1724,6 +1756,18 @@ mod tests {
             .expect("swap monitor for rule");
         commit_agent(&store, "codex-agent", "codex").await;
         assert!(runtime.agent_commit_needs_tick().expect("rule present"));
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "UPDATE runtime_rules SET record=json_set(record,'$.status','paused')",
+                    [],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("pause rule");
+        commit_agent(&store, "codex-agent", "codex").await;
+        assert!(!runtime.agent_commit_needs_tick().expect("paused rule"));
     }
 
     async fn stop_task(
@@ -2628,5 +2672,101 @@ mod tests {
     async fn filesystem_overflow_requests_a_full_rescan() {
         let event = notify::Event::new(notify::EventKind::Other);
         assert!(super::filesystem_event_needs_rescan(&event));
+    }
+
+    static WRITER_TRANSACTIONS: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_writer_transactions(event: studio_runtime_store::StoreDiagnosticsEvent) {
+        if matches!(
+            event,
+            studio_runtime_store::StoreDiagnosticsEvent::WriterAdmission { .. }
+        ) {
+            WRITER_TRANSACTIONS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn lost_monitor(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id":id,"agent":"owner","epoch":0,"status":"lost",
+            "reattachRecovery":{"accountKey":"default","epoch":0,"status":"running"},
+            "error":"Server restarted. Command outcome unknown; not rerun."
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lost_recovery_is_offered_in_its_window_then_settles_once_and_idle_ticks_never_write() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        let now = crate::event_write::unix_time().expect("fixture time");
+        let fresh = lost_monitor("fresh");
+        let stuck = lost_monitor("stuck");
+        store
+            .transaction_with(move |tx| {
+                for (id, record) in [("fresh", fresh), ("stuck", stuck)] {
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        (id, record.to_string()),
+                    )?;
+                }
+                tx.execute(
+                    "INSERT INTO runtime_rules(id,record) VALUES ('paused',?1)",
+                    [serde_json::json!({
+                        "id":"paused","agent":"owner","epoch":0,"status":"paused","kind":"interval",
+                        "inFlight":false,"created":100.0,"nextAt":5000.0,"name":"paused",
+                        "intervalSeconds":60,"command":"true","text":""
+                    })
+                    .to_string()],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("persist lost monitors");
+        let mut runtime = MonitorRuntime::new(store.clone(), port.clone(), Arc::new(Notify::new()));
+        runtime.scan.lock().await.recovering_rules = false;
+        let status = |id: &'static str| -> String {
+            let connection = store.read().expect("reader");
+            connection
+                .query_row(
+                    "SELECT json_extract(record,'$.reattachRecovery.status') FROM runtime_monitors WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("monitor row")
+        };
+
+        // Inside the window both recoveries are offered to the port on every tick and
+        // an otherwise idle store never takes the writer lane.
+        store
+            .set_diagnostics_callback(Some(count_writer_transactions))
+            .await
+            .expect("install diagnostics");
+        WRITER_TRANSACTIONS.store(0, Ordering::SeqCst);
+        for _ in 0..5 {
+            runtime.tick(now).await.expect("in-window tick");
+        }
+        assert_eq!(WRITER_TRANSACTIONS.load(Ordering::SeqCst), 0);
+        assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
+        assert_eq!(status("stuck"), "running");
+        assert_eq!(
+            runtime.next_deadline().expect("deadline"),
+            Some(runtime.reattach_window_end)
+        );
+
+        // After the window each recovery settles once and is never offered again.
+        runtime.reattach_window_end = now - 1.0;
+        runtime.tick(now).await.expect("expiry tick");
+        assert_eq!(status("stuck"), "not_reattachable");
+        assert_eq!(status("fresh"), "not_reattachable");
+        WRITER_TRANSACTIONS.store(0, Ordering::SeqCst);
+        for _ in 0..5 {
+            runtime.tick(now).await.expect("idle tick");
+        }
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics");
+        assert_eq!(WRITER_TRANSACTIONS.load(Ordering::SeqCst), 0);
+        assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
+        assert_eq!(runtime.next_deadline().expect("deadline"), None);
     }
 }

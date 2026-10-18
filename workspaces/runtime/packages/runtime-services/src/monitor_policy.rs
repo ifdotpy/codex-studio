@@ -271,7 +271,7 @@ impl MonitorSnapshot {
                     .epoch
                     .or_else(|| self.operation().map(|operation| operation.epoch))
     }
-    fn decision(&self) -> Decision {
+    pub(crate) fn decision(&self) -> Decision {
         Decision {
             record: self.record.clone(),
             effects: vec![],
@@ -774,6 +774,11 @@ pub fn start(
     });
     Ok(decision)
 }
+
+/// How long after this backend starts a lost monitor may still be reattached to its
+/// surviving provider operation. Owner: monitor reattach recovery. Unit: seconds.
+/// Afterwards each remaining recovery settles as `not_reattachable` once.
+pub const MONITOR_REATTACH_WINDOW_SECONDS: f64 = 600.0;
 
 /// A supervisor's operation receipt is evidence of the original command; it is never
 /// permission to run it again. The connection owner supplies this verified receipt.

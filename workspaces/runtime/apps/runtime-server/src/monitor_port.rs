@@ -1045,7 +1045,17 @@ impl MonitorPort for RetainedMonitorPort {
         snapshot: &'a MonitorSnapshot,
     ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>> {
         Box::pin(async move {
+            let now = studio_runtime_services::event_write::unix_time()
+                .map_err(|_| MonitorError::Refused("System clock unavailable"))?;
             let Some(operation) = snapshot.operation() else {
+                // Without a recorded operation there is nothing to reattach to.
+                studio_runtime_services::monitor_runtime::settle_reattach(
+                    &self.store,
+                    snapshot.id(),
+                    "no_operation",
+                    now,
+                )
+                .await?;
                 return Ok(None);
             };
             let operation_id = format!("monitor:{}", snapshot.id());
@@ -1073,14 +1083,32 @@ impl MonitorPort for RetainedMonitorPort {
             if receipt.certainty != RequestCertainty::Written {
                 return Ok(None);
             }
-            let Some(ProviderResponse::Reply(result)) = receipt.result else {
-                return Ok(None);
+            let result = match receipt.result {
+                Some(ProviderResponse::Reply(result)) => result,
+                Some(ProviderResponse::Rejected(_)) => {
+                    // The provider answered that it cannot show this operation.
+                    studio_runtime_services::monitor_runtime::settle_reattach(
+                        &self.store,
+                        snapshot.id(),
+                        "provider_rejected",
+                        now,
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+                None => return Ok(None),
             };
             if result["accepted"] != true {
                 let reason = result["reason"]
                     .as_str()
                     .unwrap_or("operation_not_accepted");
-                persist_not_reattachable(&self.store, snapshot, operation, reason).await?;
+                studio_runtime_services::monitor_runtime::settle_reattach(
+                    &self.store,
+                    snapshot.id(),
+                    reason,
+                    now,
+                )
+                .await?;
                 return Ok(None);
             }
             let Some(native_id) = result["nativeId"].as_u64() else {
@@ -1228,40 +1256,6 @@ impl MonitorPort for RetainedMonitorPort {
                 .unwrap_or_else(|| InputReply::Unknown("Input acknowledgement is unknown".into()))
         })
     }
-}
-
-async fn persist_not_reattachable(
-    store: &RuntimeStore,
-    expected: &MonitorSnapshot,
-    operation: &Operation,
-    reason: &str,
-) -> Result<(), MonitorError> {
-    let now = studio_runtime_services::event_write::unix_time()
-        .map_err(|_| MonitorError::Refused("System clock unavailable"))?;
-    let expected_id = expected.id().to_owned();
-    let operation = operation.clone();
-    let reason = reason.to_owned();
-    store
-        .transaction_with(move |tx| {
-            let (current, actor) =
-                studio_runtime_services::monitor_runtime::snapshot(tx, &expected_id)?;
-            if current.operation() != Some(&operation)
-                || current.record()["status"] != "lost"
-                || current.record()["reattachRecovery"]["status"] != "running"
-            {
-                return Err(MonitorError::Refused("Monitor reattach state changed"));
-            }
-            let mut decision = studio_runtime_services::monitor_policy::Decision {
-                record: current.record().clone(),
-                effects: Vec::new(),
-                response: Value::Null,
-            };
-            decision.record["reattachRecovery"]["status"] = json!("not_reattachable");
-            decision.record["reattachRecovery"]["proof"] =
-                json!(reason.chars().take(12000).collect::<String>());
-            studio_runtime_services::monitor_runtime::apply(tx, &current, &actor, &decision, now)
-        })
-        .await
 }
 
 /// Monitor command preparation uses the shared permission builder without a

@@ -315,12 +315,14 @@ pub(super) async fn replay(
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
     let call = call.clone();
-    s.transaction_with(move |tx| replay_in_transaction(tx, &call))
-        .await
+    s.read_async("runtime-services/retained_replay", move |tx| {
+        replay_in_transaction(tx, &call)
+    })
+    .await
 }
 
-/// Resolve a replay from the same transaction that fences submission. Kept
-/// synchronous and pure with respect to SQLite so actor callbacks never await.
+/// Resolve a replay from a reader snapshot: it only reads receipts, so it never
+/// takes the writer lane. Kept synchronous so actor callbacks never await.
 pub(super) fn replay_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,

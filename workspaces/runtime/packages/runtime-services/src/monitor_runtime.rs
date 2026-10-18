@@ -629,6 +629,21 @@ pub async fn tick_page(
     after: Option<&str>,
 ) -> Result<TickPage, MonitorError> {
     let after = after.map(str::to_owned);
+    // No running monitor after the cursor means nothing to decide: stay off the writer lane.
+    let start = after.clone();
+    let any_running = store.read_async("runtime-services/monitor_tick_page", move |tx| {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND id>?1)",
+            [start.as_deref().unwrap_or("")],
+            |row| row.get::<_, bool>(0),
+        ).map_err(|error| MonitorError::from(studio_runtime_store::StoreError::from(error)))
+    }).await?;
+    if !any_running {
+        return Ok(TickPage {
+            effects: Vec::new(),
+            next_after: None,
+        });
+    }
     store.transaction_with(move |tx| {
         let mut statement = tx.prepare_cached(
             "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND id>?1 ORDER BY id LIMIT ?2",
@@ -1041,6 +1056,32 @@ pub async fn reserve_start(
                 .ok_or(MonitorError::Refused("Missing monitor command"))?;
             apply(tx, &snapshot, &actor, &decision, now)?;
             Ok(effect)
+        })
+        .await
+}
+
+/// Settle a lost monitor's reattach recovery as `not_reattachable`. Idempotent: a
+/// monitor that is no longer in a running recovery is left untouched.
+pub async fn settle_reattach(
+    store: &RuntimeStore,
+    id: &str,
+    reason: &str,
+    now: f64,
+) -> Result<(), MonitorError> {
+    let id = id.to_owned();
+    let reason: String = reason.chars().take(12000).collect();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            if snapshot.record()["status"] != "lost"
+                || snapshot.record()["reattachRecovery"]["status"] != "running"
+            {
+                return Ok(());
+            }
+            let mut decision = snapshot.decision();
+            decision.record["reattachRecovery"]["status"] = serde_json::json!("not_reattachable");
+            decision.record["reattachRecovery"]["proof"] = serde_json::json!(reason);
+            apply(tx, &snapshot, &actor, &decision, now)
         })
         .await
 }

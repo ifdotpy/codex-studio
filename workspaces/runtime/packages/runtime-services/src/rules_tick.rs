@@ -175,31 +175,27 @@ pub async fn tick_batch(
             None
         };
         let available = monitor.available();
+        // A rule with nothing to change is decided on a reader; only a real change
+        // takes the writer lane, which re-decides inside its own transaction.
+        let probe = sampled.clone();
+        let busy = store
+            .read_async("runtime-services/rules_tick", move |tx| {
+                Ok::<_, RulesTickError>(
+                    decide(tx, &probe, now, fingerprint, available)?
+                        .is_some_and(|(_, decision)| decision.record.is_some()),
+                )
+            })
+            .await?;
+        if !busy {
+            continue;
+        }
         let Some((changed, check)) = store
             .transaction_with::<_, RulesTickError>(move |transaction| {
-                let Some(rule) = RulesRepository::get(transaction, sampled.id())? else {
+                let Some((owner, decision)) =
+                    decide(transaction, &sampled, now, fingerprint, available)?
+                else {
                     return Ok(None);
                 };
-                let owner = owner(transaction, sampled.owner_id())?;
-                if !sampled.current(rule.value(), &owner.value()) {
-                    return Ok(None);
-                }
-                let activity = if sampled.is_low_workers() {
-                    let raw = RulesTickRepository::activity(transaction, sampled.owner_id())?;
-                    Some(active_workers(&raw.agents, &raw.monitors)?)
-                } else {
-                    None
-                };
-                let decision = sampled.tick(
-                    now,
-                    TickObservation {
-                        fingerprint: Some(fingerprint),
-                        active_workers: activity,
-                    },
-                )?;
-                if decision.check.is_some() && !available {
-                    return Err(RulesTickError::MonitorUnavailable);
-                }
                 let changed = apply(transaction, &owner, &decision, now)?;
                 Ok(Some((changed, decision.check)))
             })
@@ -490,6 +486,40 @@ fn load_snapshot(
         owner(connection, agent_id)?.value(),
     )?)
 }
+/// Decide one sampled rule against current rows: `None` when the sample is stale.
+fn decide(
+    connection: &studio_runtime_store::Connection,
+    sampled: &RuleSnapshot,
+    now: f64,
+    fingerprint: Option<RuleFileFingerprint>,
+    available: bool,
+) -> Result<Option<(AgentRecord, RuleDecision)>, RulesTickError> {
+    let Some(rule) = RulesRepository::get(connection, sampled.id())? else {
+        return Ok(None);
+    };
+    let owner = owner(connection, sampled.owner_id())?;
+    if !sampled.current(rule.value(), &owner.value()) {
+        return Ok(None);
+    }
+    let activity = if sampled.is_low_workers() {
+        let raw = RulesTickRepository::activity(connection, sampled.owner_id())?;
+        Some(active_workers(&raw.agents, &raw.monitors)?)
+    } else {
+        None
+    };
+    let decision = sampled.tick(
+        now,
+        TickObservation {
+            fingerprint: Some(fingerprint),
+            active_workers: activity,
+        },
+    )?;
+    if decision.check.is_some() && !available {
+        return Err(RulesTickError::MonitorUnavailable);
+    }
+    Ok(Some((owner, decision)))
+}
+
 fn owner(
     connection: &studio_runtime_store::Connection,
     id: &str,
