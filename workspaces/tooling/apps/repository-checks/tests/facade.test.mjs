@@ -36,7 +36,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   const fast = recipePlan(process.cwd(), "test-fast");
   const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
 
-  assert.match(fast.command, /--only fast/);
+  assert.match(fast.command, /['"]--only['"]\s+['"]fast['"]/);
   assert.match(fast.command, /contracts-check/);
   assert.match(fast.command, /boundaries-check/);
   assert.match(
