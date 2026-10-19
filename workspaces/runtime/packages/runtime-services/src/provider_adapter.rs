@@ -596,11 +596,17 @@ mod tests {
         };
         let codex = adapter(ProviderKind::Codex).credential_location(&profile(ProviderKind::Codex));
         assert_eq!(codex.directories, vec![home.path().to_path_buf()]);
-        assert_eq!(codex.credential_files, ["auth.json"]);
+        assert_eq!(codex.credential_files.len(), 1);
+        assert_eq!(codex.credential_files[0].name, "auth.json");
         let claude =
             adapter(ProviderKind::Claude).credential_location(&profile(ProviderKind::Claude));
         assert_eq!(claude.directories, vec![home.path().to_path_buf()]);
-        assert!(claude.credential_files.contains(&".credentials.json"));
+        assert!(
+            claude
+                .credential_files
+                .iter()
+                .any(|file| file.name == ".credentials.json")
+        );
         assert_ne!(codex.identity, claude.identity);
         assert_eq!(
             adapter(ProviderKind::Codex)

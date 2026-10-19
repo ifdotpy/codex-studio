@@ -51,8 +51,120 @@ pub struct CredentialLocation {
     pub identity: String,
     /// Directories that hold the credential files.
     pub directories: Vec<PathBuf>,
-    /// File names inside those directories whose state decides the status.
-    pub credential_files: &'static [&'static str],
+    /// Files inside those directories whose state decides the status.
+    pub credential_files: &'static [CredentialFile],
+}
+
+/// One credential file and which of its contents decide the auth status.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CredentialFile {
+    pub name: &'static str,
+    pub format: CredentialFormat,
+}
+
+/// The part of a credential file that identifies a login. Claude Code and the
+/// providers rewrite these files for unrelated reasons (history, token
+/// refresh); only a change of this part is an auth event.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CredentialFormat {
+    /// `~/.claude.json`: the `oauthAccount` object.
+    ClaudeAccount,
+    /// `.credentials.json`: token presence and `subscriptionType`, not the tokens.
+    ClaudeToken,
+    /// `auth.json`: mode, API key, account id, and token presence.
+    CodexAuth,
+}
+
+/// Upper bound on a credential file read for its identity, in bytes.
+/// `~/.claude.json` grows with project history, so the bound is generous.
+const CREDENTIAL_READ_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn present(value: &Option<serde_json::Value>) -> bool {
+    use serde_json::Value;
+    !matches!(value, None | Some(Value::Null | Value::Bool(false)))
+        && value.as_ref().and_then(Value::as_str) != Some("")
+}
+
+impl CredentialFormat {
+    /// Digest of the identity part of `bytes`; `None` when it does not parse,
+    /// which is a state of its own so that a repaired file is a change.
+    fn identity(self, bytes: &[u8]) -> Option<u64> {
+        use serde::Deserialize;
+        use serde_json::Value;
+        use std::hash::{Hash, Hasher};
+        #[derive(Deserialize)]
+        struct Account {
+            #[serde(rename = "oauthAccount")]
+            account: Option<Value>,
+        }
+        #[derive(Deserialize)]
+        struct Token {
+            #[serde(rename = "claudeAiOauth")]
+            oauth: Option<Oauth>,
+        }
+        #[derive(Deserialize)]
+        struct Oauth {
+            #[serde(rename = "accessToken")]
+            access: Option<Value>,
+            #[serde(rename = "refreshToken")]
+            refresh: Option<Value>,
+            #[serde(rename = "subscriptionType")]
+            subscription: Option<Value>,
+        }
+        #[derive(Deserialize)]
+        struct Codex {
+            auth_mode: Option<Value>,
+            #[serde(rename = "OPENAI_API_KEY")]
+            api_key: Option<Value>,
+            tokens: Option<Tokens>,
+        }
+        #[derive(Deserialize)]
+        struct Tokens {
+            account_id: Option<Value>,
+            access_token: Option<Value>,
+            id_token: Option<Value>,
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        match self {
+            Self::ClaudeAccount => serde_json::from_slice::<Account>(bytes)
+                .ok()?
+                .account
+                .map(|value| value.to_string())
+                .hash(&mut hasher),
+            Self::ClaudeToken => {
+                let oauth = serde_json::from_slice::<Token>(bytes).ok()?.oauth;
+                oauth
+                    .map(|oauth| {
+                        (
+                            present(&oauth.access),
+                            present(&oauth.refresh),
+                            oauth.subscription.map(|value| value.to_string()),
+                        )
+                    })
+                    .hash(&mut hasher);
+            }
+            Self::CodexAuth => {
+                let auth = serde_json::from_slice::<Codex>(bytes).ok()?;
+                let tokens = auth.tokens;
+                (
+                    auth.auth_mode.map(|value| value.to_string()),
+                    auth.api_key.map(|value| value.to_string()),
+                    tokens
+                        .as_ref()
+                        .and_then(|tokens| tokens.account_id.as_ref())
+                        .map(ToString::to_string),
+                    tokens
+                        .as_ref()
+                        .is_some_and(|tokens| present(&tokens.access_token)),
+                    tokens
+                        .as_ref()
+                        .is_some_and(|tokens| present(&tokens.id_token)),
+                )
+                    .hash(&mut hasher);
+            }
+        }
+        Some(hasher.finish())
+    }
 }
 
 /// Identity of one file's contents as the filesystem reports them; `None` is a
@@ -60,6 +172,30 @@ pub struct CredentialLocation {
 type FileFingerprint = Option<(u64, u64, u64, i64, i64)>;
 
 impl CredentialLocation {
+    /// Digest of what every credential file of this location says about the
+    /// login. Unreadable and missing files are states of their own.
+    fn identity_digest(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::io::Read;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for directory in &self.directories {
+            for file in self.credential_files {
+                let identity = std::fs::File::open(directory.join(file.name))
+                    .ok()
+                    .map(|handle| {
+                        let mut bytes = Vec::new();
+                        handle
+                            .take(CREDENTIAL_READ_LIMIT_BYTES)
+                            .read_to_end(&mut bytes)
+                            .ok()
+                            .and_then(|_| file.format.identity(&bytes))
+                    });
+                identity.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
     /// Whether `event` names one of this location's credential files.
     fn is_touched_by(&self, event: &Event) -> bool {
         event.paths.iter().any(|path| {
@@ -67,7 +203,7 @@ impl CredentialLocation {
                 .is_some_and(|parent| self.directories.iter().any(|directory| directory == parent))
                 && path
                     .file_name()
-                    .is_some_and(|name| self.credential_files.iter().any(|file| name == *file))
+                    .is_some_and(|name| self.credential_files.iter().any(|file| name == file.name))
         })
     }
 
@@ -75,16 +211,18 @@ impl CredentialLocation {
         self.directories
             .iter()
             .flat_map(|directory| {
-                self.credential_files.iter().map(|name| {
-                    std::fs::metadata(directory.join(name)).ok().map(|meta| {
-                        (
-                            meta.dev(),
-                            meta.ino(),
-                            meta.len(),
-                            meta.mtime(),
-                            meta.mtime_nsec(),
-                        )
-                    })
+                self.credential_files.iter().map(|file| {
+                    std::fs::metadata(directory.join(file.name))
+                        .ok()
+                        .map(|meta| {
+                            (
+                                meta.dev(),
+                                meta.ino(),
+                                meta.len(),
+                                meta.mtime(),
+                                meta.mtime_nsec(),
+                            )
+                        })
                 })
             })
             .collect()
@@ -119,16 +257,22 @@ impl Default for AuthCache {
 /// Credential locations under watch, shared with the notify callback.
 type WatchedLocations = Arc<Mutex<Vec<CredentialLocation>>>;
 
+/// Identity digest of each watched location as last seen.
+type SeenIdentities = Arc<Mutex<HashMap<CredentialLocation, u64>>>;
+
 /// One directory watch per distinct parent of a credential file.
 struct CredentialWatcher {
     watcher: RecommendedWatcher,
     locations: WatchedLocations,
+    seen: SeenIdentities,
     watched: HashSet<PathBuf>,
 }
 
 impl CredentialWatcher {
     fn new(core: Weak<Core>) -> notify::Result<Self> {
         let locations = WatchedLocations::default();
+        let seen = SeenIdentities::default();
+        let worker_seen = Arc::clone(&seen);
         let (events, bursts) = mpsc::channel::<CredentialLocation>();
         let callback_locations = Arc::clone(&locations);
         let watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
@@ -160,7 +304,15 @@ impl CredentialWatcher {
                     }
                     let Some(core) = core.upgrade() else { return };
                     for location in touched {
-                        core.invalidate(&location);
+                        // An event that left the login as it was is not an auth event.
+                        let digest = location.identity_digest();
+                        let previous = worker_seen
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(location.clone(), digest);
+                        if previous != Some(digest) {
+                            core.invalidate(&location);
+                        }
                     }
                 }
             })
@@ -168,6 +320,7 @@ impl CredentialWatcher {
         Ok(Self {
             watcher,
             locations,
+            seen,
             watched: HashSet::new(),
         })
     }
@@ -177,6 +330,15 @@ impl CredentialWatcher {
             .iter()
             .flat_map(|location| location.directories.iter().cloned())
             .collect();
+        {
+            // Baseline for new locations, taken before their directories are watched.
+            let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            seen.retain(|location, _| wanted.contains(location));
+            for location in &wanted {
+                seen.entry(location.clone())
+                    .or_insert_with(|| location.identity_digest());
+            }
+        }
         *self
             .locations
             .lock()
@@ -327,7 +489,10 @@ mod tests {
         CredentialLocation {
             identity: "claude".into(),
             directories: vec![directory.to_owned()],
-            credential_files: &[".credentials.json"],
+            credential_files: &[CredentialFile {
+                name: ".credentials.json",
+                format: CredentialFormat::ClaudeToken,
+            }],
         }
     }
 
@@ -335,7 +500,10 @@ mod tests {
         CredentialLocation {
             identity: "codex".into(),
             directories: vec![directory.to_owned()],
-            credential_files: &["auth.json"],
+            credential_files: &[CredentialFile {
+                name: "auth.json",
+                format: CredentialFormat::CodexAuth,
+            }],
         }
     }
 
@@ -536,13 +704,41 @@ mod tests {
             cache.core.entry(location).generation.load(Ordering::SeqCst)
         }
 
-        /// How a test rewrites a credential file.
+        /// A credential file body whose login identity is `identity`; `extra`
+        /// stands for the unrelated parts that providers rewrite all the time.
+        fn body(name: &str, identity: u64, extra: u64) -> String {
+            match name {
+                "auth.json" => format!(
+                    r#"{{"tokens":{{"account_id":"{identity}","access_token":"t{extra}"}}}}"#
+                ),
+                ".claude.json" => {
+                    format!(
+                        r#"{{"history":{extra},"oauthAccount":{{"accountUuid":"{identity}"}}}}"#
+                    )
+                }
+                _ => format!(
+                    r#"{{"claudeAiOauth":{{"accessToken":"t{extra}","subscriptionType":"{identity}"}}}}"#
+                ),
+            }
+        }
+
+        /// Next identity, so that every call changes the login.
+        fn fresh() -> u64 {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        }
+
+        /// How a test rewrites a credential file to another login.
         fn rewrite(directory: &Path, name: &str, replace: bool) {
+            write_body(directory, name, &body(name, fresh(), 0), replace);
+        }
+
+        fn write_body(directory: &Path, name: &str, contents: &str, replace: bool) {
             if replace {
-                std::fs::write(directory.join("next.tmp"), name).expect("replacement");
+                std::fs::write(directory.join("next.tmp"), contents).expect("replacement");
                 std::fs::rename(directory.join("next.tmp"), directory.join(name)).expect("rename");
             } else {
-                std::fs::write(directory.join(name), name).expect("rewrite");
+                std::fs::write(directory.join(name), contents).expect("rewrite");
             }
         }
 
@@ -599,6 +795,54 @@ mod tests {
             next_change(&mut changes).await;
             assert_eq!(*changes.borrow(), 1);
             assert_eq!(generation(&cache, &claude_location), 0);
+        }
+
+        #[tokio::test]
+        async fn a_rewrite_of_unrelated_fields_raises_no_event() {
+            let (claude, codex) = (
+                tempfile::tempdir().expect("claude"),
+                tempfile::tempdir().expect("codex"),
+            );
+            let account = CredentialLocation {
+                identity: "claude".into(),
+                directories: vec![claude.path().to_owned()],
+                credential_files: &[
+                    CredentialFile {
+                        name: ".credentials.json",
+                        format: CredentialFormat::ClaudeToken,
+                    },
+                    CredentialFile {
+                        name: ".claude.json",
+                        format: CredentialFormat::ClaudeAccount,
+                    },
+                ],
+            };
+            let [(_, token), (codex_location, auth)] = provider_cases(claude.path(), codex.path());
+            for (directory, name) in [
+                (claude.path(), token),
+                (claude.path(), ".claude.json"),
+                (codex.path(), auth),
+            ] {
+                write_body(directory, name, &body(name, 7, 0), false);
+            }
+            let cache = AuthCache::default();
+            cache.watch(vec![account.clone(), codex_location.clone()]);
+            let mut changes = cache.changes();
+            // Token refresh and history growth keep the login: no event, not even
+            // a replaced file.
+            for (directory, name, replace) in [
+                (claude.path(), token, false),
+                (claude.path(), ".claude.json", false),
+                (claude.path(), ".claude.json", true),
+                (codex.path(), auth, true),
+            ] {
+                write_body(directory, name, &body(name, 7, fresh()), replace);
+            }
+            // The sentinel changes a login after all of the above has arrived.
+            rewrite(claude.path(), ".claude.json", false);
+            next_change(&mut changes).await;
+            assert_eq!(*changes.borrow(), 1);
+            assert_eq!(generation(&cache, &codex_location), 0);
         }
 
         #[tokio::test]

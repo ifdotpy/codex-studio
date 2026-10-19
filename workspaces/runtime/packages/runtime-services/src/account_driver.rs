@@ -227,9 +227,21 @@ pub(crate) fn read_claude_auth_cached(profile: &AuthProfile) -> AuthMetadata {
 }
 
 /// Credential files whose change ends a cached Claude status.
-const CLAUDE_CREDENTIAL_FILES: &[&str] = &[".credentials.json", ".claude.json"];
+const CLAUDE_CREDENTIAL_FILES: &[auth_cache::CredentialFile] = &[
+    auth_cache::CredentialFile {
+        name: ".credentials.json",
+        format: auth_cache::CredentialFormat::ClaudeToken,
+    },
+    auth_cache::CredentialFile {
+        name: ".claude.json",
+        format: auth_cache::CredentialFormat::ClaudeAccount,
+    },
+];
 /// Credential files whose change ends a cached Codex status.
-const CODEX_CREDENTIAL_FILES: &[&str] = &["auth.json"];
+const CODEX_CREDENTIAL_FILES: &[auth_cache::CredentialFile] = &[auth_cache::CredentialFile {
+    name: "auth.json",
+    format: auth_cache::CredentialFormat::CodexAuth,
+}];
 
 pub(crate) fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
     auth_cache::CredentialLocation {
