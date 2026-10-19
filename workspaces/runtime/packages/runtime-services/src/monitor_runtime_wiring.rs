@@ -188,6 +188,10 @@ struct LoopActivity {
     completed_ticks: AtomicUsize,
     deadline_reads: AtomicUsize,
     wait_cycles: AtomicUsize,
+    /// Event waits that a durable or retry deadline ended, not a wake signal.
+    timer_wakes: AtomicUsize,
+    /// Whether the latest event wait had a deadline.
+    wait_has_deadline: std::sync::atomic::AtomicBool,
     watch_events: AtomicUsize,
     waited: Notify,
     tick_completed: Notify,
@@ -1293,6 +1297,10 @@ pub fn start(
             {
                 runtime
                     .loop_activity
+                    .wait_has_deadline
+                    .store(wait_until.is_some(), Ordering::SeqCst);
+                runtime
+                    .loop_activity
                     .wait_cycles
                     .fetch_add(1, Ordering::SeqCst);
                 runtime.loop_activity.waited.notify_one();
@@ -1341,6 +1349,11 @@ pub fn start(
                             None => std::future::pending::<()>().await,
                         }
                     } => {
+                        #[cfg(test)]
+                        runtime
+                            .loop_activity
+                            .timer_wakes
+                            .fetch_add(1, Ordering::SeqCst);
                         let now = tokio::time::Instant::now();
                         if retry_at.is_none_or(|deadline| now >= deadline) {
                             retry_at = None;
@@ -2213,7 +2226,9 @@ mod tests {
             second_call_time.duration_since(first_error_time) >= ERROR_RETRY_MIN,
             "transient failures must honor the configured retry backoff"
         );
-        wait_for_cycles(&runtime, 2).await;
+        // A wake signal during the backoff adds an event wait without a
+        // tick, so wait for the retry tick itself to complete.
+        wait_for_completed_ticks(&runtime, 2).await;
         assert_eq!(runtime.last_tick_error(), None);
         stop_task(&shutdown_tx, task).await;
 
@@ -2570,15 +2585,28 @@ mod tests {
                 .expect("registry receives its agent commit wake"),
             Some(())
         );
-        let low_since: f64 = store
-            .read()
-            .expect("read worker rule")
-            .query_row(
-                "SELECT json_extract(record,'$.lowSince') FROM runtime_rules WHERE id='low-rule'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("low-worker observation persists");
+        // The tick counted above can be one that started before the commit, so
+        // wait for the tick that observes the completed worker.
+        let low_since = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let completed = runtime.loop_activity.completed_ticks.load(Ordering::SeqCst);
+                let low_since: Option<f64> = store
+                    .read()
+                    .expect("read worker rule")
+                    .query_row(
+                        "SELECT json_extract(record,'$.lowSince') FROM runtime_rules WHERE id='low-rule'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("read low-worker observation");
+                if let Some(low_since) = low_since {
+                    return low_since;
+                }
+                wait_for_completed_ticks(&runtime, completed + 1).await;
+            }
+        })
+        .await
+        .expect("low-worker observation persists");
         assert_eq!(
             runtime
                 .next_deadline()
@@ -2638,11 +2666,30 @@ mod tests {
             runtime.next_deadline().expect("alerted rule has no timer"),
             None
         );
-        let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
+        // A late wake signal (a commit or a filesystem event) can start another
+        // tick at any time, so the tick count is not stable here (hosted CI saw
+        // one extra tick). A past `nextAt` spin is a deadline wait and a timer
+        // wake; neither may occur.
+        assert!(
+            !runtime
+                .loop_activity
+                .wait_has_deadline
+                .load(Ordering::SeqCst)
+        );
+        let timer_wakes = runtime.loop_activity.timer_wakes.load(Ordering::SeqCst);
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(3600)).await;
         tokio::task::yield_now().await;
-        assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), ticks);
+        assert_eq!(
+            runtime.loop_activity.timer_wakes.load(Ordering::SeqCst),
+            timer_wakes
+        );
+        assert!(
+            !runtime
+                .loop_activity
+                .wait_has_deadline
+                .load(Ordering::SeqCst)
+        );
         tokio::time::resume();
         stop_task(&shutdown_tx, task).await;
     }
