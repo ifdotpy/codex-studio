@@ -3,9 +3,8 @@ description: Install the pinned tools and isolated runtime used by the fast tier
 inputs:
   rust-cache:
     description: >-
-      Shared key of the Cargo dependency cache for a job that compiles the
-      workspace; empty for no cache. The cache action adds the toolchain and
-      the hash of Cargo.lock, Cargo.toml and rust-toolchain.toml to the key.
+      Key of the Cargo dependency cache for a job that compiles the workspace
+      (see rust-dependency-cache); empty for no cache.
     default: ""
 runs:
   using: composite
@@ -34,11 +33,9 @@ runs:
         toolchain: ${{ steps.rust-toolchain.outputs.channel }}
         components: ${{ steps.rust-toolchain.outputs.components }}
     - if: inputs.rust-cache != ''
-      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: ./.github/actions/rust-dependency-cache
       with:
-        shared-key: ${{ inputs.rust-cache }}
-        # Tool binaries keep their own pinned installers and caches.
-        cache-bin: "false"
+        key: ${{ inputs.rust-cache }}
     - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
       with:
         tool: nextest@0.9.146

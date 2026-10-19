@@ -1,0 +1,30 @@
+name: Rust dependency cache
+description: >-
+  Restore and save the compiled Cargo dependencies of one kind of job. The key
+  holds the pinned toolchain and the hash of Cargo.lock, the Cargo.toml files
+  and rust-toolchain.toml; workspace crates are always compiled from source.
+inputs:
+  key:
+    description: Name of the job kind that shares this cache, for example rust-tests.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The cache key names every installed toolchain. The runner image's own
+    # stable toolchain is never used here and changes with image updates.
+    - name: Keep only the pinned Rust toolchain
+      shell: bash
+      run: |
+        active="$(rustup show active-toolchain | cut -d ' ' -f 1)"
+        test -n "$active"
+        rustup toolchain list --quiet | while read -r toolchain; do
+          if [ -n "$toolchain" ] && [ "$toolchain" != "$active" ]; then
+            rustup toolchain uninstall "$toolchain"
+          fi
+        done
+        rustup toolchain list
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        shared-key: ${{ inputs.key }}
+        # Tool binaries keep their own pinned installers and caches.
+        cache-bin: "false"
