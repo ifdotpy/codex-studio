@@ -387,7 +387,7 @@ async fn publish_verified(
     .map_err(|_| WorkspaceError::Worker)?;
     let transaction_identity = identity.clone();
     let token = store.transaction(move |tx| {
-        let current = CheckpointsRepository::workspace_snapshot(tx, &transaction_identity.agent)?;
+        let current = CheckpointsRepository::reservation_snapshot(tx, &transaction_identity.agent)?;
         let valid = current.as_ref().is_some_and(|current| {
             let Ok(actor) = actor(current) else { return false };
             let Some(observed) = &observed else { return false };
@@ -437,7 +437,7 @@ impl Context {
     }
 }
 fn snapshot(store: &RuntimeStore, id: &str) -> Result<WorkspaceSnapshot, WorkspaceError> {
-    CheckpointsRepository::workspace_snapshot(&*store.read()?, id)?
+    CheckpointsRepository::reservation_snapshot(&*store.read()?, id)?
         .ok_or(WorkspaceError::InvalidRecord)
 }
 fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError> {
@@ -532,6 +532,7 @@ fn observe(
             id,
             agent: context.actor.id.clone(),
             source: workspace_generation(source),
+            thread_id: source.get("threadId").cloned().unwrap_or_default(),
             cwd: destination.join(relative),
             destination: destination.clone(),
             branch: format!("codex-agent/{}", context.actor.id),
@@ -787,7 +788,7 @@ impl Git {
         })?;
         Ok(
             json!({"id":id,"agent":plan.agent,"rootId":plan.source.get("rootId"),"label":"Before first turn",
-            "tree":tree,"commit":plan.base_commit,"ref":reference,"threadId":plan.source.get("threadId"),
+            "tree":tree,"commit":plan.base_commit,"ref":reference,"threadId":plan.thread_id,
             "created":now(),"cwd":plan.cwd}),
         )
     }

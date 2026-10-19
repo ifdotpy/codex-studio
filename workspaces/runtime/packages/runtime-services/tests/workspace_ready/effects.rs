@@ -984,7 +984,18 @@ async fn ready_token_requires_current_generation_and_no_conflicting_reservation(
             .is_ok()
     );
     fixture.patch("epoch", json!(0)).await;
+    // A thread/start between preparation and submission leaves the workspace unchanged.
     fixture.patch("threadId", json!("changed session")).await;
+    let thread_token = token.clone();
+    assert!(
+        fixture
+            .store
+            .transaction(move |tx| thread_token.validate(tx))
+            .await
+            .expect("validate after thread start")
+            .is_ok()
+    );
+    fixture.patch("accountKey", json!("changed account")).await;
     let changed_token = token.clone();
     assert!(
         !fixture
@@ -997,11 +1008,7 @@ async fn ready_token_requires_current_generation_and_no_conflicting_reservation(
     let actor = fixture.actor();
     fixture
         .store
-        .transaction(move |tx| {
-            let mut a = actor;
-            a.as_object_mut().expect("actor").remove("threadId");
-            AgentRepository::put(tx, &AgentRecord::from_value(a)?)
-        })
+        .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(actor)?))
         .await
         .expect("restore source");
     reserve_other(&fixture, cwd.parent().expect("root")).await;
@@ -1971,5 +1978,79 @@ fn an_image_turn_runs_in_the_saved_subpath_of_the_mounted_repo() {
             ),
             "{outside}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reservation_snapshot_yields_the_reservations_of_the_full_snapshot() {
+    let fixture = Fixture::new().await;
+    let seed = fixture.actor();
+    let variants: Vec<(&str, Value)> = vec![
+        ("shared", json!({})),
+        (
+            "branch-op",
+            json!({"workspaceOperation":"branch","cwd":"/elsewhere"}),
+        ),
+        (
+            "provision-op",
+            json!({"workspaceOperation":"provision","workspaceReservationId":"provision:p:0"}),
+        ),
+        (
+            "tombstone-op",
+            json!({"deletedAt":5,"workspaceOperation":"restore","cwd":"/tomb"}),
+        ),
+        ("tombstone", json!({"deletedAt":5})),
+        ("stopped", json!({"autoWake":false})),
+    ];
+    let records = variants
+        .iter()
+        .map(|(name, patch)| {
+            let mut record = seed.clone();
+            record["id"] = json!(name);
+            record["rootId"] = json!(name);
+            for (key, value) in patch.as_object().expect("patch") {
+                record[key] = value.clone();
+            }
+            record
+        })
+        .collect::<Vec<_>>();
+    let ids = records
+        .iter()
+        .map(|r| r["id"].as_str().expect("id").to_owned())
+        .collect::<Vec<_>>();
+    fixture
+        .store
+        .transaction(move |tx| {
+            for record in records {
+                AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            }
+            tx.execute(
+                "INSERT INTO runtime_workspace_operations(id,record) VALUES('provision:p:0',?1)",
+                [
+                    json!({"id":"provision:p:0","kind":"provision","agent":"provision-op",
+                    "cwd":"/dest","phase":"local_mutation"})
+                    .to_string(),
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed corpus");
+    let db = fixture.store.read().expect("reader");
+    for id in ids {
+        let full = CheckpointsRepository::workspace_snapshot(&db, &id)
+            .expect("full")
+            .expect("agent");
+        let light = CheckpointsRepository::reservation_snapshot(&db, &id)
+            .expect("light")
+            .expect("agent");
+        assert_eq!(full.agent.record, light.agent.record, "{id}");
+        // Row order differs (rowid scan versus index); every consumer is order-independent.
+        let sorted = |snapshot: &WorkspaceSnapshot| {
+            let mut all = studio_runtime_store::workspace_ready::reservations(snapshot);
+            all.sort_by(|a, b| a.agent.cmp(&b.agent));
+            all
+        };
+        assert_eq!(sorted(&full), sorted(&light), "{id}");
     }
 }

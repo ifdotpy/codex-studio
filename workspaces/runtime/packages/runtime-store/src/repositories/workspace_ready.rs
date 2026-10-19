@@ -14,6 +14,10 @@ pub struct ProvisionIdentity {
     pub id: String,
     pub agent: String,
     pub source: Value,
+    /// The thread the "Before first turn" checkpoint records; not part of `source`, so a
+    /// thread/start does not refuse a prepared workspace.
+    #[serde(default)]
+    pub thread_id: Value,
     pub repository: PathBuf,
     pub common_dir: PathBuf,
     pub destination: PathBuf,
@@ -29,7 +33,6 @@ pub fn workspace_generation(actor: &Value) -> Value {
         "epoch",
         "cwd",
         "accountKey",
-        "threadId",
         "rootId",
         "autoWake",
         "deletedAt",
@@ -227,7 +230,7 @@ impl WorkspaceReadyRepository {
         plan: &ProvisionIdentity,
         now: f64,
     ) -> StoreResult<bool> {
-        let Some(current) = CheckpointsRepository::workspace_snapshot(tx, &plan.agent)? else {
+        let Some(current) = CheckpointsRepository::reservation_snapshot(tx, &plan.agent)? else {
             return Ok(false);
         };
         if workspace_generation(&current.agent.record) != plan.source
@@ -301,7 +304,7 @@ impl WorkspaceReadyRepository {
             return Ok(false);
         };
         let current = CheckpointsRepository::agent(tx, &plan.agent)?;
-        let relevant = CheckpointsRepository::workspace_snapshot(tx, &plan.agent)?;
+        let relevant = CheckpointsRepository::reservation_snapshot(tx, &plan.agent)?;
         let valid = relevant
             .as_ref()
             .is_some_and(|s| conflicts(s, plan).is_empty())

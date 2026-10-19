@@ -8,6 +8,7 @@ fn input() -> (Value, WorkspaceActor, ProvisionIdentity) {
         id: "provision:worker:7".into(),
         agent: "worker".into(),
         source: workspace_generation(&record),
+        thread_id: serde_json::Value::Null,
         repository: "/repo".into(),
         common_dir: "/repo/.git".into(),
         destination: "/repo/.worktrees/worker".into(),
