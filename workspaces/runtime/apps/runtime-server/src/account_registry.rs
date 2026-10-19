@@ -1714,6 +1714,16 @@ async fn classify_pending_agents(
     account: String,
     pending_agents: Vec<(String, i64, Option<String>)>,
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
+    // A host that runs image turns starts the account worker for them like for
+    // any agent: workspace preparation mounts the image and runs the turn in
+    // `<mount>/repo`, and the worker's first pass makes their restart check.
+    if studio_runtime_services::image_workspace::IMAGE_EXECUTION_SUPPORTED {
+        let agents = pending_agents
+            .into_iter()
+            .map(|(id, epoch, _)| (id, epoch))
+            .collect();
+        return Ok((std::collections::BTreeSet::new(), agents, false));
+    }
     let image_agents = pending_agents
         .iter()
         .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
@@ -1999,6 +2009,8 @@ mod bounded_reconcile_tests {
     };
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, StoreError};
 
+    // The image hold exists only on hosts without the image backend.
+    #[cfg(not(target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn image_classification_waits_off_executor_while_writer_is_held() {
         let directory = tempfile::tempdir().expect("isolated store directory");
