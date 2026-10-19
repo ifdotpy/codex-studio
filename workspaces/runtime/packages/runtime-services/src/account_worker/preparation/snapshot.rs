@@ -734,7 +734,7 @@ pub(crate) fn actor_tool_definitions(
         }
         return Ok(Some(Value::Array(definitions)));
     }
-    if flag(record, "nativeReview")? {
+    if studio_runtime_store::truthy(record.get("nativeReview")) {
         return Ok(Some(Value::Array(Vec::new())));
     }
     if record["executionMode"] == "vm" {
@@ -893,7 +893,7 @@ pub(super) fn thread_snapshot(
     } else {
         None
     };
-    let unsupported = if flag(record, "nativeReview")? {
+    let unsupported = if studio_runtime_store::truthy(record.get("nativeReview")) {
         Some(thread::Refusal::NativeReview)
     } else if record
         .get("frozenNativeParams")
@@ -1312,6 +1312,34 @@ mod resource_tests {
             .map(|raw| serde_json::from_str::<Value>(raw).expect("record")["id"].to_string())
             .collect();
         assert_eq!(ids, ["\"a\"", "\"b\""]);
+    }
+
+    /// Python stores a review child's `nativeReview` as its review object and
+    /// tests it for truth. Reading it as a boolean ended the account worker
+    /// (19 October 2026, review children of root 85bc2231).
+    #[tokio::test]
+    async fn a_native_review_object_marks_the_review_child() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources");
+        store
+            .transaction_with(move |tx| {
+                let root = json!({"id":"root","rootId":"root","epoch":1,"status":"completed",
+                    "isLead":true,"name":"Lead","provider":"codex","accountKey":"default"});
+                AgentRepository::put(tx, &AgentRecord::from_value(root).expect("root"))?;
+                let review = json!({"id":"review","rootId":"root","parentId":"root",
+                    "role":"reviewer","provider":"codex",
+                    "nativeReview":{"target":{"type":"uncommittedChanges"},"requestId":"q"}});
+                let tools = actor_tool_definitions(tx, &resources, &review)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                assert_eq!(tools, Some(json!([])));
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("a review object is read as a review child");
     }
 
     #[test]
