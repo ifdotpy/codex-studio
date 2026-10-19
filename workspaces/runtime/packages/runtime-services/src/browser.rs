@@ -1618,9 +1618,8 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigD
 
 /// How long Studio waits for `skills/extraRoots/set` (shared with Python
 /// `codex_browser.ensure_skill`).
-pub const BROWSER_SKILL_TIMEOUT: Duration = Duration::from_secs(
-    studio_runtime_schema::shared_values::BROWSER_SKILL_TIMEOUT_SECONDS,
-);
+pub const BROWSER_SKILL_TIMEOUT: Duration =
+    Duration::from_secs(studio_runtime_schema::shared_values::BROWSER_SKILL_TIMEOUT_SECONDS);
 
 /// The native Chrome setup of one host Codex account's threads: Python
 /// `codex_browser.browser_status` and `skill_root` for the account home and the
