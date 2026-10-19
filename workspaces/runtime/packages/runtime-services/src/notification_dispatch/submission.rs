@@ -1,7 +1,7 @@
 //! Submission validation, team-boundary policy, and canonical input records.
 
 use serde_json::{Value, json};
-use studio_runtime_store::{NotificationDispatchRepository, Transaction};
+use studio_runtime_store::{NotificationDispatchRepository, SchedulerRepository, Transaction};
 
 use super::{
     ITEM_PREVIEW_CHARS, NotificationDispatchError, PreparedSubmission, stored,
@@ -46,10 +46,13 @@ pub(super) fn validate_submission(
         else {
             return Err(stored("runtime_events", &input.id));
         };
-        if kind != input.kind || text != input.text || created != input.at {
+        let meta = NotificationDispatchRepository::event_metadata(transaction, &input.id)?;
+        // The submitted text is the claim's model projection of the stored row.
+        let claimed =
+            SchedulerRepository::claimed_event_text(&text, meta.as_ref().unwrap_or(&Value::Null));
+        if kind != input.kind || claimed != input.text || created != input.at {
             return Err(stored("runtime_events", &input.id));
         }
-        let meta = NotificationDispatchRepository::event_metadata(transaction, &input.id)?;
         let meta_assets = meta
             .as_ref()
             .and_then(|meta| meta.get("assets"))

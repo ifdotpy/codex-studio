@@ -2134,8 +2134,19 @@ mod claimed_input_tests {
             .transaction(|tx| {
                 let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
-                    "provider":"claude","accountKey":"default","threadId":"lead-thread"});
+                    "provider":"claude","accountKey":"default","threadId":"lead-thread",
+                    "events":0});
                 AgentRepository::put(tx, &AgentRecord::from_value(lead).expect("lead"))?;
+                let child = json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,
+                    "status":"running","autoWake":true,"name":"child","cwd":"/work",
+                    "provider":"claude","accountKey":"default"});
+                AgentRepository::put(tx, &AgentRecord::from_value(child).expect("child"))?;
+                tx.execute(
+                    "INSERT INTO runtime_rooms(id,record) VALUES('private:lead:child',?1)",
+                    [json!({"id":"private:lead:child","kind":"private",
+                        "members":["lead","child"]})
+                    .to_string()],
+                )?;
                 for (id, version) in [("progress-1", 1_u64), ("progress-2", 2)] {
                     tx.execute(
                         "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
@@ -2211,6 +2222,32 @@ mod claimed_input_tests {
                 .await
                 .expect("submission validates the saved claim")
         );
+        // The commit records the projected text as the submitted input
+        // (agent 85bc2231, 19 October 2026: the account worker ended here).
+        let event = intent.events[0].clone();
+        let submission = crate::notification_dispatch::PreparedSubmission {
+            first_event_id: event.id.clone(),
+            submitted_at: 12.0,
+            created_at: event.created,
+            text: event.text.clone(),
+            inputs: vec![crate::notification_dispatch::SubmittedInput {
+                id: event.id.clone(),
+                at: event.created,
+                kind: event.kind.clone(),
+                text: event.text.clone(),
+                assets: json!([]),
+            }],
+            assets: json!([]),
+            radio_authorized: false,
+        };
+        store
+            .transaction_with(move |tx| {
+                crate::notification_dispatch::record_user_submission(tx, "lead", &submission)
+                    .map(|_| ())
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+            })
+            .await
+            .expect("the submission record accepts the projected input");
         assert_eq!(status(&store, "progress-1").await, "stored_only");
         assert_eq!(status(&store, "progress-2").await, "dispatching");
         assert_eq!(status(&store, "late-user").await, "pending");
