@@ -798,6 +798,12 @@ class SchemaContractTests(unittest.TestCase):
         for schema in ("AgentResponse", "BranchResponse"):
             add(f"/components/schemas/{schema}/properties/startWait",
                 "property", "@nullable", "@nullableBranch")
+        for prefix in (
+            "/components/schemas/AgentRecordResponse/properties/startWait/properties",
+            "/components/schemas/StartWaitRecordResponse/properties",
+        ):
+            for field in ("_syncEntities", "_syncEntitiesAfter"):
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
 
         # The orchestration settings response carries the standard sync envelope.
         for field in ("_syncEntities", "_syncEntitiesAfter"):

@@ -5152,6 +5152,8 @@ export interface components {
       startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
       /** @default null */
       startOutcomeHold?: components["schemas"]["JsonObjectResponse"];
+      /** @default null */
+      startWait?: components["schemas"]["StartWaitRecordResponse"];
       /**
        * Status
        * @enum {string}
@@ -22223,6 +22225,37 @@ export interface components {
        * @default null
        */
       threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** StartWaitRecordResponse */
+    StartWaitRecordResponse: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Epoch */
+      epoch: number;
+      /** Maxrunningturns */
+      maxRunningTurns: number;
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: "slot" | "pause";
+      /** Runningturns */
+      runningTurns: number;
+      /**
+       * Until
+       * @default null
+       */
+      until?: number;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };

@@ -7278,6 +7278,10 @@
             "$ref": "#/components/schemas/JsonObjectResponse",
             "default": null
           },
+          "startWait": {
+            "$ref": "#/components/schemas/StartWaitRecordResponse",
+            "default": null
+          },
           "status": {
             "enum": [
               "unknown",
@@ -50748,6 +50752,81 @@
           }
         },
         "title": "StartModelSettingsRecordResponse",
+        "type": "object"
+      },
+      "StartWaitRecordResponse": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "maxRunningTurns": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Maxrunningturns",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "slot",
+              "pause"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "runningTurns": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Runningturns",
+            "type": "integer"
+          },
+          "until": {
+            "default": null,
+            "title": "Until",
+            "type": "number"
+          }
+        },
+        "required": [
+          "reason",
+          "epoch",
+          "runningTurns",
+          "maxRunningTurns"
+        ],
+        "title": "StartWaitRecordResponse",
         "type": "object"
       },
       "StateResource": {
