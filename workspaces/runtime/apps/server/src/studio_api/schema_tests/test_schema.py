@@ -672,6 +672,13 @@ class SchemaContractTests(unittest.TestCase):
         ):
             add(pointer, "property")
 
+        # Diagnostics report the startup image workspace mount check. The
+        # block is absent when no check applies; checkedAt is null until it ran.
+        add("/components/schemas/DiagnosticsResponse/properties/imageMounts",
+            "property", "@nullable", "@nullableBranch")
+        add("/components/schemas/ImageMountDiagnostics/properties/checkedAt",
+            "@nullable", "@nullableBranch")
+
         # The Claude bridge reports sessions held in memory after a failed disk write.
         for pointer in (
             "/components/schemas/SessionCacheStats/properties/unsavedSessions",
