@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run one scenario against the Runtime of the checkout given as argv[1]; print room entities JSON."""
+"""Run each scenario named in argv against a fresh Runtime; print one result line per scenario.
+
+All scenarios share one interpreter so the runtime imports load once. Each scenario has
+its own temporary state directory and Runtime, and restores every patch it applies.
+"""
 
 from test_isolation import isolate_supervisor_environment
 
@@ -10,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import sys, json, tempfile, importlib.util
 from pathlib import Path
 from codex_layout import SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
-scenario = sys.argv[1]
+scenario = ""
+RESULT_PREFIX = "SCENARIO-RESULT "
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_TESTS_ROOT))
 isolate_supervisor_environment()
@@ -126,184 +131,190 @@ def change(runtime, key, **fields):
             else: rec[k] = v
         runtime.put(db, "agents", rec)
 
-temp = tempfile.TemporaryDirectory()
-runtime = make_runtime(Path(temp.name))
-runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
-runtime.stop = lambda *a, **k: None
-out = {"scenario": scenario}
-try:
-    recs = seed(runtime)
-    out["accountKeys"] = sorted({record.get("accountKey", "default") for record in recs.values()})
+def run_scenario():
+    temp = tempfile.TemporaryDirectory()
+    runtime = make_runtime(Path(temp.name))
+    runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
+    runtime.stop = lambda *a, **k: None
+    out = {"scenario": scenario}
     try:
-        if scenario == "legacy-workspace-operation-recovery":
-            paused_owner = dict(recs["lead-0"], workspaceOperation="checkpoint",
-                                workspaceReservationId="legacy-paused-capture", status="paused",
-                                autoWake=False)
-            queued_owner = dict(recs["lead-1"], workspaceOperation="checkpoint",
-                                workspaceReservationId="legacy-queued-capture", autoWake=False)
-            with runtime.lock, runtime.db() as db:
-                runtime.put(db, "agents", paused_owner)
-                runtime.put(db, "agents", queued_owner)
-            runtime.send(queued_owner["id"], "Continue after snapshot", "legacy-recovery-input")
-            with runtime.db() as db:
-                close_before = dict(db.execute(
-                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
-                close_values_before = {key: json.loads(payload).get("value") for key, payload in db.execute(
-                    "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
-            runtime.close()
-            with runtime.db() as db:
-                close_after = dict(db.execute(
-                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
-                close_advanced = sorted(agent_id for agent_id, seq in close_after.items()
-                                        if seq > close_before.get(agent_id, -1))
-                close_values_after = {key: json.loads(payload).get("value") for key, payload in db.execute(
-                    "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
-                close_fields_changed = {agent_id: sorted(
-                    key for key in set(close_values_before.get(agent_id, {}))
-                    | set(close_values_after.get(agent_id, {}))
-                    if close_values_before.get(agent_id, {}).get(key)
-                    != close_values_after.get(agent_id, {}).get(key))
-                    for agent_id in close_advanced}
-            # Close may persist ordinary shutdown state; take the baseline
-            # immediately before the simulated restart recovery begins.
-            with runtime.db() as db:
-                sync_before = dict(db.execute(
-                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
-                legacy_records = [
-                    {key: record.get(key) for key in (
-                        "id", "rootId", "accountKey", "deletedAt", "status", "autoWake",
-                        "workspaceOperation", "workspaceReservationId")}
-                    for record in runtime.records(db, "agents")
-                    if record.get("workspaceOperation")
-                ]
-                workspace_operation_rows = runtime.records(db, "workspace_operations")
-            runtime = make_runtime(Path(temp.name))
-            runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
-            runtime.stop = lambda *a, **k: None
-            recovered = {agent_id: runtime.agent(agent_id) for agent_id in (
-                paused_owner["id"], queued_owner["id"]
-            )}
-            with runtime.db() as db:
-                pending = db.execute(
-                    "SELECT status,agent FROM runtime_events WHERE id='legacy-recovery-input'"
-                ).fetchone()
-                operation_count = db.execute(
-                    "SELECT COUNT(*) FROM runtime_workspace_operations"
-                ).fetchone()[0]
-                synced = {}
-                for agent_id in recovered:
-                    row = db.execute(
-                        "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
-                        (agent_id,),
-                    ).fetchone()
-                    value = json.loads(row[1])["value"]
-                    synced[agent_id] = {key: value.get(key) for key in (
-                        "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
-                sync_after = dict(db.execute(
-                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
-            affected = {paused_owner["id"], queued_owner["id"]}
-            advanced = {agent_id for agent_id, seq in sync_after.items()
-                        if seq > sync_before.get(agent_id, -1)}
-            assert advanced == affected, (advanced, affected)
-            assert all(sync_after[agent_id] > sync_before[agent_id] for agent_id in affected)
-            assert all(synced[agent_id]["workspaceOperation"] is None for agent_id in affected)
-            out["result"] = {
-                "agents": {agent_id: {key: recovered[agent_id].get(key) for key in (
-                    "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
-                    for agent_id in recovered},
-                "syncedAgents": synced,
-                "agentEntityRowsAdvanced": sorted(advanced),
-                "closeEntityRowsAdvanced": close_advanced,
-                "closeEntityFieldsChanged": close_fields_changed,
-                "pendingInput": dict(pending) if pending else None,
-                "workspaceOperationRows": operation_count,
-                "legacyRecordsBeforeRestart": legacy_records,
-                "workspaceOperationRowsBeforeRestart": len(workspace_operation_rows),
-            }
-        elif scenario == "spawn-then-rename":
-            with runtime.lock, runtime.db() as db:
-                runtime.put(db, "agents", dict(recs["b-worker"], id="b-new", name="B new"))
-            change(runtime, "b-new", name="B new titled")
-        elif scenario == "spawn-then-unrelated-delete":
-            with runtime.lock, runtime.db() as db:
-                runtime.put(db, "agents", dict(recs["b-worker"], id="b-new", name="B new"))
-            runtime.delete_conversation("a-grandchild")
-        elif scenario == "peer-team-then-unrelated-rename":
-            with runtime.lock, runtime.db() as db:
-                runtime.put(db, "projects", {"id": P, "path": P, "peerTeamsRevision": 1, "peerTeams": [
-                    {"id": "team-1", "name": "Peers", "members": ["lead-0", "lead-1"]}]})
-            change(runtime, "b-worker", name="B worker renamed")
-        elif scenario == "direct-message-then-unrelated-rename":
-            from types import SimpleNamespace
-            import codex_radio
-            original_time = codex_radio.time
-            codex_radio.time = SimpleNamespace(time=lambda: NOW)
-            try:
+        recs = seed(runtime)
+        out["accountKeys"] = sorted({record.get("accountKey", "default") for record in recs.values()})
+        try:
+            if scenario == "legacy-workspace-operation-recovery":
+                paused_owner = dict(recs["lead-0"], workspaceOperation="checkpoint",
+                                    workspaceReservationId="legacy-paused-capture", status="paused",
+                                    autoWake=False)
+                queued_owner = dict(recs["lead-1"], workspaceOperation="checkpoint",
+                                    workspaceReservationId="legacy-queued-capture", autoWake=False)
                 with runtime.lock, runtime.db() as db:
-                    room = json.loads(db.execute(
-                        "SELECT record FROM runtime_rooms WHERE id='shared-a'").fetchone()[0])
-                    codex_radio._message(db, room, "m2", "lead-0", "direct insert", created=NOW)
-                    codex_radio._save(runtime, db, room)
-            finally:
-                codex_radio.time = original_time
-            change(runtime, "b-worker", name="B worker renamed")
-        elif scenario in ("orphan-tree-delete", "tree-delete"):
-            out["result"] = runtime.delete_conversation("lead-0")
-        elif scenario == "repeat-tree-delete":
-            out["result"] = [runtime.delete_conversation("lead-0"), runtime.delete_conversation("lead-0")]
-        elif scenario == "cross-root-child":
-            out["result"] = runtime.delete_conversation("a-worker")
-        elif scenario == "legacy-norootid-delete":
-            out["result"] = runtime.delete_conversation("legacy")
-        elif scenario == "legacy-norootid-budget":
-            from codex_budget import budget_status
-            with runtime.lock, runtime.db() as db:
-                rec = get(db, "legacy")
-                status = budget_status(runtime, db, rec, check_coverage=False)
-                out["result"] = {k: status.get(k) for k in ("rootId", "tokensUsed", "tokenBudget")}
-                out["memberCountProbe"] = len([a for a in runtime.records(db, "agents")
-                                               if (a.get("rootId") or a["id"]) == "legacy"])
-        elif scenario == "lead-rename":
-            change(runtime, "lead-0", name="A renamed")
-        elif scenario == "worker-rename":
-            change(runtime, "a-worker", name="A worker renamed")
-        elif scenario == "lead-cwd":
-            change(runtime, "lead-0", cwd="/fixture/other")
-        elif scenario == "restore":
-            change(runtime, "c-worker", deletedAt=KeyError)
-        elif scenario == "single-delete":
-            out["result"] = runtime.delete_conversation("a-worker")
-        elif scenario == "rootid-change":
-            change(runtime, "b-worker", rootId="lead-0", parentId="lead-0")
-        elif scenario == "shared-room-change":
-            change(runtime, "lead-1", sharedRoomId=None)
-        elif scenario == "federated-delete":
-            out["result"] = runtime.delete_conversation("a-worker")
-        elif scenario == "exception-mid-tree-delete":
-            original_put = runtime.put
-            writes = [0]
-            def fail_during_delete(db, table, record, **kwargs):
-                if table == "agents" and record.get("deletedAt"):
-                    writes[0] += 1
-                    if writes[0] == 2:
-                        raise RuntimeError("injected tree-delete failure")
-                return original_put(db, table, record, **kwargs)
-            runtime.put = fail_during_delete
-            try:
-                runtime.delete_conversation("lead-0")
-            except Exception as error:
-                out["error"] = type(error).__name__ + ": " + str(error)
-            finally:
-                runtime.put = original_put
-        else:
-            raise SystemExit("unknown scenario")
-    except Exception as error:
-        out["error"] = type(error).__name__ + ": " + str(error)
-    with runtime.db() as db:
-        out["rooms"] = {row[0]: {"deleted": row[2], "value": json.loads(row[1]).get("value", json.loads(row[1]))}
-                        for row in db.execute("SELECT id,payload,deleted FROM sync_entities WHERE collection='room' ORDER BY id")}
-        out["deletedAgents"] = sorted(r[0] for r in db.execute("SELECT id,record FROM runtime_agents")
-                                      if json.loads(r[1]).get("deletedAt"))
-finally:
-    runtime.close(); temp.cleanup()
-print(json.dumps(out, sort_keys=True, default=str))
+                    runtime.put(db, "agents", paused_owner)
+                    runtime.put(db, "agents", queued_owner)
+                runtime.send(queued_owner["id"], "Continue after snapshot", "legacy-recovery-input")
+                with runtime.db() as db:
+                    close_before = dict(db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                    close_values_before = {key: json.loads(payload).get("value") for key, payload in db.execute(
+                        "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
+                runtime.close()
+                with runtime.db() as db:
+                    close_after = dict(db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                    close_advanced = sorted(agent_id for agent_id, seq in close_after.items()
+                                            if seq > close_before.get(agent_id, -1))
+                    close_values_after = {key: json.loads(payload).get("value") for key, payload in db.execute(
+                        "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
+                    close_fields_changed = {agent_id: sorted(
+                        key for key in set(close_values_before.get(agent_id, {}))
+                        | set(close_values_after.get(agent_id, {}))
+                        if close_values_before.get(agent_id, {}).get(key)
+                        != close_values_after.get(agent_id, {}).get(key))
+                        for agent_id in close_advanced}
+                # Close may persist ordinary shutdown state; take the baseline
+                # immediately before the simulated restart recovery begins.
+                with runtime.db() as db:
+                    sync_before = dict(db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                    legacy_records = [
+                        {key: record.get(key) for key in (
+                            "id", "rootId", "accountKey", "deletedAt", "status", "autoWake",
+                            "workspaceOperation", "workspaceReservationId")}
+                        for record in runtime.records(db, "agents")
+                        if record.get("workspaceOperation")
+                    ]
+                    workspace_operation_rows = runtime.records(db, "workspace_operations")
+                runtime = make_runtime(Path(temp.name))
+                runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
+                runtime.stop = lambda *a, **k: None
+                recovered = {agent_id: runtime.agent(agent_id) for agent_id in (
+                    paused_owner["id"], queued_owner["id"]
+                )}
+                with runtime.db() as db:
+                    pending = db.execute(
+                        "SELECT status,agent FROM runtime_events WHERE id='legacy-recovery-input'"
+                    ).fetchone()
+                    operation_count = db.execute(
+                        "SELECT COUNT(*) FROM runtime_workspace_operations"
+                    ).fetchone()[0]
+                    synced = {}
+                    for agent_id in recovered:
+                        row = db.execute(
+                            "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                            (agent_id,),
+                        ).fetchone()
+                        value = json.loads(row[1])["value"]
+                        synced[agent_id] = {key: value.get(key) for key in (
+                            "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
+                    sync_after = dict(db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                affected = {paused_owner["id"], queued_owner["id"]}
+                advanced = {agent_id for agent_id, seq in sync_after.items()
+                            if seq > sync_before.get(agent_id, -1)}
+                assert advanced == affected, (advanced, affected)
+                assert all(sync_after[agent_id] > sync_before[agent_id] for agent_id in affected)
+                assert all(synced[agent_id]["workspaceOperation"] is None for agent_id in affected)
+                out["result"] = {
+                    "agents": {agent_id: {key: recovered[agent_id].get(key) for key in (
+                        "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
+                        for agent_id in recovered},
+                    "syncedAgents": synced,
+                    "agentEntityRowsAdvanced": sorted(advanced),
+                    "closeEntityRowsAdvanced": close_advanced,
+                    "closeEntityFieldsChanged": close_fields_changed,
+                    "pendingInput": dict(pending) if pending else None,
+                    "workspaceOperationRows": operation_count,
+                    "legacyRecordsBeforeRestart": legacy_records,
+                    "workspaceOperationRowsBeforeRestart": len(workspace_operation_rows),
+                }
+            elif scenario == "spawn-then-rename":
+                with runtime.lock, runtime.db() as db:
+                    runtime.put(db, "agents", dict(recs["b-worker"], id="b-new", name="B new"))
+                change(runtime, "b-new", name="B new titled")
+            elif scenario == "spawn-then-unrelated-delete":
+                with runtime.lock, runtime.db() as db:
+                    runtime.put(db, "agents", dict(recs["b-worker"], id="b-new", name="B new"))
+                runtime.delete_conversation("a-grandchild")
+            elif scenario == "peer-team-then-unrelated-rename":
+                with runtime.lock, runtime.db() as db:
+                    runtime.put(db, "projects", {"id": P, "path": P, "peerTeamsRevision": 1, "peerTeams": [
+                        {"id": "team-1", "name": "Peers", "members": ["lead-0", "lead-1"]}]})
+                change(runtime, "b-worker", name="B worker renamed")
+            elif scenario == "direct-message-then-unrelated-rename":
+                from types import SimpleNamespace
+                import codex_radio
+                original_time = codex_radio.time
+                codex_radio.time = SimpleNamespace(time=lambda: NOW)
+                try:
+                    with runtime.lock, runtime.db() as db:
+                        room = json.loads(db.execute(
+                            "SELECT record FROM runtime_rooms WHERE id='shared-a'").fetchone()[0])
+                        codex_radio._message(db, room, "m2", "lead-0", "direct insert", created=NOW)
+                        codex_radio._save(runtime, db, room)
+                finally:
+                    codex_radio.time = original_time
+                change(runtime, "b-worker", name="B worker renamed")
+            elif scenario in ("orphan-tree-delete", "tree-delete"):
+                out["result"] = runtime.delete_conversation("lead-0")
+            elif scenario == "repeat-tree-delete":
+                out["result"] = [runtime.delete_conversation("lead-0"), runtime.delete_conversation("lead-0")]
+            elif scenario == "cross-root-child":
+                out["result"] = runtime.delete_conversation("a-worker")
+            elif scenario == "legacy-norootid-delete":
+                out["result"] = runtime.delete_conversation("legacy")
+            elif scenario == "legacy-norootid-budget":
+                from codex_budget import budget_status
+                with runtime.lock, runtime.db() as db:
+                    rec = get(db, "legacy")
+                    status = budget_status(runtime, db, rec, check_coverage=False)
+                    out["result"] = {k: status.get(k) for k in ("rootId", "tokensUsed", "tokenBudget")}
+                    out["memberCountProbe"] = len([a for a in runtime.records(db, "agents")
+                                                   if (a.get("rootId") or a["id"]) == "legacy"])
+            elif scenario == "lead-rename":
+                change(runtime, "lead-0", name="A renamed")
+            elif scenario == "worker-rename":
+                change(runtime, "a-worker", name="A worker renamed")
+            elif scenario == "lead-cwd":
+                change(runtime, "lead-0", cwd="/fixture/other")
+            elif scenario == "restore":
+                change(runtime, "c-worker", deletedAt=KeyError)
+            elif scenario == "single-delete":
+                out["result"] = runtime.delete_conversation("a-worker")
+            elif scenario == "rootid-change":
+                change(runtime, "b-worker", rootId="lead-0", parentId="lead-0")
+            elif scenario == "shared-room-change":
+                change(runtime, "lead-1", sharedRoomId=None)
+            elif scenario == "federated-delete":
+                out["result"] = runtime.delete_conversation("a-worker")
+            elif scenario == "exception-mid-tree-delete":
+                original_put = runtime.put
+                writes = [0]
+                def fail_during_delete(db, table, record, **kwargs):
+                    if table == "agents" and record.get("deletedAt"):
+                        writes[0] += 1
+                        if writes[0] == 2:
+                            raise RuntimeError("injected tree-delete failure")
+                    return original_put(db, table, record, **kwargs)
+                runtime.put = fail_during_delete
+                try:
+                    runtime.delete_conversation("lead-0")
+                except Exception as error:
+                    out["error"] = type(error).__name__ + ": " + str(error)
+                finally:
+                    runtime.put = original_put
+            else:
+                raise SystemExit("unknown scenario")
+        except Exception as error:
+            out["error"] = type(error).__name__ + ": " + str(error)
+        with runtime.db() as db:
+            out["rooms"] = {row[0]: {"deleted": row[2], "value": json.loads(row[1]).get("value", json.loads(row[1]))}
+                            for row in db.execute("SELECT id,payload,deleted FROM sync_entities WHERE collection='room' ORDER BY id")}
+            out["deletedAgents"] = sorted(r[0] for r in db.execute("SELECT id,record FROM runtime_agents")
+                                          if json.loads(r[1]).get("deletedAt"))
+    finally:
+        runtime.close(); temp.cleanup()
+    return out
+
+
+for scenario in sys.argv[1:]:
+    print(RESULT_PREFIX + json.dumps(run_scenario(), sort_keys=True, default=str), flush=True)
+
