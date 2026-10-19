@@ -16,14 +16,27 @@
 //! [`AuthCache::changes`] advances when a status may have changed: on every
 //! invalidation and when a probe returns another status than the previous
 //! probe of that location. Held turn starts wait on it, never on a timer.
+//!
+//! [`AuthCache::watch`] makes credential files raise that event themselves: an
+//! external `claude login` or `auth.json` rewrite invalidates the profile's entry
+//! and advances the changes at once, without waiting for the next status read.
+//! The parent directories are watched, so an atomic rename-replace is seen.
 
 use super::{AuthMetadata, AuthStatus};
-use std::collections::HashMap;
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
+
+/// Length of the window that merges one burst of filesystem events of a
+/// credential file (create, write and rename of a single login) into one
+/// invalidation, in milliseconds as a [`Duration`].
+pub(crate) const CREDENTIAL_EVENT_BURST: Duration = Duration::from_millis(100);
 
 /// The production cache shared by every account driver of this process.
 pub(crate) fn shared() -> &'static AuthCache {
@@ -47,6 +60,17 @@ pub struct CredentialLocation {
 type FileFingerprint = Option<(u64, u64, u64, i64, i64)>;
 
 impl CredentialLocation {
+    /// Whether `event` names one of this location's credential files.
+    fn is_touched_by(&self, event: &Event) -> bool {
+        event.paths.iter().any(|path| {
+            path.parent()
+                .is_some_and(|parent| self.directories.iter().any(|directory| directory == parent))
+                && path
+                    .file_name()
+                    .is_some_and(|name| self.credential_files.iter().any(|file| name == *file))
+        })
+    }
+
     fn fingerprint(&self) -> Vec<FileFingerprint> {
         self.directories
             .iter()
@@ -68,6 +92,13 @@ impl CredentialLocation {
 }
 
 pub(crate) struct AuthCache {
+    core: Arc<Core>,
+    /// Created by the first [`AuthCache::watch`].
+    watcher: Mutex<Option<CredentialWatcher>>,
+}
+
+/// The state that both readers and the watcher's worker thread reach.
+struct Core {
     entries: Mutex<HashMap<CredentialLocation, Arc<Entry>>>,
     /// Advanced when any location's status may have changed.
     changes: watch::Sender<u64>,
@@ -76,8 +107,97 @@ pub(crate) struct AuthCache {
 impl Default for AuthCache {
     fn default() -> Self {
         Self {
-            entries: Mutex::default(),
-            changes: watch::channel(0).0,
+            core: Arc::new(Core {
+                entries: Mutex::default(),
+                changes: watch::channel(0).0,
+            }),
+            watcher: Mutex::new(None),
+        }
+    }
+}
+
+/// Credential locations under watch, shared with the notify callback.
+type WatchedLocations = Arc<Mutex<Vec<CredentialLocation>>>;
+
+/// One directory watch per distinct parent of a credential file.
+struct CredentialWatcher {
+    watcher: RecommendedWatcher,
+    locations: WatchedLocations,
+    watched: HashSet<PathBuf>,
+}
+
+impl CredentialWatcher {
+    fn new(core: Weak<Core>) -> notify::Result<Self> {
+        let locations = WatchedLocations::default();
+        let (events, bursts) = mpsc::channel::<CredentialLocation>();
+        let callback_locations = Arc::clone(&locations);
+        let watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
+            let Ok(event) = result else { return };
+            if event.kind.is_access() {
+                return;
+            }
+            let locations = callback_locations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for location in locations
+                .iter()
+                .filter(|location| location.is_touched_by(&event))
+            {
+                events.send(location.clone()).ok();
+            }
+        })?;
+        // Ends when the watcher, which owns the sender, is dropped.
+        std::thread::Builder::new()
+            .name("credential-watch".into())
+            .spawn(move || {
+                while let Ok(first) = bursts.recv() {
+                    let mut touched = HashSet::from([first]);
+                    let deadline = Instant::now() + CREDENTIAL_EVENT_BURST;
+                    while let Ok(next) =
+                        bursts.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        touched.insert(next);
+                    }
+                    let Some(core) = core.upgrade() else { return };
+                    for location in touched {
+                        core.invalidate(&location);
+                    }
+                }
+            })
+            .map_err(notify::Error::io)?;
+        Ok(Self {
+            watcher,
+            locations,
+            watched: HashSet::new(),
+        })
+    }
+
+    fn set(&mut self, wanted: Vec<CredentialLocation>) {
+        let directories: HashSet<PathBuf> = wanted
+            .iter()
+            .flat_map(|location| location.directories.iter().cloned())
+            .collect();
+        *self
+            .locations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = wanted;
+        self.watched.retain(|directory| {
+            let keep = directories.contains(directory);
+            if !keep {
+                self.watcher.unwatch(directory).ok();
+            }
+            keep
+        });
+        for directory in directories {
+            // A directory that does not exist yet is retried by the next call.
+            if !self.watched.contains(&directory)
+                && self
+                    .watcher
+                    .watch(&directory, RecursiveMode::NonRecursive)
+                    .is_ok()
+            {
+                self.watched.insert(directory);
+            }
         }
     }
 }
@@ -112,7 +232,7 @@ impl AuthCache {
         location: &CredentialLocation,
         probe: impl FnOnce() -> AuthMetadata,
     ) -> AuthMetadata {
-        let entry = self.entry(location);
+        let entry = self.core.entry(location);
         // Holding this lock through the probe makes concurrent readers wait for it.
         let mut cached = entry.cached.lock().unwrap_or_else(PoisonError::into_inner);
         let generation = entry.generation.load(Ordering::Acquire);
@@ -136,24 +256,46 @@ impl AuthCache {
             .replace(metadata.status)
             .is_some_and(|last| last != metadata.status)
         {
-            self.publish_change();
+            self.core.publish_change();
         }
         metadata
     }
 
     /// End the cached status of `location`; the next read probes once.
     pub(crate) fn invalidate(&self, location: &CredentialLocation) {
+        self.core.invalidate(location);
+    }
+
+    /// Advances when a cached status may have changed; see the module notes.
+    pub(crate) fn changes(&self) -> watch::Receiver<u64> {
+        self.core.changes.subscribe()
+    }
+
+    /// Watch exactly the credential files of `locations`: a change invalidates
+    /// that location and advances [`AuthCache::changes`]. Locations dropped from
+    /// the set are unwatched, new ones watched.
+    pub(crate) fn watch(&self, locations: Vec<CredentialLocation>) {
+        let mut slot = self.watcher.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            match CredentialWatcher::new(Arc::downgrade(&self.core)) {
+                Ok(watcher) => *slot = Some(watcher),
+                Err(error) => return eprintln!("credential watch unavailable: {error}"),
+            }
+        }
+        if let Some(watcher) = slot.as_mut() {
+            watcher.set(locations);
+        }
+    }
+}
+
+impl Core {
+    fn invalidate(&self, location: &CredentialLocation) {
         let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(entry) = entries.get(location) {
             entry.generation.fetch_add(1, Ordering::AcqRel);
         }
         drop(entries);
         self.publish_change();
-    }
-
-    /// Advances when a cached status may have changed; see the module notes.
-    pub(crate) fn changes(&self) -> watch::Receiver<u64> {
-        self.changes.subscribe()
     }
 
     fn publish_change(&self) {
@@ -374,5 +516,117 @@ mod tests {
         cache.read(&location, || probes.run(AuthMetadata::signed_out()));
         cache.read(&location, || probes.run(AuthMetadata::signed_out()));
         assert_eq!(probes.count(), 3);
+    }
+
+    /// Event-driven invalidation, with a watcher on real directories. Each wait
+    /// ends at the cache's own change event, never on a sleep.
+    mod watched {
+        use super::*;
+
+        const EVENT_WAIT: Duration = Duration::from_secs(20);
+
+        async fn next_change(changes: &mut watch::Receiver<u64>) {
+            tokio::time::timeout(EVENT_WAIT, changes.changed())
+                .await
+                .expect("a change event within the wait")
+                .expect("cache alive");
+        }
+
+        fn generation(cache: &AuthCache, location: &CredentialLocation) -> u64 {
+            cache.core.entry(location).generation.load(Ordering::SeqCst)
+        }
+
+        /// How a test rewrites a credential file.
+        fn rewrite(directory: &Path, name: &str, replace: bool) {
+            if replace {
+                std::fs::write(directory.join("next.tmp"), name).expect("replacement");
+                std::fs::rename(directory.join("next.tmp"), directory.join(name)).expect("rename");
+            } else {
+                std::fs::write(directory.join(name), name).expect("rewrite");
+            }
+        }
+
+        fn provider_cases(claude: &Path, codex: &Path) -> [(CredentialLocation, &'static str); 2] {
+            [
+                (location(claude), ".credentials.json"),
+                (codex_location(codex), "auth.json"),
+            ]
+        }
+
+        #[tokio::test]
+        async fn a_rewrite_invalidates_exactly_that_profile_once() {
+            for replace in [false, true] {
+                let (claude, codex) = (
+                    tempfile::tempdir().expect("claude"),
+                    tempfile::tempdir().expect("codex"),
+                );
+                let cases = provider_cases(claude.path(), codex.path());
+                let cache = AuthCache::default();
+                for (location, _) in &cases {
+                    cache.read(location, ready);
+                }
+                cache.watch(cases.iter().map(|(location, _)| location.clone()).collect());
+                let mut changes = cache.changes();
+                for (index, (location, name)) in cases.iter().enumerate() {
+                    rewrite(location.directories[0].as_path(), name, replace);
+                    next_change(&mut changes).await;
+                    // One burst is one change, and only this profile is invalidated.
+                    assert_eq!(*changes.borrow(), index as u64 + 1, "replace={replace}");
+                    for (other, _) in &cases {
+                        let expected = u64::from(cases[..=index].iter().any(|(l, _)| l == other));
+                        assert_eq!(generation(&cache, other), expected, "replace={replace}");
+                    }
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn an_unrelated_file_in_the_directory_changes_nothing() {
+            let (claude, codex) = (
+                tempfile::tempdir().expect("claude"),
+                tempfile::tempdir().expect("codex"),
+            );
+            let [(claude_location, _), (codex_location, sentinel)] =
+                provider_cases(claude.path(), codex.path());
+            let cache = AuthCache::default();
+            cache.read(&claude_location, ready);
+            cache.watch(vec![claude_location.clone(), codex_location.clone()]);
+            let mut changes = cache.changes();
+            std::fs::write(claude.path().join("settings.json"), "{}").expect("unrelated");
+            // Events of one watcher arrive in order: once the sentinel's change is
+            // seen, the earlier unrelated event has been handled as well.
+            rewrite(codex.path(), sentinel, false);
+            next_change(&mut changes).await;
+            assert_eq!(*changes.borrow(), 1);
+            assert_eq!(generation(&cache, &claude_location), 0);
+        }
+
+        #[tokio::test]
+        async fn the_watch_set_follows_added_and_removed_profiles() {
+            let (first, second) = (
+                tempfile::tempdir().expect("first"),
+                tempfile::tempdir().expect("second"),
+            );
+            let [(first_location, first_name), (second_location, second_name)] =
+                provider_cases(first.path(), second.path());
+            let cache = AuthCache::default();
+            let mut changes = cache.changes();
+            cache.watch(vec![first_location.clone()]);
+            // Unwatched yet: this must not be seen; the first profile is the sentinel.
+            rewrite(second.path(), second_name, false);
+            rewrite(first.path(), first_name, false);
+            next_change(&mut changes).await;
+            assert_eq!(*changes.borrow(), 1);
+            cache.watch(vec![first_location.clone(), second_location.clone()]);
+            rewrite(second.path(), second_name, false);
+            next_change(&mut changes).await;
+            assert_eq!(*changes.borrow(), 2);
+            cache.watch(vec![second_location.clone()]);
+            rewrite(first.path(), first_name, false);
+            rewrite(second.path(), second_name, true);
+            next_change(&mut changes).await;
+            assert_eq!(*changes.borrow(), 3);
+            assert_eq!(generation(&cache, &first_location), 0);
+        }
     }
 }

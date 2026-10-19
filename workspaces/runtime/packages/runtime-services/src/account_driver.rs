@@ -156,6 +156,9 @@ pub trait ProviderAuthReader: Send + Sync {
 
     /// Forget any cached status of `profile`; the next read probes once.
     fn invalidate(&self, _profile: &AuthProfile) {}
+
+    /// The profiles of the registry changed: watch exactly their credential files.
+    fn watch(&self, _profiles: &[AuthProfile]) {}
 }
 
 /// Reads auth status through the profile's provider adapter and the shared
@@ -177,6 +180,17 @@ impl ProviderAuthReader for SystemProviderAuthReader {
     fn invalidate(&self, profile: &AuthProfile) {
         auth_cache::shared().invalidate(
             &crate::provider_adapter::adapter(profile.provider).credential_location(profile),
+        );
+    }
+
+    fn watch(&self, profiles: &[AuthProfile]) {
+        auth_cache::shared().watch(
+            profiles
+                .iter()
+                .map(|profile| {
+                    crate::provider_adapter::adapter(profile.provider).credential_location(profile)
+                })
+                .collect(),
         );
     }
 }
@@ -1037,7 +1051,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         value["logins"][&request.login_id] = receipt.clone();
         order.logins.push(request.login_id.clone());
-        persist_registry(&self.path, &mut state, value, &order)?;
+        self.persist_registry(&mut state, value, &order)?;
         Ok(LoginReservation::Dispatch(receipt))
     }
 
@@ -1401,7 +1415,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         value["accounts"]["claude-local"] = row;
         let mut order = state.order.clone();
         order.accounts.push("claude-local".into());
-        persist_registry(&self.path, &mut state, value, &order)?;
+        self.persist_registry(&mut state, value, &order)?;
         Ok(())
     }
 }
@@ -1422,6 +1436,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let (value, order) =
             decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
         let change_signal = AccountChangeSignal::new();
+        reader.watch(&live_profiles(&value));
         Ok(Self {
             path,
             state: Mutex::new(RegistryState {
@@ -1718,7 +1733,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let mut updated = state.value.clone();
         let mut order = state.order.clone();
         if register_metadata(&mut updated, &mut order, &path, &metadata, true)? {
-            persist_registry(&self.path, &mut state, updated, &order)?;
+            self.persist_registry(&mut state, updated, &order)?;
         }
         project_snapshot(&state.value, &state.order)
     }
@@ -1776,7 +1791,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             changed |= register_metadata(&mut updated, &mut order, &path, &metadata, false)?;
         }
         if changed {
-            persist_registry(&self.path, &mut state, updated, &order)?;
+            self.persist_registry(&mut state, updated, &order)?;
         }
         project_snapshot(&state.value, &state.order)
     }
@@ -1861,14 +1876,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 return Ok(status_from_value(row.get("status")));
             }
             (
-                AuthProfile {
-                    provider: studio_runtime_providers::ProviderKind::of_record(row)
-                        .map_err(|_| AccountDriverError::InvalidRegistry)?,
-                    home: PathBuf::from(
-                        row.get("home").and_then(Value::as_str).unwrap_or_default(),
-                    ),
-                    claude_options: row.get("claudeOptions").cloned(),
-                },
+                auth_profile(row)?,
                 row.get("status").and_then(Value::as_str) == Some("ready"),
             )
         };
@@ -1910,7 +1918,19 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
 
     fn persist(&self, state: &mut RegistryState, updated: Value) -> Result<(), AccountDriverError> {
         let order = state.order.clone();
-        persist_registry(&self.path, state, updated, &order)
+        self.persist_registry(state, updated, &order)
+    }
+
+    /// [`persist_registry`], then the credential watch follows the new profiles.
+    fn persist_registry(
+        &self,
+        state: &mut RegistryState,
+        updated: Value,
+        order: &RegistryOrder,
+    ) -> Result<(), AccountDriverError> {
+        let result = persist_registry(&self.path, state, updated, order);
+        self.reader.watch(&live_profiles(&state.value));
+        result
     }
 }
 
@@ -2183,6 +2203,27 @@ fn persist_registry(
             Err(AccountDriverError::DurabilityUnconfirmed)
         }
     }
+}
+
+fn auth_profile(row: &Value) -> Result<AuthProfile, AccountDriverError> {
+    Ok(AuthProfile {
+        provider: studio_runtime_providers::ProviderKind::of_record(row)
+            .map_err(|_| AccountDriverError::InvalidRegistry)?,
+        home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
+        claude_options: row.get("claudeOptions").cloned(),
+    })
+}
+
+/// The profiles whose credentials the registry still uses.
+fn live_profiles(value: &Value) -> Vec<AuthProfile> {
+    value
+        .get("accounts")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, row)| row.get("deleted") != Some(&Value::Bool(true)))
+        .filter_map(|(_, row)| auth_profile(row).ok())
+        .collect()
 }
 
 fn registry_account<'a>(value: &'a Value, account: &str) -> Result<&'a Value, AccountDriverError> {
@@ -3286,6 +3327,41 @@ print(store.path)
             driver.get("default").expect("admission status"),
             AccountStatus::Unavailable
         );
+    }
+
+    /// Records the profile set the driver asks to have watched.
+    struct WatchRecorder(Mutex<Vec<usize>>);
+
+    impl ProviderAuthReader for WatchRecorder {
+        fn read(&self, _profile: &AuthProfile) -> AuthMetadata {
+            metadata(AuthStatus::Ready, Some("x"), Some("chatgpt:x"))
+        }
+
+        fn watch(&self, profiles: &[AuthProfile]) {
+            self.0.lock().expect("watch log").push(profiles.len());
+        }
+    }
+
+    #[test]
+    fn the_watched_profile_set_follows_the_registry() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        let mut value: Value =
+            serde_json::from_slice(&registry(&fixture.path)).expect("registry fixture");
+        value["accounts"]["other"] = serde_json::json!({
+            "id": "other", "home": fixture.path.join("other"), "label": "Other",
+            "source": "Codex CLI", "status": "signedOut"
+        });
+        fs::write(&path, serde_json::to_vec(&value).expect("encoded")).expect("write registry");
+        let driver = AccountDriver::open_with_reader(&path, WatchRecorder(Mutex::default()))
+            .expect("open registry");
+        assert_eq!(*driver.reader.0.lock().expect("log"), [2]);
+        driver
+            .delete("other", "00000000-0000-4000-8000-000000000001")
+            .expect("delete");
+        assert_eq!(driver.reader.0.lock().expect("log").last(), Some(&1));
     }
 
     #[test]
