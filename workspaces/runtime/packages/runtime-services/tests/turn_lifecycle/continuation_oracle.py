@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[6]
 sys.path.insert(0, str(ROOT / "workspaces/runtime/apps/server/src"))
 from codex_usage_resume import UsageResumeMixin
 from codex_capacity_retry import CapacityRetryMixin
-import codex_claude_auth_wait as auth
 import codex_wakeups as wake
 from codex_runtime import Runtime
 from codex_work import WorkMixin
@@ -158,18 +157,12 @@ def corpus():
                 f.put(f.connection,"agents",a)
             elif family=="wake":batch=wake.pending_batch(f,f.connection,a)
             elif family=="reconcile":wake.reconcile_start(f,f.connection,a,[e for e in data["events"] if e["id"] in args["ids"]])
-            elif family=="auth":
-                f.pin=args["pin"]
-                token=object();f._claude_auth_wait_jobs={"default":token}
-                import codex_claude
-                with patch.object(codex_claude,"auth_metadata",return_value=args["result"]):
-                    auth._probe(f,"default",auth._account_pin(f.pin),token)
             else:raise AssertionError(family)
             expected=f.output(data,batch,capacity=family=="capacity-create")
         cases.append(dict(name=name,family=family,input=data,args=args,expected=expected))
         f.connection.close()
     inputs=json.loads((Path(__file__).parent.parent/"continuation/cases.json").read_text())
-    witnesses={"capacity-claim-success","capacity-error-known","capacity-error-unknown","usage-observation-stale-True","create-usageLimitExceeded","create-authExpired","usage-percent-100","usage-percent-99.9","usage-observation-at-994.9","usage-observation-at-995.0","usage-observation-accountKey-foreign","auth-marker-old","auth-marker-new","auth-backoff-0","auth-backoff-50","usage-task-changed","usage-identity-epoch","usage-embedded-already-started","limits-floor-990.0","disable-scheduled","capacity-restart-unknown-True","capacity-restart-starting-False","capacity-reset-starting-True","capacity-wait-20","capacity-accepted-None","progress-(1, 2)","progress-(2, 2)","reconcile-resolved-a","review-submitted-True","review-submitted-False","claude-proof-readyaccount","claude-proof-readyforeign","claude-input-text","claude-account-pin-changed","claude-wrong-credential"}
+    witnesses={"capacity-claim-success","capacity-error-known","capacity-error-unknown","usage-observation-stale-True","create-usageLimitExceeded","create-authExpired","usage-percent-100","usage-percent-99.9","usage-observation-at-994.9","usage-observation-at-995.0","usage-observation-accountKey-foreign","auth-marker-old","auth-marker-new","auth-backoff-0","auth-backoff-50","usage-task-changed","usage-identity-epoch","usage-embedded-already-started","limits-floor-990.0","disable-scheduled","capacity-restart-unknown-True","capacity-restart-starting-False","capacity-reset-starting-True","capacity-wait-20","capacity-accepted-None","progress-(1, 2)","progress-(2, 2)","reconcile-resolved-a","review-submitted-True","review-submitted-False"}
     if os.environ.get("STUDIO_RUNTIME_CORPUS_FULL")!="1":inputs=[case for case in inputs if case["name"] in witnesses or case["name"] in {"capacity-create-server-0","capacity-create-network-7"}]
     for case in inputs:add(case["name"],case["family"],case["input"],**case["args"])
     return cases

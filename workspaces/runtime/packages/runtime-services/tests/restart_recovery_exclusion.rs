@@ -181,7 +181,6 @@ async fn python_written_completed_start_recovery_exclusion_matches_rust_scans() 
             None,
         ),
         ("outside_idle_status", json!({"status":"queued"}), None),
-        ("auth_pin_changed", json!({}), Some("auth_pin_changed")),
     ];
     let registry: Value = serde_json::from_str(include_str!("turn_lifecycle/deviations.json"))
         .expect("central deviations");
@@ -199,12 +198,10 @@ async fn python_written_completed_start_recovery_exclusion_matches_rust_scans() 
                 json!(flow),
                 "{id}: oracle did not execute the requested fixture flow"
             );
-            if *flow != "auth_pin_changed" {
-                assert_eq!(
-                    result["providerFrameCount"], 1,
-                    "{id}: scripted provider did not receive exactly one turn/start frame"
-                );
-            }
+            assert_eq!(
+                result["providerFrameCount"], 1,
+                "{id}: scripted provider did not receive exactly one turn/start frame"
+            );
         }
         let store = RuntimeStore::open(Some(&rust))
             .await

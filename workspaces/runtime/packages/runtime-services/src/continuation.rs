@@ -34,6 +34,7 @@ pub(crate) enum WaitStatus {
     Unknown,
     Exhausted,
     Failed,
+    /// Retired Claude auth probe wait; startup recovery migrates it once.
     AuthProbeWait,
     Completed,
 }
@@ -54,7 +55,6 @@ pub struct Snapshot {
     pub(crate) metadata: BTreeMap<String, Option<Value>>,
     pub(crate) complaints: BTreeMap<String, Value>,
     pub(crate) work: BTreeMap<String, Value>,
-    pub(crate) assets: BTreeMap<String, Value>,
 }
 impl Snapshot {
     /// The only constructor. It accepts raw Python-written records, never trusted flags.
@@ -123,7 +123,6 @@ impl Snapshot {
                 .collect(),
             complaints: get_map("complaints"),
             work: get_map("work"),
-            assets: get_map("assets"),
         };
         let mut ids = BTreeSet::new();
         if snapshot.events.iter().any(|e| {

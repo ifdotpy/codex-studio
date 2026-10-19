@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
-mod auth_wait_schedule;
+#[cfg(unix)]
+mod auth_hold;
 mod browser_skill;
 mod claude_preparation;
 mod idle_unload;
@@ -4642,7 +4643,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
 
     let failed_sweep = resolver.attempted.notified();
     tokio::time::pause();
-    tokio::time::advance(crate::claude_auth_runtime::VM_CREDENTIAL_REFRESH_INTERVAL).await;
+    tokio::time::advance(super::VM_CREDENTIAL_REFRESH_INTERVAL).await;
     tokio::task::yield_now().await;
     tokio::time::resume();
     tokio::time::timeout(std::time::Duration::from_secs(10), failed_sweep)
@@ -4656,7 +4657,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
 
     let refreshed = resolver.refreshed.notified();
     tokio::time::pause();
-    tokio::time::advance(crate::claude_auth_runtime::VM_CREDENTIAL_REFRESH_INTERVAL).await;
+    tokio::time::advance(super::VM_CREDENTIAL_REFRESH_INTERVAL).await;
     tokio::task::yield_now().await;
     tokio::time::resume();
     tokio::time::timeout(std::time::Duration::from_secs(10), refreshed)
@@ -6143,4 +6144,36 @@ async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
         "the unsubmitted input is delivered once after thread creation"
     );
     replacement.shutdown().await.unwrap();
+}
+
+#[test]
+fn vm_refresh_timer_tracks_first_and_last_matching_session_only() {
+    let now = tokio::time::Instant::now();
+    let cadence_deadline = now + super::VM_CREDENTIAL_REFRESH_INTERVAL;
+
+    assert_eq!(
+        vm_refresh_deadline_after_session_change(false, false, true, None, now),
+        None,
+        "an empty account never starts a periodic VM timer"
+    );
+    assert_eq!(
+        vm_refresh_deadline_after_session_change(false, true, true, None, now),
+        Some(now),
+        "the first matching VM preserves the immediate refresh"
+    );
+    assert_eq!(
+        vm_refresh_deadline_after_session_change(true, true, true, Some(cadence_deadline), now),
+        Some(cadence_deadline),
+        "adding or retiring a non-last VM preserves the cadence"
+    );
+    assert_eq!(
+        vm_refresh_deadline_after_session_change(true, false, true, Some(cadence_deadline), now),
+        None,
+        "retiring the last matching VM disarms the timer"
+    );
+    assert_eq!(
+        vm_refresh_deadline_after_session_change(false, true, false, None, now),
+        None,
+        "a matching VM without a credential resolver has no timer"
+    );
 }

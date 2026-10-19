@@ -45,11 +45,13 @@ receipt, and shutdown boundaries.
 Background work is signaled by committed changes and durable deadlines, with
 bounded retry backoff after failures:
 
-- Continuation, auth-probe, monitor, and federation schedulers wait for their
-  earliest durable deadline and relevant change or commit signals. Auth probes
-  read the earliest persisted `dueAt` for the account. Active VM Claude
-  credential security refresh has a separate cadence owned by
-  [`VM_CREDENTIAL_REFRESH_INTERVAL`](../../packages/runtime-services/src/claude_auth_runtime.rs).
+- Continuation, monitor, and federation schedulers wait for their earliest
+  durable deadline and relevant change or commit signals. A turn held by the
+  account auth gate has no deadline: it is released after an account or cached
+  auth status change
+  ([`account_auth_gate.rs`](../../packages/runtime-services/src/account_auth_gate.rs)).
+  Active VM Claude credential security refresh has a separate cadence owned by
+  [`VM_CREDENTIAL_REFRESH_INTERVAL`](../../packages/runtime-services/src/account_worker.rs).
 - The peer-link owner reacts to targeted `runtime_access_clients` invalidation
   hints and child exit. It rereads authoritative peer rows, keeps a running
   child in sync, restarts it after a failed peer update, and uses bounded

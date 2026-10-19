@@ -3,7 +3,6 @@
 
 use crate::{
     capacity_retry::{self, Action as CapacityAction, Failure as CapacityFailure},
-    claude_auth_wait,
     continuation::{
         ContinuationError, Decision, Effect, Result, Snapshot, account, flag, present, text,
     },
@@ -69,95 +68,6 @@ impl PreparationSettings {
     }
 }
 
-/// Account data used by the local Claude auth probe. The account pin is already
-/// projected by the P08 account adapter before the store transaction begins.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ClaudeAccountPin(Value);
-
-impl ClaudeAccountPin {
-    /// Keep the exact Python pin fields and reject malformed adapter projections.
-    pub fn from_value(value: Value) -> Result<Self> {
-        let fields = [
-            "id",
-            "provider",
-            "home",
-            "claudeOptions",
-            "accountId",
-            "_credentialIdentity",
-            "deleted",
-            "disconnected",
-            "duplicateOf",
-            "updatedAt",
-        ];
-        if !value.is_object() {
-            return Err(ContinuationError::Invalid("/claude/accountPin".into()));
-        }
-        let value = fields
-            .iter()
-            .map(|field| {
-                (
-                    (*field).to_owned(),
-                    value.get(*field).cloned().unwrap_or(Value::Null),
-                )
-            })
-            .collect::<serde_json::Map<_, _>>();
-        let value = Value::Object(value);
-        let strings = ["id", "provider", "home", "accountId", "duplicateOf"];
-        let booleans = ["deleted", "disconnected"];
-        if !value.is_object()
-            || strings
-                .iter()
-                .any(|key| !value.get(*key).is_none_or(Value::is_null) && !value[*key].is_string())
-            || booleans
-                .iter()
-                .any(|key| !value.get(*key).is_none_or(Value::is_null) && !value[*key].is_boolean())
-        {
-            return Err(ContinuationError::Invalid("/claude/accountPin".into()));
-        }
-        Ok(Self(value))
-    }
-
-    fn value(&self) -> &Value {
-        &self.0
-    }
-
-    /// End the cached auth status of the pinned account profile.
-    fn invalidate_cached_auth(&self) {
-        use crate::account_driver::{AuthProfile, ProviderAuthReader, SystemProviderAuthReader};
-        SystemProviderAuthReader.invalidate(&AuthProfile {
-            provider: studio_runtime_providers::ProviderKind::Claude,
-            home: self.0["home"].as_str().unwrap_or_default().into(),
-            claude_options: self
-                .0
-                .get("claudeOptions")
-                .filter(|v| !v.is_null())
-                .cloned(),
-        });
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ClaudeAuthObservation {
-    pub account_pin: ClaudeAccountPin,
-    pub settings: PreparationSettings,
-}
-
-/// Identity captured by the auth timeout owner before opening its settlement transaction.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClaudeAttemptIdentity {
-    pub attempt_id: String,
-    pub epoch: i64,
-}
-
-impl ClaudeAuthObservation {
-    pub fn checked(account_pin: ClaudeAccountPin, settings: PreparationSettings) -> Self {
-        Self {
-            account_pin,
-            settings,
-        }
-    }
-}
-
 pub enum Completion<'a> {
     TerminalTurn {
         agent_id: &'a str,
@@ -165,13 +75,6 @@ pub enum Completion<'a> {
         known: bool,
         now: f64,
         limits: Option<&'a LimitsObservation>,
-        claude_auth: Option<&'a ClaudeAuthObservation>,
-    },
-    ClaudeAuthTimeout {
-        agent_id: &'a str,
-        now: f64,
-        observation: Option<&'a ClaudeAuthObservation>,
-        attempt: Option<&'a ClaudeAttemptIdentity>,
     },
 }
 
@@ -554,14 +457,7 @@ pub fn stage(tx: &Transaction<'_>, completion: Completion<'_>) -> Result<Staged>
             known,
             now,
             limits,
-            claude_auth,
-        } => stage_terminal(tx, agent_id, turn, known, now, limits, claude_auth),
-        Completion::ClaudeAuthTimeout {
-            agent_id,
-            now,
-            observation,
-            attempt,
-        } => stage_auth_timeout(tx, agent_id, now, observation, attempt),
+        } => stage_terminal(tx, agent_id, turn, known, now, limits),
     }
 }
 
@@ -572,7 +468,6 @@ fn stage_terminal(
     known: bool,
     now: f64,
     limits: Option<&LimitsObservation>,
-    claude_auth: Option<&ClaudeAuthObservation>,
 ) -> Result<Staged> {
     let mut staged = empty_stage(tx, agent_id)?;
     if !known || turn.get("id").and_then(Value::as_str).is_none() {
@@ -599,12 +494,6 @@ fn stage_terminal(
                 return Err(ContinuationError::Unavailable(
                     "usage-policy/limits-account-mismatch",
                 ));
-            }
-            if usage_failure(error, &snapshot.agent) == Some(UsageCause::Auth)
-                && text(&snapshot.agent, "provider") == "claude"
-                && claude_auth.is_none()
-            {
-                return Err(ContinuationError::Unavailable("claude-auth/account-pin"));
             }
         }
     }
@@ -734,19 +623,6 @@ fn stage_terminal(
             return Err(ContinuationError::Unavailable(
                 "usage-policy/limits-account-mismatch",
             ));
-        }
-        if cause == UsageCause::Auth
-            && text(&snapshot.agent, "provider") == "claude"
-            && claude_auth.is_none()
-        {
-            return Err(ContinuationError::Unavailable("claude-auth/account-pin"));
-        }
-        if cause == UsageCause::Auth
-            && let Some(observation) = claude_auth
-        {
-            // The provider rejected the credentials this turn used, so the cached
-            // account status is stale: the next read probes once.
-            observation.account_pin.invalidate_cached_auth();
         }
         let reset = error.get("resetsAt").and_then(Value::as_f64);
         let decision = usage_resume::record_failure(
@@ -995,42 +871,6 @@ fn auth_wait_ids_after(
         .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))
-}
-
-fn stage_auth_timeout(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    now: f64,
-    observation: Option<&ClaudeAuthObservation>,
-    attempt: Option<&ClaudeAttemptIdentity>,
-) -> Result<Staged> {
-    let attempt = attempt.ok_or(ContinuationError::Unavailable(
-        "claude-auth/attempt-identity",
-    ))?;
-    let snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
-    if snapshot.agent["epoch"].as_i64() != Some(attempt.epoch)
-        || snapshot.agent["startAttempt"]["id"].as_str() != Some(&attempt.attempt_id)
-    {
-        return empty_stage(tx, agent_id);
-    }
-    let observation =
-        observation.ok_or(ContinuationError::Unavailable("claude-auth/account-pin"))?;
-    let settings = observation.settings.value();
-    let pin = observation.account_pin.value();
-    let Some(capture) = claude_auth_wait::capture(&snapshot, &settings, pin) else {
-        return empty_stage(tx, agent_id);
-    };
-    let decision = claude_auth_wait::record_timeout(&snapshot, &capture, &settings, pin, now)?;
-    let mut staged = empty_stage(tx, agent_id)?;
-    collect_apply(
-        tx,
-        &mut staged,
-        ContinuationTable::Usage,
-        &snapshot,
-        decision,
-        now,
-    )?;
-    Ok(staged)
 }
 
 fn empty_stage(tx: &Transaction<'_>, agent_id: &str) -> Result<Staged> {

@@ -3,7 +3,7 @@ mod prepared_python;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command};
 use studio_runtime_services::{
-    capacity_retry, claude_auth_wait,
+    capacity_retry,
     continuation::{Decision, Effect, Snapshot},
     usage_resume, wakeups,
 };
@@ -99,24 +99,6 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
             s,
             &serde_json::from_value::<Vec<String>>(args["ids"].clone()).expect("ids"),
         ),
-        "auth" => {
-            let mut before = args.get("claimInput").unwrap_or(&case["input"]).clone();
-            before["record"]["dueAt"] = json!(980.0);
-            let original_pin = before["record"]["accountPin"].clone();
-            let before = Snapshot::from_records(before).expect("before probe");
-            let (_, ticket) =
-                claude_auth_wait::claim_probe(&before, &json!({}), &original_pin, 1000.0)
-                    .expect("claim probe");
-            claude_auth_wait::apply_probe(
-                s,
-                &ticket.expect("probe ticket"),
-                &json!({}),
-                &args["pin"],
-                &args["result"],
-                1000.0,
-            )
-            .expect("apply probe")
-        }
         other => panic!("unknown family {other}"),
     }
 }
@@ -245,7 +227,7 @@ fn malformed_records_are_located_and_never_decided() {
     assert!(Snapshot::from_records(raw).is_err());
 }
 #[test]
-fn unknown_capacity_and_stale_auth_ticket_never_resume() {
+fn unknown_capacity_never_resumes() {
     let cases = oracle(&[]);
     let case = cases
         .as_array()
@@ -288,32 +270,6 @@ fn unknown_capacity_and_stale_auth_ticket_never_resume() {
             .record
             .is_none()
     );
-    let case = cases
-        .as_array()
-        .expect("cases")
-        .iter()
-        .find(|c| c["family"] == "auth")
-        .expect("auth fixture");
-    let mut raw = case["input"].clone();
-    raw["record"]["dueAt"] = json!(980.0);
-    let s = Snapshot::from_records(raw.clone()).expect("auth snapshot");
-    let (_, ticket) =
-        claude_auth_wait::claim_probe(&s, &json!({}), &case["args"]["pin"], 1000.0).expect("claim");
-    raw["record"]["dueAt"] = json!(1360.0);
-    let newer = Snapshot::from_records(raw).expect("new claim");
-    assert!(
-        claude_auth_wait::apply_probe(
-            &newer,
-            &ticket.expect("ticket"),
-            &json!({}),
-            &case["args"]["pin"],
-            &case["args"]["result"],
-            1001.0
-        )
-        .expect("stale receipt")
-        .record
-        .is_none()
-    );
 }
 
 #[test]
@@ -349,115 +305,4 @@ fn automatic_capacity_claim_and_late_completion_cannot_resurrect_cancelled_retry
         assert!(decision.agent.is_none());
         assert!(decision.effects.is_empty());
     }
-}
-
-#[test]
-fn exact_unsent_receipt_is_retained_and_profile_probe_slots_are_bounded() {
-    let cases = oracle(&[]);
-    let case = cases
-        .as_array()
-        .expect("cases")
-        .iter()
-        .find(|c| c["family"] == "auth")
-        .expect("Python-written auth receipt");
-    let mut raw = case["input"].clone();
-    let pin = &case["args"]["pin"];
-    let saved = Snapshot::from_records(raw.clone()).expect("stored receipt");
-    assert!(claude_auth_wait::retained(&saved, &json!({}), pin));
-    raw["agent"]["startAttempt"]
-        .as_object_mut()
-        .expect("attempt")
-        .remove("executionOutcome");
-    let before = Snapshot::from_records(raw.clone()).expect("original unsubmitted attempt");
-    let capture = claude_auth_wait::capture(&before, &json!({}), pin).expect("capture exact input");
-    raw["agent"]["startAttempt"]["executionOutcome"] = json!("unsent");
-    let restored = Snapshot::from_records(raw.clone()).expect("restored original inputs");
-    let decision = claude_auth_wait::record_timeout(&restored, &capture, &json!({}), pin, 800.0)
-        .expect("write wait");
-    let mut expected = case["input"]["record"].clone();
-    expected["dueAt"] = json!(980.0);
-    assert_eq!(
-        decision.record.as_ref(),
-        Some(&expected),
-        "receipt equals the Python writer output before probe rescheduling"
-    );
-    raw["record"] = expected;
-    let due = Snapshot::from_records(raw).expect("due receipt");
-    let settings = std::collections::BTreeMap::from([("a".into(), json!({}))]);
-    let pins = std::collections::BTreeMap::from([("default".into(), pin.clone())]);
-    let active = std::collections::BTreeSet::from(["one".into(), "two".into()]);
-    assert!(
-        claude_auth_wait::plan_probes(
-            std::slice::from_ref(&due),
-            &active,
-            &settings,
-            &pins,
-            1000.0
-        )
-        .expect("at capacity")
-        .jobs
-        .is_empty()
-    );
-    let plan = claude_auth_wait::plan_probes(
-        &[due],
-        &std::collections::BTreeSet::new(),
-        &settings,
-        &pins,
-        1000.0,
-    )
-    .expect("free profile slot");
-    assert_eq!(plan.jobs.len(), 1);
-    assert_eq!(plan.jobs[0].tickets.len(), 1);
-    assert_eq!(
-        plan.writes[0].1.record.as_ref().expect("deadline")["dueAt"],
-        1180.0
-    );
-}
-
-#[test]
-fn probe_plan_selects_only_the_earliest_sixteen_due_rows() {
-    let cases = oracle(&[]);
-    let raw = cases
-        .as_array()
-        .expect("cases")
-        .iter()
-        .find(|c| c["name"] == "claude-proof-readyaccount")
-        .expect("auth fixture")["input"]
-        .clone();
-    let mut snapshots = Vec::new();
-    let mut settings = std::collections::BTreeMap::new();
-    let pins =
-        std::collections::BTreeMap::from([("default".into(), raw["record"]["accountPin"].clone())]);
-    for index in (0..40).rev() {
-        let mut row = raw.clone();
-        let id = format!("a-{index}");
-        row["agent"]["id"] = json!(id);
-        row["agent"]["rootId"] = json!(id);
-        row["record"]["agent"] = json!(id);
-        row["record"]["id"] = json!(format!("receipt-{index}"));
-        row["record"]["dueAt"] = json!(900.0 + index as f64);
-        // These are valid stored rows whose original source changed; each selected row cancels.
-        for event in row["events"].as_array_mut().expect("events") {
-            event["agent"] = json!(id);
-        }
-        settings.insert(id, json!({}));
-        snapshots.push(Snapshot::from_records(row).expect("checked input"));
-    }
-    let plan = claude_auth_wait::plan_probes(
-        &snapshots,
-        &std::collections::BTreeSet::new(),
-        &settings,
-        &pins,
-        1000.0,
-    )
-    .expect("plan");
-    assert!(plan.jobs.is_empty());
-    assert_eq!(plan.writes.len(), 16);
-    assert_eq!(
-        plan.writes
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>(),
-        (0..16).map(|i| format!("a-{i}")).collect::<Vec<_>>()
-    );
 }

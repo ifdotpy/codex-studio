@@ -6,9 +6,7 @@
 //! decisions that callers used to branch on with provider strings.
 
 use crate::account_driver::auth_cache::CredentialLocation;
-use crate::account_driver::{
-    AccountStatus, AuthMetadata, AuthProfile, AuthStatus, account_server_root,
-};
+use crate::account_driver::{AuthMetadata, AuthProfile, AuthStatus, account_server_root};
 use crate::account_worker::WorkerError;
 use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
 use crate::continuation_runtime::classify_usage_failure;
@@ -122,9 +120,6 @@ pub trait ProviderAdapter: Send + Sync + 'static {
 
     /// Credential files whose change ends the cached status of `profile`.
     fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation;
-
-    /// The account's cached auth status holds a turn start before any provider write.
-    fn auth_blocks_start(&self, status: AccountStatus) -> bool;
 
     /// Hold reason of a start blocked because the account is not signed in.
     fn sign_in_message(&self) -> &'static str;
@@ -295,12 +290,6 @@ impl ProviderAdapter for CodexAdapter {
         crate::account_driver::codex_location(profile)
     }
 
-    /// Only a missing or signed-out `auth.json` holds a start: the app-server
-    /// refreshes an expired token itself, so any other status may still run.
-    fn auth_blocks_start(&self, status: AccountStatus) -> bool {
-        status == AccountStatus::SignedOut
-    }
-
     fn sign_in_message(&self) -> &'static str {
         "Sign in to this Codex account first"
     }
@@ -421,10 +410,6 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn credential_location(&self, profile: &AuthProfile) -> CredentialLocation {
         crate::account_driver::claude_location(profile)
-    }
-
-    fn auth_blocks_start(&self, status: AccountStatus) -> bool {
-        status != AccountStatus::Ready
     }
 
     fn sign_in_message(&self) -> &'static str {

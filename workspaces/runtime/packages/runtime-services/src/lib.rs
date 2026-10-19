@@ -7,6 +7,7 @@
 //! provider or the server. Route modules in `studio-runtime-http` call
 //! services; services never depend on HTTP types.
 
+pub mod account_auth_gate;
 pub mod account_driver;
 pub mod account_policy;
 pub mod account_selection;
@@ -40,8 +41,6 @@ pub mod capacity_retry;
 pub mod catalog_reads;
 pub mod change_notifications;
 pub mod checkpoints;
-pub mod claude_auth_runtime;
-pub mod claude_auth_wait;
 pub mod claude_bridge;
 pub mod claude_controls;
 pub mod claude_input_recovery;
@@ -53,7 +52,6 @@ pub mod context_repair_files;
 pub mod continuation;
 pub mod continuation_driver;
 pub mod continuation_runtime;
-pub use continuation_runtime::ClaudeAttemptIdentity;
 pub mod coordination;
 pub mod coordination_reads;
 pub mod cost_usage;

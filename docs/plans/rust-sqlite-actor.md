@@ -204,10 +204,10 @@ hint is neither a receipt nor permission to replay a mutation.
   expires after the source-owned 24-hour TTL in
   [`provider_versions.rs`](../../workspaces/runtime/packages/runtime-services/src/provider_versions.rs);
   this TTL is unrelated to credential refresh.
-- Claude auth-probe work reads the earliest durable `dueAt` for the account,
-  then waits on that deadline or a usage-resume change. Active VM Claude
-  credential refresh is separate security maintenance, with its cadence owned
-  by [`VM_CREDENTIAL_REFRESH_INTERVAL`](../../workspaces/runtime/packages/runtime-services/src/claude_auth_runtime.rs).
+- A turn held by the account auth gate waits for an account or cached auth
+  status change, never for a deadline. Active VM Claude credential refresh is
+  separate security maintenance, with its cadence owned by
+  [`VM_CREDENTIAL_REFRESH_INTERVAL`](../../workspaces/runtime/packages/runtime-services/src/account_worker.rs).
 - Continuation and federation schedulers combine commit/change wakes with the
   earliest durable work deadline and per-item retry times. They retain
   backoff after failure rather than treating an unrelated wake as proof that

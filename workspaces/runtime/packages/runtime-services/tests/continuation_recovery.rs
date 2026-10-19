@@ -655,7 +655,6 @@ async fn a_disk_full_turn_failure_creates_a_free_space_retry() {
                     known: true,
                     now: 1000.0,
                     limits: None,
-                    claude_auth: None,
                 },
             )
             .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))

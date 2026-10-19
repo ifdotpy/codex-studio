@@ -8,7 +8,6 @@ use crate::{diagnostics::measure_runtime_stage_async as stage, workspace_ready::
 pub(super) struct Run {
     pub bridge: StoreBridge,
     pub resources: preparation::PreparationResources,
-    pub retained_port: retained::RetainedSessionPort,
     pub generation: u64,
     pub connection_id: String,
     pub intent: TurnIntent,
@@ -309,23 +308,18 @@ async fn settle(
 }
 
 /// Pre-start account auth gate for every provider (see
-/// `claude_auth_runtime::require_before_start`). Claude's latch proof reads the
-/// account through this worker's retained port, which the worker serves while
-/// this task waits. A host without an account registry (fixtures and transfer
-/// probes; production hosts always have one) has no auth source to gate on.
+/// `account_auth_gate`). A host without an account registry (fixtures and
+/// transfer probes; production hosts always have one) has no auth source to
+/// gate on.
 async fn require_account_auth(run: &Run) -> Result<bool, WorkerError> {
     let Some(driver) = run.resources.account_driver.clone() else {
         return Ok(true);
     };
-    let port = run.retained_port.clone();
-    crate::claude_auth_runtime::require_before_start(
+    crate::account_auth_gate::require_before_start(
         run.bridge.store.clone(),
         driver,
         run.resources.claude_account_pin.clone(),
         &run.intent,
-        |actor, deadline| async move {
-            crate::claude_auth_runtime::account_read(&port, actor, deadline).await
-        },
     )
     .await
     .map_err(|error| WorkerError::PreparationRefused(error.to_string()))

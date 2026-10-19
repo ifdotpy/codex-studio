@@ -292,20 +292,9 @@ fn project_changed_agents(
 
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
 pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
-    let registry_path = store.root().join("accounts/registry.json");
-    let account_registry = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/scheduler",
-        move || {
-            std::fs::read(registry_path)
-                .ok()
-                .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
-                .map(|(value, _)| value)
-        },
-    )
-    .await
-    .map_err(|_| SchedulerError::PreparationWorker)?;
     Ok(lifecycle_transaction(store, move |transaction| {
         studio_runtime_store::agent_management::settle_orphaned_inputs(transaction)?;
+        migrate_auth_probe_waits(transaction)?;
         let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
@@ -340,7 +329,7 @@ pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, Scheduler
             Err(error) => return Err(error),
         };
         if recovery_complete {
-            clear_startup_agent_state(transaction, account_registry.as_ref())?;
+            clear_startup_agent_state(transaction)?;
         } else {
             eprintln!(
                 "scheduler startup retained agent claims because recovery scan was incomplete"
@@ -351,11 +340,52 @@ pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, Scheduler
     .await?)
 }
 
+/// Status of a retired Claude auth probe wait in `runtime_usage_resumes`.
+const RETIRED_AUTH_PROBE_WAIT: &str = "auth_probe_wait";
+
+/// One-time move of the retired Claude auth probe waits into the account auth
+/// gate's held state: the row is removed, and its still waiting agent becomes
+/// a held turn that `account_auth_gate` releases after an account change. Its
+/// input already returned to `pending` when the wait was recorded.
+fn migrate_auth_probe_waits(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+    let exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_usage_resumes')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    let agents = transaction
+        .prepare(
+            "DELETE FROM runtime_usage_resumes WHERE json_extract(record,'$.status')=?1 \
+             RETURNING agent",
+        )?
+        .query_map([RETIRED_AUTH_PROBE_WAIT], |row| row.get::<_, String>(0))?
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    for id in agents {
+        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(id.as_str()))?
+        else {
+            continue;
+        };
+        if agent.status != AgentStatus::Waiting {
+            continue;
+        }
+        agent.status = AgentStatus::Failed;
+        agent.extra.insert(
+            "error".into(),
+            json!(
+                crate::provider_adapter::adapter(studio_runtime_providers::ProviderKind::Claude)
+                    .sign_in_message()
+            ),
+        );
+        AgentRepository::put(transaction, &agent)?;
+    }
+    Ok(())
+}
+
 /// Mirror Python's final per-agent startup cleanup after both recovery scans.
-fn clear_startup_agent_state(
-    transaction: &rusqlite::Transaction<'_>,
-    account_registry: Option<&Value>,
-) -> Result<(), StoreError> {
+fn clear_startup_agent_state(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
     let mut statement = transaction.prepare_cached(
         "SELECT id,record FROM runtime_agents \
          WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 \
@@ -376,8 +406,7 @@ fn clear_startup_agent_state(
             })?;
         let in_flight_changed = agent.get("inFlight") != Some(&Value::Bool(false));
         agent["inFlight"] = json!(false);
-        let keep_attempt = preparation_eligible(&agent)
-            || retained_auth_wait(transaction, &agent, account_registry)?;
+        let keep_attempt = preparation_eligible(&agent);
         let removed_attempt = if keep_attempt {
             false
         } else {
@@ -441,90 +470,6 @@ fn preparation_eligible(agent: &Value) -> bool {
         && !crate::event_write::truthy(attempt.get("activeAtReservation"))
         && !crate::event_write::truthy(attempt.get("turnId"))
         && !crate::event_write::truthy(attempt.get("observedTurnId"))
-}
-
-/// Retain only the durable auth-probe receipt validated by the existing policy.
-fn retained_auth_wait(
-    transaction: &rusqlite::Transaction<'_>,
-    agent: &Value,
-    account_registry: Option<&Value>,
-) -> Result<bool, StoreError> {
-    let attempt_id = agent
-        .pointer("/startAttempt/id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty());
-    let Some(attempt_id) = attempt_id else {
-        return Ok(false);
-    };
-    let agent_id = agent
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or(StoreError::RecordContract("agent id"))?;
-    let receipt_id = format!("claude-auth-probe:{attempt_id}");
-    let exists: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_usage_resumes')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Ok(false);
-    }
-    let settings = preparation_settings(agent);
-    let account_key = agent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
-    let receipt_exists: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_usage_resumes WHERE id=?1 AND agent=?2)",
-        rusqlite::params![receipt_id, agent_id],
-        |row| row.get(0),
-    )?;
-    if !receipt_exists {
-        return Ok(false);
-    }
-    let Some(current_account) = account_registry
-        .and_then(|registry| registry.get("accounts"))
-        .and_then(|accounts| accounts.get(account_key))
-    else {
-        return Ok(false);
-    };
-    let current_pin = crate::claude_auth_wait::account_pin(current_account);
-    let raw = studio_runtime_store::ContinuationRepository::snapshot(
-        transaction,
-        agent_id,
-        studio_runtime_store::ContinuationTable::Usage,
-        Some(&receipt_id),
-    )?;
-    let Ok(snapshot) = crate::continuation::Snapshot::from_records(raw) else {
-        return Ok(false);
-    };
-    Ok(crate::claude_auth_wait::retained(
-        &snapshot,
-        &settings,
-        &current_pin,
-    ))
-}
-
-/// Match Runtime.preparation_settings when validating a retained auth wait receipt.
-fn preparation_settings(agent: &Value) -> Value {
-    let mut settings = serde_json::Map::new();
-    for key in [
-        "model",
-        "effort",
-        "nativeEffort",
-        "fastMode",
-        "yoloMode",
-        "profileInstructions",
-        "role",
-    ] {
-        settings.insert(key.into(), agent.get(key).cloned().unwrap_or(Value::Null));
-    }
-    for key in ["daybreakEnabled", "cyberAccessProgram"] {
-        if let Some(value) = agent.get(key) {
-            settings.insert(key.into(), value.clone());
-        }
-    }
-    Value::Object(settings)
 }
 
 pub async fn settle_started_provider(

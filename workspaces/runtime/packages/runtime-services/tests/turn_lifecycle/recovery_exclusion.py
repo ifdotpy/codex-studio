@@ -16,7 +16,6 @@ CASES = [
     {"id": "completed_start", "flow": "completed", "mutations": {}},
     {"id": "in_flight", "flow": "written", "mutations": {}},
     {"id": "unknown_outcome", "flow": "unknown", "mutations": {}},
-    {"id": "auth_pin_changed", "flow": "auth_pin_changed", "mutations": {}},
     {"id": "action", "mutations": {"startAttempt.action": "turn/start"},
      "handShapedReason": "The public flow cannot persist an action field on a completed start receipt."},
     {"id": "active_reservation", "mutations": {"startAttempt.activeAtReservation": True},
@@ -69,65 +68,6 @@ def run_case(command, template, QuietRuntime):
     root = pathlib.Path(command["root"])
     rust = pathlib.Path(command["rust"])
     if case.get("flow"):
-        if case["flow"] == "auth_pin_changed":
-            fixture_path = (pathlib.Path(__file__).parents[6]
-                            / "workspaces/runtime/apps/server/tests/claude-auth-wait-contract.py")
-            spec = importlib.util.spec_from_file_location("claude_auth_wait_fixture", fixture_path)
-            fixture = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = fixture
-            spec.loader.exec_module(fixture)
-            flow = fixture.AuthWait("test_fresh_same_account_queues_original_inputs_once")
-            harness = sys.modules["__main__"]
-            enable_pool = patch.object(
-                concurrent.futures.ThreadPoolExecutor, "submit", harness.ORIGINAL_EXECUTOR_SUBMIT
-            )
-            enable_threads = patch.object(threading.Thread, "start", harness.ORIGINAL_THREAD_START)
-            enable_catalog = patch.object(
-                fixture.codex_runtime.Runtime,
-                "catalog",
-                lambda _runtime, _account: {"data": [{
-                    "model": "default",
-                    "defaultReasoningEffort": "medium",
-                    "supportedReasoningEfforts": [{"reasoningEffort": "medium"}],
-                }]},
-            )
-            enable_pool.start()
-            enable_threads.start()
-            enable_catalog.start()
-            runtime = None
-            try:
-                flow.setUp()
-                runtime = flow.runtime
-                flow.fail_auth()
-                with runtime.accounts.lock:
-                    runtime.accounts._row("claude-local")["claudeOptions"] = {
-                        "configDir": str(flow.root / "changed-profile")
-                    }
-                    runtime.accounts._save()
-                root = flow.root / "state"
-                before = _state(root)
-                rust.mkdir(parents=True)
-                for directory in ("multi-server", "accounts"):
-                    source = root / directory
-                    if source.exists():
-                        shutil.copytree(source, rust / directory, dirs_exist_ok=True)
-                if (root / "analytics.sqlite3").exists():
-                    shutil.copyfile(root / "analytics.sqlite3", rust / "analytics.sqlite3")
-                with sqlite3.connect(root / "canvas.sqlite3") as source, sqlite3.connect(rust / "canvas.sqlite3") as target:
-                    source.backup(target)
-                runtime.close()
-                runtime = QuietRuntime(root, lambda *_a, **_kw: None)
-                after = _state(root)
-                return {"case": case["id"], "flow": case["flow"],
-                        "providerFrameCount": 0, "before": before, "after": after,
-                        "pythonChangedPaths": _changed_paths(before, after)}
-            finally:
-                if runtime is not None:
-                    runtime.close()
-                flow.doCleanups()
-                enable_catalog.stop()
-                enable_threads.stop()
-                enable_pool.stop()
         fixture_path = (pathlib.Path(__file__).parents[6]
                         / "workspaces/runtime/apps/server/tests/turn-start-contract.py")
         spec = importlib.util.spec_from_file_location("turn_start_fixture", fixture_path)

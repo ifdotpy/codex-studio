@@ -183,9 +183,9 @@ fn preconditions_for_purpose(
     {
         return Err(refusal("preparation/ownership-changed".into()));
     }
-    if ["claudePreInputRetry", "claudeAuthWait"]
-        .iter()
-        .any(|k| record.get(*k).is_some_and(|v| !v.is_null()))
+    if record
+        .get("claudePreInputRetry")
+        .is_some_and(|v| !v.is_null())
     {
         return Err(refusal(
             "preparation/claude-frozen-input-recovery-required".into(),

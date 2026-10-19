@@ -12,10 +12,7 @@ use std::{
 };
 use studio_runtime_services::{
     continuation::{ContinuationError, Snapshot},
-    continuation_runtime::{
-        self, ClaudeAccountPin, ClaudeAttemptIdentity, ClaudeAuthObservation, Completion,
-        PreparationSettings, WakePort,
-    },
+    continuation_runtime::{self, Completion, WakePort},
     usage_resume::{self, LimitsObservation},
 };
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, RuntimeStore, StoreError};
@@ -205,7 +202,6 @@ async fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
                     known: true,
                     now: 1000.0,
                     limits: Some(&staged_observation),
-                    claude_auth: None,
                 },
             )
         })
@@ -232,7 +228,6 @@ async fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
                     known: true,
                     now: 1000.0,
                     limits: Some(&replay_observation),
-                    claude_auth: None,
                 },
             )
         })
@@ -268,7 +263,6 @@ async fn missing_limits_observation_aborts_without_a_partial_write() {
                     known: true,
                     now: 1000.0,
                     limits: None,
-                    claude_auth: None,
                 },
             )
         }).await
@@ -298,7 +292,6 @@ async fn unknown_or_malformed_completion_does_not_create_continuation_state() {
                     known: false,
                     now: 1000.0,
                     limits: None,
-                    claude_auth: None,
                 },
             )
         }).await
@@ -316,7 +309,6 @@ async fn unknown_or_malformed_completion_does_not_create_continuation_state() {
                     known: true,
                     now: 1000.0,
                     limits: None,
-                    claude_auth: None,
                 },
             )
         })
@@ -345,7 +337,7 @@ async fn foreign_account_limits_refuse_before_any_completion_write() {
     .expect("typed observation");
     let result = store.transaction_with(move |tx| continuation_runtime::stage(tx, Completion::TerminalTurn {
         agent_id:"a", turn:&json!({"id":"turn-new","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}),
-        known:true, now:1000.0, limits:Some(&foreign), claude_auth:None,
+        known:true, now:1000.0, limits:Some(&foreign),
     })).await;
     assert!(matches!(
         result,
@@ -444,58 +436,8 @@ async fn ineligible_terminal_failure_does_not_require_limits() {
     let before = complete_continuation_rows(&store);
     let staged = store.transaction_with(|tx| continuation_runtime::stage(tx, Completion::TerminalTurn {
         agent_id:"a", turn:&json!({"id":"turn-new","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}),
-        known:true, now:1000.0, limits:None, claude_auth:None,
+        known:true, now:1000.0, limits:None,
     })).await.expect("ineligible failure returns quietly");
-    assert!(!staged.changed());
-    assert_eq!(complete_continuation_rows(&store), before);
-}
-
-#[tokio::test]
-async fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
-    let template = template();
-    let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-    store
-        .transaction(|tx| {
-            let mut agent: Value = serde_json::from_str(&tx.query_row(
-                "SELECT record FROM runtime_agents WHERE id='a'",
-                [],
-                |r| r.get::<_, String>(0),
-            )?)?;
-            agent["startAttempt"] = json!({"id":"attempt-new","epoch":1,"submitted":false});
-            tx.execute(
-                "UPDATE runtime_agents SET record=?1 WHERE id='a'",
-                [agent.to_string()],
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("new attempt");
-    let pin = ClaudeAccountPin::from_value(
-        json!({"id":"default","provider":"claude","home":"/tmp","accountId":"acct"}),
-    )
-    .expect("pin");
-    let settings = PreparationSettings::from_agent(&json!({})).expect("settings");
-    let observation = ClaudeAuthObservation::checked(pin, settings);
-    let identity = ClaudeAttemptIdentity {
-        attempt_id: "attempt-old".into(),
-        epoch: 1,
-    };
-    let before = complete_continuation_rows(&store);
-    let staged = store
-        .transaction_with(move |tx| {
-            continuation_runtime::stage(
-                tx,
-                Completion::ClaudeAuthTimeout {
-                    agent_id: "a",
-                    now: 1000.0,
-                    observation: Some(&observation),
-                    attempt: Some(&identity),
-                },
-            )
-        })
-        .await
-        .expect("stale timeout ignored");
     assert!(!staged.changed());
     assert_eq!(complete_continuation_rows(&store), before);
 }
@@ -565,7 +507,6 @@ async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_lat
                     known: true,
                     now: 1000.0,
                     limits: None,
-                    claude_auth: None,
                 },
             )?;
             let owner_raw: String = tx
@@ -590,7 +531,6 @@ async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_lat
                     known: true,
                     now: 1001.0,
                     limits: None,
-                    claude_auth: None,
                 },
             )?;
             Ok((first, second))

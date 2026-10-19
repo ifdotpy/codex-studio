@@ -12,6 +12,10 @@
 //! error reported by a turn. The comparison is synchronous, so a read right
 //! after a credential rewrite never sees the old status. Concurrent readers of
 //! one location share a single probe.
+//!
+//! [`AuthCache::changes`] advances when a status may have changed: on every
+//! invalidation and when a probe returns another status than the previous
+//! probe of that location. Held turn starts wait on it, never on a timer.
 
 use super::{AuthMetadata, AuthStatus};
 use std::collections::HashMap;
@@ -19,6 +23,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use tokio::sync::watch;
 
 /// The production cache shared by every account driver of this process.
 pub(crate) fn shared() -> &'static AuthCache {
@@ -62,9 +67,19 @@ impl CredentialLocation {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct AuthCache {
     entries: Mutex<HashMap<CredentialLocation, Arc<Entry>>>,
+    /// Advanced when any location's status may have changed.
+    changes: watch::Sender<u64>,
+}
+
+impl Default for AuthCache {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::default(),
+            changes: watch::channel(0).0,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -72,7 +87,14 @@ struct Entry {
     /// Advanced by every explicit invalidation; a status is valid only for the
     /// generation read before its probe began.
     generation: AtomicU64,
-    cached: Mutex<Option<Cached>>,
+    cached: Mutex<Probed>,
+}
+
+#[derive(Default)]
+struct Probed {
+    cached: Option<Cached>,
+    /// Status of the latest probe, conclusive or not.
+    last: Option<AuthStatus>,
 }
 
 struct Cached {
@@ -96,7 +118,7 @@ impl AuthCache {
         let generation = entry.generation.load(Ordering::Acquire);
         // Taken before the probe: a rewrite during the probe mismatches next time.
         let fingerprint = location.fingerprint();
-        if let Some(hit) = cached.as_ref()
+        if let Some(hit) = cached.cached.as_ref()
             && hit.generation == generation
             && hit.fingerprint == fingerprint
         {
@@ -104,11 +126,18 @@ impl AuthCache {
         }
         let metadata = probe();
         let conclusive = matches!(metadata.status, AuthStatus::Ready | AuthStatus::SignedOut);
-        *cached = conclusive.then(|| Cached {
+        cached.cached = conclusive.then(|| Cached {
             generation,
             fingerprint,
             metadata: metadata.clone(),
         });
+        if cached
+            .last
+            .replace(metadata.status)
+            .is_some_and(|last| last != metadata.status)
+        {
+            self.publish_change();
+        }
         metadata
     }
 
@@ -118,6 +147,18 @@ impl AuthCache {
         if let Some(entry) = entries.get(location) {
             entry.generation.fetch_add(1, Ordering::AcqRel);
         }
+        drop(entries);
+        self.publish_change();
+    }
+
+    /// Advances when a cached status may have changed; see the module notes.
+    pub(crate) fn changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn publish_change(&self) {
+        self.changes
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
     fn entry(&self, location: &CredentialLocation) -> Arc<Entry> {
@@ -184,6 +225,26 @@ mod tests {
             assert_eq!(metadata.status, AuthStatus::Ready);
         }
         assert_eq!(probes.count(), 1);
+    }
+
+    #[test]
+    fn changes_advance_on_invalidation_and_a_new_status_only() {
+        let directory = tempfile::tempdir().expect("config dir");
+        let cache = AuthCache::default();
+        let location = location(directory.path());
+        let changes = cache.changes();
+        cache.read(&location, ready);
+        cache.read(&location, ready);
+        assert!(!changes.has_changed().expect("cache alive"), "first status");
+        cache.invalidate(&location);
+        assert!(changes.has_changed().expect("cache alive"), "invalidation");
+        let mut changes = cache.changes();
+        cache.read(&location, ready);
+        assert!(!changes.has_changed().expect("cache alive"), "same status");
+        cache.invalidate(&location);
+        changes.mark_unchanged();
+        cache.read(&location, AuthMetadata::signed_out);
+        assert!(changes.has_changed().expect("cache alive"), "new status");
     }
 
     #[test]

@@ -69,14 +69,9 @@ const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_s
 // clear before reporting an unconfirmed stop.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn monotonic_deadline(deadline: SystemTime) -> Result<tokio::time::Instant, WorkerError> {
-    let delay = deadline
-        .duration_since(SystemTime::now())
-        .unwrap_or_default();
-    tokio::time::Instant::now()
-        .checked_add(delay)
-        .ok_or(WorkerError::TaskFailed)
-}
+/// Active VM Claude credential refresh cadence; unit is seconds.
+pub(crate) const VM_CREDENTIAL_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(180);
 
 fn vm_refresh_deadline_after_session_change(
     had_active_session: bool,
@@ -159,7 +154,6 @@ pub struct StoreBridge {
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     continuation_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
-    auth_wait_generation: Arc<watch::Sender<u64>>,
     idle_state_generation: Arc<watch::Sender<u64>>,
     idle_setting_generation: Arc<watch::Sender<u64>>,
     /// Advances on every committed `runtime_agents` change; pending
@@ -174,16 +168,6 @@ pub struct StoreBridge {
 }
 impl StoreBridge {
     pub async fn new(store: Arc<RuntimeStore>) -> Result<Self, WorkerError> {
-        let (auth_wait_generation, _) = watch::channel(0_u64);
-        let auth_wait_generation = Arc::new(auth_wait_generation);
-        let observed_generation = Arc::downgrade(&auth_wait_generation);
-        // Workers share this generation channel; the weak callback remains
-        // harmless after the bridge owner is dropped.
-        store.add_table_change_observer(ObservedTable::UsageResumes, move || {
-            if let Some(generation) = observed_generation.upgrade() {
-                generation.send_modify(|value| *value = value.wrapping_add(1));
-            }
-        });
         let (idle_state_generation, _) = watch::channel(0_u64);
         let idle_state_generation = Arc::new(idle_state_generation);
         let observed_idle_generation = Arc::downgrade(&idle_state_generation);
@@ -218,7 +202,6 @@ impl StoreBridge {
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             continuation_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
-            auth_wait_generation,
             idle_state_generation,
             idle_setting_generation,
             agent_generation,
@@ -285,9 +268,6 @@ impl StoreBridge {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-    fn auth_wait_changes(&self) -> watch::Receiver<u64> {
-        self.auth_wait_generation.subscribe()
     }
     fn idle_state_changes(&self) -> watch::Receiver<u64> {
         self.idle_state_generation.subscribe()
@@ -655,27 +635,14 @@ pub async fn start_account_worker_with_publication_sink(
         connection: connection_id.clone(),
         generation: generation.0,
     };
-    let retained_port = retained::RetainedSessionPort {
-        scope: scope.clone(),
-        commands: commands.clone(),
-        stop: stop.clone(),
-    };
-    let is_claude_account = resources.claude_account_pin.get("provider") == Some(&json!("claude"));
-    let auth_wait_at = is_claude_account.then(tokio::time::Instant::now);
     let vm_credential_refresh_at = None;
-    // Subscribe before the worker's initial due/deadline snapshot. A commit
-    // before this point is visible in that snapshot; later commits advance it.
-    let auth_wait_changes = bridge.auth_wait_changes();
     let idle_state_changes = bridge.idle_state_changes();
     let idle_setting_changes = bridge.idle_setting_changes();
     let idle_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker = Worker {
         resources,
-        retained_port,
         bridge: bridge.clone(),
         account: account.clone(),
-        auth_wait_at,
-        auth_wait_changes,
         vm_credential_refresh_at,
         generation,
         connection_id,
@@ -841,11 +808,8 @@ struct Worker {
     retained_frames: BTreeMap<String, retained_frame::PendingFrame>,
     retained_barriers: Vec<retained::PendingBarrier>,
     resources: preparation::PreparationResources,
-    retained_port: retained::RetainedSessionPort,
     bridge: StoreBridge,
     account: String,
-    auth_wait_at: Option<tokio::time::Instant>,
-    auth_wait_changes: watch::Receiver<u64>,
     vm_credential_refresh_at: Option<tokio::time::Instant>,
     generation: Generation,
     connection_id: String,
@@ -944,9 +908,7 @@ enum ServeSignal {
     Flush,
     PublicationRetry,
     PublicationDrained(Result<Result<store::PublicationPass, WorkerError>, tokio::task::JoinError>),
-    AuthWait,
     VmCredentialRefresh,
-    AuthWaitChanged(Result<(), watch::error::RecvError>),
     Command(Option<AccountCommand>),
     Event(Option<SessionEvent>),
     VmEvent(Option<VmForwardedMessage>),
@@ -1310,9 +1272,7 @@ impl Worker {
             _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => ServeSignal::Flush,
             _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() && self.publication_drain.is_none() => ServeSignal::PublicationRetry,
             done = async { match self.publication_drain.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.publication_drain.is_some() => ServeSignal::PublicationDrained(done),
-            _ = tokio::time::sleep_until(self.auth_wait_at.unwrap_or_else(tokio::time::Instant::now)), if self.auth_wait_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWait,
             _ = tokio::time::sleep_until(self.vm_credential_refresh_at.unwrap_or_else(tokio::time::Instant::now)), if self.vm_credential_refresh_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::VmCredentialRefresh,
-            changed = self.auth_wait_changes.changed(), if self.resources.claude_account_pin.get("provider") == Some(&json!("claude")) && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWaitChanged(changed),
             event = self.events.recv() => ServeSignal::Event(event),
             vm_event = self.vm_events.recv() => ServeSignal::VmEvent(vm_event),
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
@@ -1330,12 +1290,7 @@ impl Worker {
             ServeSignal::Flush => self.flush().await?,
             ServeSignal::PublicationRetry => self.start_publication_drain(),
             ServeSignal::PublicationDrained(done) => self.publication_drained(done)?,
-            ServeSignal::AuthWait => self.probe_auth_waits().await?,
             ServeSignal::VmCredentialRefresh => self.refresh_vm_claude_credentials().await?,
-            ServeSignal::AuthWaitChanged(changed) => {
-                changed.map_err(|_| WorkerError::TaskFailed)?;
-                self.probe_auth_waits().await?;
-            }
             ServeSignal::Command(Some(command)) => {
                 self.dispatch_command(command).await?;
             }
@@ -1652,95 +1607,6 @@ impl Worker {
             previous.abort();
         }
     }
-    async fn probe_auth_waits(&mut self) -> Result<(), WorkerError> {
-        self.auth_wait_at = None;
-        let Some(driver) = self.resources.account_driver.clone() else {
-            return Ok(());
-        };
-        if self.resources.claude_account_pin.get("provider") != Some(&json!("claude")) {
-            return Ok(());
-        }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| WorkerError::TaskFailed)?
-            .as_secs_f64();
-        let account = self.account.clone();
-        let waits = self
-            .db("claude_auth_due_waits", move |store| async move {
-                crate::claude_auth_runtime::due_waits(&store, &account, now)
-                    .await
-                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
-            })
-            .await?;
-        for (agent, epoch, settings) in waits {
-            let _probe_slot = crate::claude_auth_runtime::acquire_probe_slot()
-                .await
-                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-            let pin = self.resources.claude_account_pin.clone();
-            let driver_for_probe = driver.clone();
-            let account_for_probe = self.account.clone();
-            let driver_for_pin = driver.clone();
-            let account_for_pin = self.account.clone();
-            let driver_after_probe = driver.clone();
-            let account_after_probe = self.account.clone();
-            let completed = crate::claude_auth_runtime::probe_due(
-                self.bridge.store.clone(),
-                &agent,
-                &settings,
-                &pin,
-                now,
-                move |_| async move {
-                    let status = studio_runtime_process::blocking_pool::spawn_blocking(
-                        "runtime-services/account_worker",
-                        move || driver_for_probe.get(&account_for_probe),
-                    )
-                    .await
-                    .ok()
-                    .and_then(std::result::Result::ok);
-                    let current = studio_runtime_process::blocking_pool::spawn_blocking(
-                        "runtime-services/account_worker",
-                        move || driver_for_pin.internal_record(&account_for_pin),
-                    )
-                    .await
-                    .ok()
-                    .and_then(std::result::Result::ok)
-                    .unwrap_or(Value::Null);
-                    if status == Some(crate::account_driver::AccountStatus::Ready) {
-                        json!({
-                            "status":"ready",
-                            "accountId":current.get("accountId"),
-                            "_credentialIdentity":current.get("_credentialIdentity")
-                        })
-                    } else {
-                        json!({"status":"unavailable"})
-                    }
-                },
-                || {
-                    driver_after_probe
-                        .auth_pin(&account_after_probe)
-                        .unwrap_or(Value::Null)
-                },
-            )
-            .await
-            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-            if completed {
-                self.wake(agent, epoch).await?;
-            }
-        }
-        let account = self.account.clone();
-        let next_deadline = self
-            .db(
-                "claude_auth_earliest_wait_deadline",
-                move |store| async move {
-                    crate::claude_auth_runtime::earliest_wait_deadline(&store, &account)
-                        .await
-                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
-                },
-            )
-            .await?;
-        self.auth_wait_at = next_deadline.map(monotonic_deadline).transpose()?;
-        Ok(())
-    }
     async fn refresh_vm_claude_credentials(&mut self) -> Result<(), WorkerError> {
         let actors = self
             .vm_sessions
@@ -1756,10 +1622,8 @@ impl Worker {
             self.vm_credential_refresh_at = None;
             return Ok(());
         }
-        self.vm_credential_refresh_at = Some(
-            tokio::time::Instant::now()
-                + crate::claude_auth_runtime::VM_CREDENTIAL_REFRESH_INTERVAL,
-        );
+        self.vm_credential_refresh_at =
+            Some(tokio::time::Instant::now() + VM_CREDENTIAL_REFRESH_INTERVAL);
         // The host resolver reads credentials once and fans the result out
         // to the active actor profiles without restarting their sessions.
         match self
@@ -1876,7 +1740,6 @@ impl Worker {
     ) -> impl FnOnce(TurnIntent, Option<String>) -> turn_preparation::Run + Send + use<> {
         let bridge = self.bridge.clone();
         let resources = self.resources.clone();
-        let retained_port = self.retained_port.clone();
         let generation = self.generation.0;
         let connection_id = self.connection_id.clone();
         let agent_changes = self.bridge.agent_changes();
@@ -1887,7 +1750,6 @@ impl Worker {
         move |intent, effect| turn_preparation::Run {
             bridge,
             resources,
-            retained_port,
             generation,
             connection_id,
             agent_changes,

@@ -544,9 +544,9 @@ pub(super) async fn claim(
                 return Ok(None);
             }
             if record.as_ref().is_some_and(|a| {
-                ["claudePreInputRetry", "claudeAuthWait"]
-                    .iter()
-                    .any(|key| a.extra.get(*key).is_some_and(|v| !v.is_null()))
+                a.extra
+                    .get("claudePreInputRetry")
+                    .is_some_and(|v| !v.is_null())
             }) {
                 hold_before_claim(
                     tx,
@@ -1517,29 +1517,6 @@ fn journal_one(
                                 claude_account_pin,
                                 &params["turn"],
                             );
-                            let claude_auth = if agent_before["provider"] == "claude"
-                                && claude_account_pin.is_object()
-                            {
-                                let pin =
-                                    crate::continuation_runtime::ClaudeAccountPin::from_value(
-                                        claude_account_pin.clone(),
-                                    )
-                                    .map_err(|error| {
-                                        StoreError::SchemaMismatch(error.to_string())
-                                    })?;
-                                let settings =
-                                    crate::continuation_runtime::PreparationSettings::from_agent(
-                                        &agent_before,
-                                    )
-                                    .map_err(|error| {
-                                        StoreError::SchemaMismatch(error.to_string())
-                                    })?;
-                                Some(crate::continuation_runtime::ClaudeAuthObservation::checked(
-                                    pin, settings,
-                                ))
-                            } else {
-                                None
-                            };
                             crate::continuation_runtime::stage(
                                 tx,
                                 crate::continuation_runtime::Completion::TerminalTurn {
@@ -1548,7 +1525,6 @@ fn journal_one(
                                     known: true,
                                     now: now(),
                                     limits: limits_observation,
-                                    claude_auth: claude_auth.as_ref(),
                                 },
                             )
                             .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
