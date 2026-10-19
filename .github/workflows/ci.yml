@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/fast-tier-setup
+        with:
+          rust-cache: rust-checks
       - uses: ./.github/actions/client-build-setup
         with:
           native: "true"
@@ -47,6 +49,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: rust-macos
+          cache-bin: "false"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -100,11 +106,65 @@ jobs:
       - name: API generated-types check
         run: pnpm run api:check
 
+  # The Rust code is compiled once per profile in the two build jobs below. The
+  # server shards and the Rust partitions download the output instead of
+  # compiling it again. download-build-output refuses output from another commit.
+  rust-build-server:
+    name: "Build: Rust HTTP backend"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/fast-tier-setup
+        with:
+          rust-cache: rust-release
+      - name: Build Rust HTTP backend for server contracts
+        run: |
+          cargo build --locked --release -p studio-runtime-server
+          mkdir -p "$RUNNER_TEMP/rust-http-backend"
+          cp target/release/studio-runtime-server "$RUNNER_TEMP/rust-http-backend/"
+      - uses: ./.github/actions/upload-build-output
+        with:
+          name: rust-http-backend
+          directory: ${{ runner.temp }}/rust-http-backend
+
+  rust-build-tests:
+    name: "Build: Rust workspace tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Line tables keep file and line numbers in panics and backtraces. Full
+      # debug information would make the test archive several gigabytes.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/fast-tier-setup
+        with:
+          rust-cache: rust-tests
+      - uses: ./.github/actions/client-build-setup
+        with:
+          native: "true"
+      - name: Build the Rust workspace test archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/rust-workspace-tests"
+          just build-rust-test-archive "$RUNNER_TEMP/rust-workspace-tests/workspace.tar.zst"
+      - name: Pack the renderer build that the native crate embeds
+        run: tar -cf "$RUNNER_TEMP/rust-workspace-tests/renderer.tar" workspaces/client/apps/web/dist workspaces/client/apps/web/src/wasm/generated
+      - uses: ./.github/actions/upload-build-output
+        with:
+          name: rust-workspace-tests
+          directory: ${{ runner.temp }}/rust-workspace-tests
+          # The nextest archive is already zstd-compressed.
+          compression-level: "0"
+
   fast-server:
     name: "Fast tier: server (${{ matrix.label }})"
+    needs: rust-build-server
+    # Run after a failed build too, so that each shard reports a failure, not a skip.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    # Cold Rust backend builds take 6–7 minutes; server shards need another 7–8.
-    timeout-minutes: 25
+    # Server shards take 4–9 minutes after about 2 minutes of setup.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -121,9 +181,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Require the Rust HTTP backend build
+        env:
+          BUILD_RESULT: ${{ needs.rust-build-server.result }}
+        run: |
+          if [ "$BUILD_RESULT" != success ]; then
+            echo "::error::The Build: Rust HTTP backend job ended with result $BUILD_RESULT." >&2
+            exit 1
+          fi
       - uses: ./.github/actions/fast-tier-setup
-      - name: Build Rust HTTP backend for server contracts
-        run: cargo build --locked --release -p studio-runtime-server
+      - uses: ./.github/actions/download-build-output
+        with:
+          name: rust-http-backend
+          directory: ${{ runner.temp }}/rust-http-backend
+      - name: Install the Rust HTTP backend for server contracts
+        run: install -D -m 0755 "$RUNNER_TEMP/rust-http-backend/studio-runtime-server" target/release/studio-runtime-server
       - name: Confirm hosted runner has no Codex executable
         run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
       - name: Run server shard
@@ -184,9 +256,12 @@ jobs:
 
   fast-rust:
     name: "Fast tier: Rust workspace (${{ matrix.partition }}/4)"
+    needs: rust-build-tests
+    # Run after a failed build too, so that each partition reports a failure, not a skip.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    # Cold workspace compilation takes 6–8 minutes; leave a separate budget for tests.
-    timeout-minutes: 25
+    # Partitions run 3–5 minutes of tests after about 2 minutes of setup.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -195,12 +270,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Require the Rust workspace test build
+        env:
+          BUILD_RESULT: ${{ needs.rust-build-tests.result }}
+        run: |
+          if [ "$BUILD_RESULT" != success ]; then
+            echo "::error::The Build: Rust workspace tests job ended with result $BUILD_RESULT." >&2
+            exit 1
+          fi
       - uses: ./.github/actions/fast-tier-setup
-      - uses: ./.github/actions/client-build-setup
+      # The native crate's tests link the WebView libraries at run time.
+      - uses: ./.github/actions/native-linux-deps
+      - uses: ./.github/actions/download-build-output
         with:
-          native: "true"
+          name: rust-workspace-tests
+          directory: ${{ runner.temp }}/rust-workspace-tests
+      - name: Restore the renderer build that the tests were compiled with
+        run: tar -xf "$RUNNER_TEMP/rust-workspace-tests/renderer.tar"
       - name: Run Rust workspace partition
-        run: just test-fast-rust-partition ${{ matrix.partition }} 4
+        run: just test-fast-rust-partition ${{ matrix.partition }} 4 "$RUNNER_TEMP/rust-workspace-tests/workspace.tar.zst"
       - name: Upload Rust nextest report
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

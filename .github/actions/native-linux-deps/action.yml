@@ -1,0 +1,11 @@
+name: Native Linux libraries
+description: Install the Linux WebView and tray libraries that the native desktop crate builds and runs against.
+runs:
+  using: composite
+  steps:
+    - name: Install native Linux build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
