@@ -736,6 +736,7 @@ pub async fn start_account_worker_with_publication_sink(
         effects,
         publication_sink,
         publication_retry_at: Some(tokio::time::Instant::now()),
+        publication_drain: None,
         closing: false,
         restart_recovery_started: false,
         restart_recovery: None,
@@ -901,6 +902,8 @@ struct Worker {
     effects: VecDeque<Effect>,
     publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
     publication_retry_at: Option<tokio::time::Instant>,
+    /// The single in-flight drain of this account's durable publication receipts.
+    publication_drain: Option<tokio::task::JoinHandle<Result<usize, WorkerError>>>,
     closing: bool,
     callbacks: BTreeMap<String, CallbackCursor>,
     managed_callback_cursors: BTreeSet<(Option<String>, Option<i64>, u64)>,
@@ -932,6 +935,7 @@ enum ServeSignal {
     Shutdown,
     Flush,
     PublicationRetry,
+    PublicationDrained(Result<Result<usize, WorkerError>, tokio::task::JoinError>),
     AuthWait,
     VmCredentialRefresh,
     AuthWaitChanged(Result<(), watch::error::RecvError>),
@@ -1084,6 +1088,11 @@ impl Worker {
             recovery.abort();
             let _joined = recovery.await;
         }
+        if let Some(drain) = self.publication_drain.take() {
+            // Receipts are deleted only after delivery, so a cut-off pass replays.
+            drain.abort();
+            let _joined = drain.await;
+        }
         self.connection_recovery.abort_all();
         for wait in std::mem::take(&mut self.preparation_waits).into_values() {
             wait.abort();
@@ -1184,12 +1193,6 @@ impl Worker {
                     commands: self.commands.clone(),
                 };
                 self.restart_recovery = Some(restart_recovery::start_first_pass(first_pass));
-            }
-            if self
-                .publication_retry_at
-                .is_some_and(|at| at <= tokio::time::Instant::now())
-            {
-                self.drain_publications().await?;
             }
             if self
                 .flush_at
@@ -1297,7 +1300,8 @@ impl Worker {
             // unbounded provider event stream below; the reverse order did.
             prepared = self.preparations.join_next(), if !self.preparations.is_empty() => ServeSignal::Prepared(prepared),
             _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => ServeSignal::Flush,
-            _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => ServeSignal::PublicationRetry,
+            _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() && self.publication_drain.is_none() => ServeSignal::PublicationRetry,
+            done = async { match self.publication_drain.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.publication_drain.is_some() => ServeSignal::PublicationDrained(done),
             _ = tokio::time::sleep_until(self.auth_wait_at.unwrap_or_else(tokio::time::Instant::now)), if self.auth_wait_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWait,
             _ = tokio::time::sleep_until(self.vm_credential_refresh_at.unwrap_or_else(tokio::time::Instant::now)), if self.vm_credential_refresh_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::VmCredentialRefresh,
             changed = self.auth_wait_changes.changed(), if self.resources.claude_account_pin.get("provider") == Some(&json!("claude")) && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWaitChanged(changed),
@@ -1316,7 +1320,8 @@ impl Worker {
         match signal {
             ServeSignal::Shutdown => self.closing = true,
             ServeSignal::Flush => self.flush().await?,
-            ServeSignal::PublicationRetry => self.drain_publications().await?,
+            ServeSignal::PublicationRetry => self.start_publication_drain(),
+            ServeSignal::PublicationDrained(done) => self.publication_drained(done)?,
             ServeSignal::AuthWait => self.probe_auth_waits().await?,
             ServeSignal::VmCredentialRefresh => self.refresh_vm_claude_credentials().await?,
             ServeSignal::AuthWaitChanged(changed) => {
@@ -3218,7 +3223,6 @@ impl Worker {
         self.streams = streams; // commit precedes buffer replacement and ACK
         self.arm_flush();
         self.schedule_publication_drain();
-        self.drain_publications().await?;
         let committed_any = !committed.is_empty();
         for (index, (entry, effect)) in committed.into_iter().enumerate() {
             #[cfg(not(test))]
@@ -3743,7 +3747,6 @@ impl Worker {
         self.flush_at = None;
         self.arm_flush();
         self.schedule_publication_drain();
-        self.drain_publications().await?;
         Ok(())
     }
     fn schedule_publication_drain(&mut self) {
@@ -3751,24 +3754,34 @@ impl Worker {
             self.publication_retry_at = Some(tokio::time::Instant::now());
         }
     }
-    async fn drain_publications(&mut self) -> Result<(), WorkerError> {
-        if self
-            .publication_retry_at
-            .is_some_and(|at| at > tokio::time::Instant::now())
-        {
-            return Ok(());
-        }
+    /// Delivery runs off the worker's serial path as one single-flight task, so a
+    /// slow sink or analytics transaction never delays a submission. A schedule
+    /// raised while it runs is kept in `publication_retry_at` for the next pass.
+    fn start_publication_drain(&mut self) {
+        self.publication_retry_at = None;
+        let bridge = self.bridge.clone();
         let account = self.account.clone();
         let sink = Arc::clone(&self.publication_sink);
-        match self
-            .db("drain_publications", move |store| async move {
-                store::drain_publications(store, account, sink).await
-            })
-            .await
-        {
+        self.publication_drain = Some(tokio::spawn(async move {
+            // Not a fault-injected worker operation: it runs beside the worker, so
+            // the crash matrix's operation order stays that of the serial path.
+            bridge
+                .run(move |store| async move {
+                    store::drain_publications(store, account, sink).await
+                })
+                .await
+        }));
+    }
+    fn publication_drained(
+        &mut self,
+        done: Result<Result<usize, WorkerError>, tokio::task::JoinError>,
+    ) -> Result<(), WorkerError> {
+        self.publication_drain = None;
+        match done.map_err(|_| WorkerError::TaskFailed)? {
             Ok(count) => {
-                self.publication_retry_at =
-                    (count == store::PUBLICATION_DRAIN_LIMIT).then(tokio::time::Instant::now);
+                if count == store::PUBLICATION_DRAIN_LIMIT {
+                    self.schedule_publication_drain();
+                }
                 Ok(())
             }
             Err(WorkerError::Notification(_)) => {

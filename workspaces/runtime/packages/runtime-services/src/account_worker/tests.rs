@@ -6,6 +6,7 @@ mod journal_cost;
 #[cfg(unix)]
 mod many_agents;
 mod publication_drain;
+mod publication_off_path;
 mod retained;
 mod steer;
 use super::*;

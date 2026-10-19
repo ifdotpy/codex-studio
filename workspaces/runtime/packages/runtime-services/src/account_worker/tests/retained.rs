@@ -1423,6 +1423,14 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
         ready.changed().await.unwrap();
     }
     worker_barrier(&worker).await;
+    // Delivery runs in the worker's own drain task, outside the command barrier.
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while publications.0.lock().expect("recorded").len() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("recovered publications delivered");
     let recovered = publications
         .0
         .lock()
