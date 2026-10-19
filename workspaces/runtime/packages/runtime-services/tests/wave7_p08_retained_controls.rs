@@ -194,15 +194,8 @@ async fn controls_caller_supplies_scope_and_bounds_the_retained_request_deadline
         assert_eq!(calls[0].identity.scope.epoch, 2);
         assert_eq!(
             calls[0].identity.scope.request_id.as_deref(),
-            Some(
-                format!(
-                    "stop-task:{}",
-                    studio_runtime_services::event_write::request_signature(&json!([
-                        "thread", "task"
-                    ]))
-                )
-                .as_str()
-            )
+            // SHA-256 of the Python JSON text `["thread", "task"]`.
+            Some("stop-task:e26e670c92bf185ae6ad6f81b8eb96770944cd906f864ebfd7a13e65f1377e00")
         );
     }
 }

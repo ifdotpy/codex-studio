@@ -935,12 +935,10 @@ mod tests {
         assert_eq!(calls[0].params["ephemeral"], true);
         assert!(calls[0].params["cwd"].as_str().is_some());
         assert_eq!(calls[0].params["model"], "claude-sonnet");
+        // SHA-256 of `claude-title-request`: the identity must not change between releases.
         assert_eq!(
             calls[1].params["clientUserMessageId"],
-            json!(format!(
-                "{}:turn",
-                super::operation_root("claude-title-request")
-            ))
+            "title:2eaab95462e7445c3b24d0010db46eebb6cfb82031b00f5180f483fa022f0089:turn"
         );
         assert_eq!(calls[1].params["model"], "claude-sonnet");
         assert_eq!(calls[2].method, Method::ThreadTurnsList);

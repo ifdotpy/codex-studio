@@ -291,25 +291,49 @@ mod tests {
     #[test]
     fn selections_return_exactly_the_unsettled_values_and_skip_malformed_rows() {
         let connection = database();
-        for selection in [MONITORS, REQUESTS, TOOL_REQUESTS] {
-            let field = selection.field;
-            let mut rows = selection
-                .values
-                .iter()
-                .map(|value| (format!("0-{value}"), format!(r#"{{"{field}":"{value}"}}"#)))
-                .collect::<Vec<_>>();
-            rows.extend([
-                (
-                    "1-settled".to_owned(),
-                    format!(r#"{{"{field}":"settled"}}"#),
-                ),
-                ("2-malformed".to_owned(), "{".to_owned()),
-                (
-                    "3-array".to_owned(),
-                    format!(r#"["{}"]"#, selection.values[0]),
-                ),
-            ]);
-            for (id, record) in &rows {
+        for (selection, rows, expected) in [
+            (
+                MONITORS,
+                [
+                    ("a", r#"{"status":"running"}"#),
+                    ("b", r#"{"status":"starting"}"#),
+                    ("c", r#"{"status":"approval"}"#),
+                    ("d", r#"{"status":"completed"}"#),
+                    ("e", r#"{"status":"pending"}"#),
+                    ("f", "{"),
+                    ("g", r#"["running"]"#),
+                ]
+                .as_slice(),
+                ["a", "b", "c"].as_slice(),
+            ),
+            (
+                REQUESTS,
+                [
+                    ("a", r#"{"status":"answering"}"#),
+                    ("b", r#"{"status":"pending"}"#),
+                    ("c", r#"{"status":"answered"}"#),
+                    ("d", r#"{"status":"running"}"#),
+                    ("e", "{"),
+                    ("f", r#"["pending"]"#),
+                ]
+                .as_slice(),
+                ["a", "b"].as_slice(),
+            ),
+            (
+                TOOL_REQUESTS,
+                [
+                    ("a", r#"{"stage":"queued"}"#),
+                    ("b", r#"{"stage":"running"}"#),
+                    ("c", r#"{"stage":"completed"}"#),
+                    ("d", r#"{"status":"queued"}"#),
+                    ("e", "{"),
+                    ("f", r#"["queued"]"#),
+                ]
+                .as_slice(),
+                ["a", "b"].as_slice(),
+            ),
+        ] {
+            for (id, record) in rows {
                 connection
                     .execute(
                         &format!("INSERT INTO {}(id,record) VALUES(?1,?2)", selection.table),
@@ -317,9 +341,15 @@ mod tests {
                     )
                     .expect("row");
             }
-            let mut expected = rows[..selection.values.len()].to_vec();
-            expected.sort();
-            assert_eq!(selection.rows(&connection).expect("rows"), expected);
+            let selected = selection.rows(&connection).expect("rows");
+            let ids = selected
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected, "{}", selection.table);
+            for (id, record) in &selected {
+                assert!(rows.contains(&(id.as_str(), record.as_str())), "{id}");
+            }
         }
     }
 

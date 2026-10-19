@@ -242,7 +242,7 @@ async fn legacy_receipt_keys_are_padded_once() {
             )?;
             assert_eq!(
                 publication,
-                format!("account-worker:{}:pending", store::publication_operation("default", 3, 1))
+                "account-worker:notification-publication:default:00000000000000000003:00000000000000000001:pending"
             );
             for cursor in [2, 10] {
                 assert!(store::journal_committed(tx, SCOPE, GENERATION, cursor)?);
@@ -253,10 +253,10 @@ async fn legacy_receipt_keys_are_padded_once() {
                 .collect::<Result<Vec<_>, _>>()?;
             assert_eq!(
                 ids,
-                [2, 10].map(|cursor| format!(
-                    "account-worker:{}:settled",
-                    store::journal_operation(SCOPE, GENERATION, cursor)
-                ))
+                [
+                    "account-worker:journal:default:7:00000000000000000002:settled",
+                    "account-worker:journal:default:7:00000000000000000010:settled",
+                ]
             );
             Ok(())
         })

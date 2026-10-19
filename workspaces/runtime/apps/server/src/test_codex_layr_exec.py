@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 from typing import Any
 import unittest
@@ -33,7 +32,9 @@ class ExecTests(unittest.TestCase):
         self.assertEqual(out.getvalue(), b'out\n')
         self.assertIn(b'operation op-1', err.getvalue())
         self.assertEqual(Client.calls, [('project.exec', {
-            'projectId': hashlib.sha256(b'/Users/me/app').hexdigest(), 'argv': ['pnpm', 'install'],
+            # SHA-256 of '/Users/me/app'.
+            'projectId': '844551840ebaec1d5a94e1bfc63b95b498e8fba8f4d9e7459bf4c75645002082',
+            'argv': ['pnpm', 'install'],
             'subpath': 'web', 'timeoutSeconds': 300}, 'op-1', 330)])
 
     def test_an_option_after_the_folder_is_not_run_as_the_command(self) -> None:

@@ -749,9 +749,8 @@ async fn stop_child(mut child: Child) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIRST_RETRY_DELAY, LINK_HEALTHY_RESET_AFTER, MAX_RETRY_DELAY, PeerLinkReady,
-        PeerLinkWorkState, PeerSource, forwarded_host, next_retry_delay, peers_for_source,
-        wait_ready_or_cancel,
+        FIRST_RETRY_DELAY, LINK_HEALTHY_RESET_AFTER, PeerLinkReady, PeerLinkWorkState, PeerSource,
+        forwarded_host, next_retry_delay, peers_for_source, wait_ready_or_cancel,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -760,11 +759,27 @@ mod tests {
     #[test]
     fn retry_backoff_is_bounded_and_starts_short() {
         assert_eq!(FIRST_RETRY_DELAY, Duration::from_millis(250));
-        let mut delay = FIRST_RETRY_DELAY;
-        for _ in 0..16 {
-            delay = next_retry_delay(delay);
+        for (current, next) in [
+            (250, 500),
+            (500, 1_000),
+            (1_000, 2_000),
+            (2_000, 4_000),
+            (4_000, 8_000),
+            (8_000, 16_000),
+            (16_000, 30_000),
+            (30_000, 30_000),
+        ] {
+            assert_eq!(
+                next_retry_delay(Duration::from_millis(current)),
+                Duration::from_millis(next),
+                "{current} ms"
+            );
         }
-        assert_eq!(delay, MAX_RETRY_DELAY);
+        assert_eq!(
+            next_retry_delay(Duration::MAX),
+            Duration::from_secs(30),
+            "saturating"
+        );
     }
 
     #[test]

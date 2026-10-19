@@ -8754,11 +8754,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 release_unapplied_steers(self, db, a, turn)
                 # A reserved, dispatching, or uncertain input still owns the
                 # child's continuation until its exact delivery is resolved.
+                # The input of the submitted start attempt that produced this
+                # turn is not such an input: its completion can arrive before
+                # the turn/start reply binds the batch to the turn. A submission
+                # reserved while no turn was active starts a new turn, so the
+                # only turn that can complete before its reply is its own. A
+                # submission reserved during an active turn can steer that turn
+                # and keeps the existing wait.
+                current_attempt = a.get("startAttempt") or {}
+                own_input = [a["id"] + ":initial"]
+                attempt_turn = current_attempt.get("turnId")
+                if (current_attempt.get("submitted")
+                        and current_attempt.get("epoch") == a["epoch"]
+                        and current_attempt.get("threadId") == a.get("threadId")
+                        and current_attempt.get("observedTurnId") in (None, turn.get("id"))
+                        and (attempt_turn == turn.get("id")
+                             or (attempt_turn is None
+                                 and not current_attempt.get("activeAtReservation")))):
+                    own_input.extend(event_id for event_id in current_attempt.get("events", [])
+                                     if isinstance(event_id, str))
                 pending = db.execute(
                     "SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND "
                     "(status IN ('pending','reserved') OR "
-                    "(id<>? AND status IN ('dispatching','uncertain'))) LIMIT 1",
-                    (a["id"], a["epoch"], a["id"] + ":initial"),
+                    "(id NOT IN (" + ",".join("?" for _ in own_input) + ") "
+                    "AND status IN ('dispatching','uncertain'))) LIMIT 1",
+                    (a["id"], a["epoch"], *own_input),
                 ).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
                 if (not a.get('executionMove') and not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)

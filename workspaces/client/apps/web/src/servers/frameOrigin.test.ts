@@ -72,6 +72,21 @@ it.each(["", "?studio-navigation=combined", "?studio-navigation=invalid"])(
   },
 );
 
+it("encodes server IDs as lowercase unpadded base32 in labels of at most 50 characters", () => {
+  for (const [id, host] of [
+    ["local", "studio-nrxwgylm.localhost"],
+    ["remote", "studio-ojsw233umu.localhost"],
+    ["A", "studio-ie.localhost"],
+    ["a", "studio-me.localhost"],
+    [
+      "7d265689-5a48-4aaa-85d6-54e0510fbb83",
+      "studio-g5sdenrvgy4dsljvme2dqljumfqwcljygvsdmljvgrstanjrgb.tgeyrygm.localhost",
+    ],
+  ]) {
+    expect(serverFrameHost(id), id).toBe(host);
+  }
+});
+
 it("gives native server views separate bundled origins", () => {
   const url = new URL(
     frameURL(
@@ -81,7 +96,7 @@ it("gives native server views separate bundled origins", () => {
     ),
   );
   expect(url.protocol).toBe("studio-view:");
-  expect(url.hostname).toBe(serverFrameHost("local"));
+  expect(url.hostname).toBe("studio-nrxwgylm.localhost");
   expect(url.searchParams.get("studio-server")).toBe("local");
 });
 

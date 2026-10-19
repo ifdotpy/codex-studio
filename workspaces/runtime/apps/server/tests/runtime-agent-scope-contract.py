@@ -24,6 +24,7 @@ from server_test_waits import HANG_GUARD_SECONDS
 sys.dont_write_bytecode = True
 ROOT = REPOSITORY_ROOT
 RUNNER = Path(__file__).with_name("runtime-agent-scope-scenario.py")
+RESULT_PREFIX = "SCENARIO-RESULT "
 SCENARIOS = (
     "tree-delete", "repeat-tree-delete", "lead-rename", "worker-rename", "lead-cwd",
     "restore", "single-delete", "rootid-change", "shared-room-change",
@@ -43,13 +44,16 @@ class RuntimeAgentRoomScope(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="runtime-agent-scope-test-",
                                          dir=os.environ.get("TMPDIR")) as scratch:
             env = dict(os.environ, TMPDIR=scratch, PYTHONDONTWRITEBYTECODE="1")
-            for scenario in SCENARIOS:
+            # One interpreter runs every scenario, each with a fresh Runtime and state directory.
+            result = subprocess.run(
+                [sys.executable, str(RUNNER), *SCENARIOS],
+                cwd=ROOT, env=env, capture_output=True, text=True, check=True,
+                timeout=HANG_GUARD_SECONDS)
+            outputs = [json.loads(line[len(RESULT_PREFIX):]) for line in result.stdout.splitlines()
+                       if line.startswith(RESULT_PREFIX)]
+            self.assertEqual([output["scenario"] for output in outputs], list(SCENARIOS))
+            for scenario, actual in zip(SCENARIOS, outputs):
                 with self.subTest(scenario=scenario):
-                    result = subprocess.run(
-                        [sys.executable, str(RUNNER), scenario],
-                        cwd=ROOT, env=env, capture_output=True, text=True, check=True,
-                        timeout=HANG_GUARD_SECONDS)
-                    actual = json.loads(result.stdout.strip().splitlines()[-1])
                     if scenario == "legacy-workspace-operation-recovery":
                         self.assertEqual(actual["result"], expected_workspace_recovery)
                     else:

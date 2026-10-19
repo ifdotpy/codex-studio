@@ -310,11 +310,26 @@ mod tests {
 
         let candidates = Repository::candidates(&connection).expect("candidates load");
         let ids = candidates.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
-        assert_eq!(ids.len(), falsey_values.len() + 1 + 1 + 6);
-        assert!(ids.iter().any(|id| id == "eligible-missing-markers"));
-        assert!(ids.iter().any(|id| id == "eligible-whitespace-object"));
-        assert!(ids.iter().all(|id| !id.starts_with("excluded-")));
-        assert!(!ids.iter().any(|id| id == "malformed"));
+        assert_eq!(
+            ids,
+            [
+                "eligible-0",
+                "eligible-1",
+                "eligible-2",
+                "eligible-3",
+                "eligible-4",
+                "eligible-5",
+                "eligible-6",
+                "eligible-missing-markers",
+                "eligible-scheduled-marker-0",
+                "eligible-scheduled-marker-1",
+                "eligible-scheduled-marker-2",
+                "eligible-scheduled-marker-3",
+                "eligible-scheduled-marker-4",
+                "eligible-scheduled-marker-5",
+                "eligible-whitespace-object",
+            ]
+        );
     }
 
     #[test]

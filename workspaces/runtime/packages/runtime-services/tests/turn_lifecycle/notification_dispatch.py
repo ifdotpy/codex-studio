@@ -31,7 +31,11 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
 # Claude bridge; no corpus case has that field, so the cases below are unchanged.
 # The asynchronous question id now comes from codex_questions.async_question_id
 # (same text as before), so the cases below are unchanged.
-_NOTIFICATION_GUARD_DIGEST = '7312dad6eb56247a853deb25a0b4d138e1908d471d0823bd745f086729b622b7'
+# Turn completion no longer counts the input of a submitted, unbound start
+# attempt that was reserved while no turn was active. The submission cases use
+# an unsubmitted attempt reserved while active, and long-completion's attempt
+# has no epoch or events, so the cases below are unchanged.
+_NOTIFICATION_GUARD_DIGEST = 'ef5cbb42330b7da8ae4b1cbc154caeae6fac7b6f6e517504cc16b8296044df64'
 assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
     'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:

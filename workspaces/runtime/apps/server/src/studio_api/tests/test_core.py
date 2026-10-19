@@ -1490,20 +1490,18 @@ print(api_schema_hash(openapi_document()))
         self.addCleanup(ApiContext._response_adapter.cache_clear)
         request = request_for(FederationManagementResponse)
         with patch("studio_api.context.TypeAdapter", wraps=TypeAdapter) as factory:
-            for value, status in (
-                ({"paired": True}, 200),
-                ({"invitation": "signed", "expires": 123, "warning": None}, 200),
+            for value, body in (
+                ({"paired": True}, b'{"paired":true}'),
+                ({"invitation": "signed", "expires": 123, "warning": None},
+                 b'{"invitation":"signed","expires":123,"warning":null}'),
                 # Production contract mismatches fail open with strict JSON.
-                ({"paired": "true"}, 200),
-                ({"paired": True, "unexpected": 1}, 200),
-                ({"paired": False}, 200),
+                ({"paired": "true"}, b'{"paired":"true"}'),
+                ({"paired": True, "unexpected": 1}, b'{"paired":true,"unexpected":1}'),
+                ({"paired": False}, b'{"paired":false}'),
             ):
                 response = self.context.send(request, value)
-                self.assertEqual(response.status_code, status)
-                if status == 200:
-                    self.assertEqual(bytes(response.body), json.dumps(value, separators=(",", ":")).encode())
-                else:
-                    self.assertNotIn("outcome", json.loads(bytes(response.body)))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(bytes(response.body), body)
             self.assertEqual(factory.call_count, 1)
 
     def test_sync_envelope_does_not_mutate_or_leak_between_responses(self) -> None:
