@@ -250,6 +250,8 @@ impl NotificationPostCommitSink for RecordingSink {
                 NotificationPostCommit::TokenRateStream(observation)
                 | NotificationPostCommit::TokenRateAssociation(observation)
                 | NotificationPostCommit::TokenRateUsage(observation)
+                | NotificationPostCommit::AnalyticsCaptured(observation)
+                | NotificationPostCommit::AnalyticsStreamCaptured(observation)
                 | NotificationPostCommit::Analytics { observation, .. }
                 | NotificationPostCommit::AnalyticsStream { observation, .. } => {
                     Some(observation.delivery.cursor)
@@ -842,30 +844,33 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
         })
         .await
         .expect("count bounded receipts");
-    assert!(pending <= store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64);
-    // Every acknowledged journal turn drains one bounded batch. These no-op
-    // provider frames are gates for the three remaining drain passes.
-    for index in 0..3 {
-        let cursor = peer
-            .frame(json!({
-                "method":"hook/started",
-                "params":{"threadId":"fake-thread-0","hookId":format!("drain-{index}")}
-            }))
-            .await;
-        peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
-    }
-    let pending = state
-        .bridge
-        .run(move |store| async move {
-            let connection = store.read()?;
-            Ok(connection.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .expect("count receipts after gated drains");
+    // Complete usage persists beyond the best-effort bound (at most the three
+    // effects of this one frame) until the off-path drain removes receipts.
+    assert!(pending <= store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64 + 3);
+    // The drain task delivers one bounded batch per pass and re-arms itself while
+    // a full batch remains, so the backlog empties without further journal turns.
+    let pending = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let pending = state
+                .bridge
+                .run(move |store| async move {
+                    let connection = store.read()?;
+                    Ok(connection.query_row(
+                        "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?)
+                })
+                .await
+                .expect("count receipts after drains");
+            if pending == 0 {
+                return pending;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("backlog drained");
     assert_eq!(pending, 0);
     worker.shutdown().await.expect("stop worker");
 }
