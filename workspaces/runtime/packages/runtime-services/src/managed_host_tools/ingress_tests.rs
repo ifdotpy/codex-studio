@@ -1639,11 +1639,23 @@ async fn managed_tools_match_python_rows_events_and_sync_projection() {
             .as_str()
             .unwrap();
         if actual["success"] == true {
+            let mut actual_value = serde_json::from_str::<Value>(actual_text).unwrap();
+            let mut expected_value = serde_json::from_str::<Value>(expected_text).unwrap();
+            if expected["tool"] == "orchestration_agent_manage" {
+                // A list revision hashes Python's dict key order. It is an
+                // opaque cursor identity; each backend checks its own cursors.
+                for value in [&mut actual_value, &mut expected_value] {
+                    if let Some(page) = value.as_object_mut()
+                        && page.remove("revision").is_some()
+                    {
+                        page.insert("revision".to_owned(), json!("normalized"));
+                    }
+                }
+            }
             assert_eq!(
-                serde_json::from_str::<Value>(actual_text).unwrap(),
-                serde_json::from_str::<Value>(expected_text).unwrap(),
-                "tool value for {}",
-                expected["tool"]
+                actual_value, expected_value,
+                "tool value for {} {}",
+                expected["tool"], expected["arguments"]
             );
         } else if expected["tool"] != "orchestration_send" || expected["result"]["success"] == true
         {
@@ -1698,7 +1710,12 @@ async fn managed_tools_match_python_rows_events_and_sync_projection() {
                 })
             })
             .collect::<Vec<_>>();
-        assert!(differences.is_empty(), "full rows differ: {differences:?}");
+        assert!(
+            differences.is_empty(),
+            "full rows differ after {} {}: {differences:?}",
+            expected["callId"],
+            expected["arguments"]
+        );
     }
 }
 
@@ -3278,4 +3295,122 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
             .contains("Only the owner can submit this task"),
         "{value}"
     );
+}
+
+#[tokio::test]
+async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
+    // Live cutover 4: orchestration_agent_manage answered "requires
+    // agent-management/runtime-driver" for every action.
+    let (_root, store, context) = fixture_arc().await;
+    let worker = template().value["agents"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let worker_for_finish = worker.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','completed','$.turnId',NULL,\
+                 '$.inFlight',json('false'),'$.lastCompletedTurn','turn-1','$.lastCompletedTurnStatus','completed') \
+                 WHERE id=?1",
+                [&worker_for_finish],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let manage = |rpc: &'static str, args: Value| {
+        let store = Arc::clone(&store);
+        let context = context.clone();
+        async move {
+            let frame = call(&context, rpc, "orchestration_agent_manage", args);
+            let ports = shared_ports(
+                crate::provider_callbacks::managed_tool_ports(
+                    &store,
+                    &context,
+                    &frame,
+                    Arc::new(tokio::sync::Notify::new()),
+                )
+                .unwrap(),
+            );
+            tool_reply(
+                dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports)
+                    .await
+                    .unwrap(),
+            )
+        }
+    };
+    let worker_record = |store: &RuntimeStore, id: &str| -> Value {
+        studio_runtime_store::AgentRepository::get(
+            &store.read().unwrap(),
+            &studio_runtime_store::AgentId::from(id),
+        )
+        .unwrap()
+        .unwrap()
+        .value()
+    };
+
+    let before = application_table_snapshot(&store);
+    let (success, value) = manage(
+        "manage-archive-unassign",
+        json!({"action":"restore","agent_id":worker,"unassign_work":true}),
+    )
+    .await;
+    assert!(!success);
+    assert_eq!(
+        value,
+        json!("unassign_work applies only to archive or archive_finished")
+    );
+    let (success, value) = manage(
+        "manage-archive-no-reason",
+        json!({"action":"archive","agent_id":worker}),
+    )
+    .await;
+    assert!(!success);
+    assert_eq!(
+        value,
+        json!("Give an archive reason with 1 to 1000 characters")
+    );
+    assert_eq!(
+        before,
+        application_table_snapshot(&store),
+        "refusals change no application rows"
+    );
+
+    let (success, archived) = manage(
+        "manage-archive",
+        json!({"action":"archive","agent_id":worker[..8],"reason":"Finished work"}),
+    )
+    .await;
+    assert!(success, "{archived}");
+    assert_eq!(archived["status"], "archived", "{archived}");
+    let record = worker_record(&store, &worker);
+    assert!(record["deletedAt"].is_number(), "{record}");
+    assert_eq!(record["agentArchive"]["reason"], "Finished work");
+    assert_eq!(
+        record["agentArchive"]["cleanupPending"], false,
+        "cleanup completes after the archive commits: {record}"
+    );
+    assert!(record.get("workspaceCleanupIntent").is_none(), "{record}");
+
+    let (success, inspected) = manage(
+        "manage-inspect",
+        json!({"action":"inspect","agent_id":worker}),
+    )
+    .await;
+    assert!(success, "{inspected}");
+    assert_eq!(inspected["canArchive"], false);
+    assert_eq!(inspected["blockers"], json!([]));
+
+    let (success, restored) = manage(
+        "manage-restore",
+        json!({"action":"restore","agent_id":worker}),
+    )
+    .await;
+    assert!(success, "{restored}");
+    assert_eq!(restored["status"], "restored", "{restored}");
+    let record = worker_record(&store, &worker);
+    assert!(record.get("deletedAt").is_none(), "{record}");
+    assert_eq!(record["status"], "paused");
+    assert_eq!(record["autoWake"], false);
 }

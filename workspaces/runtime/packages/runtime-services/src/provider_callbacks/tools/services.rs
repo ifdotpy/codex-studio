@@ -1,5 +1,6 @@
 //! Closed local service table. Every entry checks actor authority in the same
 //! transaction as its effects. No HTTP adapters and no user-authored substitutes.
+pub(crate) mod manage;
 pub(crate) mod messages;
 mod reads;
 #[cfg(test)]
@@ -689,6 +690,10 @@ pub(super) fn execute(
     if matches!(kind, ToolKind::MonitorInput) {
         return Err(CallbackError::Dependency("monitor-input-request-identity"));
     }
+    if matches!(kind, ToolKind::AgentManage) {
+        let (value, signals) = manage::execute(tx, snapshot, args, now)?;
+        return Ok(crate::managed_host_tools::Staged { value, signals });
+    }
     match kind {
         ToolKind::Spawn
         | ToolKind::Send
@@ -750,7 +755,9 @@ pub(super) fn execute(
             "agent-move/exact-native-history-and-paired-driver",
         )),
         ToolKind::Servers => Err(CallbackError::Dependency("multi-server/tool-coordinator")),
-        ToolKind::AgentManage => Err(CallbackError::Dependency("agent-management/runtime-driver")),
+        ToolKind::AgentManage => Err(CallbackError::Invalid(
+            "Agent management dispatch was not handled",
+        )),
         ToolKind::Speak => Err(CallbackError::Dependency("voice/provider-session")),
         ToolKind::HostExec => Err(CallbackError::Dependency("host-exec/layr-bridge")),
         ToolKind::Title => {
@@ -858,6 +865,38 @@ fn brief(value: &Value) -> Value {
     )
 }
 fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackError> {
+    let mut revision_rows = rows.clone();
+    for row in &mut revision_rows {
+        if row["entry"] == "agent"
+            && let Some(value) = row["value"].as_object_mut()
+        {
+            value.remove("status");
+        }
+    }
+    paginate(rows, &revision_rows, args, scope, Some(MODEL_PAGE_BYTES))
+}
+
+/// Model text bytes of one list page (Python `model_text_bytes` limit).
+const MODEL_PAGE_BYTES: usize = 13000;
+
+/// Python `model_page(rows, args, scope, byte_limit)`.
+fn model_page(
+    rows: Vec<Value>,
+    args: &Value,
+    scope: Value,
+    byte_limit: Option<usize>,
+) -> Result<Value, CallbackError> {
+    let revision_rows = rows.clone();
+    paginate(rows, &revision_rows, args, scope, byte_limit)
+}
+
+fn paginate(
+    rows: Vec<Value>,
+    revision_rows: &[Value],
+    args: &Value,
+    scope: Value,
+    byte_limit: Option<usize>,
+) -> Result<Value, CallbackError> {
     use base64::Engine;
     let limit = match args.get("limit") {
         None => 20,
@@ -867,14 +906,6 @@ fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackE
     };
     if !(1..=50).contains(&limit) {
         return Err(CallbackError::Invalid("limit must be 1 to 50"));
-    }
-    let mut revision_rows = rows.clone();
-    for row in &mut revision_rows {
-        if row["entry"] == "agent"
-            && let Some(value) = row["value"].as_object_mut()
-        {
-            value.remove("status");
-        }
     }
     let revision =
         studio_runtime_store::sha256_hex(json!([scope, revision_rows]).to_string().as_bytes())
@@ -897,11 +928,12 @@ fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackE
         0
     };
     let mut end = (offset + limit).min(rows.len());
-    while end > offset + 1
+    while let Some(byte_limit) = byte_limit
+        && end > offset + 1
         && json!([{"type":"inputText","text":json!(rows[offset..end]).to_string()}])
             .to_string()
             .len()
-            > 13000
+            > byte_limit
     {
         end -= 1;
     }

@@ -377,17 +377,6 @@ impl ManagementSnapshot {
             .filter(|row| row.get(field).and_then(Value::as_str) == Some(agent))
             .collect()
     }
-    fn tool_dependency(&self, agent: &Agent) -> Result<(), ManagementError> {
-        if !self
-            .owned("runtime_tool_requests", "agent", agent.id())
-            .is_empty()
-        {
-            return Err(ManagementError::Unavailable(
-                "tool-driver/archive-reconciliation",
-            ));
-        }
-        Ok(())
-    }
     fn has_active_voice_session(&self, agent: &Agent) -> bool {
         self.rows("voice_sessions").iter().any(|session| {
             session.get("agent").and_then(Value::as_str) == Some(agent.id())
@@ -680,7 +669,8 @@ fn has_releasable_deleted_work(snapshot: &ManagementSnapshot, agents: &[&Agent])
             })
     })
 }
-fn brief(record: &Value) -> Value {
+/// Python `codex_agent_management._brief`.
+pub(crate) fn brief(record: &Value) -> Value {
     Value::Object(
         BRIEF_FIELDS
             .iter()
@@ -871,13 +861,32 @@ fn decide_inner(
             target,
         } => {
             let agent = snapshot.authorize(actor, *epoch, target)?;
-            snapshot.tool_dependency(agent)?;
-            // Python inspection also consults preparation futures and scheduler liveness.
-            Err(ManagementError::Unavailable(
-                "account-worker/agent-inspection",
-            ))
+            inspect(snapshot, agent)
         }
     }
+}
+
+/// Python `manage_agent` action `inspect`. Python also reports in-memory
+/// thread preparations and the scheduler thread; this server keeps neither in
+/// memory, so it reports no preparation blocker and `schedulerAlive` as null.
+fn inspect(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, ManagementError> {
+    let archived = agent.flag("agentArchive");
+    if agent.flag("deletedAt") && !archived {
+        return Err(ManagementError::Invalid(
+            "This worker was deleted, not archived",
+        ));
+    }
+    let blockers = if archived {
+        Vec::new()
+    } else {
+        snapshot.blockers(agent, false)
+    };
+    Ok(Decision::result(json!({
+        "agent":brief(&agent.record),
+        "canArchive":!archived && blockers.is_empty(),
+        "blockers":blockers,
+        "schedulerAlive":Value::Null
+    })))
 }
 
 struct StopOptions<'a> {
@@ -1470,19 +1479,23 @@ mod lifecycle_scope_parity_tests {
             };
             assert_same_decision(&full_snapshot, &scoped_for(target), &inspect);
         }
-        // The descendant's own tool request decides its inspection in both.
+        // The descendant's own open tool request and task are its blockers in both.
         let inspect_nested = Action::Inspect {
             actor: "lead".to_owned(),
             epoch: 1,
             target: "nested".to_owned(),
         };
-        let Err(refusal) = decide_with_effects(&scoped_for("nested"), &inspect_nested, 10.0) else {
-            panic!("inspection is unavailable");
-        };
-        assert!(
-            format!("{refusal:?}").contains("tool-driver/archive-reconciliation"),
-            "{refusal:?}"
-        );
+        let inspected = decide_with_effects(&scoped_for("nested"), &inspect_nested, 10.0)
+            .expect("inspection reports blockers");
+        assert!(inspected.writes.is_empty());
+        assert_eq!(inspected.result["canArchive"], false);
+        let kinds = inspected.result["blockers"]
+            .as_array()
+            .expect("blockers")
+            .iter()
+            .map(|blocker| blocker["kind"].as_str().expect("kind"))
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["background_tasks", "tool_requests"]);
     }
 
     fn assert_same_decision(

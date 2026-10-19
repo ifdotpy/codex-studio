@@ -539,3 +539,50 @@ fn an_unapplied_disk_full_start_returns_the_exact_input_to_the_queue() {
     assert_eq!(event, ("failed".to_owned(), Some(message.to_owned())));
     assert_eq!(agent["status"], "failed", "{agent}");
 }
+
+/// Python `codex_agent_management.parked_after_turn`: a worker that asked to
+/// wait for an event during its turn is parked when that turn ends.
+#[test]
+fn a_park_requested_during_a_turn_takes_effect_when_the_turn_ends() {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({
+            "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-park",
+            "turnEpoch": 0, "error": null, "parkedEvent": "deploy", "parkAfterTurn": true,
+            "parkSequence": 1, "parkReceipt": {"event": "deploy", "epoch": 0, "sequence": 1},
+            "startAttempt": {
+                "id": "park", "epoch": 0, "submitted": true, "turnId": "turn-park",
+                "threadId": "thread", "accountKey": ACCOUNT, "events": ["message"],
+                "connectionGeneration": 1, "requestTicket": "ticket"
+            }
+        }),
+    );
+    connection
+        .execute_batch(
+            "INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);",
+        )
+        .expect("event writes");
+    let settled = with(&mut connection, |tx| {
+        SchedulerRepository::settle_terminal(
+            tx,
+            AGENT,
+            0,
+            "park",
+            "turn-park",
+            AgentStatus::Completed,
+            None,
+            "completed",
+            None,
+            &[],
+        )
+        .expect("settlement runs")
+    });
+    assert!(settled);
+    let agent = stored(&connection);
+    assert_eq!(agent["status"], "parked", "{agent}");
+    assert_eq!(agent["autoWake"], false);
+    assert!(agent.get("parkAfterTurn").is_none(), "{agent}");
+    assert_eq!(agent["parkedEvent"], "deploy");
+    assert_eq!(agent["parkReceipt"]["sequence"], 1);
+}

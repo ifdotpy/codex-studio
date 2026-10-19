@@ -561,9 +561,96 @@ pub(super) async fn dispatch(
                 WorkActionOutcome::Unknown(message) => unknown(json!(message), Vec::new()),
             }
         }
+        "orchestration_agent_manage" if super::services::manage::lifecycle_action(args) => {
+            return lifecycle_management(store, actor, args, now)
+                .await
+                .map(Some);
+        }
         _ => return Ok(None),
     };
     Ok(Some(dispatched))
+}
+
+/// Python `manage_agent` archive and restore. The shared lifecycle owner
+/// commits the decision, then completes the workspace cleanup it queued.
+async fn lifecycle_management(
+    store: std::sync::Arc<RuntimeStore>,
+    actor: &Actor,
+    args: &Value,
+    now: f64,
+) -> Result<DispatchedOperation, Error> {
+    // The same refusals as the in-transaction tool service.
+    if studio_runtime_store::truthy(actor.record().extra.get("executionMove")) {
+        return Ok(not_sent(Error::Invalid(
+            "The move is accepted. Finish this turn before the next task",
+        )));
+    }
+    if studio_runtime_store::truthy(actor.record().extra.get("remoteOrigin")) {
+        return Ok(not_sent(Error::Unavailable("multi-server/worker-call")));
+    }
+    let actor_value = actor.record().value();
+    let checked = store.read_transaction_with_error(|tx| {
+        let args = super::services::manage::resolved_args(tx, &actor_value, args)
+            .map_err(callback_refusal)?;
+        let (action, unassign_work) =
+            super::services::manage::checked_action(&args).map_err(callback_refusal)?;
+        let target = args["agent_id"]
+            .as_str()
+            .filter(|id| {
+                studio_runtime_store::system_reads::get(tx, "runtime_agents", id)
+                    .is_ok_and(|agent| agent.is_some())
+            })
+            .ok_or(Error::Invalid("Unknown managed agent"))?
+            .to_owned();
+        let actor_id = actor.record().id.0.clone();
+        let epoch = actor.record().epoch;
+        Ok::<_, Error>(if action == "archive" {
+            crate::agent_management::Action::Archive {
+                actor: actor_id,
+                epoch,
+                target,
+                reason: args["reason"].as_str().unwrap_or_default().to_owned(),
+                unassign_work,
+            }
+        } else {
+            crate::agent_management::Action::Restore {
+                actor: actor_id,
+                epoch,
+                target,
+            }
+        })
+    });
+    let action = match checked {
+        Ok(action) => action,
+        Err(error @ (Error::Store(_) | Error::Sqlite(_) | Error::Work(_))) => return Err(error),
+        // These checks only read; a refusal proves that nothing was applied.
+        Err(error) => return Ok(not_sent(error)),
+    };
+    match crate::agent_management_store::execute(store, &action, now).await {
+        Ok(value) => Ok(written(value, Vec::new())),
+        // Every decision refusal precedes its single writer transaction.
+        Err(crate::agent_management::ManagementError::Invalid(message)) => {
+            Ok(not_sent(Error::Invalid(message)))
+        }
+        Err(crate::agent_management::ManagementError::Unavailable(name)) => {
+            Ok(not_sent(Error::Unavailable(name)))
+        }
+        Err(crate::agent_management::ManagementError::Stored { .. }) => Ok(not_sent(
+            Error::Invalid("A stored team record is invalid; inspect it before managing workers"),
+        )),
+        // A store failure can follow the commit, for example in workspace cleanup.
+        Err(crate::agent_management::ManagementError::Store(error)) => Err(Error::Store(error)),
+    }
+}
+
+fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {
+    use crate::provider_callbacks::CallbackError as C;
+    match error {
+        C::Invalid(message) => Error::Invalid(message),
+        C::Dependency(name) => Error::Unavailable(name),
+        C::Store(error) => Error::Store(error),
+        _ => Error::Stale,
+    }
 }
 
 fn input_attempt(

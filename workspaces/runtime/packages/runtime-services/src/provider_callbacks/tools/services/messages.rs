@@ -557,7 +557,7 @@ pub(super) fn resolve_agent(
     )
 }
 
-fn resolve_visible_agent_prefix(
+pub(super) fn resolve_visible_agent_prefix(
     visible_ids: impl IntoIterator<Item = String>,
     supplied: &str,
 ) -> Result<String, CallbackError> {

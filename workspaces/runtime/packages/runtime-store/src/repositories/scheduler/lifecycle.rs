@@ -1371,6 +1371,9 @@ impl SchedulerRepository {
                 AgentStatus::Waiting
             };
         }
+        if current_attempt {
+            parked_after_turn(&mut agent);
+        }
         if native_status == "completed" && current_attempt {
             agent.extra.insert("complaintMisses".into(), json!(0));
         }
@@ -2537,6 +2540,21 @@ pub(super) fn completed_turn(
         [format!("{agent}:{turn}")],
         |row| row.get(0),
     )?)
+}
+
+/// Python `codex_agent_management.parked_after_turn`: a park requested during
+/// a turn takes effect when that turn ends; a stopped event waiter is parked.
+fn parked_after_turn(agent: &mut AgentRecord) {
+    if !agent.extra.get("parkedEvent").is_some_and(truthy) {
+        return;
+    }
+    if agent.extra.get("parkAfterTurn").is_some_and(truthy) {
+        agent.extra.remove("parkAfterTurn");
+        agent.extra.insert("autoWake".into(), json!(false));
+    }
+    if agent.extra.get("autoWake") != Some(&Value::Bool(true)) {
+        agent.status = AgentStatus::Parked;
+    }
 }
 
 pub(super) fn truthy(value: &Value) -> bool {

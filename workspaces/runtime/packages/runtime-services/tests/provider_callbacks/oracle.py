@@ -309,6 +309,7 @@ managed_cases = []
 managed_tables = {
     "orchestration_send": ["runtime_events", "runtime_event_meta", "runtime_rooms", "runtime_chat_messages", "runtime_agents", "runtime_complaints"],
     "orchestration_message": ["runtime_events", "runtime_rooms", "runtime_chat_messages", "runtime_complaints"],
+    "orchestration_agent_manage": ["runtime_agents", "runtime_events", "runtime_event_meta"],
     "orchestration_complaint": ["runtime_events", "runtime_complaints", "runtime_agents"],
     "orchestration_search": [],
     "orchestration_context": ["runtime_monitors"],
@@ -379,6 +380,32 @@ managed_call(lead,"orchestration_complaint",{"action":"respond","complaint_id":c
 managed_call(lead,"orchestration_search",{"query":"fixture"},8)
 managed_call(lead,"orchestration_context",{"topic":"monitor","id":managed_monitor["id"]},9)
 managed_call(lead,"orchestration_cancel_monitor",{"monitor_id":managed_monitor["id"]},10)
+# A lead's message to the user is a user-addressed message record. Python
+# resolves an orchestration_send agent_id, so "user" is refused there.
+managed_call(lead,"orchestration_send",{"agent_id":"user","text":"Report for the user"},13,allow_failure=True)
+managed_call(lead,"orchestration_message",{"target":"user","text":"  Second report  "},14)
+managed_call(worker,"orchestration_message",{"target":"user","text":"Worker report"},15,allow_failure=True)
+# Event waits: park, list, emit once per event name, replay, and cancel.
+parked = resolver_agents[0]["id"]
+cancelled = resolver_agents[1]["id"]
+managed_call(lead,"orchestration_agent_manage",{"action":"park","agent_id":parked,"event":"deploy-ready"},16)
+managed_call(worker,"orchestration_agent_manage",{"action":"park","agent_id":worker["id"],"event":"deploy-ready"},17,allow_failure=True)
+managed_call(lead,"orchestration_agent_manage",{"action":"list_parked"},18)
+managed_call(lead,"orchestration_agent_manage",{"action":"park","agent_id":parked,"event":"deploy-ready"},19)
+managed_call(worker,"orchestration_agent_manage",{"action":"emit_event","event":"deploy-ready","request_id":"emit-1"},20,allow_failure=True)
+managed_call(lead,"orchestration_agent_manage",{"action":"emit_event","event":"deploy-ready","request_id":"emit-1"},21)
+managed_call(lead,"orchestration_agent_manage",{"action":"emit_event","event":"deploy-ready","request_id":"emit-1"},22)
+managed_call(lead,"orchestration_agent_manage",{"action":"emit_event","event":"deploy-ready","request_id":"emit-2"},23)
+managed_call(lead,"orchestration_agent_manage",{"action":"park","agent_id":parked,"event":"deploy-ready"},24,allow_failure=True)
+managed_call(lead,"orchestration_agent_manage",{"action":"park","agent_id":cancelled,"event":"second event"},25,allow_failure=True)
+managed_call(lead,"orchestration_agent_manage",{"action":"park","agent_id":cancelled,"event":"second-event"},26)
+managed_call(lead,"orchestration_agent_manage",{"action":"cancel_park","agent_id":cancelled},27)
+managed_call(lead,"orchestration_agent_manage",{"action":"cancel_park","agent_id":cancelled},28)
+managed_call(lead,"orchestration_agent_manage",{"action":"list"},29)
+managed_call(lead,"orchestration_agent_manage",{"action":"list_archived"},30)
+managed_call(worker,"orchestration_agent_manage",{"action":"list"},31,allow_failure=True)
+managed_call(lead,"orchestration_agent_manage",{"action":"inspect","agent_id":parked,"unassign_work":True},32,allow_failure=True)
+managed_call(lead,"orchestration_agent_manage",{"action":"explode"},33,allow_failure=True)
 remote_worker = {**worker,"remoteOrigin":"source-server"}
 with managed.lock, managed.db() as db:
     managed.put(db,"agents",remote_worker)
@@ -386,11 +413,6 @@ managed_call(remote_worker,"orchestration_search",{"query":"fixture"},11)
 managed_call(remote_worker,"orchestration_context",{"topic":"monitor","id":managed_monitor["id"]},12)
 with managed.lock, managed.db() as db:
     managed.put(db,"agents",worker)
-# A lead's message to the user is a user-addressed message record. Python
-# resolves an orchestration_send agent_id, so "user" is refused there.
-managed_call(lead,"orchestration_send",{"agent_id":"user","text":"Report for the user"},13,allow_failure=True)
-managed_call(lead,"orchestration_message",{"target":"user","text":"  Second report  "},14)
-managed_call(worker,"orchestration_message",{"target":"user","text":"Worker report"},15,allow_failure=True)
 deleted_lead = {**lead,"deletedAt":20.0}
 with managed.lock, managed.db() as db:
     managed.put(db,"agents",deleted_lead)
