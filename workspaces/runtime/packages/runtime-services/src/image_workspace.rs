@@ -2170,18 +2170,23 @@ mod tests {
         assert!(
             matches!(manager.create_workspace(&project, "agent-1"), Err(ImageWorkspaceError::Backend(message)) if message == "failpoint:mount")
         );
-        let pending = manager.list_workspaces().expect("pending state");
-        assert_eq!(pending[0]["state"], "creating");
+        // list_workspaces follows directory order, so select the row by agent.
+        let agent_one = |label: &str| {
+            manager
+                .list_workspaces()
+                .expect(label)
+                .into_iter()
+                .find(|row| row["agentId"] == "agent-1")
+                .expect("agent-1 row")
+        };
+        assert_eq!(agent_one("pending state")["state"], "creating");
         fs::write(project.join("file.txt"), "changed under same repo identity")
             .expect("mutated source");
 
         let ready = manager
             .create_workspace(&project, "agent-1")
             .expect("workspace replay");
-        assert_eq!(
-            manager.list_workspaces().expect("ready state")[0]["state"],
-            "ready"
-        );
+        assert_eq!(agent_one("ready state")["state"], "ready");
         let workspace_file = PathBuf::from(ready["path"].as_str().expect("path")).join("file.txt");
         assert_eq!(
             fs::read_to_string(workspace_file).expect("synced file"),
