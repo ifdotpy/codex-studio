@@ -658,6 +658,18 @@ the toolchain and the hash of `Cargo.lock`, the `Cargo.toml` files, and
 - macOS and Windows are not CI targets in this workflow. M-09.1 owns the
   platform install, update, and rollback matrix that will define those jobs.
 
+## Live UI team acceptance
+
+`workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs` drives a live Studio
+backend through headless Chromium: it creates a lead chat in the dialog, types one
+prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
+counters and process load while the team runs. It deletes the chat and its agents
+afterward and checks that no provider or tool process leaked (`--keep` skips this).
+It is a manual, announced live run, outside every test tier. A small run:
+`PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
+workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
+lists the options. Evidence goes to a directory outside the checkout.
+
 ## Interpret evidence
 
 Report which suites actually ran, which failed, and which were excluded. A
