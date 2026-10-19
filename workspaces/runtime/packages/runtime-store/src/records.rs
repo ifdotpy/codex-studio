@@ -583,7 +583,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         self.list_with_raw_matching(None, RecordOrder::RowId)
     }
 
-    fn list_with_raw_matching(
+    pub(crate) fn list_with_raw_matching(
         &self,
         predicate: Option<RecordPredicate<'_>>,
         order: RecordOrder,

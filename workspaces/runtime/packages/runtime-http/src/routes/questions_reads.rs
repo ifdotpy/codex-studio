@@ -35,24 +35,18 @@ pub(crate) async fn questions(
         .and_then(Value::as_str)
         .map(str::to_owned);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/questions_reads",
-        move || {
-            let (agents, records) = store
-                .read_transaction(|transaction| {
-                    Ok((
-                        QuestionsReadsRepository::agents(transaction)?,
-                        QuestionsReadsRepository::questions(transaction)?,
-                    ))
-                })
-                .map_err(map_store_error)?;
-            let value = questions_reads::question_history(agent_id.as_deref(), agents, records)
-                .map_err(questions_error)?;
-            Ok::<_, ApiError>(value)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    // Only the asking agent's family and its requests are read, through read admission.
+    let family = agent_id.clone().unwrap_or_default();
+    let (agents, records) = store
+        .read_async("runtime-http/routes/questions_reads", move |transaction| {
+            let agents = QuestionsReadsRepository::agent_family(transaction, &family)?;
+            let records = QuestionsReadsRepository::requests_of_agents(transaction, &agents)?;
+            Ok::<_, studio_runtime_store::StoreError>((agents, records))
+        })
+        .await
+        .map_err(map_store_error)?;
+    let value = questions_reads::question_history(agent_id.as_deref(), agents, records)
+        .map_err(questions_error)?;
     Ok(Json(value))
 }
 
