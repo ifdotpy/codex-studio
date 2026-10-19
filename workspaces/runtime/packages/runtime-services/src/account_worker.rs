@@ -2824,7 +2824,9 @@ impl Worker {
         let actor_id = source.map(|source| source.actor_id.as_str());
         let actor_epoch = source.map(|source| source.epoch);
         let reclassify = !event.outcomes.is_empty();
-        for outcome in event.outcomes {
+        let outcome_count = event.outcomes.len();
+        let mut merged = None;
+        for (index, outcome) in event.outcomes.into_iter().enumerate() {
             if actor_id.is_some() && matches!(&outcome, SessionOutcome::GenerationClosed { .. }) {
                 let source_is_current = source.is_some_and(|source| {
                     self.vm_sessions
@@ -2995,31 +2997,33 @@ impl Worker {
             if turn_unsettled && let Some(context) = &pending {
                 self.thread_proofs.remove(&context.intent.agent_id);
             }
+            // The last outcome of a reply settles in its journal transaction.
+            if index + 1 == outcome_count
+                && event.journal.is_some()
+                && let Some(context) = pending
+            {
+                merged = Some(Box::new((
+                    store::OutcomeStep {
+                        account,
+                        resources,
+                        context,
+                        outcome,
+                        session_closed: closing,
+                    },
+                    id,
+                )));
+                continue;
+            }
             let settled = self
                 .db_identified("outcome", identity, move |store| async move {
                     store::outcome(store, account, resources, pending, outcome, closing).await
                 })
                 .await?;
-            let store::SettledOutcome {
-                retired: retire,
-                effect,
-                loaded,
-            } = settled;
-            // A VM actor's thread lives in its own session, not this connection.
-            if actor_id.is_none()
-                && let Some(loaded) = loaded
-            {
-                self.thread_proofs.insert(loaded.agent_id.clone(), loaded);
-            }
-            if retire && let Some(id) = id {
-                self.pending.remove(&id);
-            }
-            if let Some(effect) = effect {
-                self.push(effect);
-            }
+            self.settled_outcome(settled, id, actor_id);
         }
         if let Some(entry) = event.journal {
-            self.journal(entry, source, settle).await?;
+            self.journal_batch_with(vec![entry], source, settle, merged)
+                .await?;
         }
         if reclassify {
             for _ in 0..self.deferred.len() {
@@ -3046,6 +3050,31 @@ impl Worker {
         }
         self.complete_retained().await?;
         Ok(())
+    }
+    /// Apply a committed outcome to the worker's in-memory request state.
+    fn settled_outcome(
+        &mut self,
+        settled: store::SettledOutcome,
+        id: Option<RequestId>,
+        actor_id: Option<&str>,
+    ) {
+        let store::SettledOutcome {
+            retired,
+            effect,
+            loaded,
+        } = settled;
+        // A VM actor's thread lives in its own session, not this connection.
+        if actor_id.is_none()
+            && let Some(loaded) = loaded
+        {
+            self.thread_proofs.insert(loaded.agent_id.clone(), loaded);
+        }
+        if retired && let Some(id) = id {
+            self.pending.remove(&id);
+        }
+        if let Some(effect) = effect {
+            self.push(effect);
+        }
     }
     fn retire_vm_actor(&mut self, actor_id: &str) {
         let had_active_claude_vm = self.has_active_claude_vm_sessions();
@@ -3181,6 +3210,19 @@ impl Worker {
         source: Option<&VmActorIdentity>,
         settle: bool,
     ) -> Result<bool, WorkerError> {
+        self.journal_batch_with(entries, source, settle, None).await
+    }
+    /// Journal `entries` in one transaction that first settles `outcome`, the
+    /// request outcome their reply carries, with its pending request id.
+    async fn journal_batch_with(
+        &mut self,
+        entries: Vec<JournalEntry>,
+        source: Option<&VmActorIdentity>,
+        settle: bool,
+        outcome: Option<Box<(store::OutcomeStep, Option<RequestId>)>>,
+    ) -> Result<bool, WorkerError> {
+        let (outcome, outcome_id) = outcome.map(|merged| *merged).unzip();
+        let outcome = outcome.map(Box::new);
         #[cfg(test)]
         self.bridge
             .faults
@@ -3227,15 +3269,19 @@ impl Worker {
                         .map(|(actor, epoch)| (actor.as_str(), *epoch)),
                     native_source,
                     delivered,
+                    outcome,
                 )
                 .await;
                 Ok((streams, result))
             })
             .await?;
         self.streams = previous;
-        let Some((streams, committed, deferred)) = committed? else {
+        let Some((streams, committed, deferred, settled)) = committed? else {
             return Err(WorkerError::TaskFailed);
         };
+        if let Some(settled) = settled {
+            self.settled_outcome(settled, outcome_id.flatten(), actor_id);
+        }
         let had_deferred = !deferred.is_empty();
         self.deferred
             .extend(deferred.into_iter().map(|entry| (entry, source.cloned())));

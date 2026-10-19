@@ -868,154 +868,146 @@ pub(super) async fn outcome(
         return Ok(SettledOutcome::default());
     };
     let state_root = store.root().to_path_buf();
-    scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let i = &context.intent;
-        if context.method()? == Method::TurnSteer {
-            let wake = steer::outcome(tx, &context, &outcome)?;
-            if let SessionOutcome::Write {
-                outcome: WriteOutcome::Written,
-                recovery: Some(request),
-                ..
-            } = &outcome
-            {
-                save(tx, &context.operation, "written", record(request))?;
-            }
-            let retired = matches!(
-                outcome,
-                SessionOutcome::Resolved { .. }
-                    | SessionOutcome::Write {
-                        outcome: WriteOutcome::NotSent,
-                        ..
-                    }
-            );
-            if retired {
-                forget_request(tx, &context.operation)?;
-            }
-            return Ok(SettledOutcome {
-                retired,
-                effect: wake.map(|(agent, epoch)| Effect::Wake(agent, epoch)),
-                loaded: None,
-            });
+    let step = OutcomeStep {
+        account,
+        resources,
+        context,
+        outcome,
+        session_closed,
+    };
+    scheduler::lifecycle_transaction_with(&store, move |tx| settle_outcome(tx, &state_root, step))
+        .await
+}
+
+/// One request outcome to settle; `session_closed` is true while the worker
+/// settles its ended session's outcomes.
+pub(super) struct OutcomeStep {
+    pub account: String,
+    pub resources: Arc<preparation::PreparationResources>,
+    pub context: Pending,
+    pub outcome: SessionOutcome,
+    pub session_closed: bool,
+}
+
+/// Settle one request outcome inside a canvas transaction.
+fn settle_outcome(
+    tx: &studio_runtime_store::Transaction<'_>,
+    state_root: &std::path::Path,
+    step: OutcomeStep,
+) -> Result<SettledOutcome, WorkerError> {
+    let OutcomeStep {
+        account,
+        resources,
+        context,
+        outcome,
+        session_closed,
+    } = step;
+    let i = &context.intent;
+    if context.method()? == Method::TurnSteer {
+        let wake = steer::outcome(tx, &context, &outcome)?;
+        if let SessionOutcome::Write {
+            outcome: WriteOutcome::Written,
+            recovery: Some(request),
+            ..
+        } = &outcome
+        {
+            save(tx, &context.operation, "written", record(request))?;
         }
-        let mut effect = None;
-        let mut loaded = None;
-        let retired = match outcome {
-            SessionOutcome::Write {
-                outcome: WriteOutcome::Written,
-                recovery: Some(request),
-                ..
-            } => {
-                save(tx, &context.operation, "written", record(&request))?;
-                false
-            }
-            SessionOutcome::Write {
-                outcome: WriteOutcome::Written,
-                ..
-            } => false,
-            SessionOutcome::Write {
-                outcome, ticket, ..
-            } => {
-                let not_sent = outcome == WriteOutcome::NotSent;
-                uncertain(tx, &context, ticket.as_ref(), not_sent, session_closed)? || not_sent
-            }
-            SessionOutcome::Resolved {
-                outcome: RequestOutcome::Unknown,
-                ticket,
-            } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
-            SessionOutcome::Resolved {
-                ticket,
-                outcome: RequestOutcome::Reply { body, .. },
-            } => {
-                match context.method()? {
-                    Method::ThreadResume | Method::ThreadStart => {
-                        if let ResponseBody::Result(ref value) = body
-                            && let Some((next, thread)) = preparation::accept_thread(
-                                tx,
-                                &state_root,
-                                &resources,
-                                &context,
-                                &ticket,
-                                value,
-                            )?
-                        {
-                            effect = Some(next);
-                            loaded = Some(thread);
-                        } else {
-                            // Name the provider's own error; a rejected reply names
-                            // the identity check. The input is never sent here.
-                            let detail = match &body {
-                                ResponseBody::Error(error) => error["message"]
-                                    .as_str()
-                                    .map(|message| message.chars().take(300).collect::<String>())
-                                    .unwrap_or_else(|| "provider error".to_owned()),
-                                ResponseBody::Result(_) => {
-                                    "the reply does not match the prepared thread".to_owned()
-                                }
-                            };
-                            let reason = format!(
-                                "Provider thread resume failed ({detail}); input remains pending."
-                            );
-                            let reason = reason.as_str();
-                            let current =
-                                AgentRepository::get(tx, &AgentId::from(i.agent_id.as_str()))?;
-                            if current.as_ref().is_some_and(|a| {
-                                a.epoch == i.epoch
-                                    && account_key(a) == account
-                                    && a.extra
-                                        .get("startOutcomeHold")
-                                        .is_some_and(|h| h["operationId"] == context.operation)
-                            }) {
-                                hold_thread_receipt(tx, &context, ticket.generation, reason)?;
-                            } else {
-                                SchedulerRepository::settle_start_outcome(
-                                    tx,
-                                    &i.identity(),
-                                    "held",
-                                    Some(reason),
-                                )?;
+        let retired = matches!(
+            outcome,
+            SessionOutcome::Resolved { .. }
+                | SessionOutcome::Write {
+                    outcome: WriteOutcome::NotSent,
+                    ..
+                }
+        );
+        if retired {
+            forget_request(tx, &context.operation)?;
+        }
+        return Ok(SettledOutcome {
+            retired,
+            effect: wake.map(|(agent, epoch)| Effect::Wake(agent, epoch)),
+            loaded: None,
+        });
+    }
+    let mut effect = None;
+    let mut loaded = None;
+    let retired = match outcome {
+        SessionOutcome::Write {
+            outcome: WriteOutcome::Written,
+            recovery: Some(request),
+            ..
+        } => {
+            save(tx, &context.operation, "written", record(&request))?;
+            false
+        }
+        SessionOutcome::Write {
+            outcome: WriteOutcome::Written,
+            ..
+        } => false,
+        SessionOutcome::Write {
+            outcome, ticket, ..
+        } => {
+            let not_sent = outcome == WriteOutcome::NotSent;
+            uncertain(tx, &context, ticket.as_ref(), not_sent, session_closed)? || not_sent
+        }
+        SessionOutcome::Resolved {
+            outcome: RequestOutcome::Unknown,
+            ticket,
+        } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
+        SessionOutcome::Resolved {
+            ticket,
+            outcome: RequestOutcome::Reply { body, .. },
+        } => {
+            match context.method()? {
+                Method::ThreadResume | Method::ThreadStart => {
+                    if let ResponseBody::Result(ref value) = body
+                        && let Some((next, thread)) = preparation::accept_thread(
+                            tx, state_root, &resources, &context, &ticket, value,
+                        )?
+                    {
+                        effect = Some(next);
+                        loaded = Some(thread);
+                    } else {
+                        // Name the provider's own error; a rejected reply names
+                        // the identity check. The input is never sent here.
+                        let detail = match &body {
+                            ResponseBody::Error(error) => error["message"]
+                                .as_str()
+                                .map(|message| message.chars().take(300).collect::<String>())
+                                .unwrap_or_else(|| "provider error".to_owned()),
+                            ResponseBody::Result(_) => {
+                                "the reply does not match the prepared thread".to_owned()
                             }
+                        };
+                        let reason = format!(
+                            "Provider thread resume failed ({detail}); input remains pending."
+                        );
+                        let reason = reason.as_str();
+                        let current =
+                            AgentRepository::get(tx, &AgentId::from(i.agent_id.as_str()))?;
+                        if current.as_ref().is_some_and(|a| {
+                            a.epoch == i.epoch
+                                && account_key(a) == account
+                                && a.extra
+                                    .get("startOutcomeHold")
+                                    .is_some_and(|h| h["operationId"] == context.operation)
+                        }) {
+                            hold_thread_receipt(tx, &context, ticket.generation, reason)?;
+                        } else {
+                            SchedulerRepository::settle_start_outcome(
+                                tx,
+                                &i.identity(),
+                                "held",
+                                Some(reason),
+                            )?;
                         }
                     }
-                    Method::TurnStart => match body {
-                        ResponseBody::Result(value) => {
-                            if let Some(turn) =
-                                value["turn"]["id"].as_str().filter(|s| !s.is_empty())
-                            {
-                                if SchedulerRepository::settle_started_provider(
-                                    tx,
-                                    &i.agent_id,
-                                    i.epoch,
-                                    &i.attempt_id,
-                                    &id_string(&ticket.id),
-                                    &i.account_key,
-                                    ticket.generation,
-                                    i.thread_id.as_deref().unwrap_or(""),
-                                    turn,
-                                )? == Some(true)
-                                {
-                                    effect = Some(Effect::Interrupt {
-                                        agent: i.agent_id.clone(),
-                                        thread: i.thread_id.clone().unwrap_or_default(),
-                                        turn: turn.into(),
-                                    });
-                                }
-                                preparation::accept_turn(tx, &context, &ticket, turn)?;
-                            } else {
-                                SchedulerRepository::settle_start_outcome(
-                                    tx,
-                                    &i.identity(),
-                                    "uncertain",
-                                    None,
-                                )?;
-                                return Ok(SettledOutcome::default());
-                            }
-                        }
-                        ResponseBody::Error(error) => {
-                            if crate::disk_space::is_disk_full_error(&error) {
-                                // Hold new starts for the recheck interval.
-                                crate::disk_space::observe_full();
-                            }
-                            SchedulerRepository::settle_start_rejected_provider(
+                }
+                Method::TurnStart => match body {
+                    ResponseBody::Result(value) => {
+                        if let Some(turn) = value["turn"]["id"].as_str().filter(|s| !s.is_empty()) {
+                            if SchedulerRepository::settle_started_provider(
                                 tx,
                                 &i.agent_id,
                                 i.epoch,
@@ -1024,48 +1016,80 @@ pub(super) async fn outcome(
                                 &i.account_key,
                                 ticket.generation,
                                 i.thread_id.as_deref().unwrap_or(""),
-                                error,
+                                turn,
+                            )? == Some(true)
+                            {
+                                effect = Some(Effect::Interrupt {
+                                    agent: i.agent_id.clone(),
+                                    thread: i.thread_id.clone().unwrap_or_default(),
+                                    turn: turn.into(),
+                                });
+                            }
+                            preparation::accept_turn(tx, &context, &ticket, turn)?;
+                        } else {
+                            SchedulerRepository::settle_start_outcome(
+                                tx,
+                                &i.identity(),
+                                "uncertain",
+                                None,
                             )?;
+                            return Ok(SettledOutcome::default());
                         }
-                    },
-                    Method::TurnInterrupt => {
-                        SchedulerRepository::settle_interrupt(
+                    }
+                    ResponseBody::Error(error) => {
+                        if crate::disk_space::is_disk_full_error(&error) {
+                            // Hold new starts for the recheck interval.
+                            crate::disk_space::observe_full();
+                        }
+                        SchedulerRepository::settle_start_rejected_provider(
                             tx,
+                            &i.agent_id,
+                            i.epoch,
+                            &i.attempt_id,
                             &id_string(&ticket.id),
+                            &i.account_key,
                             ticket.generation,
-                            if matches!(body, ResponseBody::Error(_)) {
-                                "rejected"
-                            } else {
-                                "accepted"
-                            },
+                            i.thread_id.as_deref().unwrap_or(""),
+                            error,
                         )?;
                     }
-                    _ => {}
+                },
+                Method::TurnInterrupt => {
+                    SchedulerRepository::settle_interrupt(
+                        tx,
+                        &id_string(&ticket.id),
+                        ticket.generation,
+                        if matches!(body, ResponseBody::Error(_)) {
+                            "rejected"
+                        } else {
+                            "accepted"
+                        },
+                    )?;
                 }
-                true
+                _ => {}
             }
-            _ => false,
-        };
-        if retired {
-            // A retained Submit owns the same prepared/request identity. Retire
-            // it with that identity's guard, never in an independent commit.
-            if context.method()? == Method::TurnStart
-                && let Some(key) = effect_key(&account, &Effect::Submit(i.clone()))
-            {
-                delete_effect(tx, &key)?;
-            }
-            forget_request(tx, &context.operation)?;
+            true
         }
-        if let Some(effect) = &effect {
-            persist_effect(tx, &account, effect)?;
+        _ => false,
+    };
+    if retired {
+        // A retained Submit owns the same prepared/request identity. Retire
+        // it with that identity's guard, never in an independent commit.
+        if context.method()? == Method::TurnStart
+            && let Some(key) = effect_key(&account, &Effect::Submit(i.clone()))
+        {
+            delete_effect(tx, &key)?;
         }
-        Ok(SettledOutcome {
-            retired,
-            effect,
-            loaded,
-        })
+        forget_request(tx, &context.operation)?;
+    }
+    if let Some(effect) = &effect {
+        persist_effect(tx, &account, effect)?;
+    }
+    Ok(SettledOutcome {
+        retired,
+        effect,
+        loaded,
     })
-    .await
 }
 
 pub(super) async fn disconnect_vm_actor(
@@ -1160,9 +1184,10 @@ pub(super) async fn journal_batch(
     expected_vm_actor: Option<(&str, i64)>,
     native_source: Option<crate::notification_dispatch::NativeProcessSource>,
     delivered: Vec<DeliveredPublication>,
+    outcome: Option<Box<OutcomeStep>>,
 ) -> Result<JournalBatchResult, WorkerError> {
-    if entries.is_empty() {
-        return Ok(Some((streams.clone(), Vec::new(), Vec::new())));
+    if entries.is_empty() && outcome.is_none() {
+        return Ok(Some((streams.clone(), Vec::new(), Vec::new(), None)));
     }
     let needs_limits = entries.iter().any(|entry| {
         matches!(
@@ -1211,9 +1236,14 @@ pub(super) async fn journal_batch(
     let expected_vm_actor = expected_vm_actor.map(|(actor, epoch)| (actor.to_owned(), epoch));
     let analytics_link = store.analytics_connection();
     let streams = streams.clone();
+    let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         // Before this batch's receipts are counted against their bound.
         delete_delivered_publications(tx, &delivered)?;
+        // The outcome a reply carries settles before its own journal entry.
+        let settled = outcome
+            .map(|step| settle_outcome(tx, &state_root, *step))
+            .transpose()?;
         with_analytics_commit(&analytics_link, |analytics| {
             let mut next = streams.clone();
             let mut committed = Vec::with_capacity(entries.len());
@@ -1270,7 +1300,7 @@ pub(super) async fn journal_batch(
                     .into_iter()
                     .try_for_each(|generation| compact(tx, &journal_scope, generation))
             })?;
-            Ok(Some((next, committed, deferred)))
+            Ok(Some((next, committed, deferred, settled)))
         })
     })
     .await
@@ -2075,6 +2105,7 @@ type JournalBatchResult = Option<(
     NotificationStreamBuffer,
     Vec<(JournalEntry, Option<Effect>)>,
     Vec<JournalEntry>,
+    Option<SettledOutcome>,
 )>;
 #[derive(Clone, Copy)]
 struct JournalIdentity<'a> {

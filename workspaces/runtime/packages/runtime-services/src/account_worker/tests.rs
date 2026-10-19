@@ -4763,6 +4763,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         Some(("vm-actor", 4)),
         None,
         Vec::new(),
+        None,
     )
     .await
     .unwrap()
@@ -4796,6 +4797,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         Some(("vm-sibling", 6)),
         None,
         Vec::new(),
+        None,
     )
     .await
     .unwrap()
