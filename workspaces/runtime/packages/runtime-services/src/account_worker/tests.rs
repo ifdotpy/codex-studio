@@ -552,10 +552,13 @@ impl Peer {
         .unwrap()
     }
     async fn next_write(&mut self) -> Wire {
-        tokio::time::timeout(std::time::Duration::from_secs(120), self.writes.recv())
-            .await
-            .expect("provider write deadline")
-            .expect("worker submits request")
+        // An injected crash ends the scenario at once; no write will follow.
+        tokio::select! {
+            () = crashed() => panic!("injected crash ended the scenario"),
+            write = tokio::time::timeout(std::time::Duration::from_secs(120), self.writes.recv()) => {
+                write.expect("provider write deadline").expect("worker submits request")
+            }
+        }
     }
     async fn write(&mut self, method: &str) -> Value {
         let wire = self.next_write().await;
@@ -1407,6 +1410,9 @@ async fn scenario_cancel_queued_input_prevents_provider_admission() {
     state.wake(&worker).await;
     // A read through the worker lane proves Stop and Wake were processed.
     worker_barrier(&worker).await;
+    if injected() {
+        return;
+    }
     assert!(state.record().await["epoch"].as_i64().unwrap() > state.epoch);
     worker.shutdown().await.unwrap();
     assert!(peer.writes.try_recv().is_err());
@@ -1983,6 +1989,9 @@ async fn scenario_foreign_account_stop_cannot_revoke_agent() {
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
+    if injected() {
+        return;
+    }
     let agent = state.agent.clone();
     state
         .bridge
@@ -2196,29 +2205,57 @@ async fn wait_for_cursor_or_injection(peer: &mut Peer, cursor: u64) -> bool {
     }
 }
 
+/// Completes when the matrix injects its crash into this scenario; never in a plain test.
+async fn crashed() {
+    match MATRIX.try_with(Arc::clone) {
+        Ok(context) => context.faults.fired_notify.notified().await,
+        Err(_) => std::future::pending().await,
+    }
+}
+
+/// True once the matrix has injected its crash into this scenario's worker.
+fn injected() -> bool {
+    MATRIX
+        .try_with(|context| {
+            context
+                .faults
+                .fired
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+}
+
+/// Waits until the worker has processed every earlier command, or returns at
+/// once when an injected crash killed it before it could answer.
 async fn worker_barrier(worker: &AccountHandle) {
-    while !worker
-        .faults
-        .startup_recovery_done
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        let notified = worker.faults.startup_recovery.notified();
-        tokio::pin!(notified);
-        if worker
+    let barrier = async {
+        while !worker
             .faults
             .startup_recovery_done
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            break;
+            let notified = worker.faults.startup_recovery.notified();
+            tokio::pin!(notified);
+            if worker
+                .faults
+                .startup_recovery_done
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            notified.await;
         }
-        notified.await;
+        let (reply, done) = oneshot::channel();
+        worker.send(AccountCommand::Barrier(reply)).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(120), done)
+            .await
+            .expect("worker command deadline")
+            .expect("worker command barrier");
+    };
+    if injected() {
+        return;
     }
-    let (reply, done) = oneshot::channel();
-    worker.send(AccountCommand::Barrier(reply)).await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(120), done)
-        .await
-        .expect("worker command deadline")
-        .expect("worker command barrier");
+    tokio::select! { () = crashed() => {}, () = barrier => {} }
 }
 
 /// Bounds how long a finished turn preparation may wait for submission while
@@ -5715,6 +5752,9 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     state.wake(&worker).await;
     worker_barrier(&worker).await;
+    if injected() {
+        return;
+    }
     let pending = state.record().await;
     assert_eq!(pending["status"], "starting");
     assert_eq!(

@@ -563,12 +563,13 @@ pub(super) async fn scenario_preparation_drains_journal_and_stop() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("workspace".into());
     state.wake(&worker).await;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        state.bridge.faults.paused.notified(),
-    )
-    .await
-    .unwrap();
+    tokio::select! {
+        () = crashed() => return,
+        paused = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            state.bridge.faults.paused.notified(),
+        ) => paused.unwrap(),
+    }
     let marker = peer
         .frame(json!({"method":"test/barrier","params":{}}))
         .await;
@@ -579,7 +580,7 @@ pub(super) async fn scenario_preparation_drains_journal_and_stop() {
         })
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+    let committed = tokio::time::timeout(std::time::Duration::from_secs(120), async {
         loop {
             if state
                 .bridge
@@ -594,9 +595,11 @@ pub(super) async fn scenario_preparation_drains_journal_and_stop() {
             }
             tokio::task::yield_now().await;
         }
-    })
-    .await
-    .expect("stop commits while filesystem preparation remains paused");
+    });
+    tokio::select! {
+        () = crashed() => return,
+        committed = committed => committed.expect("stop commits while filesystem preparation remains paused"),
+    }
     assert!(state.record().await["epoch"].as_i64().unwrap() > state.epoch);
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     state.bridge.faults.release.notify_one();
