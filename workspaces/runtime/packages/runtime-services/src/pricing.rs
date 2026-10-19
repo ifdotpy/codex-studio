@@ -1,6 +1,8 @@
 //! Validated model pricing and token cost calculation.
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
 use serde_json::Value;
 use thiserror::Error;
@@ -37,6 +39,36 @@ struct PriceTier {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PricingCatalog {
     models: BTreeMap<(String, String), Rates>,
+}
+
+/// Path of the models.dev pricing artifact under the state root.
+const PRICING_ARTIFACT: &str = "model-pricing/models-dev-v1.json";
+
+/// The pricing artifact (about 6 MB of JSON) parsed once per file version.
+pub struct LoadedPricing {
+    /// `None` when the artifact is not a valid version-1 catalog.
+    pub catalog: Option<PricingCatalog>,
+    /// Cache signature of the catalog, which stored session costs record.
+    pub signature: Option<String>,
+}
+
+static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
+    LazyLock::new(crate::file_derived::FileDerived::default);
+
+/// The current pricing artifact of `state_root`, derived again only after the file changed.
+/// `None` when the file is missing or unreadable.
+pub fn load_pricing(state_root: &Path) -> Option<Arc<LoadedPricing>> {
+    LOADED.get_or_load(&state_root.join(PRICING_ARTIFACT), |path| {
+        let artifact = serde_json::from_slice::<Value>(&std::fs::read(path).ok()?).ok();
+        let catalog_value = artifact
+            .as_ref()
+            .filter(|artifact| artifact.get("version").and_then(Value::as_u64) == Some(1))
+            .and_then(|artifact| artifact.get("catalog"));
+        Some(LoadedPricing {
+            catalog: catalog_value.and_then(|value| PricingCatalog::from_value(value).ok()),
+            signature: catalog_value.and_then(crate::analytics::catalog_signature),
+        })
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

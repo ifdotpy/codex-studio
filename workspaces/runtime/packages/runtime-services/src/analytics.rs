@@ -169,20 +169,11 @@ pub(crate) fn current_account_is_claude(
             .is_some_and(|provider| provider == "claude")
 }
 fn pricing_signature(root: &Path) -> Option<String> {
-    let path = root.join("model-pricing/models-dev-v1.json");
-    let Ok(raw) = fs::read(path) else {
-        return None;
-    };
-    let Ok(artifact) = serde_json::from_slice::<Value>(&raw) else {
-        return None;
-    };
-    if artifact.get("version").and_then(Value::as_i64) != Some(1) {
-        return None;
-    }
-    let catalog = artifact
-        .get("catalog")
-        .filter(|value| valid_catalog(value))?;
-    signature(catalog).ok()
+    crate::pricing::load_pricing(root)?.signature.clone()
+}
+/// Cache signature of a valid models.dev catalog.
+pub(crate) fn catalog_signature(catalog: &Value) -> Option<String> {
+    valid_catalog(catalog).then(|| signature(catalog).ok())?
 }
 fn valid_catalog(value: &Value) -> bool {
     let Some(providers) = value.get("providers").and_then(Value::as_object) else {

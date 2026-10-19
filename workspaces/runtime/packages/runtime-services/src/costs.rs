@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -13,7 +14,7 @@ use studio_runtime_store::{
 use thiserror::Error;
 
 use crate::cost_usage::{CostUsageError, CostUsageSnapshot};
-use crate::pricing::PricingCatalog;
+use crate::file_derived::FileDerived;
 
 #[derive(Debug, Error)]
 pub enum CostsError {
@@ -145,7 +146,7 @@ fn session_cost_inner(
             (
                 row.account_key.clone(),
                 row.thread_id.clone(),
-                row.id.clone(),
+                row.usage.id.clone(),
             )
         })
         .collect::<BTreeSet<_>>();
@@ -171,16 +172,9 @@ fn session_cost_inner(
         ))
     }))?;
 
-    let pricing_path = store.root().join("model-pricing/models-dev-v1.json");
-    let raw =
-        fs::read(pricing_path).map_err(|_| CostsError::Dependency("costs/pricing-refresh"))?;
-    let artifact: Value = serde_json::from_slice(&raw).map_err(|_| CostsError::InvalidPricing)?;
-    if artifact.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err(CostsError::InvalidPricing);
-    }
-    let catalog_value = artifact.get("catalog").ok_or(CostsError::InvalidPricing)?;
-    let catalog =
-        PricingCatalog::from_value(catalog_value).map_err(|_| CostsError::InvalidPricing)?;
+    let loaded = crate::pricing::load_pricing(store.root())
+        .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
+    let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 
     let mut provider_totals = BTreeMap::<String, f64>::new();
     let mut model_totals = BTreeMap::<String, f64>::new();
@@ -228,7 +222,7 @@ fn session_cost_inner(
         *model_totals.entry(model.to_owned()).or_default() += subtotal;
         tier_used |= price.context_tier_used;
     }
-    for row in &local_claude {
+    for row in local_claude.iter().map(|row| &row.usage) {
         let usage = json!({
             "inputTokens": row.input_tokens,
             "cachedInputTokens": row.cached_tokens,
@@ -285,10 +279,9 @@ fn session_cost_inner(
 const MAX_SESSION_ID_BYTES: usize = 100;
 const MAX_SESSION_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
+/// One assistant response of a Claude session log.
 #[derive(Clone, Debug)]
-struct LocalClaudeUsage {
-    account_key: String,
-    thread_id: String,
+struct LogUsage {
     id: String,
     model: String,
     input_tokens: Option<f64>,
@@ -297,6 +290,18 @@ struct LocalClaudeUsage {
     output_tokens: Option<f64>,
     input_tokens_are_uncached: bool,
 }
+
+#[derive(Clone, Debug)]
+struct LocalClaudeUsage {
+    account_key: String,
+    thread_id: String,
+    usage: LogUsage,
+}
+
+/// Usage rows per session log, parsed again only after the log changed.
+static CLAUDE_LOGS: LazyLock<FileDerived<Vec<LogUsage>>> = LazyLock::new(FileDerived::default);
+/// Native session ids per Studio session state file, read again only after it changed.
+static SESSION_NATIVE_IDS: LazyLock<FileDerived<Vec<String>>> = LazyLock::new(FileDerived::default);
 
 fn read_local_claude_usage(
     state_root: &Path,
@@ -342,12 +347,12 @@ fn read_local_claude_usage(
         };
         let mut ids = BTreeSet::from([thread_id.clone()]);
         let server_root = crate::account_driver::account_server_root(state_root, &account_key);
-        read_session_native_ids(
-            &server_root
-                .join("sessions")
-                .join(format!("{thread_id}.json")),
-            &mut ids,
-        );
+        let state_path = server_root
+            .join("sessions")
+            .join(format!("{thread_id}.json"));
+        if let Some(native) = SESSION_NATIVE_IDS.get_or_load(&state_path, read_session_native_ids) {
+            ids.extend(native.iter().cloned());
+        }
         let projects = config.join("projects");
         let Ok(project_entries) = fs::read_dir(projects) else {
             continue;
@@ -359,7 +364,17 @@ fn read_local_claude_usage(
             }
             for id in &ids {
                 let path = project_path.join(format!("{id}.jsonl"));
-                read_claude_log(&path, &account_key, &thread_id, &mut rows);
+                let Some(log) = CLAUDE_LOGS.get_or_load(&path, parse_claude_log) else {
+                    continue;
+                };
+                for usage in log.iter() {
+                    rows.entry((account_key.clone(), thread_id.clone(), usage.id.clone()))
+                        .or_insert_with(|| LocalClaudeUsage {
+                            account_key: account_key.clone(),
+                            thread_id: thread_id.clone(),
+                            usage: usage.clone(),
+                        });
+                }
             }
         }
     }
@@ -408,19 +423,12 @@ fn valid_session_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-fn read_session_native_ids(path: &Path, ids: &mut BTreeSet<String>) {
-    let Ok(metadata) = fs::metadata(path) else {
-        return;
-    };
-    if metadata.len() > MAX_SESSION_STATE_BYTES {
-        return;
+fn read_session_native_ids(path: &Path) -> Option<Vec<String>> {
+    if fs::metadata(path).ok()?.len() > MAX_SESSION_STATE_BYTES {
+        return None;
     }
-    let Ok(raw) = fs::read(path) else {
-        return;
-    };
-    let Ok(value) = serde_json::from_slice::<Value>(&raw) else {
-        return;
-    };
+    let value = serde_json::from_slice::<Value>(&fs::read(path).ok()?).ok()?;
+    let mut ids = BTreeSet::new();
     let mut add = |value: Option<&Value>| {
         if let Some(value) = value
             .and_then(Value::as_str)
@@ -441,17 +449,14 @@ fn read_session_native_ids(path: &Path, ids: &mut BTreeSet<String>) {
             add(control.get("targetNativeId"));
         }
     }
+    Some(ids.into_iter().collect())
 }
 
-fn read_claude_log(
-    path: &Path,
-    account_key: &str,
-    thread_id: &str,
-    rows: &mut BTreeMap<(String, String, String), LocalClaudeUsage>,
-) {
-    let Ok(file) = File::open(path) else {
-        return;
-    };
+/// The first usage row of every response id in one session log, in file order.
+fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
+    let file = File::open(path).ok()?;
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     loop {
@@ -505,9 +510,10 @@ fn read_claude_log(
             } else {
                 (None, None, None)
             };
-        let record = LocalClaudeUsage {
-            account_key: account_key.to_owned(),
-            thread_id: thread_id.to_owned(),
+        if !seen.insert(id.to_owned()) {
+            continue;
+        }
+        rows.push(LogUsage {
             id: id.to_owned(),
             model: model.to_owned(),
             input_tokens,
@@ -515,10 +521,9 @@ fn read_claude_log(
             write_tokens,
             output_tokens: usage.get("output_tokens").and_then(Value::as_f64),
             input_tokens_are_uncached: input_tokens.is_some(),
-        };
-        rows.entry((account_key.to_owned(), thread_id.to_owned(), id.to_owned()))
-            .or_insert(record);
+        });
     }
+    Some(rows)
 }
 
 fn nonnegative_number(value: &Value) -> Option<f64> {
@@ -699,28 +704,28 @@ mod tests {
 
         let rows = read_local_claude_usage(&state, &members, &accounts);
         assert_eq!(rows.len(), 3);
-        assert!(!rows.iter().any(|row| row.id == "must-not-be-used"));
-        assert!(rows.iter().any(|row| row.id == "response-naive-time"));
+        assert!(!rows.iter().any(|row| row.usage.id == "must-not-be-used"));
+        assert!(rows.iter().any(|row| row.usage.id == "response-naive-time"));
         let current = rows
             .iter()
             .find(|row| row.account_key == "current")
             .expect("current session row");
         assert_eq!(current.thread_id, "thread-current");
-        assert_eq!(current.id, "response-1");
-        assert_eq!(current.input_tokens, Some(100.0));
-        assert_eq!(current.cached_tokens, Some(20.0));
-        assert_eq!(current.write_tokens, Some(5.0));
-        assert_eq!(current.output_tokens, Some(10.0));
-        assert!(current.input_tokens_are_uncached);
+        assert_eq!(current.usage.id, "response-1");
+        assert_eq!(current.usage.input_tokens, Some(100.0));
+        assert_eq!(current.usage.cached_tokens, Some(20.0));
+        assert_eq!(current.usage.write_tokens, Some(5.0));
+        assert_eq!(current.usage.output_tokens, Some(10.0));
+        assert!(current.usage.input_tokens_are_uncached);
         let previous = rows
             .iter()
             .find(|row| row.account_key == "previous")
             .expect("historical session row");
         assert_eq!(previous.thread_id, "thread-previous");
-        assert_eq!(previous.input_tokens, None);
-        assert_eq!(previous.cached_tokens, None);
-        assert_eq!(previous.write_tokens, None);
-        assert!(!previous.input_tokens_are_uncached);
+        assert_eq!(previous.usage.input_tokens, None);
+        assert_eq!(previous.usage.cached_tokens, None);
+        assert_eq!(previous.usage.write_tokens, None);
+        assert!(!previous.usage.input_tokens_are_uncached);
     }
 
     #[test]
@@ -852,5 +857,49 @@ mod tests {
         assert_eq!(result["totalUSD"], json!(0.000135));
         assert_eq!(result["claudeHistoryIncomplete"], true);
         assert_eq!(result["unknownModels"], json!(["claude-sonnet-4-5"]));
+
+        // Cached log parses and the cached catalog follow the files: a second answer
+        // in the log is priced, and new rates replace the old ones.
+        let second = json!({
+            "type":"assistant",
+            "timestamp":"2026-09-01T12:02:00Z",
+            "message":{
+                "id":"response-3",
+                "model":"claude-sonnet-4-5",
+                "usage":{
+                    "input_tokens":100,
+                    "cache_read_input_tokens":20,
+                    "cache_creation_input_tokens":5,
+                    "output_tokens":10
+                }
+            }
+        });
+        let log = temp
+            .path()
+            .join("claude-profile/projects/project/thread.jsonl");
+        let mut text = fs::read_to_string(&log).expect("read log");
+        text.push_str(&format!("{second}\n"));
+        fs::write(&log, text).expect("append a response");
+        let grown = session_cost_with_account_profiles(&store, "agent", &accounts)
+            .expect("session cost after the log grew");
+        assert_eq!(grown["pricedSamples"], 2);
+        assert_eq!(grown["totalUSD"], json!(0.00027));
+        fs::write(
+            temp.path().join("model-pricing/models-dev-v1.json"),
+            json!({
+                "version":1,
+                "catalog":{"providers":{
+                    "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}},
+                    "anthropic":{"models":{"claude-sonnet-4-5":{"cost":{
+                        "input":2,"output":4,"cache_read":1,"cache_write":2
+                    }}}}
+                }}
+            })
+            .to_string(),
+        )
+        .expect("rewrite pricing catalog");
+        let repriced = session_cost_with_account_profiles(&store, "agent", &accounts)
+            .expect("session cost after the rates changed");
+        assert_eq!(repriced["totalUSD"], json!(0.00054));
     }
 }
