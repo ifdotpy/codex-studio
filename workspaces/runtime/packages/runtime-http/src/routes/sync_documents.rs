@@ -204,7 +204,19 @@ pub(crate) async fn pull(
                         .entity_projections_need_maintenance(&vault_signature)
                         .map_err(map_sync_store_error)?
                 {
-                    return Ok(EntityPullResult::NeedsMaintenance(generation));
+                    // Under steady writes the commit generation always differs from the last
+                    // maintenance. The projections are still current when this snapshot's
+                    // project payloads already carry the vault views just captured, so serve
+                    // the page without taking the global maintenance lock. Nothing is marked
+                    // here: the snapshot may predate the sampled generation.
+                    let current = sync_policy::has_complete_entity_seed(connection)
+                        .map_err(map_sync_store_error)?
+                        && vault_snapshot
+                            .matches_entity_projections(connection)
+                            .map_err(map_sync_store_error)?;
+                    if !current {
+                        return Ok(EntityPullResult::NeedsMaintenance(generation));
+                    }
                 }
                 // The page reads from the same snapshot as the vault check, so
                 // commits that land meanwhile cannot discard it.
@@ -831,12 +843,17 @@ fn pull_entities(
     Ok(SyncPullResponseBody::Page(response))
 }
 
+/// The typed response is built from the generated DTOs, which already carry the schema's
+/// shape. The full JSON Schema walk (a second copy of a page of up to ~1 MB as a `Value`,
+/// then the walk) runs in debug builds and tests only, not on every pull of a release server.
 fn validate_generated<T: serde::Serialize>(
     schema: &str,
     response: &T,
     validators: &crate::validation::Registry,
 ) -> bool {
-    serde_json::to_value(response).is_ok_and(|value| validators.validate_stored(schema, &value))
+    !cfg!(debug_assertions)
+        || serde_json::to_value(response)
+            .is_ok_and(|value| validators.validate_stored(schema, &value))
 }
 
 fn validate_entity_envelope(payload: &Value, collection: &str, id: &str, deleted: bool) -> bool {
@@ -1430,6 +1447,66 @@ mod vault_maintenance_tests {
             "https://after.example/"
         );
         assert_ne!(first_payload, second_payload);
+    }
+
+    /// Steady writes keep moving the commit generation. A pull whose projections still match
+    /// its snapshot must be served while the global maintenance lock is held elsewhere.
+    #[tokio::test]
+    async fn entity_pull_with_current_projections_does_not_wait_for_the_maintenance_lock() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "agent-1",
+                        json!({"id":"agent-1","status":"idle"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("a source write advances the commit generation");
+        let _maintenance = store
+            .lock_entity_projection_maintenance()
+            .await
+            .expect("test holds the maintenance lock");
+        let state = crate::router::HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            directory.path().display().to_string(),
+            4321,
+            None,
+            Some(Arc::clone(&store)),
+            None,
+        );
+        let app = crate::router::router(state).expect("registered HTTP router");
+        let mut request = Request::builder()
+            .method("GET")
+            .uri("/api/sync/pull")
+            .header("host", "127.0.0.1:4321")
+            .body(Body::empty())
+            .expect("pull request");
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:4321"
+                .parse::<std::net::SocketAddr>()
+                .expect("loopback socket address"),
+        ));
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(10), app.oneshot(request))
+                .await
+                .expect("pull is not queued behind the maintenance lock")
+                .expect("HTTP response");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
