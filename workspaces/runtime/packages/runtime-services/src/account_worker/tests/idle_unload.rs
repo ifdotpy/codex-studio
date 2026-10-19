@@ -19,11 +19,21 @@ async fn progress<T>(future: impl std::future::Future<Output = T>) -> T {
 /// Longer than the longest accepted unload delay.
 const BEYOND_ANY_DELAY: Duration = Duration::from_secs((IDLE_SESSION_UNLOAD_SETTING.max + 1) * 60);
 
+/// Re-evaluate the idle clocks, then expire them; see [`expire_idle_clocks`].
 async fn sweep(worker: &AccountHandle) {
     worker
         .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
         .await
         .unwrap();
+    expire_idle_clocks(worker).await;
+}
+
+/// Make every idle clock of a quiescent worker due. A thread's own clock is
+/// zero ([`THREAD_UNLOAD_DELAY`]), so an unused loaded thread starts its
+/// checks without any clock advance; call this only when the worker has no
+/// provider request in flight, because advancing the clock also expires a
+/// pending request's timeout and a barrier would wait behind that request.
+async fn expire_idle_clocks(worker: &AccountHandle) {
     progress(worker_barrier(worker)).await;
     // Advance the worker's actual clock, then resume before database work can
     // cause Tokio to auto-advance unrelated protocol deadlines.
@@ -211,7 +221,7 @@ async fn input_arriving_during_native_checks_prevents_unsubscribe() {
     progress(peer.completed()).await;
     enable_unload(&state, &mut peer).await;
 
-    sweep(&worker).await;
+    // An unused loaded thread starts its checks at once.
     answer(
         &mut peer,
         "thread/read",
@@ -255,11 +265,12 @@ async fn a_loaded_thread_blocked_when_enabled_gets_a_deadline_after_durable_comp
         .send(AccountCommand::IdleStateChange(tokio::time::Instant::now()))
         .await
         .unwrap();
-    sweep(&worker).await;
+    // An unused loaded thread starts its checks at once.
     idle_checks(&mut peer).await;
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
     progress(peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))).await;
+    expire_idle_clocks(&worker).await;
     progress(worker.completion()).await.unwrap();
 }
 
@@ -274,7 +285,6 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
     enable_unload(&state, &mut peer).await;
     set_agent_in_use(&state, "unloaded-thread", true).await;
 
-    sweep(&worker).await;
     idle_checks(&mut peer).await;
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
@@ -311,7 +321,6 @@ async fn claude_idle_close_requires_a_loaded_snapshot_and_native_idle_confirmati
 
     // Claude goes through the same authoritative loaded snapshot. A busy
     // native thread must keep the account session alive despite durable idle.
-    sweep(&worker).await;
     answer(
         &mut peer,
         "thread/read",
