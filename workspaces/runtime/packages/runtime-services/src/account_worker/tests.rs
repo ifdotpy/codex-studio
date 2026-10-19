@@ -357,6 +357,8 @@ impl ProviderTaskFactory for Factory {
         Box::pin(async { Ok(attachment) })
     }
 }
+/// Provider frames the fake attachment buffers before the session reads them.
+const PEER_JOURNAL_CAPACITY: usize = 16;
 struct Wire {
     value: Value,
     receipt: oneshot::Sender<CommandReceipt>,
@@ -401,7 +403,7 @@ impl Peer {
         let stop = Shutdown::default();
         let mut stopped = stop.subscribe();
         let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
-        let (entries, journal) = mpsc::channel(16);
+        let (entries, journal) = mpsc::channel(PEER_JOURNAL_CAPACITY);
         let (out, writes) = mpsc::channel(16);
         let (ack, acks) = mpsc::channel(16);
         let (status, observed) = watch::channel(AttachmentStatus {

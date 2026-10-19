@@ -96,6 +96,7 @@ async fn reconcile_first_pass(
             {
                 continue;
             }
+            let mut history_id = None;
             let job = if restart_turn {
                 let RecoveryJob::Connection {
                     snapshot,
@@ -104,9 +105,13 @@ async fn reconcile_first_pass(
                 else {
                     continue;
                 };
-                let Some(snapshot) = claim_automatic_restart_check(&store, snapshot).await? else {
+                let check = automatic_check_id(&snapshot, &scope);
+                let Some(snapshot) =
+                    claim_automatic_restart_check(&store, snapshot, &check).await?
+                else {
                     continue;
                 };
+                history_id = Some(check);
                 RecoveryJob::Connection {
                     snapshot,
                     automatic,
@@ -153,13 +158,14 @@ async fn reconcile_first_pass(
                 Arc::new(move |current: &ConnectionScope| {
                     (current == &observed_scope).then(|| observed_value.clone())
                 });
+            let history_id = history_id.unwrap_or_else(|| snapshot.connection_recovery_id());
             let mut history = HistoryPort::new(
                 session.clone(),
                 RequestActor {
                     agent: agent.clone(),
                     epoch,
                 },
-                snapshot.connection_recovery_id(),
+                history_id.clone(),
             );
             let mut reader =
                 RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
@@ -167,7 +173,7 @@ async fn reconcile_first_pass(
                 super::connection_recovery::lifecycle_completion(
                     &store,
                     account,
-                    snapshot.connection_recovery_id(),
+                    history_id,
                     observation.at,
                 )
                 .await?
@@ -212,20 +218,43 @@ async fn reconcile_first_pass(
     })
 }
 
-/// Claim the one automatic native-history check of a restart marker. Each check
-/// is a retained read whose receipts stay durable, and a pending marker survives
-/// every later provider generation, so checking again on each worker start would
-/// retain receipts without bound. A manual connection check and the user's next
-/// message remain available after this one check.
+/// The identity of one automatic native-history check; its retained reads and
+/// recovered messages use it too. A pending restart marker gets one check: it
+/// survives every later provider generation, so checking it on each worker
+/// start would retain receipts without bound. An adopted turn (`continued`,
+/// outcome `active`) was still running at its check, and its turn/completed
+/// can be lost with the worker that should have committed it (live
+/// 2026-10-19: three agents stayed `running` after their turns ended, because
+/// their one check had seen the turns running hours earlier). It is checked
+/// once per provider connection instead. The agent stays `running`, so idle
+/// unload keeps the account open; only a backend restart or a worker failure
+/// starts a new connection.
+fn automatic_check_id(snapshot: &RecoverySnapshot, scope: &ConnectionScope) -> String {
+    let check = snapshot.connection_recovery_id();
+    let marker = &snapshot.record()["restartRecovery"];
+    if marker["stage"] == "continued" && marker["outcome"] == "active" {
+        studio_runtime_store::sha256_hex(
+            json!([check, scope.account, scope.connection, scope.generation])
+                .to_string()
+                .as_bytes(),
+        )
+    } else {
+        check
+    }
+}
+
+/// Claim the automatic native-history check `check` (see [`automatic_check_id`]).
+/// A manual connection check and the user's next message remain available.
 async fn claim_automatic_restart_check(
     store: &Arc<RuntimeStore>,
     snapshot: RecoverySnapshot,
+    check: &str,
 ) -> Result<Option<RecoverySnapshot>, RecoveryError> {
     let id = snapshot.record()["id"]
         .as_str()
         .ok_or(RecoveryError::CommitFailed)?
         .to_owned();
-    let check = snapshot.connection_recovery_id();
+    let check = check.to_owned();
     let expected = snapshot.record().clone();
     crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
