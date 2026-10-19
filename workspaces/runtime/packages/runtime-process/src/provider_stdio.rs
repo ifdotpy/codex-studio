@@ -761,8 +761,7 @@ mod tests {
         )
         .await
         .expect("write succeeds");
-        let lines = emitted.lock().expect("sink").clone();
-        lines
+        emitted.lock().expect("sink").clone()
     }
 
     #[tokio::test]
