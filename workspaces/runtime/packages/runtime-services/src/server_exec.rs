@@ -297,6 +297,10 @@ pub struct ServerExec {
     folder: PathBuf,
     events: Arc<dyn ExecEvents>,
     active: Mutex<HashMap<String, tokio::sync::mpsc::Sender<Control>>>,
+    /// Every caller waits for the one reconciliation of the previous backend's commands.
+    restored: tokio::sync::OnceCell<()>,
+    /// The last prune of expired commands (Python prunes hourly).
+    pruned: Mutex<Option<Instant>>,
 }
 
 impl ServerExec {
@@ -309,12 +313,14 @@ impl ServerExec {
         static RUNNERS: OnceLock<Mutex<HashMap<PathBuf, Arc<ServerExec>>>> = OnceLock::new();
         let key = store.root().to_path_buf();
         let runners = RUNNERS.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some(runner) = runners
+        let existing = runners
             .lock()
             .map_err(|_| ExecError::Failed("The command runner is unavailable".into()))?
             .get(&key)
-        {
-            return Ok(Arc::clone(runner));
+            .cloned();
+        if let Some(runner) = existing {
+            runner.restored.get_or_init(|| runner.restore()).await;
+            return Ok(runner);
         }
         let folder = key.join(OUTPUT_FOLDER);
         create_private_folder(&folder)?;
@@ -323,6 +329,8 @@ impl ServerExec {
             folder,
             events,
             active: Mutex::new(HashMap::new()),
+            restored: tokio::sync::OnceCell::new(),
+            pruned: Mutex::new(None),
         });
         let runner = {
             let mut runners = runners
@@ -330,7 +338,7 @@ impl ServerExec {
                 .map_err(|_| ExecError::Failed("The command runner is unavailable".into()))?;
             Arc::clone(runners.entry(key).or_insert(runner))
         };
-        runner.restore().await;
+        runner.restored.get_or_init(|| runner.restore()).await;
         Ok(runner)
     }
 
@@ -457,16 +465,15 @@ impl ServerExec {
                         .as_ref()
                         .and_then(|config| config["markerSecret"].as_str())
                         .map(str::to_owned);
-                    let stopped = marker
-                        .map(|marker| {
-                            stop_command(&Scope {
-                                marker: &marker,
-                                running_root: None,
-                                group: None,
-                            })
-                            .len()
-                        })
-                        .unwrap_or(0);
+                    let stopped = marker.map(|marker| Scope {
+                        marker,
+                        running_root: None,
+                        group: None,
+                    });
+                    let stopped = match stopped {
+                        Some(scope) => stop_in_pool(scope).await.pids.len(),
+                        None => 0,
+                    };
                     let mut record: Value =
                         serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
                     if record["finishedAt"].is_null() {
@@ -485,6 +492,20 @@ impl ServerExec {
             }
         }
         self.prune().await;
+    }
+
+    /// Prune at most once an hour (Python `MultiServerService.prune`).
+    async fn prune_hourly(&self) {
+        let due = self.pruned.lock().is_ok_and(|mut pruned| {
+            let due = pruned.is_none_or(|at| at.elapsed() >= Duration::from_secs(3600));
+            if due {
+                *pruned = Some(Instant::now());
+            }
+            due
+        });
+        if due {
+            self.prune().await;
+        }
     }
 
     /// Python `prune`: remove command files and rows after seven days.
@@ -533,6 +554,7 @@ impl ServerExec {
         payload: &Value,
         key: &str,
     ) -> Result<Value, ExecError> {
+        self.prune_hourly().await;
         let p =
             crate::multi_server_tools::validate_exec(payload, false).map_err(ExecError::Refused)?;
         let actor = p
@@ -590,6 +612,12 @@ impl ServerExec {
                 .map_err(|_| ExecError::Failed("The command runner is unavailable".into()))?;
             if active.len() >= MAX_ACTIVE {
                 return refused("The server already has 32 command handles in progress");
+            }
+            if active.contains_key(key) {
+                // Python's claim INSERT fails for a second start of one handle.
+                return Err(ExecError::Failed(
+                    "The command handle is already running".into(),
+                ));
             }
             active.insert(key.to_owned(), sender);
         }
@@ -823,9 +851,9 @@ fn new_marker() -> Result<String, ExecError> {
 }
 
 /// The processes of one command that a stop may signal.
-struct Scope<'a> {
+struct Scope {
     /// The private `STUDIO_EXEC_ID` value of the command.
-    marker: &'a str,
+    marker: String,
     /// The command's root process while it runs unreaped: its PID cannot
     /// belong to another process, so its process tree is the command's.
     running_root: Option<u32>,
@@ -836,14 +864,24 @@ struct Scope<'a> {
     group: Option<(u32, u64, u64)>,
 }
 
-/// Stop the processes of one command: the tree below its running root, the
-/// members of its process group that started within its lifetime, and every
-/// process of this user whose launch environment holds its marker. macOS
-/// hides the environment of platform binaries, so the group covers them.
-/// Returns the stopped process IDs.
-fn stop_command(scope: &Scope<'_>) -> Vec<u32> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let mut system = System::new();
+/// Seconds that a stop may take before its result stays unknown (Python
+/// `Descendants.stop`).
+const STOP_SECONDS: u64 = 3;
+
+/// The result of one stop: the stopped process IDs, and the processes that
+/// still ran at the cleanup deadline.
+struct Stopped {
+    pids: Vec<u32>,
+    remaining: usize,
+}
+
+/// The live processes of one command with their start times: the tree below
+/// its running root, the members of its process group that started within its
+/// lifetime, and every process whose launch environment holds its marker.
+/// macOS hides the environment of platform binaries, so the group covers them.
+/// Only processes of this user are selected; zombies have already stopped.
+fn command_processes(scope: &Scope, system: &mut sysinfo::System) -> Vec<(u32, u64)> {
+    use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, UpdateKind};
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
@@ -852,63 +890,136 @@ fn stop_command(scope: &Scope<'_>) -> Vec<u32> {
             .with_user(UpdateKind::Always),
     );
     let own = std::process::id();
-    let expected = format!("{MARKER_NAME}={}", scope.marker);
-    let mut targets: Vec<u32> = scope.running_root.into_iter().collect();
+    let own_user = system
+        .process(sysinfo::Pid::from_u32(own))
+        .and_then(|process| process.user_id().cloned());
+    let selectable = |process: &sysinfo::Process| {
+        own_user.is_some()
+            && process.user_id() == own_user.as_ref()
+            && !matches!(
+                process.status(),
+                ProcessStatus::Zombie | ProcessStatus::Dead
+            )
+    };
+    let mut tree: Vec<u32> = scope.running_root.into_iter().collect();
     let mut index = 0;
-    while index < targets.len() {
-        let parent = targets[index];
+    while index < tree.len() {
+        let parent = tree[index];
         for (pid, process) in system.processes() {
             if process.parent().map(|parent| parent.as_u32()) == Some(parent)
-                && !targets.contains(&pid.as_u32())
+                && !tree.contains(&pid.as_u32())
             {
-                targets.push(pid.as_u32());
+                tree.push(pid.as_u32());
             }
         }
         index += 1;
     }
+    // A process whose PID is the group ID after the root was reaped leads a
+    // reused group, so the group selects nothing then.
+    let group = scope.group.filter(|(group, _, _)| {
+        scope.running_root.is_some() || system.process(sysinfo::Pid::from_u32(*group)).is_none()
+    });
+    let expected = format!("{MARKER_NAME}={}", scope.marker);
+    let mut targets = Vec::new();
     for (pid, process) in system.processes() {
         let pid = pid.as_u32();
-        if pid == own || targets.contains(&pid) {
+        if pid == own || !selectable(process) {
             continue;
         }
+        let in_tree = tree.contains(&pid);
         let marked = process
             .environ()
             .iter()
             .any(|entry| entry.to_str() == Some(expected.as_str()));
-        let member = scope.group.is_some_and(|(group, first, last)| {
+        let member = group.is_some_and(|(group, first, last)| {
             let started = process.start_time();
-            (first.saturating_sub(1)..=last + 1).contains(&started)
+            (first.saturating_sub(1)..=last).contains(&started)
                 && i32::try_from(pid).ok().is_some_and(|raw| {
                     nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(raw)))
                         .is_ok_and(|found| i64::from(found.as_raw()) == i64::from(group))
                 })
         });
-        if marked || member {
-            targets.push(pid);
+        if in_tree || marked || member {
+            targets.push((pid, process.start_time()));
         }
     }
-    let mut stopped = Vec::new();
-    for pid in targets {
-        let Ok(raw) = i32::try_from(pid) else {
-            continue;
-        };
-        let target = nix::unistd::Pid::from_raw(raw);
-        if nix::sys::signal::kill(target, nix::sys::signal::Signal::SIGSTOP).is_ok() {
-            stopped.push(pid);
+    targets
+}
+
+/// Run a stop in the blocking pool; a failed pool keeps the outcome unknown.
+async fn stop_in_pool(scope: Scope) -> Stopped {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/server_exec",
+        move || stop_command(&scope),
+    )
+    .await
+    .unwrap_or(Stopped {
+        pids: Vec::new(),
+        remaining: 1,
+    })
+}
+
+/// Python `Descendants.stop`: stop and kill every proven process of the
+/// command until none runs or the cleanup deadline passes. Each signal goes
+/// only to a PID whose start time still matches the selected process.
+fn stop_command(scope: &Scope) -> Stopped {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+    let deadline = Instant::now() + Duration::from_secs(STOP_SECONDS);
+    let mut system = sysinfo::System::new();
+    let mut stopped: Vec<u32> = Vec::new();
+    loop {
+        let targets = command_processes(scope, &mut system);
+        if targets.is_empty() {
+            return Stopped {
+                pids: stopped,
+                remaining: 0,
+            };
         }
-    }
-    for pid in &stopped {
-        if let Ok(raw) = i32::try_from(*pid)
-            && nix::sys::signal::kill(
+        if Instant::now() >= deadline {
+            return Stopped {
+                pids: stopped,
+                remaining: targets.len(),
+            };
+        }
+        let mut signalled = Vec::new();
+        for (pid, started) in &targets {
+            let id = sysinfo::Pid::from_u32(*pid);
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[id]),
+                true,
+                ProcessRefreshKind::nothing(),
+            );
+            let same = system
+                .process(id)
+                .is_some_and(|process| process.start_time() == *started);
+            let Ok(raw) = i32::try_from(*pid) else {
+                continue;
+            };
+            if same
+                && nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(raw),
+                    nix::sys::signal::Signal::SIGSTOP,
+                )
+                .is_ok()
+            {
+                signalled.push(raw);
+                if !stopped.contains(pid) {
+                    stopped.push(*pid);
+                }
+            }
+        }
+        for raw in signalled {
+            if nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(raw),
                 nix::sys::signal::Signal::SIGKILL,
             )
             .is_err()
-        {
-            // The process exited between the two signals.
+            {
+                // The stopped process exited before the kill.
+            }
         }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    stopped
 }
 
 struct Job {
@@ -942,9 +1053,9 @@ impl Job {
         reaped: bool,
         started: u64,
         reaped_at: Option<u64>,
-    ) -> Scope<'_> {
+    ) -> Scope {
         Scope {
-            marker: &self.marker,
+            marker: self.marker.clone(),
             running_root: root.filter(|_| !reaped),
             group: root.map(|root| (root, started, reaped_at.unwrap_or_else(unix_seconds))),
         }
@@ -975,10 +1086,12 @@ impl Job {
             self.key.clone(),
             self.record.clone(),
         );
-        runner.release(&key);
         if let Err(error) = runner.save(&principal, &actor, &key, &record).await {
             eprintln!("server command {key} record failed: {error}");
         }
+        // Python removes the adapter after its final save: a control call
+        // until then still reaches this command.
+        runner.release(&key);
     }
 
     /// Python `child`, owned by the backend.
@@ -1034,6 +1147,7 @@ impl Job {
         let root = child.id();
         let mut stdin = child.stdin.take();
         let (output, mut events) = tokio::sync::mpsc::channel::<(bool, Option<Vec<u8>>)>(64);
+        let mut readers = Vec::new();
         for (is_stdout, pipe) in [
             (
                 true,
@@ -1052,7 +1166,7 @@ impl Job {
         ] {
             let Some(mut pipe) = pipe else { continue };
             let output = output.clone();
-            tokio::spawn(async move {
+            readers.push(tokio::spawn(async move {
                 let mut buffer = vec![0_u8; 8192];
                 loop {
                     match pipe.read(&mut buffer).await {
@@ -1071,7 +1185,7 @@ impl Job {
                         }
                     }
                 }
-            });
+            }));
         }
         drop(output);
         self.record["status"] = json!("running");
@@ -1101,6 +1215,7 @@ impl Job {
         let mut last_publish = Instant::now();
         let mut controls_open = true;
         let mut reaped_at: Option<u64> = None;
+        let mut wait_failed = false;
         loop {
             if ended >= 2 && exit.is_some() {
                 break;
@@ -1108,9 +1223,13 @@ impl Job {
             if killed_at.is_some_and(|at| at.elapsed().as_secs_f64() > DRAIN_SECONDS) {
                 break;
             }
-            if killed_at.is_none() && (cancelled || Instant::now() >= deadline || exit.is_some()) {
+            if killed_at.is_none()
+                && (cancelled || Instant::now() >= deadline || exit.is_some() || wait_failed)
+            {
                 self.record["timedOut"] = json!(!cancelled && Instant::now() >= deadline);
-                for pid in stop_command(&self.scope(root, exit.is_some(), started_at, reaped_at)) {
+                let scope = self.scope(root, exit.is_some(), started_at, reaped_at);
+                let result = stop_in_pool(scope).await;
+                for pid in result.pids {
                     if Some(pid) != root && !stopped.contains(&pid) {
                         stopped.push(pid);
                     }
@@ -1164,10 +1283,14 @@ impl Job {
                     }
                     None => ended = 2,
                 },
-                status = child.wait(), if exit.is_none() => {
-                    exit = status.ok().or(Some(std::process::ExitStatus::default()));
-                    reaped_at = Some(unix_seconds());
-                }
+                status = child.wait(), if exit.is_none() && !wait_failed => match status {
+                    Ok(status) => {
+                        exit = Some(status);
+                        reaped_at = Some(unix_seconds());
+                    }
+                    // The exit status is unknown; the stop below still runs.
+                    Err(_) => wait_failed = true,
+                },
                 () = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
             if last_publish.elapsed().as_secs_f64() >= PUBLISH_SECONDS {
@@ -1177,6 +1300,7 @@ impl Job {
         }
         let status = match exit {
             Some(status) => Some(status),
+            None if wait_failed => None,
             None => tokio::time::timeout(Duration::from_secs(2), child.wait())
                 .await
                 .ok()
@@ -1184,13 +1308,18 @@ impl Job {
         };
         // Python `stop_descendants` in its `finally`: no process of the command remains.
         let reaped_at = reaped_at.or_else(|| status.is_some().then(unix_seconds));
-        for pid in stop_command(&self.scope(root, status.is_some(), started_at, reaped_at)) {
+        let scope = self.scope(root, status.is_some(), started_at, reaped_at);
+        let result = stop_in_pool(scope).await;
+        for pid in result.pids {
             if Some(pid) != root && !stopped.contains(&pid) {
                 stopped.push(pid);
             }
         }
+        for reader in readers {
+            reader.abort();
+        }
         self.record["stoppedDescendants"] = json!(stopped.len());
-        self.record["cleanupUnknownForks"] = json!(0);
+        self.record["cleanupUnknownForks"] = json!(result.remaining);
         self.record["status"] = json!(if cancelled { "cancelled" } else { "completed" });
         match status {
             Some(status) => {
@@ -1205,8 +1334,13 @@ impl Job {
                 self.record["status"] = json!("unknown");
                 self.record["error"] =
                     json!("The command process still runs; inspect the target server");
-                self.record["cleanupUnknownForks"] = json!(1);
+                self.record["cleanupUnknownForks"] = json!(result.remaining.max(1));
             }
+        }
+        if result.remaining > 0 && status.is_some() {
+            self.record["status"] = json!("unknown");
+            self.record["error"] =
+                json!("Descendant cleanup is incomplete; inspect the target server");
         }
         self.finish(began).await;
     }
