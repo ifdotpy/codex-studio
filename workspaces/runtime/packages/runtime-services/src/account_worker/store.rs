@@ -2109,7 +2109,7 @@ fn persist_publication_batch_in(
     let mut available = MAX_BEST_EFFORT_PUBLICATION_RECEIPTS.saturating_sub(pending);
     let mut retained = 0;
     let mut overflow = batch.analytics_overflow;
-    let publication_overflow = 0_u64;
+    let mut publication_overflow = 0_u64;
     let mut last_saved = None;
     for (index, effect) in batch.effects.iter().enumerate() {
         if retained >= available {
@@ -2138,8 +2138,12 @@ fn persist_publication_batch_in(
             } else {
                 // The pending token-rate queue is itself full. Coalesce this
                 // observation into the newest token-rate receipt rather than
-                // dropping the committed token-rate update.
-                coalesce_token_rate_receipt(tx, &prefix, effect)?;
+                // dropping the committed token-rate update. When that receipt
+                // is full too, count the volatile observation as publication
+                // overflow: Python never stops an account for its observers.
+                if !coalesce_token_rate_receipt(tx, &prefix, effect)? {
+                    publication_overflow = publication_overflow.saturating_add(1);
+                }
             }
             continue;
         }
@@ -2257,7 +2261,7 @@ fn coalesce_token_rate_receipt(
     tx: &studio_runtime_store::Transaction<'_>,
     prefix: &str,
     effect: &crate::notification_dispatch::NotificationPostCommit,
-) -> Result<(), WorkerError> {
+) -> Result<bool, WorkerError> {
     let target = match pending_publication(tx, prefix, PUBLICATION_TOKEN_RATE, true)? {
         Some(id) => Some(id),
         None => pending_publication(tx, prefix, "", true)?,
@@ -2290,7 +2294,7 @@ fn coalesce_token_rate_receipt(
             );
         }
         if effects.len().saturating_sub(1) >= MAX_COALESCED_TOKEN_RATE_EFFECTS {
-            return Err(WorkerError::Capacity);
+            return Ok(false);
         }
         // Keep each provider delivery identity intact. Rewriting earlier deltas
         // under a later cursor can double-project them after a partial drain.
@@ -2309,16 +2313,16 @@ fn coalesce_token_rate_receipt(
         value["tokenRateCoalesced"] = json!(true);
         let serialized = value.to_string();
         if serialized.len() > MAX_COALESCED_TOKEN_RATE_BYTES {
-            return Err(WorkerError::Capacity);
+            return Ok(false);
         }
         tx.execute(
             "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
             params![id, serialized],
         )?;
     } else {
-        return Err(WorkerError::Capacity);
+        return Ok(false);
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Drain in sequence/index order. Publication is outside SQLite; deleting each

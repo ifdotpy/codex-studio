@@ -1212,3 +1212,67 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
     assert_eq!(after["status"], "lost");
     assert!(after.get("recoveryHold").is_none());
 }
+
+#[tokio::test]
+async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled() {
+    // Live cutover 4: three agents stayed `running` with restartRecovery
+    // "continued"/"active" after their native turns completed while the
+    // account worker was down; nothing delivered turn/completed again.
+    use studio_runtime_services::recovery::CompletionMode;
+    let root = fixture();
+    let store = open_store(root.path()).await;
+    let attempt = json!({"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread",
+        "turnId":"turn","events":["event"],"submitted":true,"connectionGeneration":1,
+        "activeAtReservation":false,"created":10});
+    let agent = json!({
+        "id":"agent","rootId":"agent","epoch":0,"turnEpoch":0,"accountKey":"default",
+        "threadId":"thread","turnId":"turn","status":"running","autoWake":true,"inFlight":false,
+        "error":null,"provider":"codex","lastCompletedTurn":"earlier",
+        "lastCompletedTurnStatus":"completed","startAttempt":attempt,
+        "disconnectRecovery":{"accountKey":"default","at":10.0,"autoWake":true,
+            "connectionId":null,"epoch":0,"source":"restart","startAttempt":attempt,
+            "threadId":"thread","turnId":"turn"},
+        "restartRecovery":{"accountKey":"default","at":10.0,"autoWake":true,"connectionId":null,
+            "epoch":0,"observedAt":20.0,"outcome":"active","stage":"continued",
+            "startAttempt":attempt,"threadId":"thread","turnId":"turn"},
+        "connectionRecovery":{"at":20.0,"automatic":true,"outcome":"active",
+            "previousError":"Server restarted during a turn. Review history, then send a new instruction.",
+            "source":"native_thread_read","turnId":"turn"}
+    });
+    lifecycle_transaction(&store, move |tx| {
+        let record =
+            studio_runtime_store::AgentRecord::from_value(agent.clone()).expect("agent fixture");
+        AgentRepository::put(tx, &record)?;
+        Ok(())
+    })
+    .await
+    .expect("seed the adopted turn");
+    let before = snapshot(&store);
+    assert!(before.eligibility().restart_turn);
+    let turn =
+        json!({"id":"turn","threadId":"thread","status":"completed","items":[],"itemsView":"full"});
+    let result = apply_lifecycle(
+        &store,
+        &before,
+        RecoveryAction::Terminal {
+            turn,
+            native_state: "idle".into(),
+            mode: CompletionMode::Restart,
+        },
+    )
+    .await
+    .expect("reconcile the finished turn");
+    assert_eq!(
+        result,
+        RecoveryOutcome::Applied(
+            json!({"status":"reconciled","turnId":"turn","outcome":"completed"})
+        )
+    );
+    let after = snapshot(&store).record().clone();
+    assert_eq!(after["status"], "completed");
+    assert_eq!(after["turnId"], serde_json::Value::Null);
+    assert_eq!(after["lastCompletedTurn"], "turn");
+    assert_eq!(after["autoWake"], true, "the worker keeps its permission");
+    assert_eq!(after["restartRecovery"]["stage"], "finished");
+    assert!(after.get("startAttempt").is_none());
+}

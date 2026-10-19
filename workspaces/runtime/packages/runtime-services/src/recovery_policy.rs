@@ -272,7 +272,7 @@ fn eligibility(a: &Value) -> Eligibility {
         &["interrupted", "paused", "completed", "failed"],
     ) && (a["turnId"].is_null() || a["turnId"] == r["turnId"]))
         || (a["status"] == "running" && has(a, "inFlight") && has(a, "autoWake"));
-    let restart_turn = one(&r["stage"], &["pending", "superseded"])
+    let pending_restart_turn = one(&r["stage"], &["pending", "superseded"])
         && has(r, "autoWake")
         && has(r, "turnId")
         && d["source"] == "restart"
@@ -328,6 +328,24 @@ fn eligibility(a: &Value) -> Eligibility {
         && c["outcome"] == "active"
         && c["automatic"] == true
         && c["turnId"] == a["turnId"];
+    // A turn adopted on reattach to the same provider generation ("continued",
+    // outcome "active") waits for the provider's turn/completed. When that frame
+    // reached a worker that ended before its commit, nothing delivers it again
+    // (live cutover 4: three agents stayed `running` after their native turns
+    // finished). Python reads the native thread on restart; this makes the
+    // adopted turn a restart turn again, so the next worker start reads native
+    // history: a finished turn is reconciled, a running one only records the
+    // check. A queued restart follow-up (`eventId`) is not an adopted turn.
+    let reattached_turn = continued
+        && r["eventId"].is_null()
+        && has(r, "autoWake")
+        && has(r, "turnId")
+        && r["turnId"] == a["turnId"]
+        && d["source"] == "restart"
+        && a["status"] == "running"
+        && same(r, a, &["epoch", "accountKey", "threadId"])
+        && clear(a);
+    let restart_turn = pending_restart_turn || reattached_turn;
     let same_repair = repair["agent"] == a["id"]
         && same(&repair["source"], &scope(a), &["id", "accountKey", "epoch"])
         && ((repair["phase"] == "unchanged" && repair["source"]["threadId"] == a["threadId"])
@@ -492,5 +510,61 @@ mod disconnect_text_tests {
         assert!(eligibility(&interrupted(PROVIDER_DISCONNECTED_TURN_ERROR)).connection);
         assert!(eligibility(&interrupted(VM_PROVIDER_DISCONNECTED_TURN_ERROR)).connection);
         assert!(!eligibility(&interrupted("Some other failure")).connection);
+    }
+}
+
+#[cfg(test)]
+mod reattached_turn_tests {
+    use super::RecoverySnapshot;
+    use serde_json::{Value, json};
+
+    /// The live cutover 4 shape: a restart turn adopted on reattach to the same
+    /// provider generation whose turn/completed never reached a committed worker.
+    fn stuck(in_flight: bool) -> Value {
+        let attempt = json!({"id":"attempt-1","accountKey":"acct","epoch":0,"threadId":"thread-1",
+            "turnId":"turn-9","submitted":true,"connectionGeneration":5,"events":["event-1"],
+            "activeAtReservation":false});
+        json!({
+            "id":"agent-1","rootId":"agent-1","epoch":0,"turnEpoch":0,"accountKey":"acct","threadId":"thread-1",
+            "provider":"codex","status":"running","inFlight":in_flight,"autoWake":true,
+            "turnId":"turn-9","error":null,"lastCompletedTurn":"turn-8",
+            "lastCompletedTurnStatus":"completed","startAttempt":attempt,
+            "disconnectRecovery":{"accountKey":"acct","at":10.0,"autoWake":true,"connectionId":null,
+                "epoch":0,"source":"restart","startAttempt":attempt,"threadId":"thread-1",
+                "turnId":"turn-9"},
+            "restartRecovery":{"accountKey":"acct","at":10.0,"autoWake":true,"connectionId":null,
+                "epoch":0,"observedAt":20.0,"outcome":"active","stage":"continued",
+                "startAttempt":attempt,"threadId":"thread-1","turnId":"turn-9"},
+            "connectionRecovery":{"at":20.0,"automatic":true,"outcome":"active",
+                "previousError":"Server restarted during a turn. Review history, then send a new instruction.",
+                "source":"native_thread_read","turnId":"turn-9"}
+        })
+    }
+
+    #[test]
+    fn an_adopted_restart_turn_is_checked_against_native_history_again() {
+        for in_flight in [false, true] {
+            let eligibility = RecoverySnapshot::from_record(stuck(in_flight))
+                .expect("snapshot")
+                .eligibility();
+            assert!(eligibility.restart_turn, "inFlight {in_flight}");
+            assert!(eligibility.connection, "inFlight {in_flight}");
+        }
+    }
+
+    #[test]
+    fn a_queued_restart_follow_up_or_another_turn_is_not_an_adopted_turn() {
+        let mut follow_up = stuck(false);
+        follow_up["restartRecovery"]["eventId"] = json!("restart:agent-1:0:turn-9");
+        let mut other_turn = stuck(false);
+        other_turn["turnId"] = json!("turn-10");
+        let mut held = stuck(false);
+        held["nativeFailureHold"] = json!(true);
+        for record in [follow_up, other_turn, held] {
+            let eligibility = RecoverySnapshot::from_record(record.clone())
+                .expect("snapshot")
+                .eligibility();
+            assert!(!eligibility.restart_turn, "{record}");
+        }
     }
 }

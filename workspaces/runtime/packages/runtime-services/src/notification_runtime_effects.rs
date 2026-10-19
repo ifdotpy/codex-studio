@@ -327,14 +327,27 @@ impl RuntimeNotificationPostCommitSink {
             .agent
             .as_ref()
             .ok_or(NotificationDispatchError::InvalidNotification)?;
-        let prepared = crate::analytics_capture::PreparedCapture::notification_event(
+        // Input validation is deterministic: a retry fails the same way, so a
+        // refused input settles like a stale one (see below).
+        let prepared = match crate::analytics_capture::PreparedCapture::notification_event(
             agent,
             &observation.method,
             &observation.params,
             observation.observed_at,
             observation.observed_at,
-        )
-        .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))?;
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                eprintln!(
+                    "analytics capture dropped {} {}:{}:{}: {error}",
+                    observation.method,
+                    observation.delivery.provider_handle,
+                    observation.delivery.generation,
+                    observation.delivery.cursor
+                );
+                return Ok(AnalyticsDisposition::Stale);
+            }
+        };
         let kind = match effect {
             NotificationPostCommit::Analytics { .. } => "analytics".to_owned(),
             NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream".to_owned(),
@@ -357,6 +370,19 @@ impl RuntimeNotificationPostCommitSink {
             // The identity check rolls back the effect receipt, so a retry
             // would fail the same way and block every later publication.
             Err(crate::analytics_capture::CaptureError::StaleIdentity) => {
+                Ok(AnalyticsDisposition::Stale)
+            }
+            // An invalid input fails the same way on every retry. Python's
+            // lossy capture worker records the failure and continues; holding
+            // the receipt would block every later publication of the account.
+            Err(crate::analytics_capture::CaptureError::Invalid(location)) => {
+                eprintln!(
+                    "analytics capture dropped {} {}:{}:{}: invalid input at {location}",
+                    observation.method,
+                    observation.delivery.provider_handle,
+                    observation.delivery.generation,
+                    observation.delivery.cursor
+                );
                 Ok(AnalyticsDisposition::Stale)
             }
             Err(_) => Err(NotificationDispatchError::Dependency("analytics/capture")),
@@ -466,5 +492,59 @@ mod tests {
                 .pointer("/Analytics/observation/params/threadId")
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_refusal_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_invalid_analytics_input_settles_instead_of_holding_the_queue() {
+        // Live cutover 4: one capture that failed the same way on every retry
+        // held the account's publication head until the queue reached its
+        // bound and the account worker stopped.
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store opens"),
+        );
+        let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
+        let sink = RuntimeNotificationPostCommitSink {
+            token_rates: Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
+                Arc::clone(&changes),
+            )),
+            resources: Arc::new(crate::resource_notify::ResourceNotifications::new(
+                Arc::clone(&changes),
+            )),
+            analytics_store: Arc::clone(&store),
+        };
+        let effect = NotificationPostCommit::Analytics {
+            observation: NotificationObservation {
+                agent: Some(crate::notification_dispatch::SharedJson::new(serde_json::json!({
+                    "id":"agent","name":"Agent","rootId":"root","accountKey":"default",
+                    "accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn",
+                    "model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,
+                    "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,
+                    "epoch":0,"status":"running"
+                }))),
+                method: "item/started".into(),
+                params: crate::notification_dispatch::SharedJson::new(serde_json::json!([
+                    "not an object"
+                ])),
+                delivery: ProviderDeliveryIdentity {
+                    provider_handle: "account:default".into(),
+                    generation: 7,
+                    cursor: 50,
+                },
+                observed_at: 60.0,
+                provider_at: 60.0,
+            },
+            budget_capture_value: None,
+        };
+        sink.publish(&effect)
+            .await
+            .expect("a deterministic capture refusal settles the publication");
     }
 }

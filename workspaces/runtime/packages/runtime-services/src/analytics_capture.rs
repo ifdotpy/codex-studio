@@ -333,10 +333,13 @@ impl CaptureSnapshot {
                 return Err(CaptureError::Invalid("/snapshot/row/identity"));
             }
         }
-        for row in [&rows.turn, &rows.item].into_iter().flatten() {
-            if row["turnId"] != meta["turnId"] {
-                return Err(CaptureError::Invalid("/snapshot/row/turnId"));
-            }
+        // Python keys items by agent, thread and item id (`analytics_event`):
+        // a command started in one turn still receives terminal input and
+        // output deltas in later turns. Only the turn row is turn-scoped.
+        if let Some(row) = &rows.turn
+            && row["turnId"] != meta["turnId"]
+        {
+            return Err(CaptureError::Invalid("/snapshot/row/turnId"));
         }
         Ok(Self {
             prepared,
