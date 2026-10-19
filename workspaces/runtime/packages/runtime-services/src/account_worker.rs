@@ -28,7 +28,7 @@ use studio_runtime_store::{
     AgentId, AgentRepository, ObservedTable, RuntimeStore, SchedulerRepository, StoreError,
 };
 use tokio::{
-    sync::{Notify, Semaphore, mpsc, watch},
+    sync::{Notify, mpsc, watch},
     task::{JoinHandle, JoinSet},
 };
 pub mod callback;
@@ -144,13 +144,12 @@ fn vm_account_generation_matches(
         .is_some_and(|scope| scope.generation == request.generation)
 }
 
-/// Share one bridge among all account workers of a runtime. This permit orders
-/// complete logical account operations; SQLite admission and callback lifetime
-/// are owned by RuntimeStore's actor.
+/// Share one bridge among all account workers of a runtime. Each account
+/// worker runs its store operations one at a time; SQLite admission, writer
+/// order and callback lifetime are owned by RuntimeStore's actor.
 #[derive(Clone)]
 pub struct StoreBridge {
     store: Arc<RuntimeStore>,
-    operation_slot: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// Accounts whose worker already recovered in this backend process. A later
     /// worker for the same account replaces only its provider process, so that
@@ -213,7 +212,6 @@ impl StoreBridge {
         });
         let bridge = Self {
             store,
-            operation_slot: Arc::new(Semaphore::new(1)),
             accounts: Arc::default(),
             recovered_accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
@@ -305,14 +303,8 @@ impl StoreBridge {
         F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
     {
-        let permit = self
-            .operation_slot
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| WorkerError::Closed)?;
-        studio_runtime_store::scope_account_worker_operation(permit, operation(self.store.clone()))
-            .await
+        // Store operation futures are large; keep them off the worker stack.
+        Box::pin(operation(self.store.clone())).await
     }
     async fn prepare_run<T, F, Fut>(
         &self,
@@ -364,6 +356,8 @@ impl StoreBridge {
         let _ = identity;
         #[cfg(test)]
         self.faults.pause(index).await;
+        #[cfg(test)]
+        drop(self.faults.operation_gate.read().await);
         let result = self.run(operation).await;
         #[cfg(test)]
         self.faults.after(index, result.is_ok())?;

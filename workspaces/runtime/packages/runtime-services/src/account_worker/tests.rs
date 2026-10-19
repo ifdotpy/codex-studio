@@ -94,6 +94,9 @@ pub(super) struct Faults {
     pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
     pub(super) shutdown_phase: std::sync::Mutex<&'static str>,
     pub(super) callback_phase: std::sync::Mutex<&'static str>,
+    /// A test holding the write side blocks every account-worker store
+    /// operation at its start, before any SQL is submitted.
+    pub(super) operation_gate: tokio::sync::RwLock<()>,
 }
 type Boundary = (String, usize, Option<String>);
 type NamedBoundary = (String, usize, Option<String>, bool);
@@ -2226,17 +2229,11 @@ async fn prepared_turn_submits_while_provider_events_flow() {
 }
 
 #[tokio::test]
-async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
+async fn shutdown_releases_account_while_store_operation_is_blocked() {
     let state = State::new().await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    let permit = state
-        .bridge
-        .operation_slot
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
+    let permit = state.bridge.faults.operation_gate.write().await;
     let before = state
         .bridge
         .faults
@@ -2792,13 +2789,7 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    let permit = state
-        .bridge
-        .operation_slot
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
+    let permit = state.bridge.faults.operation_gate.write().await;
     let before = state
         .bridge
         .faults
@@ -2885,13 +2876,7 @@ async fn callback_burst_beyond_response_window_is_answered_without_worker_exit()
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     // Hold the store bridge so the burst queues up behind one transaction.
-    let permit = state
-        .bridge
-        .operation_slot
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
+    let permit = state.bridge.faults.operation_gate.write().await;
     let entries = peer.entries.clone();
     let clock = peer.clock.clone();
     let producer = tokio::spawn(async move {
@@ -3026,11 +3011,6 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
     })
     .await
     .expect("claim transaction reaches its admitted SQL update");
-    assert_eq!(
-        state.bridge.operation_slot.available_permits(),
-        0,
-        "the identified claim job holds the account slot while its writer is blocked"
-    );
     worker.cancel();
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
@@ -3046,16 +3026,16 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
     ));
     tokio::time::resume();
     assert!(!state.bridge.accounts.lock().unwrap().contains("default"));
-    assert_eq!(
-        state.bridge.operation_slot.available_permits(),
-        0,
-        "started job retains permit"
-    );
+    // The single store writer orders a later write after the abandoned claim.
     let second_operation_calls = Arc::new(AtomicUsize::new(0));
     let calls_in_operation = Arc::clone(&second_operation_calls);
-    let mut second_operation = Box::pin(state.bridge.run(move |_store| async move {
-        calls_in_operation.fetch_add(1, std::sync::atomic::Ordering::Release);
-        Ok::<(), WorkerError>(())
+    let mut second_operation = Box::pin(state.bridge.run(move |store| async move {
+        store
+            .transaction_with(move |_| {
+                calls_in_operation.fetch_add(1, std::sync::atomic::Ordering::Release);
+                Ok::<(), WorkerError>(())
+            })
+            .await
     }));
     let second_operation_poll = std::future::poll_fn(|context| {
         std::task::Poll::Ready(second_operation.as_mut().poll(context))
@@ -3063,7 +3043,7 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
     .await;
     assert!(
         second_operation_poll.is_pending(),
-        "a later bridge operation waits for the admitted writer callback"
+        "a later write waits for the admitted writer callback"
     );
     assert_eq!(
         second_operation_calls.load(std::sync::atomic::Ordering::Acquire),

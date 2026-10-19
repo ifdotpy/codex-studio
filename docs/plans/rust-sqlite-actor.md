@@ -43,23 +43,13 @@ callback, and future size does not grow with callback capture size; the
 [`transaction_entry_futures_do_not_store_operation_capture` test](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
 covers all five entrypoints.
 
-Account workers also serialize complete logical account operations with the
-`StoreBridge` semaphore. `scope_account_worker_operation` places its owned
-permit in a Tokio task-local context. `RuntimeStore` clones that lease only
-after writer admission succeeds, then moves the clone into the synchronous SQL
-actor callback. If the caller is cancelled or times out after admission, the
-callback keeps the account slot until SQL work completes, so a later account
-operation cannot overtake it. Cancellation while waiting for writer admission
-still drops the caller future, submits no SQL, and releases the account slot.
-Tokio task-local context does not propagate through `tokio::spawn`; spawned
-writer work must explicitly establish its own scope before relying on this
-serialization lease.
-
-The source regressions are
-[`admitted_write_keeps_account_operation_lease_after_caller_cancellation`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
-and
-[`cancelled_writer_admission_does_not_retain_account_operation_lease`](../../workspaces/runtime/packages/runtime-store/src/lib.rs).
-They passed as part of the actor validation gate recorded below.
+Account workers do not share an operation lock. Each worker runs its own store
+operations one at a time, and the single writer actor admits writes in order: a
+write admitted for a worker that is cancelled or times out still completes before
+any later write, including the startup recovery of a replacement worker for the
+same account. Cancellation while waiting for writer admission drops the caller
+future and submits no SQL
+([`cancellation_while_saturated_does_not_submit_sql`](../../workspaces/runtime/packages/runtime-store/src/sqlite_actor.rs)).
 
 The runtime server opens one `Arc<RuntimeStore>` in
 [`runtime-server/src/main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs)

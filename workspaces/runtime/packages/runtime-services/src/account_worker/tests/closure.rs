@@ -250,13 +250,7 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
     peer.accepted(&start).await;
     let cursor=peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"timer","delta":"below threshold"}})).await;
     peer.acknowledged(cursor).await;
-    let permit = state
-        .bridge
-        .operation_slot
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap();
+    let permit = state.bridge.faults.operation_gate.write().await;
     // Keep the event lane ready while time passes. Its first DB job is blocked.
     for _ in 0..8 {
         peer.frame(json!({"method":"test/barrier","params":{}}))
@@ -269,6 +263,8 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
     let mut count = 0;
     loop {
         peer.acknowledged(cursor + 1 + count).await;
+        // Order the read after the worker's next serve cycle, which flushes a due deadline.
+        worker_barrier(&worker).await;
         count += 1;
         let flushed = state
             .bridge

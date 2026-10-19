@@ -57,7 +57,6 @@ use rusqlite::trace::{TraceEvent, TraceEventCodes};
 pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
 use thiserror::Error;
-use tokio::sync::OwnedSemaphorePermit;
 
 type BoxedTransactionOperation<T, E> =
     Box<dyn for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E> + Send + 'static>;
@@ -843,27 +842,6 @@ struct ReadConnectionPoolState {
 
 thread_local! {
     static ACTIVE_READ_POOLS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
-}
-
-tokio::task_local! {
-    static ACCOUNT_WORKER_OPERATION_LEASE: Arc<OwnedSemaphorePermit>;
-}
-
-/// Run an account-worker operation under its bridge serialization permit.
-/// Canvas writes admitted within this scope retain a clone through their SQL
-/// callback, even when the worker stops waiting for the transaction result.
-/// A write still waiting for actor admission does not retain a clone and remains
-/// cancellable with its caller. Tokio task-local values do not cross
-/// `tokio::spawn`; spawned writer work must establish its own scope.
-pub fn scope_account_worker_operation<T, O>(
-    permit: OwnedSemaphorePermit,
-    operation: O,
-) -> impl Future<Output = T> + Send
-where
-    T: Send,
-    O: Future<Output = T> + Send,
-{
-    ACCOUNT_WORKER_OPERATION_LEASE.scope(Arc::new(permit), Box::pin(operation))
 }
 
 /// A checked-out read-only canvas connection returned to its bounded pool on drop.
@@ -1671,8 +1649,6 @@ impl RuntimeStore {
             .await
             .map_err(actor_transport_outcome_unknown)
             .map_err(E::from)?;
-        let account_worker_operation_lease =
-            ACCOUNT_WORKER_OPERATION_LEASE.try_with(Arc::clone).ok();
         drop(waiter_registration);
         let waiting_threads = self.writer_waiters.load(Ordering::Relaxed);
         let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
@@ -1700,7 +1676,6 @@ impl RuntimeStore {
             Arc::clone(&self.simulate_unknown_commit_after_success);
         let transaction_job =
             move |writer: &mut Connection| -> Result<WriterTransactionOutcome<T, E>, StoreError> {
-                let _account_worker_operation_lease = account_worker_operation_lease;
                 let _identity_registry_lease = identity_registry_lease;
                 table_change_flags.store(0, Ordering::Release);
                 resource_receipt_update_count.store(0, Ordering::Release);
@@ -4462,168 +4437,6 @@ mod projection_generation_tests {
             restarted
                 .entity_projections_need_maintenance("vault-a")
                 .expect("restart begins without a process-local watermark")
-        );
-    }
-}
-
-#[cfg(test)]
-mod account_worker_operation_lease_tests {
-    use super::*;
-    use std::sync::atomic::AtomicBool;
-    use tokio::sync::Semaphore;
-
-    #[test]
-    fn account_worker_scope_future_does_not_store_operation_capture() {
-        const SMALL_CAPTURE_BYTES: usize = 8;
-        const LARGE_CAPTURE_BYTES: usize = 65_536;
-
-        let account_slot = Arc::new(Semaphore::new(2));
-        macro_rules! make_future {
-            ($payload:ident) => {{
-                let permit = Arc::clone(&account_slot)
-                    .try_acquire_owned()
-                    .expect("account operation slot is available");
-                scope_account_worker_operation(permit, async move {
-                    std::hint::black_box($payload);
-                })
-            }};
-        }
-
-        let small_payload = [0_u8; SMALL_CAPTURE_BYTES];
-        let large_payload = [0_u8; LARGE_CAPTURE_BYTES];
-        let small = make_future!(small_payload);
-        let large = make_future!(large_payload);
-        assert_eq!(
-            std::mem::size_of_val(&small),
-            std::mem::size_of_val(&large),
-            "task-local scope future keeps the operation boxed"
-        );
-    }
-
-    #[tokio::test]
-    async fn admitted_write_keeps_account_operation_lease_after_caller_cancellation() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("runtime store opens"),
-        );
-        let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let blocker_store = Arc::clone(&store);
-        let blocker = tokio::spawn(async move {
-            blocker_store
-                .transaction(move |_| {
-                    entered_tx
-                        .send(())
-                        .expect("blocked writer entry is observed");
-                    blocked_rx.recv().expect("blocked writer is released");
-                    Ok::<(), StoreError>(())
-                })
-                .await
-        });
-        entered_rx
-            .await
-            .expect("first actor callback owns the writer");
-
-        let account_slot = Arc::new(Semaphore::new(1));
-        let account_permit = Arc::clone(&account_slot)
-            .acquire_owned()
-            .await
-            .expect("account operation slot is open");
-        let mut queued = Box::pin(scope_account_worker_operation(
-            account_permit,
-            store.transaction(|_| Ok::<(), StoreError>(())),
-        ));
-        let first_poll =
-            std::future::poll_fn(|context| std::task::Poll::Ready(queued.as_mut().poll(context)))
-                .await;
-        assert!(
-            first_poll.is_pending(),
-            "queued callback awaits its response"
-        );
-        assert_eq!(
-            store.writer.available_admissions(),
-            sqlite_actor::MAX_PENDING_WRITES - 2,
-            "the blocked and queued callbacks both own writer admission"
-        );
-        drop(queued);
-        assert_eq!(
-            account_slot.available_permits(),
-            0,
-            "the admitted SQLite callback retains the bridge operation slot"
-        );
-
-        blocked_tx
-            .send(())
-            .expect("release the first actor callback");
-        blocker
-            .await
-            .expect("blocked transaction task completes")
-            .expect("blocked transaction commits");
-        store
-            .transaction(|_| Ok::<(), StoreError>(()))
-            .await
-            .expect("FIFO barrier follows the cancelled queued callback");
-        assert_eq!(
-            account_slot.available_permits(),
-            1,
-            "the bridge operation slot releases after the admitted callback"
-        );
-    }
-
-    #[tokio::test]
-    async fn cancelled_writer_admission_does_not_retain_account_operation_lease() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("runtime store opens"),
-        );
-        let mut actor_permits = Vec::with_capacity(sqlite_actor::MAX_PENDING_WRITES);
-        for _ in 0..sqlite_actor::MAX_PENDING_WRITES {
-            actor_permits.push(
-                store
-                    .writer
-                    .acquire()
-                    .await
-                    .expect("fill writer admission capacity"),
-            );
-        }
-
-        let account_slot = Arc::new(Semaphore::new(1));
-        let account_permit = Arc::clone(&account_slot)
-            .acquire_owned()
-            .await
-            .expect("account operation slot is open");
-        let operation_ran = Arc::new(AtomicBool::new(false));
-        let operation_ran_in_job = Arc::clone(&operation_ran);
-        let mut waiting = Box::pin(scope_account_worker_operation(
-            account_permit,
-            store.transaction(move |_| {
-                operation_ran_in_job.store(true, Ordering::Release);
-                Ok::<(), StoreError>(())
-            }),
-        ));
-        let first_poll =
-            std::future::poll_fn(|context| std::task::Poll::Ready(waiting.as_mut().poll(context)))
-                .await;
-        assert!(first_poll.is_pending(), "writer admission is saturated");
-        assert_eq!(store.writer_waiters.load(Ordering::Acquire), 1);
-        drop(waiting);
-        assert_eq!(
-            account_slot.available_permits(),
-            1,
-            "pre-admission cancellation releases the bridge operation slot"
-        );
-        drop(actor_permits);
-        store
-            .transaction(|_| Ok::<(), StoreError>(()))
-            .await
-            .expect("barrier succeeds after admission permits are restored");
-        assert!(
-            !operation_ran.load(Ordering::Acquire),
-            "cancelled pre-admission operation is never submitted"
         );
     }
 }
