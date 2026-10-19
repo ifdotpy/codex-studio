@@ -6262,7 +6262,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # endpoint reports file errors; do not grant an invalid path access.
             return None
 
-    def new_thread_params(self, a):
+    def new_thread_params(self, a, *, dynamic_tools=True):
+        """Build native thread parameters for a managed agent record.
+
+        dynamic_tools=False omits the Studio tool catalog. The tool catalog applies
+        the delegation policy to the saved record, so a caller that resumes a thread
+        for a record that is not saved yet must omit it.
+        """
         from codex_session_tools import session_tool_name
         a.setdefault('nativeTeleportTool', session_tool_name(a))
         progress = self.progress_file(a) if a.get("isLead") else None
@@ -6330,7 +6336,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.image_workspace_temp(a) if not a.get("imageWorkspaceReady") else None)
         # Threads started before the VM tool change keep the saved pre-change catalog.
         a.setdefault("nativeToolSource", "legacy" if a.get("threadId") else "current")
-        params["dynamicTools"] = self.tool_definitions(a)
+        if dynamic_tools:
+            params["dynamicTools"] = self.tool_definitions(a)
         if a.get("portableHistory"):
             from codex_portable_history import history_context
             params["developerInstructions"] += "\n" + history_context(self, a["portableHistory"])
@@ -6341,7 +6348,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             frozen = a['frozenNativeParams']
             params.update(baseInstructions=frozen['baseInstructions'],
                           developerInstructions=frozen['developerInstructions'],
-                          model=frozen['model'], dynamicTools=self.tool_definitions(a))
+                          model=frozen['model'])
             if a.get('provider') != 'claude':
                 if frozen.get('effort') is not None:
                     params['config']['model_reasoning_effort'] = frozen['effort']
