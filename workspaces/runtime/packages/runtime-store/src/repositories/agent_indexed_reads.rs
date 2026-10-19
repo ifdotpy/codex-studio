@@ -7,11 +7,17 @@ use rusqlite::{Connection, params};
 
 use crate::StoreResult;
 
-/// Statuses that occupy a capacity slot. Owner of both the capacity index
-/// predicate and the global/team slot queries; the unit is a status name.
+/// Statuses that occupy a capacity slot; the unit is a status name. Deleting an
+/// agent leaves it `paused`, so a slot also requires `CAPACITY_LIVE`.
 const CAPACITY_STATUSES: &str = "('starting','running','waiting','paused','approval')";
-/// Name of the covering index for the global capacity count.
-pub const CAPACITY_INDEX: &str = "runtime_agent_capacity_slots";
+/// A deleted agent (tombstone) never occupies a slot. Together with
+/// `CAPACITY_STATUSES` this is the one owner of the capacity index predicate and
+/// of every slot query.
+const CAPACITY_LIVE: &str = "json_extract(record,'$.deletedAt') IS NULL";
+/// Name of the covering index for the capacity counts. `_v2` added `CAPACITY_LIVE`.
+pub const CAPACITY_INDEX: &str = "runtime_agent_capacity_slots_v2";
+/// Index replaced by `CAPACITY_INDEX`; dropped at bootstrap so tombstones leave it.
+const RETIRED_CAPACITY_INDEX: &str = "runtime_agent_capacity_slots";
 const REMOTE_WORKER_KEY: &str = "COALESCE(json_extract(record,'$.remoteWorker'),0)";
 
 /// Indexed reads of agent records by team root or by slot-occupying status.
@@ -26,7 +32,7 @@ impl AgentIndexedReads {
             table: "runtime_agents",
             create_sql: format!(
                 "CREATE INDEX IF NOT EXISTS {CAPACITY_INDEX} ON runtime_agents({REMOTE_WORKER_KEY},id) \
-                 WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES}"
+                 WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE}"
             ),
         }
     }
@@ -34,6 +40,7 @@ impl AgentIndexedReads {
     #[doc(hidden)]
     pub fn prepare_index(connection: &Connection) -> StoreResult<()> {
         if crate::schema::table_exists(connection, "runtime_agents")? {
+            connection.execute_batch(&format!("DROP INDEX IF EXISTS {RETIRED_CAPACITY_INDEX}"))?;
             connection.execute_batch(&Self::index_definition().create_sql)?;
         }
         Ok(())
@@ -104,7 +111,7 @@ impl AgentIndexedReads {
     pub fn global_slots_sql() -> String {
         format!(
             "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 \
-             AND json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {REMOTE_WORKER_KEY}=0"
+             AND json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE} AND {REMOTE_WORKER_KEY}=0"
         )
     }
 
@@ -113,20 +120,21 @@ impl AgentIndexedReads {
         format!(
             "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 AND id<>?2 \
              AND json_extract(record,'$.rootId')=?2 \
-             AND json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {REMOTE_WORKER_KEY}=0"
+             AND json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE} AND {REMOTE_WORKER_KEY}=0"
         )
     }
 
-    /// SQL counting the working local agents per account key: slot-occupying
-    /// agents that are not paused. A paused agent keeps its slot but sends no
-    /// provider request, so it must not skew where new workers are placed. It
-    /// enumerates the partial capacity index (live agents only).
+    /// SQL counting the working local agents per account key: live
+    /// slot-occupying agents that are not paused. A live paused agent keeps its
+    /// slot but sends no provider request, so it must not skew where new workers
+    /// are placed (intended; owner semantic). It enumerates the partial
+    /// capacity index.
     #[doc(hidden)]
     pub fn account_slots_sql() -> String {
         format!(
             "SELECT COALESCE(json_extract(record,'$.accountKey'),'default'),COUNT(*) \
              FROM runtime_agents WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES} \
-             AND json_extract(record,'$.status')<>'paused' \
+             AND {CAPACITY_LIVE} AND json_extract(record,'$.status')<>'paused' \
              AND {REMOTE_WORKER_KEY}=0 GROUP BY 1"
         )
     }
@@ -225,6 +233,7 @@ mod tests {
             json!({"id":"done","rootId":"lead","status":"completed"}),
             json!({"id":"failed","rootId":"lead","status":"failed"}),
             json!({"id":"gone","rootId":"lead","status":"running","deletedAt":5}),
+            json!({"id":"tombstone","rootId":"lead","status":"paused","deletedAt":6}),
             json!({"id":"no-status","rootId":"lead"}),
             json!({"id":"remote","rootId":"lead","status":"running","remoteWorker":true}),
             json!({"id":"op","rootId":"other","status":"running","cwd":"/x","workspaceOperation":"branch"}),
@@ -252,6 +261,7 @@ mod tests {
                 "done",
                 "failed",
                 "gone",
+                "tombstone",
                 "no-status",
                 "remote"
             ]
@@ -275,24 +285,25 @@ mod tests {
                 Some("/z".to_owned())
             ]
         );
-        // Every status-occupying local agent but the caller; tombstones still count.
+        // Every live status-occupying local agent but the caller; tombstones never count.
         let old_global: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_agents WHERE id<>'a' AND json_extract(record,'$.status') \
                  IN ('starting','running','waiting','paused','approval') \
-                 AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0",
+                 AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0 \
+                 AND json_extract(record,'$.deletedAt') IS NULL",
                 [],
                 |row| row.get(0),
             )
             .expect("reference count");
-        assert_eq!(old_global, 6);
+        assert_eq!(old_global, 5);
         assert_eq!(
             AgentIndexedReads::global_slots_in_use(&connection, "a").expect("global"),
             old_global
         );
         assert_eq!(
             AgentIndexedReads::team_slots_in_use(&connection, "a", "lead").expect("team"),
-            3
+            2
         );
         insert(
             &connection,
@@ -300,9 +311,32 @@ mod tests {
         );
         let by_account = AgentIndexedReads::slots_by_account(&connection).expect("by account");
         assert_eq!(by_account.len(), 2);
-        // The three paused agents hold slots but are not counted as work.
-        assert_eq!(by_account["default"], 4);
+        // Live paused agents hold slots but are not counted as work; tombstones are not counted.
+        assert_eq!(by_account["default"], 3);
         assert_eq!(by_account["b"], 1);
+    }
+
+    #[test]
+    fn bootstrap_replaces_the_tombstone_counting_capacity_index() {
+        let connection = fixture();
+        connection
+            .execute_batch(
+                "DROP INDEX runtime_agent_capacity_slots_v2; \
+                 CREATE INDEX runtime_agent_capacity_slots ON runtime_agents(id) \
+                 WHERE json_extract(record,'$.status') IN ('starting','running','waiting','paused','approval')",
+            )
+            .expect("legacy index creates");
+        AgentIndexedReads::prepare_index(&connection).expect("migration runs");
+        let names: Vec<String> = connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'runtime_agent_capacity_slots%'",
+            )
+            .expect("catalog prepares")
+            .query_map([], |row| row.get(0))
+            .expect("catalog runs")
+            .collect::<Result<_, _>>()
+            .expect("catalog rows");
+        assert_eq!(names, [CAPACITY_INDEX]);
     }
 
     #[test]
