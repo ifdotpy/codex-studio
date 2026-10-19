@@ -4,6 +4,12 @@ inputs:
   native:
     description: Install Linux WebView libraries and build the renderer embedded by Tauri.
     default: "false"
+  renderer-checks:
+    description: >-
+      With native, also run the API drift check and the TypeScript check of the
+      renderer build. A job that only embeds the bundle sets "false"; the same
+      checks still run in the jobs that keep the default.
+    default: "true"
 runs:
   using: composite
   steps:
@@ -28,7 +34,11 @@ runs:
         if ! command -v wasm-bindgen >/dev/null || [ "$(wasm-bindgen --version)" != "wasm-bindgen $BINDINGS_VERSION" ]; then
           cargo install wasm-bindgen-cli --version "$BINDINGS_VERSION" --locked
         fi
-    - name: Build the renderer for native Rust checks
-      if: inputs.native == 'true'
+    - name: Build and check the renderer for native Rust checks
+      if: inputs.native == 'true' && inputs.renderer-checks == 'true'
       shell: bash
       run: pnpm --filter codex-agents-web run build
+    - name: Build the renderer bundle for the native crate
+      if: inputs.native == 'true' && inputs.renderer-checks != 'true'
+      shell: bash
+      run: pnpm --filter codex-agents-web run build:bundle

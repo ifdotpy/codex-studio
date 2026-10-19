@@ -133,9 +133,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Line tables keep file and line numbers in panics and backtraces. Full
-      # debug information would make the test archive several gigabytes.
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # Hosted runs print no backtraces (RUST_BACKTRACE is unset), and panic
+      # messages keep their file and line without debug information. Full debug
+      # information would make the test archive several gigabytes larger.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/fast-tier-setup
@@ -144,6 +145,8 @@ jobs:
       - uses: ./.github/actions/client-build-setup
         with:
           native: "true"
+          # Rust checks and Rust macOS build run the renderer API and type checks.
+          renderer-checks: "false"
       - name: Build the Rust workspace test archive
         run: |
           mkdir -p "$RUNNER_TEMP/rust-workspace-tests"
