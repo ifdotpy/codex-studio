@@ -191,8 +191,9 @@ fn validate_selected_account(
     Ok(())
 }
 
-/// Ready, usable accounts that the chat and project allow, least loaded first.
-/// Ties break on the account key so the order is deterministic.
+/// Ready, usable accounts that the chat and project allow: those below their
+/// running-turn limit (start throttle) first, then least loaded. Ties break on
+/// the account key so the order is deterministic.
 fn ordered_worker_account_candidates<'a>(
     listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
     excluded: &[String],
@@ -213,10 +214,9 @@ fn ordered_worker_account_candidates<'a>(
         })
         .collect::<Vec<_>>();
     ordered.sort_by_key(|row| {
-        (
-            active_agents.get(&row.account_key).copied().unwrap_or(0),
-            row.account_key.as_str(),
-        )
+        let active = active_agents.get(&row.account_key).copied().unwrap_or(0);
+        let full = u64::try_from(active).unwrap_or(0) >= row.max_running_turns;
+        (full, active, row.account_key.as_str())
     });
     ordered
 }
@@ -1124,6 +1124,7 @@ mod account_identity_tests {
             disconnected: false,
             deleted: false,
             duplicate: false,
+            max_running_turns: studio_runtime_schema::shared_values::ACCOUNT_RUNNING_TURNS_MAX,
         }
     }
 
@@ -1216,6 +1217,27 @@ mod account_identity_tests {
             pick(&mut |key| key == "offline" || key == "busy").expect("busy"),
             "busy"
         );
+    }
+
+    #[test]
+    fn implicit_selection_prefers_an_account_below_its_running_turn_limit() {
+        use ProviderKind::{Claude, Codex};
+        for (provider, model) in [(Codex, "gpt-5"), (Claude, "sonnet")] {
+            let mut listing = accounts(&[("big", provider, true), ("small", provider, true)]);
+            listing.0.accounts[1].max_running_turns = 2;
+            listing.0.accounts[0].max_running_turns = 16;
+            let counts = Counts::from([("big".to_owned(), 3), ("small".to_owned(), 2)]);
+            assert_eq!(
+                select(&listing, model, None, &counts, &mut |_| true).expect("big"),
+                "big",
+                "the less loaded account has no free slot"
+            );
+            let counts = Counts::from([("big".to_owned(), 3), ("small".to_owned(), 1)]);
+            assert_eq!(
+                select(&listing, model, None, &counts, &mut |_| true).expect("small"),
+                "small"
+            );
+        }
     }
 
     #[test]

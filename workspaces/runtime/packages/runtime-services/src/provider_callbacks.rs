@@ -63,6 +63,9 @@ pub struct ManagedCreationAccountCandidate {
     pub disconnected: bool,
     pub deleted: bool,
     pub duplicate: bool,
+    /// The account's start throttle limit on running turns (unit: turns);
+    /// implicit worker selection prefers an account below it.
+    pub max_running_turns: u64,
 }
 
 #[derive(Clone, Debug)]

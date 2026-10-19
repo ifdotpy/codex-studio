@@ -720,6 +720,7 @@ impl crate::provider_callbacks::ManagedCreationAccountRead for EligibleAccountRe
                 disconnected: false,
                 deleted: false,
                 duplicate: false,
+                max_running_turns: studio_runtime_schema::shared_values::ACCOUNT_RUNNING_TURNS_MAX,
             }],
         })
     }
