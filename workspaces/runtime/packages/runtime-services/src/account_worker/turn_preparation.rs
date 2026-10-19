@@ -21,6 +21,8 @@ pub(super) struct Run {
 
 pub(super) struct Done {
     pub intent: TurnIntent,
+    /// The requested method; the prepared request may carry another one.
+    pub method: Method,
     pub agent_changes: watch::Receiver<u64>,
     pub effect: Option<String>,
     pub outcome: Result<store::PreparationStep<preparation::RequestPreparation>, WorkerError>,
@@ -30,6 +32,7 @@ pub(super) async fn run(run: Run) -> Box<Done> {
     let outcome = stage("turn_preparation.total", prepare(&run)).await;
     Box::new(Done {
         intent: run.intent,
+        method: run.method,
         agent_changes: run.agent_changes,
         effect: run.effect,
         outcome,

@@ -1609,7 +1609,9 @@ pub(super) async fn was_submitted(
 ) -> Result<bool, WorkerError> {
     let operation = operation.to_owned();
     store
-        .transaction_with(move |tx| Ok(receipt(tx, &operation, "submitted")?.is_some()))
+        .read_async("runtime-services/account_worker_was_submitted", move |tx| {
+            Ok(receipt(tx, &operation, "submitted")?.is_some())
+        })
         .await
 }
 

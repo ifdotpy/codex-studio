@@ -1849,7 +1849,8 @@ impl Worker {
             self.idle_thread_touched(thread);
         }
         if method == Method::TurnInterrupt {
-            return Box::pin(self.submit_prepared(intent, method, interrupt_turn, None)).await;
+            return Box::pin(self.submit_prepared(intent, method, interrupt_turn, None, false))
+                .await;
         }
         // A recovered durable effect may outlive its submitted request. Check
         // that receipt before later events can settle it, and before
@@ -1902,6 +1903,7 @@ impl Worker {
     async fn prepared(&mut self, done: turn_preparation::Done) -> Result<(), WorkerError> {
         let turn_preparation::Done {
             intent,
+            method: requested,
             agent_changes,
             effect,
             outcome,
@@ -1909,8 +1911,16 @@ impl Worker {
         let rewake = self.preparing.remove(&intent.agent_id).flatten();
         if let Some(prepared) = self.preparation_ready(outcome?, &intent, &agent_changes) {
             let method = prepared.method;
-            Box::pin(self.submit_prepared(prepared.intent.clone(), method, None, Some(prepared)))
-                .await?;
+            // `submit_inner` already read this turn/start receipt before preparing.
+            let receipt_checked = requested == Method::TurnStart && method == Method::TurnStart;
+            Box::pin(self.submit_prepared(
+                prepared.intent.clone(),
+                method,
+                None,
+                Some(prepared),
+                receipt_checked,
+            ))
+            .await?;
         }
         if let Some(key) = effect {
             self.complete_effect(key).await?;
@@ -1921,12 +1931,15 @@ impl Worker {
         Ok(())
     }
     /// The serialized submission: FULL submitted commit, then the provider write.
+    /// `receipt_checked` means this worker already found no submitted receipt
+    /// for the operation; only this worker can submit it in between.
     async fn submit_prepared(
         &mut self,
         intent: TurnIntent,
         method: Method,
         interrupt_turn: Option<(String, i64)>,
         prepared: Option<preparation::RequestPreparation>,
+        receipt_checked: bool,
     ) -> Result<(), WorkerError> {
         if self.closing {
             return Ok(());
@@ -1959,11 +1972,12 @@ impl Worker {
             operation.push_str(&format!(":stop:{stop_epoch}"));
         }
         let prior = operation.clone();
-        if self
-            .db("was_submitted", move |store| async move {
-                store::was_submitted(&store, &prior).await
-            })
-            .await?
+        if !receipt_checked
+            && self
+                .db("was_submitted", move |store| async move {
+                    store::was_submitted(&store, &prior).await
+                })
+                .await?
         {
             return Ok(());
         }
