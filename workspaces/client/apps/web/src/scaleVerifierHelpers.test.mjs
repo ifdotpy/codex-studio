@@ -27,6 +27,7 @@ import {
   readProcessTable,
   sampleProviderProcesses,
   scaleProfile,
+  showsUpstreamLimit,
   SCALE_WORKSPACE_MODE,
   TOOL_BARRIER_PROCESS_BOUND_MS,
   acquireRunLock,
@@ -148,6 +149,17 @@ afterEach(async () => {
 });
 
 describe("scale verifier helpers", () => {
+  it("flags upstream limits but not ids that contain 429", () => {
+    expect(showsUpstreamLimit("HTTP 429 Too Many Requests")).toBe(true);
+    expect(showsUpstreamLimit("You've hit your usage limit")).toBe(true);
+    expect(showsUpstreamLimit('{"code":"rate_limit_exceeded"}')).toBe(true);
+    expect(
+      showsUpstreamLimit(
+        "account:x:5a2840ba53bb51e39bfea489b110bf5687e848177a374d7590f9d4244bcd4429:turn/start",
+      ),
+    ).toBe(false);
+    expect(showsUpstreamLimit("STUDIO_SCALE_1a429bcd_30_7")).toBe(false);
+  });
   it("uses the public worktree projection after the callback readiness signal", () => {
     const entity = {
       cwd: "/project/.worktrees/codex-agents/worker",

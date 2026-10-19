@@ -57,6 +57,16 @@ export const SCALE_PROFILES = Object.freeze({
 });
 export const SCALE_PROVIDER = SCALE_PROFILES["claude-haiku"];
 
+// Owner of the upstream-limit evidence pattern used by the scale verifier.
+// Word boundaries keep identifiers such as hex operation ids (which can contain
+// "429") from matching; only standalone status codes and limit phrases count.
+export const UPSTREAM_LIMIT_PATTERN =
+  /\brate[ _-]?limit|\b429\b|\bcapacity\b|\busage limit|\btoo many requests\b/i;
+
+export function showsUpstreamLimit(text) {
+  return UPSTREAM_LIMIT_PATTERN.test(String(text ?? ""));
+}
+
 export function scaleProfile(name) {
   const profile = SCALE_PROFILES[name];
   assert.ok(

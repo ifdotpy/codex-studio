@@ -57,6 +57,7 @@ import {
   releaseBarriersNow,
   readProcessTable,
   sampleProviderProcesses,
+  showsUpstreamLimit,
 } from "./scaleVerifierHelpers.mjs";
 
 // The lead and worker profiles and the stage list are fixed once from the CLI.
@@ -2317,7 +2318,7 @@ async function verifyToolCallback(client, agentId, runId, workers, index) {
     );
   }
   const providerLimit = rows.filter((row) =>
-    /rate.?limit|429|capacity|usage limit/i.test(
+    showsUpstreamLimit(
       `${row.text || ""} ${JSON.stringify(row.turnError || "")}`,
     ),
   );
@@ -2896,10 +2897,7 @@ export function summarizeEventTiming(evidence, journalEntries) {
     providerErrors: {
       events: evidence?.providerErrorEvents || [],
       upstreamLimitMatches: (evidence?.providerErrorEvents || []).filter(
-        (item) =>
-          /rate.?limit|429|capacity|usage limit|too many requests/i.test(
-            item.error,
-          ),
+        (item) => showsUpstreamLimit(item.error),
       ),
       aggregateAttribution:
         "Unavailable: no provider-specific aggregate rate-limit diagnostic is exposed.",
