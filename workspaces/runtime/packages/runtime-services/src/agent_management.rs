@@ -395,9 +395,6 @@ impl ManagementSnapshot {
                 && session.get("ended").is_none_or(Value::is_null)
         })
     }
-    fn refuse_live(&self, agent: &Agent) -> Result<(), ManagementError> {
-        self.stop_effects(agent, &mut Vec::new(), false, false)
-    }
     fn stop_effects(
         &self,
         agent: &Agent,
