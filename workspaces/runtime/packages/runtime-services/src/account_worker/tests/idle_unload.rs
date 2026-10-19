@@ -142,8 +142,7 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     assert!(peer.writes.try_recv().is_err());
     progress(peer.completed()).await;
 
-    // Completion makes the already-known loaded thread eligible for its idle clock.
-    sweep(&worker).await;
+    // Completion starts the already-known loaded thread's unload at once.
     idle_checks(&mut peer).await;
     // A failed unsubscribe proves nothing; the thread stays loaded.
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
@@ -433,4 +432,69 @@ async fn idle_snapshot_is_admitted_while_a_full_backlog_waits_for_the_worker() {
     .unwrap();
     worker_barrier(&worker).await;
     drain.abort();
+}
+
+/// Input that arrives while a settled turn's thread is being checked for
+/// unload keeps the thread from being unsubscribed; the new turn starts once,
+/// after a resume that proves the thread is loaded again.
+async fn scenario_input_at_turn_completion_is_not_raced_by_unload(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    enable_unload(&state, &mut peer).await;
+
+    // The settled turn starts the unload checks at once, with no idle wait.
+    progress(peer.completed()).await;
+    let read = progress(peer.write("thread/read")).await;
+    assert_eq!(
+        read["params"],
+        json!({"threadId": THREAD, "includeTurns": false})
+    );
+    state.enqueue("arrived-at-completion").await;
+    progress(peer.reply(
+        &read,
+        json!({"thread": {"id": THREAD, "status": {"type": "idle"}}}),
+    ))
+    .await;
+    answer(
+        &mut peer,
+        "thread/backgroundTerminals/list",
+        json!({"threadId": THREAD, "limit": 100}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    answer(
+        &mut peer,
+        "thread/queue/list",
+        json!({"threadId": THREAD}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    state.wake(&worker).await;
+    // `write_turn_start` fails on any write other than resume or turn/start.
+    let next = progress(peer.write_turn_start()).await;
+    let input = next["params"]["input"].to_string();
+    assert_eq!(input.matches("arrived-at-completion").count(), 1, "{input}");
+    progress(worker.shutdown()).await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_input_at_turn_completion_is_not_raced_by_unload() {
+    scenario_input_at_turn_completion_is_not_raced_by_unload(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_input_at_turn_completion_is_not_raced_by_unload() {
+    scenario_input_at_turn_completion_is_not_raced_by_unload(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
 }

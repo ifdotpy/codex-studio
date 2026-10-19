@@ -186,9 +186,9 @@ const sessionStore = createSessionStore(root, {
   isPinned: (id) => queries.has(id),
 });
 const sessions = sessionStore.sessions;
-// The server closes idle sessions with thread/unsubscribe after its
-// idleSessionUnloadMinutes setting. A session with a turn, background task,
-// pending input, or serialized operation refuses to close.
+// The server closes a session with thread/unsubscribe as soon as its turn
+// settles, which exits its CLI; the next turn resumes it. A session with a
+// turn, background task, pending input, or serialized operation refuses to close.
 const queryBusy = (id, active) =>
   Boolean(
     active.turn ||

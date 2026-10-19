@@ -346,7 +346,14 @@ Late acknowledgements cannot resume a stopped agent or replace a newer turn.
 ### Idle provider sessions
 
 Orchestration settings control [idle session unloading](../workspaces/runtime/packages/runtime-store/src/repositories/orchestration_settings.rs).
-The setting can keep sessions loaded or give unused threads an unload deadline.
+A thread whose turn has settled, with no pending input, request, monitor, or
+background work, unloads at once (`THREAD_UNLOAD_DELAY` in
+[idle_unload.rs](../workspaces/runtime/packages/runtime-services/src/account_worker/idle_unload.rs)),
+so provider memory follows running turns: a Claude thread's CLI exits, and the
+Codex app-server frees the thread after its own unload delay. The next turn
+resumes the thread.
+The setting stops the provider process after its minutes with no loaded thread;
+zero keeps threads and processes loaded.
 Studio checks ownership before unsubscribing a thread and stops the provider
 process only when all loaded threads have been released and no work remains.
 An unknown unsubscribe result keeps the thread loaded.

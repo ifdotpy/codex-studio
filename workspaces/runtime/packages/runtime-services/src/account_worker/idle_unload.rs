@@ -4,13 +4,14 @@
 //! A thread whose owners have no turn, unsettled input, request,
 //! monitor, or transfer (see `SchedulerRepository::idle_unload_thread_in_use`)
 //! and that this worker has no request for starts its idle clock; a thread
-//! idle for the `idleSessionUnloadMinutes` setting is unsubscribed after the
-//! provider confirms it is idle with no background terminal or queued input.
+//! idle for [`THREAD_UNLOAD_DELAY`] is unsubscribed after the provider
+//! confirms it is idle with no background terminal or queued input. The next
+//! turn's `thread/resume` reloads it with its history.
 //! When every loaded thread is unsubscribed and the worker holds no request,
-//! callback, effect, or VM session, the worker closes its session, which stops
-//! the provider process. The next wake starts a new session, and its
-//! `thread/resume` reloads the thread with its history. A request whose reply
-//! is lost leaves the thread loaded; unsubscribe is never assumed.
+//! callback, effect, or VM session for the `idleSessionUnloadMinutes` setting,
+//! the worker closes its session, which stops the provider process. Zero
+//! minutes turns idle unloading off. A request whose reply is lost leaves the
+//! thread loaded; unsubscribe is never assumed.
 use super::*;
 use crate::provider_session_task::SessionStatus;
 use std::time::Duration;
@@ -26,6 +27,18 @@ pub(super) fn session_status_invalidates_snapshot(
     status.generation != generation || status.initialization != InitializationStatus::Ready
 }
 
+/// How long a loaded provider thread with a settled turn and no pending input,
+/// request, or background work stays loaded; unit: wall time. Zero unloads it
+/// as soon as its turn settles, so provider memory follows running turns, not
+/// loaded agents: each loaded Claude thread holds its own `claude` CLI (about
+/// 240 MiB RSS). The next turn resumes the thread; a cold CLI start with resume
+/// costs about 0.25 CPU-s against about 0.015 CPU-s for a warm turn, and a Codex
+/// unload with resume 15-70 ms against about 32 ms for a warm turn (scripted
+/// model fixtures, 2026-10-19). Codex frees an unsubscribed thread after its
+/// own `thread_unload_delay_secs`; its launch keeps Codex's default, because a
+/// loaded Codex thread holds about 5 MiB and unloading it returns no RSS, and
+/// a changed launch command would no longer reattach running app-servers.
+const THREAD_UNLOAD_DELAY: Duration = Duration::ZERO;
 /// Deadline of one provider request of the sweep.
 const IDLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Retry delay after a provider snapshot or idle request has an unknown result.
@@ -225,24 +238,25 @@ impl IdleClocks {
         now.saturating_duration_since(since) >= delay
     }
 
-    fn next_deadline(&self, delay: Duration) -> Option<Instant> {
+    fn next_deadline(&self, thread_delay: Duration, process_delay: Duration) -> Option<Instant> {
         self.threads
             .iter()
             .filter(|(thread, _)| {
                 !self.released.contains(*thread) && !self.blocked.contains_key(*thread)
             })
-            .map(|(_, since)| *since + delay)
+            .map(|(_, since)| *since + thread_delay)
             .chain(
                 self.process
                     .filter(|_| self.process_blocked.is_none())
-                    .map(|since| since + delay),
+                    .map(|since| since + process_delay),
             )
             .min()
     }
 }
 
-fn next_deadline(clocks: &IdleClocks, delay: Option<Duration>) -> Option<Instant> {
-    delay.and_then(|delay| clocks.next_deadline(delay))
+/// The next idle deadline; `process_delay` is the setting, `None` when off.
+fn next_deadline(clocks: &IdleClocks, process_delay: Option<Duration>) -> Option<Instant> {
+    process_delay.and_then(|delay| clocks.next_deadline(THREAD_UNLOAD_DELAY, delay))
 }
 
 fn empty_page(page: &Value) -> bool {
@@ -275,7 +289,7 @@ impl Worker {
             self.idle_deadline = None;
             return Ok(());
         };
-        let due = self.idle_clocks.due_threads(now, delay);
+        let due = self.idle_clocks.due_threads(now, THREAD_UNLOAD_DELAY);
         if !self.pending.is_empty() || !self.retained_requests.is_empty() {
             for thread in &due {
                 self.idle_clocks.block(thread, IdleBlocker::Local);
@@ -338,7 +352,7 @@ impl Worker {
                 &thread,
                 !usage.busy_threads.contains(&thread),
                 now,
-                delay,
+                THREAD_UNLOAD_DELAY,
             );
         }
         self.idle_check_process(now, delay, Some(usage), false)
@@ -362,7 +376,7 @@ impl Worker {
             let unused = self.thread_unused(thread).await?;
             if self
                 .idle_clocks
-                .eligibility_changed(thread, unused, now, delay)
+                .eligibility_changed(thread, unused, now, THREAD_UNLOAD_DELAY)
             {
                 match self.unload_thread(thread).await? {
                     UnloadResult::Unloaded => self.idle_clocks.release(thread),
@@ -480,7 +494,7 @@ impl Worker {
                 &thread,
                 !requested && !usage.busy_threads.contains(&thread),
                 now,
-                delay,
+                THREAD_UNLOAD_DELAY,
             );
         }
         self.idle_check_process(now, delay, Some(usage), false)
@@ -509,7 +523,7 @@ impl Worker {
                 &thread,
                 !requested && !usage.busy_threads.contains(&thread),
                 now,
-                delay,
+                THREAD_UNLOAD_DELAY,
             );
         }
         self.idle_check_process(now, delay, Some(usage), false)
@@ -582,12 +596,16 @@ impl Worker {
         if method == "turn/completed"
             || params.is_some_and(|params| params["status"]["type"] == "idle")
         {
-            let Some(delay) = self.idle_delay else {
+            if self.idle_delay.is_none() {
                 return Ok(());
-            };
+            }
             let unused = self.thread_unused(thread).await?;
-            self.idle_clocks
-                .eligibility_changed(thread, unused, Instant::now(), delay);
+            self.idle_clocks.eligibility_changed(
+                thread,
+                unused,
+                Instant::now(),
+                THREAD_UNLOAD_DELAY,
+            );
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
         } else {
             self.idle_thread_touched(thread);
@@ -969,10 +987,10 @@ mod tests {
         clocks.process_blocked = Some(IdleBlocker::Local);
         assert!(clocks.has_local_blockers());
         assert!(!clocks.has_blocked_candidates());
-        assert_eq!(clocks.next_deadline(DELAY), None);
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), None);
 
         clocks.process_blocked = None;
-        assert_eq!(clocks.next_deadline(DELAY), Some(start + DELAY));
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), Some(start + DELAY));
         assert!(clocks.process_due(true, start + DELAY, DELAY));
     }
 
@@ -981,7 +999,7 @@ mod tests {
         let start = Instant::now();
         let mut clocks = IdleClocks::default();
         assert_eq!(
-            next_deadline(&clocks, Some(DELAY)),
+            clocks.next_deadline(DELAY, DELAY),
             None,
             "empty stays asleep"
         );
@@ -989,11 +1007,11 @@ mod tests {
 
         clocks.thread_due("early", true, start, DELAY);
         clocks.thread_due("later", true, start + DELAY / 2, DELAY);
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), Some(start + DELAY));
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), Some(start + DELAY));
 
         clocks.touch("early");
         assert_eq!(
-            next_deadline(&clocks, Some(DELAY)),
+            clocks.next_deadline(DELAY, DELAY),
             Some(start + DELAY * 3 / 2),
             "new input cancels the stale deadline and preserves the next idle thread"
         );
@@ -1015,9 +1033,9 @@ mod tests {
             clocks.due_threads(start + DELAY, DELAY),
             BTreeSet::from(["streaming".to_owned()])
         );
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), Some(start + DELAY));
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), Some(start + DELAY));
         clocks.block("streaming", IdleBlocker::Durable);
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), None);
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), None);
     }
 
     #[test]
@@ -1027,14 +1045,14 @@ mod tests {
         let mut clocks = IdleClocks::default();
         clocks.thread_due("thread", true, start, DELAY);
         clocks.block("thread", IdleBlocker::Local);
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), None);
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), None);
 
         let local_blocked = clocks.take_blocked(IdleBlocker::Local);
         for thread in local_blocked {
             clocks.eligibility_changed(&thread, true, completed, DELAY);
         }
         assert_eq!(
-            next_deadline(&clocks, Some(DELAY)),
+            clocks.next_deadline(DELAY, DELAY),
             Some(completed + DELAY),
             "local completion starts a fresh idle interval without a polling retry"
         );
@@ -1046,11 +1064,11 @@ mod tests {
         let mut clocks = IdleClocks::default();
         clocks.replace_loaded(BTreeSet::from(["thread".to_owned()]));
         assert!(!clocks.eligibility_changed("thread", false, attached, DELAY));
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), None);
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), None);
 
         let cleared = attached + DELAY * 2;
         assert!(!clocks.eligibility_changed("thread", true, cleared, DELAY));
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), Some(cleared + DELAY));
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), Some(cleared + DELAY));
         assert!(
             clocks
                 .due_threads(cleared + DELAY, DELAY)
@@ -1067,10 +1085,27 @@ mod tests {
 
         assert!(!clocks.has_blocked_candidates());
         assert!(clocks.blocked_by(IdleBlocker::Durable).is_empty());
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), None);
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), None);
 
         assert!(!clocks.eligibility_changed("thread", true, start, DELAY));
-        assert_eq!(next_deadline(&clocks, Some(DELAY)), Some(start + DELAY));
+        assert_eq!(clocks.next_deadline(DELAY, DELAY), Some(start + DELAY));
         assert!(!clocks.blocked.contains_key("thread"));
+    }
+
+    #[test]
+    fn a_settled_thread_is_due_at_once_and_the_process_waits_for_the_setting() {
+        let start = Instant::now();
+        let mut clocks = IdleClocks::default();
+        clocks.replace_loaded(BTreeSet::from(["thread".to_owned()]));
+        assert!(clocks.eligibility_changed("thread", true, start, THREAD_UNLOAD_DELAY));
+        assert_eq!(next_deadline(&clocks, Some(DELAY)), Some(start));
+        assert_eq!(next_deadline(&clocks, None), None, "zero minutes is off");
+
+        clocks.release("thread");
+        assert_eq!(
+            next_deadline(&clocks, Some(DELAY)),
+            Some(start + DELAY),
+            "the process stops only after the setting"
+        );
     }
 }

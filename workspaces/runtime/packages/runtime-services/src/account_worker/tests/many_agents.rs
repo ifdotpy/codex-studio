@@ -217,3 +217,259 @@ many_agents!(
     #[ignore = "manual heavy tier: just test-rust-many-agents"]
     two_hundred_agents_complete_two_exchanges: 200,
 );
+
+/// Agents of one account whose turns stay loaded only while they run.
+const UNLOAD_AGENTS: usize = 50;
+
+/// A scripted provider that keeps the loaded-thread set the way the Claude
+/// bridge and Codex app-server do: `thread/resume` loads a thread and an
+/// accepted `thread/unsubscribe` unloads it (a Claude thread's CLI exits).
+#[derive(Default)]
+struct LoadedProvider {
+    loaded: BTreeSet<String>,
+    running: BTreeMap<String, String>,
+    /// Every turn/start input text, per thread.
+    inputs: BTreeMap<String, Vec<String>>,
+    listed: usize,
+    unsubscribes: usize,
+}
+impl LoadedProvider {
+    fn answer(&mut self, request: &Value, frames: &mpsc::UnboundedSender<Value>) {
+        let params = &request["params"];
+        let thread = params["threadId"].as_str().map(str::to_owned);
+        let result = match request["method"].as_str().unwrap() {
+            "thread/loaded/list" => {
+                self.listed += 1;
+                json!({"data": self.loaded, "nextCursor": null})
+            }
+            "thread/resume" => {
+                let thread = thread.unwrap();
+                self.loaded.insert(thread.clone());
+                json!({"thread": {"id": thread}})
+            }
+            "turn/start" => {
+                let thread = thread.unwrap();
+                assert!(
+                    self.loaded.contains(&thread),
+                    "a turn starts only on a loaded thread: {request}"
+                );
+                assert!(!self.running.contains_key(&thread), "{request}");
+                let texts = self.inputs.entry(thread.clone()).or_default();
+                texts.push(params["input"].to_string());
+                let turn = format!("{thread}-turn-{}", texts.len());
+                self.running.insert(thread, turn.clone());
+                json!({"turn": {"id": turn}})
+            }
+            "thread/read" => {
+                let thread = thread.unwrap();
+                let status = if self.running.contains_key(&thread) {
+                    "active"
+                } else {
+                    "idle"
+                };
+                json!({"thread": {"id": thread, "status": {"type": status}}})
+            }
+            "thread/backgroundTerminals/list" | "thread/queue/list" => {
+                json!({"data": [], "nextCursor": null})
+            }
+            "thread/unsubscribe" => {
+                let thread = thread.unwrap();
+                assert!(
+                    !self.running.contains_key(&thread),
+                    "a running turn is never unloaded: {request}"
+                );
+                self.unsubscribes += 1;
+                let status = if self.loaded.remove(&thread) {
+                    "unsubscribed"
+                } else {
+                    "notLoaded"
+                };
+                json!({"status": status})
+            }
+            method => panic!("unexpected provider request {method}: {request}"),
+        };
+        frames
+            .send(json!({"id": request["id"], "result": result}))
+            .unwrap();
+    }
+    fn complete(&mut self, thread: &str, frames: &mpsc::UnboundedSender<Value>) {
+        let turn = self.running.remove(thread).expect("turn is running");
+        frames
+            .send(json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}}))
+            .unwrap();
+    }
+}
+
+/// Answer provider writes until `done` holds for the scripted provider.
+async fn serve_until(
+    peer: &mut Peer,
+    provider: &mut LoadedProvider,
+    frames: &mpsc::UnboundedSender<Value>,
+    phase: &str,
+    done: impl Fn(&LoadedProvider) -> bool,
+) {
+    let run = async {
+        while !done(provider) {
+            let wire = tokio::select! {
+                wire = peer.writes.recv() => wire.expect("worker submits request"),
+                ack = peer.acks.recv() => { ack.expect("session acknowledges"); continue; }
+            };
+            wire.receipt
+                .send(CommandReceipt::Written {
+                    remote_id: None,
+                    duplicate: false,
+                })
+                .ok()
+                .expect("write receipt receiver");
+            provider.answer(&wire.value, frames);
+        }
+    };
+    if tokio::time::timeout(MANY_AGENTS_DEADLINE, run)
+        .await
+        .is_err()
+    {
+        panic!(
+            "{phase} stalled: loaded {:?}, running {:?}",
+            provider.loaded, provider.running
+        );
+    }
+}
+
+/// With idle unloading on, `UNLOAD_AGENTS` agents of one account keep a
+/// thread (a Claude CLI) loaded only while its turn runs: a settled turn's
+/// thread is unloaded at once, and its next message resumes the same thread
+/// and delivers that message exactly once.
+async fn scenario_loaded_threads_follow_running_turns(provider: &str) {
+    let provider = match provider {
+        "codex" => studio_runtime_providers::ProviderKind::Codex,
+        _ => studio_runtime_providers::ProviderKind::Claude,
+    };
+    let state = State::new().await;
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(|tx| {
+                    studio_runtime_store::OrchestrationSettingsRepository::set(
+                        tx,
+                        studio_runtime_store::IDLE_SESSION_UNLOAD_SETTING,
+                        studio_runtime_store::IDLE_SESSION_UNLOAD_SETTING.default,
+                    )
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let agents = agents(&state, UNLOAD_AGENTS).await;
+    let (frames, mut outbox) = mpsc::unbounded_channel::<Value>();
+    let (entries, clock, generation) = (peer.entries.clone(), peer.clock.clone(), peer.generation);
+    let sender = tokio::spawn(async move {
+        let mut cursor = 0;
+        while let Some(frame) = outbox.recv().await {
+            cursor += 1;
+            if entries
+                .send(journal_frame(&clock, generation, cursor, &frame))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let wake_all = |agents: Vec<String>| {
+        let worker = &worker;
+        let epoch = state.epoch;
+        async move {
+            for agent_id in agents {
+                worker
+                    .send(AccountCommand::Wake { agent_id, epoch })
+                    .await
+                    .unwrap();
+            }
+        }
+    };
+    let mut native = LoadedProvider::default();
+    let threads = (0..UNLOAD_AGENTS)
+        .map(|index| format!("{THREAD_PREFIX}{index}"))
+        .collect::<Vec<_>>();
+
+    // The worker reads the loaded threads once its session is ready.
+    serve_until(&mut peer, &mut native, &frames, "attach", |p| p.listed == 1).await;
+    // Every agent runs: each running turn holds its loaded thread.
+    wake_all(agents.clone()).await;
+    serve_until(&mut peer, &mut native, &frames, "first turns", |p| {
+        p.running.len() == UNLOAD_AGENTS
+    })
+    .await;
+    assert_eq!(native.loaded.len(), UNLOAD_AGENTS);
+
+    // Half the turns settle: exactly their threads unload, the rest stay.
+    let (settled, still_running) = threads.split_at(UNLOAD_AGENTS / 2);
+    for thread in settled {
+        native.complete(thread, &frames);
+    }
+    serve_until(&mut peer, &mut native, &frames, "first unload", |p| {
+        p.loaded.len() == still_running.len()
+    })
+    .await;
+    assert_eq!(
+        native.loaded,
+        still_running.iter().cloned().collect::<BTreeSet<_>>()
+    );
+
+    // A new message for each settled agent resumes its thread and starts once.
+    for (index, agent) in agents.iter().enumerate().take(settled.len()) {
+        state
+            .enqueue_for(agent, &format!("{agent}-second-{index}"))
+            .await;
+    }
+    wake_all(agents[..settled.len()].to_vec()).await;
+    serve_until(&mut peer, &mut native, &frames, "second turns", |p| {
+        p.running.len() == UNLOAD_AGENTS
+    })
+    .await;
+    assert_eq!(native.loaded.len(), UNLOAD_AGENTS);
+
+    // Every turn settles: no thread stays loaded without a running turn.
+    for thread in &threads {
+        native.complete(thread, &frames);
+    }
+    serve_until(&mut peer, &mut native, &frames, "final unload", |p| {
+        p.loaded.is_empty()
+    })
+    .await;
+    assert!(native.running.is_empty());
+    assert_eq!(native.unsubscribes, UNLOAD_AGENTS + settled.len());
+    for (index, thread) in threads.iter().enumerate() {
+        let inputs = &native.inputs[thread];
+        let expected = if index < settled.len() { 2 } else { 1 };
+        assert_eq!(inputs.len(), expected, "{thread}: {inputs:?}");
+        if expected == 2 {
+            let second = format!("{}-second-{index}", agents[index]);
+            assert!(inputs[1].contains(&second), "{thread}: {inputs:?}");
+            assert_eq!(
+                inputs.iter().filter(|text| text.contains(&second)).count(),
+                1,
+                "the resumed turn delivers its message once: {inputs:?}"
+            );
+        }
+    }
+    assert!(!*worker.completion_signal().borrow());
+    worker.cancel();
+    sender.abort();
+    let _completed = worker.completion().await;
+}
+
+mod fifty_agents_keep_threads_loaded_only_while_running {
+    #[tokio::test]
+    async fn codex() {
+        super::scenario_loaded_threads_follow_running_turns("codex").await;
+    }
+    #[tokio::test]
+    async fn claude() {
+        super::scenario_loaded_threads_follow_running_turns("claude").await;
+    }
+}

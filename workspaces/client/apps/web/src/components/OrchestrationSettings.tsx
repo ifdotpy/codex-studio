@@ -40,14 +40,14 @@ export const childResultHoldSpec: OrchestrationSettingSpec = {
 
 export const idleSessionUnloadSpec: OrchestrationSettingSpec = {
   field: "idleSessionUnloadMinutes",
-  label: "Unload idle sessions after (minutes)",
+  label: "Stop idle provider processes after (minutes)",
   help: "Free the memory of agents that have nothing to do.",
-  ariaLabel: "Unload idle sessions after minutes",
+  ariaLabel: "Stop idle provider processes after minutes",
   tooltip:
-    "Idle Codex threads and Claude sessions are unloaded after this many minutes " +
-    "without a running turn, pending input, or active monitor. They are resumed " +
-    "automatically on the next message, which takes a few extra seconds. Lower " +
-    "values save memory. 0 never unloads.",
+    "Codex threads and Claude sessions without a running turn, pending input, or " +
+    "active monitor are unloaded as soon as their turn ends and resumed " +
+    "automatically on the next message. An account's provider process stops " +
+    "after this many minutes with no loaded thread. 0 never unloads.",
   min: IDLE_SESSION_UNLOAD_MIN_MINUTES,
   max: IDLE_SESSION_UNLOAD_MAX_MINUTES,
 };
