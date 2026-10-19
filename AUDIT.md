@@ -254,6 +254,12 @@ until the runtime has saved the completion, so the order is fixed. Without the
 fix the test fails every time (child `waiting`, one child result); with it the
 child is `completed` and the parent has two child results.
 
+The Python notification oracle of the Rust corpora hashes `Runtime.notification`;
+its digest is updated with the reason. No corpus case uses a submitted, unbound
+attempt reserved while idle, and both notification corpora pass. The Rust
+`settle_terminal` path delivers the attempt's own events before it checks for
+pending continuation input, so it has no matching change.
+
 ## 4. Duplicate coverage
 
 The `tests/rust-*-http-contract.py` suites run against the Python backend in
