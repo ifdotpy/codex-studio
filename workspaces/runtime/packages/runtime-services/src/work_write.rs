@@ -1050,6 +1050,16 @@ pub enum VmAcceptPreparation {
 
 /// Persist a merge intent before calling the VM guest. Pending or unknown
 /// identities are never resent; a completed exact merge can be replayed.
+/// Whether accepting a task result merges the owner's layr line into main. A result of the
+/// lead is in main already. A reviewer's line is read-only and has no changes by design; the
+/// guest refuses it as a merge source. Python keeps the same rule
+/// (codex_vm_agents.result_needs_merge).
+fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
+    owner.id.0 != lead_id
+        && owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && owner.extra.get("role").and_then(Value::as_str) != Some("reviewer")
+}
+
 pub async fn prepare_vm_accept(
     store: &RuntimeStore,
     agent_id: &str,
@@ -1079,9 +1089,11 @@ pub async fn prepare_vm_accept(
             if work["status"] != "review" {
                 return Ok(VmAcceptPreparation::NotVm);
             }
-            let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+            let Some(owner_id) = work["owner"].as_str().map(str::to_owned) else {
+                return Ok(VmAcceptPreparation::NotVm);
+            };
             let owner = event_write::checked_agent(tx, &owner_id)?;
-            if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            if !vm_result_needs_merge(&lead.id.0, &owner) {
                 return Ok(VmAcceptPreparation::NotVm);
             }
             // Validate the acceptance and all dependent recipients before the guest
@@ -2481,7 +2493,7 @@ fn accept(
         && owner_id != agent.root_id.0
     {
         let owner = event_write::checked_agent(tx, owner_id)?;
-        if owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        if vm_result_needs_merge(&agent.root_id.0, &owner) {
             let latest_result_id = work["results"]
                 .as_array()
                 .and_then(|items| items.last())
@@ -3847,6 +3859,66 @@ mod actor_tests {
             .expect("decision event count reads");
         assert_eq!(count, 0);
         tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn vm_reviewer_result_is_accepted_without_a_layr_merge() {
+        let mut connection = database();
+        for (id, role) in [("lead", "lead"), ("worker", "reviewer")] {
+            let record = json!({
+                "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
+                "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":"vm",
+                "isLead":(id == "lead"),"role":role,"layrProjectId":"project","layrLine":id
+            });
+            connection
+                .execute(
+                    "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                    rusqlite::params![record.to_string(), id],
+                )
+                .expect("agent becomes a VM agent");
+        }
+        insert_work(
+            &connection,
+            &work(
+                "review-task",
+                Some("worker"),
+                "review",
+                json!([{"id":"result-r","agent":"worker","text":"no defects","checks":"read","revision":"state-1","files":[]}]),
+            ),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let accept = |tx: &rusqlite::Transaction<'_>| {
+            write_action_as_agent(
+                tx,
+                "lead",
+                "lead",
+                None,
+                "accept-review",
+                WorkWrite::Accept(AcceptWork {
+                    task_id: "review-task".to_owned(),
+                    version: Some(2),
+                    reason: "review read".to_owned(),
+                    merged_result_id: None,
+                }),
+            )
+        };
+        let reviewer = AgentRepository::get(&tx, &AgentId::from("worker"))
+            .expect("reviewer reads")
+            .expect("reviewer exists");
+        assert!(!super::vm_result_needs_merge("lead", &reviewer));
+        let result = accept(&tx).expect("a reviewer result needs no merge");
+        assert_eq!(result.record["status"], "accepted");
+        tx.rollback().expect("transaction rolls back");
+
+        // An implementer's line still needs the merge before acceptance.
+        connection
+            .execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.role','implementer') WHERE id='worker'",
+                [],
+            )
+            .expect("worker becomes an implementer");
+        let tx = connection.transaction().expect("transaction starts");
+        assert!(accept(&tx).is_err());
     }
 
     #[test]

@@ -420,6 +420,16 @@ def validate_submission(runtime: Any, owner: Mapping[str, Any], revision: str) -
     return {"layrProjectId": result["projectId"], "layrLine": result["line"], "layrStateId": revision}
 
 
+def result_needs_merge(lead: Mapping[str, Any], owner: Mapping[str, Any] | None) -> bool:
+    """Whether accepting a task result merges the owner's line into main. A task without an
+    owner, or owned by the lead, has its work in main already. A reviewer's line is read-only and
+    has no changes by design; the guest refuses it as a merge source. The Rust backend keeps
+    the same rule (work_write.rs `vm_result_needs_merge`)."""
+    if owner is None or owner["id"] == lead["id"] or owner.get("executionMode") != "vm":
+        return False
+    return owner.get("role") != "reviewer"
+
+
 def merge_result(runtime: Any, lead: Mapping[str, Any], owner: Mapping[str, Any],
                  result: Mapping[str, Any], identity: str) -> dict[str, Any]:
     if lead["layrProjectId"] != owner["layrProjectId"]:

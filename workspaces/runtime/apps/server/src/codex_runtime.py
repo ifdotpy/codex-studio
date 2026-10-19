@@ -5122,7 +5122,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "imageWorkspaceHasGit": bool(data.get("_imageWorkspaceHasGit")),
                 "imageWorkspaceCreatedAt": None,
                 "imageWorkspaceError": data.get("_imageWorkspaceError"),
-                "worktreeWarning": (None if not (p and role == "implementer")
+                # A layr worker has its own line, so it needs no Git worktree.
+                "worktreeWarning": (None if not (p and role == "implementer") or vm_execution
                                     or data.get("_worktree", True) or data.get("_imageWorkspace")
                                     or data.get("_workspaceInGit")
                                     else no_worktree_warning(cwd)),
