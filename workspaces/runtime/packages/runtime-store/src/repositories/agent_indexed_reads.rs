@@ -76,6 +76,13 @@ impl AgentIndexedReads {
          WHERE json_type(record,'$.workspaceOperation')='text' \
          AND json_extract(record,'$.workspaceOperation')!=''";
 
+    /// SQL for the `id,record` rows of agents holding a workspace operation, in
+    /// index order (same index).
+    #[doc(hidden)]
+    pub const WORKSPACE_OPERATION_RECORDS_SQL: &'static str = "SELECT id,record FROM runtime_agents \
+         WHERE json_type(record,'$.workspaceOperation')='text' \
+         AND json_extract(record,'$.workspaceOperation')!=''";
+
     /// SQL for the distinct working directories of live agents and of any agent
     /// (live or not) holding a workspace operation: the directories a message
     /// admission may have to compare. Tombstones cannot start an operation.
@@ -286,6 +293,11 @@ mod tests {
             ),
             (
                 AgentIndexedReads::WORKSPACE_OPERATION_IDS_SQL.to_owned(),
+                vec![],
+                "runtime_agent_reservation_cwd",
+            ),
+            (
+                AgentIndexedReads::WORKSPACE_OPERATION_RECORDS_SQL.to_owned(),
                 vec![],
                 "runtime_agent_reservation_cwd",
             ),

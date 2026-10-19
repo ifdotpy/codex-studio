@@ -89,7 +89,7 @@ impl ReadyToken {
         }
     }
     pub fn validate(&self, tx: &Transaction<'_>) -> StoreResult<Result<PathBuf, ReadyRefusal>> {
-        let Some(current) = CheckpointsRepository::workspace_snapshot(tx, &self.agent)? else {
+        let Some(current) = CheckpointsRepository::reservation_snapshot(tx, &self.agent)? else {
             return Ok(Err(ReadyRefusal));
         };
         let valid = current.agent.record["epoch"] == self.epoch

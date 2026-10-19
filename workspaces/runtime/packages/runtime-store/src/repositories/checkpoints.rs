@@ -196,6 +196,32 @@ impl CheckpointsRepository {
         }))
     }
 
+    /// The agent and the workspace reservations other work holds: the agents
+    /// with an operation and the active operations. Monitors, tasks and agents
+    /// without an operation are left out, so a reservation check reads no row
+    /// per live agent.
+    pub fn reservation_snapshot(
+        connection: &Connection,
+        agent_id: &str,
+    ) -> StoreResult<Option<WorkspaceSnapshot>> {
+        let Some(agent) = Self::agent(connection, agent_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(WorkspaceSnapshot {
+            agent,
+            parent_checkpoint: None,
+            agents: read_reserving_agents(connection)?,
+            operations: read_active(
+                connection,
+                "runtime_workspace_operations",
+                "phase",
+                ACTIVE_OPERATION_PHASES,
+            )?,
+            monitors: Vec::new(),
+            tasks: Vec::new(),
+        }))
+    }
+
     /// Recheck the durable activity snapshot in the transaction that reserves an operation.
     /// Filesystem idle resolution and live provider/task checks belong to the caller.
     pub fn workspace_unchanged(
@@ -856,6 +882,16 @@ fn read_live_or_reserved_agents(
         "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL \
          OR json_extract(record,'$.workspaceOperation') IS NOT NULL ORDER BY rowid",
     )?;
+    let rows = statement.query_map([], read_stored_row)?;
+    collect_records(rows, "runtime_agents")
+}
+
+fn read_reserving_agents(connection: &Connection) -> StoreResult<Vec<StoredCheckpointObject>> {
+    if !table_exists(connection, "runtime_agents")? {
+        return Ok(Vec::new());
+    }
+    let mut statement =
+        connection.prepare_cached(crate::AgentIndexedReads::WORKSPACE_OPERATION_RECORDS_SQL)?;
     let rows = statement.query_map([], read_stored_row)?;
     collect_records(rows, "runtime_agents")
 }

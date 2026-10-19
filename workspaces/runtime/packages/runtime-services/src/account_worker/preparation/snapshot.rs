@@ -213,15 +213,46 @@ pub(super) fn invalid(location: &str) -> WorkerError {
 pub(super) fn agent(tx: &Transaction<'_>, id: &str) -> Result<AgentRecord, WorkerError> {
     AgentRepository::get(tx, &AgentId::from(id))?.ok_or_else(|| invalid(id))
 }
+fn table_exists(tx: &rusqlite::Connection, table: &str) -> Result<bool, WorkerError> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1 AND type='table')",
+        [table],
+        |r| r.get::<_, bool>(0),
+    )?)
+}
+/// One `id,record` row of an optional feature table.
+fn record_by_id(
+    tx: &rusqlite::Connection,
+    table: &'static str,
+    id: &str,
+) -> Result<Option<String>, WorkerError> {
+    use rusqlite::OptionalExtension;
+    if !table_exists(tx, table)? {
+        return Ok(None);
+    }
+    Ok(tx
+        .prepare_cached(&format!("SELECT record FROM {table} WHERE id=?1"))?
+        .query_row([id], |r| r.get(0))
+        .optional()?)
+}
+/// Complaints addressed to `lead`, in id order, through the
+/// `runtime_conversion_complaints_leadId` index.
+const LEAD_COMPLAINTS_SQL: &str =
+    "SELECT record FROM runtime_complaints WHERE json_extract(record,'$.leadId')=?1 ORDER BY id";
+fn lead_complaints(tx: &rusqlite::Connection, lead: &str) -> Result<Vec<String>, WorkerError> {
+    if !table_exists(tx, "runtime_complaints")? {
+        return Ok(Vec::new());
+    }
+    Ok(tx
+        .prepare_cached(LEAD_COMPLAINTS_SQL)?
+        .query_map([lead], |r| r.get(0))?
+        .collect::<Result<_, _>>()?)
+}
 pub(super) fn records(
     tx: &rusqlite::Connection,
     table: &str,
 ) -> Result<BTreeMap<String, String>, WorkerError> {
-    if !tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1 AND type='table')",
-        [table],
-        |r| r.get::<_, bool>(0),
-    )? {
+    if !table_exists(tx, table)? {
         return Ok(BTreeMap::new());
     }
     let mut query = tx.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
@@ -478,6 +509,37 @@ pub(super) fn guidance(
     record: &Value,
     state_root: &Path,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
+    let (role, progress) = role_guidance(resources, record, state_root)?;
+    let mut thread_config = resources.thread_config.clone();
+    // A managed worker (a child agent) runs without the user's MCP servers, so
+    // none of them is spawned per thread. The lead and root chats keep them.
+    // (Claude workers get the same rule from the adapter's `userMcp` param.)
+    if record["parentId"].is_string() && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+    {
+        let servers: Map<String, Value> = codex_user_mcp_servers(&resources.account_home)
+            .into_iter()
+            .map(|name| (name, serde_json::json!({"enabled": false})))
+            .collect();
+        if !servers.is_empty() {
+            thread_config.insert("mcp_servers".into(), Value::Object(servers));
+        }
+    }
+    Ok(thread::GuidanceBundle {
+        instructions: resources.instructions.clone(),
+        role,
+        progress,
+        thread_config,
+    })
+}
+
+/// The role skill text and the lead's progress guidance of `record`. A turn
+/// needs only these; the thread config (with its account MCP read) is the
+/// thread snapshot's.
+fn role_guidance(
+    resources: &PreparationResources,
+    record: &Value,
+    state_root: &Path,
+) -> Result<(String, String), WorkerError> {
     let lead = flag(record, "isLead")?;
     let name = if lead {
         "codex-orchestrator"
@@ -562,26 +624,7 @@ pub(super) fn guidance(
     } else {
         String::new()
     };
-    let mut thread_config = resources.thread_config.clone();
-    // A managed worker (a child agent) runs without the user's MCP servers, so
-    // none of them is spawned per thread. The lead and root chats keep them.
-    // (Claude workers get the same rule from the adapter's `userMcp` param.)
-    if record["parentId"].is_string() && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
-    {
-        let servers: Map<String, Value> = codex_user_mcp_servers(&resources.account_home)
-            .into_iter()
-            .map(|name| (name, serde_json::json!({"enabled": false})))
-            .collect();
-        if !servers.is_empty() {
-            thread_config.insert("mcp_servers".into(), Value::Object(servers));
-        }
-    }
-    Ok(thread::GuidanceBundle {
-        instructions: resources.instructions.clone(),
-        role,
-        progress,
-        thread_config,
-    })
+    Ok((role, progress))
 }
 
 fn progress_layout_guidance(server: Option<PathBuf>, progress_file: &Path) -> String {
@@ -757,10 +800,9 @@ pub(super) fn thread_snapshot(
         },
         root: thread::Root {
             can_delegate: can_delegate(tx, record, &root)?,
-            federation_enabled: records(tx, "runtime_federation_settings")?
-                .get("global")
+            federation_enabled: record_by_id(tx, "runtime_federation_settings", "global")?
                 .map(|raw| {
-                    serde_json::from_str::<Value>(raw).map_err(|_| invalid("federation settings"))
+                    serde_json::from_str::<Value>(&raw).map_err(|_| invalid("federation settings"))
                 })
                 .transpose()?
                 .is_some_and(|v| v["enabled"] == true),
@@ -812,12 +854,11 @@ pub(super) fn submission_snapshot(
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
-    let guidance = guidance(resources, record, state_root)?;
-    let plans = records(tx, "runtime_plans")?;
-    let plan=plans.get(root_id).map(|s|serde_json::from_str::<Value>(s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
+    let (role, progress) = role_guidance(resources, record, state_root)?;
+    let plan=record_by_id(tx, "runtime_plans", root_id)?.map(|s|serde_json::from_str::<Value>(&s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();
-    for raw in records(tx, "runtime_complaints")?.values() {
-        let v: Value = serde_json::from_str(raw).map_err(|_| invalid("complaint"))?;
+    for raw in lead_complaints(tx, &intent.agent_id)? {
+        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
         // Python only projects unanswered lead-addressed complaints into context.
         // Unrelated and closed records need no body projection.
         if v["leadId"] != intent.agent_id
@@ -857,7 +898,13 @@ pub(super) fn submission_snapshot(
         });
     }
     let mut workers = Vec::new();
-    for (_, raw) in studio_runtime_store::AgentIndexedReads::team_records(tx, root_id)? {
+    // Only a lead's turn context reads its team (the finished-worktree reminder).
+    let team = if flag(record, "isLead")? {
+        studio_runtime_store::AgentIndexedReads::team_records(tx, root_id)?
+    } else {
+        Vec::new()
+    };
+    for (_, raw) in team {
         let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
         let status = match v["status"].as_str() {
             Some("completed") => turn::WorkerStatus::Completed,
@@ -981,10 +1028,7 @@ pub(super) fn submission_snapshot(
             workers,
             delivered_reminders,
             assets,
-            guidance: turn::GuidanceBundle {
-                role: guidance.role,
-                progress: guidance.progress,
-            },
+            guidance: turn::GuidanceBundle { role, progress },
             artifact_paths: BTreeMap::new(),
             prepared_at: now(),
             operation_id: String::new(),
@@ -1083,6 +1127,61 @@ mod resource_tests {
         assert!(!native_thread_blocked(
             &json!({"threadId":"current","turnId":"new","nativeTurnError":{"turnId":"old","error":{"codexErrorInfo":"misalignmentPolicyViolation"}}})
         ));
+    }
+
+    /// The live schema's complaint index serves a lead's complaints; a
+    /// submission never scans the complaints of other leads.
+    #[test]
+    fn lead_complaints_use_the_lead_index() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../runtime-store/tests/fixtures/live-state-schema.json"
+        ))
+        .expect("live-state schema fixture");
+        let connection = rusqlite::Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+            )
+            .expect("complaints table creates");
+        for object in fixture["canvas.sqlite3"]["sqlite_master"]
+            .as_array()
+            .expect("fixture lists schema objects")
+        {
+            if object["table"] == "runtime_complaints"
+                && object["type"] == "index"
+                && let Some(sql) = object["sql"].as_str()
+            {
+                connection
+                    .execute_batch(sql)
+                    .expect("fixture index creates");
+            }
+        }
+        for (id, lead) in [("b", "lead"), ("a", "lead"), ("c", "other")] {
+            connection
+                .execute(
+                    "INSERT INTO runtime_complaints(id,record) VALUES(?1,?2)",
+                    [id, &json!({"id":id,"leadId":lead}).to_string()],
+                )
+                .expect("complaint inserts");
+        }
+        let plan = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {LEAD_COMPLAINTS_SQL}"))
+            .expect("plan prepares")
+            .query_map(["lead"], |row| row.get::<_, String>(3))
+            .expect("plan runs")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan rows")
+            .join(" | ");
+        assert!(
+            plan.contains("runtime_conversion_complaints_leadId"),
+            "{plan}"
+        );
+        let ids: Vec<String> = lead_complaints(&connection, "lead")
+            .expect("lead complaints")
+            .iter()
+            .map(|raw| serde_json::from_str::<Value>(raw).expect("record")["id"].to_string())
+            .collect();
+        assert_eq!(ids, ["\"a\"", "\"b\""]);
     }
 
     #[test]

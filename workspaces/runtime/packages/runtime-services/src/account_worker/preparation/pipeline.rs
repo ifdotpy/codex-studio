@@ -1,5 +1,6 @@
 //! The only adapter allowed to advance a claimed batch to provider submission.
 use super::*;
+use crate::diagnostics::measure_runtime_stage as stage;
 use crate::{submit_gates as gates, thread_prepare as thread, turn_prepare as turn};
 use snapshot::*;
 use std::path::{Path, PathBuf};
@@ -1351,12 +1352,14 @@ pub(crate) async fn prepare_ready(
         prepared_host,
         selection,
     ) = scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let record = preconditions(
-            tx,
-            &intent_for_snapshot,
-            &filesystem,
-            prepared_host.as_ref(),
-        )?;
+        let record = stage("turn_preparation.ready.preconditions", || {
+            preconditions(
+                tx,
+                &intent_for_snapshot,
+                &filesystem,
+                prepared_host.as_ref(),
+            )
+        })?;
         let selection_for_snapshot = match admission {
             Some(Admission { selection }) => selection,
             None => frozen_selection(&record, &identity)?,
@@ -1375,22 +1378,26 @@ pub(crate) async fn prepare_ready(
             frozen["effort"] = json!(selection_for_snapshot.settings.effort);
             frozen["nativeEffort"] = json!(selection_for_snapshot.settings.native_effort);
         }
-        let snapshot = thread_snapshot(
-            tx,
-            &resources_for_snapshot,
-            &frozen,
-            &generation,
-            &state_root,
-            &filesystem.thread_inputs,
-            None,
-        )?;
-        let (turn_snapshot, events) = submission_snapshot(
-            tx,
-            &resources_for_snapshot,
-            &frozen,
-            &intent_for_snapshot,
-            &state_root,
-        )?;
+        let snapshot = stage("turn_preparation.ready.thread_snapshot", || {
+            thread_snapshot(
+                tx,
+                &resources_for_snapshot,
+                &frozen,
+                &generation,
+                &state_root,
+                &filesystem.thread_inputs,
+                None,
+            )
+        })?;
+        let (turn_snapshot, events) = stage("turn_preparation.ready.submission_snapshot", || {
+            submission_snapshot(
+                tx,
+                &resources_for_snapshot,
+                &frozen,
+                &intent_for_snapshot,
+                &state_root,
+            )
+        })?;
         let mut prepared_intent = intent_for_snapshot.clone();
         prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
         prepared_intent.model = snapshot.settings.model.clone();
@@ -1610,20 +1617,20 @@ pub(crate) fn commit(
     context: &Pending,
     guard: &CommitGuard,
 ) -> Result<(), WorkerError> {
-    let record = preconditions(
-        tx,
-        &context.intent,
-        &guard.filesystem,
-        guard.prepared_host.as_ref(),
-    )?;
+    let record = stage("turn_submission.commit.preconditions", || {
+        preconditions(
+            tx,
+            &context.intent,
+            &guard.filesystem,
+            guard.prepared_host.as_ref(),
+        )
+    })?;
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection
         .freeze_record(&record, &identity, Instant::now())
         .map_err(|e| refusal(e.to_string()))?;
-    let cwd = guard
-        .token
-        .validate(tx)?
+    let cwd = stage("turn_submission.commit.token", || guard.token.validate(tx))?
         .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
     if context.intent.cwd.as_deref() != cwd.to_str() {
         return Err(refusal("workspace-readiness/cwd-changed".into()));
@@ -1637,36 +1644,46 @@ pub(crate) fn commit(
         frozen["nativeEffort"] = current["nativeEffort"].clone();
     }
     if let (Some(baseline), Some(compiled)) = (&guard.compiler_snapshot, &context.compiled) {
-        let (mut current_submission, current_events) = submission_snapshot(
-            tx,
-            &guard.resources,
-            &current,
-            &context.intent,
-            &guard.state_root,
-        )?;
+        let (mut current_submission, current_events) =
+            stage("turn_submission.commit.submission_snapshot", || {
+                submission_snapshot(
+                    tx,
+                    &guard.resources,
+                    &current,
+                    &context.intent,
+                    &guard.state_root,
+                )
+            })?;
         // Recompile with the exact operation, clock and verified artifact paths.
         // The compiler's manifest and output record the effective dependencies;
         // unrelated worker state must not invalidate a non-lead submission.
         current_submission.prepared_at = baseline.prepared_at;
         current_submission.operation_id = baseline.operation_id.clone();
         current_submission.artifact_paths = baseline.artifact_paths.clone();
-        let recompiled = turn::compile(&current_submission, &current_events)
-            .map_err(|e| refusal(e.to_string()))?;
-        if serde_json::to_value(recompiled).map_err(|_| invalid("compiler result"))?
-            != serde_json::to_value(compiled).map_err(|_| invalid("compiler result"))?
-        {
+        let recompiled = stage("turn_submission.commit.compile", || {
+            turn::compile(&current_submission, &current_events)
+        })
+        .map_err(|e| refusal(e.to_string()))?;
+        if stage("turn_submission.commit.compare", || {
+            Ok::<_, WorkerError>(
+                serde_json::to_value(recompiled).map_err(|_| invalid("compiler result"))?
+                    != serde_json::to_value(compiled).map_err(|_| invalid("compiler result"))?,
+            )
+        })? {
             return Err(refusal("turn-preparation/snapshot-changed".into()));
         }
     }
-    let current = thread_snapshot(
-        tx,
-        &guard.resources,
-        &current,
-        &guard.thread.account.connection_id,
-        &guard.state_root,
-        &guard.filesystem.thread_inputs,
-        None,
-    )?;
+    let current = stage("turn_submission.commit.thread_snapshot", || {
+        thread_snapshot(
+            tx,
+            &guard.resources,
+            &current,
+            &guard.thread.account.connection_id,
+            &guard.state_root,
+            &guard.filesystem.thread_inputs,
+            None,
+        )
+    })?;
     if current != guard.thread {
         return Err(refusal("thread-preparation/snapshot-changed".into()));
     }
@@ -1697,7 +1714,10 @@ pub(crate) fn commit(
     {
         attempt.remove("prepareError");
     }
-    AgentRepository::put(tx, &decode(frozen, &context.intent.agent_id)?)?;
+    let frozen = decode(frozen, &context.intent.agent_id)?;
+    stage("turn_submission.commit.agent_put", || {
+        AgentRepository::put(tx, &frozen)
+    })?;
     Ok(())
 }
 

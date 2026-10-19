@@ -1,6 +1,7 @@
 //! Account database operations. Transaction callbacks stay synchronous and are
 //! submitted to RuntimeStore's bounded writer actor.
 use super::*;
+use crate::diagnostics::measure_runtime_stage as stage;
 use crate::notification_dispatch::{
     NotificationEffects, NotificationPublicationBatch, PreparedSubmission,
     ProviderDeliveryIdentity, dispatch_notification_with_effects, flush_notification_streams,
@@ -753,46 +754,54 @@ pub(super) async fn submitted(
             return Ok(false);
         }
         if let Some(guard) = guard.as_ref() {
-            preparation::commit(tx, &context, guard)?;
+            stage("turn_submission.submitted.commit", || {
+                preparation::commit(tx, &context, guard)
+            })?;
         }
-        let authorized = match context.method()? {
-            Method::TurnStart if i.provider == studio_runtime_providers::ProviderKind::Claude => {
-                preparation::commit_claude(
+        let authorized = stage("turn_submission.submitted.authorize", || {
+            Ok::<_, WorkerError>(match context.method()? {
+                Method::TurnStart
+                    if i.provider == studio_runtime_providers::ProviderKind::Claude =>
+                {
+                    preparation::commit_claude(
+                        tx,
+                        i,
+                        &id_string(&request.ticket.id),
+                        request.ticket.generation,
+                        &connection_id,
+                        submission.as_ref().ok_or_else(|| invalid(&i.attempt_id))?,
+                        guard
+                            .as_ref()
+                            .ok_or_else(|| invalid("Claude commit guard"))?,
+                    )?
+                }
+                Method::TurnStart => commit_prepared_turn(
                     tx,
                     i,
                     &id_string(&request.ticket.id),
                     request.ticket.generation,
                     &connection_id,
                     submission.as_ref().ok_or_else(|| invalid(&i.attempt_id))?,
-                    guard
-                        .as_ref()
-                        .ok_or_else(|| invalid("Claude commit guard"))?,
-                )?
-            }
-            Method::TurnStart => commit_prepared_turn(
-                tx,
-                i,
-                &id_string(&request.ticket.id),
-                request.ticket.generation,
-                &connection_id,
-                submission.as_ref().ok_or_else(|| invalid(&i.attempt_id))?,
-            )?,
-            Method::TurnInterrupt => SchedulerRepository::prepare_interrupt(
-                tx,
-                &i.agent_id,
-                i.thread_id.as_deref().unwrap_or(""),
-                turn.as_deref().unwrap_or(""),
-                request.ticket.generation,
-                &id_string(&request.ticket.id),
-            )?,
-            _ => {
-                agent.epoch == i.epoch
-                    && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["id"] == i.attempt_id
-                    && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["submitted"] == false
-                    && agent.extra.get("autoWake").unwrap_or(&Value::Null) == true
-                    && agent.extra.get("nativeFailureHold").unwrap_or(&Value::Null) != true
-            }
-        };
+                )?,
+                Method::TurnInterrupt => SchedulerRepository::prepare_interrupt(
+                    tx,
+                    &i.agent_id,
+                    i.thread_id.as_deref().unwrap_or(""),
+                    turn.as_deref().unwrap_or(""),
+                    request.ticket.generation,
+                    &id_string(&request.ticket.id),
+                )?,
+                _ => {
+                    agent.epoch == i.epoch
+                        && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["id"]
+                            == i.attempt_id
+                        && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["submitted"]
+                            == false
+                        && agent.extra.get("autoWake").unwrap_or(&Value::Null) == true
+                        && agent.extra.get("nativeFailureHold").unwrap_or(&Value::Null) != true
+                }
+            })
+        })?;
         if !authorized {
             if guard.is_some() {
                 return Err(WorkerError::PreparationRefused(
@@ -801,15 +810,17 @@ pub(super) async fn submitted(
             }
             return Ok(false);
         }
-        if let Some(compiled) = &context.compiled {
-            preparation::persist_compilation(tx, compiled)?;
-        }
-        save(
-            tx,
-            &context.operation,
-            "submitted",
-            json!({"context":context,"request":record(&request)}),
-        )?;
+        stage("turn_submission.submitted.persist", || {
+            if let Some(compiled) = &context.compiled {
+                preparation::persist_compilation(tx, compiled)?;
+            }
+            save(
+                tx,
+                &context.operation,
+                "submitted",
+                json!({"context":context,"request":record(&request)}),
+            )
+        })?;
         Ok(true)
     })
     .await;
