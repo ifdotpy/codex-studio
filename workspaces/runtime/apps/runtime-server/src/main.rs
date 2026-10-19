@@ -704,6 +704,15 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .await?;
     startup_trace("provider-and-io-setup-completed");
     let registry_wake = state.event_wake_handle();
+    studio_runtime_services::image_workspace_agents::install_wake(Arc::clone(&registry_wake));
+    // Python `resume_read_only_image_bases`: an image agent still in its
+    // read-only phase gets its base build and copy again after a restart.
+    #[cfg(target_os = "macos")]
+    match studio_runtime_services::image_workspace_agents::resume_read_only(&store).await {
+        Ok(0) => {}
+        Ok(count) => eprintln!("resumed the image workspace of {count} read-only agent(s)"),
+        Err(error) => eprintln!("image workspace resume failed: {error}"),
+    }
     let orchestration_wake = Arc::new(Notify::new());
     let federation_wake = Arc::new(Notify::new());
     observe_table_wakes(

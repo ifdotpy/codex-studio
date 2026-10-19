@@ -27,13 +27,24 @@ pub const PLATFORM_REFUSAL: &str =
 /// every turn. Other hosts refuse image workspaces, as Python's backend does.
 pub const IMAGE_EXECUTION_SUPPORTED: bool = cfg!(target_os = "macos");
 
+/// `imageWorkspacePhase` of an agent whose implicit image request fell back to a
+/// Git worktree or its folder (Python `complete_image_workspace`). Such an agent
+/// is no longer an image agent.
+pub const FALLBACK_PHASE: &str = "fallback";
+
+/// Whether an `imageWorkspacePhase` value still binds the agent to an image.
+#[must_use]
+pub fn image_phase(phase: Option<&str>) -> bool {
+    phase.is_some_and(|phase| phase != FALLBACK_PHASE)
+}
+
 /// An agent whose workspace is an image, in any record shape Python wrote:
 /// the image fields of older records or the explicit `workspaceMode`.
 #[must_use]
 pub fn is_image_workspace_agent(record: &Value) -> bool {
     record["imageWorkspace"] == true
         || record["imageWorkspaceReady"] == true
-        || record["imageWorkspacePhase"].is_string()
+        || image_phase(record["imageWorkspacePhase"].as_str())
         || record["workspaceMode"] == "image"
 }
 
@@ -65,6 +76,8 @@ mod image_execution_tests {
             assert!(!restart_follow_up_allowed(image, false));
         }
         assert!(restart_follow_up_allowed(&worktree, false));
+        let fallback = json!({"imageWorkspace":false,"imageWorkspacePhase":"fallback","workspaceMode":"worktree"});
+        assert!(!is_image_workspace_agent(&fallback));
     }
 }
 #[cfg(target_os = "macos")]

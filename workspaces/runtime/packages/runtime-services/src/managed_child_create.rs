@@ -156,7 +156,7 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         _store: &RuntimeStore,
         root: &Path,
         agent_id: &str,
-    ) -> Result<PathBuf, ManagedCreationEnvironmentError> {
+    ) -> Result<Value, ManagedCreationEnvironmentError> {
         #[cfg(target_os = "macos")]
         {
             // Complete before returning: the caller releases the queued wake
@@ -167,10 +167,11 @@ pub trait ManagedCreationEnvironment: Send + Sync {
                         "workspace-state/image-provisioning",
                     )
                 })?;
-            return workspace
-                .get("path")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
+            return Some(workspace)
+                .filter(|workspace| {
+                    workspace.get("path").and_then(Value::as_str).is_some()
+                        && workspace.get("mount").and_then(Value::as_str).is_some()
+                })
                 .ok_or(ManagedCreationEnvironmentError::Unavailable(
                     "workspace-state/image-provisioning",
                 ));
@@ -822,8 +823,8 @@ pub(crate) async fn spawn_agents(
         })
     }).await.map_err(Error::from)?;
     for (id, root, epoch) in image_provisions {
-        let cwd = match environment.provision_image_workspace(store, Path::new(&root), &id) {
-            Ok(cwd) => cwd,
+        let workspace = match environment.provision_image_workspace(store, Path::new(&root), &id) {
+            Ok(workspace) => workspace,
             Err(error) => {
                 if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
                     eprintln!("Could not remove failed image workspace: {cleanup_error}");
@@ -840,39 +841,41 @@ pub(crate) async fn spawn_agents(
             }
         };
         let id_for_update = id.clone();
-        let cwd_for_update = cwd.clone();
         let committed = store
             .transaction(move |tx| {
                 let Some(record) =
                     AgentRepository::get(tx, &AgentId::from(id_for_update.as_str()))?
                 else {
-                    return Ok(false);
+                    return Ok(None);
                 };
-                let mut value = record.into_value();
+                let value = record.into_value();
                 if !crate::agents_create::image_provision_is_current(&value, epoch) {
-                    return Ok(false);
+                    return Ok(None);
                 }
-                value["cwd"] = json!(cwd_for_update);
-                value["imageWorkspaceReady"] = json!(true);
-                value["imageWorkspacePhase"] = json!("ready");
-                let record = AgentRecord::from_value(value)?;
-                let value = record.value();
-                AgentRepository::put(tx, &record)?;
-                crate::agents_create::publish_agent(tx, &value)?;
-                Ok::<_, studio_runtime_store::StoreError>(true)
+                let invalid = || studio_runtime_store::StoreError::InvalidStoredObject {
+                    table: "runtime_agents",
+                    id: id_for_update.clone(),
+                };
+                let now = crate::event_write::unix_time().map_err(|_| invalid())?;
+                crate::image_workspace_agents::record_ready(tx, value, &workspace, now)
+                    .map(Some)
+                    .map_err(|error| match error {
+                        crate::event_write::EventWriteError::Store(error) => error,
+                        _ => invalid(),
+                    })
             })
             .await
             .map_err(Error::from)?;
-        if !committed {
+        let Some(committed) = committed else {
             if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
                 eprintln!("Could not remove stale image workspace: {cleanup_error}");
             }
             return Err(crate::managed_host_tools::Error::Stale.into());
-        }
+        };
         if let Some(children) = result.value["agents"].as_array_mut() {
             for child in children {
                 if child.get("id").and_then(Value::as_str) == Some(id.as_str()) {
-                    child["cwd"] = json!(cwd);
+                    child["cwd"] = committed["cwd"].clone();
                     child["imageWorkspaceReady"] = json!(true);
                     child["imageWorkspacePhase"] = json!("ready");
                     break;
