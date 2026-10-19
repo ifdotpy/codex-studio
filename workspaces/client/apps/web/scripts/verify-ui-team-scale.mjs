@@ -754,7 +754,10 @@ async function main() {
     );
 
     // 3. Wait for the team.
-    const deadlineMs = stageDeadlineMs(options.workers);
+    const deadlineMs = stageDeadlineMs(
+      options.workers,
+      scaleAccountKeys(accounts, scaleProfile(options.worker)).length,
+    );
     journal.deadlineMs = deadlineMs;
     let lastLine = "";
     for (;;) {
@@ -814,6 +817,11 @@ async function main() {
       leadReportedAtMs: null,
       missingTokens: [],
     };
+    const throttling = tracker?.throttling(runMs()) ?? {
+      events: 0,
+      agents: 0,
+      waitMs: 0,
+    };
     const good = journal.samples.filter((sample) => !sample.error);
     const rel = (ms) =>
       ms === null || promptSentAtMs === null ? null : ms - promptSentAtMs;
@@ -857,6 +865,10 @@ async function main() {
       ),
       started: summary.started,
       replied: summary.replied,
+      accountDistribution: summary.accountDistribution ?? {},
+      throttleEvents: throttling.events,
+      throttledAgents: throttling.agents,
+      throttleWaitMs: throttling.waitMs,
       missingTokens: summary.missingTokens,
       leadReportedAtMs: rel(summary.leadReportedAtMs),
       maxFrameGapMs: probe

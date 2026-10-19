@@ -3,6 +3,10 @@ import {
   ECHO_LATENCY_LIMIT_MS,
   FRAME_GAP_LIMIT_MS,
   SPAWN_BATCH_MAX,
+  STAGE_DEADLINE_BASE_MS,
+  STAGE_DEADLINE_PER_WORKER_MS,
+  THROTTLE_WAVE_MS,
+  ACCOUNT_CONCURRENT_REQUESTS,
   buildLeadPrompt,
   cpuDeltaMs,
   cpuPercent,
@@ -12,11 +16,13 @@ import {
   parseArgs,
   percentile,
   sqliteLockErrors,
+  stageDeadlineMs,
   workerToken,
 } from "../scripts/uiTeamScaleHelpers.mjs";
 
 const passing = {
   uiAllVisibleMs: 5_000,
+  started: 3,
   replied: 3,
   leadReportedAtMs: 9_000,
   sqliteLockErrorDelta: 0,
@@ -68,6 +74,51 @@ describe("ui team scale helpers", () => {
     });
   });
 
+  it("spreads the deadline over throttle waves per account", () => {
+    expect(stageDeadlineMs(30, 3)).toBe(
+      STAGE_DEADLINE_BASE_MS +
+        30 * STAGE_DEADLINE_PER_WORKER_MS +
+        THROTTLE_WAVE_MS,
+    );
+    expect(stageDeadlineMs(30, 1)).toBe(
+      stageDeadlineMs(30, 3) + 2 * THROTTLE_WAVE_MS,
+    );
+    expect(stageDeadlineMs(ACCOUNT_CONCURRENT_REQUESTS)).toBe(
+      STAGE_DEADLINE_BASE_MS +
+        ACCOUNT_CONCURRENT_REQUESTS * STAGE_DEADLINE_PER_WORKER_MS +
+        THROTTLE_WAVE_MS,
+    );
+  });
+
+  it("reports account distribution and provider retries without failing", () => {
+    const tracker = createTeamTracker("lead", "TAG", 3);
+    const retrying = (at) => ({ phase: "retrying", at });
+    tracker.observe({ id: "w1", rootId: "lead", accountKey: "b" }, 0);
+    tracker.observe({ id: "w2", rootId: "lead", accountKey: "a" }, 0);
+    tracker.observe({ id: "w3", rootId: "lead", accountKey: "a" }, 0);
+    tracker.observe(
+      { id: "w1", rootId: "lead", nativeStatus: retrying(1) },
+      100,
+    );
+    tracker.observe(
+      { id: "w1", rootId: "lead", nativeStatus: retrying(2) },
+      200,
+    );
+    tracker.observe({ id: "w1", rootId: "lead" }, 1_100);
+    tracker.observe({ id: "lead", nativeStatus: retrying(3) }, 1_000);
+    tracker.observe(
+      { id: "w2", rootId: "lead", nativeStatus: retrying(4) },
+      1_500,
+    );
+    expect(tracker.summary().accountDistribution).toEqual({ a: 2, b: 1 });
+    expect(tracker.throttling(2_000)).toEqual({
+      events: 4,
+      agents: 3,
+      waitMs: 1_000 + 1_000 + 500,
+    });
+    expect(evaluateCriteria(passing, 3).passed).toBe(true);
+  });
+
   it("finds the first sample that reaches a count", () => {
     const samples = [
       { atMs: 1, n: 0 },
@@ -108,12 +159,14 @@ describe("ui team scale helpers", () => {
         sqliteLockErrorDelta: null,
         maxEchoMs: ECHO_LATENCY_LIMIT_MS + 1,
         replied: 2,
+        started: 2,
       },
       3,
     );
     expect(failed.failures).toEqual(
       expect.arrayContaining([
         "noSqliteLockErrors",
+        "allWorkerTurnsStarted",
         "allAgentsReplied",
         `echoUnder${ECHO_LATENCY_LIMIT_MS}ms`,
       ]),

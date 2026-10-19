@@ -18,7 +18,13 @@ export const SPAWN_BATCH_MAX = 64;
 export const WORKERS_MAX = 512;
 // Seconds the worker's shell command sleeps before it prints its token.
 export const WORKER_COMMAND_SECONDS = 3;
-// Stage deadline from sending the prompt: a fixed part plus a part per worker.
+// Sampling requests the provider admits at once per account before it answers
+// 429 (assumed from a live Codex run: about 10), requests.
+export const ACCOUNT_CONCURRENT_REQUESTS = 10;
+// Length of one provider retry wave after a 429 (observed 51-60 s), milliseconds.
+export const THROTTLE_WAVE_MS = 60_000;
+// Stage deadline from sending the prompt: a fixed part, a part per worker, and
+// one throttle wave for every `ACCOUNT_CONCURRENT_REQUESTS` workers per account.
 export const STAGE_DEADLINE_BASE_MS = 120_000;
 export const STAGE_DEADLINE_PER_WORKER_MS = 500;
 // Wait for the cleanup to be observed (rows deleted, processes gone).
@@ -39,8 +45,13 @@ export const WORKER_PROFILE_NAMES = Object.freeze([
   "claude-haiku",
 ]);
 
-export function stageDeadlineMs(workers) {
-  return STAGE_DEADLINE_BASE_MS + workers * STAGE_DEADLINE_PER_WORKER_MS;
+export function stageDeadlineMs(workers, accounts = 1) {
+  const waves = Math.ceil(workers / (ACCOUNT_CONCURRENT_REQUESTS * accounts));
+  return (
+    STAGE_DEADLINE_BASE_MS +
+    workers * STAGE_DEADLINE_PER_WORKER_MS +
+    waves * THROTTLE_WAVE_MS
+  );
 }
 
 export function percentile(values, fraction) {
@@ -81,11 +92,29 @@ export function createTeamTracker(leadId, runTag, workers) {
   for (let index = 1; index <= workers; index += 1)
     expected.set(workerToken(runTag, index), index);
   const byId = new Map();
+  // Provider retry state per team member (the lead included).
+  const retries = new Map();
   let leadReportedAtMs = null;
   const text = (value) =>
     `${value.lastAnswer ?? ""}\n${value.overview?.result ?? ""}`;
   return {
     observe(value, atMs) {
+      if (value.id === leadId || value.rootId === leadId) {
+        const retry = retries.get(value.id) ?? {
+          sinceMs: null,
+          events: new Set(),
+          waitMs: 0,
+        };
+        retries.set(value.id, retry);
+        const status = value.nativeStatus;
+        if (status?.phase === "retrying") {
+          retry.events.add(status.at ?? atMs);
+          retry.sinceMs ??= atMs;
+        } else if (retry.sinceMs !== null) {
+          retry.waitMs += atMs - retry.sinceMs;
+          retry.sinceMs = null;
+        }
+      }
       if (value.id === leadId) {
         if (
           leadReportedAtMs === null &&
@@ -101,11 +130,13 @@ export function createTeamTracker(leadId, runTag, workers) {
         startedAtMs: null,
         completedAtMs: null,
         token: null,
+        accountKey: null,
         status: null,
         error: null,
       };
       byId.set(value.id, row);
       row.status = value.status ?? null;
+      row.accountKey = value.accountKey ?? row.accountKey;
       row.error = value.error ?? null;
       if (row.startedAtMs === null && (value.inFlight || value.turnId))
         row.startedAtMs = atMs;
@@ -120,6 +151,21 @@ export function createTeamTracker(leadId, runTag, workers) {
       }
     },
     workers: () => [...byId.values()],
+    // Provider throttling seen as retry events: a lower bound, since several
+    // events between two samples count once. Waits still open end at `endMs`.
+    throttling(endMs) {
+      let waitMs = 0;
+      let events = 0;
+      let agents = 0;
+      for (const retry of retries.values()) {
+        events += retry.events.size;
+        agents += retry.events.size ? 1 : 0;
+        waitMs +=
+          retry.waitMs +
+          (retry.sinceMs === null ? 0 : Math.max(0, endMs - retry.sinceMs));
+      }
+      return { events, agents, waitMs };
+    },
     leadReportedAtMs: () => leadReportedAtMs,
     summary() {
       const rows = [...byId.values()];
@@ -135,6 +181,14 @@ export function createTeamTracker(leadId, runTag, workers) {
           (token) => !tokens.has(token),
         ),
         leadReportedAtMs,
+        accountDistribution: Object.fromEntries(
+          [
+            ...rows.reduce((counts, row) => {
+              const key = row.accountKey ?? "unknown";
+              return counts.set(key, (counts.get(key) ?? 0) + 1);
+            }, new Map()),
+          ].sort(([a], [b]) => (a < b ? -1 : 1)),
+        ),
       };
     },
   };
@@ -180,6 +234,7 @@ export function sqliteWriteWaits(diagnostics) {
 export function evaluateCriteria(metrics, workers) {
   const checks = [
     ["allAgentsVisibleInUi", metrics.uiAllVisibleMs !== null],
+    ["allWorkerTurnsStarted", metrics.started === workers],
     ["allAgentsReplied", metrics.replied === workers],
     ["leadReported", metrics.leadReportedAtMs !== null],
     ["noSqliteLockErrors", metrics.sqliteLockErrorDelta === 0],
@@ -290,6 +345,16 @@ export function summaryText(journal) {
       `${m.started} / ${m.replied} of ${journal.options.workers}`,
     ),
     line("lead reported (s)", sec(m.leadReportedAtMs)),
+    line(
+      "workers per account",
+      Object.entries(m.accountDistribution ?? {})
+        .map(([key, count]) => `${key}=${count}`)
+        .join(" ") || "n/a",
+    ),
+    line(
+      "provider retries (not a failure)",
+      `${m.throttleEvents} events on ${m.throttledAgents} agents, waited ${sec(m.throttleWaitMs)} s in total`,
+    ),
     line(
       "max frame gap / max echo (ms)",
       `${m.maxFrameGapMs} / ${m.maxEchoMs}`,
