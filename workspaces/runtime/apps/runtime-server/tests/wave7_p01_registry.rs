@@ -36,7 +36,8 @@ use tokio::sync::{Notify, OnceCell, mpsc, watch};
 fn test_registry_config() -> AccountRegistryConfig {
     AccountRegistryConfig::default()
 }
-const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
+/// Below the CI nextest kill (3 x 60 s), so a hang reports its state.
+const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
 const SATURATED_WAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 struct Fixture {
@@ -2988,7 +2989,11 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap();
     let mut restart_changes = restarted_state.sync_changes_handle().subscribe();
-    let held = tokio::time::timeout(TEST_HANG_GUARD, async {
+    // Shutdown closes the bridge's query; whether the bridge persists the
+    // aborted turn as interrupted before it exits is a race. Either outcome
+    // is safe: an unknown turn is held, a confirmed interruption continues
+    // with a restart notice. Neither resends the interrupted input.
+    let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
                 .store
@@ -3001,25 +3006,25 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            if record["status"] == "interrupted"
+            let held = record["status"] == "interrupted"
                 && record["autoWake"] == false
-                && record["restartRecovery"]["stage"] == "held"
-            {
+                && record["restartRecovery"]["stage"] == "held";
+            let continued = record["restartRecovery"]["stage"] == "continued"
+                && record["status"] == "completed"
+                && record["inFlight"] != true;
+            if held || continued {
                 break record;
             }
             restart_changes.changed().await.unwrap();
         }
     })
-    .await;
-    let held = held.unwrap_or_else(|_| {
+    .await
+    .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should remain held: {}",
+            "in-flight Claude turn should be held or continued: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
-    assert_eq!(held["status"], "interrupted");
-    assert_eq!(held["autoWake"], false);
-    assert_eq!(held["restartRecovery"]["stage"], "held");
     let second_event_status: String = fixture
         .store
         .read()
@@ -3030,15 +3035,29 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(second_event_status, "uncertain");
     runtime_shutdown::close(restarted, &restarted_state)
         .await
         .unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&queries).unwrap().lines().count(),
-        2,
-        "restart must not resend the turn"
-    );
+    let queries_started = std::fs::read_to_string(&queries).unwrap().lines().count();
+    if recovered["restartRecovery"]["stage"] == "held" {
+        assert_eq!(second_event_status, "uncertain");
+        assert_eq!(queries_started, 2, "restart must not resend the turn");
+    } else {
+        assert_eq!(second_event_status, "delivered");
+        let continued_events = recovered["startAttempt"]["events"].as_array().unwrap();
+        assert_eq!(continued_events.len(), 1);
+        assert!(
+            continued_events[0]
+                .as_str()
+                .unwrap()
+                .starts_with("restart:"),
+            "the continuation carries only the restart notice: {continued_events:?}"
+        );
+        assert_eq!(
+            queries_started, 3,
+            "only the continuation starts a query; the input is not resent"
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
