@@ -31,6 +31,12 @@ pub(crate) struct RequestPreparation {
     pub guard: CommitGuard,
     pub connection_id: String,
 }
+impl RequestPreparation {
+    /// The workspace token this request's commit validates.
+    pub(crate) fn workspace_token(&self) -> crate::workspace_ready::ReadyToken {
+        self.guard.token.clone()
+    }
+}
 
 async fn compile_turn(
     snapshot: turn::PreparationSnapshot,
@@ -219,6 +225,27 @@ pub(crate) const WORKSPACE_TOKEN_STALE: &str = "workspace-readiness/token-stale"
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
     WorkerError::PreparationPending(CATALOG_PENDING_REASON.into())
+}
+/// The admission of a record whose settings an accepted thread commit froze:
+/// it needs no catalog read and no transaction of its own.
+fn frozen_selection(
+    record: &Value,
+    identity: &gates::CatalogIdentity,
+) -> Result<gates::ExecutionSelection, WorkerError> {
+    let observed = gates::ExecutionSnapshot::from_record(record, identity.clone())
+        .map_err(|e| refusal(e.to_string()))?;
+    if !observed.settings_fixed {
+        return Err(refusal("execution-settings/not-frozen".into()));
+    }
+    let selection = gates::select_execution(&observed, &observed, None, Instant::now())
+        .map_err(|e| refusal(e.to_string()))?;
+    if matches!(
+        selection.settings.native_effort,
+        gates::StoredField::Missing
+    ) {
+        return Err(refusal("execution-settings/native-effort-missing".into()));
+    }
+    Ok(selection)
 }
 fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
     match error {
@@ -624,7 +651,7 @@ pub(crate) async fn prepare_with_connection_id(
         method,
         generation,
         connection_id,
-        selection,
+        Some(selection),
         token,
         None,
     )
@@ -1278,12 +1305,11 @@ pub(crate) async fn prepare_ready(
     method: Method,
     generation: u64,
     connection_id: &str,
-    admission: Admission,
+    admission: Option<Admission>,
     token: crate::workspace_ready::ReadyToken,
     loaded: Option<thread::LoadedIdentity>,
 ) -> Result<RequestPreparation, WorkerError> {
     let mut method = method;
-    let Admission { selection } = admission;
     // Workspace provisioning can update stored agent/project paths as well as
     // create the progress directory. Capture all filesystem observations after
     // that work, before the transaction rechecks the current records.
@@ -1311,7 +1337,6 @@ pub(crate) async fn prepare_ready(
     .map_err(|_| WorkerError::TaskFailed)??;
     let (identity, _) = catalog(resources, intent)?;
     let intent_for_snapshot = intent.clone();
-    let selection_for_snapshot = selection.clone();
     let token_for_snapshot = token.clone();
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
@@ -1324,6 +1349,7 @@ pub(crate) async fn prepare_ready(
         vm_reviewer,
         filesystem,
         prepared_host,
+        selection,
     ) = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let record = preconditions(
             tx,
@@ -1331,6 +1357,10 @@ pub(crate) async fn prepare_ready(
             &filesystem,
             prepared_host.as_ref(),
         )?;
+        let selection_for_snapshot = match admission {
+            Some(Admission { selection }) => selection,
+            None => frozen_selection(&record, &identity)?,
+        };
         let mut frozen = selection_for_snapshot
             .freeze_record(&record, &identity, Instant::now())
             .map_err(|e| refusal(e.to_string()))?;
@@ -1373,6 +1403,7 @@ pub(crate) async fn prepare_ready(
             vm_reviewer,
             filesystem,
             prepared_host,
+            selection_for_snapshot,
         ))
     })
     .await?;

@@ -711,6 +711,7 @@ pub async fn start_account_worker_with_publication_sink(
         preparations: JoinSet::new(),
         preparing: BTreeMap::new(),
         thread_proofs: BTreeMap::new(),
+        thread_tokens: BTreeMap::new(),
         effect_in_hand: None,
         idle_snapshot: None,
         #[cfg(test)]
@@ -881,6 +882,9 @@ struct Worker {
     /// Threads this connection loaded, by agent. A proof is published after
     /// its acceptance commits and dropped when the thread may be unloaded.
     thread_proofs: BTreeMap<String, crate::thread_prepare::LoadedIdentity>,
+    /// Workspace token of each agent's last submitted thread request, by
+    /// attempt; that attempt's turn reuses it (see `turn_preparation::Run`).
+    thread_tokens: BTreeMap<String, (String, crate::workspace_ready::ReadyToken)>,
     /// Durable key of the effect being run; a spawned preparation takes it and
     /// completes it once handled.
     effect_in_hand: Option<String>,
@@ -1880,6 +1884,11 @@ impl Worker {
             loaded: (method == Method::ThreadResume)
                 .then(|| self.thread_proofs.get(&intent.agent_id).cloned())
                 .flatten(),
+            carried: self
+                .thread_tokens
+                .remove(&intent.agent_id)
+                .filter(|(attempt, _)| method == Method::TurnStart && *attempt == intent.attempt_id)
+                .map(|(_, token)| token),
             intent,
             method,
         };
@@ -1916,6 +1925,15 @@ impl Worker {
         let rewake = self.preparing.remove(&intent.agent_id).flatten();
         if let Some(prepared) = self.preparation_ready(outcome?, &intent, &agent_changes) {
             let method = prepared.method;
+            if prepared.thread.is_some() {
+                self.thread_tokens.insert(
+                    prepared.intent.agent_id.clone(),
+                    (
+                        prepared.intent.attempt_id.clone(),
+                        prepared.workspace_token(),
+                    ),
+                );
+            }
             // `submit_inner` already read this turn/start receipt before preparing.
             let receipt_checked = requested == Method::TurnStart && method == Method::TurnStart;
             Box::pin(self.submit_prepared(

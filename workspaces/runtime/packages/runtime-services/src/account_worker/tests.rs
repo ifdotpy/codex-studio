@@ -2368,6 +2368,57 @@ async fn scenario_loaded_thread_follow_up_starts_the_turn_directly(
     worker.shutdown().await.unwrap();
 }
 
+/// Count of `name` store boundaries the worker has entered.
+fn boundaries(state: &State, name: &str) -> usize {
+    state
+        .bridge
+        .faults
+        .operations
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(operation, _, _)| operation == name)
+        .count()
+}
+
+#[cfg(unix)]
+async fn scenario_first_turn_reuses_the_thread_admission(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let start = state.start(&mut peer, &worker).await;
+    assert_eq!(
+        boundaries(&state, "workspace"),
+        1,
+        "the turn reuses the workspace token of its thread request"
+    );
+    assert_eq!(
+        boundaries(&state, "preparation"),
+        4,
+        "thread: admit and ready; turn: pre-start gate and ready"
+    );
+    assert!(start["params"]["input"].is_array());
+    finish_turn(&state, &mut peer, &start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_first_turn_reuses_the_thread_admission() {
+    scenario_first_turn_reuses_the_thread_admission(studio_runtime_providers::ProviderKind::Codex)
+        .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_first_turn_reuses_the_thread_admission() {
+    scenario_first_turn_reuses_the_thread_admission(studio_runtime_providers::ProviderKind::Claude)
+        .await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn codex_loaded_thread_follow_up_starts_the_turn_directly() {

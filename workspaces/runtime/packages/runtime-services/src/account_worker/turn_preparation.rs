@@ -20,6 +20,9 @@ pub(super) struct Run {
     /// This connection's loaded-thread proof; with unchanged thread settings a
     /// thread request becomes the turn itself.
     pub loaded: Option<crate::thread_prepare::LoadedIdentity>,
+    /// Workspace token of this attempt's accepted thread request; its commit
+    /// froze the settings, so the turn needs no separate admission.
+    pub carried: Option<ReadyToken>,
 }
 
 impl Run {
@@ -62,22 +65,29 @@ async fn prepare(
     if may_start_turn && !stage("turn_preparation.account_auth", require_account_auth(run)).await? {
         return Ok(store::PreparationStep::Settled);
     }
+    if let Some(token) = run.carried.clone() {
+        let i = intent.clone();
+        let r = resources.clone();
+        stage(
+            "turn_preparation.admit",
+            bridge.prepare_run("preparation", move |s| async move {
+                before_start(&s, &r, &i).await
+            }),
+        )
+        .await?;
+        match ready(run, None, token).await {
+            // A stale carried token or unfrozen settings take the full path.
+            Err(WorkerError::PreparationRefused(_)) => {}
+            result => return settle(run, result).await,
+        }
+    }
     let i = intent.clone();
     let r = resources.clone();
     let selection = match stage(
         "turn_preparation.admit",
         bridge.prepare_run("preparation", move |s| async move {
             if may_start_turn {
-                crate::account_transfer_executor::before_start(
-                    Arc::clone(&s),
-                    r.account_session.clone(),
-                    &r.model_catalog,
-                    &r,
-                    &i.agent_id,
-                    now(),
-                )
-                .await
-                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                before_start(&s, &r, &i).await?;
             }
             store::preparation_step(&s, &i, preparation::admit(Arc::clone(&s), &r, &i)).await
         }),
@@ -102,13 +112,32 @@ async fn prepare(
         Ok(token) => token,
         Err(step) => return Ok(step),
     };
-    let result = ready(run, selection, token).await;
+    let result = ready(run, Some(selection), token).await;
     settle(run, result).await
+}
+
+/// Apply an account transfer requested before this turn starts.
+async fn before_start(
+    store: &Arc<RuntimeStore>,
+    resources: &preparation::PreparationResources,
+    intent: &TurnIntent,
+) -> Result<(), WorkerError> {
+    crate::account_transfer_executor::before_start(
+        Arc::clone(store),
+        resources.account_session.clone(),
+        &resources.model_catalog,
+        resources,
+        &intent.agent_id,
+        now(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
 }
 
 async fn ready(
     run: &Run,
-    selection: preparation::Admission,
+    selection: Option<preparation::Admission>,
     token: ReadyToken,
 ) -> Result<preparation::RequestPreparation, WorkerError> {
     let i = run.intent.clone();
