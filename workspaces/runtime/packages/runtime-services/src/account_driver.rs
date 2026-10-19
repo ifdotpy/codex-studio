@@ -144,6 +144,15 @@ pub struct AuthProfile {
 pub trait ProviderAuthReader: Send + Sync {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata;
 
+    /// A second, active read for a profile whose stored status is not ready
+    /// when [`ProviderAuthReader::read`] left it unchanged. `None` keeps the
+    /// stored status. macOS Claude uses the native `claude auth status`, as
+    /// Python does after its passive Keychain reader; without it a stale error
+    /// (for example one torn read) would block every later turn.
+    fn recheck(&self, _profile: &AuthProfile) -> Option<AuthMetadata> {
+        None
+    }
+
     /// Forget any cached status of `profile`; the next read probes once.
     fn invalidate(&self, _profile: &AuthProfile) {}
 }
@@ -155,6 +164,13 @@ pub struct SystemProviderAuthReader;
 impl ProviderAuthReader for SystemProviderAuthReader {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
         crate::provider_adapter::adapter(profile.provider).read_auth(profile)
+    }
+
+    fn recheck(&self, profile: &AuthProfile) -> Option<AuthMetadata> {
+        // Other hosts already probe in `read`; Codex reads `auth.json` there.
+        (cfg!(target_os = "macos")
+            && profile.provider == studio_runtime_providers::ProviderKind::Claude)
+            .then(|| ClaudeCliAuthReader::read_native(profile))
     }
 
     fn invalidate(&self, profile: &AuthProfile) {
@@ -373,16 +389,21 @@ impl ProviderAuthReader for ClaudeCliAuthReader {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let environment = env::var(CLAUDE_BIN_OVERRIDE)
-                .ok()
-                .map(|value| BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), value)]))
-                .unwrap_or_default();
-            Self::read_with_environment(profile, &environment)
+            Self::read_native(profile)
         }
     }
 }
 
 impl ClaudeCliAuthReader {
+    /// `claude auth status --json` for this profile, through the shared cache.
+    fn read_native(profile: &AuthProfile) -> AuthMetadata {
+        let environment = env::var(CLAUDE_BIN_OVERRIDE)
+            .ok()
+            .map(|value| BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), value)]))
+            .unwrap_or_default();
+        Self::read_with_environment(profile, &environment)
+    }
+
     fn read_with_environment(
         profile: &AuthProfile,
         environment: &BTreeMap<String, String>,
@@ -1848,7 +1869,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         account: &str,
         include_inactive: bool,
     ) -> Result<AccountStatus, AccountDriverError> {
-        let profile = {
+        let (profile, stored_ready) = {
             let row = registry_account(value, account)?;
             if !include_inactive
                 && (row.get("deleted") == Some(&Value::Bool(true))
@@ -1859,17 +1880,31 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             if row.get("duplicateOf").is_some_and(truthy_value) {
                 return Ok(status_from_value(row.get("status")));
             }
-            AuthProfile {
-                provider: studio_runtime_providers::ProviderKind::of_record(row)
-                    .map_err(|_| AccountDriverError::InvalidRegistry)?,
-                home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
-                claude_options: row.get("claudeOptions").cloned(),
-            }
+            (
+                AuthProfile {
+                    provider: studio_runtime_providers::ProviderKind::of_record(row)
+                        .map_err(|_| AccountDriverError::InvalidRegistry)?,
+                    home: PathBuf::from(
+                        row.get("home").and_then(Value::as_str).unwrap_or_default(),
+                    ),
+                    claude_options: row.get("claudeOptions").cloned(),
+                },
+                row.get("status").and_then(Value::as_str) == Some("ready"),
+            )
         };
-        let metadata =
+        let mut metadata =
             crate::diagnostics::measure_runtime_stage("account_driver.auth_metadata", || {
                 self.reader.read(&profile)
             });
+        // Python reads the status again on every refresh, so a stored error
+        // never outlives a valid login. A read that left a non-ready status
+        // unchanged gets one active read instead.
+        if metadata.status == AuthStatus::Unchanged
+            && !stored_ready
+            && let Some(rechecked) = self.reader.recheck(&profile)
+        {
+            metadata = rechecked;
+        }
         let row = registry_account_mut(value, account)?
             .as_object_mut()
             .ok_or(AccountDriverError::InvalidRegistry)?;
@@ -3022,6 +3057,125 @@ exit 0
             snapshot.default_account_key,
             Value::String("default".into())
         );
+    }
+
+    /// macOS shape: the passive read leaves the status unchanged, and the
+    /// active recheck answers with the native `claude auth status`.
+    struct RecheckReader {
+        recheck: AuthMetadata,
+        rechecks: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ProviderAuthReader for RecheckReader {
+        fn read(&self, _profile: &AuthProfile) -> AuthMetadata {
+            AuthMetadata {
+                status: AuthStatus::Unchanged,
+                error_kind: Some("macos-passive-auth-unavailable"),
+                ..AuthMetadata::signed_out()
+            }
+        }
+
+        fn recheck(&self, _profile: &AuthProfile) -> Option<AuthMetadata> {
+            self.rechecks
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(self.recheck.clone())
+        }
+    }
+
+    fn claude_registry(fixture: &TestDir, status: &str, error_kind: Option<&str>) -> PathBuf {
+        let home = fixture.path.join("claude-home");
+        fs::create_dir_all(&home).expect("create disposable Claude home");
+        let mut value: Value = serde_json::from_slice(&registry(&home)).expect("fixture registry");
+        let row = &mut value["accounts"]["default"];
+        row["provider"] = Value::String("claude".into());
+        row["source"] = Value::String("Claude Code".into());
+        row["status"] = Value::String(status.into());
+        row["email"] = Value::String("fixture@example.invalid".into());
+        row["accountId"] = Value::String("claude:fixture@example.invalid".into());
+        row["_credentialIdentity"] = Value::String("claude:fixture@example.invalid".into());
+        if let Some(kind) = error_kind {
+            row["error"] = Value::String("Cannot read Claude Code sign-in status".into());
+            row["_authErrorKind"] = Value::String(kind.into());
+        }
+        let path = fixture.path.join("state/accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize fixture"),
+        )
+        .expect("write registry");
+        path
+    }
+
+    fn ready_claude() -> AuthMetadata {
+        AuthMetadata {
+            status: AuthStatus::Ready,
+            account_id: Some("claude:fixture@example.invalid".into()),
+            email: Some("fixture@example.invalid".into()),
+            plan: Some("max".into()),
+            credential_identity: Some("claude:fixture@example.invalid".into()),
+            error: None,
+            error_kind: None,
+        }
+    }
+
+    #[test]
+    fn a_stale_claude_error_with_a_valid_login_becomes_ready() {
+        // Live cutover 4: Python's passive reader stored one "parser" error.
+        // Python recovered on its next read; Rust kept the error and refused
+        // every turn with "Sign in with claude auth login first".
+        let fixture = TestDir::new();
+        let path = claude_registry(&fixture, "error", Some("parser"));
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            RecheckReader {
+                recheck: ready_claude(),
+                rechecks: Default::default(),
+            },
+        )
+        .expect("open fixture");
+        assert_eq!(driver.get("default").expect("status"), AccountStatus::Ready);
+        let saved: Value =
+            serde_json::from_slice(&fs::read(&path).expect("read registry")).expect("registry");
+        let row = &saved["accounts"]["default"];
+        assert_eq!(row["status"], "ready");
+        assert!(row.get("error").is_none_or(Value::is_null));
+        assert!(row.get("_authErrorKind").is_none());
+    }
+
+    #[test]
+    fn a_ready_claude_account_is_not_rechecked() {
+        let fixture = TestDir::new();
+        let path = claude_registry(&fixture, "ready", None);
+        let reader = RecheckReader {
+            recheck: AuthMetadata::error(Some("parser")),
+            rechecks: Default::default(),
+        };
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open fixture");
+        assert_eq!(driver.get("default").expect("status"), AccountStatus::Ready);
+        assert_eq!(
+            driver
+                .reader
+                .rechecks
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn a_signed_out_recheck_keeps_the_claude_account_blocked() {
+        let fixture = TestDir::new();
+        let path = claude_registry(&fixture, "error", Some("parser"));
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            RecheckReader {
+                recheck: AuthMetadata::signed_out(),
+                rechecks: Default::default(),
+            },
+        )
+        .expect("open fixture");
+        assert_ne!(driver.get("default").expect("status"), AccountStatus::Ready);
     }
 
     #[test]
