@@ -1027,15 +1027,17 @@ mod tests {
         let cwd = root.join(format!("leader-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
         let host = LocalPtyHost;
-        // The script writes with os.write, not print. The test sends TERM as
-        // soon as it reads READY, which can be before print('READY') returns.
-        // The handler then runs inside the stdout BufferedWriter, and a print
-        // in the forked replacement fails with "reentrant call", so the
-        // replacement exits before its handshake.
+        // The leader blocks TERM before it writes READY and then takes TERM
+        // with sigwait, so a TERM sent at any time after READY is consumed.
+        // Do not use a Python handler with signal.pause(): CPython runs the
+        // handler only at an eval-loop check, and a TERM that arrives after
+        // the last check and before pause(2) starts is lost. The leader then
+        // never exits and the TERM wait below reaches its bound.
+        // The replacement waits for SIGKILL, which no process can lose.
         let command = [
             "/usr/bin/python3".to_owned(),
             "-c".to_owned(),
-            "import os,signal\nr,w=os.pipe()\ndef term(_sig,_frame):\n pid=os.fork()\n if pid==0:\n  os.close(r); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n  os.write(1,f'REPLACEMENT:{os.getpid()}:{os.getpgrp()}\\n'.encode()); os.write(w,b'x'); signal.pause()\n os.close(w); os.read(r,1); raise SystemExit(0)\nsignal.signal(signal.SIGTERM,term)\nos.write(1,b'READY\\n')\nsignal.pause()".to_owned(),
+            "import os,signal\nsignal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGTERM})\nr,w=os.pipe()\nos.write(1,b'READY\\n')\nsignal.sigwait({signal.SIGTERM})\nif os.fork()==0:\n os.close(r); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n os.write(1,f'REPLACEMENT:{os.getpid()}:{os.getpgrp()}\\n'.encode()); os.write(w,b'x')\n while True: signal.pause()\nos.close(w); os.read(r,1); raise SystemExit(0)".to_owned(),
         ];
         let env = [
             ("TERM".into(), "xterm-256color".into()),

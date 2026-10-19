@@ -32,6 +32,12 @@ class BackendEnvironmentTests(unittest.TestCase):
             root = Path(temporary)
             pid_file = root / "child.pid"
             pid_temp_file = root / "child.pid.tmp"
+            # The runner blocks TERM before it publishes the PID file and takes
+            # TERM with sigwait, then runs the installed harness handler. A
+            # handler with signal.pause() loses a TERM that arrives after the
+            # last eval-loop check and before pause(2) starts. TERM is blocked
+            # only after the child starts, so the child does not inherit the
+            # mask, and is unblocked before the handler re-raises TERM.
             runner_code = f"""
 import signal, subprocess, sys
 from pathlib import Path
@@ -41,10 +47,13 @@ child = subprocess.Popen(
     [sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True,
 )
 harness._register_owned_process(child)
+signal.pthread_sigmask(signal.SIG_BLOCK, {{signal.SIGTERM}})
 pid_temp = Path({str(pid_temp_file)!r})
 pid_temp.write_text(str(child.pid), encoding='ascii')
 pid_temp.replace({str(pid_file)!r})
-signal.pause()
+signal.sigwait({{signal.SIGTERM}})
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {{signal.SIGTERM}})
+signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 """
             runner = subprocess.Popen(
                 [sys.executable, "-c", runner_code],
