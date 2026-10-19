@@ -505,6 +505,9 @@ fn claude_launch(
         error: None,
         error_kind: None,
     };
+    // The bridge's working directory is the account's server root. A profile added
+    // after startup has none yet, and a spawn in a missing cwd fails with ENOENT.
+    std::fs::create_dir_all(&root).map_err(|_| refused("claude/account-server-root"))?;
     let resolved = ResolvedBridge {
         node,
         executable: claude.clone(),
@@ -620,5 +623,36 @@ mod tests {
                 .status,
             AuthStatus::SignedOut
         );
+    }
+
+    /// A profile added after startup has no account server directory yet; the
+    /// bridge launch creates it because the bridge spawns with it as its cwd.
+    #[cfg(unix)]
+    #[test]
+    fn claude_launch_creates_a_missing_account_server_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let binary = dir.path().join("claude");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("fake claude");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+            .expect("make executable");
+        let sdk = dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&sdk).expect("sdk dir");
+        std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
+        let profile = json!({
+            "id": "added", "provider": "claude", "status": "ready", "home": dir.path(), "email": "a@example.test",
+            "accountId": "claude:a@example.test",
+            "_credentialIdentity": "claude:a@example.test",
+            "claudeOptions": {"binaryPath": binary, "configDir": dir.path(), "customModels": []}
+        });
+        let root = dir.path().join("account-servers/added");
+        let environment = std::collections::BTreeMap::from([(
+            "STUDIO_NODE_BIN".to_owned(),
+            binary.to_string_lossy().into_owned(),
+        )]);
+        super::claude_launch(&profile, dir.path(), root.clone(), environment).expect("launch spec");
+        assert!(root.is_dir());
     }
 }
