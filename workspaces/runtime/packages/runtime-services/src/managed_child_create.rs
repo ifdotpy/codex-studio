@@ -197,6 +197,18 @@ fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Python `codex_worker_workspace.select` note for a default worktree outside Git.
+const NO_GIT_WORKTREE_NOTE: &str =
+    "This folder has no Git repository; the worker uses the shared folder";
+
+/// Python `codex_runtime.no_worktree_warning`.
+fn no_worktree_warning(directory: &str) -> String {
+    format!(
+        "{directory} is not in a git repository. This agent works directly in the folder, \
+         without an isolated worktree. Other agents in this folder can change the same files."
+    )
+}
+
 /// Maximum characters of a requested worker folder, after trimming.
 const MAX_SPAWN_DIRECTORY_CHARS: usize = 4096;
 
@@ -447,14 +459,6 @@ pub(crate) async fn spawn_agents(
         } else {
             None
         };
-        if requested_base_ref.is_some()
-            && spec.get("workspace").and_then(Value::as_str) == Some("shared")
-        {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "base_ref cannot be used with workspace shared",
-            )
-            .into());
-        }
         if let Some(base_ref) = requested_base_ref
             && (base_ref.is_empty() || base_ref.chars().count() > 1024)
         {
@@ -533,17 +537,45 @@ pub(crate) async fn spawn_agents(
             "shared" => false,
             "image" | "layr" | "linux" => false,
             _ => {
-                return Err(
-                    crate::managed_host_tools::Error::Invalid("Unknown workspace mode").into(),
-                );
+                return Err(crate::managed_host_tools::Error::Invalid(
+                    "workspace must be \"image\", \"worktree\", or \"shared\"",
+                )
+                .into());
             }
         };
-        if workspace == "shared" && spec.get("base_ref").is_some() {
+        // Python `git_toplevel` decides Git support for an implementer's
+        // folder; a reviewer has no repository there (`spawn_agents`).
+        let in_git = !vm_actor
+            && role == "implementer"
+            && crate::host_worker_create::inside_git_work_tree(Path::new(child_directory));
+        let explicit_workspace = spec.get("workspace").and_then(Value::as_str);
+        if !vm_actor && explicit_workspace == Some("worktree") && !in_git {
             return Err(crate::managed_host_tools::Error::Invalid(
-                "base_ref cannot be used with workspace shared",
+                "workspace \"worktree\" requires a Git repository",
             )
             .into());
         }
+        if !vm_actor && requested_base_ref.is_some() && !in_git {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "base_ref requires an implementer in a Git repository",
+            )
+            .into());
+        }
+        if workspace == "shared" && spec.get("base_ref").is_some() {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "base_ref cannot be used with workspace \"shared\"",
+            )
+            .into());
+        }
+        // Python `select_workspace`: the parent's default worktree mode uses
+        // the shared folder, with a note, where the folder has no Git.
+        let workspace_note = (!vm_actor
+            && worktree
+            && !in_git
+            && explicit_workspace.is_none()
+            && parent_value.get("workspaceMode").and_then(Value::as_str) == Some("worktree"))
+        .then_some(NO_GIT_WORKTREE_NOTE);
+        let worktree = worktree && in_git;
         let id = child_id(request_id, index);
         let requested_account_key = spec.get("account_key").and_then(Value::as_str);
         let default_account_key = defaults.get("accountKey").and_then(Value::as_str);
@@ -668,7 +700,7 @@ pub(crate) async fn spawn_agents(
                 )?)
                 .map(|(_, project)| project)
         };
-        let project_worker_base = if requested_base_ref.is_none() {
+        let project_worker_base = if requested_base_ref.is_none() && in_git {
             worker_base_for_directory(store, parent_project_id, host_cwd)?
         } else {
             None
@@ -681,12 +713,9 @@ pub(crate) async fn spawn_agents(
             Path::new(host_cwd),
             base_ref_request,
         )?;
-        let (workspace_in_git, image_workspace_has_git) = match alternate_directory.as_deref() {
-            Some(directory) => {
-                let in_git = crate::host_worker_create::inside_git_work_tree(Path::new(directory));
-                (in_git, in_git)
-            }
-            None => {
+        let (workspace_in_git, image_workspace_has_git) = match vm_actor {
+            false => (in_git, in_git),
+            true => {
                 let in_git = parent_value
                     .get("workspaceInGit")
                     .and_then(Value::as_bool)
@@ -747,6 +776,16 @@ pub(crate) async fn spawn_agents(
             if let Some(base_state) = spec.get("base_ref") {
                 record["layrBaseState"] = base_state.clone();
             }
+        }
+        if let Some(note) = workspace_note {
+            record["imageWorkspaceError"] = json!(note);
+        }
+        // Python `create`: an implementer outside Git and outside an image
+        // works in the folder itself, and the record says so.
+        if !vm_actor && role == "implementer" && !worktree && workspace != "image" && !in_git {
+            record["worktreeWarning"] = json!(no_worktree_warning(
+                record["cwd"].as_str().unwrap_or(child_directory)
+            ));
         }
         record["provider"] = json!(provider);
         record["workerBaseMainRef"] = json!(main_ref.clone());
@@ -833,6 +872,22 @@ pub(crate) async fn spawn_agents(
                 continue;
             }
             let mut text = draft.prompt.clone();
+            if draft.workspace != "image"
+                && let Some(error) = draft
+                    .record
+                    .get("imageWorkspaceError")
+                    .and_then(Value::as_str)
+                    .filter(|error| !error.is_empty())
+            {
+                text.push_str(&format!(
+                    "\n\n[Studio workspace fallback] {error} {}",
+                    if draft.worktree {
+                        "Studio will use a Git worktree."
+                    } else {
+                        "Studio will use the selected folder."
+                    }
+                ));
+            }
             if draft.worktree {
                 text.push_str(&format!("\n\n[Studio worker base] Commit {} from ref {}.", draft.record["workerBaseCommit"].as_str().unwrap_or_default(), draft.record["workerBaseRef"].as_str().unwrap_or("HEAD")));
                 if let Some(behind) = draft.worker_base_behind_main.filter(|behind| *behind != 0) {
@@ -1204,6 +1259,17 @@ fn project_child(record: &Value, task_id: Option<&str>, worktree: bool) -> Value
             .unwrap_or_else(|| json!(if worktree { "worktree" } else { "shared" })),
     );
     output.insert("workspaceBackend".to_owned(), Value::Null);
+    for (key, field) in [
+        ("workspaceError", "imageWorkspaceError"),
+        ("warning", "worktreeWarning"),
+    ] {
+        if let Some(value) = record
+            .get(field)
+            .filter(|value| event_write::truthy(Some(value)))
+        {
+            output.insert(key.to_owned(), value.clone());
+        }
+    }
     if let Some(task) = task_id {
         output.insert("taskId".to_owned(), json!(task));
     }
