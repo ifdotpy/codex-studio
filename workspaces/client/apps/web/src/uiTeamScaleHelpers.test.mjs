@@ -14,6 +14,8 @@ import {
   evaluateCriteria,
   firstReachedMs,
   parseArgs,
+  spawnBatchTimings,
+  spawnCalls,
   percentile,
   sqliteLockErrors,
   stageDeadlineMs,
@@ -45,8 +47,47 @@ describe("ui team scale helpers", () => {
       runTag: "TAG",
       workspace: "shared",
     });
-    expect(prompt).toContain("Use 2 call(s)");
+    expect(prompt).toContain("Use exactly 2 call(s)");
+    expect(prompt).toContain(
+      `call 2: agents ${SPAWN_BATCH_MAX + 1} to ${SPAWN_BATCH_MAX + 1}`,
+    );
     expect(prompt).toContain("TAG_ALL_REPLIED");
+  });
+
+  it("splits a team into spawn calls and times each call", () => {
+    expect(spawnCalls(128)).toEqual([
+      { call: 1, from: 1, to: 64 },
+      { call: 2, from: 65, to: 128 },
+    ]);
+    const rows = [
+      { name: "1", firstSeenAtMs: 5, startedAtMs: 6, completedAtMs: 9 },
+      { name: "64", firstSeenAtMs: 7, startedAtMs: null, completedAtMs: null },
+      { name: "65", firstSeenAtMs: 50, startedAtMs: 51, completedAtMs: 60 },
+    ];
+    expect(spawnBatchTimings(rows, 128)).toEqual([
+      {
+        call: 1,
+        from: 1,
+        to: 64,
+        created: 2,
+        firstSeenAtMs: 5,
+        lastSeenAtMs: 7,
+        firstStartedAtMs: 6,
+        lastCompletedAtMs: 9,
+        replied: 1,
+      },
+      {
+        call: 2,
+        from: 65,
+        to: 128,
+        created: 1,
+        firstSeenAtMs: 50,
+        lastSeenAtMs: 50,
+        firstStartedAtMs: 51,
+        lastCompletedAtMs: 60,
+        replied: 1,
+      },
+    ]);
   });
 
   it("tracks start, token reply and lead report per worker", () => {

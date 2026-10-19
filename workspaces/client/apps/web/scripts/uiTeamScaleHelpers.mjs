@@ -73,16 +73,58 @@ export function leadDoneToken(runTag) {
 // One prompt, typed like a user would. The lead gets the token rule instead of
 // a list so that the prompt stays short; it spawns the workers in parallel
 // batches inside one turn.
+// The spawn calls of a team: call `call` creates workers `from`..`to` (1-based).
+export function spawnCalls(workers) {
+  return Array.from(
+    { length: Math.ceil(workers / SPAWN_BATCH_MAX) },
+    (_, i) => ({
+      call: i + 1,
+      from: i * SPAWN_BATCH_MAX + 1,
+      to: Math.min(workers, (i + 1) * SPAWN_BATCH_MAX),
+    }),
+  );
+}
+
 export function buildLeadPrompt({ workers, runTag, workspace }) {
-  const batches = Math.ceil(workers / SPAWN_BATCH_MAX);
+  const calls = spawnCalls(workers);
+  const plan = calls
+    .map(({ call, from, to }) => `call ${call}: agents ${from} to ${to}`)
+    .join("; ");
   return [
     `Automated Studio acceptance test ${runTag}. Do not edit files.`,
     `Spawn exactly ${workers} subagents with orchestration_spawn, numbered 1 to ${workers}.`,
-    `Use ${batches} call(s) with at most ${SPAWN_BATCH_MAX} agents each; issue all calls in this turn without waiting between them.`,
+    `Use exactly ${calls.length} call(s), one per range (${plan}); issue all calls in this turn without waiting between them, and repeat any call that failed.`,
     `Give every agent workspace "${workspace}", the default model and effort, and this task with N replaced by its number zero-padded to 4 digits:`,
     `"Run exactly one shell command: sleep ${WORKER_COMMAND_SECONDS}; echo ${runTag}_WNNNN. Then reply with only the printed token and stop."`,
-    `Spawn nothing else and run no commands yourself. When all ${workers} agents have replied, answer with only ${leadDoneToken(runTag)}.`,
+    `Spawn nothing else and run no commands yourself. Do not answer until all ${workers} agents have replied; then answer with only ${leadDoneToken(runTag)}.`,
   ].join(" ");
+}
+
+// Per spawn call (agents named by their number): how many workers exist and
+// when the first and last appeared, started and replied (milliseconds since the
+// prompt, null when not observed).
+export function spawnBatchTimings(rows, workers) {
+  const earliest = (values) => (values.length ? Math.min(...values) : null);
+  const latest = (values) => (values.length ? Math.max(...values) : null);
+  return spawnCalls(workers).map(({ call, from, to }) => {
+    const members = rows.filter((row) => {
+      const number = Number(row.name);
+      return number >= from && number <= to;
+    });
+    const seen = (key) =>
+      members.map((row) => row[key]).filter((value) => value !== null);
+    return {
+      call,
+      from,
+      to,
+      created: members.length,
+      firstSeenAtMs: earliest(seen("firstSeenAtMs")),
+      lastSeenAtMs: latest(seen("firstSeenAtMs")),
+      firstStartedAtMs: earliest(seen("startedAtMs")),
+      lastCompletedAtMs: latest(seen("completedAtMs")),
+      replied: members.filter((row) => row.completedAtMs !== null).length,
+    };
+  });
 }
 
 // Tracks the agents of one team from entity documents. `observe` takes the
@@ -126,6 +168,7 @@ export function createTeamTracker(leadId, runTag, workers) {
       if (value.rootId !== leadId) return;
       const row = byId.get(value.id) ?? {
         id: value.id,
+        name: value.name ?? null,
         firstSeenAtMs: atMs,
         startedAtMs: null,
         completedAtMs: null,
@@ -345,6 +388,12 @@ export function summaryText(journal) {
       `${m.started} / ${m.replied} of ${journal.options.workers}`,
     ),
     line("lead reported (s)", sec(m.leadReportedAtMs)),
+    ...(m.spawnBatches ?? []).map((b) =>
+      line(
+        `spawn call ${b.call} (agents ${b.from}-${b.to})`,
+        `created ${b.created}, first/last seen ${sec(b.firstSeenAtMs)} / ${sec(b.lastSeenAtMs)} s, first start ${sec(b.firstStartedAtMs)} s, last reply ${sec(b.lastCompletedAtMs)} s, replied ${b.replied}`,
+      ),
+    ),
     line(
       "workers per account",
       Object.entries(m.accountDistribution ?? {})

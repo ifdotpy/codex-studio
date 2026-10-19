@@ -117,18 +117,21 @@ impl AgentIndexedReads {
         )
     }
 
-    /// SQL counting slot-occupying local agents per account key. It enumerates
-    /// the partial capacity index (live agents only) and reads no other row.
+    /// SQL counting the working local agents per account key: slot-occupying
+    /// agents that are not paused. A paused agent keeps its slot but sends no
+    /// provider request, so it must not skew where new workers are placed. It
+    /// enumerates the partial capacity index (live agents only).
     #[doc(hidden)]
     pub fn account_slots_sql() -> String {
         format!(
             "SELECT COALESCE(json_extract(record,'$.accountKey'),'default'),COUNT(*) \
              FROM runtime_agents WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES} \
+             AND json_extract(record,'$.status')<>'paused' \
              AND {REMOTE_WORKER_KEY}=0 GROUP BY 1"
         )
     }
 
-    /// Slot-occupying local agents per account key; accounts without one are absent.
+    /// Working (not paused) local agents per account key; idle accounts are absent.
     pub fn slots_by_account(
         connection: &Connection,
     ) -> StoreResult<std::collections::HashMap<String, i64>> {
@@ -297,7 +300,8 @@ mod tests {
         );
         let by_account = AgentIndexedReads::slots_by_account(&connection).expect("by account");
         assert_eq!(by_account.len(), 2);
-        assert_eq!(by_account["default"], 7);
+        // The three paused agents hold slots but are not counted as work.
+        assert_eq!(by_account["default"], 4);
         assert_eq!(by_account["b"], 1);
     }
 

@@ -39,6 +39,7 @@ import {
   parseArgs,
   percentile,
   sqliteLockErrors,
+  spawnBatchTimings,
   sqliteWriteWaits,
   stageDeadlineMs,
   summaryText,
@@ -866,6 +867,15 @@ async function main() {
       started: summary.started,
       replied: summary.replied,
       accountDistribution: summary.accountDistribution ?? {},
+      spawnBatches: spawnBatchTimings(
+        workerTimeline.map((row) => ({
+          ...row,
+          firstSeenAtMs: rel(row.firstSeenAtMs),
+          startedAtMs: rel(row.startedAtMs),
+          completedAtMs: rel(row.completedAtMs),
+        })),
+        options.workers,
+      ),
       throttleEvents: throttling.events,
       throttledAgents: throttling.agents,
       throttleWaitMs: throttling.waitMs,

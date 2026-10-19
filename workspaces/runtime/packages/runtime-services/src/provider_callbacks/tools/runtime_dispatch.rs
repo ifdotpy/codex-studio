@@ -24,7 +24,7 @@ pub struct WorkerAccountRequest<'a> {
     pub model: &'a str,
     pub excluded_account_keys: &'a [String],
     pub project_account_keys: Option<&'a [String]>,
-    /// Slot-occupying agents per account key, including workers chosen earlier
+    /// Working (not paused) agents per account key, including workers chosen earlier
     /// in the same batch. Implicit selection picks the fewest (unit: agents).
     pub active_agents: &'a std::collections::HashMap<String, i64>,
 }
