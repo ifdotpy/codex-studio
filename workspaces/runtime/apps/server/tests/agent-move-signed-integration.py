@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -277,6 +278,12 @@ class Moves(f.SignedIntegration):
                 actor.pop('nativeRoleGuidance', None)
                 # A record saved before layr chats has no tool source marker.
                 actor.pop('nativeToolSource', None)
+                if not lead:
+                    # Delegation reads the saved record. A saved worker at the default
+                    # depth cannot delegate, as at 020fc8a2.
+                    actor.update(id=str(uuid.uuid4()), parentId=self.lead['id'], rootId=self.lead['id'])
+                    with self.a.runtime.lock, self.a.runtime.db() as db:
+                        self.a.runtime.put(db, 'agents', actor)
                 definitions = self.a.runtime.tool_definitions(actor)
                 wire = json.dumps(definitions, separators=(',', ':'), ensure_ascii=False).encode()
                 self.assertEqual(hashlib.sha256(wire).hexdigest(), expected)
@@ -328,7 +335,7 @@ class Moves(f.SignedIntegration):
         executable = self.folder / 'bin' / 'tailscale'
         executable.write_text(executable.read_text().replace('"100.64.0.12"]', '"100.64.0.12", "100.64.0.13"]'))
         with patch.object(f.fixture.f, 'FakeServer', HistoryServer):
-            endpoint = f.Endpoint(self.folder / 'c', 'c', 18767, '100.64.0.13')
+            endpoint = f.Endpoint(self.folder / 'c', 'c', 18767, '100.64.0.13', self.runtime_environment)
         self.stack.callback(endpoint.close)
         self.endpoints[endpoint.origin] = endpoint
         rt = endpoint.runtime
@@ -342,6 +349,29 @@ class Moves(f.SignedIntegration):
             endpoint.local({'action': 'accept_invite', 'invitation': invitation, 'requestId': 'accept-c-' + home.name})
         return endpoint
 
+    def complete_on_target(self, moved, text, target=None):
+        """Complete the moved agent's turn and wait for its post-turn checkpoint.
+
+        The target records the moved folder as ready, so each completed turn starts a
+        checkpoint in the background. A move refuses while that checkpoint runs.
+        """
+        runtime = (target or self.b).runtime
+        finished = threading.Event()
+        original = runtime._checkpoint_after_committed_turn
+        def checkpoint(request):
+            try:
+                original(request)
+            finally:
+                if request[0] == moved['id']:
+                    finished.set()
+        with patch.object(runtime, '_checkpoint_after_committed_turn', checkpoint):
+            runtime.server.complete(moved['threadId'], moved['turnId'], text)
+            self.drain()
+            self.assertTrue(finished.wait(30), 'The post-turn checkpoint did not finish')
+        current = runtime.agent(moved['id'])
+        self.assertFalse(current.get('workspaceOperation'), current.get('checkpointError'))
+        return current
+
     def drain(self):
         for endpoint in self.endpoints.values():
             with endpoint.runtime.read_db() as db:
@@ -351,8 +381,7 @@ class Moves(f.SignedIntegration):
 
     def next_move(self, source, target, actor, key):
         if actor.get('turnId'):
-            source.runtime.server.complete(actor['threadId'], actor['turnId'], 'Ready for the next move')
-            self.drain()
+            actor = self.complete_on_target(actor, 'Ready for the next move', source)
         actor = source.runtime.agent(actor['id'])
         reply = self.tool(source, actor, 'orchestration_move',
             {'server': target.server_id, 'cwd': str(target.folder), 'request_id': key}, key)
@@ -411,10 +440,7 @@ class Moves(f.SignedIntegration):
         self.assertEqual(len(self.events(self.b, moved['id'], 'agent_message', 'Message after an earlier resume')), 1)
 
     def test_home_stop_during_return_import_never_starts_target_input(self):
-        moved = self.finish_move(self.lead)
-        self.b.runtime.server.complete(moved['threadId'], moved['turnId'], 'Ready to return')
-        self.drain()
-        moved = self.b.runtime.agent(moved['id'])
+        moved = self.complete_on_target(self.finish_move(self.lead), 'Ready to return')
         original = self.a.runtime.server.call
         def stop_during_import(method, params, **kwargs):
             result = original(method, params, **kwargs)
@@ -434,10 +460,7 @@ class Moves(f.SignedIntegration):
 
     def test_lost_home_redirect_reply_reconciles_without_another_native_import(self):
         third = self.third_server()
-        moved = self.finish_move(self.lead)
-        self.b.runtime.server.complete(moved['threadId'], moved['turnId'], 'Ready for the third server')
-        self.drain()
-        moved = self.b.runtime.agent(moved['id'])
+        moved = self.complete_on_target(self.finish_move(self.lead), 'Ready for the third server')
         self.drop_action = 'move_home_relocate'
         self.tool(self.b, moved, 'orchestration_move',
             {'server': third.server_id, 'cwd': str(third.folder), 'request_id': 'lost-home-redirect'}, 'lost-home-redirect')
@@ -1408,10 +1431,7 @@ class Moves(f.SignedIntegration):
         self.assertEqual(self.a.runtime.agent(grandchild['id'])['parentId'], worker['id'])
 
     def test_return_to_the_original_home_keeps_the_identity_and_task_board(self):
-        moved = self.finish_move(self.lead)
-        self.b.runtime.server.complete(moved['threadId'], moved['turnId'], 'Ready to return')
-        self.drain()
-        moved = self.b.runtime.agent(moved['id'])
+        moved = self.complete_on_target(self.finish_move(self.lead), 'Ready to return')
         reply = self.tool(self.b, moved, 'orchestration_move',
             {'server': self.a.server_id, 'cwd': str(self.a.folder), 'request_id': 'return-home'}, 'return-home')
         self.assertEqual(reply['status'], 'accepted')

@@ -172,6 +172,18 @@ def imported_record(agent: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def import_thread_params(runtime: Any, agent: dict[str, Any], thread_id: str, history: Path) -> dict[str, Any]:
+    """Build the Codex resume parameters for an incoming agent record before it is saved.
+
+    The resumed thread keeps the tool catalog of its exported history, so the import sends
+    no dynamic tools. The tool catalog reads the saved record for the delegation policy;
+    the first target turn applies that policy to the saved record, as for any other agent.
+    """
+    params: dict[str, Any] = runtime.new_thread_params(agent, dynamic_tools=False)
+    params.update(threadId=thread_id, path=str(history), excludeTurns=True)
+    return params
+
+
 class AgentMoves:
     def __init__(self, service: Any) -> None:
         self.service = service
@@ -1180,9 +1192,7 @@ class AgentMoves:
             from codex_account_transfer import transfer_store
             copied = transfer_store(self.runtime).copy_history(folder / 'staging',
                 self.runtime.accounts.home(account['id']) / 'sessions' / '.studio-moves' / operation['move'], source)
-            params = self.runtime.new_thread_params(agent)
-            params.pop('dynamicTools', None)
-            params.update(threadId=descriptor['nativeThread'], path=str(copied), excludeTurns=True)
+            params = import_thread_params(self.runtime, agent, descriptor['nativeThread'], copied)
             method = 'thread/resume'
         with self.runtime.db() as db:
             operation['phase'] = 'native_submitted'

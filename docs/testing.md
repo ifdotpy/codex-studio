@@ -25,7 +25,8 @@ selection is owned by `FAST_SUITES` in the
 [server runner](../workspaces/runtime/apps/server/tests/server/run.py); the
 selection guard lives beside that runner. The witnesses cover request retry
 identity, uncertain outcomes, permission-aware recovery, reset-request replay
-against a fake provider, and Python/Rust fresh-state schema parity. The reset
+against a fake provider, move-target resume parameters built before the agent
+record is saved, and Python/Rust fresh-state schema parity. The reset
 fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
 and real credit redemption require separate evidence. The web package owns selected
 API and verifier unit witnesses and type-check scripts, while the tooling package owns
