@@ -491,14 +491,16 @@ impl SchedulerRepository {
                 .and_then(Value::as_str)
                 .is_some_and(|v| v != "unknown")
             || turn_id.is_some_and(|turn_id| {
-                attempt
-                    .get("turnId")
-                    .and_then(Value::as_str)
+                stored_attempt(&agent)
+                    .and_then(|attempt| bound_turn(&agent, attempt))
                     .is_some_and(|known| known != turn_id)
             })
         {
             return Ok((true, None));
         }
+        let bound = stored_attempt(&agent)
+            .and_then(|attempt| bound_turn(&agent, attempt))
+            .is_some();
         Ok((
             true,
             Some((
@@ -507,7 +509,7 @@ impl SchedulerRepository {
                     epoch,
                     attempt_id: attempt_id.to_owned(),
                 },
-                attempt.get("turnId").and_then(Value::as_str).is_some(),
+                bound,
             )),
         ))
     }
@@ -1246,7 +1248,7 @@ impl SchedulerRepository {
         if agent
             .extra
             .get("startAttempt")
-            .and_then(|a| a["turnId"].as_str())
+            .and_then(|a| bound_turn(&agent, a))
             != Some(turn_id)
         {
             return Ok(false);
@@ -2514,13 +2516,40 @@ pub(super) fn validated_events(
         .filter(|v| v.is_array())
         .ok_or_else(|| invalid_agent(&agent.id.0))?
         .to_string();
+    // A native action submits no queued input; every other attempt submits at
+    // least one event.
+    let empty_allowed = native_action_attempt(attempt);
     let valid: bool = transaction.query_row(
-        "SELECT COUNT(*) > 0 AND COUNT(*)=COUNT(DISTINCT value) AND COUNT(*)=SUM(type='text') FROM json_each(?1)",
-        [&events], |r|r.get(0))?;
+        "SELECT (COUNT(*) > 0 OR ?2) AND COUNT(*)=COUNT(DISTINCT value) AND COUNT(*)=COALESCE(SUM(type='text'),0) FROM json_each(?1)",
+        params![events, empty_allowed], |r|r.get(0))?;
     if !valid {
         return Err(invalid_agent(&agent.id.0));
     }
     Ok(events)
+}
+
+/// True for a `compact` or `review` attempt ([`NATIVE_ACTION_ATTEMPT_KINDS`]).
+pub(super) fn native_action_attempt(attempt: &Value) -> bool {
+    attempt
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|action| NATIVE_ACTION_ATTEMPT_KINDS.contains(&action))
+}
+
+/// The provider turn an attempt is bound to. An ordinary attempt is bound by
+/// its own `turnId`. A native action attempt saved before its acceptance bound
+/// `startAttempt.turnId` (live reviewers 8388eb70, 6f209a16 and d0e0015f,
+/// 20 October 2026) is bound by the agent turn on the same thread, which its
+/// review/start reply or turn/started notice set. Without this, the terminal
+/// notice of that turn stays deferred and holds the account journal.
+pub(super) fn bound_turn<'a>(agent: &'a AgentRecord, attempt: &'a Value) -> Option<&'a str> {
+    attempt.get("turnId").and_then(Value::as_str).or_else(|| {
+        (native_action_attempt(attempt)
+            && attempt.get("threadId").is_some()
+            && attempt.get("threadId") == agent.extra.get("threadId"))
+        .then(|| agent.extra.get("turnId").and_then(Value::as_str))
+        .flatten()
+    })
 }
 
 pub(super) fn invalid_agent(agent_id: &str) -> StoreError {

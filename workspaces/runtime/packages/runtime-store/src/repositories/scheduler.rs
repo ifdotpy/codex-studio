@@ -20,6 +20,13 @@ pub use studio_runtime_schema::shared_values::{
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 
+/// `startAttempt.action` wire names of the native provider actions
+/// (`thread/compact/start` and `review/start`). Such an attempt submits no
+/// queued input, so its `events` list is empty, and the provider reply binds
+/// its turn like an ordinary `turn/start` reply (Python `native_action_accepted`).
+/// `native_actions::Action` in runtime-services serializes to these names.
+pub const NATIVE_ACTION_ATTEMPT_KINDS: [&str; 2] = ["compact", "review"];
+
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
     TableRequirement {

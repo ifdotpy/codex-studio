@@ -756,6 +756,22 @@ mod native_action_retry_tests {
     use serde_json::json;
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
 
+    /// The store owns the attempt action names that may have no input events.
+    #[test]
+    fn action_wire_names_match_the_store_native_action_owner() {
+        let names: Vec<_> = [super::Action::Compact, super::Action::Review]
+            .into_iter()
+            .map(|action| serde_json::to_value(action).expect("action wire name"))
+            .collect();
+        assert_eq!(
+            names,
+            studio_runtime_store::NATIVE_ACTION_ATTEMPT_KINDS
+                .iter()
+                .map(|name| json!(name))
+                .collect::<Vec<_>>()
+        );
+    }
+
     fn worker_not_sent_receipt(ticket: Option<RequestTicket>) -> SessionReceipt {
         SessionReceipt {
             scope: ConnectionScope {

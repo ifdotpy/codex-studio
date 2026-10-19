@@ -1012,6 +1012,16 @@ fn python_review_child_claim_and_review_start_match() {
         let id = child["id"].as_str().expect("child id").to_owned();
         let mut db = db(&json!({"agent":case["claimed"].clone()}));
         db.execute("DELETE FROM runtime_agents", []).expect("reset");
+        // The accepted review binds its attempt through the scheduler owner,
+        // which also records execution history.
+        db.execute_batch(
+            "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT NOT NULL,account TEXT NOT NULL,epoch INTEGER NOT NULL,thread TEXT,turn TEXT,created REAL NOT NULL,record TEXT NOT NULL);\
+             CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);\
+             CREATE TABLE runtime_execution_inputs(run TEXT NOT NULL,event TEXT NOT NULL,PRIMARY KEY(run,event));\
+             CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);\
+             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,turn_id TEXT,error TEXT);",
+        )
+        .expect("scheduler table shapes");
         db.execute(
             "INSERT INTO runtime_agents VALUES(?1,?2)",
             [id.clone(), child.to_string()],
@@ -1064,6 +1074,10 @@ fn python_review_child_claim_and_review_start_match() {
         let running = stored_agent(&db, &id);
         // Python `start_accepted`: the review turn binds and the child runs.
         assert_eq!(running["turnId"], case["accepted"]["result"]["turn"]["id"]);
+        assert_eq!(
+            running["startAttempt"]["turnId"],
+            case["accepted"]["result"]["turn"]["id"]
+        );
         assert_eq!(running["status"], "running");
         assert_eq!(running["inFlight"], true);
         // A repeated wake finds no claimable review and cannot hand off again.

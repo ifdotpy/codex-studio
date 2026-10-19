@@ -189,7 +189,29 @@ impl Acceptance for NativeActionAcceptance {
             }
             Delivery::NotSent | Delivery::Unknown | Delivery::Written(_) => return Ok(()),
         }
-        AgentRepository::put(tx, &AgentRecord::from_value(value)?).map_err(|_| NativeError::Changed)
+        let review_turn = match delivery {
+            Delivery::Written(result) if request.method == "review/start" => {
+                result["turn"]["id"].as_str().map(str::to_owned)
+            }
+            _ => None,
+        };
+        AgentRepository::put(tx, &AgentRecord::from_value(value)?)
+            .map_err(|_| NativeError::Changed)?;
+        if let Some(turn) = review_turn {
+            // Python `native_action_accepted` accepts a review reply with the
+            // ordinary `start_accepted`, which binds `startAttempt.turnId`. The
+            // turn's completion settles only a bound attempt.
+            let epoch = i64::try_from(request.ticket.epoch).map_err(|_| NativeError::Changed)?;
+            studio_runtime_store::SchedulerRepository::settle_started(
+                tx,
+                &request.ticket.agent,
+                epoch,
+                &request.ticket.operation,
+                &turn,
+            )
+            .map_err(|_| NativeError::Changed)?;
+        }
+        Ok(())
     }
 }
 
