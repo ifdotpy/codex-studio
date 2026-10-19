@@ -6,6 +6,7 @@ use crate::event_write::{python_json, python_strip, truthy};
 use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::agent_limits_generated::{
     DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, TEAM_AGENT_HEADROOM,
 };
@@ -695,7 +696,7 @@ async fn create(
             .get("model")
             .and_then(Value::as_str)
             .filter(|model| !model.trim().is_empty())
-            .unwrap_or(crate::provider_adapter::default_model(&provider));
+            .unwrap_or(crate::provider_adapter::default_model(identity.provider));
         let effort = request
             .intent
             .get("effort")
@@ -745,7 +746,7 @@ async fn create(
             )?
     } else {
         ExecutionSettings {
-            model: crate::provider_adapter::default_model(&provider).to_owned(),
+            model: crate::provider_adapter::default_model(identity.provider).to_owned(),
             effort: Some("medium".to_owned()),
             native_effort: "medium".to_owned(),
             fast_mode: false,
@@ -821,7 +822,7 @@ async fn create(
         &prompt,
         &cwd,
         &account,
-        &provider,
+        identity.provider,
         yolo,
         role,
         role == "orchestrator",
@@ -1124,7 +1125,7 @@ async fn create_child(
         .and_then(Value::as_str)
         .or_else(|| defaults.get("model").and_then(Value::as_str))
         .or_else(|| root.get("model").and_then(Value::as_str))
-        .unwrap_or(crate::provider_adapter::default_model(&provider));
+        .unwrap_or(crate::provider_adapter::default_model(identity.provider));
     let effort = execution_intent
         .get("effort")
         .and_then(Value::as_str)
@@ -1951,7 +1952,7 @@ pub async fn conversation(
                 .then(|| initial.get("model").and_then(Value::as_str))
                 .flatten()
         })
-        .unwrap_or(crate::provider_adapter::default_model(&provider));
+        .unwrap_or(crate::provider_adapter::default_model(identity.provider));
     let effort = if request.effort_present {
         request.effort.as_ref().and_then(Option::as_deref)
     } else {
@@ -2904,7 +2905,7 @@ pub(crate) fn build_agent_record(
     prompt: &str,
     cwd: &str,
     account: &str,
-    provider: &str,
+    provider: ProviderKind,
     yolo: bool,
     role: &str,
     is_lead: bool,
@@ -2920,7 +2921,7 @@ pub(crate) fn build_agent_record(
     let mut record = merge_records([
         json!({
           "id":id,"threadId":null,"accountKey":account,"executionSettingsAccountKey":account,
-          "provider":provider,"yoloMode":yolo,"name":name,"prompt":prompt,"cwd":cwd,
+          "provider":provider.key(),"yoloMode":yolo,"name":name,"prompt":prompt,"cwd":cwd,
           "role":role,"isLead":is_lead,"needsTitle":draft,"parentId":null,"rootId":id,
           "model":crate::provider_adapter::default_model(provider),"effort":"medium",
           "fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":"standard",
@@ -3381,7 +3382,7 @@ mod tests {
             "Task",
             "/workspace",
             "default",
-            "codex",
+            ProviderKind::Codex,
             false,
             "implementer",
             false,

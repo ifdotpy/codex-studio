@@ -555,6 +555,9 @@ fn destination_settings(
     catalog: &CatalogObservation,
 ) -> Result<Value, TransferError> {
     let changed = source_provider != target_provider;
+    let target_kind: studio_runtime_providers::ProviderKind = target_provider
+        .parse()
+        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
     let visible = catalog
         .models
         .iter()
@@ -567,7 +570,7 @@ fn destination_settings(
     });
     let chosen = if changed || current.is_none() {
         visible.iter().find(|model| model.is_default).or_else(|| {
-            let fallback = crate::provider_adapter::default_model(target_provider);
+            let fallback = crate::provider_adapter::default_model(target_kind);
             visible.iter().find(|model| model.model == fallback)
         })
     } else {

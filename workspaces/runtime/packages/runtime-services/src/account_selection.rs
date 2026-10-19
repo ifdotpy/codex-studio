@@ -67,10 +67,9 @@ impl SelectionSnapshot {
             agent["projectFolderRevision"] = json!(revision);
         }
         let provider = studio_runtime_providers::ProviderKind::of_record(account)
-            .map_err(|_| TransferError::Refused("Unknown account provider"))?
-            .key();
-        if studio_runtime_providers::ProviderKind::key_of(&agent) != Some(provider) {
-            agent["provider"] = json!(provider);
+            .map_err(|_| TransferError::Refused("Unknown account provider"))?;
+        if studio_runtime_providers::ProviderKind::of_record(&agent).ok() != Some(provider) {
+            agent["provider"] = json!(provider.key());
             agent["model"] = json!(crate::provider_adapter::default_model(provider));
             agent["effort"] = json!("medium");
             agent["nativeEffort"] = json!("medium");

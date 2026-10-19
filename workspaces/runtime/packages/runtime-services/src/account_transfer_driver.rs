@@ -184,6 +184,9 @@ pub async fn request(
     let lead = lead.to_owned();
     let target = target.to_owned();
     let scope = scope.to_owned();
+    let target_kind: studio_runtime_providers::ProviderKind = target_provider
+        .parse()
+        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
     let target_provider = target_provider.to_owned();
     store.transaction_with_error(move |tx| {
         if !Repository::available(tx)? {
@@ -238,6 +241,9 @@ pub async fn request(
                 .as_str()
                 .unwrap_or(&target_provider)
                 .to_owned();
+            let target_kind: studio_runtime_providers::ProviderKind = target_provider
+                .parse()
+                .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
             for member_id in ids {
                 if operation["members"].get(&member_id).is_some()
                     || (scope == "subagents" && member_id == lead)
@@ -291,7 +297,7 @@ pub async fn request(
                         value["accountKey"] = json!(target);
                         if provider != target_provider {
                             value["provider"] = json!(target_provider);
-                            value["model"] = json!(crate::provider_adapter::default_model(&target_provider));
+                            value["model"] = json!(crate::provider_adapter::default_model(target_kind));
                             value["effort"] = Value::Null;
                             value["nativeEffort"] = json!("medium");
                             value["fastMode"] = json!(false);
@@ -420,7 +426,7 @@ pub async fn request(
                     value["accountKey"] = json!(target);
                     if provider != target_provider {
                         value["provider"] = json!(target_provider);
-                        value["model"] = json!(crate::provider_adapter::default_model(&target_provider));
+                        value["model"] = json!(crate::provider_adapter::default_model(target_kind));
                         value["effort"] = Value::Null;
                         value["nativeEffort"] = json!("medium");
                         value["fastMode"] = json!(false);

@@ -403,15 +403,15 @@ fn clear_startup_agent_state(
 fn preparation_eligible(agent: &Value) -> bool {
     let attempt = agent.get("startAttempt").unwrap_or(&Value::Null);
     let error = agent.get("error").and_then(Value::as_str);
-    let busy_claude = agent.get("provider").and_then(Value::as_str) == Some("claude")
-        && crate::event_write::truthy(agent.get("threadId"))
+    let busy_provider = crate::event_write::truthy(agent.get("threadId"))
         && error
             .and_then(|value| serde_json::from_str::<Value>(value).ok())
-            .is_some_and(|value| {
-                value == json!({"code":-32000,"message":"Claude is still working"})
+            .zip(studio_runtime_providers::ProviderKind::of_record(agent).ok())
+            .is_some_and(|(value, kind)| {
+                crate::provider_adapter::adapter(kind).is_busy_error(&value)
             });
     let allowed_error = error.is_some_and(|value| {
-        busy_claude
+        busy_provider
             || matches!(
                 value,
                 "AF_UNIX path too long"

@@ -141,10 +141,10 @@ pub fn model_provider(model: &str) -> Option<ProviderKind> {
         .find(|kind| adapter(*kind).owns_model(model))
 }
 
-/// Default model for a stored provider key; a key other than Claude's is Codex's.
+/// Default model of a provider.
 #[must_use]
-pub fn default_model(provider: &str) -> &'static str {
-    adapter(provider.parse().unwrap_or(ProviderKind::Codex)).default_model()
+pub fn default_model(provider: ProviderKind) -> &'static str {
+    adapter(provider).default_model()
 }
 
 struct CodexAdapter;
@@ -569,10 +569,10 @@ mod tests {
         for kind in ProviderKind::ALL {
             let default = adapter(kind).default_model();
             assert_eq!(model_provider(default), Some(kind));
-            assert_eq!(super::default_model(kind.key()), default);
+            assert_eq!(super::default_model(kind), default);
         }
-        assert_eq!(default_model("claude"), "default");
-        assert_eq!(default_model("codex"), "gpt-6-astra");
+        assert_eq!(default_model(ProviderKind::Claude), "default");
+        assert_eq!(default_model(ProviderKind::Codex), "gpt-6-astra");
     }
 
     #[test]
