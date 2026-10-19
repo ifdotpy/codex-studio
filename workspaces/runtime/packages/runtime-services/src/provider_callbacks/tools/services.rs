@@ -777,7 +777,8 @@ pub(super) fn execute(
                 updated["name"] = json!(title);
             }
             updated["needsTitle"] = json!(false);
-            crate::agents_create::publish_agent(tx, &updated)?;
+            // Python puts the agent row; the projection alone would be lost.
+            super::super::storage::save_actor(tx, &updated)?;
             Ok(json!({"title":updated["name"]}))
         }
         ToolKind::Unknown => Err(CallbackError::Invalid(

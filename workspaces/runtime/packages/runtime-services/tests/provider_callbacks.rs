@@ -1126,6 +1126,19 @@ async fn provider_callbacks_python_dynamic_read_and_title() {
             review_regressions::canonical_response(expected)
         );
     }
+    // Python `orchestration_title` puts the agent row, not only its projection.
+    let lead: String = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [&context.agent],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let lead: Value = serde_json::from_str(&lead).unwrap();
+    assert_eq!(lead["name"], "Unicode 🦀 title");
+    assert_eq!(lead["needsTitle"], false);
 }
 
 async fn provider_callbacks_python_visible_id_resolution() {
