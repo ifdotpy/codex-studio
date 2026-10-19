@@ -67,6 +67,8 @@ PENDING_FILE = 'pending-update.json'
 STATUS_FILE = 'peer-update.json'
 RECEIPT_FILE = 'update-receipt.json'
 UPDATES_DIR = 'updates'
+# Name prefix of the private folder in UPDATES_DIR that one pull extracts its archive into.
+EXTRACT_PREFIX = '.extract-'
 EXPORTS_DIR = 'server-exports'
 EXPORT_SUFFIX = '.zip'
 EXPORT_METADATA_SUFFIX = '.json'
@@ -504,6 +506,9 @@ class Puller:
             raise UpdateError('Invalid update export')
         archive = updates / (str(build['builtAt']) + EXPORT_SUFFIX + '.partial')
         folder = build_folder(self.root, build)
+        for leftover in updates.glob(EXTRACT_PREFIX + '*'):
+            remove_tree(leftover)  # From a pull that a backend exit interrupted.
+        extraction: Path | None = None
         try:
             uuid.UUID(export)
             if (type(size) is not int or not 0 < size <= MAX_ARCHIVE_BYTES or not isinstance(digest, str)
@@ -530,19 +535,29 @@ class Puller:
             if whole.hexdigest() != digest:
                 raise UpdateError('The update archive checksum differs')
             remove_tree(folder)
-            folder.mkdir(mode=0o700)
-            result = self.run([DITTO, '-x', '-k', str(archive), str(folder)], DITTO_SECONDS)
+            # A new private folder: only the archive can add entries to it. The build folder has
+            # a predictable name, and another program can write into it during the extraction
+            # (Finder writes .DS_Store into each folder that one of its windows shows).
+            extraction = Path(tempfile.mkdtemp(prefix=EXTRACT_PREFIX, dir=updates))
+            result = self.run([DITTO, '-x', '-k', str(archive), str(extraction)], DITTO_SECONDS)
             if result.returncode != 0:
                 raise UpdateError('ditto could not extract the update: ' + _tail(result))
+            entries = sorted(entry.name for entry in extraction.iterdir())
+            if entries != [APP_NAME]:
+                raise UpdateError(('The update archive does not hold only the app: '
+                                   + ', '.join(repr(name) for name in entries))[:300])
+            verify_app(extraction / APP_NAME, self.app, build, self.run)
+            remove_tree(folder)
+            folder.mkdir(mode=0o700)
             app = folder / APP_NAME
-            if [entry.name for entry in folder.iterdir()] != [APP_NAME]:
-                raise UpdateError('The update archive does not hold only the app')
-            verify_app(app, self.app, build, self.run)
+            (extraction / APP_NAME).rename(app)
             return app
         except BaseException:
             remove_tree(folder)
             raise
         finally:
+            if extraction is not None:
+                remove_tree(extraction)
             archive.unlink(missing_ok=True)
             try:
                 self._call(server, 'update.release', {'export': export}, SHORT_REQUEST_SECONDS)

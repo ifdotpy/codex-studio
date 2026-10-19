@@ -233,6 +233,42 @@ class PeerUpdates(unittest.TestCase):
         self.assertEqual((Path(pending['app']) / 'Contents/Resources/payload.bin').read_bytes(),
                          (self.peer_app / 'Contents/Resources/payload.bin').read_bytes())
 
+    def test_a_file_that_finder_writes_into_the_build_folder_does_not_fail_the_pull(self) -> None:
+        folder = updates.build_folder(self.state, NEW)
+
+        def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+            result = fake_run(argv, timeout)
+            if Path(argv[0]).name == 'ditto' and argv[1:3] == ['-x', '-k']:
+                # Finder writes .DS_Store into a folder that one of its windows shows.
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / '.DS_Store').write_bytes(b'Bud1')
+            return result
+
+        self.puller.run = run
+        result = self.puller.pull()
+        self.assertEqual(result['outcome'], 'staged', result)
+        pending = updates.read_pending(self.state)
+        assert pending is not None
+        self.assertEqual(Path(pending['app']), folder / updates.APP_NAME)
+        self.assertEqual([p.name for p in folder.iterdir()], [updates.APP_NAME])
+        self.assertEqual(sorted(p.name for p in (self.state / 'updates').iterdir()), [folder.name])
+
+    def test_an_archive_with_an_entry_beside_the_app_is_refused(self) -> None:
+        def run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+            result = fake_run(argv, timeout)
+            if Path(argv[0]).name == 'ditto' and argv[1:4] == ['-c', '-k', '--keepParent']:
+                with zipfile.ZipFile(argv[5], 'a') as archive:
+                    archive.writestr('__MACOSX/._' + updates.APP_NAME, b'resource fork')
+            return result
+
+        with patch.object(updates, 'run_tool', run):
+            result = self.puller.pull()
+        self.assertEqual(result['outcome'], 'failed')
+        self.assertEqual(result['reason'],
+                         "The update archive does not hold only the app: 'Codex Studio.app', '__MACOSX'")
+        self.assertIsNone(updates.read_pending(self.state))
+        self.assertEqual([p.name for p in (self.state / 'updates').iterdir()], [])
+
     def test_bytecode_in_the_offering_app_is_removed_before_the_export(self) -> None:
         cache = self.peer_app / 'Contents/Resources/workspace/vm/guest/__pycache__'
         cache.mkdir(parents=True)

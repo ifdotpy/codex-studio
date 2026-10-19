@@ -56,13 +56,17 @@ after the start, when the setting `autoUpdate` is on:
 3. Export, pull every chunk, and check each chunk hash and the whole file hash. Over the QUIC
    link (`docs/peer-link.md`) the archive comes as one stream; the chunks continue from the
    received offset when the stream stops.
-4. Extract into `<state>/updates/<builtAt>/` with `ditto -x -k`.
+4. Extract with `ditto -x -k` into a new private folder `<state>/updates/.extract-*`. The
+   folder must then hold only `Codex Studio.app`. Another program can write into the
+   `<builtAt>` folder at any time (Finder writes `.DS_Store` into a folder that a window shows),
+   so the check uses a folder that no other program knows.
 5. Verify the extracted app:
    - `codesign --verify --deep --strict`;
    - its designated requirement (`codesign -d -r-`) equals the one of the installed app, so the
      same certificate signed it;
    - its `studio-build.json` equals the offered stamp.
-6. Write `<state>/pending-update.json`: `{id, app, build, from}`. Release the peer export.
+6. Move the app to `<state>/updates/<builtAt>/Codex Studio.app`. Write
+   `<state>/pending-update.json`: `{id, app, build, from}`. Release the peer export.
 
 Only one pull runs at a time. A failure is recorded with its reason in `peer-update.json` and
 does not repeat the same build for 1 hour. A failed install receipt (below) also skips that build
