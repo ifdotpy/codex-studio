@@ -982,3 +982,96 @@ fn python_failed_and_unknown_receipt_errors_are_not_lost() {
         );
     }
 }
+
+fn stored_agent(db: &Connection, id: &str) -> Value {
+    serde_json::from_str(
+        &db.query_row("SELECT record FROM runtime_agents WHERE id=?1", [id], |r| {
+            r.get::<_, String>(0)
+        })
+        .expect("stored agent"),
+    )
+    .expect("agent JSON")
+}
+
+/// Python `codex_agent_review.claim` and `Runtime.run_native_action` against
+/// the Rust review child owner: the same claimed agent state and the same one
+/// `review/start` request, then the same accepted turn.
+#[test]
+fn python_review_child_claim_and_review_start_match() {
+    use studio_runtime_services::{
+        native_action_ports::NativeActionAcceptance, native_review_turn,
+    };
+    let turns = corpus()["reviewTurns"].as_array().expect("review turns");
+    assert!(!turns.is_empty(), "the oracle runs review child turns");
+    for case in turns {
+        let mut child = case["child"].clone();
+        assert!(native_review_turn::claimable(&child), "{child}");
+        // Rust starts the reviewer thread before the action receipt exists;
+        // Python starts it in prepare() after its claim.
+        child["threadId"] = case["submitted"]["threadId"].clone();
+        let id = child["id"].as_str().expect("child id").to_owned();
+        let mut db = db(&json!({"agent":case["claimed"].clone()}));
+        db.execute("DELETE FROM runtime_agents", []).expect("reset");
+        db.execute(
+            "INSERT INTO runtime_agents VALUES(?1,?2)",
+            [id.clone(), child.to_string()],
+        )
+        .expect("Python-written review child");
+        let request = native_review_turn::request(&child).expect("request");
+        let tx = db.transaction().expect("begin");
+        reserve(&tx, &request, "attempt", 1234567.5, &Gate).expect("review claim");
+        tx.commit().expect("commit");
+        let claimed = stored_agent(&db, &id);
+        let python = &case["claimed"];
+        for key in [
+            "status",
+            "inFlight",
+            "turnEpoch",
+            "nativeReview",
+            "autoWake",
+        ] {
+            assert_eq!(claimed[key], python[key], "claimed {key}");
+        }
+        for (key, value) in python["startAttempt"].as_object().expect("Python attempt") {
+            assert_eq!(&claimed["startAttempt"][key], value, "startAttempt.{key}");
+        }
+        let ticket = ProviderTicket {
+            operation: "attempt".into(),
+            agent: id.clone(),
+            epoch: 3,
+            account: "default".into(),
+            thread: child["threadId"].as_str().map(str::to_owned),
+            connection: "connection".into(),
+            generation: 1,
+            request: request.request_id.clone(),
+        };
+        let tx = db.transaction().expect("begin");
+        let native = claim(&tx, &request.request_id, &ticket).expect("hand-off");
+        tx.commit().expect("commit");
+        assert_eq!(case["requests"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            json!([native.method, native.params]),
+            case["requests"][0],
+            "the one Python native request"
+        );
+        let tx = db.transaction().expect("begin");
+        let receipt = TransportReceipt {
+            ticket: ticket.clone(),
+            delivery: Delivery::Written(case["accepted"]["result"].clone()),
+        };
+        settle(&tx, &request.request_id, &receipt, &NativeActionAcceptance).expect("accepted");
+        tx.commit().expect("commit");
+        let running = stored_agent(&db, &id);
+        // Python `start_accepted`: the review turn binds and the child runs.
+        assert_eq!(running["turnId"], case["accepted"]["result"]["turn"]["id"]);
+        assert_eq!(running["status"], "running");
+        assert_eq!(running["inFlight"], true);
+        // A repeated wake finds no claimable review and cannot hand off again.
+        assert!(!native_review_turn::claimable(&running));
+        let tx = db.transaction().expect("begin");
+        assert!(matches!(
+            claim(&tx, &request.request_id, &ticket),
+            Err(NativeError::Unknown)
+        ));
+    }
+}

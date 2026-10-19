@@ -2,11 +2,12 @@ mod pipeline;
 mod receipts;
 mod snapshot;
 use super::*;
+pub(crate) use pipeline::CATALOG_PENDING_REASON;
 #[cfg(test)]
 pub(super) use pipeline::prepare;
 pub(super) use pipeline::{
-    Admission, CATALOG_PENDING_REASON, CommitGuard, RequestPreparation, admit, commit,
-    commit_claude, persist_compilation, prepare_ready, workspace,
+    Admission, CommitGuard, RequestPreparation, admit, commit, commit_claude, persist_compilation,
+    prepare_ready, workspace,
 };
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
@@ -40,6 +41,33 @@ pub struct PreparedNativeAction {
 pub struct PreparedNativeThread {
     pub params: serde_json::Value,
 }
+
+/// The planned fresh thread of a native review child, kept until its reply is
+/// reduced by the ordinary thread receipt reducer.
+pub(crate) struct PreparedReviewThread {
+    attempt: Box<crate::thread_prepare::PreparedAttempt>,
+}
+impl PreparedReviewThread {
+    pub(crate) fn params(&self) -> serde_json::Value {
+        serde_json::Value::Object(self.attempt.params.clone())
+    }
+    pub(crate) fn request_digest(&self) -> &str {
+        &self.attempt.request_digest
+    }
+    pub(crate) fn attempt_id(&self) -> &str {
+        &self.attempt.attempt_id
+    }
+}
+
+/// Filesystem observations of one review thread receipt reduction.
+pub(crate) struct ReviewThreadFilesystem(snapshot::FilesystemSnapshot);
+impl ReviewThreadFilesystem {
+    pub(crate) fn capture(store: &RuntimeStore, agent_id: &str) -> Result<Self, WorkerError> {
+        snapshot::FilesystemSnapshot::capture(store, agent_id).map(Self)
+    }
+}
+
+pub(crate) use pipeline::{accept_review_thread, prepare_review_thread, review_thread_submitted};
 
 /// Monitor thread identity and exact permission params prepared from the current
 /// actor record. Unlike turn preparation this is valid during an active turn.

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "apps/server/src"))
 from codex_runtime import Runtime
-from codex_agent_review import request as review_request
+from codex_agent_review import claim as review_claim, request as review_request
 from codex_context_repair import sanitized_rollout
 from codex_efficiency import EfficiencyMixin
 from studio_api.persisted_models import PersistedAgentRecord
@@ -62,7 +62,53 @@ class RuntimePort:
         child.pop('concurrency',None)
         return child
 
-output = {"outcomes":[],"actions":[],"reviews":[],"rewrites":[],"commands":[],"cancellations":[],"forks":[]}
+class ReviewServer:
+    """Records the one native request of a review child's first turn."""
+    def __init__(self): self.requests=[]
+    def wait(self, submitted): return {"turn":{"id":"review-turn","items":[],"status":"inProgress"},"reviewThreadId":"review-thread"}
+
+class ReviewTurnPort(RuntimePort):
+    run_native_action = Runtime.run_native_action
+    native_action_accepted = Runtime.native_action_accepted
+    def __init__(self, actor):
+        super().__init__(actor)
+        self.server = ReviewServer()
+        self.accepted = None
+    def prepare(self, a):
+        # The only native effect of prepare for a fresh reviewer is its new thread.
+        current = self.agent(a["id"])
+        current["threadId"] = "review-thread"
+        self.put(self.connection, "agents", current)
+        self.connection.commit()
+        return current
+    def connect_agent(self, _): return self.server
+    def agent_connection(self, _): return "connection"
+    def submit_reserved(self, server, method, params):
+        server.requests.append([method, copy.deepcopy(params)])
+        return "submitted"
+    def start_accepted(self, key, attempt, result):
+        self.accepted = dict(attempt=copy.deepcopy(attempt), result=copy.deepcopy(result))
+
+def review_turn(rt, child):
+    """Python claim and run_native_action of a review child's first turn."""
+    port = ReviewTurnPort(rt.agent("lead"))
+    port.put(port.connection, "agents", child)
+    port.connection.commit()
+    with patch("codex_agent_review.uuid.uuid4", return_value="attempt"), patch("time.time", return_value=NOW):
+        with port.lock, port.db() as db:
+            attempt = review_claim(port, db, port.agent(child["id"], db))
+    claimed = port.agent(child["id"])
+    with patch("codex_context_repair.repair_before_start", lambda _rt, a: a), \
+            patch("codex_native_action_settings.ensure", lambda *_: None), \
+            patch("codex_runtime.assert_native_thread_open", lambda _a: None), \
+            patch("codex_budget.budget_admission"), patch("time.time", return_value=NOW):
+        port.run_native_action(child["id"], attempt)
+    turn = dict(child=child, attempt=attempt, claimed=claimed, requests=port.server.requests,
+                submitted=port.agent(child["id"]), accepted=port.accepted)
+    port.connection.close()
+    return turn
+
+output = {"outcomes":[],"actions":[],"reviews":[],"reviewTurns":[],"rewrites":[],"commands":[],"cancellations":[],"forks":[]}
 for action in ("compact","review"):
     for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3},
                     {"threadId":"thread Ω 😀"},{"threadId":"thread\x7f"},{"epoch":3.0}):
@@ -92,6 +138,8 @@ for target in ({"type":"uncommittedChanges"},{"type":"baseBranch","branch":"main
             result=review_request(rt,a,args,"review-request")
         child=rt.agent(result['agentId'])
         output['reviews'].append(dict(actor=a,root=a,args=args,key="review-request",directory=a["cwd"],spec=rt.spec,child=child,result=result))
+        if not options:
+            output['reviewTurns'].append(review_turn(rt, child))
         rt.connection.close()
 
 for kind in ('monitor_exit','agent_message','work_review','work_decision'):

@@ -98,6 +98,10 @@ pub struct Actor {
     /// nativeEffort was absent, persist that selection before native submission.
     pub native_effort_present: bool,
     pub deleted: bool,
+    /// A native review child (Python `nativeReview`): no Studio tools, and
+    /// the native review model is the agent model.
+    #[serde(default)]
+    pub native_review: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +194,6 @@ pub enum Refusal {
     NativeCatalogMutation,
     PortableHistoryImport,
     FrozenImport,
-    NativeReview,
     BrowserRegistration,
     Daybreak,
     CatalogIdentity,
@@ -335,6 +338,10 @@ pub struct CatalogFilter<'a> {
 
 /// Uses the immutable selected catalog, never a newly discovered live catalog.
 pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
+    // Python `Runtime.tool_definitions`: a native reviewer gets no Studio tools.
+    if s.actor.native_review {
+        return Ok(Vec::new());
+    }
     filter_tool_definitions(
         &s.catalog.definitions,
         &CatalogFilter {
@@ -497,6 +504,9 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
     }
     if let Some(effort) = &s.settings.native_effort {
         config.insert("model_reasoning_effort".into(), json!(effort));
+    }
+    if s.actor.native_review {
+        config.insert("review_model".into(), json!(s.settings.model));
     }
     let mut instructions = format!("{}\n{}", s.guidance.instructions, role_text(s));
     if s.settings.is_lead && !s.guidance.progress.is_empty() {

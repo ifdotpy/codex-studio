@@ -376,7 +376,6 @@ fn named_refusals_have_no_intents_and_preserve_snapshot() {
         Refusal::NativeCatalogMutation,
         Refusal::PortableHistoryImport,
         Refusal::FrozenImport,
-        Refusal::NativeReview,
         Refusal::BrowserRegistration,
         Refusal::Daybreak,
     ] {

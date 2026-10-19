@@ -298,6 +298,8 @@ pub fn reserve(
     agent["startAttempt"] = json!({"id":attempt,"epoch":agent["epoch"],"events":[],"action":request.action,
         "submitted":false,"created":now,"actionRequestId":request.request_id,"actionIdentity":identity});
     if review_worker {
+        // Python `codex_agent_review.claim` saves the account on the attempt.
+        agent["startAttempt"]["accountKey"] = identity["accountKey"].clone();
         agent["startAttempt"]["reviewTarget"] = agent["nativeReview"]["target"].clone();
         agent["nativeReview"]["status"] = json!("started");
         agent["nativeReview"]["startedAt"] = json!(now);
@@ -709,6 +711,31 @@ pub fn replay_if_settled(store: &RuntimeStore, request: &Request) -> Result<Opti
                 || snapshot.agent["startAttempt"]["submitted"] == true
         })
         .map(|snapshot| response(snapshot, true)))
+}
+
+/// The saved outcome of one admitted native action request.
+pub fn outcome(tx: &Transaction<'_>, id: &str) -> Result<Option<Outcome>> {
+    row(tx, id)?
+        .map(|(_, _, outcome)| decode(outcome, "outcome"))
+        .transpose()
+}
+
+/// Settle an admitted request that was never handed to the provider as a
+/// definite failure. A claimed (submitted) request keeps its uncertainty.
+pub fn fail_pending(tx: &Transaction<'_>, id: &str, error: &str) -> Result<()> {
+    let snapshot = load(tx, id)?;
+    if !matches!(snapshot.outcome, Outcome::Pending { .. })
+        || snapshot.agent["startAttempt"]["submitted"] == true
+    {
+        return Err(NativeError::Conflict);
+    }
+    write_outcome(
+        tx,
+        id,
+        &Outcome::Failed {
+            error: Some(error.to_owned()),
+        },
+    )
 }
 
 fn should_repair_before_reserve(resume_reserved: bool) -> bool {

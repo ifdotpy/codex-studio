@@ -7,6 +7,7 @@ mod idle_unload;
 mod journal_cost;
 #[cfg(unix)]
 mod many_agents;
+mod native_review;
 mod publication_drain;
 mod publication_off_path;
 mod retained;
