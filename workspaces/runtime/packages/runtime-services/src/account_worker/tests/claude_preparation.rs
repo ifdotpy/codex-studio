@@ -1,6 +1,19 @@
 use super::*;
 
 #[cfg(unix)]
+/// The largest start throttle: no fixture turn waits for it.
+pub(super) fn unthrottled() -> crate::account_start_gate::StartThrottle {
+    use studio_runtime_schema::shared_values::{
+        ACCOUNT_RUNNING_TURNS_MAX, ACCOUNT_START_BURST_MAX, ACCOUNT_START_PAUSE_MIN_SECONDS,
+    };
+    crate::account_start_gate::StartThrottle::new(
+        ACCOUNT_START_BURST_MAX,
+        ACCOUNT_START_PAUSE_MIN_SECONDS,
+        ACCOUNT_RUNNING_TURNS_MAX,
+    )
+    .expect("the bounds are a valid throttle")
+}
+
 pub(super) fn claude_resources(state: &State) -> preparation::PreparationResources {
     let mut resources = super::test_resources().unwrap();
     let home = state.root.join("claude-home");
@@ -26,7 +39,10 @@ pub(super) fn claude_resources(state: &State) -> preparation::PreparationResourc
                 "source": "Claude Code", "status": "ready", "provider": "claude",
                 "email": "fixture@example.test", "accountId": identity,
                 "_credentialIdentity": identity, "plan": "max",
-                "claudeOptions": {"binaryPath": binary, "configDir": home, "customModels": []}
+                "claudeOptions": {"binaryPath": binary, "configDir": home, "customModels": []},
+                // Fixtures start turns unthrottled, like the registry-less Codex
+                // fixture; `tests/start_throttle.rs` covers the throttle.
+                "startThrottle": unthrottled().to_record()
             }},
             "logins": {}, "deleteReceipts": {}
         })

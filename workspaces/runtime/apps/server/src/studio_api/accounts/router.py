@@ -19,6 +19,7 @@ from .models import (
     AccountLoginResponse,
     AccountKeyRequest,
     AccountNameRequest,
+    AccountStartThrottleRequest,
     RequiredAccountKeyRequest,
     ClaudeCancelRequest,
     ClaudeAddStartRequest,
@@ -74,6 +75,8 @@ class AccountService(Protocol):
     def delete(self, key: str, request_id: str) -> JsonValue: ...
 
     def set_name(self, key: str, label: str, request_id: str) -> JsonValue: ...
+
+    def set_start_throttle(self, key: str, throttle: dict[str, int]) -> JsonValue: ...
 
     def disconnect(self, key: str) -> JsonValue: ...
 
@@ -328,6 +331,16 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
         result = runtime.accounts.set_name(body.account_key, body.label, body.request_id)
+        _publish_accounts_if_changed(runtime, before)
+        return context.send(request, result)
+
+    @router.post("/api/accounts/throttle", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
+    def account_throttle(request: Request, body: Annotated[AccountStartThrottleRequest, Body()]) -> Response:
+        runtime = _runtime(context)
+        before = _accounts_before(runtime)
+        result = runtime.accounts.set_start_throttle(
+            body.account_key, body.model_dump(exclude={"account_key"}),
+        )
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 

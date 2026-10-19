@@ -86,6 +86,34 @@ IDLE_SESSION_UNLOAD_DEFAULT_MINUTES = 15
 IDLE_SESSION_UNLOAD_MIN_MINUTES = 0
 IDLE_SESSION_UNLOAD_MAX_MINUTES = 1440
 
+# Turn start throttle per account, the same mechanism for every provider. Providers limit
+# requests per account, so Studio starts at most BURST turns at once, waits PAUSE
+# seconds after the start that ends a burst (BURST starts made, or the last free
+# RUNNING slot taken), and keeps at most RUNNING turns running. A turn over the
+# limit waits and starts later; it never fails. Studio counts turn starts, not the
+# provider's own requests inside a turn. Each account setting chooses a value in
+# [MIN, MAX]; a new account takes its provider's defaults. Units: turn starts,
+# seconds, and running turns.
+ACCOUNT_START_BURST_MIN = 1
+ACCOUNT_START_BURST_MAX = 512
+ACCOUNT_START_PAUSE_MIN_SECONDS = 0
+ACCOUNT_START_PAUSE_MAX_SECONDS = 3600
+ACCOUNT_RUNNING_TURNS_MIN = 1
+ACCOUNT_RUNNING_TURNS_MAX = 512
+# Codex (measured 2026-10-19, one account): a burst of about 10 simultaneous requests
+# is admitted, more get HTTP 429 with a 58-60 s Retry-After; the allowance refills at
+# 17 or more requests per minute; 17 running turns showed no concurrency limit.
+# 8 per burst with a 30 s pause is about 16 starts per minute.
+ACCOUNT_START_BURST_DEFAULT_CODEX = 8
+ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX = 30
+ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX = 16
+# Claude (measured 2026-10-19): no throttle was observed up to about 19 sequential
+# starts per minute, a burst of 12, and 15 running turns. RUNNING mainly bounds host
+# memory: each running Claude CLI turn holds about 250-350 MiB.
+ACCOUNT_START_BURST_DEFAULT_CLAUDE = 32
+ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CLAUDE = 5
+ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE = 64
+
 
 def user_attachment_limit_label() -> str:
     """Return the display label derived from the byte-valued attachment cap."""

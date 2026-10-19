@@ -243,6 +243,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/accounts/throttle": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Account Throttle */
+    post: operations["account_throttle_api_accounts_throttle_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/action": {
     parameters: {
       query?: never;
@@ -2802,6 +2819,8 @@ export interface components {
       provider?: ("codex" | "claude") | null;
       /** Source */
       source: string;
+      /** @default null */
+      startThrottle?: components["schemas"]["AccountStartThrottle"] | null;
       status: components["schemas"]["AccountStatus"];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -3166,6 +3185,56 @@ export interface components {
       supportsDelete: boolean;
       /** Supportsdisconnect */
       supportsDisconnect: boolean;
+    };
+    /**
+     * AccountStartThrottle
+     * @description Turn start throttle of one account, the same for every provider.
+     *
+     *     Studio starts at most `burst` turns at once, then waits `pauseSeconds` after the
+     *     start that ends a burst (`burst` starts made, or the last free running slot taken),
+     *     and keeps at most `maxRunningTurns` turns running. A turn over a limit waits and
+     *     starts later. Studio limits turn starts only, not the provider's own requests
+     *     inside a turn. Bounds: codex_shared_values.ACCOUNT_START_* and ACCOUNT_RUNNING_TURNS_*.
+     */
+    AccountStartThrottle: {
+      /**
+       * Burst
+       * @description Turn starts per burst.
+       */
+      burst: number;
+      /**
+       * Maxrunningturns
+       * @description Turns that may run at once on this account.
+       */
+      maxRunningTurns: number;
+      /**
+       * Pauseseconds
+       * @description Seconds after the start that ends a burst before the next start.
+       */
+      pauseSeconds: number;
+    };
+    /**
+     * AccountStartThrottleRequest
+     * @description Replace one account's turn start throttle. Repeating a request sets the same values.
+     */
+    AccountStartThrottleRequest: {
+      /** Account Key */
+      account_key: string;
+      /**
+       * Burst
+       * @description Turn starts per burst.
+       */
+      burst: number;
+      /**
+       * Maxrunningturns
+       * @description Turns that may run at once on this account.
+       */
+      maxRunningTurns: number;
+      /**
+       * Pauseseconds
+       * @description Seconds after the start that ends a burst before the next start.
+       */
+      pauseSeconds: number;
     };
     /**
      * AccountStatus
@@ -3958,6 +4027,7 @@ export interface components {
       sharedRoomId?: null | string;
       source?: components["schemas"]["AgentSource"] | null;
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
+      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
       status?: components["schemas"]["AgentStatus"] | null;
       /** Statusdetail */
       statusDetail?: null | string;
@@ -3991,6 +4061,31 @@ export interface components {
       worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
       yoloMode?: boolean | null;
+    };
+    /**
+     * AgentEntityStartWaitDto
+     * @description A queued turn that waits for its account's start throttle (see AccountStartThrottle).
+     *
+     *     `slot`: the account already runs `maxRunningTurns` turns. `pause`: the pause after
+     *     a burst lasts until `until` (Unix seconds). Valid while the agent is queued at `epoch`.
+     */
+    AgentEntityStartWaitDto: {
+      /** Epoch */
+      epoch: number;
+      /** Maxrunningturns */
+      maxRunningTurns: number;
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: "slot" | "pause";
+      /** Runningturns */
+      runningTurns: number;
+      /**
+       * Until
+       * @default null
+       */
+      until?: null | number;
     };
     /**
      * AgentEntityUsageResumeDto
@@ -5793,6 +5888,8 @@ export interface components {
       source?: components["schemas"]["AgentSource"] | null;
       /** @default null */
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
+      /** @default null */
+      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
       /** @default null */
       status?: components["schemas"]["AgentStatus"] | null;
       /**
@@ -8375,6 +8472,8 @@ export interface components {
       source?: components["schemas"]["AgentSource"] | null;
       /** @default null */
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
+      /** @default null */
+      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
       /** @default null */
       status?: components["schemas"]["AgentStatus"] | null;
       /**
@@ -28239,6 +28338,71 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["RegisterAccountRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccountsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  account_throttle_api_accounts_throttle_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AccountStartThrottleRequest"];
       };
     };
     responses: {

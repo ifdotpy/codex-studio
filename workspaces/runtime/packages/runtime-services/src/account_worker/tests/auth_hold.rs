@@ -11,15 +11,15 @@ const SIGNED_IN: &str = "fixture@example.test";
 const OTHER: &str = "other@example.test";
 
 /// One account of `kind` whose credentials a test signs in, out or swaps.
-struct Account {
-    kind: ProviderKind,
+pub(super) struct Account {
+    pub(super) kind: ProviderKind,
     home: PathBuf,
-    driver: Arc<AccountDriver>,
+    pub(super) driver: Arc<AccountDriver>,
 }
 
 impl Account {
     /// A registry with one account of `kind`, signed in as [`SIGNED_IN`].
-    fn new(state: &State, kind: ProviderKind) -> Self {
+    pub(super) fn new(state: &State, kind: ProviderKind) -> Self {
         let home = state.root.join(format!("{}-home", kind.key()));
         let registry = state.root.join("accounts/registry.json");
         std::fs::create_dir_all(&home).unwrap();
@@ -87,7 +87,7 @@ impl Account {
         self.credentials(None);
     }
 
-    fn resources(&self) -> preparation::PreparationResources {
+    pub(super) fn resources(&self) -> preparation::PreparationResources {
         let mut resources = super::test_resources().unwrap();
         resources.claude_account_pin = self.driver.internal_record("default").unwrap();
         resources.account_driver = Some(Arc::clone(&self.driver));
@@ -108,7 +108,7 @@ impl Account {
 
 /// The fixture agent and `others` clones, each on its own thread with its own
 /// input, all on the provider of `kind`.
-async fn agents(state: &State, kind: ProviderKind, others: usize) -> Vec<String> {
+pub(super) async fn agents(state: &State, kind: ProviderKind, others: usize) -> Vec<String> {
     let first = state.agent.clone();
     let clones = (1..=others)
         .map(|index| format!("agent-{index}"))
@@ -150,7 +150,7 @@ async fn agents(state: &State, kind: ProviderKind, others: usize) -> Vec<String>
     std::iter::once(state.agent.clone()).chain(clones).collect()
 }
 
-async fn record_of(state: &State, agent: &str) -> Value {
+pub(super) async fn record_of(state: &State, agent: &str) -> Value {
     let agent = agent.to_owned();
     state
         .bridge
@@ -166,7 +166,7 @@ async fn record_of(state: &State, agent: &str) -> Value {
         .unwrap()
 }
 
-async fn wake_agent(state: &State, worker: &AccountHandle, agent: &str) {
+pub(super) async fn wake_agent(state: &State, worker: &AccountHandle, agent: &str) {
     worker
         .send(AccountCommand::Wake {
             agent_id: agent.to_owned(),

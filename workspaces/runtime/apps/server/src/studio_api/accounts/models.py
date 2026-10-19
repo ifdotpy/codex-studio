@@ -9,6 +9,14 @@ from pydantic import BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive, SidebarOrderDto
 from studio_api.multi_server.models import ServerOperationResponse
+from codex_shared_values import (
+    ACCOUNT_RUNNING_TURNS_MAX,
+    ACCOUNT_RUNNING_TURNS_MIN,
+    ACCOUNT_START_BURST_MAX,
+    ACCOUNT_START_BURST_MIN,
+    ACCOUNT_START_PAUSE_MAX_SECONDS,
+    ACCOUNT_START_PAUSE_MIN_SECONDS,
+)
 
 
 RequestUUID = Annotated[
@@ -52,6 +60,29 @@ class ClaudeCustomModel(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
+class AccountStartThrottle(ContractModel):
+    """Turn start throttle of one account, the same for every provider.
+
+    Studio starts at most `burst` turns at once, then waits `pauseSeconds` after the
+    start that ends a burst (`burst` starts made, or the last free running slot taken),
+    and keeps at most `maxRunningTurns` turns running. A turn over a limit waits and
+    starts later. Studio limits turn starts only, not the provider's own requests
+    inside a turn. Bounds: codex_shared_values.ACCOUNT_START_* and ACCOUNT_RUNNING_TURNS_*.
+    """
+
+    burst: SafeInt = Field(ge=ACCOUNT_START_BURST_MIN, le=ACCOUNT_START_BURST_MAX, description="Turn starts per burst.")
+    pauseSeconds: SafeInt = Field(
+        ge=ACCOUNT_START_PAUSE_MIN_SECONDS,
+        le=ACCOUNT_START_PAUSE_MAX_SECONDS,
+        description="Seconds after the start that ends a burst before the next start.",
+    )
+    maxRunningTurns: SafeInt = Field(
+        ge=ACCOUNT_RUNNING_TURNS_MIN,
+        le=ACCOUNT_RUNNING_TURNS_MAX,
+        description="Turns that may run at once on this account.",
+    )
+
+
 class Account(ContractModel):
     """Known profile fields; AccountStore._public passes public stored fields through."""
 
@@ -71,6 +102,7 @@ class Account(ContractModel):
     claudeOptions: ClaudeOptions | None = None
     authenticationRecovery: str | None = None
     canAttemptNativeProof: bool | None = None
+    startThrottle: AccountStartThrottle | None = None
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
@@ -434,6 +466,12 @@ class AccountNameRequest(RequiredAccountKeyRequest):
         except UnicodeEncodeError as error:
             raise ValueError("Label must contain valid Unicode scalar values") from error
         return value
+
+
+class AccountStartThrottleRequest(AccountStartThrottle):
+    """Replace one account's turn start throttle. Repeating a request sets the same values."""
+
+    account_key: str
 
 
 class LoginRequest(ContractModel):

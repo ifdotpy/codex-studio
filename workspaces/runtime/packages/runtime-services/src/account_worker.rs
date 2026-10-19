@@ -159,6 +159,9 @@ pub struct StoreBridge {
     /// Advances on every committed `runtime_agents` change; pending
     /// preparations wait on it for their workspace or VM blocker.
     agent_generation: Arc<watch::Sender<u64>>,
+    /// Turn start admission per account (see `account_start_gate`); shared by
+    /// every worker of this process, so a replaced worker keeps the counts.
+    start_gates: Arc<crate::account_start_gate::StartGates>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
     #[cfg(test)]
@@ -205,6 +208,7 @@ impl StoreBridge {
             idle_state_generation,
             idle_setting_generation,
             agent_generation,
+            start_gates: Arc::default(),
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             faults: Arc::default(),
@@ -1673,6 +1677,7 @@ impl Worker {
         let start = self.preparation(&agent, Method::ThreadResume);
         let wake = turn_preparation::Wake {
             bridge: self.bridge.clone(),
+            driver: self.resources.account_driver.clone(),
             account: self.account.clone(),
             agent_id: agent,
             epoch,

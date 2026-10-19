@@ -1632,6 +1632,30 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         self.snapshot()
     }
 
+    /// Replace the turn start throttle of `account`. A repeated request sets
+    /// the same values; the change signal reaches waiting starts at once.
+    pub fn set_start_throttle(
+        &self,
+        account: &str,
+        throttle: crate::account_start_gate::StartThrottle,
+    ) -> Result<AccountsSnapshot, AccountDriverError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut updated = state.value.clone();
+        let row = registry_account_mut(&mut updated, account)?;
+        if row.get("deleted") == Some(&Value::Bool(true)) {
+            return Err(AccountDriverError::DeletedAccount);
+        }
+        row[crate::account_start_gate::REGISTRY_FIELD] = throttle.to_record();
+        if updated != state.value {
+            self.persist(&mut state, updated)?;
+        }
+        drop(state);
+        self.snapshot()
+    }
+
     pub fn delete(
         &self,
         account: &str,

@@ -49,6 +49,11 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post("/api/accounts/name", OperationStatus::Implemented, set_name),
         post(
+            "/api/accounts/throttle",
+            OperationStatus::Implemented,
+            set_start_throttle,
+        ),
+        post(
             "/api/accounts/reconnect",
             OperationStatus::Implemented,
             reconnect,
@@ -84,6 +89,16 @@ struct AccountNameBody {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartThrottleBody {
+    #[serde(rename = "account_key")]
+    account_key: String,
+    burst: u64,
+    pause_seconds: u64,
+    max_running_turns: u64,
+}
+
+#[derive(Deserialize)]
 struct DeleteAccountBody {
     account_key: String,
     request_id: String,
@@ -115,6 +130,24 @@ async fn set_name(
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     run_mutation(state, move |driver| {
         driver.set_name(&body.account_key, &body.label, &body.request_id)
+    })
+    .await
+}
+
+async fn set_start_throttle(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<StartThrottleBody>,
+) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    // The boundary validated the bounds against the schema; this is the same
+    // check by the runtime owner.
+    let throttle = studio_runtime_services::account_start_gate::StartThrottle::new(
+        body.burst,
+        body.pause_seconds,
+        body.max_running_turns,
+    )
+    .ok_or_else(|| ApiError::validation(vec![serde_json::json!("body")]))?;
+    run_mutation(state, move |driver| {
+        driver.set_start_throttle(&body.account_key, throttle)
     })
     .await
 }

@@ -1536,6 +1536,17 @@
             "title": "Source",
             "type": "string"
           },
+          "startThrottle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountStartThrottle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "status": {
             "$ref": "#/components/schemas/AccountStatus"
           }
@@ -2387,6 +2398,79 @@
           "account_key"
         ],
         "title": "AccountSelectionRequest",
+        "type": "object"
+      },
+      "AccountStartThrottle": {
+        "additionalProperties": false,
+        "description": "Turn start throttle of one account, the same for every provider.\n\nStudio starts at most `burst` turns at once, then waits `pauseSeconds` after the\nstart that ends a burst (`burst` starts made, or the last free running slot taken),\nand keeps at most `maxRunningTurns` turns running. A turn over a limit waits and\nstarts later. Studio limits turn starts only, not the provider's own requests\ninside a turn. Bounds: codex_shared_values.ACCOUNT_START_* and ACCOUNT_RUNNING_TURNS_*.",
+        "properties": {
+          "burst": {
+            "description": "Turn starts per burst.",
+            "maximum": 512.0,
+            "minimum": 1.0,
+            "title": "Burst",
+            "type": "integer"
+          },
+          "maxRunningTurns": {
+            "description": "Turns that may run at once on this account.",
+            "maximum": 512.0,
+            "minimum": 1.0,
+            "title": "Maxrunningturns",
+            "type": "integer"
+          },
+          "pauseSeconds": {
+            "description": "Seconds after the start that ends a burst before the next start.",
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Pauseseconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "burst",
+          "pauseSeconds",
+          "maxRunningTurns"
+        ],
+        "title": "AccountStartThrottle",
+        "type": "object"
+      },
+      "AccountStartThrottleRequest": {
+        "additionalProperties": false,
+        "description": "Replace one account's turn start throttle. Repeating a request sets the same values.",
+        "properties": {
+          "account_key": {
+            "title": "Account Key",
+            "type": "string"
+          },
+          "burst": {
+            "description": "Turn starts per burst.",
+            "maximum": 512.0,
+            "minimum": 1.0,
+            "title": "Burst",
+            "type": "integer"
+          },
+          "maxRunningTurns": {
+            "description": "Turns that may run at once on this account.",
+            "maximum": 512.0,
+            "minimum": 1.0,
+            "title": "Maxrunningturns",
+            "type": "integer"
+          },
+          "pauseSeconds": {
+            "description": "Seconds after the start that ends a burst before the next start.",
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Pauseseconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "burst",
+          "pauseSeconds",
+          "maxRunningTurns",
+          "account_key"
+        ],
+        "title": "AccountStartThrottleRequest",
         "type": "object"
       },
       "AccountStatus": {
@@ -5064,6 +5148,16 @@
               }
             ]
           },
+          "startWait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityStartWaitDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "anyOf": [
               {
@@ -5296,6 +5390,58 @@
           "id"
         ],
         "title": "AgentEntityDto",
+        "type": "object"
+      },
+      "AgentEntityStartWaitDto": {
+        "additionalProperties": false,
+        "description": "A queued turn that waits for its account's start throttle (see AccountStartThrottle).\n\n`slot`: the account already runs `maxRunningTurns` turns. `pause`: the pause after\na burst lasts until `until` (Unix seconds). Valid while the agent is queued at `epoch`.",
+        "properties": {
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "maxRunningTurns": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Maxrunningturns",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "slot",
+              "pause"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "runningTurns": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Runningturns",
+            "type": "integer"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "default": null,
+            "title": "Until"
+          }
+        },
+        "required": [
+          "reason",
+          "epoch",
+          "runningTurns",
+          "maxRunningTurns"
+        ],
+        "title": "AgentEntityStartWaitDto",
         "type": "object"
       },
       "AgentEntityUsageResumeDto": {
@@ -8944,6 +9090,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AgentStartAttempt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "startWait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityStartWaitDto"
               },
               {
                 "type": "null"
@@ -16436,6 +16593,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AgentStartAttempt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "startWait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityStartWaitDto"
               },
               {
                 "type": "null"
@@ -64350,6 +64518,131 @@
           }
         },
         "summary": "Account Register"
+      }
+    },
+    "/api/accounts/throttle": {
+      "post": {
+        "operationId": "account_throttle_api_accounts_throttle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountStartThrottleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountsResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Account Throttle"
       }
     },
     "/api/action": {

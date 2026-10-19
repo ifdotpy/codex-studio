@@ -71,6 +71,8 @@ pub(super) enum Unclaimed {
 /// behind other agents' submissions in the account worker.
 pub(super) struct Wake {
     pub bridge: StoreBridge,
+    /// The account registry, for the live start throttle; fixtures have none.
+    pub driver: Option<Arc<crate::account_driver::AccountDriver>>,
     pub account: String,
     pub agent_id: String,
     pub epoch: i64,
@@ -150,6 +152,7 @@ pub(super) async fn commit(
 async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError> {
     let Wake {
         bridge,
+        driver,
         account,
         agent_id,
         epoch,
@@ -167,6 +170,30 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         steer::WakeClaim::Busy => return Ok(Err(Unclaimed::Nothing)),
         steer::WakeClaim::Idle => {}
     }
+    // A new turn waits for the account's start throttle before its claim, so
+    // its input stays queued meanwhile; a slot not claimed below is freed. A
+    // host without an account registry (fixtures; production hosts always
+    // have one) has no throttle settings, as for the auth gate.
+    let slot = match driver {
+        Some(driver) => Some(
+            stage(
+                "turn_preparation.start_gate",
+                bridge.start_gates.gate(account).admit(
+                    agent_id,
+                    epoch,
+                    crate::account_start_gate::StartSources {
+                        store: Arc::clone(&bridge.store),
+                        agent_changes: bridge.agent_changes(),
+                        driver: Arc::clone(driver),
+                        account: account.clone(),
+                    },
+                ),
+            )
+            .await
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?,
+        ),
+        None => None,
+    };
     if crate::disk_space::full_free_bytes().is_some() {
         // While the disk is full no new turn starts. The input stays queued
         // with its identity; the desktop shows one notice with the free space.
@@ -184,7 +211,13 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
             })
             .await
         {
-            Ok(candidate) => return Ok(candidate.ok_or(Unclaimed::Nothing)),
+            Ok(Some(intent)) => {
+                if let Some(slot) = slot {
+                    slot.claimed();
+                }
+                return Ok(Ok(intent));
+            }
+            Ok(None) => return Ok(Err(Unclaimed::Nothing)),
             Err(error) if invalid_agent_record_error(&error) => {
                 let (invalid_id, pointer, reason) = invalid_agent_record_details(&error)
                     .expect("guard matches InvalidSyncObjectField");

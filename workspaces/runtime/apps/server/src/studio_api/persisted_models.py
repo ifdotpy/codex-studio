@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 from pydantic_core import PydanticCustomError
 
-from studio_api.accounts.models import UsageLimitsResponse
+from studio_api.accounts.models import AccountStartThrottle, UsageLimitsResponse
 from studio_api.budget_models import BUDGET_SCHEMA_MODELS
 from studio_api.claude_persisted_models import (
     PersistedClaudeAttemptRecord, PersistedClaudeControlRecord, PersistedClaudeLoginRecord,
@@ -643,6 +643,7 @@ class AccountRecord(ContractModel):
     deleted: StrictBool | None = None
     duplicateOf: StrictStr | None = None
     claudeOptions: ClaudeOptionsRecord | None = None
+    startThrottle: AccountStartThrottle | None = None
     credentialIdentity: StrictStr | None = Field(default=None, alias="_credentialIdentity")
     authErrorKind: StrictStr | None = Field(default=None, alias="_authErrorKind")
 

@@ -403,6 +403,16 @@ class AccountStore:
                 self._save()
         return self.snapshot()
 
+    def set_start_throttle(self, key, throttle):
+        """Replace the account's turn start throttle; a repeat sets the same values."""
+        with self.lock:
+            row = self._row(key)
+            if row.get("deleted"):
+                raise ValueError("This account was deleted")
+            row["startThrottle"] = dict(throttle)
+            self._save()
+        return self.snapshot()
+
     def reconnect(self, key, verified_metadata=None):
         if verified_metadata is None:
             self.get(key)

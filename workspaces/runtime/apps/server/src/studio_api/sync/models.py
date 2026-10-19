@@ -263,6 +263,19 @@ class AgentEntityCapacityRetryDto(ContractModel):
     cause: CapacityRetryCause | None = None
 
 
+class AgentEntityStartWaitDto(ContractModel):
+    """A queued turn that waits for its account's start throttle (see AccountStartThrottle).
+
+    `slot`: the account already runs `maxRunningTurns` turns. `pause`: the pause after
+    a burst lasts until `until` (Unix seconds). Valid while the agent is queued at `epoch`.
+    """
+    reason: Literal["slot", "pause"]
+    epoch: SafeInt
+    runningTurns: SafeInt
+    maxRunningTurns: SafeInt
+    until: float | None = None
+
+
 class AgentEntityUsageResumeDto(ContractModel):
     """Usage resume fields rendered in notices and recovery controls."""
     id: str
@@ -673,6 +686,7 @@ class AgentEntityDto(ContractModel):
     epoch: SafeInt | None = None
     lastCompletedTurnStatus: str | None = None
     capacityRetry: AgentEntityCapacityRetryDto | None = None
+    startWait: AgentEntityStartWaitDto | None = None
     usageResume: AgentEntityUsageResumeDto | None = None
     contextRepairWait: AgentEntityContextRepairWaitDto | None = None
     lastEvent: str | None = None
