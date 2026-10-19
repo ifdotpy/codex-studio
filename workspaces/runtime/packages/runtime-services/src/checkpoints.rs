@@ -912,7 +912,10 @@ fn git_with_output_limit(
     .map_err(|error| match error {
         ChildError::Failed(_) => CheckpointsError::GitFailed,
         ChildError::TimedOut => CheckpointsError::GitTimeout,
-        ChildError::Other => CheckpointsError::GitFailed,
+        ChildError::Launch(detail) => {
+            eprintln!("checkpoint Git process could not run: {detail}");
+            CheckpointsError::GitFailed
+        }
     })?;
     Ok((output.stdout.bytes, output.stdout.truncated))
 }

@@ -190,7 +190,10 @@ fn run_git_program_timeout(
     .map_err(|error| match error {
         bounded_child::ChildError::Failed(message) => GitError::Failed(message),
         bounded_child::ChildError::TimedOut => GitError::TimedOut,
-        bounded_child::ChildError::Other => GitError::Other,
+        bounded_child::ChildError::Launch(detail) => {
+            eprintln!("workspace view Git process could not run: {detail}");
+            GitError::Other
+        }
     })
 }
 

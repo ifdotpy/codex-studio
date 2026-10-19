@@ -573,9 +573,10 @@ impl Git {
         .map_err(|error| match error {
             ChildError::TimedOut => WorkspaceError::Deadline(step()),
             ChildError::Failed(stderr) => WorkspaceError::Git(format!("{}: {stderr}", step())),
-            ChildError::Other => {
-                WorkspaceError::Git(format!("{}: the Git process could not run", step()))
-            }
+            ChildError::Launch(detail) => WorkspaceError::Git(format!(
+                "{}: the Git process could not run ({detail})",
+                step()
+            )),
         })?;
         if output.stdout.truncated {
             return Err(WorkspaceError::Git(format!(
