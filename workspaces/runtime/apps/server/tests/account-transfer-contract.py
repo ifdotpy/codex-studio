@@ -434,6 +434,45 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.receipt(op['id'])['status'], 'cancelled')
         self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['status'], 'cancelled')
 
+    def test_pending_summary_without_its_operation_row_does_not_stop_dispatch(self):
+        # Fields from a lead that moved to this server while its subagent
+        # transfer was pending on the source server (2026-10-18 igor-mbp). The
+        # move copied the summary and stale holds, not the source rows.
+        aid = self.lead_agent['id']
+        summary = {'id': 'abde1958-090d-4a79-8516-3780b6469e81', 'status': 'pending', 'scope': 'subagents',
+                   'targetAccountKey': 'default', 'total': 3, 'completed': 2, 'moved': 1, 'movingNow': 0,
+                   'nativeHistoryPending': 1, 'needsAttention': True, 'canRetry': True,
+                   'canFinishHistory': False, 'finishHistory': True, 'interrupted': [], 'leftOnSource': [],
+                   'blocked': [{'id': 'pool-slots-rest', 'name': 'pool-slots-rest',
+                                'reason': 'Waiting for background work or a tool response'}],
+                   'waiting': 'Waiting for background work or a tool response', 'waitingCount': 0,
+                   'updated': 1791278955.704289}
+        stale_resume = {'id': 'source-resume', 'accountKey': 'source-account', 'authAttempt': 0,
+                        'authRefreshMarker': None, 'cause': 'auth', 'dueAt': None, 'epoch': 0,
+                        'failedAt': 1791345661.81637, 'lastCheckedAt': 1791327248.63277, 'plannedAt': None,
+                        'reason': None, 'resetAt': None, 'startedAt': 1791349823.456919, 'status': 'started',
+                        'taskClaims': [], 'threadId': 'source-thread', 'turnId': 'source-turn',
+                        'updatedAt': 1791349837.572317, 'waitingForAuth': True}
+        self.set_agent(aid, accountTransfer=summary, usageResume=stale_resume, status='queued', autoWake=True,
+                       supervisorRestore={'status': 'not_restored', 'reason': 'agent_account_changed',
+                                          'accountKey': 'default', 'at': 1792366317.305347})
+        lead = self.runtime.agent(aid)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_account_transfers WHERE id=?',
+                                         (summary['id'],)).fetchone())
+            # A direct row, as the moved queue holds it: no fast dispatch runs for it.
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                       ('released-after-move', aid, 'work_released', '{"task": "released"}', 'pending',
+                        time.time(), lead['epoch'], None, None))
+
+        self.runtime.dispatch_candidates(None, lambda db: self.runtime.records(db, 'agents'))
+
+        self.assertNotIn('accountTransfer', self.runtime.agent(aid))
+        with self.runtime.db() as db:
+            status = db.execute("SELECT status FROM runtime_events WHERE id='released-after-move'").fetchone()[0]
+        self.assertNotEqual(status, 'pending')
+        self.assertEqual(self.runtime.agent(aid)['startAttempt']['events'], ['released-after-move'])
+
     def test_unreferenced_waiting_transfer_settles_without_replacing_current_summary(self):
         old = self.start_transfer()
         self.store.action(old['id'], 'cancel')

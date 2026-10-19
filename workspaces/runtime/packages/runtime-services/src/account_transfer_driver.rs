@@ -40,6 +40,57 @@ pub fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot, TransferError> {
     Snapshot::read(&raw, agents)
 }
 
+/// The operation id of a lead summary that still claims an active transfer.
+pub(crate) fn active_summary_id(agent: &Value) -> Option<&str> {
+    let summary = agent
+        .get("accountTransfer")
+        .filter(|value| !value.is_null())?;
+    if matches!(summary["status"].as_str(), Some("completed" | "cancelled")) {
+        return None;
+    }
+    summary["id"].as_str()
+}
+
+/// A lead summary mirrors its transfer row. An active summary without the row
+/// can never advance: a move to another server copies the agent record, not the
+/// source server's transfer row. Remove that summary so it neither holds the
+/// agent's turns nor blocks a new transfer. Returns the changed agent.
+fn drop_orphan_summary_in(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<Value>, TransferError> {
+    if !Repository::available(tx)? {
+        return Ok(None);
+    }
+    let Some(raw) = Repository::agent(tx, agent_id)? else {
+        return Ok(None);
+    };
+    let mut value: Value =
+        serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+    let Some(operation) = active_summary_id(&value) else {
+        return Ok(None);
+    };
+    if Repository::get(tx, operation)?.is_some() {
+        return Ok(None);
+    }
+    crate::account_transfer::remove(&mut value, &["accountTransfer"])?;
+    let agent =
+        serde_json::from_value(value.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    AgentRepository::put(tx, &agent)?;
+    crate::agents_create::publish_agent(tx, &value)?;
+    Ok(Some(value))
+}
+
+pub async fn drop_orphan_summary(
+    store: &RuntimeStore,
+    agent_id: &str,
+) -> Result<Option<Value>, TransferError> {
+    let agent_id = agent_id.to_owned();
+    store
+        .transaction_with_error(move |tx| drop_orphan_summary_in(tx, &agent_id))
+        .await
+}
+
 /// A transfer may bypass only its own native-start admission marker, and only
 /// while its exact member is durably in the Reading phase.
 pub fn owns_reading_member(
@@ -138,6 +189,7 @@ pub async fn request(
         if !Repository::available(tx)? {
             return Err(TransferError::Requires(EXECUTOR_REQUIRED));
         }
+        drop_orphan_summary_in(tx, &lead)?;
         let actor = crate::event_write::checked_agent(tx, &lead)
             .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
         if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
