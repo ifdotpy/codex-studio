@@ -54,8 +54,8 @@ AGENT_FIELD_GROUPS = {
         claudeInputRequest claudeOptions claudePreInputRetry cleanedWorktree compactionsObservedOnly
         connectionRecovery contextRepair contextRepairHistory imageWorkspaceCleanupRetry
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
-        executionSettingsAccountKey layrBaseState layrHome layrOwner layrSubpath layrTurnRetryAt
-        layrTurnSaves nativeToolSource imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
+        executionSettingsAccountKey layrBaseState layrHandoffRoot layrHome layrOwner layrScratch
+        layrSubpath layrTurnRetryAt layrTurnSaves nativeToolSource imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
         imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceHandoffText
         imageWorkspaceSnapshotCommit importedFrom
         lastBudgetWait lastCompletedTurnError lastContextRepairCheck
