@@ -2579,6 +2579,14 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&review_target, &tilde_target).unwrap();
     let review_cwd = "~/review-target".to_owned();
+    // A folder outside every Git repository, shared by both runtimes.
+    let no_git_root = tempfile::tempdir().unwrap();
+    let no_git_folder = no_git_root
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let review_directory = review_target
         .canonicalize()
         .unwrap()
@@ -2593,7 +2601,8 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     python
         .arg(&oracle)
         .arg(review_target.ancestors().nth(4).unwrap())
-        .arg(&review_cwd);
+        .arg(&review_cwd)
+        .arg(&no_git_folder);
     let output = prepared_python::output_with_timeout(
         &mut python,
         &oracle,
@@ -2619,6 +2628,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     actor_value["maxAgents"] = json!(64);
     actor_value["cwd"] = json!(project_path);
     actor_value["workspaceInGit"] = json!(true);
+    actor_value["workspaceMode"] = json!("worktree");
     actor_value["workerDefaults"] = json!({});
     actor_value["accountKey"] = json!("default");
     actor_value["effort"] = json!("low");
@@ -2783,6 +2793,81 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         actual_alternate, expected_alternate,
         "complete alternate-folder child row"
     );
+    // Python `spawn_agents` with workspace worktree, base_ref and another
+    // folder: the child keeps the folder as cwd and gets a worktree there.
+    let alternate_worktree = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Alternate worktree",
+            "prompt":"Work in a worktree of the server folder","model":"gpt-6-luna",
+            "workspace":"worktree","base_ref":"HEAD","cwd":"workspaces/runtime/apps/server"}]}),
+        "dispatcher-spawn-alternate-worktree",
+        20.76,
+        &CreationEnvironment,
+    )
+    .await
+    .expect("a worktree child may start in another repository folder");
+    assert_eq!(
+        alternate_worktree.value,
+        expected["alternateWorktree"]["response"]
+    );
+    let child_id = alternate_worktree.value["agents"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut actual_child = studio_runtime_store::AgentRepository::get(
+        &store.read().unwrap(),
+        &studio_runtime_store::AgentId::from(child_id.as_str()),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(actual_child["worktree"], true);
+    assert_eq!(actual_child["cwd"], json!(review_directory));
+    let mut expected_child = expected["alternateWorktree"]["child"].clone();
+    normalize_persisted_ids_and_times(&mut expected_child);
+    normalize_persisted_ids_and_times(&mut actual_child);
+    assert_eq!(
+        actual_child, expected_child,
+        "complete alternate-folder worktree child row"
+    );
+
+    // The parent's default worktree mode in a folder without Git uses the
+    // shared folder, records the note and the warning, and tells the worker.
+    let no_git = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"No Git","prompt":"Work in a folder without Git",
+            "model":"gpt-6-luna","cwd":no_git_folder}]}),
+        "dispatcher-spawn-no-git",
+        20.77,
+        &CreationEnvironment,
+    )
+    .await
+    .expect("a default worktree outside Git uses the shared folder");
+    assert_eq!(no_git.value, expected["noGit"]["response"]);
+    let child_id = no_git.value["agents"][0]["id"].as_str().unwrap().to_owned();
+    let mut actual_child = studio_runtime_store::AgentRepository::get(
+        &store.read().unwrap(),
+        &studio_runtime_store::AgentId::from(child_id.as_str()),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    let mut expected_child = expected["noGit"]["child"].clone();
+    normalize_persisted_ids_and_times(&mut expected_child);
+    normalize_persisted_ids_and_times(&mut actual_child);
+    assert_eq!(actual_child, expected_child, "complete no-Git child row");
+    let initial: String = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT text FROM runtime_events WHERE id=?1",
+            [format!("{child_id}:initial")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(json!(initial), expected["noGit"]["event"]);
     let agents_before_folder_refusals: i64 = store
         .read()
         .unwrap()
@@ -2810,6 +2895,33 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .await
         .expect_err("an invalid worker folder is refused");
         assert!(refused.to_string().contains(message), "{refused}");
+    }
+    for (index, case) in expected["gitRefusals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let mut spec = json!({"name":"Refused","prompt":"Work elsewhere"});
+        for (key, value) in case["spec"].as_object().unwrap() {
+            spec[key] = value.clone();
+        }
+        let refused = crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &json!({"agents":[spec]}),
+            &format!("dispatcher-spawn-git-refusal-{index}"),
+            20.9,
+            &CreationEnvironment,
+        )
+        .await
+        .expect_err("Python refuses this Git workspace request");
+        assert_eq!(
+            json!(refused.to_string()),
+            case["error"],
+            "{}",
+            case["spec"]
+        );
     }
     let agents_after_folder_refusals: i64 = store
         .read()

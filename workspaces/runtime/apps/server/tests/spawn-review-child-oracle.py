@@ -28,6 +28,7 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
     root = Path(temporary)
     project = Path(sys.argv[1]).resolve(strict=True)
     review_cwd = sys.argv[2]
+    no_git_folder = sys.argv[3]
     runtime = make_runtime(fixture.ControlledRuntime, root / "state", fixture.f.FakeServer)
     python_home = Path(os.environ["HOME"])
     python_home.mkdir(parents=True, exist_ok=True)
@@ -82,6 +83,31 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
         "model": "gpt-6-luna", "workspace": "shared", "cwd": "workspaces/runtime/apps/server"}]},
         "dispatcher-spawn-alternate")
     alternate_child = runtime.agent(alternate["agents"][0]["id"])
+    alternate_worktree = runtime.spawn_agents(lead, {"agents": [{"name": "Alternate worktree",
+        "prompt": "Work in a worktree of the server folder", "model": "gpt-6-luna",
+        "workspace": "worktree", "base_ref": "HEAD", "cwd": "workspaces/runtime/apps/server"}]},
+        "dispatcher-spawn-alternate-worktree")
+    alternate_worktree_child = runtime.agent(alternate_worktree["agents"][0]["id"])
+    no_git = runtime.spawn_agents(lead, {"agents": [{"name": "No Git",
+        "prompt": "Work in a folder without Git", "model": "gpt-6-luna", "cwd": no_git_folder}]},
+        "dispatcher-spawn-no-git")
+    no_git_child = runtime.agent(no_git["agents"][0]["id"])
+    with runtime.db() as db:
+        no_git_event = db.execute("SELECT text FROM runtime_events WHERE id=?",
+                                  (no_git_child["id"] + ":initial",)).fetchone()[0]
+    folder_refusals = []
+    for index, spec in enumerate([
+        {"workspace": "worktree", "cwd": no_git_folder},
+        {"base_ref": "HEAD", "cwd": no_git_folder},
+        {"role": "reviewer", "base_ref": "HEAD"},
+        {"workspace": "shared", "base_ref": "HEAD"},
+    ]):
+        try:
+            runtime.spawn_agents(lead, {"agents": [{"name": "Refused", "prompt": "Work elsewhere", **spec}]},
+                                 "dispatcher-spawn-git-refusal-" + str(index))
+            folder_refusals.append({"spec": spec, "error": None})
+        except ValueError as error:
+            folder_refusals.append({"spec": spec, "error": str(error)})
     reviewed = __import__("codex_agent_review").request(runtime, lead,
         {"target": {"type": "uncommittedChanges"}, "cwd": review_cwd}, "dispatcher-review-api")
     review_child = runtime.agent(reviewed["agentId"])
@@ -121,6 +147,9 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
         "event": spawn_event, "effects": spawn_effects, "nodes": spawn_nodes},
         "fallback": {"response": fallback, "child": fallback_child},
         "alternate": {"response": alternate, "child": alternate_child},
+        "alternateWorktree": {"response": alternate_worktree, "child": alternate_worktree_child},
+        "noGit": {"response": no_git, "child": no_git_child, "event": no_git_event},
+        "gitRefusals": folder_refusals,
         "base": spawned["agents"][0],
         "workspaceRefused": workspace_refused,
         "capacity": {"error": capacity_error, "countBefore": count_before, "countAfter": count_after},
