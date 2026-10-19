@@ -9,8 +9,14 @@ import unittest
 sys.path.insert(0, str(Path(__file__).parent))
 from host_exec_slot_io import collect, run
 
-# `layr show <state>:<path>` from a folder that stands for the held state.
+# `layr show <state>:<path>` from a folder that stands for the held state, and
+# `layr status --porcelain --ignored -z` in the line, where the line ignores `target/`. Like layr,
+# the status reports only files that exist in the line.
 FAKE_LAYR = """#!/bin/sh
+if [ "$1" = status ]; then
+    [ -d target ] && find target -type f | sort | while read -r f; do printf '!! %s\\0' "$f"; done
+    exit 0
+fi
 [ "$1" = show ] || exit 2
 rel=${2#*:}
 [ -f "$FAKE_BASE/$rel" ] || { echo "fatal: path '$rel' does not exist" >&2; exit 128; }
@@ -63,7 +69,7 @@ class CollectTests(unittest.TestCase):
     def test_a_line_change_without_a_slot_change_stays(self):
         self.everywhere("keep.txt", "base\n")
         self.put(self.line, "keep.txt", "line\n")
-        self.assertEqual(self.collect(["keep.txt"]), {"copied": [], "conflicts": []})
+        self.assertEqual(self.collect(["keep.txt"]), {"copied": [], "conflicts": [], "kept": []})
         self.assertEqual((self.line / "keep.txt").read_text(), "line\n")
 
     def test_separate_text_changes_on_both_sides_merge(self):
@@ -93,10 +99,40 @@ class CollectTests(unittest.TestCase):
         self.assertEqual((self.line / "b.bin.slot-conflict").read_bytes(), b"\0slot")
         self.assertEqual(len(report["conflicts"]), 1)
 
+    def test_ignored_build_output_of_the_mac_stays_out_of_the_line(self):
+        # A Mac build wrote target/ in a slot whose line had no target cache yet, and changed
+        # a binary at a path where the line has its own Linux build.
+        self.everywhere("src/main.rs", "fn main() {}\n")
+        self.put(self.slot, "src/main.rs", "fn main() { run() }\n")
+        self.put(self.slot, "target/release/tool", b"\xcf\xfa\xed\xfe mach-o")
+        self.put(self.slot, "target/release/.fingerprint/tool", "mac")
+        self.put(self.slot, "target/debug/tool", b"\xcf\xfa\xed\xfe mach-o")
+        self.put(self.line, "target/debug/tool", b"\x7fELF linux")
+        self.put(self.slot, "gen/new.rs", "// generated\n")
+        paths = ["src/main.rs", "target/release/tool", "target/release/.fingerprint/tool",
+                 "target/debug/tool", "gen/new.rs"]
+        report = self.collect(paths)
+        # The placeholders of the ignore check and their folders are gone too.
+        self.assertFalse((self.line / "target/release").exists())
+        self.assertEqual((self.line / "target/debug/tool").read_bytes(), b"\x7fELF linux")
+        self.assertFalse((self.line / "target/debug/tool.slot-conflict").exists())
+        self.assertEqual((report["copied"], report["conflicts"]), (["gen/new.rs", "src/main.rs"], []))
+        self.assertEqual(report["kept"], ["target/debug/tool", "target/release/.fingerprint/tool",
+                                          "target/release/tool"])
+        self.assertEqual((self.line / "gen/new.rs").read_text(), "// generated\n")
+
+    def test_an_ignored_path_of_the_held_state_still_returns(self):
+        # layr keeps ignored files that are part of a state (such as .env); their changes return.
+        self.everywhere("target/keep.txt", "base\n")
+        self.put(self.slot, "target/keep.txt", "mac\n")
+        report = self.collect(["target/keep.txt"])
+        self.assertEqual((report["copied"], report["kept"]), (["target/keep.txt"], []))
+        self.assertEqual((self.line / "target/keep.txt").read_text(), "mac\n")
+
     def test_the_export_marker_and_git_are_never_collected(self):
         self.put(self.slot, ".layr-export.json", "{}")
         self.put(self.slot, ".git/HEAD", "ref")
-        self.assertEqual(self.collect([".layr-export.json", ".git/HEAD"]), {"copied": [], "conflicts": []})
+        self.assertEqual(self.collect([".layr-export.json", ".git/HEAD"]), {"copied": [], "conflicts": [], "kept": []})
         self.assertFalse((self.line / ".layr-export.json").exists())
 
 

@@ -256,6 +256,9 @@ class HostSlotHandlers:
                                              "held": json.loads(held.read_text())["state"], "paths": all_paths,
                                              "env": self.layr_env(context)})
             output = "collected %d path(s) into line %s\n" % (len(report["copied"]), context["line"])
+            if report.get("kept"):
+                output += ("kept %d path(s) on the Mac: the line ignores them and its state does not have them "
+                           "(build output)\n" % len(report["kept"]))
             if report["conflicts"]:
                 output += "conflicts (the line also changed these paths):\n" + "".join(
                     "\t" + line + "\n" for line in report["conflicts"])

@@ -62,14 +62,59 @@ def _text(data):
     return data is not None and b"\0" not in data[:8000]
 
 
+def _ignored_new(line: Path, env, rels):
+    """The paths among `rels` that the line's ignore rules ignore. Each path is absent from the
+    held state, so it is output of the Mac command, such as a Mach-O binary in `target/`.
+
+    `layr status --ignored` reports only files that exist in the line, so an empty placeholder
+    stands in for each absent path during the check; the placeholders and the folders made for
+    them go before this returns."""
+    made_files, made_folders = [], []
+    try:
+        for rel in rels:
+            target = inside(line, rel, leaf=True)
+            if os.path.lexists(target):
+                continue
+            missing = []
+            parent = target.parent
+            while not os.path.lexists(parent):
+                missing.append(parent)
+                parent = parent.parent
+            require(parent.is_dir() and not parent.is_symlink(), "The line folder of a slot path is not a folder")
+            for folder in reversed(missing):
+                folder.mkdir()
+                made_folders.append(folder)
+            os.close(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+            made_files.append(target)
+        proc = subprocess.run(["layr", "status", "--porcelain", "--ignored", "-z"], cwd=line, env=env,
+                              capture_output=True, timeout=600)
+        require(proc.returncode == 0, "layr status failed: " + proc.stderr.decode(errors="replace")[-1000:],
+                "layr_failed")
+    finally:
+        for target in made_files:
+            target.unlink(missing_ok=True)
+        for folder in reversed(made_folders):
+            try:
+                folder.rmdir()
+            except OSError:
+                pass  # Something else wrote into the folder meanwhile; it stays.
+    ignored = {row[3:] for row in proc.stdout.decode(errors="surrogateescape").split("\0") if row.startswith("!! ")}
+    return {rel for rel in rels if rel in ignored}
+
+
 def collect(params):
     """Bring the paths that the Mac command changed into the line. Per path three versions: the
     held state (base), the slot (theirs) and the line now (ours). A path that only the slot
     changed is copied; one that both changed is merged as text (markers) or keeps the line's
-    version with the slot's next to it as `<path>.slot-conflict`."""
+    version with the slot's next to it as `<path>.slot-conflict`.
+
+    A path that the held state does not have and that the line ignores is build output of the
+    Mac command: it stays out of the line (`kept`), so a Mac binary never replaces or joins the
+    line's own build output."""
     source, line = Path(params["root"]), Path(params["line"])
     held, env = params["held"], {k: str(v) for k, v in params["env"].items()}
     copied, conflicts = [], []
+    versions = []
     for value in sorted(set(params["paths"])):
         rel = relative(value)
         if rel == EXPORT_MARKER or rel == ".git" or rel.startswith(".git/"):
@@ -79,7 +124,12 @@ def collect(params):
         ours = _entry(target)
         if (theirs and theirs[0] == "directory") or (ours and ours[0] == "directory"):
             continue
-        base = _base(env, held, rel)
+        versions.append((rel, theirs, target, ours, _base(env, held, rel)))
+    new = [rel for rel, theirs, _, _, base in versions if base is None and theirs is not None]
+    kept = sorted(_ignored_new(line, env, new)) if new else []
+    for rel, theirs, target, ours, base in versions:
+        if rel in kept:
+            continue
         theirs_b, ours_b = theirs[1] if theirs else None, ours[1] if ours else None
         if theirs_b == base and (theirs is None or ours is None or theirs[2] == ours[2]):
             continue
@@ -110,7 +160,7 @@ def collect(params):
         side = target.with_name(target.name + ".slot-conflict")
         _put(side, theirs)
         conflicts.append(rel + " (kept the line version; the slot version is " + rel + ".slot-conflict)")
-    return {"copied": copied, "conflicts": conflicts}
+    return {"copied": copied, "conflicts": conflicts, "kept": kept}
 
 
 def read_many(items):
