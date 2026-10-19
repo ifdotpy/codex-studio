@@ -14,6 +14,18 @@ pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
 pub(super) const MAX_BEST_EFFORT_PUBLICATION_RECEIPTS: usize = 256;
 pub(super) const MAX_COALESCED_TOKEN_RATE_EFFECTS: usize = 64;
 const MAX_COALESCED_TOKEN_RATE_BYTES: usize = 256 * 1024;
+/// Decimal digits of `u64::MAX`. Journal receipt IDs zero-pad the provider
+/// cursor to this width so receipt key order is cursor order.
+const JOURNAL_CURSOR_DIGITS: usize = 20;
+/// Settled journal receipts one compaction reclaims: two full batches plus the
+/// receipt that held the checkpoint, so a released backlog shrinks faster than
+/// new batches add to it.
+const JOURNAL_COMPACTION_LIMIT: usize = 2 * super::JOURNAL_BATCH_MAX_EVENTS + 1;
+
+/// The journal receipt operation of one provider cursor.
+pub(super) fn journal_operation(journal_scope: &str, generation: u64, cursor: u64) -> String {
+    format!("journal:{journal_scope}:{generation}:{cursor:0JOURNAL_CURSOR_DIGITS$}")
+}
 
 pub(super) struct SubmissionEvidence {
     pub turn: Option<String>,
@@ -157,6 +169,7 @@ pub(super) async fn recover(
             }
         }
         retire_generations(tx, &account, generation.0)?;
+        pad_legacy_journal_receipts(tx, &account)?;
         // The repository preserves Python recovery records. Journal delivery needs
         // the scoped attempt restored before notifications can be acknowledged.
         let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
@@ -1107,7 +1120,8 @@ pub(super) async fn journal_batch(
     });
     let read_store = Arc::clone(&store);
     let account_for_read = account.to_owned();
-    let (publication, limits_observation) =
+    let (publication, limits_observation) = crate::diagnostics::measure_runtime_stage_async(
+        "journal.snapshot",
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/account_worker_journal_snapshot",
             move || {
@@ -1134,9 +1148,10 @@ pub(super) async fn journal_batch(
                 };
                 Ok::<_, WorkerError>((publication, limits_observation))
             },
-        )
-        .await
-        .map_err(|_| WorkerError::TaskFailed)??;
+        ),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     let account = account.to_owned();
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
@@ -1149,21 +1164,24 @@ pub(super) async fn journal_batch(
         let mut persist_snapshot = false;
         let mut entries = entries.into_iter();
         while let Some(entry) = entries.next() {
-            match journal_one(
-                tx,
-                JournalIdentity {
-                    account: &account,
-                    journal_scope: &journal_scope,
-                    expected_vm_actor: expected_vm_actor
-                        .as_ref()
-                        .map(|(actor, epoch)| (actor.as_str(), *epoch)),
-                },
-                &publication,
-                &next,
-                &entry,
-                &claude_account_pin,
-                limits_observation.as_ref(),
-            )? {
+            let stage = journal_stage(&entry);
+            match crate::diagnostics::measure_runtime_stage(stage, || {
+                journal_one(
+                    tx,
+                    JournalIdentity {
+                        account: &account,
+                        journal_scope: &journal_scope,
+                        expected_vm_actor: expected_vm_actor
+                            .as_ref()
+                            .map(|(actor, epoch)| (actor.as_str(), *epoch)),
+                    },
+                    &publication,
+                    &next,
+                    &entry,
+                    &claude_account_pin,
+                    limits_observation.as_ref(),
+                )
+            })? {
                 Some((updated, effect, changed)) => {
                     next = updated;
                     persist_snapshot |= changed;
@@ -1177,11 +1195,40 @@ pub(super) async fn journal_batch(
             }
         }
         if persist_snapshot {
-            persist_streams(tx, &account, &next)?;
+            crate::diagnostics::measure_runtime_stage("journal.persist_streams", || {
+                persist_streams(tx, &account, &next)
+            })?;
         }
+        // One compaction per batch: every entry of a generation shares the checkpoint.
+        let mut generations = committed
+            .iter()
+            .map(|(entry, _)| entry.generation.0)
+            .collect::<Vec<_>>();
+        generations.dedup();
+        crate::diagnostics::measure_runtime_stage("journal.compact", || {
+            generations
+                .into_iter()
+                .try_for_each(|generation| compact(tx, &journal_scope, generation))
+        })?;
         Ok(Some((next, committed, deferred)))
     })
     .await
+}
+
+/// Fixed stage label of one journal entry, by provider method class.
+fn journal_stage(entry: &JournalEntry) -> &'static str {
+    match &entry.payload {
+        JournalPayload::Frame(Frame::Notification(frame)) => match frame.method.as_str() {
+            "turn/started" => "journal.entry.turn_started",
+            "turn/completed" => "journal.entry.turn_completed",
+            method if method.ends_with("Delta") || method.ends_with("/delta") => {
+                "journal.entry.delta"
+            }
+            _ => "journal.entry.notification",
+        },
+        JournalPayload::Frame(Frame::Request(_)) => "journal.entry.request",
+        _ => "journal.entry.other",
+    }
 }
 
 fn journal_one(
@@ -1198,10 +1245,7 @@ fn journal_one(
         journal_scope,
         expected_vm_actor,
     } = identity;
-    let operation = format!(
-        "journal:{journal_scope}:{}:{}",
-        entry.generation.0, entry.cursor.0
-    );
+    let operation = journal_operation(journal_scope, entry.generation.0, entry.cursor.0);
     let digest = match &entry.payload {
         JournalPayload::Frame(frame) => {
             studio_runtime_store::sha256_hex(&journal_frame_payload(frame, &operation)?)
@@ -1487,9 +1531,11 @@ fn journal_one(
             }
         }
     }
-    for batch in &publications {
-        persist_publication_batch(tx, account, batch)?;
-    }
+    crate::diagnostics::measure_runtime_stage("journal.publications", || {
+        publications
+            .iter()
+            .try_for_each(|batch| persist_publication_batch(tx, account, batch))
+    })?;
     if let Some(effect) = &effect {
         persist_effect(tx, account, effect)?;
     }
@@ -1500,7 +1546,6 @@ fn journal_one(
         "settled",
         json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
     )?;
-    compact(tx, journal_scope, entry.generation.0)?;
     Ok(Some((next, effect, true)))
 }
 pub(super) async fn save_recovery(
@@ -1843,54 +1888,66 @@ pub(super) fn journal_committed(
     generation: u64,
     cursor: u64,
 ) -> Result<bool, WorkerError> {
-    let operation = format!("journal:{journal_scope}:{generation}:{cursor}");
+    let operation = journal_operation(journal_scope, generation, cursor);
     Ok(receipt(tx, &operation, "settled")?.is_some_and(|value| value["committed"] == true))
 }
+/// Advance the checkpoint over the ready prefix of settled receipts and delete
+/// what it covers. Keys are in cursor order, so the work is bounded by
+/// [`JOURNAL_COMPACTION_LIMIT`], not by receipts held behind an unready one.
 fn compact(
     tx: &studio_runtime_store::Transaction<'_>,
     journal_scope: &str,
     generation: u64,
 ) -> Result<(), WorkerError> {
     let prefix = format!("account-worker:journal:{journal_scope}:{generation}:");
-    let mut stmt = tx.prepare("SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.cursor') LIMIT 65")?;
+    let mut stmt = tx.prepare_cached("SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT ?3")?;
     let rows = stmt
-        .query_map(params![prefix, format!("{prefix}~")], |r| {
-            r.get::<_, String>(0)
-        })?
+        .query_map(
+            params![
+                prefix,
+                format!("{prefix}~"),
+                JOURNAL_COMPACTION_LIMIT as i64
+            ],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )?
         .collect::<Result<Vec<_>, _>>()?;
-    let mut cursor = checkpoint(tx, journal_scope, generation)?;
-    for raw in rows {
+    let mut covered = Vec::new();
+    let mut last = None;
+    for (id, raw) in rows {
         let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(journal_scope))?;
-        let next = row["cursor"]
-            .as_u64()
-            .ok_or_else(|| invalid(journal_scope))?;
         // A missing earlier row may still be deferred before its dispatch.
         if row["ready"] != true {
             break;
         }
-        cursor = next;
-        tx.execute(
-            "DELETE FROM runtime_operation_receipts WHERE id=?1",
-            [receipt_id(
-                &format!("journal:{journal_scope}:{generation}:{cursor}"),
-                "settled",
-            )],
-        )?;
-        for phase in ["submitted", "written", "unknown"] {
-            tx.execute(
-                "DELETE FROM runtime_operation_receipts WHERE id=?1",
-                [receipt_id(
-                    &format!("callback:{journal_scope}:{generation}:{cursor}"),
-                    phase,
-                )],
-            )?;
-        }
+        covered.push(
+            row["cursor"]
+                .as_u64()
+                .ok_or_else(|| invalid(journal_scope))?,
+        );
+        last = Some(id);
+    }
+    let (Some(last), Some(&cursor)) = (last, covered.last()) else {
+        return Ok(());
+    };
+    tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id>=?1 AND id<=?2")?
+        .execute(params![prefix, last])?;
+    let mut delete =
+        tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id IN (?1,?2,?3,?4)")?;
+    for cursor in covered {
+        let callback = |phase| {
+            receipt_id(
+                &format!("callback:{journal_scope}:{generation}:{cursor}"),
+                phase,
+            )
+        };
         let identity = json!({"providerHandle":ProviderHandle::for_account(journal_scope).as_str(),"generation":generation,"cursor":cursor});
         let signature = studio_runtime_store::sha256_hex(identity.to_string().as_bytes());
-        tx.execute(
-            "DELETE FROM runtime_operation_receipts WHERE id=?1",
-            [format!("provider-notification:{signature}")],
-        )?;
+        delete.execute(params![
+            callback("submitted"),
+            callback("written"),
+            callback("unknown"),
+            format!("provider-notification:{signature}"),
+        ])?;
     }
     replace(
         tx,
@@ -1898,6 +1955,19 @@ fn compact(
         "ack",
         json!(cursor),
     )
+}
+
+/// Rename journal receipts written before cursor padding; a no-op afterwards.
+pub(super) fn pad_legacy_journal_receipts(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+) -> Result<(), WorkerError> {
+    let prefix = format!("account-worker:journal:{account}:");
+    tx.execute(
+        &format!("UPDATE runtime_operation_receipts SET id=substr(id,1,length(id)-length(':'||json_extract(result,'$.cursor')||':settled'))||printf(':%0{JOURNAL_CURSOR_DIGITS}d:settled',json_extract(result,'$.cursor')) WHERE id>=?1 AND id<?2 AND signature='settled' AND substr(id,-length(':'||json_extract(result,'$.cursor')||':settled'))=':'||json_extract(result,'$.cursor')||':settled'"),
+        params![prefix, format!("{prefix}~")],
+    )?;
+    Ok(())
 }
 pub(super) async fn callback_settled(
     store: &RuntimeStore,
@@ -1918,7 +1988,7 @@ fn settle_callback_in_transaction(
     generation: u64,
     cursor: u64,
 ) -> Result<(), WorkerError> {
-    let operation = format!("journal:{journal_scope}:{generation}:{cursor}");
+    let operation = journal_operation(journal_scope, generation, cursor);
     if let Some(mut row) = receipt(tx, &operation, "settled")? {
         row["ready"] = json!(true);
         replace(tx, &operation, "settled", row)?;

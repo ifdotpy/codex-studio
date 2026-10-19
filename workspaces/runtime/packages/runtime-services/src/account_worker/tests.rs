@@ -2,6 +2,7 @@
 mod auth_wait_schedule;
 mod claude_preparation;
 mod idle_unload;
+mod journal_cost;
 mod retained;
 mod steer;
 use super::*;
@@ -1558,8 +1559,12 @@ async fn unsupported_callback(method: &str) {
             store
                 .transaction_with(move |tx| {
                     assert!(
-                        store::receipt(tx, &format!("journal:default:1:{cursor}"), "settled")?
-                            .is_some()
+                        store::receipt(
+                            tx,
+                            &store::journal_operation("default", 1, cursor),
+                            "settled"
+                        )?
+                        .is_some()
                     );
                     assert!(
                         store::receipt(tx, &format!("callback:default:1:{cursor}"), "submitted")?

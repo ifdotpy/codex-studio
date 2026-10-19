@@ -847,7 +847,7 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'settled',?2)",
                     rusqlite::params![
-                        "account-worker:journal:default:1:2:settled",
+                        format!("account-worker:{}:settled", store::journal_operation("default", 1, 2)),
                         json!({"cursor":2,"digest":"fixture","ready":true,"committed":true}).to_string()
                     ],
                 )?;
