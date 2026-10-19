@@ -259,10 +259,23 @@ impl WorkspaceBackend for MacAsifBackend {
         mount: &Path,
         _base_image: Option<&Path>,
     ) -> Result<WorkspaceMount, ImageWorkspaceError> {
+        // The lifecycle checks mount identity first; this is the last guard.
         fs::create_dir_all(mount)?;
-        if !is_mount(mount)? {
-            attach(layer, mount)?;
+        if is_mount(mount)? {
+            return Err(ImageWorkspaceError::Backend(format!(
+                "Refusing to attach {}: a volume is already mounted at {}",
+                layer.display(),
+                mount.display()
+            )));
         }
+        if fs::read_dir(mount)?.next().is_some() {
+            return Err(ImageWorkspaceError::Backend(format!(
+                "Refusing to attach {}: the mount point {} holds files",
+                layer.display(),
+                mount.display()
+            )));
+        }
+        attach(layer, mount)?;
         Ok(WorkspaceMount {
             mount: mount.to_string_lossy().into_owned(),
             layer: Some(layer.to_string_lossy().into_owned()),
@@ -474,6 +487,19 @@ impl WorkspaceBackend for MacAsifBackend {
         )
     }
 
+    fn is_mounted(&self, path: &Path) -> Result<bool, ImageWorkspaceError> {
+        is_mount(path)
+    }
+
+    fn attachments(&self) -> Result<Vec<WorkspaceAttachment>, ImageWorkspaceError> {
+        let output = run(
+            "/usr/bin/hdiutil",
+            &["info", "-plist"],
+            Duration::from_secs(30),
+        )?;
+        attachments_from_info(&output.stdout)
+    }
+
     fn remove_layer(&self, agent_dir: &Path) -> Result<(), ImageWorkspaceError> {
         if agent_dir.exists() {
             fs::remove_dir_all(agent_dir)?;
@@ -518,6 +544,61 @@ impl WorkspaceBackend for MacAsifBackend {
     fn exec_prefix(&self) -> Vec<String> {
         Vec::new()
     }
+}
+
+/// Read attached images from `hdiutil info -plist`: image path, mount points, whole disk.
+fn attachments_from_info(bytes: &[u8]) -> Result<Vec<WorkspaceAttachment>, ImageWorkspaceError> {
+    let info = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|error| {
+        ImageWorkspaceError::Backend(format!("hdiutil info is not a property list: {error}"))
+    })?;
+    let images = info
+        .as_dictionary()
+        .and_then(|info| info.get("images"))
+        .and_then(plist::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut result = Vec::new();
+    for image in images {
+        let Some(image) = image.as_dictionary() else {
+            continue;
+        };
+        let entities = image
+            .get("system-entities")
+            .and_then(plist::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let field = |entity: &plist::Value, key: &str| {
+            entity
+                .as_dictionary()
+                .and_then(|entity| entity.get(key))
+                .and_then(plist::Value::as_string)
+                .map(str::to_owned)
+        };
+        let mounts = entities
+            .iter()
+            .filter_map(|entity| field(entity, "mount-point"))
+            .map(PathBuf::from)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let device = entities
+            .iter()
+            .filter_map(|entity| field(entity, "dev-entry"))
+            .find(|device| {
+                device.strip_prefix("/dev/disk").is_some_and(|rest| {
+                    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                })
+            });
+        result.push(WorkspaceAttachment {
+            image: image
+                .get("image-path")
+                .and_then(plist::Value::as_string)
+                .map(PathBuf::from),
+            mounts,
+            device,
+        });
+    }
+    Ok(result)
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -705,6 +786,61 @@ mod tests {
     }
 
     use super::*;
+
+    /// Recorded shape of `hdiutil info -plist` with one attached ASIF image.
+    const HDIUTIL_INFO: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>framework</key><string>673</string>
+<key>images</key><array>
+<dict>
+<key>image-path</key><string>/store/agents/agent-1/workspace.asif</string>
+<key>system-entities</key><array>
+<dict><key>content-hint</key><string>GUID_partition_scheme</string><key>dev-entry</key><string>/dev/disk9</string></dict>
+<dict><key>content-hint</key><string>Apple_APFS</string><key>dev-entry</key><string>/dev/disk9s1</string></dict>
+<dict><key>content-hint</key><string>41504653-0000-11AA-AA11-00306543ECAC</string><key>dev-entry</key><string>/dev/disk10s1</string><key>mount-point</key><string>/store/mnt/agent-1</string></dict>
+</array>
+</dict>
+<dict><key>image-path</key><string>/other/base.asif</string><key>system-entities</key><array/></dict>
+</array>
+</dict></plist>"#;
+
+    #[test]
+    fn hdiutil_info_lists_image_mount_points_and_whole_disk() {
+        let attachments = attachments_from_info(HDIUTIL_INFO.as_bytes()).expect("parse fixture");
+        assert_eq!(
+            attachments,
+            vec![
+                WorkspaceAttachment {
+                    image: Some("/store/agents/agent-1/workspace.asif".into()),
+                    mounts: vec!["/store/mnt/agent-1".into()],
+                    device: Some("/dev/disk9".into()),
+                },
+                WorkspaceAttachment {
+                    image: Some("/other/base.asif".into()),
+                    mounts: Vec::new(),
+                    device: None,
+                },
+            ]
+        );
+        assert!(attachments_from_info(b"not a plist").is_err());
+    }
+
+    #[test]
+    fn attach_refuses_a_mount_point_that_holds_files() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mount = root.path().join("mnt");
+        fs::create_dir_all(&mount).expect("mount point");
+        fs::write(mount.join("left-behind.txt"), "only copy").expect("plain file");
+        let error = MacAsifBackend
+            .mount_workspace(&root.path().join("missing.asif"), &mount, None)
+            .expect_err("attach over files");
+        assert!(error.to_string().contains("holds files"), "{error}");
+        assert_eq!(
+            fs::read_to_string(mount.join("left-behind.txt")).expect("file kept"),
+            "only copy"
+        );
+    }
 
     #[test]
     fn timed_out_clone_is_killed_and_reaped_before_copy_fallback() {

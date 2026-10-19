@@ -15,6 +15,15 @@ from codex_sqlite import diagnostics as sqlite_diagnostics
 from codex_http_traces import route_metrics as http_route_metrics
 
 
+def image_mount_diagnostics():
+    """Startup image mount check summary; Windows has no image workspaces or fcntl."""
+    try:
+        from codex_workspace_images import mount_diagnostics
+    except ImportError:
+        return {"state": "unsupported", "checkedAt": None, "problems": [], "strayAttachments": 0}
+    return mount_diagnostics()
+
+
 def _kind(command):
     executable = command.split(None, 1)[0].rsplit("/", 1)[-1] if command else ""
     if "workspaces/providers/apps/claude-bridge/bridge.mjs" in command:
@@ -249,7 +258,8 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "httpRequestMetrics": http_route_metrics(),
             "analyticsCapture": getattr(runtime, "analytics_capture_status", lambda: {"available": False})(),
             "migrations": migration_status(runtime),
-            "searchMigrationError": getattr(runtime, "search_migration_error", None)}
+            "searchMigrationError": getattr(runtime, "search_migration_error", None),
+            "imageMounts": image_mount_diagnostics()}
     lock_metrics = getattr(runtime.lock, "runtime_lock_metrics", None)
     result["runtimeLockOperations"] = lock_metrics() if callable(lock_metrics) else []
     return result

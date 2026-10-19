@@ -361,17 +361,24 @@ Swap at a quiet moment:
 3. Send SIGTERM to the backend PID that `/api/desktop` reports for this state.
 4. `launchctl bootout gui/<uid>/local.codex.agents.supervisor.<state-hash>`.
    This ends provider processes.
-5. Make the state backup that
+5. Detach the image workspace volumes and record them. Follow
+   [Image workspace mounts](#image-workspace-mounts), steps 1 to 3. If one
+   detach fails, stop the cutover.
+6. Make the state backup that
    [Rust backend state compatibility](rust-backend-state-compatibility.md)
-   requires before the first Rust start.
-6. Run the same `enable` command again. With no registered job and no backend,
-   it installs and starts both jobs.
+   requires before the first Rust start. Use step 4 of
+   [Image workspace mounts](#image-workspace-mounts).
+7. Run the same `enable` command again. With no registered job and no backend,
+   it installs and starts both jobs. Then attach the recorded volumes again
+   (step 6 of [Image workspace mounts](#image-workspace-mounts)), or let each
+   agent attach its volume when it starts.
 
 Rollback uses the same steps with the Python selection
-(`codex-supervisor enable` without `CODEX_DESKTOP_BACKEND`). In step 5, restore
-the pre-Rust backup instead: Python refuses a state that the Rust server owns.
-The restore itself is outside this command. When the Rust server never started
-(no `rust-state-owner.json`), there is nothing to restore. The rollback does not
+(`codex-supervisor enable` without `CODEX_DESKTOP_BACKEND`). The Rust backend can
+attach volumes, so step 5 is necessary again. In step 6, restore the pre-Rust
+backup instead (step 5 of [Image workspace mounts](#image-workspace-mounts)):
+Python refuses a state that the Rust server owns. When the Rust server never
+started (no `rust-state-owner.json`), there is nothing to restore. The rollback does not
 require idle agents: the saved `supervisorEnabled` and the existing
 `supervisor.sqlite3` show that this is not a first cutover, and the swap already
 ended the provider processes. `enable` then saves
@@ -381,6 +388,97 @@ the Python supervisor job (`codex_process_supervisor.py --wait-for-lease`).
 The Electron desktop keeps a saved Rust selection when it rewrites the recovery
 configuration, and it does not write a Python supervisor job over it.
 `restart-backend-v2.sh` has no Rust-specific checks and has not been tested with the Rust backend.
+
+### Image workspace mounts
+
+Each image workspace is an APFS volume. Its image is
+`<state>/workspaces/agents/<agent>/workspace.asif`, and it is attached at
+`<state>/workspaces/mnt/<agent>`. A volume stays attached at the path where it
+was attached. These operations strand a volume:
+
+- `mv` of a state folder that has attached volumes. The volumes move with the
+  folder, and the live mount points become empty folders.
+- `cp -c -R` of a state folder that has attached volumes. The copy contains the
+  files of each volume as plain files. A restore of that copy puts a plain
+  folder at the live mount point.
+
+Studio uses a mount point only when the volume there carries the agent's marker
+and the image file has the inode that Studio recorded at attach (see
+[Image workspaces](workspace-images.md#mount-identity)). It refuses a plain folder
+with files, a volume of another image, a second attachment of the same volume,
+and a replaced image file. Archive and removal refuse in the same states, so they
+cannot delete an image whose volume is attached somewhere else. Each backend
+checks the mounts once at start. It writes each problem to stderr and shows the
+problem codes in `/api/diagnostics` (`imageMounts`). The check repairs nothing.
+
+`studio-runtime-server mounts check [--store <store>]` prints the full report as
+JSON and changes nothing. The default store is `<state>/workspaces`. The command
+exits with 0 when there is no problem and no stray volume, and with 1 otherwise.
+`studio-runtime-server mounts repair [--store <store>]` does only one step: it
+attaches each ready agent that has `mounted: true` in its `agent.json`, an empty
+mount point, and no attachment of its volume in another place. It does not
+detach, move, or delete anything. Every other problem needs an operator.
+
+Use this procedure around a backup, a restore, or a move of the state folder. Stop
+the backend first. In the commands, `$SERVER` is the absolute path of
+`studio-runtime-server` (the `runtimeServer` value in `background-recovery.json`).
+
+```sh
+STATE="$HOME/.local/state/codex-agents"
+SERVER=/absolute/path/to/studio-runtime-server
+```
+
+1. Check the mounts and record the attached volumes. If the command exits with
+   1, stop and resolve each reported problem first.
+
+   ```sh
+   "$SERVER" mounts check --store "$STATE/workspaces" > "$STATE.mounts.json" &&
+   python3 -c 'import json, sys; print("\n".join(json.load(sys.stdin)["mountsUnderStore"]))' \
+     < "$STATE.mounts.json" > "$STATE.mounts.txt"
+   ```
+
+2. Detach each recorded volume without `-force`. Stop at the first failure;
+   a busy volume has an open process that must stop first.
+
+   ```sh
+   while read -r mount; do hdiutil detach "$mount" || break; done < "$STATE.mounts.txt"
+   ```
+
+3. Make sure that no volume is mounted under the state folder. Do not continue
+   while this command prints a line.
+
+   ```sh
+   /sbin/mount | grep -F " on $STATE/" && echo "Volumes are still mounted under $STATE" >&2
+   ```
+
+4. Back up. The backup does not contain `workspaces/mnt`; it gets an empty
+   `mnt` folder. `cp -c` clones the images, so the backup needs almost no
+   space. Do the step 3 check again immediately before this command.
+
+   ```sh
+   BACKUP="$STATE.backup-$(date +%Y%m%d-%H%M%S)"
+   mkdir "$BACKUP" "$BACKUP/workspaces" &&
+   (cd "$STATE" && find . -mindepth 1 -maxdepth 1 ! -name workspaces -print0 |
+     xargs -0 -I{} cp -c -R {} "$BACKUP/") &&
+   (cd "$STATE/workspaces" && find . -mindepth 1 -maxdepth 1 ! -name mnt -print0 |
+     xargs -0 -I{} cp -c -R {} "$BACKUP/workspaces/") &&
+   mkdir "$BACKUP/workspaces/mnt"
+   ```
+
+5. To restore, do steps 1 to 3 on the live state folder first. Never `mv` a
+   state folder while step 3 prints a line. Then keep the live folder as a
+   separate recovery point and clone the backup into its place:
+
+   ```sh
+   mv "$STATE" "$STATE.replaced-$(date +%Y%m%d-%H%M%S)" &&
+   cp -c -R "$BACKUP" "$STATE"
+   ```
+
+6. Before the backend starts, run `"$SERVER" mounts check --store "$STATE/workspaces"`.
+   Then run `"$SERVER" mounts repair --store "$STATE/workspaces"` to attach
+   the recorded volumes again. Its `actions` list shows each attached agent. An
+   agent that it does not attach attaches its volume when it starts, or the
+   start fails with the reason.
 
 ## Verification
 

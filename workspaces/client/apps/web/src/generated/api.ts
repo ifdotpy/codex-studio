@@ -11703,6 +11703,8 @@ export interface components {
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
       httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
+      /** @default null */
+      imageMounts?: components["schemas"]["ImageMountDiagnostics"] | null;
       migrations: components["schemas"]["MigrationStatus"];
       /** Nativeaccounts */
       nativeAccounts: {
@@ -13142,6 +13144,38 @@ export interface components {
     IdRequest: {
       /** Id */
       id: string;
+    };
+    /**
+     * ImageMountDiagnostics
+     * @description Startup image workspace mount check. Paths and details stay in `mounts check`.
+     */
+    ImageMountDiagnostics: {
+      /** Checkedat */
+      checkedAt: null | number;
+      /** Problems */
+      problems: components["schemas"]["ImageMountProblem"][];
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "pending" | "checked" | "failed" | "unsupported";
+      /** Strayattachments */
+      strayAttachments: number;
+    };
+    /** ImageMountProblem */
+    ImageMountProblem: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status:
+        | "plain-folder"
+        | "foreign-volume"
+        | "image-replaced"
+        | "attached-elsewhere"
+        | "image-missing";
     };
     /** ImageWorkspaceCleanupResultRecordResponse */
     ImageWorkspaceCleanupResultRecordResponse: {

@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use studio_runtime_services::image_workspace::{
-    ImageWorkspaceError, WorkspaceBackend, WorkspaceBaseStaging, WorkspaceDelta,
-    WorkspaceLifecycle, WorkspaceMount,
+    ImageWorkspaceError, WorkspaceAttachment, WorkspaceBackend, WorkspaceBaseStaging,
+    WorkspaceDelta, WorkspaceLifecycle, WorkspaceMount,
 };
 
 #[path = "support/prepared_python.rs"]
@@ -18,6 +19,8 @@ mod prepared_python;
 struct ScriptedBackend {
     store: PathBuf,
     failures: Mutex<Vec<&'static str>>,
+    /// Mount point -> image. A detach moves the volume into `<image>.volume`.
+    mounted: Mutex<BTreeMap<PathBuf, PathBuf>>,
 }
 
 impl ScriptedBackend {
@@ -103,7 +106,16 @@ impl WorkspaceBackend for ScriptedBackend {
         mount: &Path,
         _base_image: Option<&Path>,
     ) -> Result<WorkspaceMount, ImageWorkspaceError> {
+        let volume = layer.with_extension("volume");
+        if volume.exists() {
+            fs::remove_dir(mount)?;
+            fs::rename(&volume, mount)?;
+        }
         fs::create_dir_all(mount.join("repo"))?;
+        self.mounted
+            .lock()
+            .expect("mounted volumes")
+            .insert(mount.to_path_buf(), layer.to_path_buf());
         Ok(WorkspaceMount {
             mount: mount.to_string_lossy().into_owned(),
             layer: Some(layer.to_string_lossy().into_owned()),
@@ -127,8 +139,35 @@ impl WorkspaceBackend for ScriptedBackend {
         })
     }
 
-    fn unmount_workspace(&self, _mount: &Path, _force: bool) -> Result<Value, ImageWorkspaceError> {
+    fn unmount_workspace(&self, mount: &Path, _force: bool) -> Result<Value, ImageWorkspaceError> {
+        let layer = self.mounted.lock().expect("mounted volumes").remove(mount);
+        if let Some(layer) = layer {
+            fs::rename(mount, layer.with_extension("volume"))?;
+            fs::create_dir(mount)?;
+        }
         Ok(json!({"method":"scripted","terminatedPids":0}))
+    }
+
+    fn is_mounted(&self, path: &Path) -> Result<bool, ImageWorkspaceError> {
+        Ok(self
+            .mounted
+            .lock()
+            .expect("mounted volumes")
+            .contains_key(path))
+    }
+
+    fn attachments(&self) -> Result<Vec<WorkspaceAttachment>, ImageWorkspaceError> {
+        Ok(self
+            .mounted
+            .lock()
+            .expect("mounted volumes")
+            .iter()
+            .map(|(mount, layer)| WorkspaceAttachment {
+                image: Some(layer.clone()),
+                mounts: vec![mount.clone()],
+                device: None,
+            })
+            .collect())
     }
 
     fn remove_layer(&self, agent_dir: &Path) -> Result<(), ImageWorkspaceError> {
@@ -222,7 +261,14 @@ fn normalize(value: Value, store: &Path) -> Value {
                 .filter(|(key, _)| {
                     !matches!(
                         key.as_str(),
-                        "createdAt" | "startedAt" | "failedAt" | "builderPid"
+                        "createdAt"
+                            | "startedAt"
+                            | "failedAt"
+                            | "builderPid"
+                            | "attachedAt"
+                            | "checkedAt"
+                            | "imageDevice"
+                            | "imageInode"
                     )
                 })
                 .map(|(key, value)| (key, normalize(value, store)))
@@ -301,6 +347,7 @@ fn python_and_rust_lifecycles_write_equivalent_state_rows_for_shared_scripted_fa
         ScriptedBackend {
             store: rust_store.clone(),
             failures: Mutex::new(vec!["seal", "clone"]),
+            mounted: Mutex::new(BTreeMap::new()),
         },
     );
     manager.start_base_build(&root).expect("start base build");
@@ -334,6 +381,43 @@ fn python_and_rust_lifecycles_write_equivalent_state_rows_for_shared_scripted_fa
     manager.ensure_mounted("agent-corpus").expect("remount");
     rust_rows
         .push(json!({"phase":"workspace-remounted","agent":read_row(&rust_agent, &rust_store)}));
+    rust_rows.push(json!({
+        "phase": "check-mounted",
+        "report": normalize(manager.check_mounts().expect("check mounts"), &rust_store),
+    }));
+    manager
+        .archive_workspace("agent-corpus")
+        .expect("archive again");
+    let mount = rust_store.join("mnt/agent-corpus");
+    fs::write(mount.join("restored-copy.txt"), "only copy\n").expect("plain folder file");
+    let mut refusals = serde_json::Map::new();
+    for (name, result) in [
+        ("ensure", manager.ensure_mounted("agent-corpus")),
+        ("archive", manager.archive_workspace("agent-corpus")),
+        ("remove", manager.remove_workspace("agent-corpus", false)),
+    ] {
+        match result {
+            Err(error @ ImageWorkspaceError::MountCheck { .. }) => {
+                refusals.insert(
+                    name.to_owned(),
+                    normalize(Value::String(error.to_string()), &rust_store),
+                );
+            }
+            other => panic!("{name} used a plain folder at the mount point: {other:?}"),
+        }
+    }
+    rust_rows.push(json!({
+        "phase": "plain-folder-refused",
+        "refusals": refusals,
+        "imageKept": rust_store.join("agents/agent-corpus/workspace.asif").exists(),
+        "report": normalize(manager.check_mounts().expect("check mounts"), &rust_store),
+    }));
+    fs::remove_file(mount.join("restored-copy.txt")).expect("clear plain folder");
+    manager
+        .ensure_mounted("agent-corpus")
+        .expect("attach after clearing");
+    rust_rows
+        .push(json!({"phase":"plain-folder-cleared","agent":read_row(&rust_agent, &rust_store)}));
 
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let server_source = package.join("../../apps/server/src");

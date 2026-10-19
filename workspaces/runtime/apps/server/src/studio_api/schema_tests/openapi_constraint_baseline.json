@@ -389,6 +389,24 @@
       "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
     },
     {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/imageMounts",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/imageMounts",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/imageMounts",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/ImageMountDiagnostics\"}']"
+    },
+    {
       "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/holdMs/properties/p99",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -672,6 +690,18 @@
     },
     {
       "pointer": "/components/schemas/IdentityAlert/properties/origin",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/ImageMountDiagnostics/properties/checkedAt",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ImageMountDiagnostics/properties/checkedAt",
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"

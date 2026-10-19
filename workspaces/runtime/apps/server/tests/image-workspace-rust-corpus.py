@@ -23,6 +23,8 @@ os.environ["CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES"] = "0"
 class ScriptedBackend:
     def __init__(self) -> None:
         self.failures = ["seal", "clone"]
+        # Mount point -> image. A detach moves the volume into "<image>.volume".
+        self.mounted: dict[Path, Path] = {}
 
     def fail(self, operation: str) -> None:
         if self.failures and self.failures[0] == operation:
@@ -71,18 +73,32 @@ class ScriptedBackend:
         shutil.copy2(image, layer)
         return layer
 
-    @staticmethod
-    def mount_workspace(_layer, mount, *, base_image=None):
+    def mount_workspace(self, layer, mount, *, base_image=None):
+        volume = Path(layer).with_suffix(".volume")
+        if volume.exists():
+            mount.rmdir()
+            volume.rename(mount)
         (mount / "repo").mkdir(parents=True, exist_ok=True)
+        self.mounted[Path(mount)] = Path(layer)
         return {"mount": str(mount), "baseImage": str(base_image) if base_image else None}
+
+    def is_mounted(self, path):
+        return Path(path) in self.mounted
+
+    def attachments(self):
+        return [{"image": str(layer), "mounts": [str(mount)], "device": None}
+                for mount, layer in self.mounted.items()]
 
     @staticmethod
     def sync_delta(_source, _target, token, *, excludes=()):
         return {"token": token, "changedPaths": ["."], "historyLost": False,
                 "scanPaths": ["."], "refreshBase": False}
 
-    @staticmethod
-    def unmount_workspace(_mount, *, force=False):
+    def unmount_workspace(self, mount, *, force=False):
+        layer = self.mounted.pop(Path(mount), None)
+        if layer is not None:
+            Path(mount).rename(layer.with_suffix(".volume"))
+            Path(mount).mkdir()
         return {"method": "scripted", "terminatedPids": 0}
 
     @staticmethod
@@ -119,7 +135,8 @@ def wait_for_build():
 def normalize(value):
     if isinstance(value, dict):
         return {key: normalize(child) for key, child in value.items()
-                if key not in {"createdAt", "startedAt", "failedAt", "builderPid"}}
+                if key not in {"createdAt", "startedAt", "failedAt", "builderPid",
+                               "attachedAt", "checkedAt", "imageDevice", "imageInode"}}
     if isinstance(value, list):
         return [normalize(child) for child in value]
     if isinstance(value, str):
@@ -161,4 +178,24 @@ images.archive_workspace("agent-corpus")
 snapshots.append({"phase": "workspace-archived", "agent": normalize(images._read_json(agent_path))})
 images.ensure_mounted("agent-corpus")
 snapshots.append({"phase": "workspace-remounted", "agent": normalize(images._read_json(agent_path))})
+snapshots.append({"phase": "check-mounted", "report": normalize(images.check_mounts())})
+images.archive_workspace("agent-corpus")
+mount = store / "mnt" / "agent-corpus"
+(mount / "restored-copy.txt").write_text("only copy\n")
+refusals = {}
+for name, action in (("ensure", lambda: images.ensure_mounted("agent-corpus")),
+                     ("archive", lambda: images.archive_workspace("agent-corpus")),
+                     ("remove", lambda: images.remove_workspace("agent-corpus"))):
+    try:
+        action()
+    except images.ImageMountError as error:
+        refusals[name] = normalize(str(error))
+    else:
+        raise AssertionError(f"{name} used a plain folder at the mount point")
+snapshots.append({"phase": "plain-folder-refused", "refusals": refusals,
+                  "imageKept": (store / "agents" / "agent-corpus" / "workspace.asif").exists(),
+                  "report": normalize(images.check_mounts())})
+(mount / "restored-copy.txt").unlink()
+images.ensure_mounted("agent-corpus")
+snapshots.append({"phase": "plain-folder-cleared", "agent": normalize(images._read_json(agent_path))})
 print(json.dumps(snapshots, sort_keys=True, separators=(",", ":")))

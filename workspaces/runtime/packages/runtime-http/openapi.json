@@ -24106,6 +24106,17 @@
           "httpRequestMetrics": {
             "$ref": "#/components/schemas/HttpRequestMetrics"
           },
+          "imageMounts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageMountDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "migrations": {
             "$ref": "#/components/schemas/MigrationStatus"
           },
@@ -27876,6 +27887,80 @@
           "detail"
         ],
         "title": "IdentityAlert",
+        "type": "object"
+      },
+      "ImageMountDiagnostics": {
+        "additionalProperties": false,
+        "description": "Startup image workspace mount check. Paths and details stay in `mounts check`.",
+        "properties": {
+          "checkedAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Checkedat"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/ImageMountProblem"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "checked",
+              "failed",
+              "unsupported"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "strayAttachments": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Strayattachments",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "checkedAt",
+          "problems",
+          "strayAttachments"
+        ],
+        "title": "ImageMountDiagnostics",
+        "type": "object"
+      },
+      "ImageMountProblem": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "title": "Agentid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "plain-folder",
+              "foreign-volume",
+              "image-replaced",
+              "attached-elsewhere",
+              "image-missing"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentId",
+          "status"
+        ],
+        "title": "ImageMountProblem",
         "type": "object"
       },
       "ImageWorkspaceCleanupResultRecordResponse": {

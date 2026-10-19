@@ -147,3 +147,15 @@ MONITOR_WAIT_SLOTS = 64
 # Native terminal discovery before a stop: entries per page and pages per operation.
 NATIVE_TERMINAL_ITEMS_PER_PAGE = 100
 NATIVE_TERMINAL_MAX_PAGES = 100
+
+# Image workspace mount identity (docs/workspace-images.md, "Mount identity"). Studio writes the
+# marker file at the root of each agent volume when it attaches the volume. The marker names the
+# agent and the (st_dev, st_ino) of the image file at attach time. MOUNT_STATUSES are the closed
+# results of one mount point check; the PROBLEM subset needs an operator and is never repaired
+# automatically.
+IMAGE_WORKSPACE_MARKER_NAME = ".studio-workspace.json"
+IMAGE_WORKSPACE_MARKER_SCHEMA = 1
+IMAGE_MOUNT_STATUSES = ("mounted", "detached", "plain-folder", "foreign-volume",
+                        "image-replaced", "attached-elsewhere", "image-missing")
+IMAGE_MOUNT_PROBLEM_STATUSES = ("plain-folder", "foreign-volume", "image-replaced",
+                                "attached-elsewhere", "image-missing")

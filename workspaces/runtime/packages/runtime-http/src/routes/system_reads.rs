@@ -35,6 +35,7 @@ const DIAGNOSTICS_RESPONSE_FIELDS: &[&str] = &[
     "runtimeLockOperations",
     "supervisor",
     "blockingPoolMetrics",
+    "imageMounts",
 ];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -318,6 +319,7 @@ async fn diagnostics(
         "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
         "supervisor": supervisor,
         "blockingPoolMetrics": blocking_pool_metrics,
+        "imageMounts": studio_runtime_services::image_workspace::mount_diagnostics(),
     });
     let mut value = value;
     redact_untrusted_diagnostic_text(&mut value);

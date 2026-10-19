@@ -999,6 +999,25 @@ class BlockingPoolMetrics(ContractModel):
     groups: list[BlockingPoolGroupMetrics]
 
 
+ImageMountProblemStatus = Literal[
+    "plain-folder", "foreign-volume", "image-replaced", "attached-elsewhere", "image-missing",
+]
+
+
+class ImageMountProblem(ContractModel):
+    agentId: str
+    # Owner: IMAGE_MOUNT_PROBLEM_STATUSES in codex_shared_values; a parity test checks this list.
+    status: ImageMountProblemStatus
+
+
+class ImageMountDiagnostics(ContractModel):
+    """Startup image workspace mount check. Paths and details stay in `mounts check`."""
+    state: Literal["pending", "checked", "failed", "unsupported"]
+    checkedAt: float | None
+    problems: list[ImageMountProblem]
+    strayAttachments: SafeInt
+
+
 class DiagnosticsResponse(ResponseModel):
     at: str
     processTree: ProcessTree
@@ -1017,6 +1036,7 @@ class DiagnosticsResponse(ResponseModel):
     runtimeLockOperations: list[RuntimeLockOperation]
     supervisor: SupervisorDiagnostics
     blockingPoolMetrics: BlockingPoolMetrics | None = None
+    imageMounts: ImageMountDiagnostics | None = None
 
 
 class DirectoryEntry(ContractModel):

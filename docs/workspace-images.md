@@ -80,7 +80,10 @@ base can retry after five minutes. The caller can request an immediate retry wit
 - `archive_workspace(agent_id) -> {freedBytes, state}` stops processes that hold the mount,
   detaches it, and keeps the image. The returned state is `archived`.
 - `remove_workspace(agent_id, *, force=False) -> {freedBytes, state}` stops processes that hold
-  the mount, detaches it, and deletes the image and state.
+  the mount, detaches it, and deletes the image and state. It removes the mount point folder
+  only when the folder is empty.
+- `check_mounts() -> report` classifies each mount point and lists Studio volumes that are
+  attached outside their mount points. It changes nothing.
 - `workspace_bytes(agent_id)` and `base_bytes(root)` report private bytes.
 - `list_workspaces()` includes archived workspaces.
 - `exec_prefix()` returns an empty list for macOS ASIF workspaces.
@@ -88,6 +91,42 @@ base can retry after five minutes. The caller can request an immediate retry wit
 Archive is reversible: call `ensure_mounted` to attach the same copy again. Remove deletes it.
 The `force` argument to remove is retained for API compatibility. Removal always stops mount
 holders so it can safely delete the image.
+
+## Mount identity
+
+A mount point is not proof of identity: a moved or restored state folder can leave a plain
+folder, another volume, or a volume of an older image file at `mnt/<agent-id>/`. After each
+attach, Studio writes the marker `.studio-workspace.json` at the root of the volume. The marker
+holds the agent ID, the image path, and the device and inode of the image file. `agent.json`
+records the same values and the mount path and device in `mountIdentity`. The marker name, its
+schema, and the status codes have one owner: `IMAGE_WORKSPACE_*` and `IMAGE_MOUNT_*` in
+`codex_shared_values.py`; the Rust constants are generated from it.
+
+Before each use, attach, archive, and removal, Studio reads the mount point, the marker, and the
+attached images (`hdiutil info -plist`). The result is one of these statuses:
+
+| Status               | Meaning                                                                               | Studio action                               |
+| -------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `mounted`            | The volume has this agent's marker, and the image file has the recorded inode.        | Use, archive, and remove are permitted.     |
+| `detached`           | The mount point is empty or missing, the image exists, and nothing else attached it.  | Attach is permitted.                        |
+| `plain-folder`       | The mount point is not a mount, and it holds files.                                   | Refuse. Do not attach over it or delete it. |
+| `foreign-volume`     | The volume at the mount point belongs to another agent or to another image.           | Refuse.                                     |
+| `image-replaced`     | The volume has this agent's marker, but the image file changed since the attach.      | Refuse.                                     |
+| `attached-elsewhere` | The volume of this agent is also attached at another path, or attached without mount. | Refuse.                                     |
+| `image-missing`      | The image file is missing.                                                            | Removal only when nothing is attached.      |
+
+A refusal raises `ImageMountError` (Rust: `ImageWorkspaceError::MountCheck`) with the status and
+the paths. Studio finds a second attachment by the marker at each attached mount point, by the
+image path or inode, or by an image path of the form `agents/<agent-id>/workspace.asif` in a
+moved folder. A volume that was attached before markers existed has no marker. Studio accepts it
+once when `hdiutil` reports this image for the mount point, and then writes the marker.
+
+Each backend runs `check_mounts` once at start in the background and writes each problem to
+stderr. `/api/diagnostics` shows `imageMounts`: the check state, the problem codes per agent,
+and the count of stray volumes, without paths. `studio-runtime-server mounts check` prints the full
+report; `mounts repair` only attaches recorded volumes at empty mount points. See
+[Image workspace mounts](restart-recovery.md#image-workspace-mounts) for the backup, move, and
+restore procedure.
 
 ## Runtime behavior
 
