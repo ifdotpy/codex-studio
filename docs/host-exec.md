@@ -125,6 +125,15 @@ the line version with the Mac version next to it as `<path>.slot-conflict`.
 Executable modes and symbolic links are preserved. Hard links become copies.
 Linux extended attributes are not copied.
 
+A changed path that the held state does not have and that the line ignores (`.gitignore`,
+`.layrignore`) is build output of the Mac command, for example a Mach-O binary in `target/`.
+It stays on the Mac, also when the line has its own file at that path, and the collect output
+counts it as kept. Without this rule a Mac build in a line that had no `target` cache yet put
+its binaries into the Linux line, and a Linux build took them as its own output. An ignored file
+that is part of the state, such as an imported `.env`, still returns. To check the ignore rules,
+the guest puts an empty placeholder at each such path for one `layr status --ignored` run and
+removes it again.
+
 A new slot generation uses an empty guest folder and a full layr sync. A warm
 Mac slot receives only content differences, including when a different line
 uses it. Output paths map from the source folder to the VM line. The map handles
