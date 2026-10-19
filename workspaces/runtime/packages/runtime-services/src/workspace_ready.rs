@@ -42,6 +42,18 @@ pub struct WorkspaceActor {
     pub workspace_reservation_id: Option<String>,
 }
 
+impl WorkspaceActor {
+    /// The agent runs in an image workspace. A fallback phase does not count:
+    /// that agent runs in a Git worktree or its folder.
+    #[must_use]
+    pub fn image_bound(&self) -> bool {
+        self.image_workspace
+            || self.image_workspace_ready
+            || crate::image_workspace::image_phase(self.image_workspace_phase.as_deref())
+            || self.workspace_mode.as_deref() == Some("image")
+    }
+}
+
 /// Whether this actor requires Git worktree provisioning before it can run.
 /// `workspaceMode` is a preference; the persisted `worktree` flag is the owner.
 #[must_use]
@@ -111,11 +123,7 @@ pub fn unsupported(actor: &WorkspaceActor) -> Option<WorkspaceRefusal> {
         Some(WorkspaceRefusal::VmWorkspaceUnsupported)
     } else if actor.environment.as_deref() == Some("linux") {
         Some(WorkspaceRefusal::LegacyVmWorkspaceUnsupported)
-    } else if actor.image_workspace
-        || actor.image_workspace_ready
-        || actor.image_workspace_phase.is_some()
-        || actor.workspace_mode.as_deref() == Some("image")
-    {
+    } else if actor.image_bound() {
         Some(WorkspaceRefusal::ImageWorkspaceUnsupported)
     } else {
         None

@@ -2436,10 +2436,9 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         _: &RuntimeStore,
         _: &std::path::Path,
         _: &str,
-    ) -> Result<std::path::PathBuf, crate::managed_child_create::ManagedCreationEnvironmentError>
-    {
+    ) -> Result<Value, crate::managed_child_create::ManagedCreationEnvironmentError> {
         IMAGE_PROVISION_CALLS.with(|calls| calls.set(calls.get() + 1));
-        Ok(std::path::PathBuf::from("/fake-image/repo"))
+        Ok(json!({"path":"/fake-image/repo","mount":"/fake-image"}))
     }
 }
 impl crate::host_worker_create::CreationCatalog for CreationEnvironment {

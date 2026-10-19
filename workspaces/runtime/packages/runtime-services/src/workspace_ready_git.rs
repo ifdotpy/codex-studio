@@ -151,11 +151,7 @@ async fn prepare_attempt(
             token: ReadyToken::new(value, PathBuf::from(cwd)),
         });
     }
-    if actor.image_workspace
-        || actor.image_workspace_ready
-        || actor.image_workspace_phase.is_some()
-        || actor.workspace_mode.as_deref() == Some("image")
-    {
+    if actor.image_bound() {
         #[cfg(not(target_os = "macos"))]
         return Ok(image_workspace_refusal_decision());
         #[cfg(target_os = "macos")]
@@ -164,15 +160,18 @@ async fn prepare_attempt(
                 return Ok(WorkspaceDecision::Defer { reservation: None });
             }
             if !actor.image_workspace_ready {
-                return Ok(
-                    if actor.image_workspace_phase.as_deref() == Some("creating") {
+                return Ok(match actor.image_workspace_phase.as_deref() {
+                    Some("creating") => WorkspaceDecision::Defer { reservation: None },
+                    // Python `prepare_locked` starts the base build and the copy here.
+                    // The turn waits for the ready copy instead of running read-only.
+                    Some("read_only") => {
+                        crate::image_workspace_agents::start(&store, &agent_id);
                         WorkspaceDecision::Defer { reservation: None }
-                    } else {
-                        WorkspaceDecision::Refuse(
-                            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
-                        )
-                    },
-                );
+                    }
+                    _ => WorkspaceDecision::Refuse(
+                        crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
+                    ),
+                });
             }
             let read_agent_id = agent_id.clone();
             let mounted = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -191,8 +190,35 @@ async fn prepare_attempt(
                 &repo,
                 initial.agent.record["imageWorkspaceSubpath"].as_str(),
             )?;
+            let mount = mounted
+                .get("mount")
+                .and_then(Value::as_str)
+                .ok_or(WorkspaceError::InvalidRecord)?
+                .to_owned();
+            // Python `prepare_locked`: the record names the mounted directory and
+            // mount, and the agent gets the ready notice once.
+            let write_id = agent_id.clone();
+            let write_path = path.clone();
+            let record = store
+                .transaction_with(move |tx| {
+                    crate::image_workspace_agents::record_mounted(
+                        tx,
+                        &write_id,
+                        &write_path,
+                        &mount,
+                        now(),
+                    )
+                })
+                .await
+                .map_err(|error| match error {
+                    crate::event_write::EventWriteError::Store(error) => {
+                        WorkspaceError::Store(error)
+                    }
+                    _ => WorkspaceError::InvalidRecord,
+                })?
+                .unwrap_or_else(|| initial.agent.record.clone());
             return Ok(WorkspaceDecision::Ready {
-                token: ReadyToken::new(&initial.agent.record, path),
+                token: ReadyToken::new(&record, path),
             });
         }
     }
@@ -255,17 +281,7 @@ async fn prepare_attempt(
 /// repository is an invalid record.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn image_turn_cwd(repo: &Path, subpath: Option<&str>) -> Result<PathBuf, WorkspaceError> {
-    let subpath = Path::new(subpath.unwrap_or("."));
-    if subpath
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(WorkspaceError::InvalidRecord);
-    }
-    Ok(subpath
-        .components()
-        .filter(|part| matches!(part, Component::Normal(_)))
-        .fold(repo.to_path_buf(), |path, part| path.join(part)))
+    crate::image_workspace_agents::turn_cwd(repo, subpath).ok_or(WorkspaceError::InvalidRecord)
 }
 
 #[cfg(not(target_os = "macos"))]

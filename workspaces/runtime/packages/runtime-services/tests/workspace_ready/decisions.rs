@@ -130,7 +130,7 @@ fn unsupported_modes_are_refused_for_new_existing_and_stopped_records() {
             ),
             (
                 "imageWorkspacePhase",
-                json!("fallback"),
+                json!("read_only"),
                 WorkspaceRefusal::ImageWorkspaceUnsupported,
             ),
             (
@@ -173,6 +173,19 @@ fn unsupported_modes_are_refused_for_new_existing_and_stopped_records() {
             );
         }
     }
+}
+
+#[test]
+fn an_image_fallback_prepares_its_worktree_like_any_worktree_agent() {
+    // Python `complete_image_workspace` leaves `imageWorkspacePhase: "fallback"`
+    // on an agent that now uses a Git worktree or its folder.
+    let (mut record, _, _) = input();
+    record["imageWorkspace"] = json!(false);
+    record["imageWorkspacePhase"] = json!("fallback");
+    record["workspaceMode"] = json!("worktree");
+    let actor: WorkspaceActor = serde_json::from_value(record.clone()).expect("actor");
+    assert!(!actor.image_bound());
+    assert_eq!(unsupported(&actor), None);
 }
 
 #[test]

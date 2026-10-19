@@ -409,6 +409,14 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         startup_recovery_time,
     )
     .await?;
+    // Python `resume_read_only_image_bases`: an image agent still in its
+    // read-only phase gets its base build and copy again after a restart.
+    #[cfg(target_os = "macos")]
+    match studio_runtime_services::image_workspace_agents::resume_read_only(&store).await {
+        Ok(0) => {}
+        Ok(count) => eprintln!("resumed the image workspace of {count} read-only agent(s)"),
+        Err(error) => eprintln!("image workspace resume failed: {error}"),
+    }
     startup_trace("store-recovery-completed");
     // Report stranded or mismatched image workspace mounts; never repair them here.
     std::thread::Builder::new()

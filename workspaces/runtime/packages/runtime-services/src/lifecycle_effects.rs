@@ -1211,6 +1211,38 @@ fn child_result_payload(agent: &Value, status: Value, result: Value) -> Value {
     })
 }
 
+/// Python `parent_event(..., recovery=True)` for an image-workspace outcome:
+/// the parent gets one `child_result` under `child:{id}:{event_id}`. A child
+/// without a stored parent has nobody to tell; a remote parent has no local queue.
+pub(crate) fn notify_parent_of_image_workspace(
+    tx: &Transaction<'_>,
+    agent: &Value,
+    event_id: &str,
+    text: &str,
+    at: f64,
+) -> Result<(), event_write::EventWriteError> {
+    let Some(parent_id) = agent.get("parentId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(parent) = AgentRepository::get(tx, &AgentId::from(parent_id))? else {
+        return Ok(());
+    };
+    let agent_id = agent.get("id").and_then(Value::as_str).unwrap_or_default();
+    let status = agent.get("status").cloned().unwrap_or(Value::Null);
+    let payload = child_result_payload(agent, status, json!(text));
+    match event_write::enqueue_recovery_event(
+        tx,
+        &parent,
+        format!("child:{agent_id}:{event_id}"),
+        "child_result",
+        payload.to_string(),
+        at,
+    ) {
+        Ok(_) | Err(event_write::EventWriteError::RemoteEventsUnavailable) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Report a settled child turn to its parent inside the settling transaction.
 ///
 /// Ports the turn-completion branch of Python `Runtime.notification` that calls

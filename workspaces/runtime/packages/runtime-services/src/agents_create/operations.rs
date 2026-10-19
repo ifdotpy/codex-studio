@@ -1453,7 +1453,9 @@ async fn provision_image_workspace(
             ));
         }
     };
-    let Some(cwd) = workspace.get("path").and_then(Value::as_str) else {
+    if workspace.get("path").and_then(Value::as_str).is_none()
+        || workspace.get("mount").and_then(Value::as_str).is_none()
+    {
         let _ = remove_image_workspace(id.to_owned()).await;
         persist_image_provision_failure(
             context.store.as_ref(),
@@ -1467,7 +1469,6 @@ async fn provision_image_workspace(
         ));
     };
     let agent_id = id.to_owned();
-    let cwd = cwd.to_owned();
     let projection = context
         .store
         .transaction(move |tx| {
@@ -1478,23 +1479,24 @@ async fn provision_image_workspace(
             else {
                 return Ok(None);
             };
-            let mut value = agent.into_value();
+            let value = agent.into_value();
             if !image_provision_is_current(&value, expected_epoch) {
                 return Ok(None);
             }
-            value["cwd"] = json!(cwd);
-            value["imageWorkspaceReady"] = json!(true);
-            value["imageWorkspacePhase"] = json!("ready");
-            let agent = studio_runtime_store::AgentRecord::from_value(value).map_err(|_| {
-                StoreError::InvalidStoredObject {
+            let now =
+                crate::event_write::unix_time().map_err(|_| StoreError::InvalidStoredObject {
                     table: "runtime_agents",
                     id: agent_id.to_owned(),
-                }
-            })?;
-            value = agent.value();
-            studio_runtime_store::AgentRepository::put(tx, &agent)?;
-            crate::agents_create::publish_agent(tx, &value)?;
-            Ok(Some(value))
+                })?;
+            crate::image_workspace_agents::record_ready(tx, value, &workspace, now)
+                .map(Some)
+                .map_err(|error| match error {
+                    crate::event_write::EventWriteError::Store(error) => error,
+                    _ => StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: agent_id.to_owned(),
+                    },
+                })
         })
         .await?;
     if let Some(projection) = projection {
