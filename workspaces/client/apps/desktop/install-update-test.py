@@ -38,11 +38,19 @@ class FakeMac:
     def __init__(self):
         self.window = True
         self.commands = []
+        # AppKit refuses the Apple Event quit, as on 2026-10-19 with build 75e8c1568.
+        self.quit_refused = False
+        self.signals = []
+
+    def kill(self, pid, number):
+        self.signals.append((pid, number))
+        if number == signal.SIGTERM:
+            self.window = False
 
     def run(self, argv, timeout):
         self.commands.append(argv)
         tool, args = Path(argv[0]).name, argv[1:]
-        out, code = "", 0
+        out, err, code = "", "", 0
         if tool == "ditto":
             shutil.copytree(args[0], args[1], symlinks=True)
         elif tool == "codesign" and args[0] == "--verify":
@@ -52,13 +60,16 @@ class FakeMac:
             out = f'designated => identifier "local.codex.agents" and certificate leaf = H"{certificate}"\n'
         elif tool == "osascript" and args[1].endswith("is running"):
             out = "true\n" if self.window else "false\n"
+        elif tool == "osascript" and args[1].endswith("to quit") and self.quit_refused:
+            code = 1
+            err = "44:48: execution error: Codex Studio got an error: User canceled. (-128)\n"
         elif tool == "osascript" and args[1].endswith("to quit"):
             self.window = False
         elif tool == "open":
             self.window = True
         else:
             raise AssertionError(f"Unexpected command {argv}")
-        return subprocess.CompletedProcess(argv, code, out, "")
+        return subprocess.CompletedProcess(argv, code, out, err)
 
     def ran(self, tool, last=None):
         return [argv for argv in self.commands
@@ -102,6 +113,60 @@ class InstallUpdate(unittest.TestCase):
 
     def receipt(self):
         return json.loads((self.state / updates.RECEIPT_FILE).read_text())
+
+    STARTED = "Mon Oct 19 03:31:12 2026"
+
+    def write_intent(self, **changes):
+        intent = {"version": 1, "desiredOpen": True, "pid": 8864, "startedAt": self.STARTED,
+                  "executable": str(self.installed / "Contents/MacOS/studio-native-client"),
+                  "profile": "/profile", "closeSignal": "SIGTERM"} | changes
+        (self.state / "desktop-recovery.json").write_text(json.dumps(intent))
+
+    def install_with_signal(self):
+        def target(state, installed):
+            return installer.signal_target(state, installed, started=lambda pid: self.STARTED)
+        return installer.install(self.state, self.config, applications=self.applications,
+                                 run=self.mac.run, verify=self.verify, stop=self.stop,
+                                 sleep=lambda seconds: None, target=target, kill=self.mac.kill)
+
+    def test_window_that_closes_on_sigterm_gets_the_signal_not_the_apple_event_quit(self):
+        self.mac.quit_refused = True
+        self.write_intent()
+        code, _ = self.install_with_signal()
+        self.assertEqual(code, installer.INSTALLED)
+        self.assertEqual(self.mac.signals, [(8864, signal.SIGTERM)])
+        self.assertEqual(self.mac.ran("osascript", "to quit"), [])
+        self.assertEqual(updates.read_build(self.installed), NEW)
+        self.assertEqual(self.mac.ran("open"), [["/usr/bin/open", "-g", str(self.installed)]])
+        self.assertIs(self.receipt()["window"], True)
+
+    def test_window_without_a_proved_close_signal_gets_the_apple_event_quit(self):
+        for changes in ({"closeSignal": None}, {"startedAt": "Sun Oct 18 08:00:00 2026"},
+                        {"executable": "/tmp/Codex Studio.app/Contents/MacOS/studio-native-client"},
+                        {"desiredOpen": False}, {"pid": True}):
+            with self.subTest(changes=changes):
+                self.write_intent(**changes)
+                self.assertIsNone(installer.signal_target(self.state, self.installed,
+                                                          started=lambda pid: self.STARTED))
+        self.assertEqual(self.install_with_signal()[0], installer.INSTALLED)
+        self.assertEqual(self.mac.signals, [])
+        self.assertEqual(len(self.mac.ran("osascript", "to quit")), 1)
+
+    def test_refused_apple_event_quit_fails_and_leaves_the_installed_app(self):
+        self.mac.quit_refused = True
+        code, reason = self.install()
+        self.assertEqual(code, installer.FAILED)
+        self.assertEqual(reason, "The desktop window did not quit: 44:48: execution error: "
+                                 "Codex Studio got an error: User canceled. (-128)")
+        self.assertEqual(updates.read_build(self.installed), OLD)
+        self.assertEqual(self.stops, [])
+
+    def test_close_signal_matches_the_native_window_owner(self):
+        owner = (REPOSITORY_ROOT / "workspaces/client/apps/native/src-tauri/src/desktop_recovery.rs").read_text()
+        self.assertIn(f'pub const CLOSE_SIGNAL: &str = "{installer.CLOSE_SIGNAL}";', owner)
+        self.assertIn('value["closeSignal"] = CLOSE_SIGNAL.into();', owner)
+        self.assertIn(f'"/Applications/Codex Studio.app/{installer.NATIVE_EXECUTABLE}"', owner)
+        self.assertIn(f'state.join("{installer.DESKTOP_INTENT}")', owner)
 
     def test_swap_installs_the_build_and_restarts_backend_and_window(self):
         make_app(self.applications / "Codex Studio.previous.app", {**OLD, "builtAt": 1.0})

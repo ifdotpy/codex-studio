@@ -512,8 +512,14 @@ pub fn run() {
             app.manage(lock_profile(&directory)?);
             #[cfg(desktop)]
             desktop_menu::install(app)?;
+            #[cfg(all(desktop, unix))]
+            let closes_on_signal = close::close_on_terminate(app.handle())
+                .inspect_err(|error| eprintln!("{error}"))
+                .is_ok();
+            #[cfg(all(desktop, not(unix)))]
+            let closes_on_signal = false;
             #[cfg(desktop)]
-            if let Err(error) = desktop_recovery::install(app, &directory, hidden) {
+            if let Err(error) = desktop_recovery::install(app, &directory, hidden, closes_on_signal) {
                 eprintln!("Desktop recovery is unavailable: {error}");
             }
             let handle = app.handle().clone();
