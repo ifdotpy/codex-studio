@@ -58,6 +58,8 @@ class FakeServer:
         self.closed = False
         self.fail_start = False
         self.finish_before_reply = False
+        # Called with (thread_id, turn_id) after an early completion and before the turn/start reply.
+        self.before_reply = None
         self.start_gate = None
         self.active_turns = {}
 
@@ -101,6 +103,8 @@ class FakeServer:
                 self.notify({'method': 'turn/started', 'params': {'threadId': params['threadId'], 'turn': turn}})
             if self.finish_before_reply:
                 self.complete(params['threadId'], turn['id'])
+                if self.before_reply is not None:
+                    self.before_reply(params['threadId'], turn['id'])
             return {'turn': turn}
         if method == 'turn/steer':
             return {'turnId': params['expectedTurnId']}
@@ -1627,6 +1631,41 @@ class RuntimeContract(unittest.TestCase):
         with self.runtime.db() as db:
             result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
         self.assertEqual(json.loads(result)['result'], 'Final result after the lead answer')
+
+    def test_follow_up_completed_before_its_start_reply_reports_to_the_parent(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        self.complete(self.runtime.agent(child['id']))
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'completed')
+
+        def child_results():
+            with self.runtime.read_db() as db:
+                return db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND kind='child_result'",
+                                  (lead['id'],)).fetchone()[0]
+
+        self.assertEqual(child_results(), 1)
+
+        def completion_saved(_thread_id, turn_id):
+            # Hold the turn/start reply until the runtime has saved the completion,
+            # so the completion always precedes the reply that binds the input.
+            def saved():
+                with self.runtime.read_db() as db:
+                    return db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?",
+                                      (child['id'] + ':' + turn_id,)).fetchone() is not None
+            eventually(saved)
+
+        server = self.runtime.connect()
+        server.before_reply = completion_saved
+        server.finish_before_reply = True
+        self.runtime.send(child['id'], 'Check one more file')
+        eventually(lambda: child_results() == 2)
+        # The follow-up input is delivered by the turn that already completed.
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'completed')
+        with self.runtime.read_db() as db:
+            self.assertEqual([tuple(row) for row in db.execute(
+                "SELECT kind,status FROM runtime_events WHERE agent=? ORDER BY created,rowid",
+                (child['id'],))], [('user', 'delivered'), ('user', 'delivered')])
 
     def test_child_result_waits_for_inflight_input_receipt(self):
         lead = self.lead()
