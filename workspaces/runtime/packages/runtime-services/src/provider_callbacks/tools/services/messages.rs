@@ -214,11 +214,6 @@ fn send_as_actor(
         )
         .map_err(map_federation_error);
     }
-    if versioned_progress {
-        return Err(CallbackError::Dependency(
-            "coordination/versioned-progress-delivery",
-        ));
-    }
     if target == who {
         return Err(CallbackError::Invalid("Select another agent"));
     }
@@ -300,6 +295,12 @@ fn send_as_actor(
             let mut payload = json!({"room":room_id,"message_id":id,"sender":who,"sender_name":actor["name"],"text":message});
             if importance != "message" {
                 payload["importance"] = json!(importance);
+            }
+            // Python `chat_message`: the version travels with the input, and
+            // turn preparation keeps the latest version per sender, room and key.
+            if let (Some(key), Some(version)) = (progress_key, progress_version) {
+                payload["progress_key"] = key.clone();
+                payload["progress_version"] = version.clone();
             }
             event_write::enqueue_event(
                 tx,
