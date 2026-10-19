@@ -1952,3 +1952,24 @@ async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
         );
     }
 }
+
+/// Python runs an image agent's turn in `<mount>/repo/<imageWorkspaceSubpath>`.
+#[test]
+fn an_image_turn_runs_in_the_saved_subpath_of_the_mounted_repo() {
+    let repo = Path::new("/state/workspaces/mnt/agent/repo");
+    assert_eq!(image_turn_cwd(repo, None).expect("default"), repo);
+    assert_eq!(image_turn_cwd(repo, Some(".")).expect("root"), repo);
+    assert_eq!(
+        image_turn_cwd(repo, Some("crates/backend")).expect("subpath"),
+        repo.join("crates/backend")
+    );
+    for outside in ["..", "../other", "/etc", "crates/../../x"] {
+        assert!(
+            matches!(
+                image_turn_cwd(repo, Some(outside)),
+                Err(WorkspaceError::InvalidRecord)
+            ),
+            "{outside}"
+        );
+    }
+}

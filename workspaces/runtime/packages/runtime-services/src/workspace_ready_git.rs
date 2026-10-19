@@ -182,11 +182,15 @@ async fn prepare_attempt(
             .await
             .map_err(|_| WorkspaceError::Worker)?
             .map_err(|error| WorkspaceError::Git(format!("image workspace mount: {error}")))?;
-            let path = mounted
+            let repo = mounted
                 .get("path")
                 .and_then(Value::as_str)
                 .map(PathBuf::from)
                 .ok_or(WorkspaceError::InvalidRecord)?;
+            let path = image_turn_cwd(
+                &repo,
+                initial.agent.record["imageWorkspaceSubpath"].as_str(),
+            )?;
             return Ok(WorkspaceDecision::Ready {
                 token: ReadyToken::new(&initial.agent.record, path),
             });
@@ -244,6 +248,24 @@ async fn prepare_attempt(
         return Ok(context.decide());
     };
     provision(store, context, plan, git_deadline).await
+}
+
+/// The turn directory of an image agent: its mounted `repo` plus the saved
+/// subpath, as Python's `prepare_locked` builds it. A subpath that leaves the
+/// repository is an invalid record.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn image_turn_cwd(repo: &Path, subpath: Option<&str>) -> Result<PathBuf, WorkspaceError> {
+    let subpath = Path::new(subpath.unwrap_or("."));
+    if subpath
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(WorkspaceError::InvalidRecord);
+    }
+    Ok(subpath
+        .components()
+        .filter(|part| matches!(part, Component::Normal(_)))
+        .fold(repo.to_path_buf(), |path, part| path.join(part)))
 }
 
 #[cfg(not(target_os = "macos"))]
