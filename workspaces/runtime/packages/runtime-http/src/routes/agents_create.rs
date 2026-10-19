@@ -92,12 +92,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
 
     fn select_worker_account(
         &self,
-        parent_account_key: &str,
-        requested_account_key: Option<&str>,
-        default_account_key: Option<&str>,
-        model: &str,
-        excluded_account_keys: &[String],
-        project_account_keys: Option<&[String]>,
+        request: studio_runtime_services::provider_callbacks::WorkerAccountRequest<'_>,
     ) -> Result<
         (
             String,
@@ -126,12 +121,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         };
         let (key, identity) = select_worker_account(WorkerAccountSelection {
             accounts: &accounts,
-            parent_account_key,
-            requested_account_key,
-            default_account_key,
-            model,
-            excluded_account_keys,
-            project_account_keys,
+            request,
             model_available: &mut model_available,
         })?;
         Ok((key, host_account_identity(&identity)))
@@ -358,11 +348,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
                 })
             })
             .collect();
-        let default = snapshot.default_account_key.as_str().map(str::to_owned);
-        Ok(ManagedCreationAccountListing {
-            default_account_key: default,
-            accounts,
-        })
+        Ok(ManagedCreationAccountListing { accounts })
     }
 
     fn resolve_identity(

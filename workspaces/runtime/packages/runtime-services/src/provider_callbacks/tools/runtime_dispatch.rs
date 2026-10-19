@@ -16,14 +16,22 @@ use crate::managed_host_tools::{
 type ModelPrice = (f64, f64);
 type WorkerModelPrices = Option<(Option<ModelPrice>, Option<ModelPrice>)>;
 
-pub struct WorkerAccountSelection<'a> {
-    pub accounts: &'a dyn crate::provider_callbacks::ManagedCreationAccountRead,
+/// What a worker creation asks of account selection.
+pub struct WorkerAccountRequest<'a> {
     pub parent_account_key: &'a str,
     pub requested_account_key: Option<&'a str>,
     pub default_account_key: Option<&'a str>,
     pub model: &'a str,
     pub excluded_account_keys: &'a [String],
     pub project_account_keys: Option<&'a [String]>,
+    /// Slot-occupying agents per account key, including workers chosen earlier
+    /// in the same batch. Implicit selection picks the fewest (unit: agents).
+    pub active_agents: &'a std::collections::HashMap<String, i64>,
+}
+
+pub struct WorkerAccountSelection<'a> {
+    pub accounts: &'a dyn crate::provider_callbacks::ManagedCreationAccountRead,
+    pub request: WorkerAccountRequest<'a>,
     pub model_available: &'a mut dyn FnMut(
         &str,
         &crate::provider_callbacks::ManagedAccountIdentity,
@@ -32,18 +40,22 @@ pub struct WorkerAccountSelection<'a> {
 }
 
 pub fn select_worker_account(
-    request: WorkerAccountSelection<'_>,
+    selection: WorkerAccountSelection<'_>,
 ) -> Result<(String, crate::provider_callbacks::ManagedAccountIdentity), CreationError> {
     let WorkerAccountSelection {
         accounts,
-        parent_account_key,
-        requested_account_key,
-        default_account_key,
-        model,
-        excluded_account_keys,
-        project_account_keys,
+        request:
+            WorkerAccountRequest {
+                parent_account_key,
+                requested_account_key,
+                default_account_key,
+                model,
+                excluded_account_keys,
+                project_account_keys,
+                active_agents,
+            },
         model_available,
-    } = request;
+    } = selection;
     let selected_default = default_account_key.filter(|key| !key.is_empty());
     if selected_default.is_some()
         && requested_account_key.is_some()
@@ -69,9 +81,9 @@ pub fn select_worker_account(
     let listing = accounts.worker_accounts().map_err(account_read_error)?;
     let candidates = ordered_worker_account_candidates(
         &listing,
-        parent_account_key,
         excluded_account_keys,
         project_account_keys,
+        active_agents,
     );
     let provider = worker_model_provider(model);
     let mut saw_eligible = false;
@@ -179,40 +191,33 @@ fn validate_selected_account(
     Ok(())
 }
 
+/// Ready, usable accounts that the chat and project allow, least loaded first.
+/// Ties break on the account key so the order is deterministic.
 fn ordered_worker_account_candidates<'a>(
     listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
-    parent: &str,
     excluded: &[String],
     project_keys: Option<&[String]>,
+    active_agents: &std::collections::HashMap<String, i64>,
 ) -> Vec<&'a crate::provider_callbacks::ManagedCreationAccountCandidate> {
-    let mut seen = std::collections::HashSet::new();
-    let mut ordered = Vec::new();
-    for key in [Some(parent), listing.default_account_key.as_deref()]
-        .into_iter()
-        .flatten()
-        .chain(listing.accounts.iter().map(|row| row.account_key.as_str()))
-    {
-        if !seen.insert(key.to_owned())
-            || excluded.iter().any(|excluded| excluded == key)
-            || project_keys.is_some_and(|allowed| {
-                !allowed.is_empty() && !allowed.iter().any(|item| item == key)
-            })
-        {
-            continue;
-        }
-        let Some(candidate) = listing.accounts.iter().find(|row| row.account_key == key) else {
-            continue;
-        };
-        let is_parent = key == parent;
-        if candidate.disconnected
-            || candidate.deleted
-            || candidate.duplicate
-            || (!is_parent && !candidate.ready && !candidate.can_attempt_native_proof)
-        {
-            continue;
-        }
-        ordered.push(candidate);
-    }
+    let mut ordered = listing
+        .accounts
+        .iter()
+        .filter(|row| {
+            let key = row.account_key.as_str();
+            row.ready
+                && !(row.disconnected || row.deleted || row.duplicate)
+                && !excluded.iter().any(|excluded| excluded == key)
+                && project_keys.is_none_or(|allowed| {
+                    allowed.is_empty() || allowed.iter().any(|item| item == key)
+                })
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|row| {
+        (
+            active_agents.get(&row.account_key).copied().unwrap_or(0),
+            row.account_key.as_str(),
+        )
+    });
     ordered
 }
 
@@ -1075,7 +1080,7 @@ mod tests {
 
 #[cfg(test)]
 mod account_identity_tests {
-    use super::{WorkerAccountSelection, select_worker_account};
+    use super::{WorkerAccountRequest, WorkerAccountSelection, select_worker_account};
     use crate::provider_callbacks::{
         ManagedAccountIdentity, ManagedCreationAccountCandidate as Candidate,
         ManagedCreationAccountError, ManagedCreationAccountListing as Listing,
@@ -1103,87 +1108,126 @@ mod account_identity_tests {
         }
     }
 
-    fn candidate(key: &str, ready: bool, native_proof: bool) -> Candidate {
+    use studio_runtime_providers::ProviderKind;
+
+    fn candidate(key: &str, provider: ProviderKind, ready: bool) -> Candidate {
         Candidate {
             account_key: key.to_owned(),
             identity: ManagedAccountIdentity {
-                provider: studio_runtime_providers::ProviderKind::Codex,
+                provider,
                 home: None,
                 account_id: None,
                 email: None,
             },
             ready,
-            can_attempt_native_proof: native_proof,
+            can_attempt_native_proof: false,
             disconnected: false,
             deleted: false,
             duplicate: false,
         }
     }
 
-    fn accounts() -> Accounts {
+    fn accounts(rows: &[(&str, ProviderKind, bool)]) -> Accounts {
         Accounts(Listing {
-            default_account_key: Some("configured".to_owned()),
-            accounts: vec![
-                candidate("parent", false, false),
-                candidate("configured", true, false),
-                candidate("ready", true, false),
-                candidate("proof", false, true),
-                candidate("offline", false, false),
-            ],
+            accounts: rows
+                .iter()
+                .map(|(key, provider, ready)| candidate(key, *provider, *ready))
+                .collect(),
         })
     }
 
-    #[test]
-    fn implicit_worker_accounts_follow_python_order_and_filters() {
-        let accounts = accounts();
-        let mut available_parent = |key: &str,
-                                    _: &crate::provider_callbacks::ManagedAccountIdentity,
-                                    _: &str| Ok(key == "parent");
-        let selected = select_worker_account(WorkerAccountSelection {
-            accounts: &accounts,
-            parent_account_key: "parent",
-            requested_account_key: None,
-            default_account_key: None,
-            model: "gpt-5",
-            excluded_account_keys: &["configured".to_owned()],
-            project_account_keys: None,
-            model_available: &mut available_parent,
-        })
-        .expect("parent is the first eligible model account");
-        assert_eq!(selected.0, "parent");
+    type Counts = std::collections::HashMap<String, i64>;
 
-        let mut available_ready = |key: &str,
-                                   _: &crate::provider_callbacks::ManagedAccountIdentity,
-                                   _: &str| Ok(key == "ready");
-        let selected = select_worker_account(WorkerAccountSelection {
-            accounts: &accounts,
-            parent_account_key: "parent",
-            requested_account_key: None,
-            default_account_key: None,
-            model: "gpt-5",
-            excluded_account_keys: &[],
-            project_account_keys: None,
-            model_available: &mut available_ready,
+    fn select(
+        accounts: &Accounts,
+        model: &str,
+        requested: Option<&str>,
+        counts: &Counts,
+        available: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<String, crate::managed_child_create::ManagedCreationEnvironmentError> {
+        let mut model_available =
+            |key: &str, _: &ManagedAccountIdentity, _: &str| Ok(available(key));
+        select_worker_account(WorkerAccountSelection {
+            accounts,
+            request: WorkerAccountRequest {
+                parent_account_key: "parent",
+                requested_account_key: requested,
+                default_account_key: None,
+                model,
+                excluded_account_keys: &[],
+                project_account_keys: None,
+                active_agents: counts,
+            },
+            model_available: &mut model_available,
         })
-        .expect("configured and ready candidates are probed in order");
-        assert_eq!(selected.0, "ready");
+        .map(|selected| selected.0)
+    }
+
+    /// Spawn `workers` with no account the way a batch does: each pick raises
+    /// that account's count before the next selection.
+    fn spread(accounts: &Accounts, model: &str, workers: usize) -> Vec<(String, i64)> {
+        let mut counts = Counts::new();
+        for _ in 0..workers {
+            let key = select(accounts, model, None, &counts, &mut |_| true).expect("selected");
+            *counts.entry(key).or_default() += 1;
+        }
+        let mut result = counts.into_iter().collect::<Vec<_>>();
+        result.sort();
+        result
+    }
+
+    #[test]
+    fn thirty_workers_spread_evenly_over_three_accounts_per_provider() {
+        use ProviderKind::{Claude, Codex};
+        let codex = accounts(&[
+            ("parent", Codex, true),
+            ("b", Codex, true),
+            ("a", Codex, true),
+            ("claude", Claude, true),
+        ]);
+        let expected = |keys: [&str; 3]| keys.map(|key| (key.to_owned(), 10)).to_vec();
+        assert_eq!(spread(&codex, "gpt-5", 30), expected(["a", "b", "parent"]));
+        let claude = accounts(&[
+            ("c3", Claude, true),
+            ("c1", Claude, true),
+            ("c2", Claude, true),
+            ("codex", Codex, true),
+        ]);
+        assert_eq!(spread(&claude, "sonnet", 30), expected(["c1", "c2", "c3"]));
+    }
+
+    #[test]
+    fn implicit_selection_prefers_the_least_loaded_ready_account() {
+        use ProviderKind::Codex;
+        let accounts = accounts(&[
+            ("busy", Codex, true),
+            ("idle", Codex, true),
+            ("offline", Codex, false),
+            ("parent", Codex, true),
+        ]);
+        let counts = Counts::from([("busy".to_owned(), 4), ("parent".to_owned(), 2)]);
+        let pick = |available: &mut dyn FnMut(&str) -> bool| {
+            select(&accounts, "gpt-5", None, &counts, available)
+        };
+        assert_eq!(pick(&mut |_| true).expect("idle"), "idle");
+        // The lead's account gets no preference, and a non-ready account is skipped.
+        assert_eq!(pick(&mut |key| key != "idle").expect("parent"), "parent");
+        assert_eq!(
+            pick(&mut |key| key == "offline" || key == "busy").expect("busy"),
+            "busy"
+        );
     }
 
     #[test]
     fn explicit_worker_account_never_falls_back() {
-        let accounts = accounts();
-        let mut unavailable =
-            |_: &str, _: &crate::provider_callbacks::ManagedAccountIdentity, _: &str| Ok(false);
-        let result = select_worker_account(WorkerAccountSelection {
-            accounts: &accounts,
-            parent_account_key: "parent",
-            requested_account_key: Some("offline"),
-            default_account_key: None,
-            model: "gpt-5",
-            excluded_account_keys: &[],
-            project_account_keys: None,
-            model_available: &mut unavailable,
-        });
-        assert!(result.is_err());
+        use ProviderKind::Codex;
+        let accounts = accounts(&[("offline", Codex, false), ("idle", Codex, true)]);
+        let counts = Counts::new();
+        assert_eq!(
+            select(&accounts, "gpt-5", Some("offline"), &counts, &mut |_| true)
+                .expect("explicit account is honoured even when busier or not ready"),
+            "offline"
+        );
+        assert!(select(&accounts, "gpt-5", Some("offline"), &counts, &mut |_| false).is_err());
     }
 }

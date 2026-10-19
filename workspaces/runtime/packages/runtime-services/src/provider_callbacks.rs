@@ -67,7 +67,6 @@ pub struct ManagedCreationAccountCandidate {
 
 #[derive(Clone, Debug)]
 pub struct ManagedCreationAccountListing {
-    pub default_account_key: Option<String>,
     pub accounts: Vec<ManagedCreationAccountCandidate>,
 }
 
@@ -96,8 +95,8 @@ pub(crate) use tools::{
 #[cfg(test)]
 pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
 pub use tools::{
-    WorkActionOutcome, WorkActionPort, WorkerAccountSelection, select_worker_account,
-    validate_worker_model_choice,
+    WorkActionOutcome, WorkActionPort, WorkerAccountRequest, WorkerAccountSelection,
+    select_worker_account, validate_worker_model_choice,
 };
 
 pub(crate) struct ManagedToolPortsConfig {

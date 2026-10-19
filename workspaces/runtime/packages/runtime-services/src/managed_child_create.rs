@@ -117,17 +117,13 @@ pub trait ManagedCreationEnvironment: Send + Sync {
     /// kept separate so an explicit value can be checked against chat settings.
     /// `excluded_account_keys` comes from the root agent. Project keys are the
     /// resolved project settings allowlist, when the root has a project binding.
-    /// Implicit selection probes parent, configured default, then AccountDriver
-    /// list order, filtering disabled/unusable accounts, project keys, provider,
-    /// and models (including aliases); explicit selection never falls back.
+    /// Implicit selection picks the ready account with the fewest active agents
+    /// (`active_agents`, ties by account key), filtering disabled/unusable
+    /// accounts, project keys, provider, and models (including aliases);
+    /// explicit selection never falls back.
     fn select_worker_account(
         &self,
-        parent_account_key: &str,
-        requested_account_key: Option<&str>,
-        default_account_key: Option<&str>,
-        model: &str,
-        excluded_account_keys: &[String],
-        project_account_keys: Option<&[String]>,
+        request: crate::provider_callbacks::WorkerAccountRequest<'_>,
     ) -> Result<(String, crate::host_worker_create::AccountIdentity), ManagedCreationEnvironmentError>;
     fn validate_worker_choice(
         &self,
@@ -373,6 +369,10 @@ pub(crate) async fn spawn_agents(
     let mut drafts = Vec::with_capacity(specs.len());
     let mut task_ids = std::collections::BTreeSet::new();
 
+    // Workers without an explicit account go to the least loaded one; the count
+    // grows with each pick so a batch spreads across accounts as well.
+    let mut account_load =
+        studio_runtime_store::AgentIndexedReads::slots_by_account(&*store.read()?)?;
     for (index, spec) in specs.iter().enumerate() {
         if !spec.is_object() {
             return Err(crate::managed_host_tools::Error::Invalid(
@@ -620,14 +620,17 @@ pub(crate) async fn spawn_agents(
                     })
                     .flatten()
             });
-        let (account_key, account) = environment.select_worker_account(
-            parent_account,
-            requested_account_key,
-            default_account_key,
-            requested_model,
-            &excluded_account_keys,
-            project_account_keys.as_deref(),
-        )?;
+        let (account_key, account) =
+            environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
+                parent_account_key: parent_account,
+                requested_account_key,
+                default_account_key,
+                model: requested_model,
+                excluded_account_keys: &excluded_account_keys,
+                project_account_keys: project_account_keys.as_deref(),
+                active_agents: &account_load,
+            })?;
+        *account_load.entry(account_key.clone()).or_default() += 1;
         if spec.get("model").and_then(Value::as_str).is_some() || profile_model.is_some() {
             let default_model = defaults
                 .get("model")
@@ -1474,14 +1477,16 @@ pub(crate) async fn request_review(
     let model = spec.get("model").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Invalid native review model"),
     )?;
-    let (account_key, account) = environment.select_worker_account(
-        account_key,
-        Some(account_key),
-        None,
-        model,
-        &[],
-        None,
-    )?;
+    let (account_key, account) =
+        environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
+            parent_account_key: account_key,
+            requested_account_key: Some(account_key),
+            default_account_key: None,
+            model,
+            excluded_account_keys: &[],
+            project_account_keys: None,
+            active_agents: &std::collections::HashMap::new(),
+        })?;
     // Review is read-only in the parent's managed workspace. Its requested
     // repository is validated separately and may differ from the actor's cwd.
     let workspace_admission = environment.prepare_workspace(

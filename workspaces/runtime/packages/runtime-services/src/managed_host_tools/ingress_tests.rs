@@ -707,7 +707,6 @@ impl crate::provider_callbacks::ManagedCreationAccountRead for EligibleAccountRe
         crate::provider_callbacks::ManagedCreationAccountError,
     > {
         Ok(crate::provider_callbacks::ManagedCreationAccountListing {
-            default_account_key: None,
             accounts: vec![crate::provider_callbacks::ManagedCreationAccountCandidate {
                 account_key: "primary".into(),
                 identity: crate::provider_callbacks::ManagedAccountIdentity {
@@ -752,12 +751,15 @@ async fn unavailable_provider_model_list_refuses_without_callback_writes() {
     let result = crate::provider_callbacks::select_worker_account(
         crate::provider_callbacks::WorkerAccountSelection {
             accounts: &EligibleAccountRead,
-            parent_account_key: "primary",
-            requested_account_key: None,
-            default_account_key: None,
-            model: "gpt-5",
-            excluded_account_keys: &[],
-            project_account_keys: None,
+            request: crate::provider_callbacks::WorkerAccountRequest {
+                parent_account_key: "primary",
+                requested_account_key: None,
+                default_account_key: None,
+                model: "gpt-5",
+                excluded_account_keys: &[],
+                project_account_keys: None,
+                active_agents: &std::collections::HashMap::new(),
+            },
             model_available: &mut unavailable,
         },
     );
@@ -2393,16 +2395,20 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
     }
     fn select_worker_account(
         &self,
-        parent_account_key: &str,
-        requested_account_key: Option<&str>,
-        default_account_key: Option<&str>,
-        model: &str,
-        excluded_account_keys: &[String],
-        project_account_keys: Option<&[String]>,
+        request: crate::provider_callbacks::WorkerAccountRequest<'_>,
     ) -> Result<
         (String, crate::host_worker_create::AccountIdentity),
         crate::managed_child_create::ManagedCreationEnvironmentError,
     > {
+        let crate::provider_callbacks::WorkerAccountRequest {
+            parent_account_key,
+            requested_account_key,
+            default_account_key,
+            model,
+            excluded_account_keys,
+            project_account_keys,
+            ..
+        } = request;
         if requested_account_key
             .is_some_and(|key| default_account_key.is_some_and(|default| default != key))
         {

@@ -117,6 +117,27 @@ impl AgentIndexedReads {
         )
     }
 
+    /// SQL counting slot-occupying local agents per account key. It enumerates
+    /// the partial capacity index (live agents only) and reads no other row.
+    #[doc(hidden)]
+    pub fn account_slots_sql() -> String {
+        format!(
+            "SELECT COALESCE(json_extract(record,'$.accountKey'),'default'),COUNT(*) \
+             FROM runtime_agents WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES} \
+             AND {REMOTE_WORKER_KEY}=0 GROUP BY 1"
+        )
+    }
+
+    /// Slot-occupying local agents per account key; accounts without one are absent.
+    pub fn slots_by_account(
+        connection: &Connection,
+    ) -> StoreResult<std::collections::HashMap<String, i64>> {
+        Ok(connection
+            .prepare_cached(&Self::account_slots_sql())?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?)
+    }
+
     /// Slot-occupying local agents other than `agent_id`, across all teams.
     pub fn global_slots_in_use(connection: &Connection, agent_id: &str) -> StoreResult<i64> {
         Ok(connection
@@ -270,6 +291,14 @@ mod tests {
             AgentIndexedReads::team_slots_in_use(&connection, "a", "lead").expect("team"),
             3
         );
+        insert(
+            &connection,
+            json!({"id":"on-b","rootId":"o","status":"running","accountKey":"b"}),
+        );
+        let by_account = AgentIndexedReads::slots_by_account(&connection).expect("by account");
+        assert_eq!(by_account.len(), 2);
+        assert_eq!(by_account["default"], 7);
+        assert_eq!(by_account["b"], 1);
     }
 
     #[test]
@@ -304,6 +333,11 @@ mod tests {
             (
                 AgentIndexedReads::global_slots_sql(),
                 vec!["a"],
+                CAPACITY_INDEX,
+            ),
+            (
+                AgentIndexedReads::account_slots_sql(),
+                vec![],
                 CAPACITY_INDEX,
             ),
             (

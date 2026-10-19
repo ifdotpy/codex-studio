@@ -2612,14 +2612,15 @@ async fn resolve_worker_defaults(
     let (worker_account_key, worker_account) =
         if let Some(environment) = context.managed_creation_environment {
             environment
-                .select_worker_account(
-                    account_key,
+                .select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
+                    parent_account_key: account_key,
                     requested_account_key,
-                    None,
+                    default_account_key: None,
                     model,
                     excluded_account_keys,
-                    None,
-                )
+                    project_account_keys: None,
+                    active_agents: &std::collections::HashMap::new(),
+                })
                 .map_err(|error| match error {
                     crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
                         message,
@@ -2734,14 +2735,15 @@ async fn resolve_review_defaults(
     let (catalog_account_key, catalog_account) =
         if let Some(environment) = context.managed_creation_environment {
             environment
-                .select_worker_account(
-                    account_key,
-                    worker_account_key,
-                    None,
+                .select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
+                    parent_account_key: account_key,
+                    requested_account_key: worker_account_key,
+                    default_account_key: None,
                     model,
                     excluded_account_keys,
-                    None,
-                )
+                    project_account_keys: None,
+                    active_agents: &std::collections::HashMap::new(),
+                })
                 .map_err(|error| match error {
                     crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
                         message,
@@ -3072,12 +3074,7 @@ mod tests {
     impl crate::managed_child_create::ManagedCreationEnvironment for ManagedFixture {
         fn select_worker_account(
             &self,
-            parent_account_key: &str,
-            requested_account_key: Option<&str>,
-            default_account_key: Option<&str>,
-            model: &str,
-            excluded_account_keys: &[String],
-            project_account_keys: Option<&[String]>,
+            request: crate::provider_callbacks::WorkerAccountRequest<'_>,
         ) -> Result<
             (String, AccountIdentity),
             crate::managed_child_create::ManagedCreationEnvironmentError,
@@ -3114,13 +3111,8 @@ mod tests {
             let (key, identity) = crate::provider_callbacks::select_worker_account(
                 crate::provider_callbacks::WorkerAccountSelection {
                     accounts: &self.accounts,
-                    parent_account_key,
-                    requested_account_key,
-                    default_account_key,
-                    model,
-                    excluded_account_keys,
-                    project_account_keys,
                     model_available: &mut available,
+                    request,
                 },
             )?;
             Ok((
@@ -3189,7 +3181,6 @@ mod tests {
         ManagedFixture {
             accounts: AccountFixture {
                 listing: ManagedCreationAccountListing {
-                    default_account_key: Some("default".to_owned()),
                     accounts: vec![
                         candidate("claude-local", "claude", true),
                         candidate("default", "codex", true),
