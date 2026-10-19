@@ -294,3 +294,58 @@ fn claude_python_and_canonical_rust_rows_replay_without_usage_writes() {
         );
     }
 }
+
+#[test]
+fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
+    // Live cutover 4: a terminalInteraction of a command started one turn
+    // earlier failed with "/snapshot/row/turnId", stopped the account's
+    // publication queue at its head, and filled it to the evidence bound.
+    // Python keys items by agent, thread and item id only.
+    let data = oracle();
+    let mut db = Connection::open_in_memory().expect("db");
+    db.execute_batch(data["template"].as_str().expect("schema"))
+        .expect("schema");
+    let mut agent = data["capture"][1]["agent"].clone();
+    let thread = agent["threadId"].as_str().expect("thread").to_owned();
+    let mut run = |turn: &str, method: &str, params: Value, at: f64| {
+        agent["turnId"] = json!(turn);
+        let mut params = params;
+        params["threadId"] = json!(thread);
+        params["turnId"] = json!(turn);
+        let prepared = PreparedCapture::event(&agent, method, &params, at, at, CaptureSource::Live)
+            .expect("request");
+        let tx = db.transaction().expect("transaction");
+        let decision = decide(CaptureSnapshot::load(&tx, prepared.into()).expect("snapshot"))
+            .unwrap_or_else(|error| panic!("{method} in {turn}: {error}"));
+        decision.apply(&tx).expect("apply");
+        tx.commit().expect("commit");
+    };
+    run(
+        "turn-a",
+        "item/started",
+        json!({"item":{"id":"exec-1","type":"commandExecution","command":"sleep 600","processId":"74036"}}),
+        10.0,
+    );
+    run(
+        "turn-b",
+        "item/commandExecution/terminalInteraction",
+        json!({"itemId":"exec-1","processId":"74036","stdin":""}),
+        20.0,
+    );
+    run(
+        "turn-b",
+        "item/commandExecution/outputDelta",
+        json!({"itemId":"exec-1","delta":"line one\n"}),
+        21.0,
+    );
+    let raw: String = db
+        .query_row(
+            "SELECT record FROM analytics_items WHERE id LIKE '%:exec-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("item row");
+    let item: Value = serde_json::from_str(&raw).expect("item record");
+    assert_eq!(item["turnId"], "turn-a", "the item keeps its starting turn");
+    assert_eq!(item["stream"]["deltas"], 1, "the later delta is counted");
+}

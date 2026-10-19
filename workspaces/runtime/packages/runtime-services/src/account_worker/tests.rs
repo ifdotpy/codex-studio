@@ -3,6 +3,7 @@ mod auth_wait_schedule;
 mod claude_preparation;
 mod idle_unload;
 mod journal_cost;
+mod publication_drain;
 mod retained;
 mod steer;
 use super::*;
