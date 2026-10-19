@@ -1298,6 +1298,110 @@ async fn startup_first_pass_finishes_a_completed_restart_turn_without_new_input(
     worker.shutdown().await.unwrap();
 }
 
+/// The live 19 October 2026 shape (agents 9d10adc2, be102fa0, d0c9c794): a
+/// restart turn adopted on reattach (`continued`, outcome `active`) whose one
+/// automatic check ran while the turn was still running and answered
+/// "superseded". The turn then ended, its turn/completed never reached a
+/// committed worker, and every later worker skipped the already-claimed check.
+async fn seed_adopted_turn_checked_while_running(state: &State) {
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("seed agent");
+                    let attempt = json!({"id":"attempt-1","accountKey":"default","epoch":epoch,
+                        "threadId":"fake-thread-0","turnId":"old-turn","submitted":true,
+                        "connectionGeneration":1,"events":["annotation:input"],
+                        "activeAtReservation":false,"settingsFixed":true});
+                    let base = json!({"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0",
+                        "turnId":"old-turn","autoWake":true,"at":1.0,"connectionId":null,
+                        "startAttempt":attempt});
+                    let mut disconnect = base.clone();
+                    disconnect["source"] = json!("restart");
+                    let mut marker = base;
+                    marker["stage"] = json!("continued");
+                    marker["outcome"] = json!("active");
+                    marker["observedAt"] = json!(2.0);
+                    agent.status = studio_runtime_store::AgentStatus::Running;
+                    agent.extra.insert("threadId".into(), json!("fake-thread-0"));
+                    agent.extra.insert("turnId".into(), json!("old-turn"));
+                    agent.extra.insert("turnEpoch".into(), json!(epoch));
+                    agent.extra.insert("autoWake".into(), json!(true));
+                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.extra.insert("error".into(), Value::Null);
+                    agent.extra.insert("startAttempt".into(), attempt);
+                    agent.extra.insert("disconnectRecovery".into(), disconnect);
+                    agent.extra.insert("restartRecovery".into(), marker);
+                    let mut value = agent.value();
+                    let check = crate::recovery_policy::connection_recovery_id(&value);
+                    value["restartRecovery"]["automaticCheck"] = json!(check);
+                    value["connectionRecovery"] = json!({"at":2.0,"automatic":true,
+                        "outcome":"active","source":"native_thread_read","turnId":"old-turn",
+                        "previousError":studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR,
+                        "requestId":check,"requestState":"result",
+                        "requestReceipt":{"status":"superseded"},
+                        "requestBasis":crate::recovery_policy::connection_recovery_basis(&value)});
+                    AgentRepository::put(
+                        tx,
+                        &studio_runtime_store::AgentRecord::from_value(value)
+                            .expect("adopted agent"),
+                    )?;
+                    tx.execute(
+                        "UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'",
+                        [],
+                    )?;
+                    Ok::<(), WorkerError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .expect("seed adopted turn");
+}
+
+#[tokio::test]
+async fn a_new_connection_rechecks_an_adopted_turn_that_its_one_check_saw_running() {
+    let state = State::new().await;
+    seed_adopted_turn_checked_while_running(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let first = tokio::time::timeout(std::time::Duration::from_secs(10), peer.writes.recv())
+        .await
+        .expect("the new connection reads native history for the adopted turn")
+        .expect("provider session remains open");
+    assert_eq!(first.value["method"], "thread/read", "{}", first.value);
+    let _ignored = first.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    peer.reply(
+        &first.value,
+        json!({"thread":{"id":"fake-thread-0","status":{"type":"notLoaded"}}}),
+    )
+    .await;
+    for method in ["thread/turns/list", "thread/read"] {
+        let request = peer.write(method).await;
+        let result = if method == "thread/read" {
+            json!({"thread":{"id":"fake-thread-0","status":{"type":"notLoaded"}}})
+        } else {
+            json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":"completed",
+                "items":[{"id":"answer","type":"agentMessage","text":"after the check"}]}]})
+        };
+        peer.reply(&request, result).await;
+    }
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "completed", "{record}");
+    assert_eq!(record["restartRecovery"]["stage"], "finished", "{record}");
+    assert_eq!(record["lastCompletedTurn"], "old-turn");
+    assert_eq!(record["lastAnswer"], "after the check");
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let state = State::new().await;

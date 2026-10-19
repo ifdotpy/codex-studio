@@ -798,23 +798,33 @@ impl Worker {
             uuid::Uuid::new_v4()
         );
         let deadline = tokio::time::Instant::now() + IDLE_REQUEST_TIMEOUT;
-        let prepared = self
-            .control
-            .prepare(RequestSpec {
-                id: RequestId::String(operation.clone()),
-                operation_id: OperationId(operation.clone()),
-                method,
-                thread_id: params["threadId"].as_str().map(str::to_owned),
-                params,
-                lightweight: true,
-                timeout_ms: IDLE_REQUEST_TIMEOUT
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX),
-            })
-            .await;
-        let Ok(prepared) = prepared else {
-            return Ok(None);
+        let control = self.control.clone();
+        // The session admits a preparation only after it hands its held journal
+        // frame to this worker, so keep reading events while it waits.
+        let prepared = match self
+            .pump_until(
+                control.prepare(RequestSpec {
+                    id: RequestId::String(operation.clone()),
+                    operation_id: OperationId(operation.clone()),
+                    method,
+                    thread_id: params["threadId"].as_str().map(str::to_owned),
+                    params,
+                    lightweight: true,
+                    timeout_ms: IDLE_REQUEST_TIMEOUT
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                }),
+            )
+            .await
+        {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(_not_prepared)) => return Ok(None),
+            Err(WorkerError::Closed) => {
+                self.closing = true;
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
         };
         let observed_generation = *self.idle_state_changes.borrow();
         if let Some(thread) = unsubscribe_thread.as_deref()
@@ -839,7 +849,6 @@ impl Worker {
             self.request_waiters.remove(&operation);
             return Ok(None);
         }
-        let control = self.control.clone();
         let outcome = match self.pump_until(control.submit(prepared)).await {
             Ok(Ok(_ticket)) => self
                 .pump_until(tokio::time::timeout_at(deadline, response))

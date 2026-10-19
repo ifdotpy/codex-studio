@@ -2658,8 +2658,10 @@ impl Worker {
         }
         let control = self.control_for_actor(Some(agent_id))?;
         let request_id = RequestId::String(operation.clone());
-        let prepared = control
-            .prepare(RequestSpec {
+        // The session admits a preparation only after it hands its held journal
+        // frame to this worker, so keep reading events while it waits.
+        let prepared = self
+            .drive(control.prepare(RequestSpec {
                 id: request_id,
                 operation_id: OperationId(operation.clone()),
                 method: Method::AccountLoginStart,
@@ -2667,7 +2669,7 @@ impl Worker {
                 thread_id: None,
                 lightweight: false,
                 timeout_ms: self.timeout_ms,
-            })
+            }))
             .await?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.request_waiters.insert(operation.clone(), reply);

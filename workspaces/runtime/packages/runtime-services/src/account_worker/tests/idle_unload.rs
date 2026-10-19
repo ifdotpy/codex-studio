@@ -362,3 +362,75 @@ async fn committed_setting_and_agent_changes_wake_idle_reconciliation() {
         .expect("agent and event commits wake idle workers")
         .expect("idle change watch remains open");
 }
+
+/// A restarted backend can attach behind more provider frames than the event
+/// lane holds. Live 2026-10-19: the idle snapshot's `thread/loaded/list`
+/// preparation waited for the session, the session waited to hand the next
+/// backlog frame to the worker, and the account never acknowledged a frame.
+#[tokio::test]
+async fn idle_snapshot_is_admitted_while_a_full_backlog_waits_for_the_worker() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let worker = peer.worker(state.bridge.clone()).await;
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("idle_unload_delay".into());
+    set_delay(&state, IDLE_SESSION_UNLOAD_SETTING.default).await;
+    tokio::time::timeout(PROGRESS_GUARD, state.bridge.faults.paused.notified())
+        .await
+        .expect("the enabled setting's delay read is held");
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+
+    // Drain acknowledgements beside the protocol so the fake attachment never
+    // waits on its own acknowledgement buffer.
+    let mut acks = std::mem::replace(&mut peer.acks, mpsc::channel(1).1);
+    let (acknowledged, mut acknowledged_rx) = watch::channel(0u64);
+    let drain = tokio::spawn(async move {
+        while let Some(cursor) = acks.recv().await {
+            acknowledged.send_modify(|seen| *seen = (*seen).max(cursor.0));
+        }
+    });
+
+    // Fill the worker's event lane, the session's one held frame, and the
+    // attachment buffer, so the session can take no command until the worker reads.
+    let backlog = LANE_CAPACITY + 1 + PEER_JOURNAL_CAPACITY;
+    let entries = peer.entries.clone();
+    let clock = peer.clock.clone();
+    let generation = peer.generation;
+    let start = peer.cursor;
+    tokio::time::timeout(PROGRESS_GUARD, async move {
+        for cursor in start + 1..=start + backlog as u64 {
+            let entry = JournalEntry {
+                received_at_ms: clock.now_ms(),
+                cursor: EventCursor(cursor),
+                generation,
+                payload: JournalPayload::Stderr(json!({"data": format!("backlog {cursor}\n")})),
+            };
+            entries.send(entry).await.unwrap();
+        }
+    })
+    .await
+    .expect("the backlog fills the lane while the worker is held");
+    peer.cursor = start + backlog as u64;
+    state.bridge.faults.release.notify_one();
+
+    let wire = tokio::time::timeout(PROGRESS_GUARD, peer.writes.recv())
+        .await
+        .expect("the snapshot request is admitted behind the held backlog")
+        .expect("provider session remains open");
+    assert_eq!(wire.value["method"], "thread/loaded/list");
+    let _ignored = wire.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    let reply = peer
+        .frame(json!({"id": wire.value["id"], "result": {"data": [THREAD], "nextCursor": null}}))
+        .await;
+    tokio::time::timeout(
+        PROGRESS_GUARD,
+        acknowledged_rx.wait_for(|seen| *seen >= reply),
+    )
+    .await
+    .expect("the backlog and the snapshot reply are acknowledged")
+    .unwrap();
+    worker_barrier(&worker).await;
+    drain.abort();
+}
