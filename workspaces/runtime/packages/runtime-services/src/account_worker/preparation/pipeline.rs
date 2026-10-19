@@ -891,10 +891,35 @@ fn execution_cwd(record: &Value, validated_workspace_cwd: &Path) -> Option<Strin
     }
 }
 
-fn apply_vm_reviewer_permissions(params: &mut serde_json::Map<String, Value>, vm_reviewer: bool) {
-    if vm_reviewer {
-        params.insert("approvalPolicy".into(), json!("never"));
-        params.insert("sandboxPolicy".into(), json!({"type":"readOnly"}));
+/// The turn permissions of a VM reviewer. Its line is read-only on disk and owned by root. With
+/// the private scratch folder of a current guest (`layrScratch`), it may write only there. It
+/// has no network access; it reads states through layr outside its sandbox (Python's
+/// `layr_read` tool). Without a scratch folder (an older guest) it stays read-only. Python keeps
+/// the same rule (codex_vm_agents.reviewer_permissions).
+fn vm_reviewer_permissions(record: &Value) -> Option<Value> {
+    if record["executionMode"] != "vm" || record["role"] != "reviewer" {
+        return None;
+    }
+    let scratch = record["layrScratch"]
+        .as_str()
+        .filter(|path| !path.is_empty());
+    let sandbox = match scratch {
+        Some(scratch) => {
+            json!({"type":"workspaceWrite","writableRoots":[scratch],"networkAccess":false})
+        }
+        None => json!({"type":"readOnly"}),
+    };
+    Some(json!({"approvalPolicy":"never","sandboxPolicy":sandbox}))
+}
+
+fn apply_vm_reviewer_permissions(
+    params: &mut serde_json::Map<String, Value>,
+    vm_reviewer: Option<&Value>,
+) {
+    if let Some(Value::Object(permissions)) = vm_reviewer {
+        for (key, value) in permissions {
+            params.insert(key.clone(), value.clone());
+        }
     }
 }
 
@@ -924,8 +949,10 @@ fn monitor_command_settings(
                 .ok_or_else(|| refusal("monitor-preparation/image-temp-required".into()))?;
             json!({"approvalPolicy":"never","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[temp],"networkAccess":false}})
         }
-    } else if record["executionMode"] == "vm" && role == thread::Role::Reviewer {
-        json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
+    } else if let Some(permissions) =
+        vm_reviewer_permissions(record).filter(|_| role == thread::Role::Reviewer)
+    {
+        permissions
     } else {
         match yolo_mode {
             Some(true) => {
@@ -1370,7 +1397,7 @@ pub(crate) async fn prepare_ready(
         let cwd = token_for_snapshot
             .validate(tx)?
             .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
-        let vm_reviewer = frozen["executionMode"] == "vm" && frozen["role"] == "reviewer";
+        let vm_reviewer = vm_reviewer_permissions(&frozen);
         if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
             frozen["cwd"] = json!(execution_cwd);
         }
@@ -1505,7 +1532,7 @@ pub(crate) async fn prepare_ready(
         },
     )
     .map_err(|e| refusal(format!("thread-preparation/{e:?}")))?;
-    apply_vm_reviewer_permissions(&mut params, vm_reviewer);
+    apply_vm_reviewer_permissions(&mut params, vm_reviewer.as_ref());
     params.insert("input".into(), json!(compiled.provider_inputs));
     params.insert(
         "clientUserMessageId".into(),
@@ -2037,7 +2064,7 @@ mod daybreak_tests {
         );
 
         let vm_reviewer = monitor_command_settings(
-            &json!({"executionMode":"vm","sandbox":"danger-full-access"}),
+            &json!({"executionMode":"vm","role":"reviewer","sandbox":"danger-full-access"}),
             "/workspace",
             thread::Role::Reviewer,
             false,
@@ -2056,9 +2083,24 @@ mod daybreak_tests {
             ("approvalPolicy".into(), json!("never")),
             ("sandboxPolicy".into(), json!({"type":"dangerFullAccess"})),
         ]);
-        apply_vm_reviewer_permissions(&mut yolo_turn, true);
+        let old_guest = vm_reviewer_permissions(&json!({"executionMode":"vm","role":"reviewer"}));
+        apply_vm_reviewer_permissions(&mut yolo_turn, old_guest.as_ref());
         assert_eq!(yolo_turn["approvalPolicy"], "never");
         assert_eq!(yolo_turn["sandboxPolicy"], json!({"type":"readOnly"}));
+
+        // A reviewer of a current guest writes only its scratch folder, without network.
+        let scratch = vm_reviewer_permissions(&json!({
+            "executionMode":"vm","role":"reviewer","layrScratch":"/home/r/.studio/scratch/a"
+        }));
+        apply_vm_reviewer_permissions(&mut yolo_turn, scratch.as_ref());
+        assert_eq!(
+            yolo_turn["sandboxPolicy"],
+            json!({"type":"workspaceWrite","writableRoots":["/home/r/.studio/scratch/a"],"networkAccess":false})
+        );
+        assert_eq!(
+            vm_reviewer_permissions(&json!({"executionMode":"vm","role":"implementer"})),
+            None
+        );
     }
 
     #[test]

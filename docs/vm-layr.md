@@ -173,6 +173,47 @@ writes it again if the attempt fails. The project entity changes when an attempt
 gets the lock, when it ends, at backend start, and with each project write.
 Linux servers send no `layrReadiness`.
 
+## Reviewers
+
+A reviewer line (role `reviewer`) is a read-only copy of the reviewed state: root owns it, its
+btrfs subvolume is read-only, and an ACL lets the reviewer user read it. The reviewer reads other
+states through layr, with its own Linux user:
+
+- A Codex reviewer turn has no network access, so the Codex Linux sandbox refuses `connect` on
+  every socket, also on `/run/layr/layr.sock` ("Operation not permitted"). Studio gives each VM
+  reviewer the `layr_read` tool (`codex_vm_agents.py`): it runs one read command of
+  `LAYR_READ_COMMANDS` (`status`, `diff`, `show`, `log`, `rev-parse`, `merge-base`, `blame`, `grep`,
+  `ls-files`), optionally after `--line <line>`, in the reviewer's line, as the reviewer's user,
+  outside the sandbox (guest method `layr.exec`). `--project`, `-C` and `layr try` stay out:
+  `try` runs any command.
+- Every reviewer user is in the `studio-reviewers` group. Before a reviewer joins it, the broker
+  adds the project's layr deny rule for that group (`REVIEWER_DENY` in `layr_agents.py`):
+  `line.create`, `merge`, `line.manage`, `tag`, `push`, `config`, `gc` and `fsck`. A change inside a
+  line belongs to its owner, and a reviewer owns no line. A Claude reviewer has no sandbox and
+  reaches the socket itself; the deny rule applies to it too.
+- The reviewer has a private writable folder, `~/.studio/scratch/<agent ID>` (mode 0700). Its
+  processes get it as `TMPDIR`; the line record names it as `scratch`. A Codex reviewer turn uses
+  the `workspaceWrite` sandbox with that folder as its only writable root. A reviewer of a guest
+  without scratch folders keeps the `readOnly` sandbox.
+- Acceptance of a reviewer's task result does not merge: a reviewer line has no changes.
+
+## Task handoff
+
+Each task that a VM lead creates gets a handoff folder,
+`/var/lib/codex-studio/handoff/<project ID>/<task ID>` (guest method `handoff.ensure`). The task
+records it as `handoff`, and the assignment event of the assignee names it. The lead puts files
+for the assignee there: logs, timings, profile data, and copies of files from its line or home.
+
+- Root owns `handoff/` (0711) and the project folder in it (group: the project's agents, 0750).
+- The lead owns the task folder (group: the project's agents, mode 2750). Its default ACL gives
+  the group read access to new files whatever the umask of the lead. A copy that keeps a private
+  mode (`cp -p`) stays private; `chmod -R g+rX <folder>` opens it.
+- Every agent of the project reads the folder; other projects' agents cannot pass the project
+  folder. A Codex lead without full access gets the handoff folders as a writable root.
+- The task ID of a create with a request ID comes from that ID, so a retry gets the same folder.
+  When the guest cannot make the folder, the task has `handoffError` instead.
+- Studio does not remove handoff folders. The lead removes the files that it no longer needs.
+
 ## Project secrets
 
 Each layr project can have secrets: named values that every agent process of the project gets

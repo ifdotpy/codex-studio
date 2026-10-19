@@ -1182,6 +1182,10 @@ impl Preparation<'_> {
                 ] {
                     current[target] = result[source].clone();
                 }
+                // A reviewer line of a current guest has a private writable folder.
+                if let Some(scratch) = result.get("scratch").filter(|value| value.is_string()) {
+                    current["layrScratch"] = scratch.clone();
+                }
                 current["environment"] = serde_json::json!("linux");
                 current["worktree"] = serde_json::json!(false);
                 current["layrReady"] = serde_json::json!(true);
