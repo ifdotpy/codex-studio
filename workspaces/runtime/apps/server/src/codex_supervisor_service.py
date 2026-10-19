@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from codex_layout import REPOSITORY_ROOT
+from codex_remote import PUBLIC_ORIGIN_ENVIRONMENT
 
 
 def _resource_path(resources: Path, relocated: str, legacy: str) -> Path:
@@ -59,7 +60,7 @@ def _recovery_script(resources: Path) -> Path:
 BACKEND_SELECTION_ENV = 'CODEX_DESKTOP_BACKEND'
 BACKEND_SELECTIONS = ('python', 'rust')
 # Environment the Rust server reads at startup; services carry it from the operator's shell.
-RUST_SERVICE_ENVIRONMENT = ('CODEX_CANVAS_PUBLIC_ORIGIN', 'CODEX_BIN', 'CODEX_NODE')
+RUST_SERVICE_ENVIRONMENT = (PUBLIC_ORIGIN_ENVIRONMENT, 'CODEX_BIN', 'CODEX_NODE')
 # Values of the `backend` field in background-recovery.json. The owner is
 # recover_backend.py (`BACKEND_SELECTIONS`, validated in `load_config`); the parity test
 # checks this copy against it.

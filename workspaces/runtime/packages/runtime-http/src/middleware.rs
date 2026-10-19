@@ -111,6 +111,13 @@ pub(crate) async fn boundary(
             return response;
         }
     }
+    // Only a forwarded Serve request uses the origin. Local requests do not
+    // read the Serve configuration.
+    let serve_origin = if forwarded(headers) {
+        state.serve_origin()
+    } else {
+        None
+    };
     if api
         && !trusted(
             headers,
@@ -118,7 +125,7 @@ pub(crate) async fn boundary(
             &state.token,
             peer_loopback,
             state.port,
-            &state.public_origin,
+            &serve_origin,
             &path,
         )
     {

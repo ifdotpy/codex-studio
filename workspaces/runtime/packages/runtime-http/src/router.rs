@@ -117,6 +117,8 @@ pub struct HttpState {
     pub(crate) app_server_log: Option<OperationalLog>,
     pub(crate) port: u16,
     pub(crate) public_origin: Option<String>,
+    /// The live Serve configuration. `None` keeps `public_origin` fixed (tests).
+    remote_access: Option<Arc<studio_runtime_services::remote_access::RemoteAccess>>,
     pub(crate) validators: Registry,
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) diagnostics_provider:
@@ -251,6 +253,7 @@ impl HttpState {
             app_server_log: None,
             port,
             public_origin,
+            remote_access: None,
             validators: Registry::default(),
             store,
             diagnostics_provider: None,
@@ -292,6 +295,24 @@ impl HttpState {
     ) -> Self {
         self.server_discovery = Some(discovery);
         self
+    }
+
+    /// Recheck the Serve configuration that produced `public_origin` for each
+    /// remote request, so disabling remote access needs no restart.
+    pub fn with_remote_access(
+        mut self,
+        remote_access: Arc<studio_runtime_services::remote_access::RemoteAccess>,
+    ) -> Self {
+        self.remote_access = Some(remote_access);
+        self
+    }
+
+    /// The Serve origin that a remote request may use now.
+    pub(crate) fn serve_origin(&self) -> Option<String> {
+        match &self.remote_access {
+            Some(access) => access.still_allows(self.public_origin.as_deref()),
+            None => self.public_origin.clone(),
+        }
     }
 
     /// Attach the host Tailscale whoami probe used when creating federation invites.

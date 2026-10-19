@@ -145,6 +145,7 @@ pub mod recovery_policy;
 pub mod recovery_runtime;
 pub mod recovery_store;
 pub mod relocation;
+pub mod remote_access;
 pub mod remote_transport;
 pub mod resource_notify;
 pub mod rules;

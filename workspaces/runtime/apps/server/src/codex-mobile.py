@@ -28,14 +28,14 @@ def main():
     if status.get('BackendState') != 'Running':
         parser.error('Connect Tailscale first')
     hostname = status.get('Self', {}).get('DNSName', '').rstrip('.')
-    from codex_remote import validate_origin
+    from codex_remote import REMOTE_ACCESS_FILE, validate_origin
     origin = validate_origin('https://' + hostname)
     target = f'http://127.0.0.1:{args.port}'
     current = read('serve', 'status', '--json')
     expected = current.get('Web', {}).get(hostname + ':443', {}).get('Handlers', {}).get('/', {}).get('Proxy')
     if current and (expected != target or current.get('AllowFunnel')):
         parser.error('Tailscale Serve already has another configuration. Preserve it and configure this target manually.')
-    path = Path(server['stateDir']) / 'remote-access.json'
+    path = Path(server['stateDir']) / REMOTE_ACCESS_FILE
     previous = path.read_bytes() if path.exists() else None
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps({'enabled': True, 'origin': origin}) + '\n')

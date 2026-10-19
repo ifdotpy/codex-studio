@@ -91,11 +91,13 @@ def _source_root(configured: str | None) -> Path:
 
 
 def _child_env(root: Path, state: Path, origin: str) -> dict[str, str]:
+    from codex_remote import PUBLIC_ORIGIN_ENVIRONMENT
+
     env = os.environ.copy()
     env.update({
         "CODEX_AGENTS_STATE_DIR": str(state),
         "CODEX_AGENTS_SUPERVISOR_MODE": "1",
-        "CODEX_CANVAS_PUBLIC_ORIGIN": origin,
+        PUBLIC_ORIGIN_ENVIRONMENT: origin,
         "CODEX_STUDIO_SOURCE_DIR": str(root),
     })
     return env

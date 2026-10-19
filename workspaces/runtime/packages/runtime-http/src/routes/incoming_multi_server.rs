@@ -72,7 +72,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             &state.token,
             peer_loopback,
             state.port,
-            &state.public_origin,
+            &state.serve_origin(),
             request.uri().path(),
         )
     {
