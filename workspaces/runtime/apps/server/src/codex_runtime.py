@@ -5919,6 +5919,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             import importlib
             if actor.get("role") != "reviewer":
                 definitions.append(importlib.import_module("codex_host_exec").tool_definition())
+            else:
+                from codex_vm_agents import layr_read_tool_definition
+                definitions.append(layr_read_tool_definition())
         return definitions
 
     @staticmethod
@@ -5954,7 +5957,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "networkAccess": False}}
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
         if a.get("executionMode") == "vm" and a.get("role") == "reviewer":
-            return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
+            from codex_vm_agents import reviewer_permissions
+            return reviewer_permissions(a)
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
         if a.get("yoloMode") is False:
@@ -5962,6 +5966,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if a["role"] != "reviewer":
                 progress = self.progress_file(a) if a.get("isLead") else None
                 roots = [a["cwd"]] + ([str(progress.parent)] if progress else [])
+                if a.get("isLead") and a.get("layrHandoffRoot"):
+                    # A VM lead writes the handoff folders of its tasks.
+                    roots.append(str(a["layrHandoffRoot"]))
                 sandbox = {"type": "workspaceWrite", "writableRoots": roots, "networkAccess": False}
             return {"approvalPolicy": "on-request", "sandboxPolicy": sandbox}
         return {}
@@ -9447,6 +9454,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         raise ValueError("host_exec requires a writable layr agent")
                     import importlib
                     value = importlib.import_module("codex_host_exec").run_tool(self, a, args, key)
+                elif name == "layr_read":
+                    from codex_vm_agents import run_layr_read
+                    value = run_layr_read(self, a, args, key)
                 elif name in {'orchestration_move', 'orchestration_teleport'}:
                     try:
                         value = self.multi_server().moves().start(a, args, key)

@@ -4643,6 +4643,11 @@ export interface components {
        */
       layrError?: string;
       /**
+       * Layrhandoffroot
+       * @default null
+       */
+      layrHandoffRoot?: string;
+      /**
        * Layrhome
        * @default null
        */
@@ -4667,6 +4672,11 @@ export interface components {
        * @default null
        */
       layrReady?: boolean;
+      /**
+       * Layrscratch
+       * @default null
+       */
+      layrScratch?: string;
       /**
        * Layrstateid
        * @default null
@@ -26901,6 +26911,16 @@ export interface components {
             | "accepted"
             | "cancelled"
           );
+      /**
+       * Handoff
+       * @default null
+       */
+      handoff?: string;
+      /**
+       * Handofferror
+       * @default null
+       */
+      handoffError?: string;
       /** Id */
       id: string;
       /**

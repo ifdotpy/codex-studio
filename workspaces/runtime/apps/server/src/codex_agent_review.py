@@ -121,8 +121,9 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
         if state is None:
             state = guest_request(rt, 'line.save', {'agentId': actor['id'], 'turnId': 'review:' + key},
                                   'layr-review-state:' + key)['stateId']
-        prompt = ('Review layr state ' + state + '. Use layr show and layr diff. '
-                  'Your line is read-only. Report defects with file paths and evidence. '
+        prompt = ('Review layr state ' + state + '. Read it with the layr_read tool (show, diff, log). '
+                  'Your line is read-only; write notes and copies only in $TMPDIR. '
+                  'Report defects with file paths and evidence. '
                   'Review target: ' + json.dumps(target, ensure_ascii=False))
         vm_spec: dict[str, Any] = {'name': 'Review', 'role': 'reviewer', 'prompt': prompt[:32000], 'base_ref': state,
                 **{name: args[name] for name in ('model', 'effort', 'cwd') if name in args}}

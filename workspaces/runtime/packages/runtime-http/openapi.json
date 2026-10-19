@@ -6506,6 +6506,11 @@
             "title": "Layrerror",
             "type": "string"
           },
+          "layrHandoffRoot": {
+            "default": null,
+            "title": "Layrhandoffroot",
+            "type": "string"
+          },
           "layrHome": {
             "default": null,
             "title": "Layrhome",
@@ -6530,6 +6535,11 @@
             "default": null,
             "title": "Layrready",
             "type": "boolean"
+          },
+          "layrScratch": {
+            "default": null,
+            "title": "Layrscratch",
+            "type": "string"
           },
           "layrStateId": {
             "default": null,
@@ -60688,6 +60698,16 @@
               }
             ],
             "title": "Displaystatus"
+          },
+          "handoff": {
+            "default": null,
+            "title": "Handoff",
+            "type": "string"
+          },
+          "handoffError": {
+            "default": null,
+            "title": "Handofferror",
+            "type": "string"
           },
           "id": {
             "title": "Id",

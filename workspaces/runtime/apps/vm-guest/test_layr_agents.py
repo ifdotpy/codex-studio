@@ -1,8 +1,10 @@
 """Owned line setup rolls back after failures at privileged boundaries."""
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -11,7 +13,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError, atomic_json
-from layr_agents import AgentHandlers
+import layr_agents
+from layr_agents import AgentHandlers, PRIVATE_FOLDER, REVIEWER_DENY, REVIEWERS_GROUP
 
 
 class ReviewerLines(unittest.IsolatedAsyncioTestCase):
@@ -30,11 +33,12 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
                        "owner": "parent", "uid": 1010, "gid": 1010, "home": str(self.root), "readOnly": False}
         atomic_json(self.handlers.record_path(self.parent_id), self.parent)
         self.user = {"owner": "reviewer", "uid": 1011, "gid": 1011, "home": str(self.root)}
-        self.calls, self.lines = [], set()
+        self.calls, self.lines, self.users = [], set(), []
         self.failure = None
 
         async def command(cwd, arguments, **options):
             self.calls.append(tuple(arguments))
+            self.users.append((tuple(arguments), options.get("user")))
             if arguments[:2] == ["setfacl", "--version"] and self.failure == "preflight":
                 raise GuestError("operation_failed", "setfacl is absent")
             if arguments[:2] == ["setfacl", "-RP"] and self.failure in {"acl", "rollback"}:
@@ -66,8 +70,27 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
 
     async def branch(self):
         with patch("layr_agents._user", return_value=self.user), \
-                patch("layr_agents.join_project_group", side_effect=lambda user, project: user):
+                patch("layr_agents.join_project_group", side_effect=lambda user, project: user), \
+                patch("layr_agents.ensure_group"), \
+                patch("layr_agents.join_reviewers", side_effect=lambda user: self.calls.append(("join-reviewers",))):
             return await self.handlers.dispatch("reviewer-create", "line.branch", self.params, None)
+
+    async def test_a_reviewer_reads_through_layr_and_writes_only_its_scratch_folder(self):
+        result = await self.branch()
+        # layr takes the line-changing actions away from reviewers before the user joins the group.
+        deny = ("--project", "proof", "access", "deny", "@" + REVIEWERS_GROUP, *REVIEWER_DENY)
+        self.assertIn(deny, self.calls)
+        self.assertLess(self.calls.index(deny), self.calls.index(("join-reviewers",)))
+        self.assertTrue({"line.create", "merge", "line.manage", "push"} <= set(REVIEWER_DENY))
+        self.assertNotIn("try", REVIEWER_DENY)
+        self.assertNotIn("read", REVIEWER_DENY)
+        # The reviewer makes its own private folder, which is its TMPDIR.
+        scratch = str(self.root / ".studio/scratch" / self.agent_id)
+        self.assertEqual(result["scratch"], scratch)
+        self.assertIn((("python3", "-c", PRIVATE_FOLDER, scratch), self.user), self.users)
+        context = self.handlers.context(self.agent_id)
+        self.assertEqual(self.handlers.agent_env(context)["TMPDIR"], scratch)
+        self.assertIn("TMPDIR", layr_agents.LAUNCH_ENV_NAMES)
 
     async def test_missing_acl_does_not_create_a_line(self):
         self.failure = "preflight"
@@ -110,6 +133,61 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stateId"], "state-0")
         self.assertTrue(self.record.is_file())
         self.assertIn(("btrfs", "property", "set", "-ts", str(self.target), "ro", "true"), self.calls)
+
+
+
+class TaskHandoff(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        (self.root / "store/projects/proof/lines/main").mkdir(parents=True)
+        with patch.object(AgentHandlers, "join_project_groups"):
+            self.handlers = AgentHandlers(self.root / "state", self.root / "store")
+        self.lead_id, self.worker_id = str(uuid.uuid4()), str(uuid.uuid4())
+        (self.root / "store/projects/proof/lines" / self.worker_id).mkdir()
+        ids = {"owner": "lead", "uid": os.getuid(), "gid": os.getgid(), "home": str(self.root), "readOnly": False}
+        atomic_json(self.handlers.record_path(self.lead_id),
+                    {"agentId": self.lead_id, "projectId": "proof", "line": "main", **ids})
+        atomic_json(self.handlers.record_path(self.worker_id),
+                    {"agentId": self.worker_id, "projectId": "proof", "line": self.worker_id, **ids})
+        self.calls = []
+
+        async def command(cwd, arguments, **options):
+            self.calls.append(tuple(arguments))
+            return ""
+
+        self.handlers.command = command
+        group = type("Group", (), {"gr_gid": os.getgid()})()
+        self.group = patch("layr_agents.grp.getgrnam", return_value=group)
+        self.group.start()
+
+    async def asyncTearDown(self):
+        self.group.stop()
+        self.temp.cleanup()
+
+    async def ensure(self, agent, task):
+        return await self.handlers.dispatch("handoff-" + task, "handoff.ensure", {"agentId": agent, "taskId": task}, None)
+
+    async def test_the_lead_gets_a_task_folder_that_the_project_group_reads(self):
+        task = str(uuid.uuid4())
+        result = await self.ensure(self.lead_id, task)
+        folder = Path(result["path"])
+        self.assertEqual(folder, self.root / "handoff/proof" / task)
+        self.assertEqual(result["root"], str(self.root / "handoff/proof"))
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o2750)
+        self.assertEqual(stat.S_IMODE(folder.parent.stat().st_mode), 0o750)
+        self.assertEqual(stat.S_IMODE(folder.parent.parent.stat().st_mode), 0o711)
+        # New files are readable by the group whatever the umask of the lead.
+        self.assertEqual(self.calls, [("setfacl", "-d", "-m", "u::rwX,g::r-X,o::---", str(folder))])
+        self.assertEqual(await self.ensure(self.lead_id, task), result)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_only_the_lead_has_task_folders(self):
+        with self.assertRaises(GuestError):
+            await self.ensure(self.worker_id, str(uuid.uuid4()))
+        with self.assertRaises(ValueError):
+            await self.ensure(self.lead_id, "../escape")
+        self.assertFalse((self.root / "handoff/proof").exists())
 
 
 if __name__ == "__main__":

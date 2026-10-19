@@ -49,6 +49,8 @@ class Guest(fixture.NativeGuest):
         # The output of `layr op log` in the line.
         self.op_log = ''
         self.merges = 0
+        # A guest from before reviewer scratch folders returns none.
+        self.reviewer_scratch = True
         self.state_dir = root / 'vm-state'
         self.during_import = []
         self.fail_import = False
@@ -110,6 +112,8 @@ class Guest(fixture.NativeGuest):
             result = {'agentId': agent, 'projectId': params['projectId'], 'line': line,
                       'cwd': str(cwd), 'path': str(cwd), 'home': str(self.project.parent / owner),
                       'owner': owner, 'stateId': str(uuid.uuid4()), 'readOnly': params.get('readOnly', False)}
+            if result['readOnly'] and self.reviewer_scratch:
+                result['scratch'] = result['home'] + '/.studio/scratch/' + agent
             self.lines[agent] = result
         elif method == 'agent.context':
             result = self.lines[params['agentId']]
@@ -136,6 +140,11 @@ class Guest(fixture.NativeGuest):
             result = {'state': 'removed'}
         elif method == 'layr.credentials.sync':
             result = {'synced': True}
+        elif method == 'handoff.ensure':
+            if self.lines[params['agentId']]['line'] != 'main':
+                raise LinuxVMError('Linux guest handoff.ensure', code='invalid_params')
+            root = self.project.parent / 'guest-handoff' / self.lines[params['agentId']]['projectId']
+            result = {'path': str(root / params['taskId']), 'root': str(root)}
         elif method == 'layr.exec':
             self.exec_argv.append(params['argv'])
             stdout = (b'state-from-exec\n' if params['argv'][1] == 'rev-parse'
@@ -241,8 +250,17 @@ class VmAgents(unittest.TestCase):
         self.assertNotEqual(worker['layrLine'], lead['layrLine'])
         self.assertTrue(self.guest.lines[reviewer['id']]['readOnly'])
         self.assertNotIn('host_exec', {t['name'] for t in self.runtime.tool_definitions(reviewer)})
-        self.assertEqual(self.runtime.turn_permissions(reviewer)['sandboxPolicy']['type'], 'readOnly')
-        self.assertEqual(len(self.guest.starts), 3)
+        # The reviewer writes only its scratch folder, without network; layr_read reads states.
+        self.assertEqual(reviewer['layrScratch'], self.guest.lines[reviewer['id']]['scratch'])
+        self.assertEqual(self.runtime.turn_permissions(reviewer), {'approvalPolicy': 'never', 'sandboxPolicy': {
+            'type': 'workspaceWrite', 'writableRoots': [reviewer['layrScratch']], 'networkAccess': False}})
+        self.assertIn('layr_read', {t['name'] for t in self.runtime.tool_definitions(reviewer)})
+        self.assertNotIn('layr_read', {t['name'] for t in self.runtime.tool_definitions(worker)})
+        self.guest.reviewer_scratch = False
+        old_guest = self.runtime.prepare(self.worker(lead, reviewer=True))
+        self.assertNotIn('layrScratch', old_guest)
+        self.assertEqual(self.runtime.turn_permissions(old_guest)['sandboxPolicy'], {'type': 'readOnly'})
+        self.assertEqual(len(self.guest.starts), 4)
         for start in self.guest.starts:
             self.assertTrue(start['layr'])
             self.assertEqual(start['transport'], 'native')
@@ -562,6 +580,42 @@ class VmAgents(unittest.TestCase):
             internal = self.runtime.new_lead({'id': str(uuid.uuid4()), 'cwd': str(self.project), 'reuse_empty': False})
             self.assertEqual((internal['workspaceMode'], internal['executionMode']), ('worktree', 'native'))
 
+    def test_a_task_of_a_layr_lead_gets_a_handoff_folder(self):
+        lead = prepare(self.runtime, self.lead())
+        worker = prepare(self.runtime, self.worker(lead))
+        args = {'action': 'create', 'title': 'Profile', 'owner': worker['id']}
+        task = self.runtime.work_action(lead['id'], args, 'create-profile', actor=lead['id'])
+        root = self.guest.project.parent / 'guest-handoff' / lead['layrProjectId']
+        self.assertEqual(task['handoff'], str(root / task['id']))
+        ensures = [call for call in self.guest.calls if call[0] == 'handoff.ensure']
+        self.assertEqual(ensures, [('handoff.ensure', {'agentId': lead['id'], 'taskId': task['id']},
+                                    {'request_id': 'layr-handoff:' + task['id'], 'timeout': 30})])
+        # The assignee learns the folder with its assignment.
+        with self.runtime.read_db() as db:
+            ready = [json.loads(row[0]) for row in db.execute(
+                "SELECT text FROM runtime_events WHERE agent=? AND kind='work_ready'", (worker['id'],))]
+        self.assertEqual([event['handoff'] for event in ready], [task['handoff']])
+        # A retry with the same request ID returns the same task and folder.
+        self.assertEqual(self.runtime.work_action(lead['id'], args, 'create-profile', actor=lead['id']), task)
+        self.assertEqual(len(self.runtime.work_action(lead['id'], {'action': 'list'})['items']), 1)
+        # A Codex lead without full access may write the handoff folders.
+        current = self.runtime.agent(lead['id'])
+        self.assertEqual(current['layrHandoffRoot'], str(root))
+        roots = self.runtime.turn_permissions({**current, 'yoloMode': False})['sandboxPolicy']['writableRoots']
+        self.assertIn(str(root), roots)
+
+    def test_a_guest_failure_leaves_the_task_without_a_handoff_folder(self):
+        lead = prepare(self.runtime, self.lead())
+        def refuse(method, params=None, **options):
+            if method == 'handoff.ensure':
+                raise LinuxVMError('Linux guest handoff.ensure: The layr agent method is not supported',
+                                   code='invalid_request')
+            return Guest.request(self.guest, method, params, **options)
+        with patch.object(self.guest, 'request', side_effect=refuse):
+            task = self.runtime.work_action(lead['id'], {'action': 'create', 'title': 'Task'}, actor=lead['id'])
+        self.assertNotIn('handoff', task)
+        self.assertIn('not supported', task['handoffError'])
+
     def test_turn_tick_selects_only_vm_agents_with_unsaved_turns(self):
         from codex_vm_agents import tick
         base = self.runtime.new_lead({'cwd': str(self.project), 'workspaceMode': 'worktree'})
@@ -638,6 +692,39 @@ class VmAgents(unittest.TestCase):
             self.runtime.dynamic(denied, 'default', self.runtime.agent_connection(reviewer))
             self.assertFalse(self.runtime.reply.call_args.args[0]['result']['success'])
             self.assertEqual(len(calls), 1)
+
+    def test_a_reviewer_reads_states_with_layr_read_outside_its_sandbox(self):
+        lead = self.runtime.prepare(self.lead())
+        reviewer = self.runtime.prepare(self.worker(lead, reviewer=True))
+        message = {'id': 92, 'method': 'item/tool/call', 'params': {
+            'threadId': reviewer['threadId'], 'callId': 'read-1', 'tool': 'layr_read',
+            'arguments': {'args': ['--line', 'main', 'diff', 'abc1234', 'def5678']}}}
+        self.runtime.reply = unittest.mock.Mock()
+        connection = self.runtime.agent_connection(reviewer)
+        self.runtime.dynamic(message, 'default', connection)
+        result = self.runtime.reply.call_args.args[0]['result']
+        self.assertTrue(result['success'], result)
+        # The guest runs it as the reviewer's own user (layr.exec), where layr applies its role.
+        execs = [call for call in self.guest.calls if call[0] == 'layr.exec']
+        self.assertEqual([call[1] for call in execs], [{'agentId': reviewer['id'],
+                          'argv': ['layr', '--line', 'main', 'diff', 'abc1234', 'def5678']}])
+        self.runtime.dynamic(message, 'default', connection)
+        self.assertEqual(len([call for call in self.guest.calls if call[0] == 'layr.exec']), 1)
+        # Commands that change lines or run code, and other projects, stay out.
+        for number, args in enumerate((['commit', '-m', 'x'], ['try', 'abc', '--', 'sh'], ['branch', 'x'],
+                                       ['--project', 'other', 'log'], ['-C', '/', 'log'], [])):
+            refused = copy.deepcopy(message)
+            refused['params'].update(callId='refused-' + str(number), arguments={'args': args})
+            self.runtime.dynamic(refused, 'default', connection)
+            self.assertFalse(self.runtime.reply.call_args.args[0]['result']['success'], args)
+        self.assertEqual(len([call for call in self.guest.calls if call[0] == 'layr.exec']), 1)
+        # Only a VM reviewer has the tool.
+        worker = self.runtime.prepare(self.worker(lead))
+        refused = copy.deepcopy(message)
+        refused['params'].update(threadId=worker['threadId'], callId='worker-read')
+        self.runtime.dynamic(refused, 'default', self.runtime.agent_connection(worker))
+        self.assertFalse(self.runtime.reply.call_args.args[0]['result']['success'])
+        self.assertEqual(len([call for call in self.guest.calls if call[0] == 'layr.exec']), 1)
 
     def test_vm_monitors_use_guest_shell_without_mac_sdk_paths(self):
         from codex_shell import monitor_command

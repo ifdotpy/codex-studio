@@ -1381,6 +1381,10 @@ class AgentRecord(TypedDict):
     layrLine: NotRequired[str]
     layrOwner: NotRequired[str]
     layrHome: NotRequired[str]
+    # A VM reviewer's private writable folder in the guest (its TMPDIR).
+    layrScratch: NotRequired[str]
+    # The guest folder that holds a VM lead's task handoff folders.
+    layrHandoffRoot: NotRequired[str]
     layrSubpath: NotRequired[str]
     layrBaseState: NotRequired[str]
     layrStateId: NotRequired[str]
@@ -1676,6 +1680,9 @@ class WorkRecord(TypedDict):
     archive: NotRequired[WorkArchiveRecord]
     archiveIntent: NotRequired[WorkArchiveIntentRecord]
     releases: NotRequired[list[JsonValue]]
+    # A VM task's handoff folder in the guest: the lead writes it, the project's agents read it.
+    handoff: NotRequired[str]
+    handoffError: NotRequired[str]
 
 
 class WorkViewRecord(WorkRecord):

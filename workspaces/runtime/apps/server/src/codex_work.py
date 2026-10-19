@@ -54,7 +54,10 @@ class _WorkHost(RecordStore, Protocol):
     def asset_record(self: "_WorkHost", key: str, db: "sqlite3.Connection | None" = None) -> "JsonObject": ...
     def asset_view(self: "_WorkHost", asset: "JsonObject") -> "JsonObject": ...
     def _work_action(self: "_WorkHost", agent_id: str, data: "dict[str, Any]", key: str | None = None,
-                     actor: str | None = None, epoch: int | None = None, reviewed_result_id: str | None = None) -> "dict[str, Any]": ...
+                     actor: str | None = None, epoch: int | None = None, reviewed_result_id: str | None = None,
+                     prepared: "dict[str, Any] | None" = None) -> "dict[str, Any]": ...
+    def _prepare_vm_task(self: "_WorkHost", agent_id: str, key: str | None,
+                         actor: str | None) -> "dict[str, Any] | None": ...
     def _archive_work_result(self: "_WorkHost", task_id: str | None, result_id: str) -> str: ...
     def _finish_accepted_action(self: "_WorkHost", agent_id: str, result: "dict[str, Any]", key: str | None,
                                 epoch: int | None) -> "dict[str, Any]": ...
@@ -197,6 +200,9 @@ def work_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["J
 class WorkMixin:
     def work_action(self: "_WorkHost", agent_id: "str", data: "dict[str, Any]", key: "str | None"=None, actor: "str | None"=None, epoch: "int | None"=None) -> "dict[str, Any]":
         reviewed_result_id = None
+        prepared = None
+        if data.get('action') == 'create':
+            prepared = self._prepare_vm_task(agent_id, key, actor)
         if data.get('action') == 'accept':
             with self.lock, self.db() as db:
                 leader = self.checked_actor(db, agent_id, actor)
@@ -223,7 +229,7 @@ class WorkMixin:
                     if current['version'] != version or current['results'][-1]['id'] != latest['id']:
                         raise ValueError('The task changed after the layr merge; inspect the merge receipt')
                 reviewed_result_id = latest['id']
-        result = self._work_action(agent_id, data, key, actor, epoch, reviewed_result_id)
+        result = self._work_action(agent_id, data, key, actor, epoch, reviewed_result_id, prepared)
         if data.get('action') == 'submit' and result.get('results'):
             self._archive_work_result(data.get('task_id'), result['results'][-1]['id'])
         if data.get('action') != 'accept' or result.get('status') != 'accepted':
@@ -231,6 +237,20 @@ class WorkMixin:
         lock = self.__dict__.setdefault('_accepted_archive_lock', threading.RLock())
         with lock:
             return self._finish_accepted_action(agent_id, result, key, epoch)
+
+    def _prepare_vm_task(self: "_WorkHost", agent_id: "str", key: "str | None", actor: "str | None") -> "dict[str, Any] | None":
+        """The ID and handoff folder of a new task of a VM lead, made before the task record. The
+        guest call stays outside the database lock. With a request ID the task ID comes from it,
+        so a retry finds the same folder and the same receipt."""
+        with self.lock, self.db() as db:
+            a = self.checked_actor(db, agent_id, actor)
+            lead = self.agent(a['rootId'], db)
+        if lead.get('executionMode') != 'vm' or not lead.get('layrReady'):
+            return None
+        task_id = (str(uuid.uuid5(uuid.NAMESPACE_URL, 'studio-work-create:' + lead['id'] + ':' + key))
+                   if key else str(uuid.uuid4()))
+        from codex_vm_agents import task_handoff
+        return {'id': task_id, **task_handoff(cast('Runtime', self), lead, task_id)}
 
     def _finish_accepted_action(self: "_WorkHost", agent_id: "str", result: "dict[str, Any]", key: "str | None", epoch: "int | None") -> "dict[str, Any]":
         with self.lock, self.db() as db:
@@ -1031,7 +1051,7 @@ class WorkMixin:
             )
         return result
 
-    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None, reviewed_result_id=None) : # type: (_WorkHost, str, dict[str, Any], str | None, str | None, int | None, str | None) -> dict[str, Any]
+    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None, reviewed_result_id=None, prepared=None) : # type: (_WorkHost, str, dict[str, Any], str | None, str | None, int | None, str | None, dict[str, Any] | None) -> dict[str, Any]
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id, actor)
             if epoch is not None and self.agent(actor, db)["epoch"] != epoch:  # type: ignore[arg-type]  # typed-suspect: epoch may be set without an actor
@@ -1053,8 +1073,11 @@ class WorkMixin:
             if action == "create":
                 if actor and a["id"] != a["rootId"]:
                     raise ValueError("Only the lead can create work")
+                task_id = (prepared or {}).get("id") or str(uuid.uuid4())
+                if db.execute("SELECT 1 FROM runtime_work WHERE id=?", (task_id,)).fetchone():
+                    raise ValueError("This request ID already created another task")
                 w = {
-                    "id": str(uuid.uuid4()),
+                    "id": task_id,
                     "rootId": a["rootId"],
                     "title": text_field(data.get("title"), "a title", 160),
                     "description": text_field(
@@ -1070,6 +1093,10 @@ class WorkMixin:
                     "decisions": [],
                     "createdBy": actor or a["id"],
                 }
+                if prepared and prepared.get("handoff"):
+                    w["handoff"] = str(prepared["handoff"])
+                if prepared and prepared.get("handoffError"):
+                    w["handoffError"] = str(prepared["handoffError"])
             else:
                 w = self.work_by_id(db, data.get("task_id"), a["rootId"])
                 if not w:
@@ -1284,7 +1311,9 @@ class WorkMixin:
                                 self.agent(other["owner"], db),  # type: ignore[arg-type]  # typed-narrowing: owner guard proves recipient exists
                                 "work_ready",
                                 json.dumps({"task": other["id"], "title": other["title"],
-                                            "description": other.get("description", "")}, ensure_ascii=False),
+                                            "description": other.get("description", ""),
+                                            **({"handoff": other["handoff"]} if other.get("handoff") else {})},
+                                           ensure_ascii=False),
                                 "work-ready:" + other["id"] + ":" + w["id"],
                             )
             else:
@@ -1306,8 +1335,8 @@ class WorkMixin:
                     and (action == "create" or w["owner"] != previous_owner or not previous_ready)):
                 self.enqueue_recovery_event(
                     db, self.agent(w["owner"], db), "work_ready",  # type: ignore[arg-type]  # typed-narrowing: owner guard proves recipient exists
-                    json.dumps({"task": w["id"], "title": w["title"],
-                                "description": w["description"]}, ensure_ascii=False),
+                    json.dumps({"task": w["id"], "title": w["title"], "description": w["description"],
+                                **({"handoff": w["handoff"]} if w.get("handoff") else {})}, ensure_ascii=False),
                     "work-ready:" + w["id"] + ":assignment:" + str(w["version"]))
             return self.save_receipt(
                 db,

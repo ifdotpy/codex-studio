@@ -21,18 +21,26 @@ from project_env import wrap
 READ_METHODS = {"agent.context", "line.status", "line.evidence", "layr.provider.list",
                 "layr.provider.rpc", "agent.progress", "layr.file.stat", "layr.file.read"}
 METHODS = READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release",
-                          "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
+                          "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec",
+                          "handoff.ensure"}
 
 
 # Every agent user is in this group: the project's layr deny rules for it keep agents away
 # from roles, replication, remotes, records and backups whatever role an agent gets.
 AGENTS_GROUP = "studio-agents"
+# Every reviewer user is also in this group. A reviewer's layr commands run as its own user: a
+# Codex reviewer's through Studio's layr_read tool (its sandbox has no network, so no socket), a
+# Claude reviewer's directly. The project's deny rule for this group takes away the layr actions
+# that create or change lines. Changes inside a line belong to its owner, and a reviewer owns no
+# line (its own line belongs to root).
+REVIEWERS_GROUP = "studio-reviewers"
+REVIEWER_DENY = ("line.create", "merge", "line.manage", "tag", "push", "config", "gc", "fsck")
 
 # The names that the launch of an agent process sets (AgentHandlers.agent_env; runuser adds
 # SHELL), and the names that each provider adds. A project secret never takes one of them
 # (project_secrets.py).
 LAUNCH_ENV_NAMES = frozenset({"PATH", "LANG", "HOME", "USER", "LOGNAME", "SHELL", "LAYR_ROOT", "LAYR_SESSION",
-                              "BROWSER"})
+                              "BROWSER", "TMPDIR"})
 # A sign-in command opens its link with this shim: Studio asks the person to approve the link
 # and opens it in the browser of the Mac (browser_bridge.py, docs/vm-browser-bridge.md).
 BROWSER = "/usr/local/bin/studio-browser"
@@ -41,11 +49,22 @@ PROVIDER_ENV = {"codex": frozenset({"CODEX_HOME"}),
                                      "STUDIO_CLAUDE_ACCOUNT"})}
 
 
+# Run as the agent user: make a private folder (mode 0700) below the agent's home.
+PRIVATE_FOLDER = ("from pathlib import Path; import sys; p=Path(sys.argv[1]); "
+                  "p.mkdir(parents=True,exist_ok=True,mode=0o700); p.chmod(0o700)")
+
+
 def ensure_group(name):
     try:
         grp.getgrnam(name)
     except KeyError:
         subprocess.run(["/usr/sbin/groupadd", "--system", name], check=True, capture_output=True, timeout=30)
+
+
+def join_reviewers(user):
+    if user["owner"] not in grp.getgrnam(REVIEWERS_GROUP).gr_mem:
+        subprocess.run(["/usr/sbin/usermod", "-aG", REVIEWERS_GROUP, user["owner"]], check=True,
+                       capture_output=True, timeout=30)
 
 
 def ensure_agents_group():
@@ -176,9 +195,10 @@ class AgentHandlers:
     def agent_env(self, context, extra=None):
         """The environment of an agent process. Its project's secrets come at the start of the
         process from the wrapper (project_env.py), never from this launch record."""
+        scratch = {"TMPDIR": context["scratch"]} if context.get("scratch") else {}
         return {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": context["home"],
                 "USER": context["owner"], "LOGNAME": context["owner"], "LAYR_ROOT": str(self.layr_root),
-                "LAYR_SESSION": context["agentId"], "BROWSER": BROWSER, **(extra or {})}
+                "LAYR_SESSION": context["agentId"], "BROWSER": BROWSER, **scratch, **(extra or {})}
 
     def agent_argv(self, context, command):
         """The command as the line owner, with the project's secrets (project_env.py)."""
@@ -208,17 +228,29 @@ class AgentHandlers:
             # A reviewer line needs setfacl; find a missing tool before the line exists.
             await self.command(str(project), ["setfacl", "--version"])
         user = join_project_group(_user("studio-a-" + uuid.UUID(name).hex[:22]), params["projectId"])
+        if readonly:
+            # The deny rule is in place before the reviewer is in its group.
+            ensure_group(REVIEWERS_GROUP)
+            await self.layr(parent, "--project", params["projectId"], "access", "deny", "@" + REVIEWERS_GROUP,
+                            *REVIEWER_DENY, root=True)
+            join_reviewers(user)
         source = params.get("stateId") or await self.head(parent)
         require(isinstance(source, str) and source and not source.startswith("-"), "The state ID is invalid")
         created = False
         try:
             await self.layr(parent, "branch", name, source, "--owner", "0" if readonly else user["owner"], root=True)
             created = True
+            extra = {}
             if readonly:
                 await self.command(str(project), ["setfacl", "-RP", "-m", "u:" + str(user["uid"]) + ":r-X", str(target)])
                 await self.command(str(project), ["btrfs", "property", "set", "-ts", str(target), "ro", "true"])
+                # The reviewer's private writable folder (its TMPDIR); the reviewer makes it, so
+                # root never writes through a path in the agent's home.
+                scratch = str(Path(user["home"]) / ".studio/scratch" / name)
+                await self.command(user["home"], ["python3", "-c", PRIVATE_FOLDER, scratch], user=user)
+                extra["scratch"] = scratch
             value = {"agentId": name, "projectId": params["projectId"], "line": name,
-                     "subpath": subpath, "readOnly": readonly, **user,
+                     "subpath": subpath, "readOnly": readonly, **user, **extra,
                      "parentAgentId": parent["agentId"], "requestedState": params.get("stateId")}
             atomic_json(record, value)
             context = self.context(name)
@@ -235,6 +267,46 @@ class AgentHandlers:
                 raise GuestError("outcome_unknown",
                                  "The line setup failed and its rollback has no proven result") from rollback_error
             raise
+
+    def handoff_root(self, project_id):
+        """The handoff folders of one project: root owns them, and only the project's agents (its
+        group) pass and list. Each task folder in it belongs to the lead."""
+        group = grp.getgrnam(project_group(project_id)).gr_gid
+        parent = self.layr_root.parent / "handoff"
+        parent.mkdir(mode=0o711, exist_ok=True)
+        info = parent.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid(), "The handoff folder must be a root folder")
+        parent.chmod(0o711)
+        root = parent / project_id
+        root.mkdir(mode=0o750, exist_ok=True)
+        info = root.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid(),
+                "The project handoff folder must be a root folder")
+        os.chown(root, os.geteuid(), group, follow_symlinks=False)
+        root.chmod(0o750)
+        return root, group
+
+    async def handoff(self, context, params):
+        """The handoff folder of one task (docs/vm-layr.md, "Task handoff"). The lead writes it;
+        every agent of the project reads it. Its default ACL gives the group read access to new
+        files whatever the umask of the writer."""
+        require(context["line"] == "main" and not context["readOnly"], "Only the lead has task handoff folders")
+        task = params.get("taskId")
+        require(isinstance(task, str) and str(uuid.UUID(task)) == task, "The task ID must be a canonical UUID")
+        root, group = self.handoff_root(context["projectId"])
+        folder = root / task
+        # Only root creates entries in the project folder, so the task folder is no link.
+        folder.mkdir(mode=0o700, exist_ok=True)
+        info = folder.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid in {0, context["uid"]},
+                "The task handoff folder has another owner")
+        if info.st_uid != context["uid"] or info.st_gid != group or not info.st_mode & stat.S_ISGID:
+            # A new folder, or one whose setup stopped. A change of owner can clear the set-group-ID
+            # bit, so the mode comes after it; the check above repeats an unfinished setup.
+            await self.command(str(root), ["setfacl", "-d", "-m", "u::rwX,g::r-X,o::---", str(folder)])
+            os.chown(folder, context["uid"], group, follow_symlinks=False)
+            folder.chmod(0o2750)
+        return {"path": str(folder), "root": str(root)}
 
     async def dispatch(self, request_id, method, params, emit):
         agent = params.get("agentId")
@@ -322,6 +394,8 @@ class AgentHandlers:
             require(isinstance(expected, str) and expected == await self.head(source), "The reviewed state changed")
             output = await self.layr(context, "merge", source["line"], "--expect", expected)
             return {"stateId": await self.head(context), "reviewedStateId": expected, "output": output}
+        if method == "handoff.ensure":
+            return await self.handoff(context, params)
         if method == "agent.release":
             require(context["line"] == "main", "Only a lead releases the main association")
             if context.get("providerHandle"):

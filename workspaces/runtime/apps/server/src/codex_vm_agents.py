@@ -237,11 +237,69 @@ def prepare(runtime: Any, agent: Mapping[str, Any]) -> Any:
             current.update(cwd=result["cwd"], environment="linux", worktree=False,
                            layrReady=True, layrProjectId=result["projectId"],
                            layrLine=result["line"], layrOwner=result["owner"],
-                           layrHome=result["home"], layrStateId=result["stateId"])
+                           layrHome=result["home"], layrStateId=result["stateId"],
+                           # A reviewer line of a current guest has a private writable folder.
+                           **({"layrScratch": result["scratch"]} if result.get("scratch") else {}))
             runtime.put(db, "agents", current)
             agent = current
     flush_turns(runtime, agent)
     return runtime.agent(key)
+
+
+def reviewer_permissions(agent: Mapping[str, Any]) -> dict[str, Any]:
+    """The turn permissions of a VM reviewer. Its line is read-only on disk and owned by root.
+    With the private scratch folder of a current guest (`layrScratch`, also its TMPDIR), it may
+    write only there. It has no network access, so the Codex Linux sandbox refuses `connect`
+    also on the layr socket: the reviewer reads states with the `layr_read` tool, which runs
+    outside that sandbox. Without a scratch folder (an older guest) it stays read-only. The Rust
+    backend keeps the same rule (pipeline.rs `vm_reviewer_permissions`)."""
+    scratch = agent.get("layrScratch")
+    if not scratch:
+        return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
+    return {"approvalPolicy": "never", "sandboxPolicy": {
+        "type": "workspaceWrite", "writableRoots": [scratch], "networkAccess": False}}
+
+
+# The layr commands of the `layr_read` tool: they read states and change nothing. `try` runs
+# any command outside the reviewer's sandbox, so it is not one of them.
+LAYR_READ_COMMANDS = frozenset({"status", "diff", "show", "log", "rev-parse", "merge-base", "blame", "grep",
+                                "ls-files"})
+
+
+def layr_read_tool_definition() -> dict[str, Any]:
+    # The same canonical format as TOOLS: the app-server rejects a mixed list.
+    return {"type": "function", "name": "layr_read", "description": (
+        "Run one read-only layr command as your Linux user in your read-only line, outside your sandbox: "
+        + ", ".join(sorted(LAYR_READ_COMMANDS)) + ". args is the argument list after `layr`, for example "
+        '["diff", "<base>", "<state>"] or ["show", "<state>:<path>"]. '
+        '["--line", "<line>", "log"] reads another line of your project. '
+        "Write notes and copies only in $TMPDIR."),
+        "inputSchema": {"type": "object", "properties": {
+            "args": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64}},
+            "required": ["args"]}}
+
+
+def run_layr_read(runtime: Any, actor: Mapping[str, Any], args: Mapping[str, Any], key: str) -> dict[str, Any]:
+    """One `layr_read` call of a VM reviewer. The guest runs it as the reviewer's own Linux user
+    (`layr.exec`), so layr applies the reviewer's role and the project's deny rules."""
+    if not is_vm(actor) or actor.get("role") != "reviewer" or not actor.get("layrReady"):
+        raise PermissionError("layr_read is for VM reviewers")
+    argv = args.get("args")
+    if (not isinstance(argv, list) or not 0 < len(argv) <= 64
+            or not all(isinstance(item, str) and "\0" not in item and len(item) <= 4096 for item in argv)):
+        raise ValueError("Supply args as 1 to 64 strings")
+    index = 0
+    while index < len(argv) and argv[index] == "--line":
+        index += 2
+    if index >= len(argv) or argv[index] not in LAYR_READ_COMMANDS:
+        raise ValueError("layr_read runs only " + ", ".join(sorted(LAYR_READ_COMMANDS))
+                         + ", after optional --line <line>")
+    identity = "layr-read:" + hashlib.sha256((actor["id"] + ":" + key).encode()).hexdigest()
+    result = request(runtime, "layr.exec", {"agentId": actor["id"], "argv": ["layr", *argv]}, identity, 330)
+    def text(name: str) -> str:
+        return base64.b64decode(result.get(name) or "").decode(errors="replace")
+    return {"exitCode": result.get("exitCode"), "stdout": text("stdout"), "stderr": text("stderr"),
+            **({"reason": result["reason"]} if result.get("reason") else {})}
 
 
 def context(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
@@ -438,6 +496,25 @@ def merge_result(runtime: Any, lead: Mapping[str, Any], owner: Mapping[str, Any]
         "agentId": lead["id"], "sourceAgentId": owner["id"],
         "expectedStateId": result["revision"],
     }, "layr-accept:" + identity)
+
+
+def task_handoff(runtime: Any, lead: Mapping[str, Any], task_id: str) -> dict[str, str]:
+    """The handoff folder of a new task (docs/vm-layr.md, "Task handoff"): the lead writes it and
+    every agent of the project reads it. The guest owns its place. A guest failure leaves the task
+    without the folder and says why; the task itself does not depend on it."""
+    from codex_linux_vm import LinuxVMError
+    try:
+        result = request(runtime, "handoff.ensure", {"agentId": lead["id"], "taskId": task_id},
+                         "layr-handoff:" + task_id, 30)
+        path, root = str(result["path"]), str(result["root"])
+    except (LinuxVMError, OSError, ValueError, KeyError, TypeError) as error:
+        return {"handoffError": "The task handoff folder is unavailable: " + str(error)[:300]}
+    if lead.get("layrHandoffRoot") != root:
+        with runtime.lock, runtime.db() as db:
+            current = runtime.agent(lead["id"], db)
+            current["layrHandoffRoot"] = root
+            runtime.put(db, "agents", current)
+    return {"handoff": path}
 
 
 def dispose(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:

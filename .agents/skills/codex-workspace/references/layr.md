@@ -21,9 +21,18 @@ The lead owns the main line and may commit in it.
 Each worker has its own line and Linux user.
 Only the owner of a line changes it.
 Reviewers have read-only lines.
+A reviewer reads states with the `layr_read` tool (`layr show`, `layr diff`, `layr log` and other reads).
+`layr_read` with `--line <line>` reads another line of the project.
+A reviewer writes notes and copies only in `$TMPDIR`, its private folder.
+layr refuses line changes, new lines, and merges from a reviewer.
+To test another agent's exact state without a change to your line, run `layr try <state> -- <command>`.
 Studio saves a state after every agent turn.
 `layr access check <user> <action>` explains a refused command.
 Inspect the exact submitted state before accepting the result.
+Each task of the lead has a handoff folder: `handoff` in the task.
+Put logs, timings, profiles, and other files for the assignee there, not in `/tmp`.
+Every agent of the project can read the folder. Only the lead writes it.
+If an assignee cannot read a copied file, run `chmod -R g+rX` on the folder.
 Acceptance calls `layr merge <line> --expect <reviewed state>`.
 Acceptance does not merge a reviewer's result or your own result: they have no line changes.
 A changed line rejects acceptance.
