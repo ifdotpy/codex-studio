@@ -87,6 +87,15 @@ async fn reconcile_first_pass(
             // automatically from native history (`codex_connection_recovery.tick`).
             let restart_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
                 if snapshot.eligibility().restart_turn);
+            if restart_turn
+                && matches!(&job, RecoveryJob::Connection { snapshot, .. }
+                if !crate::image_workspace::restart_follow_up_allowed(
+                    snapshot.record(),
+                    crate::image_workspace::IMAGE_EXECUTION_SUPPORTED,
+                ))
+            {
+                continue;
+            }
             let job = if restart_turn {
                 let RecoveryJob::Connection {
                     snapshot,

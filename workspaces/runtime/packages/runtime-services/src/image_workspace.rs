@@ -19,6 +19,54 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const PLATFORM_REFUSAL: &str =
     "Image workspaces require macOS ASIF. Use a Git worktree on this server";
+
+/// Whether this host runs the turns of image-workspace agents. On macOS, as in
+/// Python (`codex_workspace_macos.py` `exec_prefix` is empty), a turn attaches
+/// the agent's image and runs in `<mount>/repo` with the account's shared
+/// provider; workspace preparation (`workspace_ready_git`) mounts it before
+/// every turn. Other hosts refuse image workspaces, as Python's backend does.
+pub const IMAGE_EXECUTION_SUPPORTED: bool = cfg!(target_os = "macos");
+
+/// An agent whose workspace is an image, in any record shape Python wrote:
+/// the image fields of older records or the explicit `workspaceMode`.
+#[must_use]
+pub fn is_image_workspace_agent(record: &Value) -> bool {
+    record["imageWorkspace"] == true
+        || record["imageWorkspaceReady"] == true
+        || record["imageWorkspacePhase"].is_string()
+        || record["workspaceMode"] == "image"
+}
+
+/// Whether restart recovery may give this agent a follow-up turn. A host that
+/// cannot run image turns gives an image agent none: the turn would run
+/// outside its image. The agent stays interrupted with the restart error, and
+/// its next input is held with `workspace-state/image-execution`.
+#[must_use]
+pub fn restart_follow_up_allowed(record: &Value, image_execution_supported: bool) -> bool {
+    image_execution_supported || !is_image_workspace_agent(record)
+}
+
+#[cfg(test)]
+mod image_execution_tests {
+    use super::{is_image_workspace_agent, restart_follow_up_allowed};
+    use serde_json::json;
+
+    #[test]
+    fn an_image_agent_gets_a_restart_follow_up_only_where_image_turns_run() {
+        let explicit = json!({"workspaceMode":"image"});
+        let older =
+            json!({"imageWorkspace":true,"imageWorkspaceReady":true,"imageWorkspacePhase":"ready"});
+        let worktree = json!({"workspaceMode":"worktree"});
+        assert!(is_image_workspace_agent(&explicit));
+        assert!(is_image_workspace_agent(&older));
+        assert!(!is_image_workspace_agent(&worktree));
+        for image in [&explicit, &older] {
+            assert!(restart_follow_up_allowed(image, true));
+            assert!(!restart_follow_up_allowed(image, false));
+        }
+        assert!(restart_follow_up_allowed(&worktree, false));
+    }
+}
 #[cfg(target_os = "macos")]
 const STORE_ENV: &str = "CODEX_WORKSPACE_STORE";
 const BASE_MIN_FREE_ENV: &str = "CODEX_WORKSPACE_MIN_FREE_BYTES";

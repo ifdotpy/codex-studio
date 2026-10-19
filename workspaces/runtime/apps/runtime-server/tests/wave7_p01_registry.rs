@@ -1201,6 +1201,8 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
     );
 }
 
+/// A host without the image backend refuses image turns before a provider starts.
+#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn image_workspace_pending_event_is_refused_before_account_provider_launch() {
     let fixture = Fixture::new().await;
@@ -1278,6 +1280,112 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(event_status, "pending");
     drop(db);
     restarted.shutdown().await.unwrap();
+}
+
+/// Rehearsal 15, agent d0c9c794 (workspaceMode "image"): on macOS the account
+/// worker starts for an image agent's input and its restart check like for any
+/// agent. Workspace preparation mounts the image and runs the turn in
+/// `<mount>/repo`, as Python does; the registry neither refuses nor holds it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn image_workspace_pending_event_starts_the_account_provider_on_macos() {
+    let fixture = Fixture::new().await;
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    let transaction_agent_id = agent_id.clone();
+    fixture
+        .store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image') WHERE id=?1",
+                [&transaction_agent_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    fixture.enqueue(0, "image-workspace-input").await;
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+
+    registry.reconcile(None).await.unwrap();
+
+    assert!(
+        !launcher.opened.lock().unwrap().is_empty(),
+        "the account provider starts for the image agent"
+    );
+    let record: Value = {
+        let db = fixture.store.read().unwrap();
+        serde_json::from_str(
+            &db.query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [agent_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_ne!(
+        record["error"], "workspace-state/image-execution",
+        "{record}"
+    );
+    assert_ne!(record["status"], "paused", "{record}");
+    registry.shutdown().await.unwrap();
+}
+
+/// Rehearsal 15: the restart check of an image agent that ran at the backend
+/// swap waited until another agent of the account started the worker. On macOS
+/// its own recovery row starts the account worker, whose first pass reads it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn an_interrupted_image_agent_starts_its_own_restart_check_on_macos() {
+    let fixture = Fixture::new().await;
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    let transaction_agent_id = agent_id.clone();
+    fixture
+        .store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,
+                   '$.workspaceMode','image','$.status','interrupted','$.autoWake',json('false'),
+                   '$.inFlight',json('false'),'$.turnId','turn-at-swap',
+                   '$.error','Server restarted during a turn. Review history, then send a new instruction.',
+                   '$.restartRecovery',json_object('stage','pending','autoWake',json('true'),
+                      'turnId','turn-at-swap','epoch',json_extract(record,'$.epoch'),
+                      'accountKey',json_extract(record,'$.accountKey'),
+                      'threadId',json_extract(record,'$.threadId'),'at',1.0,'source','restart'),
+                   '$.disconnectRecovery',json_object('source','restart','autoWake',json('true'),
+                      'turnId','turn-at-swap','epoch',json_extract(record,'$.epoch'),
+                      'accountKey',json_extract(record,'$.accountKey'),
+                      'threadId',json_extract(record,'$.threadId'),'at',1.0)) WHERE id=?1",
+                [&transaction_agent_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+
+    registry.reconcile(None).await.unwrap();
+
+    assert!(
+        !launcher.opened.lock().unwrap().is_empty(),
+        "the image agent's recovery starts the account worker"
+    );
+    registry.shutdown().await.unwrap();
 }
 
 #[tokio::test]
