@@ -1,7 +1,7 @@
-//! Per-agent turn preparation (auth check, admission, workspace, ready
-//! snapshot) runs as its own task, concurrently with other agents. The account
-//! worker keeps only the serialized submission: the FULL submitted commit,
-//! the provider write, fences, cancellation and unknown outcomes.
+//! Per-agent turn preparation (wake claim, auth check, admission, workspace,
+//! ready snapshot) runs as its own task, concurrently with other agents. The
+//! account worker keeps only the serialized submission: the FULL submitted
+//! commit, the provider write, fences, cancellation and unknown outcomes.
 use super::*;
 use crate::{diagnostics::measure_runtime_stage_async as stage, workspace_ready::ReadyToken};
 
@@ -33,23 +33,143 @@ impl Run {
 }
 
 pub(super) struct Done {
+    pub agent_id: String,
+    pub effect: Option<String>,
+    pub outcome: Result<Outcome, WorkerError>,
+}
+
+pub(super) enum Outcome {
+    Prepared(Box<Prepared>),
+    /// A wake whose claim started no turn preparation.
+    Unclaimed(Unclaimed),
+}
+
+pub(super) struct Prepared {
     pub intent: TurnIntent,
     /// The requested method; the prepared request may carry another one.
     pub method: Method,
     pub agent_changes: watch::Receiver<u64>,
+    /// The loaded-thread proof this preparation planned with.
+    pub loaded: Option<crate::thread_prepare::LoadedIdentity>,
+    pub step: store::PreparationStep<preparation::RequestPreparation>,
+}
+
+/// What a wake's claim found instead of a turn to prepare.
+pub(super) enum Unclaimed {
+    /// Busy-turn input claimed for the running turn, and that turn's id.
+    Steer(Box<TurnIntent>, String),
+    /// The disk is full: the input stays queued at this epoch until the recheck.
+    DiskFull(i64),
+    /// Nothing to start now.
+    Nothing,
+}
+
+/// One agent's wake. Its claim runs in this task, so a wake never waits
+/// behind other agents' serialized submissions in the account worker.
+pub(super) struct Wake {
+    pub bridge: StoreBridge,
+    pub account: String,
+    pub agent_id: String,
+    pub epoch: i64,
     pub effect: Option<String>,
-    pub outcome: Result<store::PreparationStep<preparation::RequestPreparation>, WorkerError>,
 }
 
 pub(super) async fn run(run: Run) -> Box<Done> {
-    let outcome = stage("turn_preparation.total", prepare(&run)).await;
+    let step = stage("turn_preparation.total", prepare(&run)).await;
     Box::new(Done {
-        intent: run.intent,
-        method: run.method,
-        agent_changes: run.agent_changes,
+        agent_id: run.intent.agent_id.clone(),
         effect: run.effect,
+        outcome: step.map(|step| {
+            Outcome::Prepared(Box::new(Prepared {
+                intent: run.intent,
+                method: run.method,
+                agent_changes: run.agent_changes,
+                loaded: run.loaded,
+                step,
+            }))
+        }),
+    })
+}
+
+/// Claim the agent's queued input, then prepare the claimed turn that
+/// `start` describes in the same task.
+pub(super) async fn wake(
+    wake: Wake,
+    start: impl FnOnce(TurnIntent, Option<String>) -> Run + Send,
+) -> Box<Done> {
+    let outcome = match stage("turn_preparation.claim", claim(&wake)).await {
+        Ok(Ok(intent)) => return run(start(intent, wake.effect)).await,
+        Ok(Err(unclaimed)) => Ok(Outcome::Unclaimed(unclaimed)),
+        Err(error) => Err(error),
+    };
+    Box::new(Done {
+        agent_id: wake.agent_id,
+        effect: wake.effect,
         outcome,
     })
+}
+
+async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError> {
+    let Wake {
+        bridge,
+        account,
+        agent_id,
+        epoch,
+        ..
+    } = wake;
+    let epoch = *epoch;
+    let (a, g) = (account.clone(), agent_id.clone());
+    match bridge
+        .worker_run("claim_steer", move |store| async move {
+            steer::claim_for_wake(store, &a, &g, epoch).await
+        })
+        .await?
+    {
+        steer::WakeClaim::Steer(intent, turn) => return Ok(Err(Unclaimed::Steer(intent, turn))),
+        steer::WakeClaim::Busy => return Ok(Err(Unclaimed::Nothing)),
+        steer::WakeClaim::Idle => {}
+    }
+    if crate::disk_space::full_free_bytes().is_some() {
+        // While the disk is full no new turn starts. The input stays queued
+        // with its identity; the desktop shows one notice with the free space.
+        return Ok(Err(Unclaimed::DiskFull(epoch)));
+    }
+    loop {
+        let (a, g) = (account.clone(), agent_id.clone());
+        match bridge
+            .worker_run("claim", move |store| async move {
+                store::claim(store, &a, &g, epoch).await
+            })
+            .await
+        {
+            Ok(candidate) => return Ok(candidate.ok_or(Unclaimed::Nothing)),
+            Err(error) if invalid_agent_record_error(&error) => {
+                let (invalid_id, pointer, reason) = invalid_agent_record_details(&error)
+                    .expect("guard matches InvalidSyncObjectField");
+                let invalid_id = invalid_id.to_owned();
+                let pointer = pointer.to_owned();
+                let reason = reason.to_owned();
+                let was_requested_agent = invalid_id == *agent_id;
+                let diagnostic = error.to_string();
+                bridge
+                    .worker_run("hold_invalid_agent", move |store| async move {
+                        store::hold_invalid_agent_record(
+                            &store,
+                            &invalid_id,
+                            &pointer,
+                            &reason,
+                            &diagnostic,
+                        )
+                        .await
+                    })
+                    .await?;
+                if was_requested_agent {
+                    return Ok(Err(Unclaimed::Nothing));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 async fn prepare(

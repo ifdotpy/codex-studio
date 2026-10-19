@@ -2290,6 +2290,80 @@ async fn provider_worker(
     .await
 }
 
+/// A wake's claim runs in its own preparation task: while one agent's claim
+/// is held, another agent's wake is claimed and reaches the provider.
+async fn scenario_wake_is_claimed_while_another_preparation_is_pending(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let (first, second) = (state.agent.clone(), "second-agent".to_owned());
+    let copy = second.clone();
+    state
+        .bridge
+        .run(move |s| async move {
+            scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(first.as_str()))?.unwrap();
+                row.id = AgentId::from(copy.as_str());
+                row.root_id = AgentId::from(copy.as_str());
+                row.extra.insert("threadId".into(), json!("fake-thread-1"));
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    state.enqueue_for(&second, "second-input").await;
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("claim_steer".into());
+    state.wake(&worker).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("the first wake's claim is held");
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    worker
+        .send(AccountCommand::Wake {
+            agent_id: second.clone(),
+            epoch: state.epoch,
+        })
+        .await
+        .unwrap();
+    let resume = peer.write("thread/resume").await;
+    assert_eq!(resume["params"]["threadId"], "fake-thread-1", "{resume}");
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-1"}}))
+        .await;
+    let turn = peer.write("turn/start").await;
+    assert!(
+        turn["params"]["input"].to_string().contains("second-input"),
+        "{turn}"
+    );
+    state.bridge.faults.release.notify_one();
+    let resume = peer.write("thread/resume").await;
+    assert_eq!(resume["params"]["threadId"], "fake-thread-0", "{resume}");
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_wake_is_claimed_while_another_preparation_is_pending() {
+    scenario_wake_is_claimed_while_another_preparation_is_pending(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_wake_is_claimed_while_another_preparation_is_pending() {
+    scenario_wake_is_claimed_while_another_preparation_is_pending(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
+}
+
 /// Wake the agent and return the method of its first provider request.
 async fn first_request_after_wake(state: &State, peer: &mut Peer, worker: &AccountHandle) -> Value {
     state.enqueue(&uuid::Uuid::new_v4().to_string()).await;
@@ -2371,6 +2445,60 @@ async fn scenario_loaded_thread_follow_up_starts_the_turn_directly(
     let reloaded = first_request_after_wake(&state, &mut peer, &worker).await;
     assert_eq!(reloaded["method"], "thread/resume", "{reloaded}");
     worker.shutdown().await.unwrap();
+}
+
+/// A thread closed while a wake's claim and preparation run is not loaded:
+/// the follow-up loads it again instead of starting the turn directly.
+#[cfg(unix)]
+async fn scenario_thread_closed_during_a_wake_preparation_reloads_it(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let first = state.start(&mut peer, &worker).await;
+    finish_turn(&state, &mut peer, &first).await;
+    // The completed turn's own wake claims nothing before the new input.
+    worker_barrier(&worker).await;
+    state.enqueue("after-close").await;
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("claim_steer".into());
+    state.wake(&worker).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("the wake's claim is held");
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    let closed = peer
+        .frame(json!({"method":"thread/closed","params":{"threadId":"fake-thread-0"}}))
+        .await;
+    peer.acknowledged(closed).await;
+    state.bridge.faults.release.notify_one();
+    let reloaded = peer.write("thread/resume").await;
+    assert_eq!(
+        reloaded["params"]["threadId"], "fake-thread-0",
+        "{reloaded}"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_thread_closed_during_a_wake_preparation_reloads_it() {
+    scenario_thread_closed_during_a_wake_preparation_reloads_it(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_thread_closed_during_a_wake_preparation_reloads_it() {
+    scenario_thread_closed_during_a_wake_preparation_reloads_it(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
 }
 
 /// Count of `name` store boundaries the worker has entered.
@@ -3054,6 +3182,9 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
             }
         }
     });
+    // The wake's claim runs in its own task; hold it at its first store call
+    // to observe when the worker dispatched the wake.
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("claim_steer".into());
     worker
         .send(AccountCommand::Stop {
             agent_id: state.agent.clone(),
@@ -3064,14 +3195,27 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     let (done, observed) = oneshot::channel();
     worker.send(AccountCommand::Barrier(done)).await.unwrap();
     drop(permit);
-    let processed = tokio::time::timeout(std::time::Duration::from_secs(10), observed)
-        .await
-        .expect("commands cannot wait for the journal to empty")
-        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("commands cannot wait for the journal to empty");
+    let processed = state
+        .bridge
+        .faults
+        .journal_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     assert!(
         processed <= 5,
-        "three queued commands waited for {processed} journal entries"
+        "stop and wake waited for {processed} journal entries"
     );
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    state.bridge.faults.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(10), observed)
+        .await
+        .expect("the barrier follows the wake's claim")
+        .unwrap();
     assert!(state.record().await["epoch"].as_i64().unwrap() > state.epoch);
     assert!(peer.writes.try_recv().is_err());
     worker.cancel();

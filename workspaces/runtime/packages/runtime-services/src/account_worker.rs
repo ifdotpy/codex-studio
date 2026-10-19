@@ -1290,6 +1290,9 @@ impl Worker {
         tokio::select! {
             biased;
             _ = Shutdown::cancelled(&mut self.stop) => ServeSignal::Shutdown,
+            // Commands are bounded (COMMAND_CAPACITY) and a wake only spawns its
+            // claim, so a wake never waits behind other agents' submissions.
+            command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::Command(command),
             // A finished preparation is a one-shot result, so it cannot starve the
             // unbounded provider event stream below; the reverse order did.
             prepared = self.preparations.join_next(), if !self.preparations.is_empty() => ServeSignal::Prepared(prepared),
@@ -1298,7 +1301,6 @@ impl Worker {
             _ = tokio::time::sleep_until(self.auth_wait_at.unwrap_or_else(tokio::time::Instant::now)), if self.auth_wait_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWait,
             _ = tokio::time::sleep_until(self.vm_credential_refresh_at.unwrap_or_else(tokio::time::Instant::now)), if self.vm_credential_refresh_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::VmCredentialRefresh,
             changed = self.auth_wait_changes.changed(), if self.resources.claude_account_pin.get("provider") == Some(&json!("claude")) && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWaitChanged(changed),
-            command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::Command(command),
             event = self.events.recv() => ServeSignal::Event(event),
             vm_event = self.vm_events.recv() => ServeSignal::VmEvent(vm_event),
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
@@ -1790,63 +1792,16 @@ impl Worker {
             *rewake = Some(epoch);
             return Ok(());
         }
-        let account = self.account.clone();
-        let steer_agent = agent.clone();
-        match self
-            .db("claim_steer", move |store| async move {
-                steer::claim_for_wake(store, &account, &steer_agent, epoch).await
-            })
-            .await?
-        {
-            steer::WakeClaim::Steer(intent, turn) => return self.steer(*intent, turn).await,
-            steer::WakeClaim::Busy => return Ok(()),
-            steer::WakeClaim::Idle => {}
-        }
-        if crate::disk_space::full_free_bytes().is_some() {
-            // While the disk is full no new turn starts. The input stays queued
-            // with its identity; the desktop shows one notice with the free space.
-            self.wait_for_disk_space(agent, epoch);
-            return Ok(());
-        }
-        let candidate = loop {
-            let account = self.account.clone();
-            let claim_agent = agent.clone();
-            match self
-                .db("claim", move |store| async move {
-                    store::claim(store, &account, &claim_agent, epoch).await
-                })
-                .await
-            {
-                Ok(candidate) => break candidate,
-                Err(error) if invalid_agent_record_error(&error) => {
-                    let (invalid_id, pointer, reason) = invalid_agent_record_details(&error)
-                        .expect("guard matches InvalidSyncObjectField");
-                    let invalid_id = invalid_id.to_owned();
-                    let pointer = pointer.to_owned();
-                    let reason = reason.to_owned();
-                    let was_requested_agent = invalid_id == agent;
-                    let diagnostic = error.to_string();
-                    self.db("hold_invalid_agent", move |store| async move {
-                        store::hold_invalid_agent_record(
-                            &store,
-                            &invalid_id,
-                            &pointer,
-                            &reason,
-                            &diagnostic,
-                        )
-                        .await
-                    })
-                    .await?;
-                    if was_requested_agent {
-                        return Ok(());
-                    }
-                }
-                Err(error) => return Err(error),
-            }
+        self.preparing.insert(agent.clone(), None);
+        let start = self.preparation(&agent, Method::ThreadResume);
+        let wake = turn_preparation::Wake {
+            bridge: self.bridge.clone(),
+            account: self.account.clone(),
+            agent_id: agent,
+            epoch,
+            effect: self.effect_in_hand.take(),
         };
-        if let Some(intent) = candidate {
-            self.submit(intent, Method::ThreadResume, None).await?;
-        }
+        self.preparations.spawn(turn_preparation::wake(wake, start));
         Ok(())
     }
     fn submit<'a>(
@@ -1893,27 +1848,43 @@ impl Worker {
             }
         }
         self.preparing.insert(intent.agent_id.clone(), None);
-        let run = turn_preparation::Run {
-            bridge: self.bridge.clone(),
-            resources: self.resources.clone(),
-            retained_port: self.retained_port.clone(),
-            generation: self.generation.0,
-            connection_id: self.connection_id.clone(),
-            agent_changes: self.bridge.agent_changes(),
-            effect: self.effect_in_hand.take(),
-            loaded: (method == Method::ThreadResume)
-                .then(|| self.thread_proofs.get(&intent.agent_id).cloned())
-                .flatten(),
-            carried: self
-                .thread_tokens
-                .remove(&intent.agent_id)
+        let start = self.preparation(&intent.agent_id, method);
+        let run = start(intent, self.effect_in_hand.take());
+        self.preparations.spawn(turn_preparation::run(run));
+        Ok(())
+    }
+    /// The preparation of `method` for one agent. The worker state it needs is
+    /// taken now; the intent may come later, from a wake's claim.
+    fn preparation(
+        &mut self,
+        agent_id: &str,
+        method: Method,
+    ) -> impl FnOnce(TurnIntent, Option<String>) -> turn_preparation::Run + Send + use<> {
+        let bridge = self.bridge.clone();
+        let resources = self.resources.clone();
+        let retained_port = self.retained_port.clone();
+        let generation = self.generation.0;
+        let connection_id = self.connection_id.clone();
+        let agent_changes = self.bridge.agent_changes();
+        let loaded = (method == Method::ThreadResume)
+            .then(|| self.thread_proofs.get(agent_id).cloned())
+            .flatten();
+        let carried = self.thread_tokens.remove(agent_id);
+        move |intent, effect| turn_preparation::Run {
+            bridge,
+            resources,
+            retained_port,
+            generation,
+            connection_id,
+            agent_changes,
+            effect,
+            loaded,
+            carried: carried
                 .filter(|(attempt, _)| method == Method::TurnStart && *attempt == intent.attempt_id)
                 .map(|(_, token)| token),
             intent,
             method,
-        };
-        self.preparations.spawn(turn_preparation::run(run));
-        Ok(())
+        }
     }
     #[cfg(test)]
     fn release_barriers(&mut self) {
@@ -1936,40 +1907,76 @@ impl Worker {
     /// Handle one finished preparation on the serialized worker.
     async fn prepared(&mut self, done: turn_preparation::Done) -> Result<(), WorkerError> {
         let turn_preparation::Done {
-            intent,
-            method: requested,
-            agent_changes,
+            agent_id,
             effect,
             outcome,
         } = done;
-        let rewake = self.preparing.remove(&intent.agent_id).flatten();
-        if let Some(prepared) = self.preparation_ready(outcome?, &intent, &agent_changes) {
-            let method = prepared.method;
-            if prepared.thread.is_some() {
-                self.thread_tokens.insert(
-                    prepared.intent.agent_id.clone(),
-                    (
-                        prepared.intent.attempt_id.clone(),
-                        prepared.workspace_token(),
-                    ),
-                );
+        let rewake = self.preparing.remove(&agent_id).flatten();
+        match outcome? {
+            turn_preparation::Outcome::Prepared(prepared) => {
+                let turn_preparation::Prepared {
+                    intent,
+                    method: requested,
+                    agent_changes,
+                    loaded,
+                    step,
+                } = *prepared;
+                // A wake's claim ran in its task; its thread is in use from here.
+                if let Some(thread) = intent.thread_id.as_deref() {
+                    self.idle_thread_touched(thread);
+                }
+                if let Some(prepared) = self.preparation_ready(step, &intent, &agent_changes) {
+                    let method = prepared.method;
+                    // A proof forgotten while this preparation ran (an unload or
+                    // thread/closed) no longer shows the thread loaded: prepare
+                    // again from the current proofs. Nothing was committed yet.
+                    if requested == Method::ThreadResume
+                        && method == Method::TurnStart
+                        && loaded.as_ref() != self.thread_proofs.get(&agent_id)
+                    {
+                        self.effect_in_hand = effect;
+                        Box::pin(self.submit(intent, Method::ThreadResume, None)).await?;
+                        if let Some(epoch) = rewake {
+                            self.wake(agent_id, epoch).await?;
+                        }
+                        return Ok(());
+                    }
+                    if prepared.thread.is_some() {
+                        self.thread_tokens.insert(
+                            prepared.intent.agent_id.clone(),
+                            (
+                                prepared.intent.attempt_id.clone(),
+                                prepared.workspace_token(),
+                            ),
+                        );
+                    }
+                    // `submit_inner` already read this turn/start receipt before preparing.
+                    let receipt_checked =
+                        requested == Method::TurnStart && method == Method::TurnStart;
+                    Box::pin(self.submit_prepared(
+                        prepared.intent.clone(),
+                        method,
+                        None,
+                        Some(prepared),
+                        receipt_checked,
+                    ))
+                    .await?;
+                }
             }
-            // `submit_inner` already read this turn/start receipt before preparing.
-            let receipt_checked = requested == Method::TurnStart && method == Method::TurnStart;
-            Box::pin(self.submit_prepared(
-                prepared.intent.clone(),
-                method,
-                None,
-                Some(prepared),
-                receipt_checked,
-            ))
-            .await?;
+            turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::Steer(
+                intent,
+                turn,
+            )) => Box::pin(self.steer(*intent, turn)).await?,
+            turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::DiskFull(epoch)) => {
+                self.wait_for_disk_space(agent_id.clone(), epoch);
+            }
+            turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::Nothing) => {}
         }
         if let Some(key) = effect {
             self.complete_effect(key).await?;
         }
         if let Some(epoch) = rewake {
-            self.wake(intent.agent_id, epoch).await?;
+            self.wake(agent_id, epoch).await?;
         }
         Ok(())
     }
