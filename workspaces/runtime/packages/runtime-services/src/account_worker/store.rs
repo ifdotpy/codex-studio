@@ -1315,12 +1315,6 @@ fn journal_one(
             return Ok(Some((streams.clone(), None, false)));
         }
     }
-    replace(
-        tx,
-        &operation,
-        "settled",
-        json!({"cursor":entry.cursor.0,"digest":digest,"ready":false,"committed":false}),
-    )?;
     let mut next = streams.clone();
     let mut effect = None;
     let mut publications = Vec::new();
@@ -1435,6 +1429,14 @@ fn journal_one(
                     }
                     "turn/completed" => {
                         if !bound {
+                            // The deferred entry holds the checkpoint below
+                            // itself until it is journaled again.
+                            replace(
+                                tx,
+                                &operation,
+                                "settled",
+                                json!({"cursor":entry.cursor.0,"digest":digest,"ready":false,"committed":false}),
+                            )?;
                             return Ok(None);
                         }
                         next = flush_notification_streams(
