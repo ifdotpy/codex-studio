@@ -371,3 +371,46 @@ async fn startup_resume_selects_only_live_read_only_image_agents() {
     .await;
     assert_eq!(read_only_agents(&store).expect("scan"), vec!["a-read-only"]);
 }
+
+fn ready_copy(_: &Path, agent_id: &str) -> Result<Value, ImageWorkspaceError> {
+    let root = std::env::temp_dir().join(format!("image-workspace-agents-wake-{agent_id}"));
+    std::fs::create_dir_all(root.join("repo/app"))?;
+    Ok(json!({"mount":root,"path":root.join("repo")}))
+}
+
+#[tokio::test]
+async fn a_background_completion_wakes_the_scheduler_for_its_notice() {
+    let (_directory, store) = fixture().await;
+    let id = format!("waker-{}", std::process::id());
+    put_agent(
+        &store,
+        agent(
+            &id,
+            json!({"imageWorkspace":true,"imageWorkspacePhase":"read_only"}),
+        ),
+    )
+    .await;
+    let wake = Arc::new(tokio::sync::Notify::new());
+    install_wake(Arc::clone(&wake));
+    start_with(
+        &store,
+        &id,
+        Steps {
+            base: ready_base,
+            create: ready_copy,
+            remove: never_remove,
+            poll: Duration::from_millis(1),
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(10), wake.notified())
+        .await
+        .expect("the scheduler is woken after the ready write");
+    assert_eq!(stored(&store, &id)["imageWorkspacePhase"], "ready");
+    assert_eq!(
+        events(&store, &id)[0].0,
+        format!("image-workspace-ready:{id}")
+    );
+    let _cleanup = std::fs::remove_dir_all(
+        std::env::temp_dir().join(format!("image-workspace-agents-wake-{id}")),
+    );
+}

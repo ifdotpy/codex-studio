@@ -497,6 +497,23 @@ pub async fn complete(
     }
 }
 
+/// The scheduler wake. A completion writes the ready or failed record and its
+/// notice outside any turn, so the scheduler must look again afterwards.
+static SCHEDULER_WAKE: OnceLock<Arc<tokio::sync::Notify>> = OnceLock::new();
+
+/// Install the scheduler wake once, before any completion starts.
+pub fn install_wake(wake: Arc<tokio::sync::Notify>) {
+    if SCHEDULER_WAKE.set(wake).is_err() {
+        eprintln!("the image workspace scheduler wake was already installed");
+    }
+}
+
+fn wake_scheduler() {
+    if let Some(wake) = SCHEDULER_WAKE.get() {
+        wake.notify_one();
+    }
+}
+
 fn in_flight() -> &'static Mutex<BTreeSet<String>> {
     static AGENTS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
     AGENTS.get_or_init(Mutex::default)
@@ -536,11 +553,15 @@ pub fn start_with(store: &Arc<RuntimeStore>, agent_id: &str, steps: Steps) {
     let agent_id = agent_id.to_owned();
     tokio::spawn(async move {
         match complete(&store, &agent_id, steps).await {
-            Ok(Completion::Failed(record)) => eprintln!(
-                "image workspace for {agent_id} failed: {}",
-                record["imageWorkspaceError"].as_str().unwrap_or_default()
-            ),
-            Ok(_) => {}
+            Ok(Completion::Ready(_)) => wake_scheduler(),
+            Ok(Completion::Failed(record)) => {
+                eprintln!(
+                    "image workspace for {agent_id} failed: {}",
+                    record["imageWorkspaceError"].as_str().unwrap_or_default()
+                );
+                wake_scheduler();
+            }
+            Ok(Completion::Superseded) => {}
             Err(error) => eprintln!("image workspace completion for {agent_id} failed: {error}"),
         }
         in_flight()
