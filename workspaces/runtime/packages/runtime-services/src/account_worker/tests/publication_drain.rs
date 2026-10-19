@@ -335,12 +335,13 @@ async fn sequence_and_index_order_survive_a_sink_failure() {
             .await
             .is_err()
     );
-    let delivered = sink.seen.lock().expect("sink");
-    assert_eq!(delivered.len(), 1);
-    assert!(
-        matches!(&delivered[0], NotificationPostCommit::TokenRateStream(value) if value.delivery.cursor == 1)
-    );
-    drop(delivered);
+    {
+        let delivered = sink.seen.lock().expect("sink");
+        assert_eq!(delivered.len(), 1);
+        assert!(
+            matches!(&delivered[0], NotificationPostCommit::TokenRateStream(value) if value.delivery.cursor == 1)
+        );
+    }
     assert_eq!(pending_count(&store), 2);
 
     *sink.fail_cursor.lock().expect("failure state") = None;
