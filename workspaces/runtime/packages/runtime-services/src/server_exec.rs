@@ -458,7 +458,14 @@ impl ServerExec {
                         .and_then(|config| config["markerSecret"].as_str())
                         .map(str::to_owned);
                     let stopped = marker
-                        .map(|marker| stop_marked(&marker, None).len())
+                        .map(|marker| {
+                            stop_command(&Scope {
+                                marker: &marker,
+                                running_root: None,
+                                group: None,
+                            })
+                            .len()
+                        })
                         .unwrap_or(0);
                     let mut record: Value =
                         serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
@@ -815,9 +822,26 @@ fn new_marker() -> Result<String, ExecError> {
     Ok(data_encoding::HEXLOWER.encode(&bytes))
 }
 
-/// Stop every process of this user whose launch environment holds the marker,
-/// and the descendants of `root`. Returns the stopped process IDs.
-fn stop_marked(marker: &str, root: Option<u32>) -> Vec<u32> {
+/// The processes of one command that a stop may signal.
+struct Scope<'a> {
+    /// The private `STUDIO_EXEC_ID` value of the command.
+    marker: &'a str,
+    /// The command's root process while it runs unreaped: its PID cannot
+    /// belong to another process, so its process tree is the command's.
+    running_root: Option<u32>,
+    /// The command's process group (the root PID) and the Unix seconds in
+    /// which a member of it can have started: from the command start to the
+    /// moment its root was reaped. A group ID that another process reuses
+    /// later only has members that started after that moment.
+    group: Option<(u32, u64, u64)>,
+}
+
+/// Stop the processes of one command: the tree below its running root, the
+/// members of its process group that started within its lifetime, and every
+/// process of this user whose launch environment holds its marker. macOS
+/// hides the environment of platform binaries, so the group covers them.
+/// Returns the stopped process IDs.
+fn stop_command(scope: &Scope<'_>) -> Vec<u32> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -828,32 +852,38 @@ fn stop_marked(marker: &str, root: Option<u32>) -> Vec<u32> {
             .with_user(UpdateKind::Always),
     );
     let own = std::process::id();
-    let expected = format!("{MARKER_NAME}={marker}");
-    let mut targets: Vec<u32> = Vec::new();
-    let mut tree: Vec<u32> = root.into_iter().collect();
-    // The process tree below the command, then every marked process.
+    let expected = format!("{MARKER_NAME}={}", scope.marker);
+    let mut targets: Vec<u32> = scope.running_root.into_iter().collect();
     let mut index = 0;
-    while index < tree.len() {
-        let parent = tree[index];
+    while index < targets.len() {
+        let parent = targets[index];
         for (pid, process) in system.processes() {
             if process.parent().map(|parent| parent.as_u32()) == Some(parent)
-                && !tree.contains(&pid.as_u32())
+                && !targets.contains(&pid.as_u32())
             {
-                tree.push(pid.as_u32());
+                targets.push(pid.as_u32());
             }
         }
         index += 1;
     }
-    targets.extend(tree);
     for (pid, process) in system.processes() {
         let pid = pid.as_u32();
-        if pid != own
-            && !targets.contains(&pid)
-            && process
-                .environ()
-                .iter()
-                .any(|entry| entry.to_str() == Some(expected.as_str()))
-        {
+        if pid == own || targets.contains(&pid) {
+            continue;
+        }
+        let marked = process
+            .environ()
+            .iter()
+            .any(|entry| entry.to_str() == Some(expected.as_str()));
+        let member = scope.group.is_some_and(|(group, first, last)| {
+            let started = process.start_time();
+            (first.saturating_sub(1)..=last + 1).contains(&started)
+                && i32::try_from(pid).ok().is_some_and(|raw| {
+                    nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(raw)))
+                        .is_ok_and(|found| i64::from(found.as_raw()) == i64::from(group))
+                })
+        });
+        if marked || member {
             targets.push(pid);
         }
     }
@@ -896,7 +926,30 @@ struct Job {
     record: Value,
 }
 
+/// The current Unix second, in the resolution of process start times.
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
 impl Job {
+    /// The processes that a stop of this command may signal.
+    fn scope(
+        &self,
+        root: Option<u32>,
+        reaped: bool,
+        started: u64,
+        reaped_at: Option<u64>,
+    ) -> Scope<'_> {
+        Scope {
+            marker: &self.marker,
+            running_root: root.filter(|_| !reaped),
+            group: root.map(|root| (root, started, reaped_at.unwrap_or_else(unix_seconds))),
+        }
+    }
+
     fn publish(&self) {
         let snapshot = json!({
             "record": self.record,
@@ -963,6 +1016,7 @@ impl Job {
             .stderr(std::process::Stdio::piped());
         #[cfg(unix)]
         command.process_group(0);
+        let started_at = unix_seconds();
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -1046,6 +1100,7 @@ impl Job {
         let mut stopped: Vec<u32> = Vec::new();
         let mut last_publish = Instant::now();
         let mut controls_open = true;
+        let mut reaped_at: Option<u64> = None;
         loop {
             if ended >= 2 && exit.is_some() {
                 break;
@@ -1055,10 +1110,7 @@ impl Job {
             }
             if killed_at.is_none() && (cancelled || Instant::now() >= deadline || exit.is_some()) {
                 self.record["timedOut"] = json!(!cancelled && Instant::now() >= deadline);
-                for pid in root
-                    .map(|root| stop_marked(&self.marker, Some(root)))
-                    .unwrap_or_default()
-                {
+                for pid in stop_command(&self.scope(root, exit.is_some(), started_at, reaped_at)) {
                     if Some(pid) != root && !stopped.contains(&pid) {
                         stopped.push(pid);
                     }
@@ -1114,6 +1166,7 @@ impl Job {
                 },
                 status = child.wait(), if exit.is_none() => {
                     exit = status.ok().or(Some(std::process::ExitStatus::default()));
+                    reaped_at = Some(unix_seconds());
                 }
                 () = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
@@ -1130,10 +1183,8 @@ impl Job {
                 .and_then(Result::ok),
         };
         // Python `stop_descendants` in its `finally`: no process of the command remains.
-        for pid in root
-            .map(|root| stop_marked(&self.marker, Some(root)))
-            .unwrap_or_default()
-        {
+        let reaped_at = reaped_at.or_else(|| status.is_some().then(unix_seconds));
+        for pid in stop_command(&self.scope(root, status.is_some(), started_at, reaped_at)) {
             if Some(pid) != root && !stopped.contains(&pid) {
                 stopped.push(pid);
             }

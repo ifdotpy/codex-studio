@@ -992,6 +992,22 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
     let cancelled = wait_for_status(&store, lead, &tools, &cancel_handle, "exec-cancel-read").await;
     assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
     assert_eq!(cancelled["signal"], 9, "{cancelled}");
+    // A background process that outlives the command stops with it.
+    let background = call_tool(
+        &store,
+        lead,
+        "exec-background",
+        "call-exec-background",
+        &json!({"action": "exec", "cwd": cwd, "timeout": 5,
+            "command": ["sh", "-c", "sleep 30 & printf started"]}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    let background = parsed(&background)["value"].clone();
+    assert_eq!(background["status"], "completed", "{background}");
+    assert_eq!(background["exitCode"], 0);
+    assert_eq!(background["stdout"], "started");
+    assert_eq!(background["stoppedDescendants"], 1, "{background}");
     // Each final record told the lead once.
     let events = exit_events(&store);
     let handles: Vec<&str> = events
@@ -1033,7 +1049,7 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
             )?)
         })
         .unwrap();
-    assert_eq!(audits, 3);
+    assert_eq!(audits, 4, "the replay started no command");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
