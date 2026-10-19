@@ -1608,7 +1608,11 @@ const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') 
 // An idle agent whose attempt turn is its last finished turn has nothing to
 // recover, also when the attempt was reserved during an active turn
 // (`activeAtReservation`). Python restart recovery never touches an idle agent.
-const SETTLED_IDLE_TURN_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'),'')!='' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'))=json_extract(record,'$.lastCompletedTurn') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'') IN ('completed','failed','interrupted')";
+// A turn that ended `failed` or `interrupted` is settled too: a later backend
+// stop or provider generation must not interrupt it again or replace its error
+// (rehearsal 11, agent 841ebc0e). The startup scan and every disconnect path
+// select through this rule.
+const SETTLED_IDLE_TURN_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued','failed','interrupted') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'),'')!='' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'))=json_extract(record,'$.lastCompletedTurn') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'') IN ('completed','failed','interrupted')";
 pub(super) fn unresolved_sql() -> String {
     format!(
         "{} AND NOT ({COMPLETED_START_SQL}) AND NOT ({SETTLED_IDLE_TURN_SQL})",

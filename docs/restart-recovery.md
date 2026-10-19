@@ -320,6 +320,8 @@ that Python wrote:
   `pending` (for example, after a failed history read). The next restart does
   not interrupt that agent again for the old turn.
 - An idle agent whose attempt turn is its last finished turn is not changed.
+  This includes a turn that ended `failed` or `interrupted`: a backend stop,
+  the next start and a new provider generation keep its status and its error.
 - Only an input without a turn identity stays held. A new user message clears
   that hold, and later generations do not apply it again.
 - An `uncertain` input is never sent again, and it does not stop new input.
