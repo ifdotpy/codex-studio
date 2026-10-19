@@ -25,6 +25,14 @@ from codex_agent_modes import mode_fields
 from studio_api.persisted_models import PersistedAgentRecord
 
 NOW = 1234567.5
+
+
+class NoScheduler:
+    """The Rust server has no single scheduler thread; it reports null."""
+
+    @staticmethod
+    def is_alive():
+        return None
 TABLES = ("agents", "work", "requests", "monitors", "tasks", "tool_requests")
 
 
@@ -34,6 +42,7 @@ class MemoryRuntime:
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         self.preparations = {}
+        self.scheduler = NoScheduler()
         self.closed = False
         for table in TABLES:
             self.connection.execute(f"CREATE TABLE runtime_{table}(id TEXT PRIMARY KEY,record TEXT)")
@@ -221,6 +230,26 @@ def corpus():
     )
     cases.append(run("stop-capacity-retry-submitted-missing", records,
                      dict(action="stop", target="lead", descendants=False)))
+    inspect = dict(action="inspect", actor="lead", epoch=3, target="worker")
+    cases.append(run("inspect-finished", seed(), inspect))
+    cases.append(run("inspect-archived", archived, inspect))
+    for table, row in (
+        ("runtime_events", dict(id="pending", agent="worker", epoch=8, status="pending")),
+        ("runtime_requests", dict(id="question", agent="worker", status="pending", method="agent/asyncQuestion")),
+        ("runtime_work", dict(id="work", owner="worker", rootId="lead", version=2, status="ready", title="Assignment")),
+    ):
+        records = seed()
+        records["tables"][table] = [row]
+        cases.append(run("inspect-blocker-"+table, records, inspect))
+    records = seed()
+    records["tables"]["runtime_agents"][1].update(status="running", inFlight=True, parkedEvent="deploy")
+    cases.append(run("inspect-active-parked", records, inspect))
+    records = seed()
+    records["tables"]["runtime_agents"][1]["deletedAt"] = True
+    cases.append(run("inspect-deleted", records, inspect))
+    records = seed()
+    records["tables"]["runtime_agents"][0]["epoch"] = 2
+    cases.append(run("inspect-stale-actor", records, inspect))
     cases.append(run("delete-child", seed(), dict(action="delete", target="worker")))
     cases.append(run("delete", seed(), dict(action="delete", target="lead")))
     cases.append(run("delete-retry", cases[-1]["expected"]["records"], dict(action="delete", target="lead")))

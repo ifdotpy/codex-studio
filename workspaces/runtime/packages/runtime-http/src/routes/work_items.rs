@@ -302,10 +302,6 @@ pub(crate) fn work_request_signature(agent: &str, body: &Value) -> Result<String
 
 pub(crate) fn write_error(error: EventWriteError) -> ApiError {
     match error {
-        EventWriteError::RuleDriverUnavailable => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires rule-driver/event-rules",
-        ),
         EventWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",

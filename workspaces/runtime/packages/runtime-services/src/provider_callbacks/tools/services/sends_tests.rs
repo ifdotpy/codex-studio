@@ -342,6 +342,115 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     assert_eq!(chat_count, 1);
 }
 
+/// Python `codex_radio.guard_message`: a radio member's private message is
+/// refused only while its own shared reply turn is in flight.
+#[tokio::test]
+async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
+    let oracle = template();
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(
+            PathBuf::from(oracle["template"].as_str().unwrap()).join(name),
+            directory.path().join(name),
+        )
+        .unwrap();
+    }
+    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let worker = oracle["agents"][1].clone();
+    let worker_id = worker["id"].as_str().unwrap().to_owned();
+    let turn = worker["turnId"].as_str().unwrap().to_owned();
+    let epoch = worker["epoch"].as_i64().unwrap();
+    let room = json!({"id":"radio:guard","kind":"private","members":[lead,worker_id],
+        "projectPath":"/fixture","customName":"Guard","created":10.0,"userHidden":false,
+        "radio":{"direct":true,"teamId":"guard","revision":1,"status":"speaking",
+            "speaker":worker_id,"next":[],"error":null,"seen":{},
+            "active":{"eventId":"radio-turn:guard","agentId":worker_id,"epoch":epoch,
+                "threadId":worker["threadId"],"identity":{},"through":0}}});
+    let worker_for_setup = worker_id.clone();
+    store
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_rooms(id,record) VALUES('radio:guard',?1)",
+                [room.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('radio-turn:guard',?1,'radio_turn','{}','delivered',10.0,?2,?3,NULL)",
+                params![worker_for_setup, epoch, turn],
+            )?;
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.inFlight',json('true')) WHERE id=?1",
+                [&worker_for_setup],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let send = |id: &'static str| {
+        let lead = lead.clone();
+        let worker = worker.clone();
+        let store = &store;
+        async move {
+            let context = CallbackContext {
+                agent: worker["id"].as_str().unwrap().into(),
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 7,
+                epoch: worker["epoch"].as_u64().unwrap(),
+                thread: worker["threadId"].as_str().unwrap().into(),
+                turn: worker["turnId"].as_str().unwrap().into(),
+            };
+            store
+                .transaction_with(move |tx| {
+                    let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+                    messages::send(
+                        tx,
+                        &snapshot,
+                        &json!({"target":lead,"text":"private note"}),
+                        id,
+                        20.0,
+                    )
+                })
+                .await
+        }
+    };
+    let refused = send("radio-guard-live").await;
+    assert!(
+        matches!(
+            refused,
+            Err(CallbackError::Invalid(
+                "Your reply is shared automatically. Reply in this turn and let Studio pass the floor."
+            ))
+        ),
+        "{refused:?}"
+    );
+    let worker_for_finish = worker_id.clone();
+    store
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.inFlight',json('false')) WHERE id=?1",
+                [&worker_for_finish],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let delivered = send("radio-guard-idle")
+        .await
+        .expect("a radio member may message privately outside its shared reply turn");
+    assert_eq!(delivered["id"], "radio-guard-idle");
+    let chat_count: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_chat_messages WHERE id IN ('radio-guard-live','radio-guard-idle')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(chat_count, 1);
+}
+
 fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntimePorts {
     crate::provider_callbacks::tools::ManagedToolRuntimePorts {
         status_watch: None,

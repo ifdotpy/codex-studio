@@ -234,6 +234,17 @@ pub(crate) fn agent_complaint_action(
     questions::agent_complaint_action(tx, agent, args, request_id, now)
 }
 
+/// A lead's message to the user (Python `codex_user_messages.send_to_user`).
+pub(crate) fn submit_user_message(
+    tx: &Transaction<'_>,
+    lead: &Value,
+    request_id: &str,
+    text: &str,
+    now: f64,
+) -> Result<Value, NotificationDispatchError> {
+    questions::submit_user_message(tx, lead, request_id, text, now)
+}
+
 /// Stored outcome and a staged connection-buffer replacement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NotificationDispatchResult {

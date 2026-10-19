@@ -83,6 +83,11 @@ pub fn resolve_worker_base(
     ))
 }
 
+/// Whether `path` is inside a Git work tree, as Python `git_toplevel` reports.
+pub(crate) fn inside_git_work_tree(path: &Path) -> bool {
+    git_value(path, &["rev-parse", "--is-inside-work-tree"]).is_ok_and(|value| value == "true")
+}
+
 fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: OsStr::new("git"),

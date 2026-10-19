@@ -197,6 +197,42 @@ fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Maximum characters of a requested worker folder, after trimming.
+const MAX_SPAWN_DIRECTORY_CHARS: usize = 4096;
+
+/// Python `codex_runtime.spawn_directory` for a host worker: `None` keeps the
+/// parent's folder; a relative path starts at the parent's folder; the
+/// resolved path must be an existing folder.
+fn spawn_directory(parent: &str, requested: Option<&Value>) -> Result<Option<String>, Error> {
+    let requested = match requested {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(value)) => value,
+        Some(_) => {
+            return Err(
+                crate::managed_host_tools::Error::Invalid("cwd must be a folder path").into(),
+            );
+        }
+    };
+    let trimmed = event_write::python_strip(requested);
+    if trimmed.is_empty() || trimmed.chars().count() > MAX_SPAWN_DIRECTORY_CHARS {
+        return Err(crate::managed_host_tools::Error::Invalid("cwd must be a folder path").into());
+    }
+    let home = std::env::var("HOME").ok();
+    let expanded = expand_review_home(trimmed, home.as_deref());
+    let path = if expanded.is_absolute() {
+        expanded
+    } else {
+        Path::new(parent).join(expanded)
+    };
+    // `Path.resolve()` of an existing folder is its canonical path.
+    match std::fs::canonicalize(&path) {
+        Ok(path) if path.is_dir() => Ok(Some(path.to_string_lossy().into_owned())),
+        _ => {
+            Err(crate::managed_host_tools::Error::Invalid("cwd must be an existing folder").into())
+        }
+    }
+}
+
 fn vm_child_directory(parent: &str, requested: Option<&str>) -> Result<(String, String), Error> {
     let root = Path::new(parent);
     let raw = requested.map(Path::new).unwrap_or(root);
@@ -459,15 +495,15 @@ pub(crate) async fn spawn_agents(
         } else {
             None
         };
-        if spec
-            .get("cwd")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !vm_actor && value != parent_cwd)
-        {
-            return Err(Error::Unavailable(
-                "workspace-state/alternate-child-directory",
-            ));
-        }
+        // Python `spawn_directory`: a host child may work in another folder;
+        // a relative path starts at the parent's folder.
+        let alternate_directory = if vm_actor {
+            None
+        } else {
+            spawn_directory(parent_cwd, spec.get("cwd"))?
+                .filter(|directory| directory.as_str() != parent_cwd)
+        };
+        let child_directory = alternate_directory.as_deref().unwrap_or(parent_cwd);
         if role == "reviewer" && spec.get("workspace").is_some() {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "workspace applies to implementers; reviewers use the shared folder with read-only access",
@@ -615,11 +651,15 @@ pub(crate) async fn spawn_agents(
             .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
             .unwrap_or(false);
         let vm_workspace = matches!(workspace, "layr" | "linux");
-        let host_cwd = host_project_cwd(vm_workspace, &root_value, parent_cwd);
+        let host_cwd = host_project_cwd(vm_workspace, &root_value, child_directory);
+        // The parent's project binding names the parent's folder. Another
+        // folder uses its own path settings, as Python `settings_key` does.
+        let parent_project_id = parent_value
+            .get("projectId")
+            .filter(|_| alternate_directory.is_none());
         let project = {
             let read = store.read()?;
-            let project_id = parent_value
-                .get("projectId")
+            let project_id = parent_project_id
                 .and_then(Value::as_str)
                 .unwrap_or(host_cwd);
             studio_runtime_store::ProjectsRepository::get(&read, project_id)?
@@ -629,7 +669,7 @@ pub(crate) async fn spawn_agents(
                 .map(|(_, project)| project)
         };
         let project_worker_base = if requested_base_ref.is_none() {
-            worker_base_for_directory(store, parent_value.get("projectId"), host_cwd)?
+            worker_base_for_directory(store, parent_project_id, host_cwd)?
         } else {
             None
         };
@@ -641,11 +681,30 @@ pub(crate) async fn spawn_agents(
             Path::new(host_cwd),
             base_ref_request,
         )?;
+        let (workspace_in_git, image_workspace_has_git) = match alternate_directory.as_deref() {
+            Some(directory) => {
+                let in_git = crate::host_worker_create::inside_git_work_tree(Path::new(directory));
+                (in_git, in_git)
+            }
+            None => {
+                let in_git = parent_value
+                    .get("workspaceInGit")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                (
+                    in_git,
+                    in_git
+                        || parent_value
+                            .get("imageWorkspaceHasGit")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                )
+            }
+        };
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
             "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some(),
-            "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
-            "_imageWorkspaceHasGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false)
-                || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
+            "_workspaceInGit":workspace_in_git,
+            "_imageWorkspaceHasGit":image_workspace_has_git});
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
             Path::new(host_cwd),
@@ -673,7 +732,7 @@ pub(crate) async fn spawn_agents(
             .map_err(map_create_error)?
             .value();
         if workspace == "image" {
-            crate::agents_create::set_image_workspace_fields(&mut record, parent_cwd);
+            crate::agents_create::set_image_workspace_fields(&mut record, child_directory);
             if base_ref_request.is_some() {
                 record["imageWorkspaceBaseRef"] = json!(base_ref);
                 record["workerBaseRef"] = json!(base_ref);

@@ -373,17 +373,28 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         finally:
             runtime.close()
 
-    def test_active_event_rule_refuses_both_writes_without_changes(self):
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("Python backend owns its existing event-rule delivery path")
+    def test_active_event_rule_does_not_refuse_plan_or_annotation(self):
+        # Runtime.enqueue offers plan_update and user events to the rule hook;
+        # no rule event name matches either kind, so both writes proceed.
         self.backend.stop()
         agent_id = seed_agent_with_event_rule(self.backend)
         self.backend.start()
-        before = self._event_refusal_snapshot(agent_id)
+        rule_id = f"event-rule-{agent_id}"
+        database_path = self.backend.state / "canvas.sqlite3"
+
+        def rule_record():
+            with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+                return database.execute(
+                    "SELECT record FROM runtime_rules WHERE id=?", (rule_id,),
+                ).fetchone()
+
+        rule_before = rule_record()
+        self.assertIsNotNone(rule_before)
         requests = (
             (
                 "/api/plan",
-                {"agent": agent_id, "id": "rule-plan", "version": 0, "text": "blocked"},
+                {"agent": agent_id, "id": "rule-plan", "version": 0, "text": "allowed"},
+                f"plan:{agent_id}:1",
             ),
             (
                 "/api/annotation",
@@ -392,17 +403,22 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "id": "rule-annotation",
                     "path": "src/main.rs",
                     "line": 1,
-                    "text": "blocked",
+                    "text": "allowed",
                 },
+                "annotation:rule-annotation",
             ),
         )
-        for path, body in requests:
+        for path, body, event_id in requests:
             response = self.backend.request(
                 "POST", path, body=body, headers=self.headers()
             )
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("rule-driver/event-rules", response.body.decode())
-            self.assertEqual(self._event_refusal_snapshot(agent_id), before)
+            self.assertEqual(response.status, 200, response.body[:1000])
+            with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+                event = database.execute(
+                    "SELECT agent FROM runtime_events WHERE id=?", (event_id,),
+                ).fetchone()
+            self.assertEqual(event, (agent_id,))
+            self.assertEqual(rule_record(), rule_before)
 
     def test_remote_event_writes_refuse_without_changes(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
