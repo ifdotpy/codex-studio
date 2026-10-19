@@ -643,7 +643,9 @@ fn shutdown_aborts_queued_environment_work_and_reaps_started_work() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_entries() {
+async fn response_mapping_prunes_all_settled_entries() {
+    /// Requests the provider owes replies at once; the mapping has no window.
+    const OWED: u64 = 40;
     let shutdown = Shutdown::default();
     let (mut actor, _commands, _journal) = actor(&shutdown);
     actor.info = Some(AttachmentInfo {
@@ -662,7 +664,7 @@ async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_en
             started: false,
             received_at: Instant::now(),
         };
-        for id in 1..=MAX_PENDING_RESPONSES as u64 {
+        for id in 1..=OWED {
             let receipt = actor
                 .write(
                     &mut rpc,
@@ -675,19 +677,8 @@ async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_en
                 .unwrap();
             assert!(matches!(receipt, CommandReceipt::Written { .. }));
         }
-        assert_eq!(actor.response_ids.len(), MAX_PENDING_RESPONSES);
-        let rejected = actor
-            .write(
-                &mut rpc,
-                PreparedWrite {
-                    operation_id: OperationId("overflow".into()),
-                    message: serde_json::json!({"id":99,"method":"model/list"}),
-                },
-            )
-            .await
-            .unwrap();
-        assert!(matches!(rejected, CommandReceipt::NotSent));
-        for id in 1..=MAX_PENDING_RESPONSES as u64 {
+        assert_eq!(actor.response_ids.len(), OWED as usize);
+        for id in 1..=OWED {
             let event = SupervisorEvent {
                 sequence: EventCursor(id),
                 generation: Generation(1),
@@ -716,9 +707,8 @@ async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_en
         ));
         assert_eq!(actor.response_ids.len(), 1);
     });
-    for remote in 1..=MAX_PENDING_RESPONSES as u64 + 1 {
+    for remote in 1..=OWED + 1 {
         let request = read_request(&mut server).await;
-        assert_ne!(request["operationId"], "overflow");
         let response = serde_json::json!({"requestId":request["requestId"],"result":{"accepted":true,"duplicate":false,"remoteId":remote,"durableMs":0}});
         server
             .get_mut()

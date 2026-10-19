@@ -135,7 +135,10 @@ environment and prepared read-only interpreter as for the corpus runs.
 The probabilistic provider-session scheduling diagnostic is excluded from the
 default set and runs only through `just test-rust-session-fairness`. It uses real
 Tokio scheduling; it is not evidence of a deterministic fairness bound. The
-worker has a separate deterministic command-priority witness. Real stdio and
+worker has a separate deterministic command-priority witness. The account worker
+runs 32 agents of one account through two exchanges in the default set;
+the same scenario with 200 agents takes about half a minute of serialized store
+work in a debug build and runs only through `just test-rust-many-agents`. Real stdio and
 supervisor tests use disposable processes and wall-clock watchdogs; only scripted
 worker deadline scenarios use paused time throughout.
 

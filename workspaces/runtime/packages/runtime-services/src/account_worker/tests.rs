@@ -3,6 +3,8 @@ mod auth_wait_schedule;
 mod claude_preparation;
 mod idle_unload;
 mod journal_cost;
+#[cfg(unix)]
+mod many_agents;
 mod publication_drain;
 mod retained;
 mod steer;
@@ -3229,12 +3231,11 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     let _completed = worker.completion().await;
 }
 
-/// More provider callbacks than the provider response window are queued
+/// A burst of provider callbacks larger than the journal lane is queued
 /// effects, not a capacity failure: each is answered and the worker survives.
 #[tokio::test]
-async fn callback_burst_beyond_response_window_is_answered_without_worker_exit() {
+async fn callback_burst_is_answered_without_worker_exit() {
     const BURST: u64 = 40;
-    assert!(BURST as usize > studio_runtime_process::provider_seam::MAX_PENDING_RESPONSES);
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;

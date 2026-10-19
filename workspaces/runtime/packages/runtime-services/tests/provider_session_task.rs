@@ -973,36 +973,26 @@ async fn shutdown_interrupts_factory_open_before_attachment_exists() {
     assert!(exit.adapter.is_none());
 }
 
+/// A request the provider still owes a reply, even one whose outcome is
+/// Unknown after its deadline, never holds back a new preparation.
 #[tokio::test(start_paused = true)]
-async fn unresolved_request_limit_includes_unknown_until_positive_reply() {
+async fn unresolved_requests_never_hold_back_a_preparation() {
+    /// More unresolved requests than any former per-session window.
+    const UNRESOLVED: u64 = 100;
     let (mut session, mut peer) = open().await;
     ready(&mut session, &mut peer).await;
-    for id in 2..MAX_PENDING_RESPONSES as u64 + 2 {
+    for id in 2..UNRESOLVED + 2 {
         let request = session.control.prepare(spec(id, 100)).await.unwrap();
         session.control.submit(request).await.unwrap();
         written(write(&mut peer).await);
         session.events.recv().await.unwrap();
     }
-    // A full window is backpressure: preparation waits, it never fails.
-    pending(session.control.prepare(spec(100, 100))).await;
     tokio::time::advance(Duration::from_millis(100)).await;
     assert_eq!(
         session.events.recv().await.unwrap().outcomes.len(),
-        MAX_PENDING_RESPONSES
+        UNRESOLVED as usize
     );
-    let control = session.control.clone();
-    let mut waiting = tokio::spawn(async move { control.prepare(spec(100, 100)).await });
-    pending(&mut waiting).await;
-    peer.events
-        .send(entry(
-            1,
-            100,
-            JournalPayload::Frame(reply(RequestId::Number(2))),
-        ))
-        .await
-        .unwrap();
-    session.events.recv().await.unwrap();
-    assert!(waiting.await.unwrap().is_ok());
+    session.control.prepare(spec(1000, 100)).await.unwrap();
     session.checked_shutdown().await;
 }
 
@@ -1495,43 +1485,10 @@ for line in sys.stdin:
     }).await.expect("disposable recovery probe watchdog");
 }
 
+/// Recovery restores every durable request, and new preparations do not
+/// wait for the recovered ones.
 #[tokio::test(start_paused = true)]
-async fn closure_full_admission_window_can_be_recovered() {
-    let (factory, mut peer) = fake();
-    let mut cfg = config();
-    cfg.recovered = (2..34)
-        .map(|id| {
-            let mut r = recovered(RequestId::Number(id), Method::ModelList, 1000);
-            r.operation_id = OperationId(format!("recovered:{id}"));
-            r
-        })
-        .collect();
-    let result =
-        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg).await;
-    assert!(
-        result.is_ok(),
-        "the 32 requests accepted by the session cannot be restored together"
-    );
-    let mut session = result.unwrap();
-    ready(&mut session, &mut peer).await;
-    pending(session.control.prepare(spec(34, 1000))).await;
-    peer.events
-        .send(entry(
-            1,
-            1,
-            JournalPayload::Frame(reply(RequestId::Number(2))),
-        ))
-        .await
-        .unwrap();
-    session.events.recv().await.unwrap();
-    session.control.prepare(spec(34, 1000)).await.unwrap();
-    session.checked_shutdown().await;
-}
-
-/// Recovery restores every durable request even beyond the response window;
-/// only new preparations wait for a free slot.
-#[tokio::test(start_paused = true)]
-async fn recovery_beyond_response_window_restores_every_request() {
+async fn recovery_restores_every_request_without_holding_back_preparation() {
     let (factory, mut peer) = fake();
     let mut cfg = config();
     cfg.recovered = (2..602)
@@ -1546,7 +1503,7 @@ async fn recovery_beyond_response_window_restores_every_request() {
             .await
             .expect("every recovered request is restored");
     ready(&mut session, &mut peer).await;
-    pending(session.control.prepare(spec(1000, 1000))).await;
+    session.control.prepare(spec(1000, 1000)).await.unwrap();
     session.checked_shutdown().await;
 }
 

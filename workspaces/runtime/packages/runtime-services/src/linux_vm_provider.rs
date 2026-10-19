@@ -218,8 +218,6 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
             if handle != ProviderHandle::for_account(&self.identity.agent_id)
                 || options.expected_generation != Some(Generation(self.identity.generation))
                 || options.launch.command.is_empty()
-                || options.launch.retained_response_ids.len()
-                    > studio_runtime_process::provider_seam::MAX_PENDING_RESPONSES
             {
                 return Err(AdapterError::InvalidConfiguration);
             }

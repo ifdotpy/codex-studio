@@ -129,7 +129,6 @@ impl SupervisorProviderTaskFactory {
             if handle.as_str().len() > 180
                 || options.launch.command.is_empty()
                 || options.launch.command.iter().any(|arg| arg.contains('\0'))
-                || options.launch.retained_response_ids.len() > MAX_PENDING_RESPONSES
                 || options
                     .launch
                     .cwd
@@ -503,7 +502,6 @@ impl AdapterTask {
             let options = activated.options;
             if options.expected_generation != Some(opened.generation)
                 || options.launch.handled_cursor > opened.sequence
-                || options.launch.retained_response_ids.len() > MAX_PENDING_RESPONSES
             {
                 return Err(AdapterError::InvalidConfiguration);
             }
@@ -794,7 +792,7 @@ impl AdapterTask {
             .or_else(|| initialize.then_some(NativeId::Integer(1)));
         let rpc_request = native_id.is_some();
         let local_id = method.and_then(|_| write.message.get("id")).cloned();
-        if rpc_request && (local_id.is_none() || self.response_ids.len() >= MAX_PENDING_RESPONSES) {
+        if rpc_request && local_id.is_none() {
             return Ok(CommandReceipt::NotSent);
         }
         let request = WriteRequest {

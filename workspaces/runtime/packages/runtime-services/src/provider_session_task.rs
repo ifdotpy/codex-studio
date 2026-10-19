@@ -8,8 +8,8 @@ use studio_runtime_process::{
     EventCursor, Generation, OperationId, ProviderHandle,
     provider_seam::{
         AdapterCommand, AdapterError, AttachmentStatus, CommandReceipt, InitializationStatus,
-        JournalEntry, JournalPayload, LANE_CAPACITY, MAX_PENDING_RESPONSES, OpenOptions,
-        PreparedWrite, ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
+        JournalEntry, JournalPayload, LANE_CAPACITY, OpenOptions, PreparedWrite,
+        ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
         initialized_operation,
     },
 };
@@ -18,7 +18,7 @@ use studio_runtime_providers::{
     SessionError, SessionState,
 };
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
@@ -59,17 +59,14 @@ pub struct RequestSpec {
 }
 
 /// Validated wire size/shape before the account commits its Submitted marker.
-/// It owns an unresolved-request slot, so admission never fails for capacity;
-/// it can still be refused if readiness changes afterward.
+/// Admission never fails for capacity; it can still be refused if readiness
+/// changes afterward.
 pub struct PreparedRequest {
     spec: RequestSpec,
     prepared_at_ms: u64,
     write: Option<PreparedWrite>,
     generation: Generation,
     owner: mpsc::Sender<Command>,
-    /// One of the session's `MAX_PENDING_RESPONSES` unresolved-request slots.
-    /// Admission moves it into the request record; dropping it frees the slot.
-    slot: Option<OwnedSemaphorePermit>,
 }
 impl PreparedRequest {
     /// Persist this absolute deadline with Submitted, before calling submit.
@@ -180,8 +177,6 @@ pub struct SessionControl {
     settlements: mpsc::Sender<Settlement>,
     status: watch::Receiver<SessionStatus>,
     stop: Shutdown,
-    /// Unresolved provider responses; `prepare` waits for a slot (backpressure).
-    response_slots: Arc<Semaphore>,
 }
 
 impl SessionHandle {
@@ -239,7 +234,6 @@ impl SessionHandle {
             id: initialize_frame.id.clone(),
             method: Method::Initialize,
         };
-        let response_slots = Arc::new(Semaphore::new(MAX_PENDING_RESPONSES));
         let mut records = BTreeMap::new();
         for recovered in config.recovered {
             state.restore_request(
@@ -273,9 +267,6 @@ impl SessionHandle {
                     send: SendState::Unknown,
                     write: None,
                     ready: false,
-                    // Recovery restores every durable request; only new
-                    // preparations wait while recovered ones hold the slots.
-                    _slot: Arc::clone(&response_slots).try_acquire_owned().ok(),
                 },
             );
         }
@@ -290,7 +281,6 @@ impl SessionHandle {
                 lightweight: false,
                 write: Some(initialize),
                 ready: true,
-                _slot: None,
             },
         );
         let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
@@ -332,7 +322,6 @@ impl SessionHandle {
                 settlements,
                 status: observed.clone(),
                 stop: stop.clone(),
-                response_slots,
             },
             status: observed,
             stop,
@@ -393,18 +382,12 @@ impl SessionControl {
             fields: Map::new(),
         });
         let write = PreparedWrite::new(spec.operation_id.clone(), &frame)?;
-        let mut stop = self.stop.subscribe();
-        let slot = tokio::select! { biased;
-            _ = Shutdown::cancelled(&mut stop) => return Err(SessionTaskError::Closed),
-            slot = Arc::clone(&self.response_slots).acquire_owned() => slot.map_err(|_| SessionTaskError::Closed)?,
-        };
         let prepared = PreparedRequest {
             spec,
             prepared_at_ms: self.clock.now_ms(),
             write: Some(write),
             generation: self.status.borrow().generation,
             owner: self.commands.clone(),
-            slot: Some(slot),
         };
         let (reply, receipt) = oneshot::channel();
         self.commands
@@ -545,8 +528,6 @@ struct Record {
     lightweight: bool,
     write: Option<PreparedWrite>,
     ready: bool,
-    /// Held until the record retires (positive reply or definite NotSent).
-    _slot: Option<OwnedSemaphorePermit>,
 }
 struct PendingWrite {
     write: PreparedWrite,
@@ -1055,11 +1036,9 @@ impl SessionTask {
             spec.thread_id.clone(),
             spec.lightweight,
         )?;
-        let (write, slot) = match &mut self.retained.command {
-            Some(Command::Request { prepared, .. }) => {
-                (prepared.write.take(), prepared.slot.take())
-            }
-            _ => (None, None),
+        let write = match &mut self.retained.command {
+            Some(Command::Request { prepared, .. }) => prepared.write.take(),
+            _ => None,
         };
         self.records.insert(
             ticket.id.clone(),
@@ -1072,7 +1051,6 @@ impl SessionTask {
                 lightweight: spec.lightweight,
                 write,
                 ready: false,
-                _slot: slot,
             },
         );
         self.retained.actions = actions;

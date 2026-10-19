@@ -94,6 +94,10 @@ test-rust-runtime-corpora-mutations *args:
 test-rust-session-fairness:
     @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 
+[doc("Run the 200-agent single-account two-exchange scenario for both providers (manual heavy tier).")]
+test-rust-many-agents:
+    @cargo nextest run -p studio-runtime-services --lib --run-ignored only -E 'test(two_hundred_agents_complete_two_exchanges)'
+
 [doc("Run all manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy

@@ -2077,7 +2077,7 @@ impl Worker {
             })
             .unwrap_or_else(|| self.control.clone());
         let prepared = match crate::diagnostics::measure_runtime_stage_async(
-            "turn_submission.response_slot",
+            "turn_submission.prepare",
             self.drive(control.prepare(RequestSpec {
                 id: id.clone(),
                 operation_id: OperationId(operation),

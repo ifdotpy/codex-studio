@@ -15,8 +15,6 @@ use crate::{EventCursor, Generation, OperationId, ProviderHandle, ProviderLaunch
 /// Each lane has at most 16 serialized MiB, plus one bounded in-flight RPC.
 /// Decoded JSON has proportional allocation overhead. No replay batch is retained.
 pub const LANE_CAPACITY: usize = 16;
-/// Distinct from Python's CALLBACK_QUEUE_LIMIT, which bounds incoming events.
-pub const MAX_PENDING_RESPONSES: usize = 32;
 
 /// Shared monotonic epoch, injected into an attachment and its session.
 /// Tokio's clock makes arrival/deadline tests independent of wall time.
