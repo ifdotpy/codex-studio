@@ -151,6 +151,7 @@ fn ports_with_wake(
                     work_action: None,
                     late: Default::default(),
                 },
+                preparation: None,
             },
         )
         .unwrap(),

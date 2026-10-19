@@ -572,6 +572,7 @@ fn production_managed_ports(
                 wake: Arc::new(tokio::sync::Notify::new()),
                 monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
                 runtime_ports: real_monitor_runtime_ports(Arc::clone(store), monitor),
+                preparation: None,
             },
         )
         .unwrap(),
@@ -803,6 +804,7 @@ fn managed_ports(
             work_action: None,
             late: Default::default(),
         },
+        preparation: None,
     }
 }
 
@@ -1282,8 +1284,8 @@ async fn named_refusals_leave_all_application_tables_unchanged() {
         ),
         (
             "orchestration_context",
-            json!({"topic":"profiles"}),
-            "model-context/requested-topic",
+            json!({"topic":"tools"}),
+            "model-context/preparation-resources",
         ),
     ];
     for (index, (tool, args, dependency)) in cases.into_iter().enumerate() {
@@ -3308,6 +3310,7 @@ fn work_ports(
                     work_action: Some(port),
                     late: Default::default(),
                 },
+                preparation: None,
             },
         )
         .unwrap(),
@@ -3529,3 +3532,5 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert_eq!(record["status"], "paused");
     assert_eq!(record["autoWake"], false);
 }
+#[path = "ingress_tests/model_reads.rs"]
+mod model_reads;

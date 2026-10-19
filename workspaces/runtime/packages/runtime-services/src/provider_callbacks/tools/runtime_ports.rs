@@ -21,6 +21,10 @@ use crate::managed_host_tools::{
 pub struct ManagedToolRuntime {
     ports: ManagedToolRuntimePorts,
     creation_environment: Option<Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>>,
+    /// The host's preparation resources: the tool catalogs, progress template
+    /// and skills that `orchestration_context` reports. The host sets them once
+    /// after it loads them; topics that read them are refused before that.
+    preparation: std::sync::OnceLock<Arc<crate::account_worker::preparation::PreparationResources>>,
 }
 
 impl ManagedToolRuntime {
@@ -29,7 +33,23 @@ impl ManagedToolRuntime {
         Arc::new(Self {
             ports,
             creation_environment: None,
+            preparation: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Give managed tools the resources that account workers prepare threads with.
+    pub fn set_preparation_resources(
+        &self,
+        resources: Arc<crate::account_worker::preparation::PreparationResources>,
+    ) {
+        // The host loads its resources once; a later call keeps the first.
+        self.preparation.get_or_init(|| resources);
+    }
+
+    pub(crate) fn preparation_resources(
+        &self,
+    ) -> Option<Arc<crate::account_worker::preparation::PreparationResources>> {
+        self.preparation.get().cloned()
     }
 
     pub fn new(
@@ -88,6 +108,7 @@ impl ManagedToolRuntime {
                 late: Default::default(),
             },
             creation_environment: environment,
+            preparation: std::sync::OnceLock::new(),
         })
     }
 

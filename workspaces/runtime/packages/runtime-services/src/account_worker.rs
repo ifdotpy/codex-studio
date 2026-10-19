@@ -2306,7 +2306,7 @@ impl Worker {
                             .get("layrHome")
                             .and_then(Value::as_str)
                             .filter(|value| value.starts_with('/'))
-                            .unwrap_or("/home/studio");
+                            .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
                         Ok(Some(preparation::VmProviderLaunchRequest {
                             agent_id: record.id.0,
                             epoch: record.epoch,
@@ -2588,7 +2588,7 @@ impl Worker {
                             .get("layrHome")
                             .and_then(Value::as_str)
                             .filter(|value| value.starts_with('/'))
-                            .unwrap_or("/home/studio");
+                            .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
                         Ok(Some((
                             record.id.0,
                             provider.to_owned(),

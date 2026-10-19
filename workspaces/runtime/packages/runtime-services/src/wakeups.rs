@@ -19,7 +19,8 @@ fn complaints<'a>(s: &'a Snapshot, event: &Value) -> Option<Vec<&'a Value>> {
         })
         .collect()
 }
-fn needs_response(c: &Value) -> bool {
+/// Python's `Runtime.complaint_needs_response`: the responsible side has not answered.
+pub(crate) fn needs_response(c: &Value) -> bool {
     if matches!(text(c, "status"), "resolved" | "declined") {
         return false;
     }

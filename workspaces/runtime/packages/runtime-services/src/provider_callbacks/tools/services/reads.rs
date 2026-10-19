@@ -1,6 +1,11 @@
 //! Bounded model projections with the same authority as their full-text reader.
 use super::*;
+use crate::submit_gates::{
+    AuthorizationScope, AuthorizationSnapshot, EventDenial, StoredEvent, authorize_events,
+};
 use rusqlite::OptionalExtension;
+use serde_json::Map;
+use studio_runtime_store::{TranscriptItem, TranscriptRepository, TranscriptStoreError};
 
 pub(super) fn chat(
     tx: &Transaction<'_>,
@@ -63,6 +68,7 @@ pub(super) fn read(
     snapshot: &CallbackSnapshot,
     args: &Value,
     now: f64,
+    state_root: &std::path::Path,
 ) -> Result<Value, CallbackError> {
     let key = text(args, "output_ref")?;
     if let Some(id) = key.strip_prefix("chat-message:") {
@@ -81,58 +87,302 @@ pub(super) fn read(
             text(&message, "text")?,
             args,
             json!({"source":"chat-message","identity":identity}),
+            Map::new(),
         );
     }
-    if key.starts_with("event:") || key.starts_with(&format!("{}:", snapshot.context().agent)) {
-        return Err(CallbackError::Dependency(
-            "model-output/native-and-event-payload-recovery",
-        ));
+    if let Some(id) = key.strip_prefix("event:") {
+        return event(tx, snapshot, key, id, args);
     }
-    // Reuse canonical alias resolution and payload expiry from the receipt service.
-    let receipt = tool_requests::execute(
-        tx,
-        &snapshot.context().agent,
-        tool_requests::Action::Get(key),
-        now,
-    )?;
-    if receipt["agent"] != snapshot.context().agent || receipt["stage"] == "ambiguous" {
+    let agent = snapshot.context().agent.as_str();
+    let mut receipt = receipt(tx, agent, key, now, state_root)?;
+    // Native item ids start with the stable Studio agent id, also after an
+    // account transfer. A caller-supplied thread id never authorizes a read.
+    if receipt["stage"] == "not_found"
+        && let Some(call) = key
+            .strip_prefix(agent)
+            .and_then(|rest| rest.strip_prefix(':'))
+        && let Some(item) = TranscriptRepository::item(tx, agent, key).map_err(transcript_error)?
+    {
+        match item.record["title"].as_str() {
+            Some("commandExecution") => return command_output(tx, key, &item, args),
+            Some("dynamicToolCall") => {
+                let aliases = tx
+                    .prepare_cached(
+                        "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
+                    )?
+                    .query_map([agent, call], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                if aliases.len() > 1 {
+                    return Err(CallbackError::Invalid(
+                        "Output reference is ambiguous. Use the canonical request id.",
+                    ));
+                }
+                if let Some(request) = aliases.first() {
+                    receipt = self::receipt(tx, agent, request, now, state_root)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    if receipt["agent"] != agent || receipt["stage"] == "ambiguous" {
         return Err(CallbackError::Invalid(
             "Output reference is not owned by this agent",
         ));
     }
-    let result = receipt
-        .get("result")
-        .cloned()
-        .or(records::get(
-            tx,
-            "runtime_tool_results",
-            text(&receipt, "id")?,
-        )?)
+    let id = text(&receipt, "id")?;
+    let mut result = records::get(tx, "runtime_tool_results", id)?
+        .or_else(|| receipt.get("result").cloned())
         .ok_or(CallbackError::Invalid(
             "Result is not available yet. Do not repeat the operation.",
         ))?;
     if studio_runtime_store::truthy(result.get("_payloadBlobs")) {
-        return Err(CallbackError::Dependency(
-            "payload-store/tool-request-recovery",
-        ));
+        result = crate::payload_blobs::resolve_record(state_root, &result)
+            .map_err(|_| CallbackError::Stored(format!("runtime_tool_results/{id} payload")))?;
     }
+    tool_requests::expire(&mut result, now);
     let body = result["contentItems"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|v| v["type"] == "inputText")
-        .filter_map(|v| v["text"].as_str())
+        .map(|v| v["text"].as_str().unwrap_or_default())
         .collect::<Vec<_>>()
         .join("\n");
+    let mut page = Map::new();
+    if let Some(expiry) = result.get("serverOutputExpiresAt") {
+        page.insert("outputExpiresAt".into(), expiry.clone());
+    }
     excerpt(
-        text(&receipt, "id")?,
+        id,
         &body,
         args,
         json!({"success":result["success"],"outcome":receipt["outcome"]}),
+        page,
     )
 }
 
-fn excerpt(key: &str, body: &str, args: &Value, mut value: Value) -> Result<Value, CallbackError> {
+/// The receipt service's canonical alias resolution, with saved payloads
+/// resolved from the state directory. Python's `tool_request` reads them too.
+fn receipt(
+    tx: &Transaction<'_>,
+    agent: &str,
+    key: &str,
+    now: f64,
+    state_root: &std::path::Path,
+) -> Result<Value, CallbackError> {
+    Ok(tool_requests::execute_http(
+        tx,
+        agent,
+        tool_requests::Action::Get(key),
+        now,
+        state_root,
+    )?)
+}
+
+/// Python's `model_saved_message` for an `event:` reference: only the
+/// recipient reads its event, and only inside the current team boundary.
+fn event(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    key: &str,
+    id: &str,
+    args: &Value,
+) -> Result<Value, CallbackError> {
+    let agent = snapshot.context().agent.as_str();
+    let (kind, created, epoch, turn, body) = tx
+        .query_row(
+            "SELECT kind,created,epoch,turn_id,text FROM runtime_events WHERE id=?1 AND agent=?2",
+            [id, agent],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(CallbackError::Invalid(
+            "Event reference is not owned by this agent",
+        ))?;
+    let meta = if records::exists(tx, "runtime_event_meta")? {
+        tx.query_row(
+            "SELECT record FROM runtime_event_meta WHERE id=?1",
+            [id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    } else {
+        None
+    };
+    authorize_event(
+        tx,
+        agent,
+        StoredEvent {
+            id: id.into(),
+            kind: kind.clone(),
+            text: body.clone(),
+        },
+        meta.as_deref(),
+    )?;
+    let mut metadata = match meta {
+        Some(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(Value::Object(metadata)) => metadata,
+            _ => return Err(CallbackError::Stored(format!("runtime_event_meta/{id}"))),
+        },
+        None => Map::new(),
+    };
+    metadata.remove("contextManifest");
+    let identity = json!({"id":id,"agent":agent,"kind":kind,"created":created,"epoch":epoch,"turn_id":turn,"metadata":metadata});
+    excerpt(
+        key,
+        &body,
+        args,
+        json!({"source":"event","identity":identity}),
+        Map::new(),
+    )
+}
+
+/// Python's `codex_team_isolation.assert_events` for one stored event. Only
+/// agent communication kinds cross a team boundary; other kinds need no rows.
+fn authorize_event(
+    tx: &Transaction<'_>,
+    agent: &str,
+    event: StoredEvent,
+    meta: Option<&str>,
+) -> Result<(), CallbackError> {
+    if !matches!(
+        event.kind.as_str(),
+        "agent_message" | "chat_review" | "complaint_response" | "followup" | "radio_turn"
+    ) {
+        return Ok(());
+    }
+    let mut rows = messages::authorization_records(tx)?;
+    rows.recipient_id = agent.into();
+    if let Some(meta) = meta {
+        rows.event_meta.insert(event.id.clone(), meta.into());
+    }
+    rows.events = vec![event];
+    let scope = AuthorizationScope::of_events(agent, &rows.events, &rows.event_meta);
+    for id in &scope.rooms {
+        if let Some(room) = records::get(tx, "runtime_rooms", id)? {
+            rows.rooms.insert(id.clone(), room.to_string());
+        }
+    }
+    for id in &scope.complaints {
+        if let Some(complaint) = records::get(tx, "runtime_complaints", id)? {
+            rows.complaints.insert(id.clone(), complaint.to_string());
+        }
+    }
+    let snapshot = AuthorizationSnapshot::from_records(&rows)
+        .map_err(|e| CallbackError::Stored(e.location))?;
+    authorize_events(&snapshot).map_err(event_denial)
+}
+
+/// The reason Python's `validate_event` gives for each denial.
+fn event_denial(denial: EventDenial) -> CallbackError {
+    CallbackError::Invalid(match denial {
+        EventDenial::RecipientUnavailable => {
+            "Agent communication is allowed only within one team: the recipient team is unavailable"
+        }
+        EventDenial::RoomUnavailable => {
+            "Agent communication is allowed only within one team: the message room is unavailable"
+        }
+        EventDenial::BroadcastDisabled => {
+            "Agent communication is allowed only within one team: global and foreign broadcasts are disabled"
+        }
+        EventDenial::RoomBoundary => {
+            "Agent communication is allowed only within one team: the message room crosses team boundaries"
+        }
+        EventDenial::ComplaintUnavailable => {
+            "Agent communication is allowed only within one team: the complaint is unavailable"
+        }
+        EventDenial::ComplaintRecipient => {
+            "Agent communication is allowed only within one team: the complaint recipient does not match"
+        }
+        EventDenial::ComplaintResponderUnavailable => {
+            "Agent communication is allowed only within one team: the complaint responder is unavailable"
+        }
+        EventDenial::ComplaintResponder => {
+            "Agent communication is allowed only within one team: the complaint responder does not match"
+        }
+        EventDenial::TeamBoundary => "Agent communication is allowed only within one team",
+        EventDenial::ChatReviewRemoved => "Scheduled chat reviews have been removed",
+        // Python checks a radio turn against the radio policy, which has no
+        // Rust owner for reads yet.
+        EventDenial::RadioUnsupported => {
+            return CallbackError::Dependency("radio-policy/event-read");
+        }
+    })
+}
+
+/// Python's saved native command output: the transcript item of this agent's
+/// own command, with its complete text when the item was truncated.
+fn command_output(
+    tx: &Transaction<'_>,
+    key: &str,
+    item: &TranscriptItem,
+    args: &Value,
+) -> Result<Value, CallbackError> {
+    let unreadable = || {
+        CallbackError::Invalid(
+            "Saved command output is truncated or unreadable. Do not repeat the command.",
+        )
+    };
+    let item_truncated = studio_runtime_store::truthy(item.record.get("truncated"));
+    let full = if item_truncated {
+        TranscriptRepository::full_text(tx, item)
+            .map_err(transcript_error)?
+            .filter(|text| !text.is_empty())
+    } else {
+        None
+    };
+    let raw = match &full {
+        Some(full) => full.as_str(),
+        None => item.record["text"].as_str().ok_or_else(unreadable)?,
+    };
+    let payload: Value = serde_json::from_str(raw).map_err(|_| unreadable())?;
+    let output = payload["aggregatedOutput"]
+        .as_str()
+        .ok_or(CallbackError::Invalid(
+            "Saved command output is unavailable. Do not repeat the command.",
+        ))?;
+    let truncated = studio_runtime_store::truthy(payload.get("outputTruncated"))
+        || (item_truncated && full.is_none());
+    let success = payload["status"] == "completed" && payload["exitCode"] == 0;
+    let mut page = Map::new();
+    page.insert("commandStatus".into(), payload["status"].clone());
+    page.insert("exitCode".into(), payload["exitCode"].clone());
+    excerpt(
+        key,
+        output,
+        args,
+        json!({"success":success,"outcome":"unknown","source":"saved_native_output","truncated":truncated}),
+        page,
+    )
+}
+
+fn transcript_error(error: TranscriptStoreError) -> CallbackError {
+    match error {
+        TranscriptStoreError::Store(error) => CallbackError::Store(error),
+        TranscriptStoreError::Sqlite(error) => CallbackError::Store(error.into()),
+        TranscriptStoreError::InvalidStoredObject { table, id } => {
+            CallbackError::Stored(format!("{table}/{id}"))
+        }
+        TranscriptStoreError::ActiveTurn => CallbackError::Stored("runtime_items".into()),
+    }
+}
+
+/// One page of saved text. `page` holds the fields that only a found page has.
+fn excerpt(
+    key: &str,
+    body: &str,
+    args: &Value,
+    mut value: Value,
+    page: Map<String, Value>,
+) -> Result<Value, CallbackError> {
     let chars = body.chars().collect::<Vec<_>>();
     let mut offset = match args.get("offset") {
         None => 0,
@@ -164,5 +414,8 @@ fn excerpt(key: &str, body: &str, args: &Value, mut value: Value) -> Result<Valu
     };
     value["totalChars"] = json!(chars.len());
     value["text"] = json!(chars[offset..end].iter().collect::<String>());
+    if let Some(fields) = value.as_object_mut() {
+        fields.extend(page);
+    }
     Ok(value)
 }

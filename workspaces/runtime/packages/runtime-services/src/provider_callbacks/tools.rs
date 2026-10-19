@@ -482,6 +482,8 @@ pub(super) fn production_ports(
             event_wake: config.wake,
             monitor_dispatch_wake: config.monitor_dispatch_wake,
             runtime_ports: config.runtime_ports,
+            state_root: store.state_dir().to_path_buf(),
+            preparation: config.preparation,
         },
     ))
 }
@@ -614,6 +616,7 @@ async fn run_claimed(
     let context_for_local = context.clone();
     let call_for_local = call.clone();
     let ports_for_local = Arc::clone(ports);
+    let state_root = store.state_dir().to_path_buf();
     store
         .transaction_with(move |tx| {
             let context = &context_for_local;
@@ -633,6 +636,7 @@ async fn run_claimed(
                     call,
                     &mut record,
                     now,
+                    &state_root,
                     ports_for_local.as_ref(),
                 )
             };
@@ -758,6 +762,7 @@ fn execute_once(
     call: &ToolCall,
     record: &mut Value,
     now: f64,
+    state_root: &std::path::Path,
     ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
     put(tx, record)?;
@@ -765,7 +770,7 @@ fn execute_once(
     // Store failures roll back claim, effect, result and reply together.
     tx.execute_batch("SAVEPOINT callback_service")?;
     let effect = services::execute(
-        tx, snapshot, call.kind, &call.name, &call.args, &call.id, now, ports,
+        tx, snapshot, call.kind, &call.name, &call.args, &call.id, now, state_root, ports,
     );
     let (mut value, signals) = match effect {
         Ok(staged) => {
