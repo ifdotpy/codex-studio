@@ -241,6 +241,20 @@ class Host:
         return self.snapshot["root"]["federation_enabled"]
 
 
+def browser(s, params):
+    """Apply the snapshot's account decision where Python's configure_browser runs.
+
+    The Rust snapshot carries the filesystem decision of codex_browser.browser_status
+    (tests/browser_differential.rs checks it) and has already merged its overrides into
+    thread_config. Python appends the guidance after every other instruction, and only
+    at its own call site, which excludes Claude and VM agents.
+    """
+    decision = s["guidance"].get("browser") or {}
+    if decision.get("instructions"):
+        params["developerInstructions"] += "\n" + decision["instructions"]
+    return params
+
+
 def run(command):
     s = command["snapshot"]
     with tempfile.TemporaryDirectory(prefix="thread-oracle-") as name:
@@ -259,7 +273,7 @@ def run(command):
                     ("codex_runtime.uid", lambda: command.get("attempt_id", "attempt")),
                     ("codex_vm_agents.progress_context", lambda *a: s["guidance"]["progress"]),
                     ("codex_nested_delegation.can_delegate", lambda *a: s["root"]["can_delegate"]),
-                    ("codex_browser.configure_browser", lambda *a: None),
+                    ("codex_browser.configure_browser", lambda _runtime, _actor, params: browser(s, params)),
                     ("codex_native_release.reconcile_unknown", lambda *a: None),
                     ("codex_native_release.time.time", lambda: 1000.0),
                 ):

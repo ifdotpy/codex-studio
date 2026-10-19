@@ -182,7 +182,9 @@ def config_corpus(root):
                                  "nodeRuntime": str(node_path.resolve()) if runtime else None,
                                  "browserService": str(service_path.resolve()) if service and valid_services else None},
                       "python": {"overrides": overrides, "reason": reason,
-                                 "developerInstructions": codex_browser.GUIDANCE if overrides else None},
+                                 "developerInstructions": codex_browser.GUIDANCE if overrides else None,
+                                 # configure_browser registers this root only for enabled overrides.
+                                 "skillRoots": [str(codex_browser.skill_root(shared_home))] if overrides else []},
                       "expectedReason": expected_reason})
     return cases
 

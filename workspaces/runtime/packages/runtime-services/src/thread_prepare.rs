@@ -155,6 +155,19 @@ pub struct GuidanceBundle {
     pub role: String,
     pub progress: String,
     pub thread_config: Map<String, Value>,
+    /// Native Chrome setup of a host Codex thread; `None` for an agent without
+    /// one (Claude, VM). Its config overrides are already in `thread_config`.
+    #[serde(default)]
+    pub browser: Option<BrowserGuidance>,
+}
+
+/// Python `codex_browser.configure_browser` for one thread request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserGuidance {
+    /// Appended to the developer instructions when the browser is on.
+    pub instructions: Option<String>,
+    /// The connection's `skills/extraRoots/set` roots; empty when the browser is off.
+    pub skill_roots: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -534,6 +547,15 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
     }
     let provider = adapter(s.account.provider);
     provider.shape_thread_params(s, &mut params, &mut instructions);
+    if let Some(text) = s
+        .guidance
+        .browser
+        .as_ref()
+        .and_then(|browser| browser.instructions.as_deref())
+    {
+        instructions.push('\n');
+        instructions.push_str(text);
+    }
     let mut context_versions = Map::new();
     let mut artifacts = Vec::new();
     for (key, text) in [

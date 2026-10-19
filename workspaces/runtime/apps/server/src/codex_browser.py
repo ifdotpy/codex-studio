@@ -13,6 +13,8 @@ import tomllib
 import threading
 from weakref import WeakKeyDictionary
 
+from codex_shared_values import BROWSER_SKILL_TIMEOUT_SECONDS
+
 
 PLUGIN = "chrome@openai-bundled"
 GUIDANCE = (
@@ -84,7 +86,8 @@ def ensure_skill(server, root):
         if not state["dirty"] and state["root"] == root:
             return
         state["dirty"] = True
-        server.call("skills/extraRoots/set", {"extraRoots": [str(root)] if root else []}, timeout=20)
+        server.call("skills/extraRoots/set", {"extraRoots": [str(root)] if root else []},
+                    timeout=BROWSER_SKILL_TIMEOUT_SECONDS)
         state.update(root=root, dirty=False)
 
 

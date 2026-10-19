@@ -505,7 +505,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             Some(retained_session),
             tokio::runtime::Handle::current(),
             PathBuf::from(&state_dir).join("accounts"),
-            base_home,
+            base_home.clone(),
             home,
         )
         .with_limits(account_policy.clone())
@@ -792,6 +792,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&session_binaries),
         account_registry::AccountRegistryConfig::default(),
         Some(Arc::clone(&managed_tool_runtime)),
+        Some(base_home.clone()),
     )
     .await
     {
