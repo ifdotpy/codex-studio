@@ -1441,6 +1441,41 @@ mod tests {
         ));
     }
 
+    /// Cutover attempt 3: the kqueue watcher held one descriptor per session file
+    /// and folder (about 14,000). New descriptors then got numbers above macOS
+    /// OPEN_MAX (10240), and every child spawn of the server failed with EBADF
+    /// from posix_spawn, so Git workspace checks failed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_history_watcher_does_not_hold_a_descriptor_per_session_file() {
+        fn open_descriptors() -> usize {
+            std::fs::read_dir("/dev/fd")
+                .expect("descriptor table")
+                .count()
+        }
+        let root = tempdir().expect("temporary state");
+        let home = root.path().join("profile");
+        for day in 0..40 {
+            let folder = home.join(format!("sessions/2026/10/{day:02}"));
+            std::fs::create_dir_all(&folder).expect("session folder");
+            for file in 0..50 {
+                std::fs::write(folder.join(format!("rollout-{file}.jsonl")), "{}\n")
+                    .expect("session file");
+            }
+        }
+        std::fs::create_dir_all(root.path().join("accounts")).expect("registry folder");
+        let before = open_descriptors();
+        let mut watcher = HistoryWatcher::new(root.path(), Arc::new(HistoryWake::default()))
+            .expect("history watcher");
+        watcher
+            .watch_profiles(BTreeMap::from([("account".to_owned(), home)]))
+            .expect("profile watch");
+        let held = open_descriptors().saturating_sub(before);
+        // 2,000 files and 40 folders; other tests may open a few descriptors meanwhile.
+        assert!(held < 200, "the watcher holds {held} descriptors");
+        drop(watcher);
+    }
+
     #[test]
     fn rollout_notifications_match_timestamped_files_only_in_scanned_trees() {
         let home = Path::new("/profile");
