@@ -13,7 +13,6 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { chooseSetupValue } from "../../../../runtime/apps/server/tests/setup-controls.mjs";
 import {
   assertStoredScaleProfile,
   readProcessTable,
@@ -59,6 +58,9 @@ const VIEWPORT = { width: 1440, height: 900 };
 // Deadline of one HTTP request and of one UI step, milliseconds.
 const REQUEST_DEADLINE_MS = 30_000;
 const UI_STEP_TIMEOUT_MS = 30_000;
+// A hover-revealed click is retried this often, each attempt this long.
+const UI_CLICK_ATTEMPTS = 3;
+const UI_CLICK_TIMEOUT_MS = 10_000;
 // Entity documents per sync pull page.
 const PULL_PAGE_LIMIT = 500;
 // Poll period of waits that have no event to await, milliseconds.
@@ -66,6 +68,10 @@ const POLL_MS = 250;
 const BYTES_PER_MIB = 1024 * 1024;
 const DIAGNOSTICS_PATH = "/api/diagnostics";
 const PROVIDER_PROCESS_NAMES = ["codex", "claude"];
+// Provider processes owned by one agent. `codex app-server` is shared by the
+// threads of an account and outlives them by design, so it is reported but
+// not a leak; loaded threads are checked through the diagnostics counter.
+const AGENT_OWNED_PROCESS_NAMES = ["claude"];
 
 let aborted = false;
 let signalCount = 0;
@@ -199,6 +205,9 @@ function compactDiagnostics(value) {
   return {
     at: new Date().toISOString(),
     lockErrors: sqliteLockErrors(value),
+    loadedThreads: Number.isSafeInteger(value?.studioLoadedThreads)
+      ? value.studioLoadedThreads
+      : null,
     ...(() => {
       const waits = sqliteWriteWaits(value);
       return { writeWaits: waits.count, writeWaitMs: waits.totalMs };
@@ -232,9 +241,9 @@ function processesMentioning(needle) {
   return found;
 }
 
-function providerPids(table, backendPid) {
+function providerPids(table, backendPid, names) {
   return new Set(
-    PROVIDER_PROCESS_NAMES.flatMap((name) =>
+    names.flatMap((name) =>
       sampleProviderProcesses(table, backendPid, name).perProcess.map(
         (item) => item.pid,
       ),
@@ -299,6 +308,27 @@ const UI_COUNTS_SOURCE = () => ({
     document.querySelector("#team-toggle")?.getAttribute("aria-expanded") ===
     "false",
 });
+
+// Operate a visible segmented control or the account tiles with real clicks.
+async function chooseSetupValue(locator, value) {
+  const segment = locator.locator(`input[value="${value}"]`);
+  if (
+    (await locator.getAttribute("role")) === "radiogroup" &&
+    (await segment.count())
+  ) {
+    const id = await segment.getAttribute("id");
+    await locator.locator(`label[for="${id}"]`).click();
+    return;
+  }
+  const tile = locator.locator(`[data-account-key="${value}"]`);
+  // A tile of another provider shows after that provider is selected.
+  for (const provider of await locator.locator('input[type="radio"]').all()) {
+    if (await tile.isVisible()) break;
+    const id = await provider.getAttribute("id");
+    await locator.locator(`label[for="${id}"]`).click();
+  }
+  await tile.click();
+}
 
 async function configureNewChat(page, dialog, lead, worker) {
   const main = await dialog.getByRole("button", {
@@ -431,7 +461,11 @@ async function main() {
     scaleProfile(options.worker),
   );
   journal.roles = { lead, worker: workerRole };
-  const baselineProviderPids = providerPids(readProcessTable(), backendPid);
+  const baselineProviderPids = providerPids(
+    readProcessTable(),
+    backendPid,
+    PROVIDER_PROCESS_NAMES,
+  );
   journal.baselineProviderProcesses = baselineProviderPids.size;
   const diagnosticsBefore = compactDiagnostics(
     await api("GET", "/api/diagnostics"),
@@ -590,14 +624,25 @@ async function main() {
     })();
 
     // 1. New lead chat through the dialog.
-    await page
+    const heading = page
       .locator(".project-tree-heading")
       .filter({ has: page.getByText(project.name, { exact: true }) })
-      .first()
-      .hover();
-    await page
-      .getByRole("button", { name: `New chat in ${project.name}`, exact: true })
-      .click();
+      .first();
+    const newChatButton = page.getByRole("button", {
+      name: `New chat in ${project.name}`,
+      exact: true,
+    });
+    // The row action appears on hover; a sidebar still re-rendering under load
+    // can cover it, so hover and click are retried a bounded number of times.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await heading.hover();
+        await newChatButton.click({ timeout: UI_CLICK_TIMEOUT_MS });
+        break;
+      } catch (error) {
+        if (attempt >= UI_CLICK_ATTEMPTS) throw error;
+      }
+    }
     const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
     await dialog.waitFor();
     // The dialog loads accounts and the catalogue before its settings can be saved.
@@ -899,6 +944,7 @@ async function main() {
       runTag,
       backendPid,
       baselineProviderPids,
+      baselineLoadedThreads: diagnosticsBefore.loadedThreads,
     });
   } else {
     journal.cleanup = { state: "nothing created" };
@@ -926,6 +972,7 @@ async function cleanup({
   runTag,
   backendPid,
   baselineProviderPids,
+  baselineLoadedThreads,
 }) {
   const state = {
     state: "started",
@@ -933,6 +980,9 @@ async function cleanup({
     deleteRequest: null,
     remaining: null,
     leakedProviderPids: [],
+    sharedAppServersAdded: null,
+    loadedThreads: null,
+    baselineLoadedThreads,
     leakedProcesses: [],
   };
   const owned = () =>
@@ -956,18 +1006,35 @@ async function cleanup({
       const live = owned().filter((value) => !value.deleted);
       state.remaining = live.length;
       const table = readProcessTable();
-      const providerLeaks = [...providerPids(table, backendPid)].filter(
-        (pid) => !baselineProviderPids.has(pid),
-      );
+      const providerLeaks = [
+        ...providerPids(table, backendPid, AGENT_OWNED_PROCESS_NAMES),
+      ].filter((pid) => !baselineProviderPids.has(pid));
+      state.sharedAppServersAdded = [
+        ...providerPids(table, backendPid, PROVIDER_PROCESS_NAMES),
+      ].filter(
+        (pid) => !baselineProviderPids.has(pid) && !providerLeaks.includes(pid),
+      ).length;
+      state.loadedThreads = compactDiagnostics(
+        await api("GET", DIAGNOSTICS_PATH),
+      ).loadedThreads;
+      const threadLeak =
+        state.loadedThreads !== null &&
+        baselineLoadedThreads !== null &&
+        state.loadedThreads > baselineLoadedThreads;
       const toolLeaks = processesMentioning(runTag);
       state.leakedProviderPids = providerLeaks;
       state.leakedProcesses = toolLeaks;
-      if (!live.length && !providerLeaks.length && !toolLeaks.length) {
+      if (
+        !live.length &&
+        !providerLeaks.length &&
+        !toolLeaks.length &&
+        !threadLeak
+      ) {
         state.state = "verified";
         break;
       }
       if (performance.now() - startedAt > CLEANUP_DEADLINE_MS) {
-        state.state = "FAILED: agents or processes remain";
+        state.state = "FAILED: agents, threads or processes remain";
         break;
       }
       await sleep(POLL_MS * 4);
