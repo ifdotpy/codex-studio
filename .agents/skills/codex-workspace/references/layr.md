@@ -25,6 +25,7 @@ Studio saves a state after every agent turn.
 `layr access check <user> <action>` explains a refused command.
 Inspect the exact submitted state before accepting the result.
 Acceptance calls `layr merge <line> --expect <reviewed state>`.
+Acceptance does not merge a reviewer's result or your own result: they have no line changes.
 A changed line rejects acceptance.
 Resolve merge conflicts in the main line with `layr`.
 Archive or removal deletes the worker line and keeps its states.

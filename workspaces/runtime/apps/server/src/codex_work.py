@@ -204,6 +204,9 @@ class WorkMixin:
                 work = json.loads(row[0]) if row else None
                 vm_merge = leader.get('executionMode') == 'vm' and work and work.get('status') == 'review'
                 if vm_merge and work is not None:
+                    from codex_vm_agents import result_needs_merge
+                    vm_merge = result_needs_merge(leader, self.agent(work['owner'], db) if work.get('owner') else None)
+                if vm_merge and work is not None:
                     if not leader.get('isLead') or leader['id'] != work['rootId'] or (epoch is not None and leader['epoch'] != epoch):
                         raise ValueError('Only the active lead can accept a layr result')
                     text_field(data.get('result'), 'a review decision')

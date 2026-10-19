@@ -122,6 +122,9 @@ class Guest(fixture.NativeGuest):
                 raise ValueError('The submitted state is not the line head')
         elif method == 'line.merge':
             source = self.lines[params['sourceAgentId']]
+            # The guest merges only a writable worker line into main (layr_agents.py line.merge).
+            if source['readOnly'] or source['line'] == 'main':
+                raise LinuxVMError('Linux guest line.merge: The source line is invalid', code='invalid_params')
             if source['stateId'] != params['expectedStateId']:
                 raise ValueError('The reviewed state changed')
             self.merges += 1
@@ -197,7 +200,15 @@ class VmAgents(unittest.TestCase):
         result = self.runtime.spawn_agents(lead, {'agents': [{
             'name': 'Worker', 'prompt': 'Change the file', 'role': 'reviewer' if reviewer else 'implementer'}]},
             'spawn:' + str(uuid.uuid4()))
+        self.spawned = result['agents'][0]
         return self.runtime.agent(result['agents'][0]['id'])
+
+    def test_a_layr_worker_gets_no_shared_folder_warning(self):
+        lead = prepare(self.runtime, self.lead())
+        worker = self.worker(lead)
+        # Each layr worker has its own line: the Git worktree warning does not apply.
+        self.assertNotIn('warning', self.spawned)
+        self.assertIsNone(worker['worktreeWarning'])
 
     def test_layr_sessions_get_the_layr_guidance_and_skill(self):
         import codex_runtime
@@ -502,6 +513,22 @@ class VmAgents(unittest.TestCase):
         self.assertEqual(self.guest.merges, 1)
         self.assertEqual((self.guest.project / 'file').read_text(), 'worker')
         self.assertEqual((self.project / 'file').read_text(), 'base')
+
+    def test_acceptance_does_not_merge_a_reviewer_or_lead_result(self):
+        lead = prepare(self.runtime, self.lead())
+        reviewer = prepare(self.runtime, self.worker(lead, reviewer=True))
+        for owner in (reviewer, lead):
+            with self.subTest(owner='lead' if owner is lead else 'reviewer'):
+                task = self.runtime.work_action(lead['id'], {'action': 'create', 'title': 'Review',
+                                                             'owner': owner['id']}, actor=lead['id'])
+                self.runtime.work_action(owner['id'], {'action': 'submit', 'task_id': task['id'],
+                    'result': 'No defects', 'checks': 'Read the state',
+                    'revision': self.guest.lines[owner['id']]['stateId']}, actor=owner['id'])
+                accepted = self.runtime.work_action(lead['id'], {'action': 'accept', 'task_id': task['id'],
+                                                                 'result': 'Review read'}, actor=lead['id'])
+                self.assertEqual(accepted['status'], 'accepted')
+        self.assertEqual(self.guest.merges, 0)
+        self.assertFalse(any(call[0] == 'line.merge' for call in self.guest.calls))
 
     def test_http_creation_returns_workspace_and_execution_mode(self):
         from fastapi import FastAPI
