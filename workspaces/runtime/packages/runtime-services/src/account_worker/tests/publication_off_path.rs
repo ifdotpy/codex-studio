@@ -41,6 +41,8 @@ impl NotificationPostCommitSink for GatedSink {
         let cursor = match effect {
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. }
+            | NotificationPostCommit::AnalyticsCaptured(observation)
+            | NotificationPostCommit::AnalyticsStreamCaptured(observation)
             | NotificationPostCommit::TokenRateStream(observation)
             | NotificationPostCommit::TokenRateAssociation(observation)
             | NotificationPostCommit::TokenRateUsage(observation) => observation.delivery.cursor,
@@ -155,5 +157,69 @@ async fn restart_replays_undelivered_publications_once() {
     sorted.dedup();
     assert_eq!(delivered, sorted, "replayed in order, each once");
     assert!(delivered.len() >= cursors.len());
+    worker.shutdown().await.expect("stop worker");
+}
+
+static WRITER_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn count_writer_job(event: studio_runtime_store::StoreDiagnosticsEvent) {
+    if matches!(
+        event,
+        studio_runtime_store::StoreDiagnosticsEvent::WriterTransaction { .. }
+    ) {
+        WRITER_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn analytics_rows(state: &State) -> i64 {
+    rusqlite::Connection::open(state.root.join("analytics.sqlite3"))
+        .expect("analytics DB")
+        .query_row("SELECT count(*) FROM analytics_notifications", [], |row| {
+            row.get(0)
+        })
+        .expect("notification rows")
+}
+
+/// Notification analytics are captured inside the journal commit: the rows exist
+/// when the frame is acknowledged, with the sink still shut, and each frame costs
+/// one writer transaction (the journal batch) instead of one for the journal, one
+/// for its capture and one for its receipt cleanup.
+#[tokio::test]
+async fn analytics_are_captured_in_the_journal_commit_with_one_writer_job() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let sink = GatedSink::new(false);
+    let mut worker = peer
+        .open_worker_with_resources_and_sink(
+            state.bridge.clone(),
+            test_resources().unwrap(),
+            sink.clone(),
+        )
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let before = analytics_rows(&state);
+    state
+        .bridge
+        .store
+        .set_diagnostics_callback(Some(count_writer_job))
+        .await
+        .expect("install writer job counter");
+    let jobs_before = WRITER_JOBS.load(std::sync::atomic::Ordering::Relaxed);
+    let cursor = peer
+        .frame(json!({"method":"turn/started","params":{"threadId":"fake-thread-0","turn":{"id":"turn"}}}))
+        .await;
+    peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
+    let jobs = WRITER_JOBS.load(std::sync::atomic::Ordering::Relaxed) - jobs_before;
+    assert!(
+        analytics_rows(&state) > before,
+        "captured at acknowledgement"
+    );
+    assert!(sink.delivered().is_empty(), "the sink is still shut");
+    assert_eq!(jobs, 1, "one writer job per journaled frame");
     worker.shutdown().await.expect("stop worker");
 }

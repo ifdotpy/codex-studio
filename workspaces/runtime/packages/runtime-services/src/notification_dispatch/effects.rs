@@ -158,6 +158,12 @@ pub enum NotificationPostCommit {
         observation: NotificationObservation,
         metrics: NotificationStreamMetrics,
     },
+    /// `Analytics` after its rows were captured inside the journal commit. The
+    /// sink only projects the token rate and invalidates state for it.
+    AnalyticsCaptured(NotificationObservation),
+    /// `AnalyticsStream` after capture inside the journal commit; the sink only
+    /// invalidates state for it.
+    AnalyticsStreamCaptured(NotificationObservation),
     TokenRateStream(NotificationObservation),
     TokenRateAssociation(NotificationObservation),
     TokenRateUsage(NotificationObservation),

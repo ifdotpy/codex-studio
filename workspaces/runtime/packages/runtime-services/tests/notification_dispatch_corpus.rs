@@ -630,6 +630,8 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
             let observation = match effect {
                 NotificationPostCommit::Analytics { observation, .. }
                 | NotificationPostCommit::AnalyticsStream { observation, .. }
+                | NotificationPostCommit::AnalyticsCaptured(observation)
+                | NotificationPostCommit::AnalyticsStreamCaptured(observation)
                 | NotificationPostCommit::TokenRateStream(observation)
                 | NotificationPostCommit::TokenRateAssociation(observation)
                 | NotificationPostCommit::TokenRateUsage(observation) => observation,
@@ -701,6 +703,10 @@ fn post_commit_value(
         } => ("analytics", observation, *budget_capture_value),
         NotificationPostCommit::AnalyticsStream { observation, .. } => {
             ("analytics", observation, None)
+        }
+        NotificationPostCommit::AnalyticsCaptured(observation)
+        | NotificationPostCommit::AnalyticsStreamCaptured(observation) => {
+            unreachable!("the corpus drives dispatch, which captures nothing: {observation:?}")
         }
         NotificationPostCommit::TokenRateStream(observation) => ("stream", observation, None),
         NotificationPostCommit::TokenRateAssociation(observation) => {

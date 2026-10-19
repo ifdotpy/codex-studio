@@ -497,69 +497,166 @@ pub async fn capture_notification_effect(
     } else {
         2_i64
     };
-    store.analytics_transaction(move |tx, canvas| {
-        tx.execute(
-            "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
-            [],
-        )?;
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
-             CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
-        )?;
-        let migrated: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
+    store
+        .analytics_transaction(move |tx, canvas| {
+            capture_notification_effect_in(
+                tx,
+                canvas,
+                &provider_handle,
+                generation,
+                cursor,
+                effect_bit,
+                prepared,
+                stream.as_ref(),
+            )
+        })
+        .await
+}
+
+/// The capture of one notification effect inside an already open analytics
+/// transaction, deduplicated by its delivery identity. `true` captured now;
+/// `false` is an exact or legacy replay whose rows already exist.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn capture_notification_effect_in(
+    tx: &Transaction<'_>,
+    canvas: &Connection,
+    provider_handle: &str,
+    generation: i64,
+    cursor: i64,
+    effect_bit: i64,
+    prepared: PreparedCapture,
+    stream: Option<&NotificationStreamMetrics>,
+) -> Result<bool, CaptureError> {
+    let capture_kind = if effect_bit == 1 {
+        "analytics"
+    } else {
+        "analyticsStream"
+    };
+    tx.execute(
+        "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
+        [],
+    )?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
+         CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
+    )?;
+    let migrated: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !migrated {
+        let legacy_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
             [],
             |row| row.get(0),
         )?;
-        if !migrated {
-            let legacy_exists: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
-                [],
-                |row| row.get(0),
-            )?;
-            if legacy_exists {
-                tx.execute(
-                    "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
-                    [],
-                )?;
-            }
+        if legacy_exists {
             tx.execute(
-                "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
+                "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
                 [],
             )?;
         }
-        let legacy: Option<(i64, i64, i64)> = tx
-            .query_row(
-                "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
-                [provider_handle.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        if legacy.is_some_and(|(saved_generation, saved_cursor, effects)| {
-            generation < saved_generation
-                || generation == saved_generation
-                    && (cursor < saved_cursor
-                        || cursor == saved_cursor && effects & effect_bit != 0)
-        }) {
-            return Ok(false);
-        }
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
-            params![provider_handle.as_str(), generation, cursor, capture_kind.as_str()],
+        tx.execute(
+            "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
+            [],
         )?;
-        if inserted == 0 {
-            return Ok(false);
+    }
+    let legacy: Option<(i64, i64, i64)> = tx
+        .query_row(
+            "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
+            [provider_handle],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    if legacy.is_some_and(|(saved_generation, saved_cursor, effects)| {
+        generation < saved_generation
+            || generation == saved_generation
+                && (cursor < saved_cursor || cursor == saved_cursor && effects & effect_bit != 0)
+    }) {
+        return Ok(false);
+    }
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
+        params![provider_handle, generation, cursor, capture_kind],
+    )?;
+    if inserted == 0 {
+        return Ok(false);
+    }
+    check_identity(canvas, prepared.agent())?;
+    let prepared = std::sync::Arc::new(prepared);
+    let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
+    if let Some(metrics) = stream {
+        apply_stream_metrics(&mut decision, &prepared, metrics);
+    }
+    decision.apply(tx)?;
+    Ok(true)
+}
+
+/// Capture an `Analytics` or `AnalyticsStream` effect inside the journal commit
+/// and return the effect that remains to be published (`None`: the agent identity
+/// is stale, so nothing is captured or published). Any other effect passes
+/// through. A failed capture rolls back only that effect and is returned, so the
+/// journal commit fails with it.
+pub(crate) fn capture_effect_in(
+    analytics: &Transaction<'_>,
+    canvas: &Connection,
+    effect: crate::notification_dispatch::NotificationPostCommit,
+) -> Result<Option<crate::notification_dispatch::NotificationPostCommit>, CaptureError> {
+    use crate::notification_dispatch::NotificationPostCommit as Effect;
+    let (observation, metrics, effect_bit) = match &effect {
+        Effect::Analytics { observation, .. } => (observation, None, 1_i64),
+        Effect::AnalyticsStream {
+            observation,
+            metrics,
+        } => (observation, Some(metrics), 2_i64),
+        _ => return Ok(Some(effect)),
+    };
+    let agent = observation
+        .agent
+        .as_ref()
+        .ok_or(CaptureError::Invalid("/agent"))?;
+    let prepared = PreparedCapture::notification_event(
+        agent,
+        &observation.method,
+        &observation.params,
+        observation.observed_at,
+        observation.observed_at,
+    );
+    // A deterministic input refusal would wedge every later journal commit.
+    let Ok(prepared) = prepared else {
+        return Ok(None);
+    };
+    let delivery = &observation.delivery;
+    let generation =
+        i64::try_from(delivery.generation).map_err(|_| CaptureError::Invalid("/generation"))?;
+    let cursor = i64::try_from(delivery.cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
+    analytics.execute_batch("SAVEPOINT capture_effect")?;
+    let captured = capture_notification_effect_in(
+        analytics,
+        canvas,
+        &delivery.provider_handle,
+        generation,
+        cursor,
+        effect_bit,
+        prepared,
+        metrics,
+    );
+    match captured {
+        Ok(_) => analytics.execute_batch("RELEASE capture_effect")?,
+        Err(error) => {
+            analytics.execute_batch("ROLLBACK TO capture_effect; RELEASE capture_effect")?;
+            return match error {
+                CaptureError::StaleIdentity => Ok(None),
+                error => Err(error),
+            };
         }
-        check_identity(canvas, prepared.agent())?;
-        let prepared = std::sync::Arc::new(prepared);
-        let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
-        if let Some(metrics) = &stream {
-            apply_stream_metrics(&mut decision, &prepared, metrics);
-        }
-        decision.apply(tx)?;
-        Ok(true)
-    })
-    .await
+    }
+    Ok(Some(match effect {
+        Effect::Analytics { observation, .. } => Effect::AnalyticsCaptured(observation),
+        Effect::AnalyticsStream { observation, .. } => Effect::AnalyticsStreamCaptured(observation),
+        other => other,
+    }))
 }
 
 /// Retain the legacy process-scoped receipt tables while volatile token-rate

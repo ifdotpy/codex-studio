@@ -210,10 +210,12 @@ impl TokenRateHub {
         let delivery = &observation.delivery;
         let effect_bit = match effect {
             NotificationPostCommit::Analytics { .. }
+            | NotificationPostCommit::AnalyticsCaptured(_)
             | NotificationPostCommit::TokenRateUsage(_) => 1,
             NotificationPostCommit::TokenRateStream(_) => 2,
             NotificationPostCommit::TokenRateAssociation(_) => 4,
             NotificationPostCommit::AnalyticsStream { .. }
+            | NotificationPostCommit::AnalyticsStreamCaptured(_)
             | NotificationPostCommit::Recovered { .. } => {
                 return Err(TokenRateError::Unavailable);
             }
@@ -319,6 +321,8 @@ fn effect_observation(effect: &NotificationPostCommit) -> Option<&NotificationOb
     match effect {
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. }
+        | NotificationPostCommit::AnalyticsCaptured(observation)
+        | NotificationPostCommit::AnalyticsStreamCaptured(observation)
         | NotificationPostCommit::TokenRateStream(observation)
         | NotificationPostCommit::TokenRateAssociation(observation)
         | NotificationPostCommit::TokenRateUsage(observation) => Some(observation),
@@ -377,46 +381,47 @@ fn project_effect(
             }
             _ => {}
         },
-        NotificationPostCommit::Analytics { .. } | NotificationPostCommit::TokenRateUsage(_) => {
-            match observation.method.as_str() {
-                "turn/started" => {
-                    if let Some(turn) = observed_turn(params, agent_turn(observation)) {
-                        if turn != state.turn {
-                            state.turn = turn;
-                            state.active = true;
-                            state.rate = 0.0;
-                            state.actual = 0.0;
-                            state.pending = 0.0;
-                            state.estimated = false;
-                            state.baseline = state.lifetime;
-                            state.samples.clear();
-                            state.response_outputs.clear();
-                            state.tools.clear();
-                            state.generation_elapsed = 0.0;
-                            state.response_durations.clear();
-                            state.response_duration_pending_tokens = 0.0;
-                        }
-                        state.generation_started = Some(at);
-                        state.timing_valid = true;
+        NotificationPostCommit::Analytics { .. }
+        | NotificationPostCommit::AnalyticsCaptured(_)
+        | NotificationPostCommit::TokenRateUsage(_) => match observation.method.as_str() {
+            "turn/started" => {
+                if let Some(turn) = observed_turn(params, agent_turn(observation)) {
+                    if turn != state.turn {
+                        state.turn = turn;
+                        state.active = true;
+                        state.rate = 0.0;
+                        state.actual = 0.0;
+                        state.pending = 0.0;
+                        state.estimated = false;
+                        state.baseline = state.lifetime;
+                        state.samples.clear();
+                        state.response_outputs.clear();
+                        state.tools.clear();
+                        state.generation_elapsed = 0.0;
+                        state.response_durations.clear();
+                        state.response_duration_pending_tokens = 0.0;
                     }
+                    state.generation_started = Some(at);
+                    state.timing_valid = true;
                 }
-                "thread/tokenUsage/updated" => project_usage(state, params, at),
-                "turn/completed"
-                    if observed_turn(params, Some(&state.turn)).as_deref() == Some(&state.turn) =>
-                {
-                    state.active = false;
-                    state.estimated = false;
-                }
-                "turn/completed" => {}
-                _ => {}
             }
-        }
+            "thread/tokenUsage/updated" => project_usage(state, params, at),
+            "turn/completed"
+                if observed_turn(params, Some(&state.turn)).as_deref() == Some(&state.turn) =>
+            {
+                state.active = false;
+                state.estimated = false;
+            }
+            "turn/completed" => {}
+            _ => {}
+        },
         NotificationPostCommit::TokenRateAssociation(_) => match observation.method.as_str() {
             "thread/tokenUsage/updated" => associate_response(state, params),
             "item/started" | "item/completed" => project_item_association(state, observation),
             _ => {}
         },
-        NotificationPostCommit::AnalyticsStream { .. } => {}
+        NotificationPostCommit::AnalyticsStream { .. }
+        | NotificationPostCommit::AnalyticsStreamCaptured(_) => {}
         NotificationPostCommit::Recovered { .. } => {}
     }
 }

@@ -1201,63 +1201,67 @@ pub(super) async fn journal_batch(
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
     let expected_vm_actor = expected_vm_actor.map(|(actor, epoch)| (actor.to_owned(), epoch));
+    let analytics_link = store.analytics_connection();
     let streams = streams.clone();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let mut next = streams.clone();
-        let mut committed = Vec::with_capacity(entries.len());
-        let mut deferred = Vec::new();
-        let mut persist_snapshot = false;
-        let mut outbox = PublicationOutbox::default();
-        let mut entries = entries.into_iter();
-        while let Some(entry) = entries.next() {
-            let stage = journal_stage(&entry);
-            match crate::diagnostics::measure_runtime_stage(stage, || {
-                journal_one(
-                    tx,
-                    JournalIdentity {
-                        account: &account,
-                        journal_scope: &journal_scope,
-                        expected_vm_actor: expected_vm_actor
-                            .as_ref()
-                            .map(|(actor, epoch)| (actor.as_str(), *epoch)),
-                    },
-                    &publication,
-                    &next,
-                    &entry,
-                    &claude_account_pin,
-                    limits_observation.as_ref(),
-                    &mut outbox,
-                )
-            })? {
-                Some((updated, effect, changed)) => {
-                    next = updated;
-                    persist_snapshot |= changed;
-                    committed.push((entry, effect));
-                }
-                None => {
-                    deferred.push(entry);
-                    deferred.extend(entries);
-                    break;
+        with_analytics_commit(&analytics_link, |analytics| {
+            let mut next = streams.clone();
+            let mut committed = Vec::with_capacity(entries.len());
+            let mut deferred = Vec::new();
+            let mut persist_snapshot = false;
+            let mut outbox = PublicationOutbox::default();
+            let mut entries = entries.into_iter();
+            while let Some(entry) = entries.next() {
+                let stage = journal_stage(&entry);
+                match crate::diagnostics::measure_runtime_stage(stage, || {
+                    journal_one(
+                        tx,
+                        JournalIdentity {
+                            account: &account,
+                            journal_scope: &journal_scope,
+                            expected_vm_actor: expected_vm_actor
+                                .as_ref()
+                                .map(|(actor, epoch)| (actor.as_str(), *epoch)),
+                        },
+                        &publication,
+                        &next,
+                        &entry,
+                        &claude_account_pin,
+                        limits_observation.as_ref(),
+                        &mut outbox,
+                        analytics,
+                    )
+                })? {
+                    Some((updated, effect, changed)) => {
+                        next = updated;
+                        persist_snapshot |= changed;
+                        committed.push((entry, effect));
+                    }
+                    None => {
+                        deferred.push(entry);
+                        deferred.extend(entries);
+                        break;
+                    }
                 }
             }
-        }
-        if persist_snapshot {
-            crate::diagnostics::measure_runtime_stage("journal.persist_streams", || {
-                persist_streams(tx, &account, &next)
+            if persist_snapshot {
+                crate::diagnostics::measure_runtime_stage("journal.persist_streams", || {
+                    persist_streams(tx, &account, &next)
+                })?;
+            }
+            // One compaction per batch: every entry of a generation shares the checkpoint.
+            let mut generations = committed
+                .iter()
+                .map(|(entry, _)| entry.generation.0)
+                .collect::<Vec<_>>();
+            generations.dedup();
+            crate::diagnostics::measure_runtime_stage("journal.compact", || {
+                generations
+                    .into_iter()
+                    .try_for_each(|generation| compact(tx, &journal_scope, generation))
             })?;
-        }
-        // One compaction per batch: every entry of a generation shares the checkpoint.
-        let mut generations = committed
-            .iter()
-            .map(|(entry, _)| entry.generation.0)
-            .collect::<Vec<_>>();
-        generations.dedup();
-        crate::diagnostics::measure_runtime_stage("journal.compact", || {
-            generations
-                .into_iter()
-                .try_for_each(|generation| compact(tx, &journal_scope, generation))
-        })?;
-        Ok(Some((next, committed, deferred)))
+            Ok(Some((next, committed, deferred)))
+        })
     })
     .await
 }
@@ -1288,6 +1292,7 @@ fn journal_one(
     claude_account_pin: &Value,
     limits_observation: Option<&crate::usage_resume::LimitsObservation>,
     outbox: &mut PublicationOutbox,
+    analytics: &rusqlite::Transaction<'_>,
 ) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
     let JournalIdentity {
         account,
@@ -1583,9 +1588,9 @@ fn journal_one(
         }
     }
     crate::diagnostics::measure_runtime_stage("journal.publications", || {
-        publications
-            .iter()
-            .try_for_each(|batch| persist_publication_batch_in(tx, account, batch, outbox))
+        publications.iter().try_for_each(|batch| {
+            persist_publication_batch_in(tx, Some(analytics), account, batch, outbox)
+        })
     })?;
     if let Some(effect) = &effect {
         persist_effect(tx, account, effect)?;
@@ -2076,20 +2081,69 @@ pub(crate) struct PublicationOutbox {
     invalidation: Option<Option<String>>,
 }
 
+/// Persist one publication batch whose analytics effects stay uncaptured: the
+/// sink captures them after the drain. Recovery paths use this; the journal and
+/// stream flush capture inside their own commit.
 pub(crate) fn persist_publication_batch(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     batch: &NotificationPublicationBatch,
 ) -> Result<(), WorkerError> {
-    persist_publication_batch_in(tx, account, batch, &mut PublicationOutbox::default())
+    persist_publication_batch_in(tx, None, account, batch, &mut PublicationOutbox::default())
+}
+
+/// Run `change` with an open analytics transaction and commit it afterwards.
+/// Call it inside a canvas writer callback: the analytics commit then precedes
+/// the canvas commit under the same writer admission. Analytics rows are
+/// idempotent by delivery identity, so a crash or canvas failure after this
+/// commit replays the journal entry and finds them already captured.
+pub(crate) fn with_analytics_commit<T>(
+    link: &Arc<std::sync::Mutex<rusqlite::Connection>>,
+    change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, WorkerError>,
+) -> Result<T, WorkerError> {
+    let mut connection = link.lock().map_err(|_| StoreError::WriterPoisoned)?;
+    let analytics = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(StoreError::from)?;
+    let value = change(&analytics)?;
+    analytics
+        .commit()
+        .map_err(StoreError::CommitOutcomeUnknown)?;
+    Ok(value)
 }
 
 fn persist_publication_batch_in(
     tx: &studio_runtime_store::Transaction<'_>,
+    analytics: Option<&rusqlite::Transaction<'_>>,
     account: &str,
     batch: &NotificationPublicationBatch,
     outbox: &mut PublicationOutbox,
 ) -> Result<(), WorkerError> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let captured = batch
+        .effects
+        .iter()
+        .cloned()
+        .map(|effect| match analytics {
+            Some(analytics) => crate::analytics_capture::capture_effect_in(analytics, tx, effect),
+            None => Ok(Some(effect)),
+        })
+        .filter_map(Result::transpose)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| match error {
+            crate::analytics_capture::CaptureError::Store(error) => WorkerError::Store(error),
+            _ => crate::notification_dispatch::NotificationDispatchError::Dependency(
+                "analytics/capture",
+            )
+            .into(),
+        })?;
+    let batch = &NotificationPublicationBatch {
+        sequence: batch.sequence,
+        effects: captured,
+        analytics_overflow: batch.analytics_overflow,
+    };
     if batch.is_empty() {
         return Ok(());
     }
@@ -2118,6 +2172,7 @@ fn persist_publication_batch_in(
             } else if matches!(
                 effect,
                 crate::notification_dispatch::NotificationPostCommit::Analytics { .. }
+                    | crate::notification_dispatch::NotificationPostCommit::AnalyticsCaptured(_)
             ) {
                 // Complete usage is provider-committed. It persists beyond the
                 // best-effort bound rather than being shed or reclaimed.
@@ -2223,6 +2278,7 @@ fn save_publication_effect(
     let signature = match effect {
         _ if NotificationStreamBuffer::is_best_effort_analytics(effect) => PUBLICATION_BEST_EFFORT,
         Effect::TokenRateStream(_)
+        | Effect::AnalyticsStreamCaptured(_)
         | Effect::TokenRateAssociation(_)
         | Effect::TokenRateUsage(_) => PUBLICATION_TOKEN_RATE,
         _ => PUBLICATION_PENDING,
@@ -2540,32 +2596,41 @@ pub(super) async fn flush_streams(
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
     let account = account.to_owned();
+    let analytics_link = store.analytics_connection();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
-        // A failed/cancelled journal job may have moved the live buffer. The
-        // committed pending record, never that possibly empty cache, owns text.
-        let mut streams = load_streams(tx, &account)?;
-        crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), false)?;
-        for (owner, generation, thread) in streams.threads() {
-            let (_, identity) = SchedulerRepository::find_attempt_for_thread(
-                tx, &owner, generation, &thread, None,
-            )?;
-            if let Some((identity, _)) = identity
-                && let Some(next) = flush_notification_streams(
-                    tx,
-                    &identity.agent_id,
-                    &publication,
-                    &streams,
-                    now(),
-                )?
-            {
-                let mut next = next;
-                let batch = next.take_post_commit()?;
-                persist_publication_batch(tx, &account, &batch)?;
-                streams = next;
+        with_analytics_commit(&analytics_link, |analytics| {
+            // A failed/cancelled journal job may have moved the live buffer. The
+            // committed pending record, never that possibly empty cache, owns text.
+            let mut streams = load_streams(tx, &account)?;
+            crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), false)?;
+            for (owner, generation, thread) in streams.threads() {
+                let (_, identity) = SchedulerRepository::find_attempt_for_thread(
+                    tx, &owner, generation, &thread, None,
+                )?;
+                if let Some((identity, _)) = identity
+                    && let Some(next) = flush_notification_streams(
+                        tx,
+                        &identity.agent_id,
+                        &publication,
+                        &streams,
+                        now(),
+                    )?
+                {
+                    let mut next = next;
+                    let batch = next.take_post_commit()?;
+                    persist_publication_batch_in(
+                        tx,
+                        Some(analytics),
+                        &account,
+                        &batch,
+                        &mut PublicationOutbox::default(),
+                    )?;
+                    streams = next;
+                }
             }
-        }
-        persist_streams(tx, &account, &streams)?;
-        Ok(streams)
+            persist_streams(tx, &account, &streams)?;
+            Ok(streams)
+        })
     })
     .await
 }

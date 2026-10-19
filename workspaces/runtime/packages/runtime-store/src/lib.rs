@@ -1547,6 +1547,13 @@ impl RuntimeStore {
         fire_commit_observers(&self.commit_notifiers);
     }
 
+    /// The analytics connection. Lock it only inside a canvas writer callback,
+    /// the way `analytics_transaction` does, so analytics writes stay serialized
+    /// with canvas writes.
+    pub fn analytics_connection(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.analytics)
+    }
+
     /// Run one durable transaction while holding the sole serialized writer.
     /// Admission waits cancellably when the named actor capacity is exhausted. A
     /// canceled wait submits no SQL; cancellation after submission cannot retract

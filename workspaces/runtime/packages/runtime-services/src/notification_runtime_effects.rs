@@ -247,6 +247,15 @@ impl RuntimeNotificationPostCommitSink {
                     })?;
                 return Ok(());
             }
+            NotificationPostCommit::AnalyticsCaptured(observation) => {
+                if observation.agent.is_some() {
+                    self.project_token_rate(effect)?;
+                }
+                (observation, "analytics")
+            }
+            NotificationPostCommit::AnalyticsStreamCaptured(observation) => {
+                (observation, "analyticsStream")
+            }
             NotificationPostCommit::TokenRateStream(observation)
             | NotificationPostCommit::TokenRateAssociation(observation)
             | NotificationPostCommit::TokenRateUsage(observation) => {
@@ -305,6 +314,7 @@ impl RuntimeNotificationPostCommitSink {
         if !matches!(
             effect,
             NotificationPostCommit::Analytics { .. }
+                | NotificationPostCommit::AnalyticsCaptured(_)
                 | NotificationPostCommit::TokenRateStream(_)
                 | NotificationPostCommit::TokenRateAssociation(_)
                 | NotificationPostCommit::TokenRateUsage(_)
