@@ -363,6 +363,15 @@ class CapacityRetryRecord(TypedDict):
     waits: NotRequired[SafeInt]
 
 
+class StartWaitRecord(TypedDict):
+    """A queued start waiting for its account's start throttle (Rust account_start_gate)."""
+    reason: Literal["slot", "pause"]
+    epoch: SafeInt
+    runningTurns: SafeInt
+    maxRunningTurns: SafeInt
+    until: NotRequired[float]
+
+
 class UsageResumeRecord(TypedDict):
     id: NotRequired[str]
     status: NotRequired[UsageResumeStatusValue]
@@ -1471,6 +1480,7 @@ class AgentRecord(TypedDict):
     capacityRetry: NotRequired[CapacityRetryRecord]
     capacityRetryCount: NotRequired[SafeInt]
     usageResume: NotRequired[UsageResumeRecord]
+    startWait: NotRequired[StartWaitRecord]
     budgetBlocked: NotRequired[str]
     budgetStartWait: NotRequired[BudgetWaitRecord]
     budgetActionWait: NotRequired[BudgetWaitRecord]

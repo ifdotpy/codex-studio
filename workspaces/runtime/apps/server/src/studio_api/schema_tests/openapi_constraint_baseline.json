@@ -125,6 +125,42 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/Account/properties/startThrottle",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/Account/properties/startThrottle",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AccountStartThrottle\"}']"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/accounts/items/properties/startThrottle",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/accounts/items/properties/startThrottle",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AccountStartThrottle\"}']"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/archivedAccounts/items/properties/startThrottle",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/archivedAccounts/items/properties/startThrottle",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AccountStartThrottle\"}']"
+    },
+    {
       "pointer": "/components/schemas/AgentEntityCapacityRetryDto/properties/cause",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -141,6 +177,18 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/CapacityRetryCause\"}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/until",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/until",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/components/schemas/AgentRecordResponse/properties/imageWorkspaceCleanupRetry/properties/_syncEntities",
@@ -281,6 +329,24 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/AgentResponse/properties/startWait",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/startWait",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/startWait",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AgentEntityStartWaitDto\"}']"
+    },
+    {
       "pointer": "/components/schemas/AnalyticsItemRecord/properties/command",
       "constraint": "type",
       "baseline": "'string'",
@@ -333,6 +399,24 @@
       "constraint": "property",
       "baseline": "absent from closed object",
       "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/startWait",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/startWait",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/startWait",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AgentEntityStartWaitDto\"}']"
     },
     {
       "pointer": "/components/schemas/CapacityRetryCause",

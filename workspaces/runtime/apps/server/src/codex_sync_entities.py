@@ -117,6 +117,7 @@ _AGENT_FIELD_ALLOWLISTS = {
     "capacityRetry": ("id", "threadId", "epoch", "accountKey", "status", "cause",
                       "acceptedTurnId", "updatedAt", "dueAt", "claimedAt", "reason"),
     "usageResume": ("id", "status", "cause", "reason", "updatedAt", "plannedAt", "dueAt"),
+    "startWait": ("reason", "epoch", "runningTurns", "maxRunningTurns", "until"),
     "contextRepairWait": ("scope", "error"),
 }
 _AGENT_REPROJECT_FIELDS = frozenset((*_AGENT_FIELD_ALLOWLISTS, "nativeRelease", "overview"))

@@ -43,7 +43,7 @@ AGENT_FIELD_GROUPS = {
         subagentConcurrencyVersion tail threadId tokensUsed turnId updated workerDefaults worktree
         worktreePreparation yoloMode
         accountTransferId capacityRetry contextRepairWait epoch lastCompletedTurnStatus lastEvent
-        usageResume workspaceOperation remoteWorker remoteOrigin remoteAnchor
+        usageResume workspaceOperation remoteWorker remoteOrigin remoteAnchor startWait
         executionMode hostProjectPath layrError layrLine layrProjectId layrReady layrStateId
     """.split()),
     "private": frozenset("""

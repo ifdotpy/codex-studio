@@ -594,6 +594,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(operation_keys(committed_document) - operation_keys(baseline_document), {
             "GET /api/processes", "GET /api/processes/action", "POST /api/processes/action",
             "GET /api/orchestration/settings", "POST /api/orchestration/settings",
+            "POST /api/accounts/throttle",
         })
         reviewed_baseline = copy.deepcopy(baseline_document)
         paths = reviewed_baseline["paths"]
@@ -783,6 +784,20 @@ class SchemaContractTests(unittest.TestCase):
             # itemId names the running command of a background_command action.
             for field in ("process", "responseTarget", "itemId"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # Accounts carry their optional turn start throttle, and a queued agent
+        # its optional start wait (account_start_gate); until is null for a
+        # slot wait.
+        for pointer in (
+            "/components/schemas/Account/properties/startThrottle",
+            "/components/schemas/AccountsResponse/properties/accounts/items/properties/startThrottle",
+            "/components/schemas/AccountsResponse/properties/archivedAccounts/items/properties/startThrottle",
+            "/components/schemas/AgentEntityStartWaitDto/properties/until",
+        ):
+            add(pointer, "@nullable", "@nullableBranch")
+        for schema in ("AgentResponse", "BranchResponse"):
+            add(f"/components/schemas/{schema}/properties/startWait",
+                "property", "@nullable", "@nullableBranch")
 
         # The orchestration settings response carries the standard sync envelope.
         for field in ("_syncEntities", "_syncEntitiesAfter"):
