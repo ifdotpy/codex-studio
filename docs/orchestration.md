@@ -845,6 +845,30 @@ The setting is independent of token budgets, provider availability, and an
 explicit operator resource ceiling. Those constraints can reduce actual
 parallelism; the queue reports their blockers.
 
+### Account turn start limits
+
+Providers limit requests per account, so each account has three turn start
+settings, the same for Codex and Claude: turn starts per burst, the pause after
+a burst (seconds), and running turns at once. While fewer turns run than the
+limit and no pause is active, turns start at once, up to one burst. The start
+that ends a burst (the last start of the burst, or the start that takes the last
+free running slot) begins the pause; the next start waits until the pause ends.
+A turn over a limit is not failed: its message stays queued, the agent shows
+"Waiting for an account slot (8/8)" or "Waiting for the account pause", and it
+starts later exactly once. This applies to first and follow-up turns of leads
+and workers. Studio counts turn starts only, not the provider's requests inside
+a running turn.
+
+The settings are stored with the account and edited under "Turn start limits"
+on its account card; a change applies to waiting turns at once. A new account
+takes its provider's defaults. The bounds, the defaults, and the measurements
+behind them belong to the
+[shared values](../workspaces/runtime/apps/server/src/codex_shared_values.py)
+(`ACCOUNT_START_*`, `ACCOUNT_RUNNING_TURNS_*`); the gate is
+[`account_start_gate`](../workspaces/runtime/packages/runtime-services/src/account_start_gate.rs).
+A worker spawned without an account prefers an account below its running-turn
+limit, then the least loaded one.
+
 ## Terminal control
 
 `codex-control` talks to the same canvas server. It does not create a second

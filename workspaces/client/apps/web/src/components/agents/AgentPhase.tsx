@@ -16,6 +16,7 @@ import {
   diskFullHold,
 } from "../../capacityRetry";
 import { nativeThreadError } from "../../nativeErrors";
+import { startWaitLabel } from "../../startWait";
 import { displayError, errorDetails } from "../../errorPresentation";
 import ErrorDescription from "../ErrorDescription";
 import {
@@ -86,7 +87,7 @@ export default function AgentPhase({
     auth: "Restoring sign-in",
     safety: "Codex is checking this request",
     error: "Codex reported an error",
-    queued: "Queued",
+    queued: startWaitLabel(agent) || "Queued",
     waiting: wait?.label || endedWaitLabel,
     parked: wait?.label || endedWaitLabel,
     approval: "Waiting for your answer",

@@ -9,6 +9,7 @@ import { ActionButton } from "./ui/primitives";
 import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
+import AccountStartThrottle from "./AccountStartThrottle";
 import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
@@ -1218,6 +1219,12 @@ export default function Accounts({
                                 card
                                 account={account}
                                 opened={managerOnly || opened}
+                              />
+                            )}
+                            {!account.disconnected && (
+                              <AccountStartThrottle
+                                account={account}
+                                onSaved={state.setData}
                               />
                             )}
                             {account.provider === "claude" && (

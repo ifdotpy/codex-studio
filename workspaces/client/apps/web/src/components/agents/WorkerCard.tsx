@@ -21,6 +21,7 @@ import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
 import "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
+import { startWaitLabel } from "../../startWait";
 import { setupModelName } from "./AgentSetupPicker";
 import { TeamModelCatalog } from "./WorkerOverview";
 import { ProviderMark } from "../AccountTiles";
@@ -195,7 +196,8 @@ const WorkerCardView = memo(function WorkerCardView({
         ? "The agent stopped with an error."
         : error;
   const statusDetail =
-    indicator?.kind === "answer" ||
+    startWaitLabel(agent) ??
+    (indicator?.kind === "answer" ||
     ["waiting", "parked"].includes(agent.status ?? "") ||
     (indicator?.kind === "working" && !agent.inFlight)
       ? indicator?.label || statusLabel(agent.status ?? "")
@@ -228,7 +230,7 @@ const WorkerCardView = memo(function WorkerCardView({
                   nativeReleaseLabel(agent),
                 ]
                   .filter(Boolean)
-                  .join(" · ");
+                  .join(" · "));
   const statusText =
     !awaitingAnswer &&
     ["waiting", "parked", "queued"].includes(agent.status || "")
