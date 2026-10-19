@@ -52,6 +52,10 @@ struct Script<'a> {
     frames: mpsc::UnboundedSender<Value>,
     turns: Vec<usize>,
     done: usize,
+    /// When every agent's first turn/start was written.
+    first_turns_written: Option<std::time::Duration>,
+    started: std::time::Instant,
+    first_turns: usize,
 }
 impl Script<'_> {
     /// Reply to `request`; a turn also completes, and its first turn queues
@@ -69,6 +73,10 @@ impl Script<'_> {
                 let exchange = self.turns[index];
                 assert!(exchange <= EXCHANGES_PER_AGENT, "{request}");
                 if exchange == 1 {
+                    self.first_turns += 1;
+                    if self.first_turns == self.agents.len() {
+                        self.first_turns_written = Some(self.started.elapsed());
+                    }
                     let input = format!("{}-second", self.agents[index]);
                     self.state.enqueue_for(&self.agents[index], &input).await;
                     self.state.deliver_after_turn(&input).await;
@@ -97,6 +105,7 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
     let mut peer = Peer::new();
     let mut worker = provider_worker(&state, &mut peer, provider).await;
     let agents = agents(&state, count).await;
+    let started = std::time::Instant::now();
     for agent in &agents {
         worker
             .send(AccountCommand::Wake {
@@ -129,6 +138,9 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
         frames,
         turns: vec![0; count],
         done: 0,
+        first_turns_written: None,
+        started,
+        first_turns: 0,
     };
     let mut withheld = Vec::new();
     let run = async {
@@ -167,6 +179,14 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
         );
     }
     assert!(script.turns.iter().all(|n| *n == EXCHANGES_PER_AGENT));
+    // Reported, not asserted: wall time is evidence for a manual run only.
+    eprintln!(
+        "{count} agents: every first turn/start written after {:?}, two exchanges done after {:?}",
+        script
+            .first_turns_written
+            .expect("every first turn written"),
+        script.started.elapsed()
+    );
     assert!(!*worker.completion_signal().borrow());
     worker.cancel();
     sender.abort();

@@ -41,6 +41,7 @@ pub mod retained;
 pub mod retained_frame;
 mod steer;
 pub(crate) mod store;
+mod submission;
 mod turn_preparation;
 
 impl From<rusqlite::Error> for WorkerError {
@@ -1834,8 +1835,9 @@ impl Worker {
             self.idle_thread_touched(thread);
         }
         if method == Method::TurnInterrupt {
-            return Box::pin(self.submit_prepared(intent, method, interrupt_turn, None, false))
-                .await;
+            let commit = self.commit(intent, method, interrupt_turn, None, false);
+            let committed = self.drive(commit.run()).await?;
+            return Box::pin(self.committed(committed)).await;
         }
         // A recovered durable effect may outlive its submitted request. Check
         // that receipt before later events can settle it, and before
@@ -1962,14 +1964,36 @@ impl Worker {
                     // `submit_inner` already read this turn/start receipt before preparing.
                     let receipt_checked =
                         requested == Method::TurnStart && method == Method::TurnStart;
-                    Box::pin(self.submit_prepared(
-                        prepared.intent.clone(),
-                        method,
-                        None,
-                        Some(prepared),
-                        receipt_checked,
-                    ))
-                    .await?;
+                    // A closing worker commits nothing new.
+                    if !self.closing {
+                        // The FULL submitted commit runs in this agent's task; the
+                        // agent stays in preparation until its write is handled.
+                        let commit = self.commit(
+                            prepared.intent.clone(),
+                            method,
+                            None,
+                            Some(prepared),
+                            receipt_checked,
+                        );
+                        // A host thread request with browser guidance needs the
+                        // skill root registered on this connection first; VM
+                        // and Claude agents get no browser guidance.
+                        if let Some(browser) = commit
+                            .context
+                            .thread
+                            .as_ref()
+                            .and_then(|attempt| attempt.snapshot.guidance.browser.as_ref())
+                        {
+                            self.ensure_browser_skill(browser.skill_roots.clone())
+                                .await?;
+                        }
+                        if !self.closing {
+                            self.preparing.insert(agent_id.clone(), rewake);
+                            self.preparations
+                                .spawn(turn_preparation::commit(agent_id, effect, commit));
+                            return Ok(());
+                        }
+                    }
                 }
             }
             turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::Steer(
@@ -1980,6 +2004,9 @@ impl Worker {
                 self.wait_for_disk_space(agent_id.clone(), epoch);
             }
             turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::Nothing) => {}
+            turn_preparation::Outcome::Committed(committed) => {
+                Box::pin(self.committed(committed)).await?;
+            }
         }
         if let Some(key) = effect {
             self.complete_effect(key).await?;
@@ -1989,22 +2016,17 @@ impl Worker {
         }
         Ok(())
     }
-    /// The serialized submission: FULL submitted commit, then the provider write.
-    /// `receipt_checked` means this worker already found no submitted receipt
-    /// for the operation; only this worker can submit it in between.
-    async fn submit_prepared(
-        &mut self,
+    /// Build the commit of one submission. `receipt_checked` means this
+    /// worker already found no submitted receipt for the operation; only this
+    /// agent's single in-flight preparation can submit it in between.
+    fn commit(
+        &self,
         intent: TurnIntent,
         method: Method,
         interrupt_turn: Option<(String, i64)>,
         prepared: Option<preparation::RequestPreparation>,
         receipt_checked: bool,
-    ) -> Result<(), WorkerError> {
-        if self.closing {
-            return Ok(());
-        }
-        let turn = interrupt_turn.clone();
-        let connection_id = self.connection_id.clone();
+    ) -> submission::Commit {
         let (intent, method, params, submission, guard, thread, compiled) = if let Some(prepared) =
             prepared
         {
@@ -2018,7 +2040,8 @@ impl Worker {
                 prepared.compiled,
             )
         } else {
-            let params = json!({"threadId":intent.thread_id,"turnId":turn.as_ref().map(|(t,_)|t)});
+            let params =
+                json!({"threadId":intent.thread_id,"turnId":interrupt_turn.as_ref().map(|(t,_)|t)});
             (intent, method, params, None, None, None, None)
         };
         let mut operation = format!(
@@ -2030,65 +2053,60 @@ impl Worker {
         if let Some((_, stop_epoch)) = &interrupt_turn {
             operation.push_str(&format!(":stop:{stop_epoch}"));
         }
-        let prior = operation.clone();
-        if !receipt_checked
-            && self
-                .db("was_submitted", move |store| async move {
-                    store::was_submitted(&store, &prior).await
-                })
-                .await?
-        {
-            return Ok(());
-        }
-        let id = RequestId::String(operation.clone());
-        let context = Pending {
-            thread,
-            compiled,
-            intent,
-            method: method.as_str().into(),
-            operation: operation.clone(),
-        };
-        let actor_session = if matches!(
+        submission::Commit {
+            bridge: self.bridge.clone(),
+            account: self.account.clone(),
+            connection_id: self.connection_id.clone(),
+            generation: self.generation.0,
+            timeout_ms: self.timeout_ms,
+            control: self.control.clone(),
+            id: RequestId::String(operation.clone()),
+            context: Pending {
+                thread,
+                compiled,
+                intent,
+                method: method.as_str().into(),
+                operation,
+            },
             method,
-            Method::ThreadStart | Method::TurnStart | Method::TurnInterrupt | Method::ThreadResume
-        ) {
-            match self.ensure_vm_session(&context.intent).await {
-                Ok(session) => session,
-                Err(WorkerError::PreparationRefused(reason)) if method != Method::TurnInterrupt => {
-                    let blocked_intent = context.intent.clone();
-                    let _settled = self
-                        .db("vm-session-identity-blocked", move |store| async move {
-                            store::preparation_step(&store, &blocked_intent, async move {
-                                Err::<(), WorkerError>(WorkerError::PreparationRefused(reason))
-                            })
-                            .await
-                        })
-                        .await?;
-                    return Ok(());
-                }
-                // Stop already committed the actor's new epoch and disabled
-                // wake. A stale provider session must not receive an interrupt
-                // under the replacement identity; retain the existing receipt
-                // state for recovery instead of failing the account worker.
-                Err(WorkerError::PreparationRefused(_)) => return Ok(()),
-                Err(WorkerError::StaleVmActor) => return Ok(()),
-                Err(error) => return Err(error),
-            }
-        } else {
-            None
+            params,
+            interrupt_turn,
+            submission,
+            guard,
+            receipt_checked,
+        }
+    }
+    /// Finish a commit on the worker: a VM actor first opens its own session
+    /// and commits on it here; every committed request is then written.
+    async fn committed(&mut self, committed: submission::Committed) -> Result<(), WorkerError> {
+        let (commit, launch) = match committed {
+            submission::Committed::Nothing => return Ok(()),
+            submission::Committed::Ready(ready) => return self.write(*ready).await,
+            submission::Committed::Vm(commit, launch) => (*commit, launch),
         };
-        if actor_session.is_none()
-            && let Some(browser) = context
-                .thread
-                .as_ref()
-                .and_then(|attempt| attempt.snapshot.guidance.browser.as_ref())
-        {
-            self.ensure_browser_skill(browser.skill_roots.clone())
-                .await?;
-            if self.closing {
+        let method = commit.method;
+        let actor_session = match self.ensure_vm_session(launch).await {
+            Ok(session) => session,
+            Err(WorkerError::PreparationRefused(reason)) if method != Method::TurnInterrupt => {
+                let blocked_intent = commit.context.intent.clone();
+                let _settled = self
+                    .db("vm-session-identity-blocked", move |store| async move {
+                        store::preparation_step(&store, &blocked_intent, async move {
+                            Err::<(), WorkerError>(WorkerError::PreparationRefused(reason))
+                        })
+                        .await
+                    })
+                    .await?;
                 return Ok(());
             }
-        }
+            // Stop already committed the actor's new epoch and disabled
+            // wake. A stale provider session must not receive an interrupt
+            // under the replacement identity; retain the existing receipt
+            // state for recovery instead of failing the account worker.
+            Err(WorkerError::PreparationRefused(_)) => return Ok(()),
+            Err(WorkerError::StaleVmActor) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let control = actor_session
             .as_deref()
             .and_then(|agent| {
@@ -2097,52 +2115,24 @@ impl Worker {
                     .map(|session| session.control.clone())
             })
             .unwrap_or_else(|| self.control.clone());
-        let prepared = match crate::diagnostics::measure_runtime_stage_async(
-            "turn_submission.prepare",
-            self.drive(control.prepare(RequestSpec {
-                id: id.clone(),
-                operation_id: OperationId(operation),
-                method,
-                params,
-                thread_id: context.intent.thread_id.clone(),
-                lightweight: method == Method::TurnInterrupt,
-                timeout_ms: self.timeout_ms,
-            })),
-        )
-        .await
-        {
-            Ok(prepared) => prepared,
-            Err(WorkerError::Session(SessionTaskError::Closed)) if actor_session.is_some() => {
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
-        if self.closing {
-            return Ok(());
+        let vm = actor_session.is_some();
+        match self.drive(commit.finish(control, vm)).await? {
+            submission::Committed::Ready(ready) => self.write(*ready).await,
+            _ => Ok(()),
         }
-        let recovery = prepared.recovery_record();
-        let save_context = context.clone();
-        let account = self.account.clone();
-        let authorized = crate::diagnostics::measure_runtime_stage_async(
-            "turn_submission.submitted",
-            self.db("submitted", move |store| async move {
-                store::submitted(
-                    &store,
-                    save_context,
-                    &account,
-                    recovery,
-                    store::SubmissionEvidence {
-                        turn: interrupt_turn.as_ref().map(|(turn, _)| turn.clone()),
-                        submission,
-                        guard,
-                        connection_id,
-                    },
-                )
-                .await
-            }),
-        )
-        .await?;
-        if !authorized || self.closing {
+    }
+    /// The only serialized step of a submission: the provider write of a
+    /// request whose FULL submitted commit has already returned.
+    async fn write(&mut self, ready: submission::Ready) -> Result<(), WorkerError> {
+        let submission::Ready {
+            id,
+            context,
+            method,
+            prepared,
+            control,
+            vm,
+        } = ready;
+        if self.closing {
             return Ok(());
         }
         self.pending.insert(id.clone(), context);
@@ -2169,9 +2159,7 @@ impl Worker {
         .await
         {
             Ok(_ticket) => {}
-            Err(WorkerError::Session(SessionTaskError::Closed)) if actor_session.is_some() => {
-                return Ok(());
-            }
+            Err(WorkerError::Session(SessionTaskError::Closed)) if vm => {}
             Err(error) => {
                 // Only the session's explicit pre-admission rejection proves NotSent.
                 // A failure while draining unrelated evidence may follow an enqueued write.
@@ -2281,67 +2269,9 @@ impl Worker {
     /// guest provider configuration, and the minimal credential copy.
     async fn ensure_vm_session(
         &mut self,
-        intent: &TurnIntent,
+        launch: Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
     ) -> Result<Option<String>, WorkerError> {
-        let agent_id = intent.agent_id.clone();
-        let lookup_id = agent_id.clone();
-        let intent_cwd = intent.cwd.clone();
-        let account_key = intent.account_key.clone();
-        let provider = intent.provider.key().to_owned();
-        let intent_epoch = intent.epoch;
-        let generation = self.generation.0;
-        let launch_request = self
-            .db("vm_launch_request", move |store| async move {
-                store
-                    .read_async("runtime-services/account_worker_read", move |connection| {
-                        let Some(record) =
-                            AgentRepository::get(connection, &AgentId::from(lookup_id.as_str()))?
-                        else {
-                            return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
-                        };
-                        if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
-                            return Ok(None);
-                        }
-                        if !crate::linux_vm_provider::vm_actor_matches(
-                            connection,
-                            &record.id.0,
-                            intent_epoch,
-                            &account_key,
-                            Some(&provider),
-                        )? {
-                            return Err(WorkerError::PreparationRefused(
-                                "vm-agent/identity-changed".into(),
-                            ));
-                        }
-                        let cwd = record
-                            .extra
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .or(intent_cwd.as_deref())
-                            .filter(|value| value.starts_with('/'))
-                            .ok_or_else(|| {
-                                WorkerError::PreparationRefused("vm-agent/cwd".into())
-                            })?;
-                        let guest_home = record
-                            .extra
-                            .get("layrHome")
-                            .and_then(Value::as_str)
-                            .filter(|value| value.starts_with('/'))
-                            .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
-                        Ok(Some(preparation::VmProviderLaunchRequest {
-                            agent_id: record.id.0,
-                            epoch: record.epoch,
-                            generation,
-                            account_key,
-                            provider,
-                            cwd: cwd.to_owned(),
-                            guest_home: guest_home.to_owned(),
-                        }))
-                    })
-                    .await
-            })
-            .await?;
-        let Some(request) = launch_request else {
+        let Some(request) = launch? else {
             return Ok(None);
         };
         if let Some(session) = self.vm_sessions.get(&request.agent_id) {

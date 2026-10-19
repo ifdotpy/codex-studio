@@ -1,7 +1,7 @@
 //! Per-agent turn preparation (wake claim, auth check, admission, workspace,
-//! ready snapshot) runs as its own task, concurrently with other agents. The
-//! account worker keeps only the serialized submission: the FULL submitted
-//! commit, the provider write, fences, cancellation and unknown outcomes.
+//! ready snapshot) and the FULL submitted commit run as the agent's own tasks,
+//! concurrently with other agents. The account worker keeps only the provider
+//! write, fences, cancellation and unknown outcomes (see `submission`).
 use super::*;
 use crate::{diagnostics::measure_runtime_stage_async as stage, workspace_ready::ReadyToken};
 
@@ -42,6 +42,8 @@ pub(super) enum Outcome {
     Prepared(Box<Prepared>),
     /// A wake whose claim started no turn preparation.
     Unclaimed(Unclaimed),
+    /// A prepared request's submitted commit; the worker writes it.
+    Committed(submission::Committed),
 }
 
 pub(super) struct Prepared {
@@ -65,7 +67,7 @@ pub(super) enum Unclaimed {
 }
 
 /// One agent's wake. Its claim runs in this task, so a wake never waits
-/// behind other agents' serialized submissions in the account worker.
+/// behind other agents' submissions in the account worker.
 pub(super) struct Wake {
     pub bridge: StoreBridge,
     pub account: String,
@@ -106,6 +108,19 @@ pub(super) async fn wake(
         agent_id: wake.agent_id,
         effect: wake.effect,
         outcome,
+    })
+}
+
+/// Commit a prepared request in the agent's task.
+pub(super) async fn commit(
+    agent_id: String,
+    effect: Option<String>,
+    commit: submission::Commit,
+) -> Box<Done> {
+    Box::new(Done {
+        agent_id,
+        effect,
+        outcome: commit.run().await.map(Outcome::Committed),
     })
 }
 
