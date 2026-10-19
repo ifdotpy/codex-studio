@@ -9,6 +9,50 @@ const MANY_AGENTS_DEADLINE: std::time::Duration = std::time::Duration::from_secs
 /// Exchanges each agent completes: its first input and one after-turn input.
 const EXCHANGES_PER_AGENT: usize = 2;
 const THREAD_PREFIX: &str = "fake-thread-";
+/// Streamed answer deltas per scripted turn, between the item start and end.
+const DELTAS_PER_TURN: usize = 3;
+
+/// Writer transactions observed during a run, by caller origin.
+static WRITER_ORIGINS: std::sync::Mutex<
+    Vec<(&'static std::panic::Location<'static>, std::time::Duration)>,
+> = std::sync::Mutex::new(Vec::new());
+
+fn record_writer_origin(event: studio_runtime_store::StoreDiagnosticsEvent) {
+    if let studio_runtime_store::StoreDiagnosticsEvent::WriterTransaction { hold, origin, .. } =
+        event
+    {
+        WRITER_ORIGINS
+            .lock()
+            .expect("writer origins")
+            .push((origin, hold));
+    }
+}
+
+/// Print writer transactions per agent turn by origin, largest first.
+fn report_writer_origins(provider: studio_runtime_providers::ProviderKind, turns: usize) {
+    let origins = std::mem::take(&mut *WRITER_ORIGINS.lock().expect("writer origins"));
+    let mut table = std::collections::BTreeMap::<String, (usize, std::time::Duration)>::new();
+    for (origin, hold) in &origins {
+        let file = origin.file();
+        let file = file.rsplit_once("/src/").map_or(file, |(_, tail)| tail);
+        let entry = table
+            .entry(format!("{file}:{}", origin.line()))
+            .or_default();
+        entry.0 += 1;
+        entry.1 += *hold;
+    }
+    let mut rows = table.into_iter().collect::<Vec<_>>();
+    rows.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
+    eprintln!("{provider:?} writer transactions per agent turn ({turns} turns):");
+    for (origin, (count, hold)) in rows {
+        eprintln!(
+            "  {:>6.2}  {:>8.3} ms avg  {origin}",
+            count as f64 / turns as f64,
+            hold.as_secs_f64() * 1000.0 / count as f64
+        );
+    }
+    eprintln!("  {:>6.2}  total", origins.len() as f64 / turns as f64);
+}
 
 /// `count` agents on one account: the fixture agent and clones of it, each
 /// with its own thread and queued input.
@@ -56,17 +100,22 @@ struct Script<'a> {
     first_turns_written: Option<std::time::Duration>,
     started: std::time::Instant,
     first_turns: usize,
+    /// Provider frames sent; unit: journal cursors.
+    sent: u64,
 }
 impl Script<'_> {
+    fn send(&mut self, frame: Value) {
+        self.frames.send(frame).unwrap();
+        self.sent += 1;
+    }
     /// Reply to `request`; a turn also completes, and its first turn queues
     /// the agent's after-turn input for the second exchange.
     async fn answer(&mut self, request: &Value) {
         let thread = request["params"]["threadId"].as_str().unwrap().to_owned();
         match request["method"].as_str().unwrap() {
-            "thread/resume" => self
-                .frames
-                .send(json!({"id":request["id"],"result":{"thread":{"id":thread}}}))
-                .unwrap(),
+            "thread/resume" => {
+                self.send(json!({"id":request["id"],"result":{"thread":{"id":thread}}}))
+            }
             "turn/start" => {
                 let index: usize = thread[THREAD_PREFIX.len()..].parse().unwrap();
                 self.turns[index] += 1;
@@ -82,12 +131,25 @@ impl Script<'_> {
                     self.state.deliver_after_turn(&input).await;
                 }
                 let turn = format!("{thread}-turn-{exchange}");
-                self.frames
-                    .send(json!({"id":request["id"],"result":{"turn":{"id":turn}}}))
-                    .unwrap();
-                self.frames
-                    .send(json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}}))
-                    .unwrap();
+                self.send(json!({"id":request["id"],"result":{"turn":{"id":turn}}}));
+                let item = format!("{turn}-answer");
+                let mut notifications = vec![
+                    json!({"method":"turn/started","params":{"threadId":thread,"turn":{"id":turn}}}),
+                    json!({"method":"item/started","params":{"threadId":thread,"turnId":turn,"item":{"id":item,"type":"agentMessage","text":""}}}),
+                ];
+                notifications.extend((0..DELTAS_PER_TURN).map(|part| {
+                    json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":turn,"itemId":item,"delta":format!("part-{part};")}})
+                }));
+                notifications.extend([
+                    json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"id":item,"type":"agentMessage","text":"done"}}}),
+                    json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{
+                        "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+                        "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}}}}),
+                    json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}}),
+                ]);
+                for notification in notifications {
+                    self.send(notification);
+                }
                 self.done += 1;
             }
             method => panic!("unexpected provider request {method}: {request}"),
@@ -105,6 +167,13 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
     let mut peer = Peer::new();
     let mut worker = provider_worker(&state, &mut peer, provider).await;
     let agents = agents(&state, count).await;
+    WRITER_ORIGINS.lock().expect("writer origins").clear();
+    state
+        .bridge
+        .store
+        .set_diagnostics_callback(Some(record_writer_origin))
+        .await
+        .expect("install writer origin counter");
     let started = std::time::Instant::now();
     for agent in &agents {
         worker
@@ -141,13 +210,18 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
         first_turns_written: None,
         started,
         first_turns: 0,
+        sent: 0,
     };
     let mut withheld = Vec::new();
+    let mut acknowledged = 0;
     let run = async {
         while script.done < count * EXCHANGES_PER_AGENT {
             let wire = tokio::select! {
                 wire = peer.writes.recv() => wire.expect("worker submits request"),
-                ack = peer.acks.recv() => { ack.expect("session acknowledges"); continue; }
+                ack = peer.acks.recv() => {
+                    acknowledged = acknowledged.max(ack.expect("session acknowledges").0);
+                    continue;
+                }
             };
             wire.receipt
                 .send(CommandReceipt::Written {
@@ -166,6 +240,11 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
             } else {
                 script.answer(&wire.value).await;
             }
+        }
+        // Every frame is journaled and acknowledged before the count is read.
+        while acknowledged < script.sent {
+            acknowledged =
+                acknowledged.max(peer.acks.recv().await.expect("session acknowledges").0);
         }
     };
     if tokio::time::timeout(MANY_AGENTS_DEADLINE, run)
@@ -187,6 +266,13 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
             .expect("every first turn written"),
         script.started.elapsed()
     );
+    state
+        .bridge
+        .store
+        .set_diagnostics_callback(None)
+        .await
+        .expect("clear writer origin counter");
+    report_writer_origins(provider, count * EXCHANGES_PER_AGENT);
     assert!(!*worker.completion_signal().borrow());
     worker.cancel();
     sender.abort();
