@@ -36,6 +36,10 @@ warm-checkout prerequisite and its cold build is outside the 30-second target.
 The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
 passed in 23.759 seconds; cold setup was excluded.
 The short tier does not build the browser or contact a model provider.
+The tooling tests also check the prebuilt release binary contract of the native
+packagers (`release-binaries.test.mjs`): the same commit is accepted; another
+commit, a changed binary, or a dirty tree is refused. See the
+[native package cycle](../workspaces/client/apps/native/README.md#package-cycle).
 Route-manifest extraction uses the ordinary Rust test profile and the same
 `print_operation_manifest` witness as workspace tests; it does not compile a
 second optimized HTTP test binary solely to print route metadata.

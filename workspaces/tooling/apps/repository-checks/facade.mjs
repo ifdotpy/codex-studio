@@ -149,6 +149,13 @@ const BOUNDARY_ALLOWLIST = [
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
+    importer: "codex-studio-tooling",
+    file: "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
+    specifier: "../../../../client/apps/**",
+    reason:
+      "The fast tier checks the release-binaries commit and SHA-256 manifest contract of the desktop packagers and the native package flow, which have no fast-tier test runner of their own.",
+  },
+  {
     importer: "codex-agents-web",
     file: "tests/**",
     specifier: "../../../../../runtime/apps/server/tests/**",

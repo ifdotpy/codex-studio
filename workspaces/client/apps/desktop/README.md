@@ -64,6 +64,12 @@ the compiled web assets. Python and Codex remain installed prerequisites. The
 package uses no checkout paths at runtime. It uses a persistent local signing
 certificate and is not notarized. This build is for local use.
 
+To skip the Rust release build when the binaries already exist for the same
+commit, build them once with `just build-release-binaries` and set
+`CODEX_RELEASE_TARGET_DIR` to that directory. The packager checks the commit and
+SHA-256 manifest and refuses anything else. See the
+[native package cycle](../native/README.md#package-cycle).
+
 Configure `CODEX_STUDIO_SIGNING_IDENTITY` with the certificate fingerprint from
 `security find-identity -p codesigning`. Alternatively, save
 `{"identity":"CERTIFICATE_FINGERPRINT"}` in `~/.config/codex-studio/signing.json`.
