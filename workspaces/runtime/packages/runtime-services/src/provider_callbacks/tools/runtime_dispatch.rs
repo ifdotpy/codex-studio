@@ -385,7 +385,15 @@ pub(crate) struct LatePorts {
     pub(crate) multi_server: std::sync::Arc<
         std::sync::OnceLock<std::sync::Arc<dyn crate::multi_server_tools::MultiServerToolPort>>,
     >,
+    /// The provider-session voice adapter for `orchestration_speak` playback.
+    pub(crate) voice: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
+    >,
 }
+
+/// The dependency that a remote worker's forwarded tool names until the host
+/// attaches the paired-server driver.
+pub(crate) const WORKER_CALL_DEPENDENCY: &str = "multi-server/worker-call";
 
 /// The dependency that `orchestration_servers` names until the host attaches
 /// the paired-server driver.
@@ -419,7 +427,68 @@ pub(super) async fn dispatch(
     let actor_id = actor.record().id.0.as_str();
     let actor_epoch = actor.record().epoch;
     let execution_move = studio_runtime_store::truthy(actor.record().extra.get("executionMove"));
+    // Python `dynamic`: a remote worker's send to its parent, its lead or any
+    // agent that is not its descendant goes through `chat_message`, which the
+    // home server answers as the `message` worker call.
+    let remote_send = if tool == "orchestration_send"
+        && studio_runtime_store::truthy(actor.record().extra.get("remoteOrigin"))
+        && !studio_runtime_store::truthy(actor.record().extra.get("movedFrom"))
+        && let Some(target) = args.get("agent_id").and_then(Value::as_str)
+        && !(target == "user" || target.starts_with("remote:") || target.starts_with("federated:"))
+    {
+        if matches!(target, "parent" | "lead" | "broadcast" | "all") {
+            Some(target.to_owned())
+        } else {
+            match super::services::resolve_send_target(store_ref, context, target).await {
+                Ok((resolved, false)) => Some(resolved),
+                Ok((_, true)) => None,
+                Err(error) => return refused_before_write(error),
+            }
+        }
+    } else {
+        None
+    };
+    let route = match remote_send {
+        Some(target) => Some(crate::multi_server_tools::worker_message(
+            &target,
+            &json!({"text": args.get("text")}),
+        )),
+        None => crate::multi_server_tools::worker_route(tool, args, actor.record()),
+    };
+    if let Some(route) = route {
+        if execution_move {
+            return Ok(Some(not_sent(Error::Invalid(
+                "The move is accepted. Finish this turn before the next task",
+            ))));
+        }
+        let (action, call_args) = match route {
+            Ok(route) => route,
+            Err(message) => return Ok(Some(not_sent(Error::Invalid(message)))),
+        };
+        let Some(port) = ports.late.multi_server.get() else {
+            return Ok(Some(not_sent(Error::Unavailable(WORKER_CALL_DEPENDENCY))));
+        };
+        return Ok(Some(
+            port.worker_call(actor, action, &call_args, request_id)
+                .await?,
+        ));
+    }
     let dispatched = match tool {
+        "orchestration_speak" => {
+            if execution_move {
+                return Ok(Some(not_sent(Error::Invalid(
+                    "The move is accepted. Finish this turn before the next task",
+                ))));
+            }
+            speak(
+                std::sync::Arc::clone(&store),
+                actor,
+                args,
+                request_id,
+                ports.late.voice.get().cloned(),
+            )
+            .await
+        }
         "orchestration_servers" => {
             if execution_move {
                 return Ok(Some(not_sent(Error::Invalid(
@@ -432,11 +501,6 @@ pub(super) async fn dispatch(
             port.servers(actor, args, request_id, now).await?
         }
         "orchestration_status" => {
-            if studio_runtime_store::truthy(actor.record().extra.get("remoteOrigin")) {
-                return Ok(Some(not_sent(Error::Unavailable(
-                    "remote-transport/managed-status",
-                ))));
-            }
             let Some(port) = ports.status_watch.as_ref() else {
                 return Ok(Some(not_sent(Error::Unavailable(
                     "model-directory/status-and-dispatch-capacity",
@@ -678,6 +742,50 @@ fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {
         C::Dependency(name) => Error::Unavailable(name),
         C::Store(error) => Error::Store(error),
         _ => Error::Stale,
+    }
+}
+
+/// Python `VoiceStore.speak` through `Runtime.dynamic`.
+async fn speak(
+    store: std::sync::Arc<RuntimeStore>,
+    actor: &Actor,
+    args: &Value,
+    request_id: &str,
+    provider: Option<std::sync::Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
+) -> DispatchedOperation {
+    use crate::voice::provider::VoiceProviderError as V;
+    let Some(text) = args.get("text").and_then(Value::as_str) else {
+        return not_sent(Error::Invalid(
+            "Speech text must contain 1 to 4096 characters",
+        ));
+    };
+    match crate::voice::speak(crate::voice::SpeakRequest {
+        store,
+        provider,
+        agent_id: actor.record().id.0.clone(),
+        text: text.to_owned(),
+        request_id: request_id.to_owned(),
+        epoch: Some(actor.record().epoch),
+    })
+    .await
+    {
+        Ok(value) => written(value, Vec::new()),
+        Err(V::Voice(crate::voice::VoiceError::InvalidRequest(message)))
+        | Err(V::Voice(crate::voice::VoiceError::Conflict(message))) => {
+            not_sent(Error::Invalid(message))
+        }
+        Err(V::RequiresDependency(name)) => not_sent(Error::Unavailable(name)),
+        Err(error @ (V::Unknown | V::Store(_) | V::Voice(crate::voice::VoiceError::Store(_)))) => {
+            unknown(json!(error.to_string()), Vec::new())
+        }
+        Err(error) => DispatchedOperation {
+            result: OperationResult {
+                value: json!(error.to_string()),
+                signals: Vec::new(),
+            },
+            certainty: DeliveryCertainty::Written,
+            applied: Some(false),
+        },
     }
 }
 

@@ -1463,16 +1463,17 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
         .unwrap()
         .to_owned();
     // Runtime.dynamic routes movedFrom actors to move_send before target
-    // resolution (codex_runtime.py:9048-9049). For other actors it resolves
-    // agent_id as a visible agent ID, so "user" is a too-short ID; remote and
-    // federated targets reach chat_message and use federation locally
-    // (codex_runtime.py:9858-9877).
+    // resolution (codex_runtime.py:9048-9049); these ports attach no paired
+    // driver, so the forwarded call names the worker-call dependency. For
+    // other actors it resolves agent_id as a visible agent ID, so "user" is a
+    // too-short ID; remote and federated targets reach chat_message and use
+    // federation locally (codex_runtime.py:9858-9877).
     let cases = [
         (
             "moved descendant",
             descendant,
             json!({"remoteOrigin":"source-server","movedFrom":true}),
-            "multi-server-runtime/move-send",
+            "multi-server/worker-call",
         ),
         (
             "remote to user",

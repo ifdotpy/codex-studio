@@ -840,6 +840,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     if let Some(driver) = state.orchestration_driver_handle() {
         managed_tool_runtime.attach_multi_server(Arc::clone(&store), driver);
     }
+    // The host runtime installed the provider-session voice adapter above.
+    if let Some(voice) = state.voice_request_port_handle() {
+        managed_tool_runtime.attach_voice(voice);
+    }
     let sync_changes = state.sync_changes_handle();
     let cost_scan_cancelled = state.cost_scan_cancellation_handle();
     let vault_job_owner = VaultJobOwner::start();
