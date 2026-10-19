@@ -36,7 +36,8 @@ use tokio::sync::{Notify, OnceCell, mpsc, watch};
 fn test_registry_config() -> AccountRegistryConfig {
     AccountRegistryConfig::default()
 }
-const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
+/// Must stay below the CI nextest kill (3 x 60 s) so a hang reports its state.
+const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
 const SATURATED_WAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 struct Fixture {
