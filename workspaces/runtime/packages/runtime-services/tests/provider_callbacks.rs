@@ -685,6 +685,104 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
     );
 }
 
+async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() {
+    // Live cutover 4: every versioned progress update was refused with
+    // "requires coordination/versioned-progress-delivery".
+    let (_dir, store, context) = fixture().await;
+    let lead = template().value["agents"][0]["id"].as_str().unwrap();
+    let actor = &template().value["agents"][1];
+    let mut worker = context.clone();
+    worker.agent = actor["id"].as_str().unwrap().into();
+    worker.thread = "thread-1".into();
+    worker.turn = "turn-1".into();
+    let progress = |id: &str, version: u64| {
+        call(
+            &worker,
+            id,
+            "orchestration_message",
+            json!({"target":"parent","text":format!("step {version}"),"importance":"progress",
+                "progress_key":"task-7","progress_version":version}),
+        )
+    };
+    let first_frame = progress("progress-1", 1);
+    let first = reply(
+        dispatch(std::sync::Arc::clone(&store), &worker, &first_frame, 10.0)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(body(&first)["success"], true, "{:?}", body(&first));
+    assert_eq!(tool_value(&first)["deliveries"][lead], "queued");
+    // A retried callback answers from its receipt and delivers nothing again.
+    assert_eq!(
+        reply(
+            dispatch(std::sync::Arc::clone(&store), &worker, &first_frame, 11.0)
+                .await
+                .unwrap()
+        ),
+        first
+    );
+    let second = reply(
+        dispatch(
+            std::sync::Arc::clone(&store),
+            &worker,
+            &progress("progress-2", 2),
+            12.0,
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(body(&second)["success"], true, "{:?}", body(&second));
+    {
+        let reader = store.read().unwrap();
+        let mut statement = reader
+        .prepare(
+            "SELECT text FROM runtime_events WHERE agent=?1 AND kind='agent_message' ORDER BY created, id",
+        )
+        .unwrap();
+        let delivered = statement
+            .query_map([lead], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|text| serde_json::from_str::<Value>(&text.unwrap()).unwrap())
+            .filter(|payload| payload["progress_key"] == "task-7")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delivered.len(),
+            2,
+            "one input per update, none for the retry"
+        );
+        for (payload, version) in delivered.iter().zip([1, 2]) {
+            assert_eq!(payload["importance"], "progress");
+            assert_eq!(payload["sender"], worker.agent.as_str());
+            assert_eq!(payload["progress_version"], version);
+            assert_eq!(payload["text"], format!("step {version}"));
+        }
+        let chats: i64 = reader
+            .query_row(
+                "SELECT count(*) FROM runtime_chat_messages WHERE sender=?1",
+                [worker.agent.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(chats, 2);
+    }
+    let refused = call(
+        &worker,
+        "progress-bad",
+        "orchestration_message",
+        json!({"target":"parent","text":"bad","importance":"message",
+            "progress_key":"task-7","progress_version":3}),
+    );
+    assert_eq!(
+        body(&reply(
+            dispatch(std::sync::Arc::clone(&store), &worker, &refused, 13.0)
+                .await
+                .unwrap()
+        ))["success"],
+        false,
+        "versioned fields still require importance progress"
+    );
+}
+
 async fn provider_callbacks_python_reservations_and_restart() {
     let (_dir, store, context) = fixture().await;
     recover_connection(&store, &context.account, &context.connection, 20.0)
@@ -1166,6 +1264,9 @@ async fn provider_callbacks_corpus() {
         }),
         ("local_message_once_and_worker_chat", || {
             Box::pin(provider_callbacks_local_message_once_and_worker_chat())
+        }),
+        ("worker_versioned_progress_reaches_the_parent_once", || {
+            Box::pin(provider_callbacks_worker_versioned_progress_reaches_the_parent_once())
         }),
         ("python_reservations_and_restart", || {
             Box::pin(provider_callbacks_python_reservations_and_restart())
