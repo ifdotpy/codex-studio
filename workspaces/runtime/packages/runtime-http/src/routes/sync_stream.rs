@@ -186,6 +186,8 @@ async fn sync_stream(
         notifications: state.resource_notifications,
         token_rates,
         consecutive_token_frames: 0,
+        next_token_frame_at: None,
+        next_resources_frame_at: None,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -292,8 +294,12 @@ struct ResourceStream {
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
-    token_rates: tokio::sync::watch::Receiver<TokenRates>,
+    token_rates: tokio::sync::watch::Receiver<Arc<TokenRates>>,
     consecutive_token_frames: usize,
+    /// Earliest instant of the next token-rate frame, from `SYNC_FRAME_MIN_INTERVAL`.
+    next_token_frame_at: Option<Instant>,
+    /// Earliest instant of the next resources frame, from `SYNC_FRAME_MIN_INTERVAL`.
+    next_resources_frame_at: Option<Instant>,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -312,15 +318,16 @@ async fn next_frame(
         let heartbeat = if prefer_resource {
             tokio::select! {
                 biased;
-                changed = state.changes.changed() => {
+                changed = changed_not_before(&mut state.changes, state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
                     state.changes.borrow_and_update();
                     false
                 },
-                changed = state.token_rates.changed() => {
+                changed = changed_not_before(&mut state.token_rates, state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
                     state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
                     let frame = token_rate_sse_frame(&mut state)?;
+                    state.next_token_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
                     return Some((Ok(frame), state));
                 },
                 _ = state.heartbeat.tick() => true,
@@ -328,13 +335,14 @@ async fn next_frame(
         } else {
             tokio::select! {
                 biased;
-                changed = state.token_rates.changed() => {
+                changed = changed_not_before(&mut state.token_rates, state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
                     state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
                     let frame = token_rate_sse_frame(&mut state)?;
+                    state.next_token_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
                     return Some((Ok(frame), state));
                 },
-                changed = state.changes.changed() => {
+                changed = changed_not_before(&mut state.changes, state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
                     state.changes.borrow_and_update();
                     false
@@ -366,6 +374,7 @@ async fn next_frame(
                 };
             let event =
                 resource_changes_event(&state.workspace_id, &view, reason, state.entity_sequence);
+            state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             return Some((
                 Ok(sse_event("resources", Some(view.cursor.revision), event)),
                 state,
@@ -386,6 +395,20 @@ async fn next_frame(
     }
 }
 
+/// A change notification that is not acted on before `not_before`: the first change after
+/// a quiet period passes at once, and a burst collapses into one frame at the window's end
+/// because the watch keeps only the newest value. The window is waited out before
+/// `changed()`, which consumes the notification, so dropping this future loses nothing.
+async fn changed_not_before<T>(
+    receiver: &mut tokio::sync::watch::Receiver<T>,
+    not_before: Option<Instant>,
+) -> Result<(), tokio::sync::watch::error::RecvError> {
+    if let Some(not_before) = not_before {
+        tokio::time::sleep_until(not_before).await;
+    }
+    receiver.changed().await
+}
+
 fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
     let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
     if cursor.closed {
@@ -396,11 +419,11 @@ fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
 
 // Keep the rate read guard until its cursor is captured: publishers take these locks in this order.
 fn token_snapshot(
-    rates: &mut tokio::sync::watch::Receiver<TokenRates>,
+    rates: &mut tokio::sync::watch::Receiver<Arc<TokenRates>>,
     cursor: impl FnOnce() -> ChangeSnapshot,
-) -> (TokenRates, ChangeSnapshot) {
+) -> (Arc<TokenRates>, ChangeSnapshot) {
     let rates = rates.borrow_and_update();
-    (rates.clone(), cursor())
+    (Arc::clone(&rates), cursor())
 }
 
 fn resource_changes_event(
@@ -426,20 +449,24 @@ fn resource_changes_event(
     event
 }
 
+/// The token-rates frame. The `rates` and `teams` members are the snapshot's shared,
+/// once-serialized text; only the small cursor members are written per subscriber.
 fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &TokenRates) -> Event {
-    let rates = rates.to_value();
-    sse_event(
-        "token-rates",
-        Some(snapshot.revision),
-        json!({
-            "protocol": SYNC_PROTOCOL_VERSION,
-            "workspaceId": workspace_id,
-            "epoch": snapshot.epoch,
-            "revision": snapshot.revision,
-            "rates": rates["rates"],
-            "teams": rates["teams"],
-        }),
-    )
+    let wire = rates.wire();
+    let text = |value: &str| serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
+    let data = format!(
+        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"rates":{},"teams":{}}}"#,
+        SYNC_PROTOCOL_VERSION,
+        text(workspace_id),
+        text(&snapshot.epoch),
+        snapshot.revision,
+        wire.rates,
+        wire.teams,
+    );
+    Event::default()
+        .event("token-rates")
+        .data(data)
+        .id(snapshot.revision.to_string())
 }
 
 fn resource_event(
@@ -476,6 +503,11 @@ fn resource_event(
         "resourceVersions": resource_versions,
     })
 }
+
+/// Minimum spacing of two frames of one kind on one stream, in milliseconds of wall time. The
+/// UI redraws far below this rate, and a token burst otherwise costs one full-snapshot frame
+/// per publication.
+const SYNC_FRAME_MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 fn sse_event(name: &str, revision: Option<i64>, payload: Value) -> Event {
     let event = Event::default().event(name).data(payload.to_string());
@@ -635,6 +667,8 @@ mod tests {
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: tokens.subscribe(),
             consecutive_token_frames: 0,
+            next_token_frame_at: None,
+            next_resources_frame_at: None,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -676,6 +710,8 @@ mod tests {
             notifications: notifications.clone(),
             token_rates: token_hub.subscribe(),
             consecutive_token_frames: 0,
+            next_token_frame_at: None,
+            next_resources_frame_at: None,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -707,8 +743,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn pending_resource_change_gets_a_turn_after_bounded_token_updates() {
+    /// Token frames are spaced by `SYNC_FRAME_MIN_INTERVAL`, so a pending resource change is
+    /// sent right after the first token frame instead of waiting behind a token burst, and
+    /// the burst collapses into the newest snapshot once the window has passed.
+    #[tokio::test(start_paused = true)]
+    async fn pending_resource_change_goes_out_before_the_next_spaced_token_frame() {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
         let token_hub = TokenRateHub::with_change_hub(hub.clone());
@@ -719,23 +758,24 @@ mod tests {
             vec![json!({"kind":"accounts"})],
         );
         hub.notify_one();
-        let mut state = state;
-        for rate in 1..=8 {
-            token_hub.publish(test_rates(rate)).expect("token rate");
-            let (token, next_state) = next_frame(state).await.expect("token event");
-            state = next_state;
-            let token = event_document(token).await;
-            assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(rate as f64));
-        }
+        token_hub.publish(test_rates(1)).expect("token rate");
+        let (token, state) = next_frame(state).await.expect("first token event at once");
+        let token = event_document(token).await;
+        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(1.0));
 
+        for rate in 2..=8 {
+            token_hub.publish(test_rates(rate)).expect("token burst");
+        }
+        let started = Instant::now();
         let (resource, state) = next_frame(state).await.expect("resource event");
         let resource = event_document(resource).await;
         assert_eq!(resource["resources"], json!([{"kind":"accounts"}]));
+        assert!(started.elapsed() < SYNC_FRAME_MIN_INTERVAL);
 
-        token_hub.publish(test_rates(9)).expect("latest rate");
         let (token, _state) = next_frame(state).await.expect("latest token snapshot");
+        assert!(started.elapsed() >= SYNC_FRAME_MIN_INTERVAL - Duration::from_millis(1));
         let token = event_document(token).await;
-        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(9.0));
+        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(8.0));
     }
 
     #[test]
@@ -783,6 +823,8 @@ mod tests {
             notifications,
             token_rates: tokens.subscribe(),
             consecutive_token_frames: 0,
+            next_token_frame_at: None,
+            next_resources_frame_at: None,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(15),
@@ -1017,6 +1059,8 @@ mod tests {
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: TokenRateHub::new().subscribe(),
             consecutive_token_frames: 0,
+            next_token_frame_at: None,
+            next_resources_frame_at: None,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),

@@ -56,6 +56,32 @@ impl Serialize for FiniteRate {
 pub struct TokenRateSnapshot {
     rates: BTreeMap<String, TokenRateValue>,
     teams: BTreeMap<String, BTreeMap<String, TokenRateValue>>,
+    #[serde(skip)]
+    wire: WireCache,
+}
+
+/// JSON text of the `rates` and `teams` members of a snapshot, written once for all
+/// stream subscribers; a stream frame embeds these fragments verbatim.
+#[derive(Debug)]
+pub struct TokenRateWire {
+    pub rates: String,
+    pub teams: String,
+}
+
+/// Lazily filled serialization of one immutable snapshot. It never takes part in equality.
+#[derive(Debug, Default)]
+struct WireCache(std::sync::OnceLock<Arc<TokenRateWire>>);
+
+impl Clone for WireCache {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl PartialEq for WireCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -69,7 +95,7 @@ pub enum TokenRateError {
 /// A bounded watch channel; slow subscribers always receive the newest snapshot.
 #[derive(Clone)]
 pub struct TokenRateHub {
-    sender: watch::Sender<TokenRateSnapshot>,
+    sender: watch::Sender<Arc<TokenRateSnapshot>>,
     projector: Arc<Mutex<RateProjector>>,
     changes: Option<Arc<ChangeNotificationHub>>,
 }
@@ -125,6 +151,12 @@ impl TokenRateSnapshot {
     pub fn from_value(value: serde_json::Value) -> Result<Self, TokenRateError> {
         let snapshot: Self =
             serde_json::from_value(value).map_err(|_| TokenRateError::InvalidSnapshot)?;
+        snapshot.validated()
+    }
+
+    /// The snapshot, when it respects the entry and value limits of the wire contract.
+    fn validated(self) -> Result<Self, TokenRateError> {
+        let snapshot = self;
         let total_rate_entries =
             snapshot.rates.len() + snapshot.teams.values().map(BTreeMap::len).sum::<usize>();
         if snapshot.rates.len() > TOKEN_RATE_MAX_ENTRIES
@@ -157,6 +189,19 @@ impl TokenRateSnapshot {
         serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({"rates":{},"teams":{}}))
     }
 
+    /// The serialized `rates` and `teams` members, written on first use and then shared.
+    #[must_use]
+    pub fn wire(&self) -> Arc<TokenRateWire> {
+        Arc::clone(self.wire.0.get_or_init(|| {
+            let text =
+                |result: serde_json::Result<String>| result.unwrap_or_else(|_| "{}".to_owned());
+            Arc::new(TokenRateWire {
+                rates: text(serde_json::to_string(&self.rates)),
+                teams: text(serde_json::to_string(&self.teams)),
+            })
+        }))
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rates.is_empty() && self.teams.is_empty()
@@ -167,7 +212,7 @@ impl TokenRateHub {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            sender: watch::channel(TokenRateSnapshot::empty()).0,
+            sender: watch::channel(Arc::new(TokenRateSnapshot::empty())).0,
             projector: Arc::default(),
             changes: None,
         }
@@ -184,11 +229,11 @@ impl TokenRateHub {
 
     #[must_use]
     pub fn snapshot(&self) -> TokenRateSnapshot {
-        self.sender.borrow().clone()
+        TokenRateSnapshot::clone(&self.sender.borrow())
     }
 
     #[must_use]
-    pub fn subscribe(&self) -> watch::Receiver<TokenRateSnapshot> {
+    pub fn subscribe(&self) -> watch::Receiver<Arc<TokenRateSnapshot>> {
         self.sender.subscribe()
     }
 
@@ -297,20 +342,23 @@ impl TokenRateHub {
             }
             snapshot_from_projector(&projector)
         };
-        self.publish(snapshot.to_value())
+        self.publish_snapshot(snapshot.validated()?)
             .map_err(|_| TokenRateError::InvalidSnapshot)
     }
 
     /// Publish one already validated producer snapshot; identical updates are coalesced.
     pub fn publish(&self, value: serde_json::Value) -> Result<bool, TokenRateError> {
-        let snapshot = TokenRateSnapshot::from_value(value)?;
+        self.publish_snapshot(TokenRateSnapshot::from_value(value)?)
+    }
+
+    fn publish_snapshot(&self, snapshot: TokenRateSnapshot) -> Result<bool, TokenRateError> {
         Ok(self.sender.send_if_modified(|current| {
-            if *current == snapshot {
+            if **current == snapshot {
                 false
             } else if let Some(changes) = &self.changes {
-                changes.try_publish(1, false, |_| *current = snapshot)
+                changes.try_publish(1, false, |_| *current = Arc::new(snapshot))
             } else {
-                *current = snapshot;
+                *current = Arc::new(snapshot);
                 true
             }
         }))
@@ -672,6 +720,30 @@ mod tests {
         NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
     };
     use serde_json::json;
+
+    /// Every subscriber of one published snapshot shares one serialization, and it equals the
+    /// snapshot's own JSON members.
+    #[test]
+    fn subscribers_share_one_serialization_of_a_snapshot() {
+        let hub = TokenRateHub::new();
+        let (first, second) = (hub.subscribe(), hub.subscribe());
+        hub.publish(json!({
+            "rates": {"agent": {"turnId":"turn","active":true,"estimated":false,"rate":2.5,"outputTokens":7.0}},
+            "teams": {"root": {"agent": {"turnId":"turn","active":true,"estimated":false,"rate":2.5,"outputTokens":7.0}}}
+        }))
+        .expect("publish");
+        let (a, b) = (first.borrow().wire(), second.borrow().wire());
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        let expected = hub.snapshot().to_value();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&a.rates).expect("rates"),
+            expected["rates"]
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&a.teams).expect("teams"),
+            expected["teams"]
+        );
+    }
 
     fn usage_effect(
         agent_id: &str,
