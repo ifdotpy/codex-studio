@@ -1054,7 +1054,6 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
-    let oracle = &oracle().value;
     let (_directory, store) = python_written_store().await;
     let driver = OrchestrationDriver::new(
         Arc::clone(&store),
@@ -1123,7 +1122,6 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     };
     assert_eq!(missing["status"], "failed", "{missing}");
     assert_eq!(missing["error"], "No such file or directory");
-    let _ = &oracle["lead"];
 }
 
 #[tokio::test]
