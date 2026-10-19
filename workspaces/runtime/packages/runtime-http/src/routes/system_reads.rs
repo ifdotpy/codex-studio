@@ -733,9 +733,23 @@ mod diagnostics_http_tests {
         ) -> futures_util::future::BoxFuture<'a, ProviderDiagnosticsSnapshot> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::Relaxed);
+                // Rows shaped like provider_ports.rs emits them: the Claude bridge
+                // `claude/diagnostics` result plus provider and idleLimitSeconds,
+                // a Codex loaded-thread count, and an unavailable account.
                 ProviderDiagnosticsSnapshot {
-                    native_accounts: json!({}),
-                    studio_loaded_threads: 0,
+                    native_accounts: json!({
+                        "account1": {
+                            "provider": "claude", "liveQueries": 2, "activeTurns": 1,
+                            "backgroundQueries": 0, "idleQueries": 1, "idleLimitSeconds": 600,
+                            "sessionCache": {
+                                "cachedSessions": 2, "retainedBytes": 4096, "pendingWrites": 0,
+                                "unsavedSessions": 1, "journalBytes": 512
+                            }
+                        },
+                        "account2": {"provider": "codex", "loadedThreads": 3},
+                        "account3": {"error": "ProviderDiagnosticsUnavailable"}
+                    }),
+                    studio_loaded_threads: 3,
                     queues: serde_json::Map::new(),
                 }
             })

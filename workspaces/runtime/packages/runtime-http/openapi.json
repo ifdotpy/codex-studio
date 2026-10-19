@@ -48269,12 +48269,19 @@
             "minimum": 0,
             "title": "Retainedbytes",
             "type": "integer"
+          },
+          "unsavedSessions": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Unsavedsessions",
+            "type": "integer"
           }
         },
         "required": [
           "cachedSessions",
           "retainedBytes",
           "pendingWrites",
+          "unsavedSessions",
           "journalBytes"
         ],
         "title": "SessionCacheStats",

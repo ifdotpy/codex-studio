@@ -672,6 +672,13 @@ class SchemaContractTests(unittest.TestCase):
         ):
             add(pointer, "property")
 
+        # The Claude bridge reports sessions held in memory after a failed disk write.
+        for pointer in (
+            "/components/schemas/SessionCacheStats/properties/unsavedSessions",
+            "/components/schemas/NativeClaudeAccount/properties/sessionCache/properties/unsavedSessions",
+        ):
+            add(pointer, "property")
+
         # Shared-workspace children: CreateAgentRequest.workspaceMode gains "shared".
         for pointer in (
             "/components/schemas/CreateAgentRequest/properties/workspaceMode",

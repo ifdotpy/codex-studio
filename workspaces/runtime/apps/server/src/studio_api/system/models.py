@@ -652,6 +652,7 @@ class SessionCacheStats(ContractModel):
     cachedSessions: SafeInt
     retainedBytes: SafeInt
     pendingWrites: SafeInt
+    unsavedSessions: SafeInt
     journalBytes: SafeInt
 
 

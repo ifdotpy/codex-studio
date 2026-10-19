@@ -21230,6 +21230,8 @@ export interface components {
       pendingWrites: number;
       /** Retainedbytes */
       retainedBytes: number;
+      /** Unsavedsessions */
+      unsavedSessions: number;
     };
     /** SessionCostResource */
     SessionCostResource: {

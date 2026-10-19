@@ -827,6 +827,12 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/NativeClaudeAccount/properties/sessionCache/properties/unsavedSessions",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
       "pointer": "/components/schemas/OrchestrationSettingsResponse/properties/_syncEntities",
       "constraint": "@nullable",
       "baseline": "None",
@@ -1389,6 +1395,12 @@
       "constraint": "type",
       "baseline": "'string'",
       "candidate": "None"
+    },
+    {
+      "pointer": "/components/schemas/SessionCacheStats/properties/unsavedSessions",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
     },
     {
       "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
