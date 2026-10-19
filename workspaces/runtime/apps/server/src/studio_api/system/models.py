@@ -1066,9 +1066,10 @@ class OrchestrationSettings(ContractModel):
         le=IDLE_SESSION_UNLOAD_MAX_MINUTES,
         strict=True,
         description=(
-            "Minutes an account's provider process stays running after its last thread unloaded. "
-            "A thread without a running turn, pending input, or active monitor unloads at once; "
-            "the next message resumes it. 0 never unloads."
+            "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, "
+            "and an account's provider process keeps running after its last thread unloaded. "
+            "A managed worker without a running turn, pending input, or active monitor unloads at once. "
+            "The next message resumes a thread. 0 never unloads."
         ),
     )
 

@@ -40,14 +40,15 @@ export const childResultHoldSpec: OrchestrationSettingSpec = {
 
 export const idleSessionUnloadSpec: OrchestrationSettingSpec = {
   field: "idleSessionUnloadMinutes",
-  label: "Stop idle provider processes after (minutes)",
-  help: "Free the memory of agents that have nothing to do.",
-  ariaLabel: "Stop idle provider processes after minutes",
+  label: "Unload idle sessions after (minutes)",
+  help: "Free the memory of leads and chats that have nothing to do.",
+  ariaLabel: "Unload idle sessions after minutes",
   tooltip:
-    "Codex threads and Claude sessions without a running turn, pending input, or " +
-    "active monitor are unloaded as soon as their turn ends and resumed " +
-    "automatically on the next message. An account's provider process stops " +
-    "after this many minutes with no loaded thread. 0 never unloads.",
+    "A lead's or ordinary chat's Codex thread or Claude session without a running " +
+    "turn, pending input, or active monitor is unloaded after this many minutes " +
+    "and resumed automatically on the next message. An account's provider process " +
+    "stops after this many minutes with no loaded thread. Workers spawned by a " +
+    "lead unload as soon as their turn ends. 0 never unloads.",
   min: IDLE_SESSION_UNLOAD_MIN_MINUTES,
   max: IDLE_SESSION_UNLOAD_MAX_MINUTES,
 };

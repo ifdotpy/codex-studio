@@ -346,14 +346,21 @@ Late acknowledgements cannot resume a stopped agent or replace a newer turn.
 ### Idle provider sessions
 
 Orchestration settings control [idle session unloading](../workspaces/runtime/packages/runtime-store/src/repositories/orchestration_settings.rs).
-A thread whose turn has settled, with no pending input, request, monitor, or
-background work, unloads at once (`THREAD_UNLOAD_DELAY` in
+A managed worker's thread (an agent that is not a lead) whose turn has settled,
+with no pending input, request, monitor, or background work, unloads at once
+(`WORKER_UNLOAD_DELAY` in
 [idle_unload.rs](../workspaces/runtime/packages/runtime-services/src/account_worker/idle_unload.rs)),
-so provider memory follows running turns: a Claude thread's CLI exits, and the
+so provider memory follows running workers: a Claude thread's CLI exits, and the
 Codex app-server frees the thread after its own unload delay. The next turn
-resumes the thread.
-The setting stops the provider process after its minutes with no loaded thread;
-zero keeps threads and processes loaded.
+resumes the thread. A lead's or ordinary chat's thread unloads after
+`idleSessionUnloadMinutes` of the same idleness, because each resume costs a
+cold CLI start. The same setting stops the provider process after its minutes
+with no loaded thread; zero keeps threads and processes loaded.
+When Studio resumes a Claude thread it unloaded, the CLI's resume dialog
+(summary or full history) is answered with the full history and never reaches
+the user or stalls an agent. A resume Studio did not unload still asks through
+the user question for leads, and a worker refuses it. Codex has no such prompt:
+`thread/resume` loads the stored history without a dialog.
 Studio checks ownership before unsubscribing a thread and stops the provider
 process only when all loaded threads have been released and no work remains.
 An unknown unsubscribe result keeps the thread loaded.

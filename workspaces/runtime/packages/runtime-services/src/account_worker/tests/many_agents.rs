@@ -89,6 +89,26 @@ async fn agents(state: &State, count: usize) -> Vec<String> {
     std::iter::once(state.agent.clone()).chain(clones).collect()
 }
 
+/// Managed workers unload at once; leads wait for the idle setting.
+async fn make_workers(state: &State, agents: &[String]) {
+    let agents = agents.to_vec();
+    state
+        .bridge
+        .run(move |s| async move {
+            scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
+                for id in &agents {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    row.extra.insert("isLead".into(), json!(false));
+                    AgentRepository::put(tx, &row)?;
+                }
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+}
+
 /// The scripted provider's per-run state.
 struct Script<'a> {
     state: &'a State,
@@ -422,7 +442,7 @@ async fn serve_until(
 }
 
 /// With idle unloading on, `UNLOAD_AGENTS` agents of one account keep a
-/// thread (a Claude CLI) loaded only while its turn runs: a settled turn's
+/// thread (a Claude CLI) loaded only while its turn runs: a settled worker turn's
 /// thread is unloaded at once, and its next message resumes the same thread
 /// and delivers that message exactly once.
 async fn scenario_loaded_threads_follow_running_turns(provider: &str) {
@@ -450,6 +470,7 @@ async fn scenario_loaded_threads_follow_running_turns(provider: &str) {
     let mut peer = Peer::new();
     let mut worker = provider_worker(&state, &mut peer, provider).await;
     let agents = agents(&state, UNLOAD_AGENTS).await;
+    make_workers(&state, &agents).await;
     let (frames, mut outbox) = mpsc::unbounded_channel::<Value>();
     let (entries, clock, generation) = (peer.entries.clone(), peer.clock.clone(), peer.generation);
     let sender = tokio::spawn(async move {

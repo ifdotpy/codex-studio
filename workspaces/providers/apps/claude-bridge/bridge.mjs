@@ -189,6 +189,10 @@ const sessions = sessionStore.sessions;
 // The server closes a session with thread/unsubscribe as soon as its turn
 // settles, which exits its CLI; the next turn resumes it. A session with a
 // turn, background task, pending input, or serialized operation refuses to close.
+// Threads Studio itself unloaded in this process. The CLI's resume_return
+// dialog (summary or full history) on their next turn is Studio's own resume,
+// not a user's return to a stale chat: it keeps the full history and never asks.
+const studioUnloaded = new Set();
 const queryBusy = (id, active) =>
   Boolean(
     active.turn ||
@@ -1393,6 +1397,8 @@ async function startSession(s, active, p) {
         onUserDialog: async (value, options) => {
           if (value.dialogKind !== "resume_return" || !active.turn)
             return { behavior: "cancelled" };
+          if (studioUnloaded.has(s.id))
+            return { behavior: "completed", result: "continue" };
           const question =
             "Resume this Claude conversation with a summary or full history?";
           const answer = await permissions(
@@ -2374,6 +2380,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
+    if (active) studioUnloaded.add(p.threadId);
     catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);
     return { status: active ? "unsubscribed" : "notLoaded" };

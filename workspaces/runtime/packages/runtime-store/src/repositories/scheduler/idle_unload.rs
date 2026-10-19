@@ -83,6 +83,10 @@ fn transfer_pending_predicate(connection: &Connection) -> StoreResult<String> {
         .to_owned())
 }
 
+/// SQL predicate over the `runtime_agents` row: a managed worker, an agent that
+/// is not a lead. Leads and ordinary chats are leads.
+const WORKER_AGENT_SQL: &str = "COALESCE(json_extract(record,'$.isLead'),0)=0";
+
 const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
      COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
      AND json_extract(record,'$.deletedAt') IS NULL";
@@ -90,11 +94,17 @@ const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
 impl SchedulerRepository {
     /// Read the durable status of known loaded threads and the account in one
     /// bounded query. The candidate list comes from one provider snapshot.
+    /// Returns the busy threads, the threads of managed workers, and whether
+    /// the account is in use.
     pub fn idle_unload_usage_snapshot(
         connection: &Connection,
         account: &str,
         threads: &std::collections::BTreeSet<String>,
-    ) -> StoreResult<(std::collections::BTreeSet<String>, bool)> {
+    ) -> StoreResult<(
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+        bool,
+    )> {
         let transfer = transfer_pending_predicate(connection)?;
         let in_use = agent_in_use(connection)?;
         let account_in_use = format!("({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} AND ({in_use})))");
@@ -142,7 +152,35 @@ impl SchedulerRepository {
                 busy_threads.insert(thread);
             }
         }
-        Ok((busy_threads, account_in_use))
+        Ok((
+            busy_threads,
+            Self::idle_unload_worker_threads(connection, account, threads)?,
+            account_in_use,
+        ))
+    }
+
+    /// The members of `threads` owned by a live managed worker of `account`.
+    pub fn idle_unload_worker_threads(
+        connection: &Connection,
+        account: &str,
+        threads: &std::collections::BTreeSet<String>,
+    ) -> StoreResult<std::collections::BTreeSet<String>> {
+        let encoded_threads = serde_json::Value::Array(
+            threads
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        )
+        .to_string();
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT DISTINCT json_extract(record,'$.threadId') FROM runtime_agents WHERE \
+             COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
+             AND json_extract(record,'$.deletedAt') IS NULL AND {WORKER_AGENT_SQL} \
+             AND json_extract(record,'$.threadId') IN (SELECT value FROM json_each(?2))"
+        ))?;
+        let rows = statement.query_map([account, &encoded_threads], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Whether `thread` on `account` must stay loaded: an agent that owns it
@@ -394,7 +432,7 @@ mod tests {
             json!({"threadId":"other","status":"running"}),
         );
         let candidates = std::collections::BTreeSet::from(["thread".to_owned(), "cold".to_owned()]);
-        let (busy, account_busy) =
+        let (busy, _, account_busy) =
             SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &candidates)
                 .expect("usage snapshot reads");
         assert_eq!(
@@ -408,10 +446,39 @@ mod tests {
 
         agent(&connection, "busy", json!({}));
         agent(&connection, "other-thread", json!({"threadId":"other"}));
-        let (busy, account_busy) =
+        let (busy, _, account_busy) =
             SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &candidates)
                 .expect("usage snapshot rereads authoritative state");
         assert!(busy.is_empty());
         assert!(!account_busy);
+    }
+
+    #[test]
+    fn only_live_non_lead_agents_are_managed_workers() {
+        let connection = database();
+        let threads = std::collections::BTreeSet::from(["thread".to_owned(), "cold".to_owned()]);
+        let workers = || {
+            SchedulerRepository::idle_unload_worker_threads(&connection, "acct", &threads)
+                .expect("workers read")
+        };
+        agent(&connection, "chat", json!({"isLead":true}));
+        assert!(workers().is_empty(), "a lead or ordinary chat is no worker");
+        agent(&connection, "chat", json!({"isLead":false}));
+        assert_eq!(
+            workers(),
+            std::collections::BTreeSet::from(["thread".to_owned()])
+        );
+        let (_, snapshot_workers, _) =
+            SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &threads)
+                .expect("usage snapshot reads");
+        assert_eq!(snapshot_workers, workers());
+        agent(&connection, "chat", json!({"isLead":false,"deletedAt":1.0}));
+        assert!(workers().is_empty(), "a deleted worker holds nothing");
+        agent(
+            &connection,
+            "chat",
+            json!({"isLead":false,"accountKey":"other"}),
+        );
+        assert!(workers().is_empty(), "another account's worker is not ours");
     }
 }

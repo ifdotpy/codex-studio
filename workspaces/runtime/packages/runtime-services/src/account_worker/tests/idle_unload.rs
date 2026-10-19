@@ -28,8 +28,8 @@ async fn sweep(worker: &AccountHandle) {
     expire_idle_clocks(worker).await;
 }
 
-/// Make every idle clock of a quiescent worker due. A thread's own clock is
-/// zero ([`THREAD_UNLOAD_DELAY`]), so an unused loaded thread starts its
+/// Make every idle clock of a quiescent worker due. A managed worker's own clock
+/// is zero ([`WORKER_UNLOAD_DELAY`]), so an unused loaded thread starts its
 /// checks without any clock advance; call this only when the worker has no
 /// provider request in flight, because advancing the clock also expires a
 /// pending request's timeout and a barrier would wait behind that request.
@@ -106,6 +106,26 @@ async fn set_delay(state: &State, minutes: u64) {
         .unwrap();
 }
 
+/// Make the test agent a lead (leads and ordinary chats) or a managed worker.
+async fn set_lead(state: &State, lead: bool) {
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("test agent exists");
+                    agent.extra.insert("isLead".into(), json!(lead));
+                    AgentRepository::put(tx, &agent)
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
 async fn set_agent_in_use(state: &State, thread: &str, in_use: bool) {
     let agent_id = state.agent.clone();
     let thread = thread.to_owned();
@@ -152,7 +172,8 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     assert!(peer.writes.try_recv().is_err());
     progress(peer.completed()).await;
 
-    // Completion starts the already-known loaded thread's unload at once.
+    // The lead's thread waits for the setting after its turn completes.
+    sweep(&worker).await;
     idle_checks(&mut peer).await;
     // A failed unsubscribe proves nothing; the thread stays loaded.
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
@@ -219,6 +240,7 @@ async fn input_arriving_during_native_checks_prevents_unsubscribe() {
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     progress(peer.completed()).await;
+    set_lead(&state, false).await;
     enable_unload(&state, &mut peer).await;
 
     // An unused loaded thread starts its checks at once.
@@ -256,6 +278,7 @@ async fn a_loaded_thread_blocked_when_enabled_gets_a_deadline_after_durable_comp
     peer.accepted(&start).await;
     progress(peer.completed()).await;
     set_agent_in_use(&state, THREAD, true).await;
+    set_lead(&state, false).await;
     enable_unload(&state, &mut peer).await;
     worker_barrier(&worker).await;
     assert!(peer.writes.try_recv().is_err());
@@ -282,10 +305,32 @@ async fn a_durable_account_blocker_wakes_the_released_process_clock_when_cleared
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     progress(peer.completed()).await;
+    set_lead(&state, false).await;
     enable_unload(&state, &mut peer).await;
+    // The worker learns the thread's role from the snapshot, which precedes its
+    // first provider check; moving the agent to another thread orphans this one.
+    answer(
+        &mut peer,
+        "thread/read",
+        json!({"threadId": THREAD, "includeTurns": false}),
+        json!({"thread": {"id": THREAD, "status": {"type": "idle"}}}),
+    )
+    .await;
     set_agent_in_use(&state, "unloaded-thread", true).await;
-
-    idle_checks(&mut peer).await;
+    answer(
+        &mut peer,
+        "thread/backgroundTerminals/list",
+        json!({"threadId": THREAD, "limit": 100}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    answer(
+        &mut peer,
+        "thread/queue/list",
+        json!({"threadId": THREAD}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
     let unsubscribe = progress(peer.write("thread/unsubscribe")).await;
     assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
     progress(peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))).await;
@@ -317,6 +362,7 @@ async fn claude_idle_close_requires_a_loaded_snapshot_and_native_idle_confirmati
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     progress(peer.completed()).await;
+    set_lead(&state, false).await;
     enable_unload(&state, &mut peer).await;
 
     // Claude goes through the same authoritative loaded snapshot. A busy
@@ -455,8 +501,9 @@ async fn scenario_input_at_turn_completion_is_not_raced_by_unload(
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
     enable_unload(&state, &mut peer).await;
+    set_lead(&state, false).await;
 
-    // The settled turn starts the unload checks at once, with no idle wait.
+    // A worker's settled turn starts the unload checks at once, with no idle wait.
     progress(peer.completed()).await;
     let read = progress(peer.write("thread/read")).await;
     assert_eq!(
@@ -506,4 +553,58 @@ async fn claude_input_at_turn_completion_is_not_raced_by_unload() {
         studio_runtime_providers::ProviderKind::Claude,
     )
     .await;
+}
+
+/// A managed worker's thread unloads as soon as its turn settles; a lead's or
+/// ordinary chat's thread stays loaded until the idle setting elapses.
+async fn scenario_unload_timing_follows_the_agent_role(
+    provider: studio_runtime_providers::ProviderKind,
+    lead: bool,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    enable_unload(&state, &mut peer).await;
+    set_lead(&state, lead).await;
+
+    progress(peer.completed()).await;
+    if lead {
+        progress(worker_barrier(&worker)).await;
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "a settled lead stays loaded before the idle setting elapses"
+        );
+        sweep(&worker).await;
+    }
+    let read = progress(peer.write("thread/read")).await;
+    assert_eq!(
+        read["params"],
+        json!({"threadId": THREAD, "includeTurns": false})
+    );
+    progress(worker.shutdown()).await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_worker_unloads_at_settle_and_lead_waits_for_the_setting() {
+    for lead in [false, true] {
+        scenario_unload_timing_follows_the_agent_role(
+            studio_runtime_providers::ProviderKind::Codex,
+            lead,
+        )
+        .await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_worker_unloads_at_settle_and_lead_waits_for_the_setting() {
+    for lead in [false, true] {
+        scenario_unload_timing_follows_the_agent_role(
+            studio_runtime_providers::ProviderKind::Claude,
+            lead,
+        )
+        .await;
+    }
 }

@@ -1,6 +1,7 @@
 // Idle unload through the real bridge with a scripted SDK: a settled turn's
 // thread/unsubscribe ends its CLI query, and the next turn starts a new query
-// that resumes the same native session with only the new message.
+// that resumes the same native session with only the new message. The CLI's
+// resume_return dialog on such a resume is answered with the full history.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -119,4 +120,53 @@ test("a repeated unload closes nothing more", async () => {
     1,
     "only the loaded CLI was closed",
   );
+});
+
+// A scripted CLI that raises its resume_return dialog on the first input of a
+// resumed query, as the real one does for a long or large session.
+const DIALOG_SDK = FAKE_SDK.replace(
+  "log({input:input.value.message.content[0].text});",
+  `log({input:input.value.message.content[0].text});
+    if(options.resume&&!asked){asked=true;log({dialog:await options.onUserDialog({dialogKind:'resume_return',toolUseID:'dialog'},{requestId:'dialog',signal:abort.signal})});}`,
+).replace("log({query:", "let asked=false;log({query:");
+
+const askedUser = (bridge) =>
+  bridge.notes.some((note) => note.method === "item/tool/requestUserInput");
+
+test("a resume after Studio's own unload keeps the full history without asking", async () => {
+  const bridge = await startBridge(DIALOG_SDK, "claude-unload-");
+  bridges.push(bridge);
+  await turn(bridge, "first");
+  await bridge.call("thread/unsubscribe", { threadId: bridge.thread });
+  await bridge.call("thread/resume", { threadId: bridge.thread });
+  const second = await turn(bridge, "second");
+  assert.equal(second.params.turn.status, "completed");
+  const events = await log(bridge);
+  assert.deepEqual(
+    events.filter((event) => event.dialog).map((event) => event.dialog),
+    [{ behavior: "completed", result: "continue" }],
+  );
+  assert.equal(askedUser(bridge), false, "the dialog never reaches the user");
+  assert.deepEqual(
+    events.filter((event) => event.input).map((event) => event.input),
+    ["first", "second"],
+    "the turn is delivered once",
+  );
+});
+
+test("a resume Studio did not unload still asks through the user question", async () => {
+  const bridge = await startBridge(DIALOG_SDK, "claude-unload-");
+  bridges.push(bridge);
+  await turn(bridge, "first");
+  // Studio re-resumes the idle query without unloading it first.
+  await bridge.call("thread/resume", { threadId: bridge.thread });
+  const id = (
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "message-second",
+      input: [{ type: "text", text: "second" }],
+    })
+  ).turn.id;
+  assert.ok(id);
+  await bridge.note((n) => n.method === "item/tool/requestUserInput");
 });

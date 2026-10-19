@@ -40,8 +40,9 @@ pub const CHILD_RESULT_COALESCE_SETTING: Setting = Setting {
     min: CHILD_RESULT_COALESCE_MIN_SECONDS,
     max: CHILD_RESULT_COALESCE_MAX_SECONDS,
 };
-/// Minutes an account's provider process runs after its last thread unloaded;
-/// zero never unloads threads or stops the process.
+/// Minutes a lead's or ordinary chat's idle thread stays loaded and an
+/// account's provider process runs after its last thread unloaded; managed
+/// workers unload as soon as their turn settles; zero never unloads.
 pub const IDLE_SESSION_UNLOAD_SETTING: Setting = Setting {
     field: "idleSessionUnloadMinutes",
     default: IDLE_SESSION_UNLOAD_DEFAULT_MINUTES,
@@ -142,7 +143,8 @@ impl OrchestrationSettingsRepository {
         Self::set(connection, CHILD_RESULT_COALESCE_SETTING, seconds)
     }
 
-    /// How long an idle provider process runs; `None` never unloads.
+    /// How long an idle lead or chat thread stays loaded and an idle provider
+    /// process runs; `None` never unloads.
     pub fn idle_session_unload(connection: &Connection) -> StoreResult<Option<Duration>> {
         let minutes = Self::value(connection, IDLE_SESSION_UNLOAD_SETTING)?;
         Ok((minutes > 0).then(|| Duration::from_secs(minutes * SECONDS_PER_MINUTE)))
