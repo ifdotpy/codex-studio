@@ -153,6 +153,17 @@ const VERSION_READER_CONNECTION_RESERVATION: usize = 1;
 pub const READ_CONNECTION_POOL_CAPACITY: usize =
     CANVAS_READER_CONNECTION_CAPACITY - VERSION_READER_CONNECTION_RESERVATION;
 
+/// `PRAGMA synchronous` of the Canvas database: every commit is fsynced, because the
+/// Canvas journal is the durable record that analytics capture replays from.
+const CANVAS_SYNCHRONOUS: &str = "FULL";
+/// `PRAGMA synchronous` of the analytics database (WAL). A commit is durable against
+/// an application crash but is not fsynced, saving one fsync per journal batch. After
+/// an OS or power crash the last moments of analytics rows can be lost: analytics
+/// commits before Canvas, so Canvas may be durable past a lost analytics commit and
+/// that journal entry is not replayed. Canvas and the integrity of both files are
+/// unaffected (WAL with NORMAL never corrupts).
+const ANALYTICS_SYNCHRONOUS: &str = "NORMAL";
+
 /// Canvas tables with process-local observers for committed row changes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ObservedTable {
@@ -1173,7 +1184,7 @@ impl RuntimeStore {
                     .map_err(StoreError::from)?;
                 install_profile(connection, StoreDatabaseKind::Canvas);
                 connection
-                    .pragma_update(None, "synchronous", "FULL")
+                    .pragma_update(None, "synchronous", CANVAS_SYNCHRONOUS)
                     .map_err(StoreError::from)?;
                 schema::register_python_trigger_functions(connection)?;
                 install_table_change_hooks(
@@ -1197,7 +1208,7 @@ impl RuntimeStore {
             })?;
         let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         analytics.pragma_update(None, "journal_mode", "WAL")?;
-        analytics.pragma_update(None, "synchronous", "FULL")?;
+        analytics.pragma_update(None, "synchronous", ANALYTICS_SYNCHRONOUS)?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
         let identity_registry_path = canvas_path.clone();
@@ -2155,6 +2166,29 @@ mod read_pool_tests {
                     == CANVAS_READER_CONNECTION_CAPACITY
             );
         }
+    }
+
+    #[tokio::test]
+    async fn canvas_commits_are_fsynced_and_analytics_commits_are_not() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        // SQLite reports FULL as 2 and NORMAL as 1.
+        let canvas: i64 = store
+            .transaction_with(|tx| -> StoreResult<i64> {
+                Ok(tx.query_row("PRAGMA synchronous", [], |row| row.get(0))?)
+            })
+            .await
+            .expect("canvas pragma");
+        assert_eq!(canvas, 2, "{CANVAS_SYNCHRONOUS}");
+        let analytics: i64 = store
+            .analytics_connection()
+            .lock()
+            .expect("analytics connection")
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("analytics pragma");
+        assert_eq!(analytics, 1, "{ANALYTICS_SYNCHRONOUS}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
