@@ -395,9 +395,6 @@ impl ManagementSnapshot {
                 && session.get("ended").is_none_or(Value::is_null)
         })
     }
-    fn refuse_live(&self, agent: &Agent) -> Result<(), ManagementError> {
-        self.stop_effects(agent, &mut Vec::new(), false, false)
-    }
     fn stop_effects(
         &self,
         agent: &Agent,
@@ -482,6 +479,25 @@ impl ManagementSnapshot {
         if agent.flag("workspaceOperation") {
             add("workspace_operation", vec![json!(agent.id())]);
         }
+        if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm") {
+            add(
+                "turn_state",
+                agent
+                    .record
+                    .get("layrTurnSaves")
+                    .and_then(Value::as_object)
+                    .map(|saves| {
+                        saves
+                            .iter()
+                            .filter(|(_, saved)| {
+                                saved.get("status").and_then(Value::as_str) != Some("saved")
+                            })
+                            .map(|(turn, _)| json!(turn))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
+        }
         add(
             "descendants",
             self.agents
@@ -536,7 +552,36 @@ impl ManagementSnapshot {
                     .collect(),
             );
         }
+        // Python `_blockers`: an open request, or an unknown outcome while the
+        // agent may still act on it. A finished agent's unknown outcomes are
+        // recorded in the archive instead (`unknownToolRequests`).
+        let finished = finished(agent);
+        add(
+            "tool_requests",
+            self.owned("runtime_tool_requests", "agent", agent.id())
+                .into_iter()
+                .filter(|r| {
+                    matches!(
+                        r.get("stage").and_then(Value::as_str),
+                        Some("queued" | "running")
+                    ) || (!finished && r.get("outcome").and_then(Value::as_str) == Some("unknown"))
+                })
+                .map(|r| r["id"].clone())
+                .collect(),
+        );
         blocks
+    }
+    /// Tool requests whose outcome stays unknown, kept with the archive record.
+    fn unknown_tool_requests(&self, agent: &Agent) -> Vec<Value> {
+        let mut ids = self
+            .owned("runtime_tool_requests", "agent", agent.id())
+            .into_iter()
+            .filter(|r| r.get("outcome").and_then(Value::as_str) == Some("unknown"))
+            .filter_map(|r| r.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.into_iter().map(Value::String).collect()
     }
     fn open_work(&self, agent: &Agent) -> Vec<&Work> {
         self.work
@@ -551,6 +596,69 @@ impl ManagementSnapshot {
             })
             .collect()
     }
+}
+
+/// Python `_finished`.
+fn finished(agent: &Agent) -> bool {
+    matches!(
+        agent.record.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "interrupted")
+    ) || (agent.record.get("status").and_then(Value::as_str) == Some("paused")
+        && !agent.flag("autoWake"))
+}
+
+/// Python `_completed_native_turn`: a durable completion of the last submitted
+/// turn proves that no native turn is left to wait for.
+fn completed_native_turn(agent: &Agent) -> bool {
+    let record = &agent.record;
+    let attempt_turn = record.pointer("/startAttempt/turnId");
+    let turn = record
+        .get("lastCompletedTurn")
+        .filter(|turn| truthy(Some(turn)));
+    let completed_without_attempt = !agent.flag("startAttempt")
+        && matches!(
+            record
+                .get("lastCompletedTurnStatus")
+                .and_then(Value::as_str),
+            Some("completed" | "failed" | "interrupted")
+        );
+    turn.is_some_and(|turn| attempt_turn == Some(turn) || completed_without_attempt)
+        && record.get("turnId").is_none_or(Value::is_null)
+        && !agent.flag("inFlight")
+        && finished(agent)
+}
+
+/// Python `manage_agent` archive replay: the cleanup receipts already saved.
+fn archived_cleanup_result(agent: &Agent) -> (Value, Value) {
+    let record = &agent.record;
+    let cleaned = (!agent.flag("worktreeReady"))
+        .then(|| record.get("cleanedWorktree"))
+        .flatten()
+        .filter(|cleaned| truthy(Some(cleaned)));
+    let worktree = match cleaned {
+        Some(cleaned) if truthy(cleaned.get("missing")) => {
+            json!({"state":"missing","reason":cleaned.get("note").cloned().unwrap_or(Value::Null),"bytes":0})
+        }
+        Some(cleaned) => {
+            json!({"state":"removed","bytes":cleaned.get("bytes").cloned().unwrap_or(Value::Null)})
+        }
+        None => json!({"state":"kept","reason":"already archived","bytes":0}),
+    };
+    let cleaned_image = (!agent.flag("imageWorkspaceReady"))
+        .then(|| record.get("cleanedImageWorkspace"))
+        .flatten()
+        .filter(|cleaned| truthy(Some(cleaned)));
+    let workspace = record
+        .get("imageWorkspaceCleanupResult")
+        .filter(|result| truthy(Some(result)))
+        .cloned()
+        .or_else(|| {
+            cleaned_image.map(|cleaned| {
+                json!({"state":"archived","bytes":cleaned.get("bytes").cloned().unwrap_or(json!(0))})
+            })
+        })
+        .unwrap_or(Value::Null);
+    (worktree, workspace)
 }
 
 fn is_status(row: &Value, statuses: &[&str]) -> bool {
@@ -976,30 +1084,31 @@ fn archive(
                 "unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))
             })));
         }
-        workspace_dependency(agent)?;
+        let (worktree, workspace) = archived_cleanup_result(agent);
         return Ok(Decision::result(
-            json!({"status":"archived","agent":brief(&agent.record),"replayed":true,"workspace":null,"worktree":{"state":"kept","reason":"already archived","bytes":0},"unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))}),
+            json!({"status":"archived","agent":brief(&agent.record),"replayed":true,"workspace":workspace,"worktree":worktree,"unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))}),
         ));
     }
-    snapshot.tool_dependency(agent)?;
-    // Python may reconcile OS command liveness while computing blockers.
-    if snapshot
-        .owned("runtime_tasks", "agent", agent.id())
-        .iter()
-        .any(|r| is_status(r, &["running", "starting", "pending", "unknown"]))
-    {
-        return Err(ManagementError::Unavailable(
-            "process-driver/archive-reconciliation",
-        ));
-    }
+    // Python `_blockers`. A running, starting, pending or unknown background
+    // task is the `background_tasks` blocker; it is retried, never refused.
     let blockers = snapshot.blockers(agent, unassign);
     if !blockers.is_empty() {
         return Ok(Decision::result(
             json!({"status":"blocked","agent":brief(&agent.record),"blockers":blockers}),
         ));
     }
-    snapshot.refuse_live(agent)?;
-    workspace_dependency(agent)?;
+    // Python reads the native thread state first and, when the account is
+    // offline, accepts a durable completion of the last submitted turn. This
+    // decision has no provider session, so it uses that durable proof only.
+    if agent.flag("threadId") && !completed_native_turn(agent) {
+        return Ok(Decision::result(json!({
+            "status":"blocked",
+            "agent":brief(&agent.record),
+            "blockers":[{"kind":"native_state_unconfirmed","count":1,"ids":[agent.id()]}]
+        })));
+    }
+    // The workspace cleanup service removes the worktree, archives the image
+    // or releases the layr line from the durable intent written below.
     let reason = python_strip(reason);
     if reason.is_empty() || reason.chars().count() > 1000 {
         return Err(ManagementError::Invalid(
@@ -1047,7 +1156,7 @@ fn archive(
     record["autoWake"] = json!(false);
     record["status"] = json!("paused");
     record["epoch"] = json!(next_epoch(agent)?);
-    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":true,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":true,"unknownToolRequests":snapshot.unknown_tool_requests(agent),"unassignedWork":unassigned});
     record["workspaceCleanupIntent"] = crate::workspace_cleanup_runtime::queued_cleanup_intent(
         agent.id(),
         record["epoch"]
@@ -1405,6 +1514,128 @@ mod lifecycle_scope_parity_tests {
         assert_eq!(
             effect_values(&full_decision),
             effect_values(&scoped_decision)
+        );
+    }
+}
+
+#[cfg(test)]
+mod archive_parity_tests {
+    use super::{Action, ManagementSnapshot, Records, decide_with_effects};
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+
+    /// A finished reviewer as the live state holds it after its result reached
+    /// the lead: a native thread, finished tool requests, finished tasks.
+    fn records(worker: Value, tools: Vec<Value>, tasks: Vec<Value>) -> Records {
+        Records {
+            tables: BTreeMap::from([
+                (
+                    "runtime_agents".to_owned(),
+                    vec![
+                        json!({"id":"lead","rootId":"lead","epoch":4,"status":"running",
+                            "autoWake":true,"isLead":true}),
+                        worker,
+                    ],
+                ),
+                ("runtime_tool_requests".to_owned(), tools),
+                ("runtime_tasks".to_owned(), tasks),
+            ]),
+        }
+    }
+
+    fn worker(fields: Value) -> Value {
+        let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":2,
+            "status":"completed","autoWake":true,"isLead":false,"role":"reviewer",
+            "threadId":"thread-1","lastCompletedTurn":"turn-9",
+            "lastCompletedTurnStatus":"completed"});
+        for (key, value) in fields.as_object().expect("fields") {
+            record[key] = value.clone();
+        }
+        record
+    }
+
+    fn archive(records: Records) -> Value {
+        let snapshot = ManagementSnapshot::from_records(records).expect("snapshot");
+        decide_with_effects(
+            &snapshot,
+            &Action::Archive {
+                actor: "lead".to_owned(),
+                epoch: 4,
+                target: "worker".to_owned(),
+                reason: "Reviewer result delivered to parent".to_owned(),
+                unassign_work: false,
+            },
+            50.0,
+        )
+        .expect("archive decides")
+        .result
+    }
+
+    #[test]
+    fn a_finished_worker_with_a_thread_and_tool_history_is_archived() {
+        // Live cutover 4: 18 reviewers kept "Not implemented: requires
+        // tool-driver/archive-reconciliation" or "account-worker/agent-interrupt".
+        let result = archive(records(
+            worker(json!({})),
+            vec![
+                json!({"id":"tool-done","agent":"worker","stage":"completed","outcome":"applied"}),
+                json!({"id":"tool-lost","agent":"worker","stage":"failed","outcome":"unknown"}),
+            ],
+            vec![json!({"id":"task-done","agent":"worker","status":"completed"})],
+        ));
+        assert_eq!(result["status"], "archived", "{result}");
+    }
+
+    #[test]
+    fn open_work_is_a_blocker_not_a_refusal() {
+        let blocked = |records: Records, kind: &str| {
+            let result = archive(records);
+            assert_eq!(result["status"], "blocked", "{result}");
+            assert!(
+                result["blockers"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item["kind"] == kind)),
+                "{kind}: {result}"
+            );
+        };
+        blocked(
+            records(
+                worker(json!({})),
+                vec![
+                    json!({"id":"tool-open","agent":"worker","stage":"running","outcome":"pending"}),
+                ],
+                Vec::new(),
+            ),
+            "tool_requests",
+        );
+        blocked(
+            records(
+                worker(json!({})),
+                Vec::new(),
+                vec![json!({"id":"task-open","agent":"worker","status":"running"})],
+            ),
+            "background_tasks",
+        );
+        // Python reads the native thread, or accepts the durable completion of
+        // the last submitted turn; without either the archive waits.
+        blocked(
+            records(
+                worker(json!({"lastCompletedTurnStatus":Value::Null})),
+                Vec::new(),
+                Vec::new(),
+            ),
+            "native_state_unconfirmed",
+        );
+        // A worker that may still act keeps its unknown outcome as a blocker.
+        blocked(
+            records(
+                worker(json!({"status":"waiting"})),
+                vec![
+                    json!({"id":"tool-lost","agent":"worker","stage":"failed","outcome":"unknown"}),
+                ],
+                Vec::new(),
+            ),
+            "tool_requests",
         );
     }
 }

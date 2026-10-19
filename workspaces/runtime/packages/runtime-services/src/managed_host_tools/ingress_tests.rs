@@ -800,6 +800,7 @@ fn managed_ports(
             interrupt: None,
             monitor_input,
             monitor_cancel,
+            work_action: None,
         },
     }
 }
@@ -3040,3 +3041,152 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
 
 #[path = "ingress_tests/claim_settlement.rs"]
 mod claim_settlement;
+
+/// Records each task action the managed tool hands to the work-action owner.
+struct ScriptedWorkPort {
+    calls: Mutex<Vec<(String, Value, String)>>,
+    outcome: crate::provider_callbacks::WorkActionOutcome,
+}
+
+impl crate::provider_callbacks::WorkActionPort for ScriptedWorkPort {
+    fn act<'a>(
+        &'a self,
+        actor_id: &'a str,
+        args: &'a Value,
+        request_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, crate::provider_callbacks::WorkActionOutcome> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((actor_id.to_owned(), args.clone(), request_id.to_owned()));
+        let outcome = self.outcome.clone();
+        Box::pin(async move { outcome })
+    }
+}
+
+fn work_ports(
+    store: &Arc<RuntimeStore>,
+    context: &CallbackContext,
+    frame: &Frame,
+    port: Arc<ScriptedWorkPort>,
+) -> Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>> {
+    shared_ports(
+        crate::provider_callbacks::managed_tool_ports_with_runtime(
+            store.as_ref(),
+            context,
+            frame,
+            ManagedToolPortsConfig {
+                wake: Arc::new(tokio::sync::Notify::new()),
+                monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+                runtime_ports: ManagedToolRuntimePorts {
+                    status_watch: None,
+                    child_creation: None,
+                    monitor_create: None,
+                    interrupt: None,
+                    monitor_input: None,
+                    monitor_cancel: None,
+                    work_action: Some(port),
+                },
+            },
+        )
+        .unwrap(),
+    )
+}
+
+fn tool_reply(decision: CallbackDecision) -> (bool, Value) {
+    let CallbackDecision::Answer(reply) = decision else {
+        panic!("managed callback must answer")
+    };
+    let ResponseBody::Result(actual) = reply.body else {
+        panic!("managed callback result expected")
+    };
+    let text = actual["contentItems"][0]["text"].as_str().unwrap();
+    (
+        actual["success"] == true,
+        serde_json::from_str(text).unwrap_or_else(|_| json!(text)),
+    )
+}
+
+#[tokio::test]
+async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
+    // Live cutover 4: every claim, submit and accept through orchestration_task
+    // answered "requires work-board/assignment-and-result-driver".
+    let (_root, store, context) = fixture_arc().await;
+    let port = Arc::new(ScriptedWorkPort {
+        calls: Mutex::new(Vec::new()),
+        outcome: crate::provider_callbacks::WorkActionOutcome::Written(json!({
+            "id":"task-1","title":"Ship it","owner":"worker","status":"accepted","version":4,
+            "blockedBy":[],"description":"not in the brief",
+            "archive":{"status":"kept","reason":"The owner has another open task","tasks":["task-2"]}
+        })),
+    });
+    for (rpc, action) in [
+        ("task-claim", "claim"),
+        ("task-submit", "submit"),
+        ("task-accept", "accept"),
+    ] {
+        let frame = call(
+            &context,
+            rpc,
+            "orchestration_task",
+            json!({"action":action,"task_id":"task-1","version":3,"result":"done"}),
+        );
+        let ports = work_ports(&store, &context, &frame, Arc::clone(&port));
+        let first =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
+        let (success, value) = tool_reply(first);
+        assert!(success, "{action}: {value}");
+        assert_eq!(
+            value,
+            json!({"id":"task-1","title":"Ship it","owner":"worker","status":"accepted",
+                "version":4,"blockedBy":[],
+                "archive":{"status":"kept","reason":"The owner has another open task"},
+                "requestId":value["requestId"],
+                "detail":{"tool":"orchestration_task","action":"get","task_id":"task-1"}}),
+            "{action}: Python task_brief, requestId and detail"
+        );
+        // A retried callback answers from its receipt and never acts again.
+        let (_, replay) = tool_reply(
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(replay, value, "{action}");
+    }
+    let calls = port.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3, "one owner call per action");
+    for ((actor, args, request), action) in calls.iter().zip(["claim", "submit", "accept"]) {
+        assert_eq!(actor, &context.agent);
+        assert_eq!(args["action"], action);
+        assert!(!request.is_empty());
+    }
+
+    // Python reports the owner's refusal to the model; nothing is applied.
+    let refusing = Arc::new(ScriptedWorkPort {
+        calls: Mutex::new(Vec::new()),
+        outcome: crate::provider_callbacks::WorkActionOutcome::Refused(
+            "Only the owner can submit this task".to_owned(),
+        ),
+    });
+    let frame = call(
+        &context,
+        "task-refused",
+        "orchestration_task",
+        json!({"action":"submit","task_id":"task-1","version":3,"result":"done"}),
+    );
+    let ports = work_ports(&store, &context, &frame, refusing);
+    let (success, value) = tool_reply(
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 22.0, ports)
+            .await
+            .unwrap(),
+    );
+    assert!(!success);
+    assert!(
+        value
+            .to_string()
+            .contains("Only the owner can submit this task"),
+        "{value}"
+    );
+}

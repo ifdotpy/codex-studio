@@ -36,7 +36,7 @@ impl ManagedToolRuntime {
         monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
         lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
     ) -> Arc<Self> {
-        Self::with_optional_creation(monitor, lifecycle, None)
+        Self::with_optional_creation(monitor, lifecycle, None, None)
     }
 
     pub fn with_creation(
@@ -44,13 +44,25 @@ impl ManagedToolRuntime {
         lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
         environment: Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>,
     ) -> Arc<Self> {
-        Self::with_optional_creation(monitor, lifecycle, Some(environment))
+        Self::with_optional_creation(monitor, lifecycle, Some(environment), None)
+    }
+
+    /// [`ManagedToolRuntime::with_creation`] plus the work-action owner for
+    /// task claim, submit and accept (Python `model_work` -> `work_action`).
+    pub fn with_creation_and_work(
+        monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
+        lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+        environment: Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>,
+        work_action: Arc<dyn super::runtime_dispatch::WorkActionPort>,
+    ) -> Arc<Self> {
+        Self::with_optional_creation(monitor, lifecycle, Some(environment), Some(work_action))
     }
 
     fn with_optional_creation(
         monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
         lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
         environment: Option<Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>>,
+        work_action: Option<Arc<dyn super::runtime_dispatch::WorkActionPort>>,
     ) -> Arc<Self> {
         let child_creation = environment.as_ref().map(|environment| {
             Arc::new(ManagedChildCreationAdapter(Arc::clone(environment)))
@@ -72,6 +84,7 @@ impl ManagedToolRuntime {
                     runtime: Arc::clone(&monitor),
                 })),
                 monitor_cancel: Some(Arc::new(ManagedMonitorCancelAdapter { runtime: monitor })),
+                work_action,
             },
             creation_environment: environment,
         })

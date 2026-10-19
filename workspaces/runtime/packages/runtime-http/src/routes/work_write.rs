@@ -51,6 +51,64 @@ pub(crate) async fn work_action(
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    perform(state, runtime.map(|Extension(runtime)| runtime), body)
+        .await
+        .map(Json)
+}
+
+/// The work-action owner for agent tools: Python `model_work` hands claim,
+/// submit and accept to the same `work_action` as `POST /api/work`.
+pub fn managed_work_port(
+    state: HttpState,
+    runtime: Option<Arc<MonitorRuntime>>,
+) -> Arc<dyn studio_runtime_services::provider_callbacks::WorkActionPort> {
+    Arc::new(ManagedWorkPort { state, runtime })
+}
+
+struct ManagedWorkPort {
+    state: HttpState,
+    runtime: Option<Arc<MonitorRuntime>>,
+}
+
+impl studio_runtime_services::provider_callbacks::WorkActionPort for ManagedWorkPort {
+    fn act<'a>(
+        &'a self,
+        actor_id: &'a str,
+        args: &'a Value,
+        request_id: &'a str,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        studio_runtime_services::provider_callbacks::WorkActionOutcome,
+    > {
+        use studio_runtime_services::provider_callbacks::WorkActionOutcome;
+        Box::pin(async move {
+            let mut body = args.clone();
+            let Some(object) = body.as_object_mut() else {
+                return WorkActionOutcome::Refused("Invalid task arguments".to_owned());
+            };
+            object.insert("agent".to_owned(), Value::String(actor_id.to_owned()));
+            object.insert("id".to_owned(), Value::String(request_id.to_owned()));
+            match perform(self.state.clone(), self.runtime.clone(), body).await {
+                Ok(record) => WorkActionOutcome::Written(record),
+                // A client error is a refusal before the commit; anything else
+                // may follow it, so the model must not repeat the action blindly.
+                Err(error) if error.status().is_client_error() => {
+                    WorkActionOutcome::Refused(error.message().to_owned())
+                }
+                Err(error) => WorkActionOutcome::Unknown(format!(
+                    "The task action outcome is unknown: {}. Check the task with orchestration_task get before repeating it",
+                    error.message()
+                )),
+            }
+        })
+    }
+}
+
+pub(crate) async fn perform(
+    state: HttpState,
+    runtime: Option<Arc<MonitorRuntime>>,
+    body: Value,
+) -> Result<Value, ApiError> {
     let agent = body
         .get("agent")
         .and_then(Value::as_str)
@@ -58,7 +116,7 @@ pub(crate) async fn work_action(
         .to_owned();
     let action = body.get("action").and_then(Value::as_str).unwrap_or("list");
     if action == "list" {
-        return work_items::work_for_agent(state, agent).await.map(Json);
+        return work_items::work_for_agent(state, agent).await;
     }
     #[cfg(not(unix))]
     if action == "submit" {
@@ -154,7 +212,7 @@ pub(crate) async fn work_action(
         .map_err(|_| ApiError::internal())?
         .map_err(write_error)?;
         if let Some(receipt) = receipt {
-            return Ok(Json(receipt));
+            return Ok(receipt);
         }
     }
     if let WorkWrite::Accept(input) = &command
@@ -173,16 +231,7 @@ pub(crate) async fn work_action(
     if let WorkWrite::Accept(input) = &mut command {
         prepare_vm_accept(&state, &agent, request_id.as_deref(), &signature, input).await?;
     }
-    commit(
-        state,
-        runtime.map(|Extension(runtime)| runtime),
-        agent,
-        request_id,
-        signature,
-        command,
-    )
-    .await
-    .map(Json)
+    commit(state, runtime, agent, request_id, signature, command).await
 }
 
 #[cfg(unix)]
@@ -879,6 +928,91 @@ mod tests {
     fn integral_decimal_version_keeps_its_stale_value() {
         assert!(matches!(version(&json!({"version": 0.0})), Ok(Some(0))));
         assert!(version(&json!({"version": 1.5})).is_err());
+    }
+}
+#[cfg(test)]
+mod managed_work_port_tests {
+    use super::managed_work_port;
+    use crate::router::HttpState;
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use studio_runtime_services::provider_callbacks::WorkActionOutcome;
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+
+    async fn state() -> (HttpState, Arc<RuntimeStore>, tempfile::TempDir) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
+        store
+            .transaction(|tx| {
+                for agent in [
+                    json!({"id":"lead","rootId":"lead","parentId":null,"epoch":1,
+                        "status":"running","autoWake":true,"isLead":true,"name":"lead"}),
+                    json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                        "status":"running","autoWake":true,"isLead":false,"name":"worker"}),
+                ] {
+                    AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("agents commit");
+        let state = HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(Arc::clone(&store)),
+            None,
+        );
+        (state, store, directory)
+    }
+
+    fn written(outcome: WorkActionOutcome) -> Value {
+        match outcome {
+            WorkActionOutcome::Written(record) => record,
+            other => panic!("expected a written task, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_tool_port_runs_the_work_route_owner_with_the_tool_request_identity() {
+        let (state, _store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"Port check","owner":"worker"}),
+                "tool-create",
+            )
+            .await,
+        );
+        let task = created["id"].as_str().expect("task id").to_owned();
+        let claim = json!({"action":"claim","task_id":task,"version":created["version"]});
+        let claimed = written(port.act("worker", &claim, "tool-claim").await);
+        assert_eq!(claimed["owner"], "worker");
+        assert_eq!(claimed["status"], "running");
+        // The same tool request replays its receipt instead of acting again.
+        assert_eq!(
+            written(port.act("worker", &claim, "tool-claim").await),
+            claimed
+        );
+        // A refusal before any write reaches the model as a refusal.
+        let refused = port
+            .act(
+                "worker",
+                &json!({"action":"claim","task_id":"missing-task","version":1}),
+                "tool-claim-missing",
+            )
+            .await;
+        assert!(
+            matches!(refused, WorkActionOutcome::Refused(_)),
+            "{refused:?}"
+        );
     }
 }
 inventory::submit! {
