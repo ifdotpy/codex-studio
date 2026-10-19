@@ -150,6 +150,7 @@ fn ports_with_wake(
                     monitor_cancel: None,
                     work_action: None,
                 },
+                preparation: None,
             },
         )
         .unwrap(),

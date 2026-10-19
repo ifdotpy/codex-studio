@@ -5,7 +5,9 @@ use crate::submit_gates::{
 use std::collections::BTreeMap;
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 
-fn authorization_records(tx: &Transaction<'_>) -> Result<AuthorizationRecords, CallbackError> {
+pub(super) fn authorization_records(
+    tx: &Transaction<'_>,
+) -> Result<AuthorizationRecords, CallbackError> {
     let agents = records::all(tx, "runtime_agents")?;
     let mut paths = BTreeMap::new();
     for actor in &agents {

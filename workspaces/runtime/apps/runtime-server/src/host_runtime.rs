@@ -252,6 +252,9 @@ impl HostRuntime {
         }));
         let resources = resources.with_account_session(state.account_session.clone());
         let preparation_resources = Arc::new(resources.clone());
+        if let Some(managed_tool_runtime) = &managed_tool_runtime {
+            managed_tool_runtime.set_preparation_resources(Arc::clone(&preparation_resources));
+        }
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(
                 store.clone(),

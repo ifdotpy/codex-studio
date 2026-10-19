@@ -68,6 +68,8 @@ async fn send(
         event_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         runtime_ports: empty_runtime_ports(),
+        state_root: store.state_dir().to_path_buf(),
+        preparation: None,
     });
     let raw: String = store
         .read()
@@ -127,6 +129,8 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         event_wake: wake.clone(),
         monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         runtime_ports: empty_runtime_ports(),
+        state_root: store.state_dir().to_path_buf(),
+        preparation: None,
     });
     let mut notified = Box::pin(wake.notified());
     assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
@@ -197,6 +201,8 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         event_wake: event_wake.clone(),
         monitor_dispatch_wake: monitor_wake.clone(),
         runtime_ports: empty_runtime_ports(),
+        state_root: store.state_dir().to_path_buf(),
+        preparation: None,
     });
     let mut event_notified = Box::pin(event_wake.notified());
     let mut monitor_notified = Box::pin(monitor_wake.notified());

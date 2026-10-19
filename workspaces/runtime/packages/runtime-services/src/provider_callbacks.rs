@@ -104,6 +104,8 @@ pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) runtime_ports: ManagedToolRuntimePorts,
+    pub(crate) preparation:
+        Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
 
 /// This is deliberately pure: journal bookkeeping may call it repeatedly.
@@ -172,6 +174,7 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
                 monitor_cancel: None,
                 work_action: None,
             },
+            preparation: None,
         },
     )
 }
@@ -219,6 +222,7 @@ pub(crate) fn managed_tool_ports_with_bundle(
             wake,
             monitor_dispatch_wake,
             runtime_ports,
+            preparation: runtime.and_then(ManagedToolRuntime::preparation_resources),
         },
     )
 }

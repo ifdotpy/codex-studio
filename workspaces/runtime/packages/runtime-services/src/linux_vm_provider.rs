@@ -4,6 +4,10 @@
 //! journal. This host adapter owns only the exact start identity and settlement
 //! cursor; it does not create another socket or receipt protocol.
 
+/// The guest home of a VM agent whose record has no `layrHome`. Python's
+/// `codex_vm_agents.progress_context` uses the same default.
+pub(crate) const DEFAULT_GUEST_HOME: &str = "/home/studio";
+
 use crate::linux_vm_guest::{GUEST_RPC_TIMEOUT_SECONDS, GuestError, GuestRpc};
 use base64::Engine as _;
 use rusqlite::Transaction;

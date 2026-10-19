@@ -435,4 +435,101 @@ managed_root_deleted_refusal = {"actor":worker["id"],"tool":"orchestration_compl
 managed.close()
 shutil.copy2(baseline_canvas, managed_root / "canvas.sqlite3")
 shutil.copy2(baseline_canvas, root / "canvas.sqlite3")
-print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"reviewCases":review_cases,"baseWork":base_work,"projections":projections,"preview":{"item":item,"request":preview_request,"expected":preview_expected},"resolved":resolved_cases,"chatVisibility":chat_visibility,"managedToolCases":managed_cases,"managedRootDeletedRefusal":managed_root_deleted_refusal,"template":str(root)},ensure_ascii=False))
+
+# orchestration_read and orchestration_context cases run on their own clone.
+# Rust copies this clone's databases and payload blobs, so both read the same
+# Python-written events, transcript items, receipts and blobs.
+reads_root = Path(sys.argv[-1]) / "model-reads"
+shutil.copytree(root, reads_root)
+reads = Quiet(reads_root, lambda *_args, **_kwargs: None)
+reads.replies = []
+with reads.lock, reads.db() as db:
+    for actor in [lead, worker, foreign]:
+        reads.put(db, "agents", actor)
+    for event_id, agent_id, kind, text, meta in [
+        ("read-event-long", lead["id"], "monitor_exit", "first line\n" + "字" * 40000 + " needle tail",
+         {"contextManifest": {"epoch": ["thread-0", 0]}, "source": "fixture"}),
+        ("read-event-peer", lead["id"], "followup", "From another team", {"senderId": foreign["id"]}),
+        ("read-event-team", lead["id"], "followup", "From my worker", {"senderId": worker["id"]}),
+        ("read-event-foreign", foreign["id"], "monitor_exit", "Not yours", None),
+    ]:
+        db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id) VALUES(?,?,?,?,?,?,?,?)",
+                   (event_id, agent_id, kind, text, "delivered", 12.5, 3, "turn-0"))
+        if meta is not None:
+            db.execute("INSERT INTO runtime_event_meta(id,record) VALUES(?,?)", (event_id, json.dumps(meta)))
+    command = {"command": "printf read", "status": "completed", "exitCode": 0,
+               "aggregatedOutput": "out\n" * 9000 + "done"}
+    reads.item(db, lead["id"], "read-command", "tool", json.dumps(command), "commandExecution", index_search=False)
+    reads.item(db, lead["id"], "read-command-lost", "tool", json.dumps(command), "commandExecution", index_search=False)
+    db.execute("DELETE FROM runtime_item_fulltext WHERE id=?", (lead["id"] + ":read-command-lost",))
+large_message = {"id": "read-large", "method": "item/tool/call", "params": {
+    "threadId": lead["threadId"], "turnId": lead["turnId"], "callId": "read-large",
+    "tool": "orchestration_task", "arguments": {"action": "list"}}}
+with patch("time.time", return_value=20.0):
+    large_key = reads.reserve_tool_request(large_message, "default", "connection")["id"]
+reads.begin_tool_request(large_key)
+large_result = {"success": True, "contentItems": [
+    {"type": "inputText", "text": "large " + "x" * 70000 + " needle " + "y" * 5000}]}
+from codex_payloads import externalize_result
+with reads.lock, reads.db() as db:
+    db.execute("INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
+               (large_key, json.dumps(externalize_result(reads.root, db, large_result))))
+    reads.finish_tool_request(large_key, large_result, outcome="applied", db=db)
+    reads.item(db, lead["id"], "read-large", "tool", json.dumps({"id": "read-large"}), "dynamicToolCall",
+               index_search=False)
+    if "_payloadBlobs" not in json.loads(db.execute("SELECT result FROM runtime_tool_results WHERE id=?",
+                                                    (large_key,)).fetchone()[0]):
+        raise AssertionError("the large fixture result must be saved as a payload blob")
+model_read_cases = []
+for output_ref, extra in [
+    ("event:read-event-long", {}),
+    ("event:read-event-long", {"offset": 30000}),
+    ("event:read-event-long", {"contains": "needle"}),
+    ("event:read-event-long", {"contains": "absent"}),
+    ("event:read-event-long", {"offset": 10 ** 6}),
+    ("event:read-event-peer", {}),
+    ("event:read-event-team", {}),
+    ("event:read-event-foreign", {}),
+    (lead["id"] + ":read-command", {}),
+    (lead["id"] + ":read-command", {"contains": "done"}),
+    (lead["id"] + ":read-command", {"contains": "absent"}),
+    (lead["id"] + ":read-command-lost", {}),
+    (large_key, {}),
+    (large_key, {"offset": 30000}),
+    (large_key, {"contains": "needle"}),
+    (lead["id"] + ":read-large", {"offset": 60000}),
+    (lead["id"] + ":missing", {}),
+]:
+    arguments = {"output_ref": output_ref, **extra}
+    try:
+        model_read_cases.append({"arguments": arguments, "success": True,
+                                 "value": reads.model_read(lead["id"], arguments)})
+    except ValueError as error:
+        model_read_cases.append({"arguments": arguments, "success": False, "error": str(error)})
+# Context rows are stored with sorted keys, so Python's insertion-order version
+# digest and the Rust digest of the same value are equal.
+submitted = reads.complaint(worker["id"], {"action": "submit", "text": "Need context"}, "context-complaint", worker["epoch"])
+answered = reads.complaint(worker["id"], {"action": "submit", "text": "Already answered"}, "context-answered", worker["epoch"])
+reads.complaint(lead["id"], {"action": "respond", "complaint_id": answered["id"], "text": "Done", "status": "in_progress"},
+                "context-answer", lead["epoch"])
+profile = reads.profiles({"name": "Context reviewer", "role": "reviewer", "model": "gpt-5.5", "effort": "high",
+                          "instructions": "Check the diff"})
+with reads.lock, reads.db() as db:
+    for complaint_id in [submitted["id"], answered["id"]]:
+        stored = json.loads(db.execute("SELECT record FROM runtime_complaints WHERE id=?", (complaint_id,)).fetchone()[0])
+        reads.put(db, "complaints", sort_json(stored))
+    db.execute("UPDATE runtime_profiles SET record=? WHERE id=?", (json.dumps(sort_json(profile)), profile["id"]))
+    db.execute("DELETE FROM runtime_events WHERE kind IN ('complaint','complaint_response')")
+context_cases = []
+for actor, topic in [(lead, "complaints"), (worker, "complaints"), (lead, "profiles"), (lead, "tools"),
+                     (worker, "tools"), (lead, "panel"), (lead, "background"), (worker, "panel"),
+                     (worker, "background"), (lead, "unknown")]:
+    try:
+        context_cases.append({"actor": actor["id"], "topic": topic, "success": True,
+                              "value": reads.model_context(actor["id"], {"topic": topic})})
+    except ValueError as error:
+        context_cases.append({"actor": actor["id"], "topic": topic, "success": False, "error": str(error)})
+model_reads = {"template": str(reads_root), "reads": model_read_cases, "contexts": context_cases,
+               "panelGuidance": reads.panel_guidance()}
+reads.close()
+print(json.dumps({"modelReads":model_reads,"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"reviewCases":review_cases,"baseWork":base_work,"projections":projections,"preview":{"item":item,"request":preview_request,"expected":preview_expected},"resolved":resolved_cases,"chatVisibility":chat_visibility,"managedToolCases":managed_cases,"managedRootDeletedRefusal":managed_root_deleted_refusal,"template":str(root)},ensure_ascii=False))

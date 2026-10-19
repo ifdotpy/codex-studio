@@ -600,31 +600,116 @@ fn role_guidance(
         )
     };
     let progress = if lead && !resources.progress_template.is_empty() {
-        let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
-        if id.is_empty()
-            || id.len() > 200
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        {
-            return Err(invalid("progress agent"));
-        }
-        let path = state_root.join("progress").join(id).join("PROGRESS.md");
-        let progress = resources
-            .progress_template
-            .replace("{progress_file}", &path.to_string_lossy())
-            .replace(
-                "{layout_file}",
-                &path
-                    .with_file_name("PROGRESS.layout.json")
-                    .to_string_lossy(),
-            );
-        let layout_guidance = progress_layout_guidance(std::env::current_exe().ok(), &path);
-        progress.replace("{progress_layout_check}", &layout_guidance)
+        progress_context(resources, record, state_root)?
     } else {
         String::new()
     };
     Ok((role, progress))
+}
+
+/// The progress-file guidance of a host lead. Its role guidance and the
+/// `orchestration_context` topics `panel` and `background` use this text.
+pub(crate) fn progress_context(
+    resources: &PreparationResources,
+    record: &Value,
+    state_root: &Path,
+) -> Result<String, WorkerError> {
+    let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
+    if id.is_empty()
+        || id.len() > 200
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(invalid("progress agent"));
+    }
+    let path = state_root.join("progress").join(id).join("PROGRESS.md");
+    let progress = resources
+        .progress_template
+        .replace("{progress_file}", &path.to_string_lossy())
+        .replace(
+            "{layout_file}",
+            &path
+                .with_file_name("PROGRESS.layout.json")
+                .to_string_lossy(),
+        );
+    let layout_guidance = progress_layout_guidance(std::env::current_exe().ok(), &path);
+    Ok(progress.replace("{progress_layout_check}", &layout_guidance))
+}
+
+/// The catalog an agent's thread uses: its saved source, else legacy for an
+/// agent that already has a native thread.
+fn catalog_source(record: &Value) -> Result<thread::CatalogSource, WorkerError> {
+    Ok(
+        optional(record, "nativeToolSource")?.unwrap_or(if record["threadId"].is_string() {
+            thread::CatalogSource::Legacy
+        } else {
+            thread::CatalogSource::Current
+        }),
+    )
+}
+
+fn federation_enabled(tx: &Transaction<'_>) -> Result<bool, WorkerError> {
+    Ok(record_by_id(tx, "runtime_federation_settings", "global")?
+        .map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| invalid("federation settings")))
+        .transpose()?
+        .is_some_and(|v| v["enabled"] == true))
+}
+
+/// The tool definitions of one host agent, as Python's
+/// `Runtime.tool_definitions(actor)` reports them to `orchestration_context`.
+/// `None` means a VM agent, whose catalog transform has no Rust owner yet.
+pub(crate) fn actor_tool_definitions(
+    tx: &Transaction<'_>,
+    resources: &PreparationResources,
+    record: &Value,
+) -> Result<Option<Value>, WorkerError> {
+    let root_id = record["rootId"]
+        .as_str()
+        .ok_or_else(|| invalid("agent/rootId"))?;
+    let root = agent(tx, root_id)?.value();
+    let delegation = can_delegate(tx, record, &root)?;
+    if let Some(frozen) = record.get("frozenNativeParams").filter(|v| !v.is_null()) {
+        let mut definitions = frozen["dynamicTools"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| invalid("agent/frozenNativeParams"))?;
+        if !delegation {
+            definitions.retain(|tool| tool["name"] != "orchestration_spawn");
+        }
+        return Ok(Some(Value::Array(definitions)));
+    }
+    if flag(record, "nativeReview")? {
+        return Ok(Some(Value::Array(Vec::new())));
+    }
+    if record["executionMode"] == "vm" {
+        return Ok(None);
+    }
+    let definitions = if catalog_source(record)? == thread::CatalogSource::Legacy {
+        &resources.legacy_tools
+    } else {
+        &resources.tools
+    };
+    let cwd = text(record, "cwd")?.unwrap_or_default();
+    let filtered = thread::filter_tool_definitions(
+        definitions,
+        &thread::CatalogFilter {
+            provider: studio_runtime_providers::ProviderKind::of_record(record)
+                .map_err(|_| invalid("agent/provider"))?,
+            is_lead: flag(record, "isLead")?,
+            can_delegate: delegation,
+            federation_enabled: federation_enabled(tx)?,
+            cwd: &cwd,
+            session_tool: thread::session_tool_of(
+                optional(record, "nativeTeleportTool")?,
+                text(record, "threadId")?.is_some(),
+            ),
+        },
+    )
+    .map_err(|_| invalid("tool catalog"))?;
+    serde_json::to_value(filtered)
+        .map(Some)
+        .map_err(|_| invalid("tool catalog"))
 }
 
 fn progress_layout_guidance(server: Option<PathBuf>, progress_file: &Path) -> String {
@@ -716,12 +801,7 @@ pub(super) fn thread_snapshot(
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
-    let source: thread::CatalogSource =
-        optional(record, "nativeToolSource")?.unwrap_or(if record["threadId"].is_string() {
-            thread::CatalogSource::Legacy
-        } else {
-            thread::CatalogSource::Current
-        });
+    let source = catalog_source(record)?;
     let definitions = if source == thread::CatalogSource::Legacy {
         resources.legacy_tools.clone()
     } else {
@@ -800,12 +880,7 @@ pub(super) fn thread_snapshot(
         },
         root: thread::Root {
             can_delegate: can_delegate(tx, record, &root)?,
-            federation_enabled: record_by_id(tx, "runtime_federation_settings", "global")?
-                .map(|raw| {
-                    serde_json::from_str::<Value>(&raw).map_err(|_| invalid("federation settings"))
-                })
-                .transpose()?
-                .is_some_and(|v| v["enabled"] == true),
+            federation_enabled: federation_enabled(tx)?,
         },
         settings: thread::Settings {
             model: text(record, "model")?,

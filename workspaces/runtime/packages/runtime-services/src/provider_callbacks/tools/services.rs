@@ -1,5 +1,6 @@
 //! Closed local service table. Every entry checks actor authority in the same
 //! transaction as its effects. No HTTP adapters and no user-authored substitutes.
+mod context;
 pub(crate) mod manage;
 pub(crate) mod messages;
 mod reads;
@@ -22,6 +23,8 @@ pub(crate) struct ProductionPorts {
     event_wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     runtime_ports: super::ManagedToolRuntimePorts,
+    state_root: std::path::PathBuf,
+    preparation: Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
 
 pub(crate) struct ProductionPortsConfig {
@@ -31,6 +34,10 @@ pub(crate) struct ProductionPortsConfig {
     pub(crate) event_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) runtime_ports: super::ManagedToolRuntimePorts,
+    /// The store's state directory, which owns progress files.
+    pub(crate) state_root: std::path::PathBuf,
+    pub(crate) preparation:
+        Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
 
 impl ProductionPorts {
@@ -42,6 +49,8 @@ impl ProductionPorts {
             event_wake: config.event_wake,
             monitor_dispatch_wake: config.monitor_dispatch_wake,
             runtime_ports: config.runtime_ports,
+            state_root: config.state_root,
+            preparation: config.preparation,
         }
     }
 }
@@ -285,30 +294,36 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
         actor: &crate::managed_host_tools::Actor,
         args: &Value,
     ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
-        if args["topic"] != "monitor" {
-            return Err(crate::managed_host_tools::Error::Unavailable(
-                "model-context/requested-topic",
-            ));
-        }
-        let id = args["id"]
-            .as_str()
-            .ok_or(crate::managed_host_tools::Error::Invalid(
-                "Missing monitor id",
-            ))?;
-        let (snapshot, monitor_actor) =
-            crate::monitor_runtime::snapshot(tx, id).map_err(monitor_context_error)?;
-        if monitor_actor.root_id != actor.record().root_id {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "Unknown monitor in this team",
-            ));
-        }
-        let content = snapshot.record().clone();
+        let topic = args["topic"].as_str().unwrap_or_default();
+        let content = if topic == "monitor" {
+            let id = args["id"]
+                .as_str()
+                .ok_or(crate::managed_host_tools::Error::Invalid(
+                    "Missing monitor id",
+                ))?;
+            let (snapshot, monitor_actor) =
+                crate::monitor_runtime::snapshot(tx, id).map_err(monitor_context_error)?;
+            if monitor_actor.root_id != actor.record().root_id {
+                return Err(crate::managed_host_tools::Error::Invalid(
+                    "Unknown monitor in this team",
+                ));
+            }
+            snapshot.record().clone()
+        } else {
+            context::topic(
+                tx,
+                actor,
+                topic,
+                &self.state_root,
+                self.preparation.as_deref(),
+            )?
+        };
         let version = studio_runtime_store::sha256_hex(
             studio_runtime_store::python_json_compact(&content).as_bytes(),
         )[..24]
             .to_owned();
         Ok(crate::managed_host_tools::OperationResult {
-            value: json!({"topic":"monitor","version":version,"content":content}),
+            value: json!({"topic":topic,"version":version,"content":content}),
             signals: Vec::new(),
         })
     }
@@ -612,6 +627,7 @@ pub(super) fn execute(
     args: &Value,
     id: &str,
     now: f64,
+    state_root: &std::path::Path,
     ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<crate::managed_host_tools::Staged, CallbackError> {
     let actor = snapshot.actor();
@@ -734,7 +750,7 @@ pub(super) fn execute(
         ToolKind::Message => messages::send(tx, snapshot, args, id, now),
         ToolKind::ChatRead => reads::chat(tx, snapshot, args),
         ToolKind::Peers => messages::peers(tx, snapshot, args),
-        ToolKind::Read => reads::read(tx, snapshot, args, now),
+        ToolKind::Read => reads::read(tx, snapshot, args, now, state_root),
         ToolKind::Status
         | ToolKind::Search
         | ToolKind::Context
