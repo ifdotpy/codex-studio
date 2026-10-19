@@ -1,5 +1,17 @@
 use super::*;
 use rusqlite::OptionalExtension;
+
+/// SQL for the account that owns a monitor's provider command. A rule monitor
+/// stores `accountKey`; a submitted command stores `operation.accountKey`. A tool
+/// monitor that is not submitted yet stores neither, so its owner's current
+/// account applies, as Python `run_monitor` uses `agent.accountKey` when it
+/// starts the command. `?{agent_param}` binds that owner account.
+fn monitor_account_sql(agent_param: usize) -> String {
+    format!(
+        "COALESCE(json_extract(record,'$.accountKey'),json_extract(record,'$.operation.accountKey'),?{agent_param})"
+    )
+}
+
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
         if let Some(transfer) = call.transfer.as_ref() {
@@ -37,12 +49,12 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
-    let common_identity = agent_record
+    let agent_account = agent_record
         .extra
         .get("accountKey")
         .and_then(Value::as_str)
-        .unwrap_or("default")
-        == call.scope.account
+        .unwrap_or("default");
+    let common_identity = agent_account == call.scope.account
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
@@ -130,8 +142,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         })
         && if let Some(monitor_id) = config_monitor_id {
             tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE id=?1 AND json_extract(record,'$.agent')=?2 AND json_extract(record,'$.epoch')=?3 AND COALESCE(json_extract(record,'$.accountKey'),'default')=?4 AND json_extract(record,'$.cwd')=?5 AND json_extract(record,'$.status') IN ('starting','running'))",
-                rusqlite::params![monitor_id, actor.agent, actor.epoch, call.scope.account, call.params["cwd"].as_str()],
+                &format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE id=?1 AND json_extract(record,'$.agent')=?2 AND json_extract(record,'$.epoch')=?3 AND {}=?4 AND json_extract(record,'$.cwd')=?5 AND json_extract(record,'$.status') IN ('starting','running'))", monitor_account_sql(6)),
+                rusqlite::params![monitor_id, actor.agent, actor.epoch, call.scope.account, call.params["cwd"].as_str(), agent_account],
                 |row| row.get::<_, i64>(0),
             )? != 0
         } else {
@@ -154,13 +166,16 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         if let Some(monitor_id) = monitor_id {
             let monitor = tx
                 .query_row(
-                    "SELECT CASE WHEN json_valid(record) THEN json_extract(record,'$.agent') END, \
+                    &format!(
+                        "SELECT CASE WHEN json_valid(record) THEN json_extract(record,'$.agent') END, \
                             CASE WHEN json_valid(record) THEN json_extract(record,'$.epoch') END, \
-                            CASE WHEN json_valid(record) THEN COALESCE(json_extract(record,'$.accountKey'),'default') END, \
+                            CASE WHEN json_valid(record) THEN {} END, \
                             CASE WHEN json_valid(record) THEN json_extract(record,'$.cwd') END, \
                             CASE WHEN json_valid(record) THEN json_extract(record,'$.status') END \
                      FROM runtime_monitors WHERE id=?1",
-                    [monitor_id],
+                        monitor_account_sql(2)
+                    ),
+                    rusqlite::params![monitor_id, agent_account],
                     |row| {
                         Ok((
                             row.get::<_, Option<String>>(0)?,
