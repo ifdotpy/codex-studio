@@ -76,6 +76,34 @@ pub fn request(app: &tauri::AppHandle) -> bool {
     request_action(app, Action::Close)
 }
 
+/// Close the window on SIGTERM through the same save check as a user close.
+///
+/// The update installer (`install_update.py`) sends SIGTERM to the window process that
+/// desktop-recovery.json names. AppKit can refuse an Apple Event quit before the app sees it
+/// ("Failed responder chain validation for terminate: action"), for example while a sheet or
+/// a modal panel blocks the main window; osascript then reports "User canceled. (-128)".
+/// Returns after the handler is installed, so the caller can record that this process
+/// closes on SIGTERM.
+#[cfg(all(desktop, unix))]
+pub fn close_on_terminate(app: &tauri::AppHandle) -> Result<(), String> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = tauri::async_runtime::block_on(async { signal(SignalKind::terminate()) })
+        .map_err(|error| format!("Cannot handle SIGTERM: {error}"))?;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while terminate.recv().await.is_some() {
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                // Without a renderer close check (none yet, or it failed) exit at once.
+                if !request(&handle) {
+                    handle.exit(0);
+                }
+            });
+        }
+    });
+    Ok(())
+}
+
 pub fn reload(app: &tauri::AppHandle) -> Result<(), String> {
     if !request_action(app, Action::Reload) {
         app.get_webview_window("main")

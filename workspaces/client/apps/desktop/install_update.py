@@ -23,6 +23,12 @@ OPEN = "/usr/bin/open"
 # Seconds to wait for the desktop window to quit, and for the old backend to exit.
 QUIT_SECONDS = 60
 BACKEND_EXIT_SECONDS = 60
+# The window writes this intent (pid, startedAt, executable) while it is open.
+DESKTOP_INTENT = "desktop-recovery.json"
+# Owner: CLOSE_SIGNAL in workspaces/client/apps/native/src-tauri/src/desktop_recovery.rs. A window
+# that records it as `closeSignal` closes on SIGTERM through its save check.
+CLOSE_SIGNAL = "SIGTERM"
+NATIVE_EXECUTABLE = "Contents/MacOS/studio-native-client"
 
 
 def load_recovery():
@@ -80,10 +86,40 @@ def desktop_running(updates, run):
     return result.stdout.strip() == "true"
 
 
-def quit_desktop(updates, run, sleep):
-    result = run([OSASCRIPT, "-e", f'tell application id "{updates.BUNDLE_ID}" to quit'], QUIT_SECONDS)
-    if result.returncode != 0:
-        raise RuntimeError("The desktop window did not quit: " + (result.stderr or "").strip()[-200:])
+def signal_target(state, installed, started=recovery.process_start_time):
+    """The PID of the open window of the installed app when it closes on SIGTERM, else None.
+
+    The window records its PID, start time, executable and close signal in its intent. AppKit
+    can refuse an Apple Event quit without user input (osascript: "User canceled. (-128)"), so
+    a window that supports the signal gets it. An older window records no signal and gets the
+    Apple Event quit. The PID counts only while the same process (start time) runs the app."""
+    try:
+        intent = json.loads((state / DESKTOP_INTENT).read_text())
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(intent, dict) or intent.get("version") != 1 or intent.get("desiredOpen") is not True
+            or intent.get("closeSignal") != CLOSE_SIGNAL
+            or intent.get("executable") != str(installed / NATIVE_EXECUTABLE)):
+        return None
+    pid = intent.get("pid")
+    if type(pid) is not int or pid < 2 or not intent.get("startedAt"):
+        return None
+    try:
+        return pid if started(pid) == intent["startedAt"] else None
+    except RuntimeError:
+        return None
+
+
+def quit_desktop(updates, run, sleep, target=None, kill=os.kill):
+    if target is not None:
+        try:
+            kill(target, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # It closed after the identity check; the wait below confirms that.
+    else:
+        result = run([OSASCRIPT, "-e", f'tell application id "{updates.BUNDLE_ID}" to quit'], QUIT_SECONDS)
+        if result.returncode != 0:
+            raise RuntimeError("The desktop window did not quit: " + (result.stderr or "").strip()[-200:])
     deadline = time.monotonic() + QUIT_SECONDS
     while desktop_running(updates, run):
         if time.monotonic() >= deadline:
@@ -131,7 +167,7 @@ def stop_backend(config, state, backend):
 
 
 def install(state, config, *, applications=Path("/Applications"), run=None, verify=verify_backend,
-            stop=stop_backend, sleep=time.sleep, clock=time.time):
+            stop=stop_backend, sleep=time.sleep, clock=time.time, target=signal_target, kill=os.kill):
     """Install the pending update. Returns (exit status, detail)."""
     updates, vm = load_updates(config["resources"])
     run = run or updates.run_tool
@@ -148,10 +184,11 @@ def install(state, config, *, applications=Path("/Applications"), run=None, veri
         with held(vm.vm_state_dir(state) / vm.MAINTENANCE_LOCK, create=False) as free:
             if not free:
                 return WAITING, "waiting for the VM maintenance lock"
-            return _install(state, config, pending, updates, applications, run, verify, stop, sleep, clock)
+            return _install(state, config, pending, updates, applications, run, verify, stop, sleep, clock,
+                            target, kill)
 
 
-def _install(state, config, pending, updates, applications, run, verify, stop, sleep, clock):
+def _install(state, config, pending, updates, applications, run, verify, stop, sleep, clock, target, kill):
     installed = applications / updates.APP_NAME
     staged = Path(pending["app"])
     following = applications / (installed.stem + ".next.app")
@@ -181,7 +218,7 @@ def _install(state, config, pending, updates, applications, run, verify, stop, s
         updates.verify_app(staged, installed, pending["build"], run)
         window = desktop_running(updates, run)
         if window:
-            quit_desktop(updates, run, sleep)
+            quit_desktop(updates, run, sleep, target(state, installed), kill)
         updates.remove_tree(following)
         result = run([updates.DITTO, str(staged), str(following)], updates.DITTO_SECONDS)
         if result.returncode != 0:

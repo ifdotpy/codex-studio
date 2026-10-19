@@ -9,6 +9,25 @@ pub struct Intent {
     path: PathBuf,
     value: serde_json::Value,
 }
+/// The signal that closes this window through its save check (`close::close_on_terminate`).
+/// `install_update.py` reads it from the intent as `closeSignal` (`CLOSE_SIGNAL` there) and
+/// signals only a window that records it; older windows get the Apple Event quit.
+pub const CLOSE_SIGNAL: &str = "SIGTERM";
+fn intent_value(
+    pid: u32,
+    started: &str,
+    executable: &std::path::Path,
+    profile: &std::path::Path,
+    closes_on_signal: bool,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "version": 1, "desiredOpen": true, "pid": pid, "startedAt": started, "executable": executable, "profile": profile
+    });
+    if closes_on_signal {
+        value["closeSignal"] = CLOSE_SIGNAL.into();
+    }
+    value
+}
 fn write_intent(intent: &Intent, open: bool) -> Result<(), String> {
     let mut value = intent.value.clone();
     value["desiredOpen"] = open.into();
@@ -33,7 +52,12 @@ fn preference(state: &std::path::Path) -> Result<bool, String> {
         Err(error) => Err(error.to_string()),
     }
 }
-pub fn install(app: &tauri::App, profile: &std::path::Path, hidden: bool) -> Result<(), String> {
+pub fn install(
+    app: &tauri::App,
+    profile: &std::path::Path,
+    hidden: bool,
+    closes_on_signal: bool,
+) -> Result<(), String> {
     if hidden {
         return Ok(());
     }
@@ -64,9 +88,13 @@ pub fn install(app: &tauri::App, profile: &std::path::Path, hidden: bool) -> Res
     }
     let intent = Intent {
         path: state.join("desktop-recovery.json"),
-        value: serde_json::json!({
-            "version": 1, "desiredOpen": true, "pid": std::process::id(), "startedAt": started, "executable": executable, "profile": profile
-        }),
+        value: intent_value(
+            std::process::id(),
+            &started,
+            &executable,
+            profile,
+            closes_on_signal,
+        ),
     };
     write_intent(&intent, true)?;
     app.manage(intent);
@@ -176,5 +204,27 @@ pub fn close(app: &tauri::AppHandle) {
         if let Err(error) = std::fs::remove_file(&intent.path) {
             eprintln!("Cannot withdraw desktop intent: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CLOSE_SIGNAL, intent_value};
+    use std::path::Path;
+
+    #[test]
+    fn the_intent_names_the_close_signal_only_when_the_handler_runs() {
+        let executable =
+            Path::new("/Applications/Codex Studio.app/Contents/MacOS/studio-native-client");
+        let profile = Path::new("/Users/test/Library/Application Support/local.codex.agents");
+        let started = "Mon Oct 19 03:31:12 2026";
+        let value = intent_value(8864, started, executable, profile, true);
+        assert_eq!(value["closeSignal"], CLOSE_SIGNAL);
+        assert_eq!(value["pid"], 8864);
+        assert_eq!(value["startedAt"], started);
+        assert_eq!(value["executable"], executable.to_str().unwrap());
+        assert_eq!(value["desiredOpen"], true);
+        let value = intent_value(8864, started, executable, profile, false);
+        assert!(value.get("closeSignal").is_none());
     }
 }

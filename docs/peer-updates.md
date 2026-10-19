@@ -84,7 +84,12 @@ The backend never replaces the installed app itself.
    rest of the install.
 2. Stop as obsolete when the installed app is this build or a newer one. Verify the staged app
    again, as in step 5 above.
-3. Note whether the desktop window runs. Quit it (`osascript`, by bundle ID).
+3. Note whether the desktop window runs, and close it. When `desktop-recovery.json` records
+   `closeSignal: "SIGTERM"` with the PID, start time and executable of the running window of
+   the installed app, send SIGTERM to that PID: the window closes through its save check, as for
+   a user close. An older window gets the Apple Event quit (`osascript`, by bundle ID). AppKit
+   can refuse that quit without user input ("User canceled. (-128)"), for example while a sheet
+   or a modal panel blocks the main window.
 4. `ditto` the staged app to `Codex Studio.next.app` and verify it. Verify the backend process
    against the installed app that started it: its packaged process reader, script path and,
    for Rust, executable hash. Then move the installed app to `Codex Studio.previous.app`
