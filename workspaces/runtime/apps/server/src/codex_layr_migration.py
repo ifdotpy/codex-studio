@@ -30,10 +30,8 @@ from codex_workspace_images import _git_repositories, _workspace_excludes
 
 def _save(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    temporary = path.with_name('.' + path.name + '.tmp')
-    temporary.write_text(json.dumps(value, indent=1, sort_keys=True))
-    temporary.chmod(0o600)
-    os.replace(temporary, path)
+    from codex_private_paths import write_atomic
+    write_atomic(path, json.dumps(value, indent=1, sort_keys=True))
 
 
 def project_id(folder: Path) -> str:

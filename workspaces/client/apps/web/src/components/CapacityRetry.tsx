@@ -3,7 +3,10 @@ import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
 import { errorText, type PostResult } from "../api";
-import type { CapacityRetry as CapacityRetryRecord } from "../capacityRetry";
+import {
+  DISK_FULL_CAUSE,
+  type CapacityRetry as CapacityRetryRecord,
+} from "../capacityRetry";
 
 export default function CapacityRetry({
   agentId,
@@ -73,21 +76,23 @@ export default function CapacityRetry({
       data-retry-status={current.status || "unknown"}
     >
       <p role="status">
-        {scheduled
-          ? seconds > 0
-            ? `Automatic retry in ${seconds}s.`
-            : "Waiting for the server to retry."
-          : current.status === "cancelled"
-            ? "Automatic retry cancelled."
-            : current.status === "exhausted"
-              ? "Automatic retries finished. You can retry now."
-              : current.status === "unknown"
-                ? "Waiting for Codex to confirm the retry."
-                : current.status === "failed"
-                  ? "The retry could not start."
-                  : current.acceptedTurnId
-                    ? "The model retry started."
-                    : "Starting the model retry."}
+        {scheduled && current.cause === DISK_FULL_CAUSE
+          ? "Waiting for free disk space."
+          : scheduled
+            ? seconds > 0
+              ? `Automatic retry in ${seconds}s.`
+              : "Waiting for the server to retry."
+            : current.status === "cancelled"
+              ? "Automatic retry cancelled."
+              : current.status === "exhausted"
+                ? "Automatic retries finished. You can retry now."
+                : current.status === "unknown"
+                  ? "Waiting for Codex to confirm the retry."
+                  : current.status === "failed"
+                    ? "The retry could not start."
+                    : current.acceptedTurnId
+                      ? "The model retry started."
+                      : "Starting the model retry."}
       </p>
       {current.reason && (
         <p>

@@ -438,6 +438,9 @@ const ERROR_MESSAGES: &[(&str, &str)] = &[
 ];
 /// Notice text for a provider error; `label` names the agent's provider.
 pub(crate) fn error_message(error: &Value, label: &str) -> String {
+    if crate::disk_space::is_disk_full_error(error) {
+        return crate::disk_space::ERROR_MESSAGE.into();
+    }
     let kind = error_kind(error);
     if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| *k == kind) {
         return (*message).into();

@@ -117,7 +117,10 @@ fn status(state: &HttpState) -> Value {
         "supervisor": supervisor.as_ref().and_then(|snapshot| snapshot.health.clone()),
         "supervisorFallback": supervisor.as_ref().is_some_and(|snapshot| snapshot.fallback),
         "supervisorNotice": supervisor.and_then(|snapshot| snapshot.notice),
-        "stateDir": state.state_dir, "linuxVm": null
+        "stateDir": state.state_dir, "linuxVm": null,
+        "diskSpace": studio_runtime_services::disk_space::status(
+            std::path::Path::new(&state.state_dir),
+        )
     })
 }
 inventory::submit! {

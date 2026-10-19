@@ -407,6 +407,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let workspace_id =
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
     let state_root = store.root().canonicalize()?;
+    // Free space of the state volume gates new turns and disk-full holds.
+    studio_runtime_services::disk_space::install(state_root.clone());
     let state_dir = state_root.to_string_lossy().into_owned();
     let home = env::var_os("HOME")
         .map(PathBuf::from)

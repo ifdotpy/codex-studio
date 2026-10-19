@@ -564,3 +564,135 @@ async fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_h
         "Account default is disabled for this chat"
     );
 }
+
+const MIB: u64 = 1024 * 1024;
+const INCIDENT: &str = "ENOSPC: no space left on device, rename '/state/sessions/55f43293.meta.json.7c1e.tmp' -> '/state/sessions/55f43293.meta.json'";
+
+fn capacity_start(effects: &[studio_runtime_services::continuation::Effect]) -> bool {
+    effects.iter().any(|effect| {
+        matches!(
+            effect,
+            studio_runtime_services::continuation::Effect::CapacityStart { .. }
+        )
+    })
+}
+
+#[tokio::test]
+async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
+    let template = template_kind("capacity");
+    let store = RuntimeStore::open(Some(template.path()))
+        .await
+        .expect("Python state opens");
+    let before = capacity_state(&store);
+    let staged = store
+        .transaction_with(|tx| {
+            studio_runtime_services::continuation_runtime::stage_capacity_retry_observed(
+                tx,
+                "a",
+                "retry",
+                1000.0,
+                true,
+                Some(100 * MIB),
+            )
+            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))
+        })
+        .await
+        .expect("disk-full wait");
+    assert!(
+        !capacity_start(staged.effects()),
+        "no turn starts while the disk is full"
+    );
+    let held = capacity_state(&store);
+    assert_eq!(held["record"]["status"], "scheduled");
+    assert_eq!(held["record"]["dueAt"], 1015.0);
+    assert_eq!(
+        held["record"]["reason"],
+        "Disk is full: 100 MiB free. Studio resumes this agent when free space returns."
+    );
+    assert_eq!(held["record"].get("claimedAt"), None);
+    assert_eq!(held["record"].get("waits"), before["record"].get("waits"));
+    assert_eq!(
+        held["agent"].get("startAttempt"),
+        before["agent"].get("startAttempt")
+    );
+    assert_eq!(held["agent"]["capacityRetry"], held["record"]);
+    assert_eq!(held["events"], before["events"]);
+
+    store
+        .transaction_with(|tx| {
+            studio_runtime_services::continuation_runtime::stage_capacity_retry_observed(
+                tx, "a", "retry", 1016.0, true, None,
+            )
+            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))
+        })
+        .await
+        .expect("claim after space returns");
+    let resumed = capacity_state(&store);
+    assert!(
+        !resumed["record"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("Disk is full"),
+        "free space ends the disk wait: {resumed}"
+    );
+}
+
+#[tokio::test]
+async fn a_disk_full_turn_failure_creates_a_free_space_retry() {
+    let template = template();
+    let root = clone_template(template.path());
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("Python state opens");
+    let turn = json!({"id":"turn","status":"failed","error":{"message":INCIDENT}});
+    let staged = store
+        .transaction_with(move |tx| {
+            studio_runtime_services::continuation_runtime::stage(
+                tx,
+                studio_runtime_services::continuation_runtime::Completion::TerminalTurn {
+                    agent_id: "a",
+                    turn: &turn,
+                    known: true,
+                    now: 1000.0,
+                    limits: None,
+                    claude_auth: None,
+                },
+            )
+            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))
+        })
+        .await
+        .expect("disk-full failure stages a continuation");
+    assert!(staged.changed());
+    let db = store.read().expect("reader");
+    let agent: Value = db
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='a'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|raw| serde_json::from_str(&raw).expect("agent JSON"))
+        .expect("agent");
+    let retry = &agent["capacityRetry"];
+    assert_eq!(retry["cause"], "diskFull");
+    assert_eq!(retry["status"], "scheduled");
+    assert_eq!(retry["dueAt"], 1000.0);
+    assert_eq!(retry["turnId"], "turn");
+    assert_eq!(retry["maxAttempts"], 5);
+    assert!(
+        retry["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("Disk is full: ")),
+        "{retry}"
+    );
+    let stored: String = db
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE agent='a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("durable retry row");
+    assert_eq!(
+        &serde_json::from_str::<Value>(&stored).expect("retry JSON"),
+        retry
+    );
+}

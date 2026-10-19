@@ -25,7 +25,7 @@ export function desktopNotices(data: DesktopNoticeSource): DesktopNotice[] {
       text: data.supervisorNotice,
       level: "warning",
     });
-  return notices.sort(
-    (a, b) => Number(b.level === "critical") - Number(a.level === "critical"),
-  );
+  const rank = (notice: DesktopNotice) =>
+    notice.level === "full" ? 2 : notice.level === "critical" ? 1 : 0;
+  return notices.sort((a, b) => rank(b) - rank(a));
 }

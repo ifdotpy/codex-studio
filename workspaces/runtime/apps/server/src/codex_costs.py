@@ -501,10 +501,8 @@ class ClaudeCostReader:
             } != {key: value.get("rows", []) for key, value in files.items()}
             if content_changed:
                 payload = {"config": str(self.config_dir), "files": files, "data": data, "checked": now}
-                tmp = self.state_path.with_name("." + self.state_path.name + ".tmp")
-                tmp.write_text(json.dumps(payload, separators=(",", ":")))
-                os.chmod(tmp, 0o600)
-                os.replace(tmp, self.state_path)
+                from codex_private_paths import write_atomic
+                write_atomic(self.state_path, json.dumps(payload, separators=(",", ":")))
             with self.lock:
                 self.files, self.data, self.error, self.checked = files, data, None, now
         except Exception as error:

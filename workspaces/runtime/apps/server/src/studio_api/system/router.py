@@ -277,7 +277,7 @@ def create_router(context: ApiContext) -> APIRouter:
             ),
             "stateDir": str(Path(canvas.root).resolve()),
             "peerUpdate": peer_update_status(Path(canvas.root)),
-            "diskSpace": disk_space_status(Path(canvas.root)),
+            "diskSpace": disk_space_status(Path(canvas.root), canvas),
         }
         return context.send(request, result)
 

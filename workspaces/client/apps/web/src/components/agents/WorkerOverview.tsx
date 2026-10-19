@@ -19,6 +19,7 @@ export function TeamModels({
 }
 
 import type { Agent, Snapshot } from "../../types";
+import { diskFullHold } from "../../capacityRetry";
 
 type Request = NonNullable<Snapshot["runtime"]>["requests"][number];
 
@@ -45,7 +46,8 @@ export function workerState(
   if (answers.has(agent.id)) return "answer";
   if (status === "approval")
     return deferred?.has(agent.id) ? "waiting" : "answer";
-  if (["failed", "interrupted"].includes(status)) return "attention";
+  if (["failed", "interrupted"].includes(status))
+    return diskFullHold(agent) ? "waiting" : "attention";
   if (["running", "starting"].includes(status)) return "working";
   if (status === "parked") return "waiting";
   if (status === "completed") return "completed";

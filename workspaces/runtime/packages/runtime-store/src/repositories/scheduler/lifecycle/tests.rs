@@ -473,3 +473,69 @@ fn a_settled_turn_of_any_terminal_status_is_not_interrupted_again() {
         assert_eq!(stored(&connection), expected, "{native} after restart");
     }
 }
+
+fn rejected_start(error: Value) -> (Value, (String, Option<String>)) {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({
+            "status": "starting", "autoWake": true, "inFlight": true, "turnEpoch": 0, "error": null,
+            "startAttempt": {
+                "id": "start", "epoch": 0, "submitted": true, "activeAtReservation": false,
+                "accountKey": ACCOUNT, "threadId": "thread", "events": ["input"],
+                "connectionGeneration": 1, "requestTicket": "ticket", "created": 1.0
+            }
+        }),
+    );
+    connection
+        .execute(
+            "INSERT INTO runtime_events VALUES('input','agent','user','Exact input','dispatching',1,0,NULL,NULL)",
+            [],
+        )
+        .expect("event writes");
+    connection
+        .execute(
+            "INSERT INTO runtime_execution_attempts VALUES('start','run','{\"id\":\"start\",\"epoch\":0,\"runId\":\"run\",\"events\":[\"input\"],\"submission\":\"submitted\"}')",
+            [],
+        )
+        .expect("attempt writes");
+    let settled = with(&mut connection, |tx| {
+        SchedulerRepository::settle_start_rejected_provider(
+            tx, AGENT, 0, "start", "ticket", ACCOUNT, 1, "thread", error,
+        )
+        .expect("rejection settles")
+    });
+    assert!(settled);
+    let event = connection
+        .query_row(
+            "SELECT status, error FROM runtime_events WHERE id='input'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("event reads");
+    (stored(&connection), event)
+}
+
+#[test]
+fn an_unapplied_disk_full_start_returns_the_exact_input_to_the_queue() {
+    let message =
+        "Disk is full. Claude did not receive this input. Studio sends it when free space returns.";
+    let (agent, event) = rejected_start(json!({
+        "code": -32000, "message": message,
+        "data": {"turnStartOutcome": "not_applied", "inputSubmitted": false, "diskFull": true}
+    }));
+    assert_eq!(
+        event,
+        ("pending".to_owned(), None),
+        "the input is not failed"
+    );
+    assert_eq!(agent["status"], "queued", "{agent}");
+    assert_eq!(agent["inFlight"], false);
+    assert_eq!(agent["error"], Value::Null);
+    assert_eq!(agent.get("startAttempt"), None);
+
+    // Without the provider's proof the rejection keeps the ordinary failure.
+    let (agent, event) = rejected_start(json!({"code": -32000, "message": message}));
+    assert_eq!(event, ("failed".to_owned(), Some(message.to_owned())));
+    assert_eq!(agent["status"], "failed", "{agent}");
+}

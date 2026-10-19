@@ -595,6 +595,32 @@ the team and cancels its queued work and command watches. In-flight requests can
 exceed the limit before their usage notification arrives.
 Increase the budget with `codex-control configure`, then send a new instruction to resume.
 
+### Full disk
+
+A full disk is a wait, not a failure. `codex_shared_values.py` owns the thresholds
+for the volume that holds the state directory. Both backends use them:
+
+- Below `DISK_FULL_ENTER_FREE_BYTES` (1 GiB free), the disk is full. Studio
+  starts no new turn and no automatic continuation. Queued input stays queued
+  with its identity. A running turn can still receive a steer. The desktop
+  shows one notice with the free space.
+- A turn that fails because the disk is full (ENOSPC, `No space left on device`,
+  or SQLite `database or disk is full`, from Studio, Codex or the Claude bridge)
+  gets a capacity retry with the cause `diskFull`. The agent shows "Waiting for
+  disk space" and the reason with the free MiB. The retry checks free space every
+  `DISK_FULL_RECHECK_SECONDS` (15 s). It continues the same thread with empty
+  input, so no submitted input is sent again. At most `DISK_FULL_MAX_RESUMES`
+  (5) continuations follow consecutive disk-full failures.
+- The full state ends at `DISK_FULL_EXIT_FREE_BYTES` (2 GiB free). An observed
+  disk-full write error keeps the state for at least one recheck interval.
+- The Claude bridge keeps a running turn when a session write fails with ENOSPC.
+  The session stays in memory and the bridge saves it again every 15 s. A
+  pre-input receipt that cannot be written rejects the start with
+  `turnStartOutcome: not_applied` and `diskFull: true`, so Studio returns the
+  exact input to the queue.
+- Atomic file writes remove their temporary file on any failure and keep the
+  previous file.
+
 ## Stop and recovery
 
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all

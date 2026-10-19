@@ -1,5 +1,14 @@
 import { errorDetails } from "./errorPresentation.ts";
+import { DISK_FULL_ERROR_PATTERN } from "./generated/sharedValues.ts";
 import type { Agent } from "./types";
+
+// A Studio condition, not a Codex error kind: the state volume has no free space.
+const DISK_FULL_PATTERN = new RegExp(DISK_FULL_ERROR_PATTERN, "i");
+export const DISK_FULL_TITLE = "Disk is full";
+const DISK_FULL_MESSAGE =
+  "Studio holds this agent and resumes it when free space returns.";
+const DISK_FULL_HINT =
+  "Free disk space on this Mac. Queued work starts again on its own.";
 
 // Codex 0.153.4 CodexErrorInfo, including unknown future variants.
 export const nativeErrorHints: Record<string, string> = {
@@ -155,7 +164,31 @@ export function nativeThreadError(
     : undefined;
 }
 
+// True when an error means the disk is full (ENOSPC, SQLite SQLITE_FULL).
+export function isDiskFullError(value: unknown): boolean {
+  const data = parseError(value);
+  const record = objectRecord(data);
+  if (record?.codexErrorInfo === "diskFull") return true;
+  if (objectRecord(record?.data)?.diskFull === true) return true;
+  const readable = readableError(data);
+  return DISK_FULL_PATTERN.test(
+    readable?.message ?? (typeof value === "string" ? value : ""),
+  );
+}
+
 export function nativeErrorView(value: unknown, planType?: string) {
+  const view = codexErrorView(value, planType);
+  if (!isDiskFullError(value)) return view;
+  return {
+    ...view,
+    message: DISK_FULL_MESSAGE,
+    title: DISK_FULL_TITLE,
+    hint: DISK_FULL_HINT,
+    severity: "warning",
+  };
+}
+
+function codexErrorView(value: unknown, planType?: string) {
   const data = parseError(value);
   const record = objectRecord(data);
   const structured = record !== null;

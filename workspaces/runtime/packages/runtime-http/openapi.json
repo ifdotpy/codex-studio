@@ -3800,6 +3800,17 @@
             ],
             "title": "Accountkey"
           },
+          "cause": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapacityRetryCause"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "claimedAt": {
             "anyOf": [
               {
@@ -17331,7 +17342,8 @@
           "httpConnectionFailed",
           "responseStreamConnectionFailed",
           "responseStreamDisconnected",
-          "responseTooManyFailedAttempts"
+          "responseTooManyFailedAttempts",
+          "diskFull"
         ],
         "title": "CapacityRetryCause",
         "type": "string"
@@ -24681,7 +24693,8 @@
               {
                 "enum": [
                   "warning",
-                  "critical"
+                  "critical",
+                  "full"
                 ],
                 "type": "string"
               },
@@ -24689,7 +24702,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set when the free space of the state volume is below the warning or the critical threshold.",
+            "description": "Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.",
             "title": "Level"
           },
           "message": {

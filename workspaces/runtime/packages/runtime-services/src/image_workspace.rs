@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -1113,15 +1112,7 @@ fn read_json(path: &Path) -> Result<Value, ImageWorkspaceError> {
 }
 fn write_json(path: &Path, value: &Value) -> Result<(), ImageWorkspaceError> {
     fs::create_dir_all(path.parent().ok_or(ImageWorkspaceError::InvalidState)?)?;
-    let temp = path.with_extension(format!("{}.tmp", now_ns()));
-    let mut file = File::create(&temp)?;
-    file.write_all(&serde_json::to_vec(value)?)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(temp, path)?;
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
-    }
+    crate::atomic_file::replace(path, &serde_json::to_vec(value)?, None, true)?;
     Ok(())
 }
 fn now_ns() -> u128 {

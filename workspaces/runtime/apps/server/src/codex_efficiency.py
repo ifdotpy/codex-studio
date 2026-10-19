@@ -542,11 +542,10 @@ class EfficiencyMixin:
         path = self.root / 'context-snapshots' / (digest(text) + '.txt')
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            # Parallel preparations can write the same snapshot. A shared
-            # temporary name let one rename remove the other writer's file.
-            temporary = path.with_suffix(f'.tmp.{os.getpid()}.{threading.get_ident()}')
-            temporary.write_text(text, encoding='utf-8')
-            os.replace(temporary, path)
+            # Parallel preparations can write the same snapshot; each write has
+            # its own temporary name. A failed write leaves no temporary file.
+            from codex_private_paths import write_atomic
+            write_atomic(path, text)
 
     def role_update(self: "_EfficiencyHost", previous_version: "Any", text: str) -> str:
         try:

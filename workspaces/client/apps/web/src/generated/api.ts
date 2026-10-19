@@ -3725,6 +3725,8 @@ export interface components {
       acceptedTurnId?: null | string;
       /** Accountkey */
       accountKey: null | string;
+      /** @default null */
+      cause?: components["schemas"]["CapacityRetryCause"] | null;
       /**
        * Claimedat
        * @default null
@@ -8789,7 +8791,8 @@ export interface components {
       | "httpConnectionFailed"
       | "responseStreamConnectionFailed"
       | "responseStreamDisconnected"
-      | "responseTooManyFailedAttempts";
+      | "responseTooManyFailedAttempts"
+      | "diskFull";
     /** CapacityRetryRecordResponse */
     CapacityRetryRecordResponse: {
       /**
@@ -11913,9 +11916,9 @@ export interface components {
       freeBytes: number | null;
       /**
        * Level
-       * @description Set when the free space of the state volume is below the warning or the critical threshold.
+       * @description Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.
        */
-      level: ("warning" | "critical") | null;
+      level: ("warning" | "critical" | "full") | null;
       /** Message */
       message: null | string;
     };

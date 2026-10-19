@@ -6,6 +6,32 @@ const FORMAT = "studio-claude-session-v1";
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_COMPACT_BYTES = 1024 * 1024;
 const DEFAULT_COMPACT_RECORDS = 128;
+// Milliseconds between save attempts for a session whose write failed because the disk is full.
+const DEFAULT_DISK_FULL_RETRY_MS = 15_000;
+
+// A write failed because the volume has no free space (ENOSPC) or the user quota is used (EDQUOT).
+export function isDiskFull(error) {
+  for (let current = error, depth = 0; current && depth < 8; depth++) {
+    if (current.code === "ENOSPC" || current.code === "EDQUOT") return true;
+    if (Array.isArray(current.errors) && current.errors.some(isDiskFull))
+      return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+// Replace a file in one rename. A failed write or rename removes the
+// temporary file, so the previous file stays and no partial file remains.
+export async function writeFileAtomic(file, data, mode = 0o600) {
+  const tmp = file + "." + randomUUID() + ".tmp";
+  try {
+    await fs.writeFile(tmp, data, { mode });
+    await fs.rename(tmp, file);
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
 
 export function ephemeralSessionOptions(session) {
   if (session?.ephemeral !== true) return {};
@@ -155,6 +181,18 @@ export function createSessionStore(root, options = {}) {
       : DEFAULT_CACHE_BYTES);
   const compactBytes = options.compactBytes ?? DEFAULT_COMPACT_BYTES;
   const compactRecords = options.compactRecords ?? DEFAULT_COMPACT_RECORDS;
+  const configuredRetryMs = Number(
+    process.env.STUDIO_CLAUDE_DISK_FULL_RETRY_MS,
+  );
+  const diskFullRetryMs =
+    options.diskFullRetryMs ??
+    (Number.isFinite(configuredRetryMs) && configuredRetryMs > 0
+      ? configuredRetryMs
+      : DEFAULT_DISK_FULL_RETRY_MS);
+  // Sessions whose last write failed because the disk is full. They stay cached
+  // and are saved again from the live object until a write succeeds.
+  const unsaved = new Map();
+  let unsavedTimer = null;
   const sessions = new Map();
   const entries = new Map();
   const writes = new Map();
@@ -188,10 +226,10 @@ export function createSessionStore(root, options = {}) {
   });
   const writeMetadata = async (session, revision = randomUUID()) => {
     const metadata = metadataFor(session, revision);
-    const file = metadataFileFor(session.id),
-      tmp = file + "." + randomUUID() + ".tmp";
-    await fs.writeFile(tmp, JSON.stringify(metadata), { mode: 0o600 });
-    await fs.rename(tmp, file);
+    await writeFileAtomic(
+      metadataFileFor(session.id),
+      JSON.stringify(metadata),
+    );
     metadataCache.set(session.id, metadata);
     return metadata;
   };
@@ -274,7 +312,8 @@ export function createSessionStore(root, options = {}) {
     while (retainedBytes > maxCacheBytes) {
       let candidate;
       for (const [id, entry] of entries) {
-        if (options.isPinned?.(id) || writes.has(id)) continue;
+        if (options.isPinned?.(id) || writes.has(id) || unsaved.has(id))
+          continue;
         if (!candidate || entry.used < candidate[1].used)
           candidate = [id, entry];
       }
@@ -313,16 +352,11 @@ export function createSessionStore(root, options = {}) {
     enforceLimit();
     return session;
   };
-  const atomicSnapshot = async (id, session, sequence) => {
-    const file = fileFor(id),
-      tmp = file + "." + randomUUID() + ".tmp";
-    await fs.writeFile(
-      tmp,
+  const atomicSnapshot = (id, session, sequence) =>
+    writeFileAtomic(
+      fileFor(id),
       JSON.stringify({ format: FORMAT, sequence, session }),
-      { mode: 0o600 },
     );
-    await fs.rename(tmp, file);
-  };
   const persistNow = async (session) => {
     await ready;
     const id = session.id;
@@ -561,13 +595,48 @@ export function createSessionStore(root, options = {}) {
         enforceLimit();
       }
     };
-    next.then(clear, clear);
+    next.then(
+      () => {
+        if (unsaved.get(id) === session) {
+          unsaved.delete(id);
+          options.onSaved?.(session);
+        }
+        clear();
+      },
+      (error) => {
+        if (isDiskFull(error)) deferSave(session);
+        clear();
+      },
+    );
     return next;
+  }
+  // The disk is full: keep the live session and save it again later. The
+  // journal diff starts from the last saved shadow, so nothing is lost.
+  function deferSave(session) {
+    unsaved.set(session.id, session);
+    if (unsavedTimer) return;
+    unsavedTimer = setTimeout(() => {
+      unsavedTimer = null;
+      for (const pending of unsaved.values()) persist(pending).catch(() => {});
+    }, diskFullRetryMs);
+    unsavedTimer.unref?.();
+  }
+  // Save without failing the caller when the disk is full. Returns true when
+  // the save is deferred; any other write error still rejects.
+  async function persistOrDefer(session) {
+    try {
+      await persist(session);
+      return false;
+    } catch (error) {
+      if (!isDiskFull(error)) throw error;
+      return true;
+    }
   }
   async function evict(id) {
     const pending = writes.get(id);
     if (pending) await pending.catch(() => {});
-    if (options.isPinned?.(id) || writes.has(id)) return false;
+    if (options.isPinned?.(id) || writes.has(id) || unsaved.has(id))
+      return false;
     sessions.delete(id);
     const entry = entries.get(id);
     if (entry) {
@@ -579,12 +648,17 @@ export function createSessionStore(root, options = {}) {
   }
   async function drain() {
     await Promise.allSettled(writes.values());
+    if (unsaved.size)
+      await Promise.allSettled(
+        [...unsaved.values()].map((session) => persist(session)),
+      );
   }
   function stats() {
     return {
       cachedSessions: sessions.size,
       retainedBytes,
       pendingWrites: writes.size,
+      unsavedSessions: unsaved.size,
       journalBytes: [...entries.values()].reduce(
         (sum, entry) => sum + entry.journalBytes,
         0,
@@ -597,6 +671,8 @@ export function createSessionStore(root, options = {}) {
     metadata,
     listMetadata,
     persist,
+    persistOrDefer,
+    isUnsaved: (id) => unsaved.has(id),
     evict,
     drain,
     stats,

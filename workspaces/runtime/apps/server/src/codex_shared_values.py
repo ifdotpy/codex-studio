@@ -116,6 +116,24 @@ def workspace_preview_limit_label() -> str:
         return f"{MAX_WORKSPACE_PREVIEW_BYTES} bytes"
     return f"{mib} MiB"
 
+# Free space of the volume that holds the state directory, in bytes available to Studio
+# (shutil.disk_usage().free; statvfs f_bavail * f_frsize). The desktop warns below WARNING and
+# CRITICAL. Below DISK_FULL_ENTER the disk is full: Studio starts no new turn, and an agent whose
+# turn failed for lack of space waits. The full state ends at or above DISK_FULL_EXIT; Studio then
+# resumes held agents. The gap between the two values keeps the state from flapping.
+DISK_SPACE_WARNING_FREE_BYTES = 15 * 1024**3
+DISK_SPACE_CRITICAL_FREE_BYTES = 5 * 1024**3
+DISK_FULL_ENTER_FREE_BYTES = 1024**3
+DISK_FULL_EXIT_FREE_BYTES = 2 * 1024**3
+# Seconds between free-space checks while the disk is full. An observed "disk full" write error
+# also keeps the full state for at least this time, even when the sample shows free space.
+DISK_FULL_RECHECK_SECONDS = 15
+# Automatic continuations after consecutive turns that failed because the disk was full.
+DISK_FULL_MAX_RESUMES = 5
+# Case-insensitive regular expression for provider or local error text that means the disk is
+# full: POSIX ENOSPC in Node, Python, and Rust messages, and SQLite SQLITE_FULL.
+DISK_FULL_ERROR_PATTERN = r"ENOSPC|No space left on device|database or disk is full|SQLITE_FULL"
+
 # Command monitor output matching and bounded observation. Byte limits count UTF-8.
 MONITOR_OUTPUT_MAX_PATTERNS = 16
 MONITOR_OUTPUT_MAX_PATTERN_BYTES = 256
