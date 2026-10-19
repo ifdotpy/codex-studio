@@ -504,6 +504,11 @@ impl SchedulerRepository {
         business_metadata(Some(metadata))
     }
 
+    /// The text a claim carries for one stored event and its metadata.
+    pub fn claimed_event_text(text: &str, metadata: &Value) -> String {
+        model_event_text(text, Some(metadata)).unwrap_or_else(|| text.to_owned())
+    }
+
     /// Return queued local agents with pending events in the current epoch.
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
         let mut statement = connection.prepare_cached(
@@ -1133,6 +1138,9 @@ pub(super) fn replay_claim(
                 serde_json::from_str(&raw).map_err(|_| receipt_error())?,
             );
         }
+        if let Some(text) = model_event_text(&event.text, metadata.get(&event.id.0)) {
+            event.text = text;
+        }
         events.push(event);
     }
     if events.len() != identity.len() {
@@ -1440,18 +1448,8 @@ pub(super) fn prepare_pending_batch(
         if retired.contains_key(&event.id.0) || cancelled.contains_key(&event.id.0) {
             continue;
         }
-        if let Some(count) = metadata
-            .get(&event.id.0)
-            .and_then(|value| value.get("earlierProgressUpdates"))
-            .filter(|count| truthy(count))
-            && let Ok(Value::Object(mut value)) = serde_json::from_str(&event.text)
-        {
-            value.insert("earlierProgressUpdates".to_owned(), count.clone());
-            value.insert(
-                "history".to_owned(),
-                json!("Read earlier progress with orchestration_chat_read in this room."),
-            );
-            event.text = Value::Object(value).to_string();
+        if let Some(text) = model_event_text(&event.text, metadata.get(&event.id.0)) {
+            event.text = text;
         }
         prepared_events.push(event);
     }
@@ -1462,6 +1460,26 @@ pub(super) fn prepare_pending_batch(
         retired,
         cancelled,
     })
+}
+
+/// The claimed text of one event when it differs from the stored row: a
+/// progress update that replaced earlier updates names their count. Only this
+/// model projection changes; the stored row keeps the original payload
+/// (Python `codex_wakeups.pending_batch`). Every check that compares a claim
+/// with its stored rows applies this same projection to them.
+pub(super) fn model_event_text(text: &str, metadata: Option<&Value>) -> Option<String> {
+    let count = metadata?
+        .get("earlierProgressUpdates")
+        .filter(|count| truthy(count))?;
+    let Ok(Value::Object(mut value)) = serde_json::from_str(text) else {
+        return None;
+    };
+    value.insert("earlierProgressUpdates".to_owned(), count.clone());
+    value.insert(
+        "history".to_owned(),
+        json!("Read earlier progress with orchestration_chat_read in this room."),
+    );
+    Some(Value::Object(value).to_string())
 }
 
 pub(super) fn apply_preparation(

@@ -193,32 +193,39 @@ fn preconditions_for_purpose(
     }
     gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
     authorize(tx, intent, filesystem, prepared_host)?;
+    selected_inputs_current(tx, intent)?;
+    Ok(record)
+}
+/// Refuse a claim whose stored input rows changed after the claim. The claim
+/// carries the model projection of each row, so the stored text is compared
+/// through that same projection.
+fn selected_inputs_current(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<(), WorkerError> {
     for selected in &intent.events {
         let current = studio_runtime_store::QueueEventRepository::get(
             tx,
             &studio_runtime_store::QueueEventId::from(selected.id.as_str()),
         )?;
+        let metadata =
+            studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, &selected.id)?
+                .unwrap_or_else(|| json!({}));
         if current.is_none_or(|event| {
             event.agent.0 != intent.agent_id
                 || event.epoch != selected.epoch
                 || event.kind != selected.kind
-                || event.text != selected.text
+                || SchedulerRepository::claimed_event_text(&event.text, &metadata) != selected.text
                 || event.created != selected.created
                 || event.error != selected.error
                 || event.status != "reserved"
         }) {
             return Err(refusal("preparation/input-changed".into()));
         }
-        let metadata =
-            studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, &selected.id)?
-                .unwrap_or_else(|| json!({}));
         if SchedulerRepository::input_metadata_identity(&metadata)
             != SchedulerRepository::input_metadata_identity(&selected.metadata)
         {
             return Err(refusal("preparation/input-metadata-changed".into()));
         }
     }
-    Ok(record)
+    Ok(())
 }
 /// Refusal of a ready snapshot whose workspace token no longer validates.
 pub(crate) const WORKSPACE_TOKEN_STALE: &str = "workspace-readiness/token-stale";
@@ -2102,5 +2109,133 @@ mod daybreak_tests {
             ),
             Some("/validated/host/workspace".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod claimed_input_tests {
+    use super::*;
+    use studio_runtime_store::{AgentRecord, QueueEventId, QueueEventRepository};
+
+    fn progress(version: u64) -> String {
+        json!({"importance":"progress","message_id":format!("m{version}"),
+            "progress_key":"install","progress_version":version,"room":"private:lead:child",
+            "sender":"child","sender_name":"child","text":format!("step {version}")})
+        .to_string()
+    }
+
+    /// A queued lead with two progress updates from one child, as in the
+    /// failure of agent 85bc2231 on 19 October 2026.
+    async fn seeded(directory: &Path) -> RuntimeStore {
+        let store = RuntimeStore::open(Some(directory))
+            .await
+            .expect("runtime store opens");
+        store
+            .transaction(|tx| {
+                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                    "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
+                    "provider":"claude","accountKey":"default","threadId":"lead-thread"});
+                AgentRepository::put(tx, &AgentRecord::from_value(lead).expect("lead"))?;
+                for (id, version) in [("progress-1", 1_u64), ("progress-2", 2)] {
+                    tx.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                         VALUES(?1,'lead','agent_message',?2,'pending',?3,1)",
+                        rusqlite::params![id, progress(version), version as f64],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("lead and progress seed");
+        store
+    }
+
+    async fn claim(store: &RuntimeStore) -> TurnIntent {
+        scheduler::lifecycle_transaction_with(store, |tx| {
+            scheduler::claim_preparation_in_transaction(tx, "lead", 1, "attempt", 10.0)
+        })
+        .await
+        .expect("claim runs")
+        .expect("lead is claimable")
+    }
+
+    async fn check(store: &RuntimeStore, intent: &TurnIntent) -> Result<(), WorkerError> {
+        let intent = intent.clone();
+        scheduler::lifecycle_transaction_with(store, move |tx| selected_inputs_current(tx, &intent))
+            .await
+    }
+
+    async fn status(store: &RuntimeStore, id: &str) -> String {
+        let id = id.to_owned();
+        store
+            .transaction(move |tx| QueueEventRepository::get(tx, &QueueEventId::from(id.as_str())))
+            .await
+            .expect("event reads")
+            .expect("event exists")
+            .status
+    }
+
+    #[tokio::test]
+    async fn coalesced_progress_claim_passes_preparation_and_submission() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = seeded(directory.path()).await;
+        let intent = claim(&store).await;
+        let ids = intent
+            .events
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["progress-2"]);
+        assert!(
+            intent.events[0].text.contains("earlierProgressUpdates"),
+            "the claim carries the model projection: {}",
+            intent.events[0].text
+        );
+        // Input that arrives during preparation stays queued for the next turn.
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                     VALUES('late-user','lead','user','next','pending',11,1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("late input seeds");
+        check(&store, &intent)
+            .await
+            .expect("the projected text matches its unchanged stored row");
+        assert!(
+            scheduler::mark_submitted_for_provider(&store, &intent, "ticket", 1, "connection")
+                .await
+                .expect("submission validates the saved claim")
+        );
+        assert_eq!(status(&store, "progress-1").await, "stored_only");
+        assert_eq!(status(&store, "progress-2").await, "dispatching");
+        assert_eq!(status(&store, "late-user").await, "pending");
+    }
+
+    #[tokio::test]
+    async fn changed_stored_input_still_refuses_the_claim() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = seeded(directory.path()).await;
+        let intent = claim(&store).await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_events SET text=?1 WHERE id='progress-2'",
+                    [progress(3)],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("stored input changes");
+        match check(&store, &intent).await {
+            Err(WorkerError::PreparationRefused(reason)) => {
+                assert_eq!(reason, "preparation/input-changed");
+            }
+            other => panic!("changed input must refuse, got {other:?}"),
+        }
     }
 }
