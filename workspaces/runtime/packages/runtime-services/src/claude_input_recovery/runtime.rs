@@ -142,7 +142,18 @@ pub fn freeze_start(
     params: &Value,
     text: &str,
 ) -> StoreResult<()> {
-    let mut rows = reserved(tx, agent, attempt, &transport)?;
+    let rows = reserved(tx, agent, attempt, &transport)?;
+    freeze_loaded(tx, agent, rows, params, text)
+}
+
+/// `freeze_start` over rows the caller already loaded and validated with `reserved`.
+fn freeze_loaded(
+    tx: &Transaction<'_>,
+    agent: &str,
+    mut rows: ClaudeRetryRecords,
+    params: &Value,
+    text: &str,
+) -> StoreResult<()> {
     let input = resolve(agent, &rows, params.clone(), text.into())?;
     if &input.params != params || input.text != text {
         return Err(invalid(agent));
