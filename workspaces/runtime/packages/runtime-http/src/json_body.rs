@@ -51,9 +51,13 @@ mod tests {
         assert!(parse_bounded(deep.as_bytes(), 256 * 1024).is_err());
         assert!(parse_bounded(br#"{"value":"[ {{{ \""}"#, 64).is_ok());
         assert!(parse_bounded(b"{}", 1).is_err());
-        for depth in [127, 128, 129] {
+        for (depth, accepted) in [(127, true), (128, false), (129, false)] {
             let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
-            assert_eq!(parse_bounded(nested.as_bytes(), 1024).is_ok(), depth == 127);
+            assert_eq!(
+                parse_bounded(nested.as_bytes(), 1024).is_ok(),
+                accepted,
+                "{depth}"
+            );
         }
     }
 

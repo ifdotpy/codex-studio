@@ -2252,18 +2252,17 @@ mod tests {
             ("kid", "claude", "acct-claude", Some("parent")),
         ])
         .await;
-        for (id, agent) in [("e-claude", "claude-a"), ("e-codex", "codex-a")] {
+        for (id, agent, expected) in [
+            ("e-claude", "claude-a", "acct-claude"),
+            ("e-codex", "codex-a", "acct-codex"),
+        ] {
             queue_user_event(&store, id, agent).await;
             let changes = hints.take();
             assert!(!changes.full);
-            let expected = if agent == "claude-a" {
-                "acct-claude"
-            } else {
-                "acct-codex"
-            };
             assert_eq!(
                 accounts_of(&store, &changes),
-                BTreeSet::from([expected.to_owned()])
+                BTreeSet::from([expected.to_owned()]),
+                "{agent}"
             );
         }
 

@@ -80,8 +80,10 @@ class CommandTests(unittest.TestCase):
         code, _output, errors, client = self.run_command(
             ['remove', '/tmp/project', 'TOKEN', '--operation-id', 'op-7'], io.StringIO(VALUE))
         self.assertEqual(code, 0, errors)
-        self.assertEqual(client.calls, [('secrets.remove', {'projectId': project_id(Path('/tmp/project')),
-                                                            'name': 'TOKEN'}, 'secrets-remove:op-7')])
+        # SHA-256 of the registered path text '/tmp/project'; links are not resolved.
+        self.assertEqual(client.calls, [('secrets.remove', {
+            'projectId': 'f630ad93b344dd6bd04d44ecde70b128e7e77f9ecc28ee90b62b018734a7e8c4',
+            'name': 'TOKEN'}, 'secrets-remove:op-7')])
         code, output, _errors, client = self.run_command(['list', '/tmp/project'], io.StringIO(VALUE))
         self.assertEqual((code, output), (0, ''))
         self.assertEqual(client.calls[0][0], 'secrets.list')

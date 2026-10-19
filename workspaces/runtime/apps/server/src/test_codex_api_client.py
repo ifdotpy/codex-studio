@@ -21,10 +21,12 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import codex_api_client
-from codex_canvas import identity
 
 
 SCRIPT = Path(__file__).resolve().parent / "codex-control"
+# codex_canvas.identity("wave", "run", "wave-thread", "Wave Worker"): the first 24 hex digits
+# of the SHA-256 of the JSON list.
+WAVE_WORKER_ID = "81b73f916b6c5287014786bf"
 
 
 class FaultHandler(BaseHTTPRequestHandler):
@@ -246,11 +248,11 @@ class CodexAPIClientContracts(unittest.TestCase):
                     status = exit_code.code
             self.assertEqual(status, 0, errors.getvalue())
             rows = json.loads(output.getvalue())
-            self.assertEqual([row["id"] for row in rows], [identity(
-                "wave", "run", "wave-thread", "Wave Worker"), "a-agent", "b-agent", "z-agent"])
+            self.assertEqual([row["id"] for row in rows],
+                             [WAVE_WORKER_ID, "a-agent", "b-agent", "z-agent"])
             wave = rows[0]
             self.assertEqual(wave, {
-                "id": identity("wave", "run", "wave-thread", "Wave Worker"),
+                "id": WAVE_WORKER_ID,
                 "name": "Wave Worker", "parent": "a-agent", "status": "running",
                 "model": "wave-model", "accountKey": "wave-account", "tokens": 23,
             })
@@ -315,7 +317,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                     "launcherPid": os.getpid(), "createdAt": 1,
                 }]), encoding="utf-8")
 
-            wave_id = identity("wave", "run", "wave-thread", "Wave Worker")
+            wave_id = WAVE_WORKER_ID
             alias = {"id": "graph-alias", "name": "Alias", "threadId": "wave-thread",
                      "parentId": "lead-thread", "source": "registered", "createdAt": 1}
             child = {"id": "wave-child", "name": "Child", "threadId": "child-thread",
@@ -325,7 +327,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                           "status": "old-status", "source": "app-server", "createdAt": 1}
             stale_reference = {"id": "old-lead-reference", "name": "Old lead",
                                "source": "orchestrator-reference", "status": "unknown"}
-            entities = [stale_wave, stale_reference, alias, child]
+            entities: "list[dict[str, Any]]" = [stale_wave, stale_reference, alias, child]
 
             def list_agents() -> "Any":
                 def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":

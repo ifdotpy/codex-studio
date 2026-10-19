@@ -320,10 +320,9 @@ mod tests {
         );
         assert_eq!(value.status, PriceStatus::Priced);
         assert!(value.context_tier_used);
-        assert_eq!(
-            value.amount_usd,
-            Some((70.0 * 3.0 + 5.0 * 4.0 + 20.0 + 20.0) / 1_000_000.0)
-        );
+        // 70 uncached input at 3, 5 output at 4, 20 cache reads at 1 and
+        // 10 cache writes at 2 USD per million tokens.
+        assert_eq!(value.amount_usd, Some(0.00027));
     }
 
     #[test]

@@ -637,7 +637,8 @@ mod tests {
         assert!(framer.push(&[0.5; 10], true).is_empty());
         assert_eq!(framer.push(&[0.5; FRAME], true)[0], vec![0; FRAME]);
         assert!(encoder.encode(&[0; 10]).is_err());
-        assert!(decoder.decode(&[0xff; 3]).is_err() || decoder.decode(&[0xff; 3]).is_ok());
+        // A malformed packet returns a result instead of a panic; either result is allowed.
+        let _malformed = decoder.decode(&[0xff; 3]);
     }
 
     #[derive(Clone)]

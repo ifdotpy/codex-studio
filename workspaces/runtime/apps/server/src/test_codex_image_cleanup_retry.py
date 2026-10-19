@@ -99,17 +99,23 @@ class ImageCleanupRetry(unittest.TestCase):
         self.removed.side_effect = RuntimeError('still busy')
         self.agent('stuck', deletedAt=time.time(), imageWorkspacePhase='archived',
                    imageWorkspaceError=cleanup.REMOVAL_FAILED + 'diskutil timed out')
-        now = 10_000.0
-        self.assertEqual(cleanup.retry(self.runtime, 'stuck', now), 'failed')
+        self.assertEqual(cleanup.retry(self.runtime, 'stuck', 10_000.0), 'failed')
         retry = self.saved('stuck')['imageWorkspaceCleanupRetry']
-        self.assertEqual((retry['attempts'], retry['nextAt']), (1, now + cleanup.FIRST_DELAY_SECONDS))
-        self.assertEqual(cleanup.retry(self.runtime, 'stuck', now + 1), 'skipped')
-        for attempt in range(2, cleanup.MAX_ATTEMPTS + 1):
-            now = self.saved('stuck')['imageWorkspaceCleanupRetry']['nextAt']
-            self.assertEqual(cleanup.retry(self.runtime, 'stuck', now), 'failed')
-            self.assertEqual(self.saved('stuck')['imageWorkspaceCleanupRetry']['attempts'], attempt)
-        self.assertEqual(cleanup.retry(self.runtime, 'stuck', now + 10**9), 'skipped')
-        self.assertEqual(self.removed.call_count, cleanup.MAX_ATTEMPTS)
+        self.assertEqual((retry['attempts'], retry['nextAt']), (1, 10_300.0))
+        self.assertEqual(cleanup.retry(self.runtime, 'stuck', 10_001.0), 'skipped')
+        # Delays of 10, 20, 40 and 80 minutes, then no further attempt.
+        for attempt, at, next_at in (
+            (2, 10_300.0, 10_900.0),
+            (3, 10_900.0, 12_100.0),
+            (4, 12_100.0, 14_500.0),
+            (5, 14_500.0, 19_300.0),
+            (6, 19_300.0, 28_900.0),
+        ):
+            self.assertEqual(cleanup.retry(self.runtime, 'stuck', at), 'failed')
+            retry = self.saved('stuck')['imageWorkspaceCleanupRetry']
+            self.assertEqual((retry['attempts'], retry['nextAt']), (attempt, next_at))
+        self.assertEqual(cleanup.retry(self.runtime, 'stuck', 28_900.0 + 10**9), 'skipped')
+        self.assertEqual(self.removed.call_count, 6)
 
 
 if __name__ == '__main__':

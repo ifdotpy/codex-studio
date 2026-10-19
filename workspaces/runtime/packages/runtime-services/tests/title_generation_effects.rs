@@ -994,10 +994,11 @@ async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_bac
             .expect("intent count");
         assert_eq!(intents, 0, "{timing} intent write rolls back");
     }
-    for (table, operation) in [
-        ("runtime_agents", "UPDATE"),
-        ("sync_entities", "INSERT"),
-        ("runtime_operation_receipts", "UPDATE"),
+    // The receipt update fails before the provider call; the title writes fail after it.
+    for (table, operation, expected_calls) in [
+        ("runtime_agents", "UPDATE", 1),
+        ("sync_entities", "INSERT", 1),
+        ("runtime_operation_receipts", "UPDATE", 0),
     ] {
         for timing in ["BEFORE", "AFTER"] {
             let (_root, store) = fixture().await;
@@ -1026,12 +1027,11 @@ async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_bac
                 .is_err(),
                 "{table} {timing}"
             );
-            let expected_calls = if table == "runtime_operation_receipts" {
-                0
-            } else {
-                1
-            };
-            assert_eq!(port.calls.load(Ordering::SeqCst), expected_calls);
+            assert_eq!(
+                port.calls.load(Ordering::SeqCst),
+                expected_calls,
+                "{table} {timing}"
+            );
             let (record, projection) = agent_and_projection(&store);
             assert_eq!(
                 serde_json::from_str::<Value>(&record).expect("agent")["name"],

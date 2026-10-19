@@ -813,7 +813,13 @@ mod tests {
     fn task_preview_uses_a_utf8_safe_tail_and_marks_truncation() {
         let source = json!({"tail": format!("{}{}", "a".repeat(511), "💙")});
         let preview = task_preview(source["tail"].as_str().expect("tail"));
-        assert!(preview.len() <= 512);
+        assert_eq!(preview, format!("{}💙", "a".repeat(508)));
+        // A cut inside a multibyte character moves forward to the next boundary.
+        assert_eq!(
+            task_preview(&format!("💙{}", "a".repeat(510))),
+            "a".repeat(510)
+        );
+        assert_eq!(task_preview("short"), "short");
         let trimmed = trim_task(&source).expect("trim");
         assert_eq!(trimmed["outputTruncated"], Value::Bool(true));
         assert_eq!(trimmed["outputPreviewOnly"], Value::Bool(true));

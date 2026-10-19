@@ -70,8 +70,10 @@ it("bounds nested message lookup while preserving fallback diagnostics", () => {
   for (let level = 0; level < 8; level++) deep = { message: deep };
   assert.equal(displayError(deep), errorDetails(deep));
 
-  const whitespaceOnly = { message: " \t ", code: "E_EMPTY" };
-  assert.equal(displayError(whitespaceOnly), errorDetails(whitespaceOnly));
+  assert.equal(
+    displayError({ message: " \t ", code: "E_EMPTY" }),
+    '{\n  "message": " \\t ",\n  "code": "E_EMPTY"\n}',
+  );
 });
 
 it("breaks repeated message references and continues to a readable fallback", () => {
@@ -98,7 +100,10 @@ it("returns complete diagnostics if service-time display conversion throws", () 
     Date.prototype.toLocaleString = function () {
       throw new Error("Locale conversion failed");
     };
-    assert.equal(displayError(diagnostic), errorDetails(diagnostic));
+    assert.equal(
+      displayError(diagnostic),
+      '{\n  "message": "You\'ve hit a failure at 2026-01-01T00:00:00Z",\n  "context": "preserved"\n}',
+    );
   } finally {
     Date.prototype.toLocaleString = originalToLocaleString;
   }

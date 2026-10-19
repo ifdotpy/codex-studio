@@ -160,17 +160,17 @@ class ScopedPricingContract(unittest.TestCase):
             with patch.object(pricing, "lookup", wraps=pricing.lookup) as lookup:
                 first = reader._compute_shared("lead", "lead", refresh=True)
                 self.assertEqual(lookup.call_count, 2)
-            expected = .00024  # Native Claude usage counts input separately from its caches.
-            for seq in range(1, 9):
-                expected += pricing.price_usage(prices.value, "openai" if seq % 2 else "anthropic",
-                    "gpt-test" if seq % 2 else "claude-opus-5-5", {**self.usage, "inputTokens": 100 + seq})[0]
+            # Each SQL row costs (70 + seq) * 2 + 5 * 4 + 20 * .5 + 10 * 1 = 180 + 2 * seq
+            # micro-USD; seq 1..8 sums to 1512. Native Claude usage counts input
+            # separately from its caches and adds 240.
             self.assertEqual(first["pricedSamples"], 9)
-            self.assertAlmostEqual(first["totalUSD"], expected)
+            self.assertAlmostEqual(first["totalUSD"], .001752)
             prices.value["providers"]["openai"]["models"]["gpt-test"]["cost"]["input"] = 3
             with patch.object(pricing, "lookup", wraps=pricing.lookup) as lookup:
                 second = reader._compute_shared("lead", "lead", refresh=True)
                 self.assertEqual(lookup.call_count, 2)
-            self.assertAlmostEqual(second["totalUSD"] - first["totalUSD"], sum(70 + seq for seq in (1, 3, 5, 7)) / 1_000_000)
+            # One more micro-USD per uncached input token on the four gpt-test rows: 71 + 73 + 75 + 77.
+            self.assertAlmostEqual(second["totalUSD"] - first["totalUSD"], .000296)
 
 
 if __name__ == "__main__":

@@ -305,7 +305,8 @@ class PeerUpdates(unittest.TestCase):
         self.assertFalse((self.state / 'updates' / str(NEW['builtAt'])).exists())
         self.assertEqual([p.name for p in (self.state / 'updates').iterdir()], [])
         saved = json.loads((self.state / updates.STATUS_FILE).read_text())
-        self.assertEqual(list(saved['failures']), [updates.build_key(NEW)])
+        # The persisted key is the repr of builtAt and the commit.
+        self.assertEqual(list(saved['failures']), ['1791980000.25:' + 'b' * 40])
         self.assertEqual(updates.status(self.state, self.local_app)['lastPull']['outcome'], 'failed')
         self.assertEqual(self.actions('update.release'), ['update.release'])
         self.now += updates.FAILURE_RETRY_SECONDS - 1

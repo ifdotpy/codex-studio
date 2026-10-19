@@ -432,15 +432,16 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(self.watchdog.check(), 'limited')
         self.assertEqual(self.helper.stops, 1)
         held = self.client.status()['watchdog']['held']
-        self.assertEqual(held['until'], start + watchdog.MIN_RESTART_INTERVAL)
-        for step in range(1, watchdog.DAILY_RESTART_LIMIT):
-            self.clock.now = start + step * (watchdog.MIN_RESTART_INTERVAL + 1)
+        self.assertEqual(held['until'], start + 600)
+        # Restarts two to four, each a little more than ten minutes after the last one.
+        for at in (601, 1202, 1803):
+            self.clock.now = start + at
             self.panic()
             self.assertEqual(self.watchdog.check(), 'restarted')
-        self.clock.now += watchdog.MIN_RESTART_INTERVAL + 1
+        self.clock.now = start + 2404
         self.panic()
         self.assertEqual(self.watchdog.check(), 'limited')
-        self.assertEqual(self.helper.stops, watchdog.DAILY_RESTART_LIMIT)
+        self.assertEqual(self.helper.stops, 4)
         status = self.client.status()
         self.assertEqual(status['state'], 'failed')
         self.assertEqual(status['watchdog']['held']['until'], start + 24 * 3600)
@@ -568,11 +569,12 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(self.records()[0]['outcome'], 'abandoned')
 
     def test_crash_console_copies_are_bounded(self) -> None:
-        for step in range(watchdog.CRASH_LOGS_KEPT + 2):
+        for step in range(7):
             (self.directory / 'console.log').write_text(f'boot {step}\n')
             watchdog._keep_console(self.directory, self.clock.now + step)
         kept = sorted(path.read_text() for path in self.directory.glob('console-crash-*.log'))
-        self.assertEqual(kept, [f'boot {step}\n' for step in range(2, watchdog.CRASH_LOGS_KEPT + 2)])
+        # The five newest copies stay.
+        self.assertEqual(kept, ['boot 2\n', 'boot 3\n', 'boot 4\n', 'boot 5\n', 'boot 6\n'])
 
     def test_providers_of_the_dead_boot_end_through_the_transport_loss_path(self) -> None:
         servers = {'chat-1': Mock(), 'chat-2': Mock()}

@@ -29,7 +29,6 @@ import {
   scaleProfile,
   showsUpstreamLimit,
   SCALE_WORKSPACE_MODE,
-  TOOL_BARRIER_PROCESS_BOUND_MS,
   acquireRunLock,
   assertConcurrentWorkers,
   assertServedModelEvidence,
@@ -846,11 +845,18 @@ describe("scale verifier readiness markers", () => {
         readinessObservedAt,
         nowMs: startMs + 10_000,
       }),
-    ).toBe(TOOL_BARRIER_PROCESS_BOUND_MS - 10_000);
+    ).toBe(231_000);
+    // 239 s timeout, 1 s kill grace and 1 s scheduling margin.
     expect(
       callbackProcessRetirementDelayMs({
         readinessObservedAt,
-        nowMs: startMs + TOOL_BARRIER_PROCESS_BOUND_MS,
+        nowMs: startMs + 240_999,
+      }),
+    ).toBe(1);
+    expect(
+      callbackProcessRetirementDelayMs({
+        readinessObservedAt,
+        nowMs: startMs + 241_000,
       }),
     ).toBe(0);
     expect(() =>

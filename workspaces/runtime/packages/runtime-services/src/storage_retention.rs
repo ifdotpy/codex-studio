@@ -431,9 +431,10 @@ mod tests {
         run_pass(&store, NOW).await.expect("retention pass");
 
         let trimmed = task(&store, "old-done").await;
+        // The last 512 bytes of `long_tail()`.
         assert_eq!(
             trimmed["tail"],
-            json!(crate::payload_blobs::task_preview(&tail))
+            json!(format!("{}end of output", "a".repeat(499)))
         );
         assert_eq!(trimmed["outputPreviewOnly"], json!(true));
         assert_eq!(trimmed["outputTruncated"], json!(true));
@@ -518,9 +519,10 @@ mod tests {
             (cursor, complete, status.as_str(), error),
             (TASK_NEWEST_PER_AGENT + 1, 1, "complete", None)
         );
+        // The last 512 bytes of `long_tail()`.
         assert_eq!(
             task(&store, "t-0100").await["tail"],
-            json!(crate::payload_blobs::task_preview(&tail))
+            json!(format!("{}end of output", "a".repeat(499)))
         );
     }
 

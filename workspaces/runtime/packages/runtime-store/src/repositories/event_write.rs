@@ -571,7 +571,15 @@ mod tests {
             )
             .expect("updated projection exists");
         assert_eq!(sequence, 2);
-        assert_eq!(hash, super::hash_payload(&payload));
+        assert_eq!(
+            payload,
+            r#"{"collection":"agent","id":"a","value":{"id":"a","manualName":true,"name":"New","needsTitle":true,"role":"orchestrator"}}"#
+        );
+        // SHA-256 of the payload text above.
+        assert_eq!(
+            hash,
+            "42b19456ff8aa96252aa2805d353078e41fad0b2f2b0d29e0e66af9cb962d2b6"
+        );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&payload)
                 .expect("updated projection remains JSON")["value"],

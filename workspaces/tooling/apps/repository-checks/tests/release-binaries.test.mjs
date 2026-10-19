@@ -51,6 +51,23 @@ test("accepts binaries built from the same commit", () =>
     );
   }));
 
+test("names the shipped release artifacts for each Unix platform", () => {
+  assert.deepEqual(releaseArtifacts("darwin"), [
+    "studio-runtime-server",
+    "codex-process-supervisor",
+    "codex-diagnostics",
+    "studio-peer-link",
+    "libstudio_operations_native.dylib",
+  ]);
+  assert.deepEqual(releaseArtifacts("linux"), [
+    "studio-runtime-server",
+    "codex-process-supervisor",
+    "codex-diagnostics",
+    "studio-peer-link",
+    "libstudio_operations_native.so",
+  ]);
+});
+
 test("refuses binaries built from another commit", () =>
   withRelease(async (directory) => {
     await assert.rejects(
