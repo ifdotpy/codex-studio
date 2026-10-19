@@ -384,7 +384,11 @@ async fn crash_before_delete_keeps_the_receipt_for_idempotent_replay() {
         assert_eq!(sink.seen.lock().expect("sink").len(), 1);
     }
     drop(store);
-    let store = Arc::new(RuntimeStore::open(Some(&root)).await.expect("reopen after delete failpoint"));
+    let store = Arc::new(
+        RuntimeStore::open(Some(&root))
+            .await
+            .expect("reopen after delete failpoint"),
+    );
     assert_eq!(
         store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
             .await
@@ -802,7 +806,9 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
         .bridge
         .run(move |store| async move {
             store
-                .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &backlog))
+                .transaction_with(move |tx| {
+                    store::persist_publication_batch(tx, "default", &backlog)
+                })
                 .await
         })
         .await
@@ -1213,17 +1219,17 @@ async fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
     let deliver = |cursor, prepared: crate::analytics_capture::PreparedCapture| {
         let store = Arc::clone(&store);
         async move {
-        crate::analytics_capture::capture_notification_effect(
-            &store,
-            "account:default".into(),
-            7,
-            cursor,
-            "analytics".into(),
-            prepared,
-            None,
-        )
-        .await
-        .expect("capture analytics effect")
+            crate::analytics_capture::capture_notification_effect(
+                &store,
+                "account:default".into(),
+                7,
+                cursor,
+                "analytics".into(),
+                prepared,
+                None,
+            )
+            .await
+            .expect("capture analytics effect")
         }
     };
 

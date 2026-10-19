@@ -522,13 +522,15 @@ mod capture_refusal_tests {
         };
         let effect = NotificationPostCommit::Analytics {
             observation: NotificationObservation {
-                agent: Some(crate::notification_dispatch::SharedJson::new(serde_json::json!({
-                    "id":"agent","name":"Agent","rootId":"root","accountKey":"default",
-                    "accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn",
-                    "model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,
-                    "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,
-                    "epoch":0,"status":"running"
-                }))),
+                agent: Some(crate::notification_dispatch::SharedJson::new(
+                    serde_json::json!({
+                        "id":"agent","name":"Agent","rootId":"root","accountKey":"default",
+                        "accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn",
+                        "model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,
+                        "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,
+                        "epoch":0,"status":"running"
+                    }),
+                )),
                 method: "item/started".into(),
                 params: crate::notification_dispatch::SharedJson::new(serde_json::json!([
                     "not an object"

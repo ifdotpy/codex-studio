@@ -312,9 +312,8 @@ fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
         let mut params = params;
         params["threadId"] = json!(thread);
         params["turnId"] = json!(turn);
-        let prepared =
-            PreparedCapture::event(&agent, method, &params, at, at, CaptureSource::Live)
-                .expect("request");
+        let prepared = PreparedCapture::event(&agent, method, &params, at, at, CaptureSource::Live)
+            .expect("request");
         let tx = db.transaction().expect("transaction");
         let decision = decide(CaptureSnapshot::load(&tx, prepared.into()).expect("snapshot"))
             .unwrap_or_else(|error| panic!("{method} in {turn}: {error}"));
