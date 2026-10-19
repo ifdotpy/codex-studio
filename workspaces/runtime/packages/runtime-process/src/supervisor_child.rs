@@ -250,6 +250,27 @@ impl OwnedChild {
             _ => Ok(None),
         }
     }
+    /// Exit sequence whose journal row has committed. A reader can receive
+    /// the committed exit row before `publish_exit` marks it persisted, so a
+    /// decision made after that delivery reads the journal, not that mark.
+    pub fn committed_exit_sequence(&self) -> Result<Option<u64>> {
+        if self.exit_event_state.load(Ordering::Acquire) != ExitEventState::Persisting as u8 {
+            return self.durable_exit_sequence();
+        }
+        // `append` records the exit sequence before its commit can be visible.
+        let sequence = self.exit_event_sequence.load(Ordering::Acquire);
+        if sequence == 0 {
+            return Ok(None);
+        }
+        let row = self
+            .journal
+            .handle(&self.handle)?
+            .ok_or(Error::Refused("Unknown supervisor handle"))?;
+        Ok(
+            (row.snapshot.generation() == self.generation && row.snapshot.sequence() >= sequence)
+                .then_some(sequence),
+        )
+    }
     #[cfg(test)]
     pub(super) fn lock_append_for_test(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
         lock(&self.append_lock)
@@ -298,6 +319,11 @@ impl OwnedChild {
             .handle(&self.handle)?
             .ok_or(Error::Refused("Unknown supervisor handle"))?;
         let sequence = row.snapshot.sequence() + 1;
+        if kind == "exit" {
+            // Record the sequence before its commit can become visible.
+            // Readers trust it only after `Persisted` or a journal commit.
+            self.exit_event_sequence.store(sequence, Ordering::Release);
+        }
         while !self.stopping.load(Ordering::Acquire) {
             let result = free_space(&self.root, 1024 * 1024).and_then(|()| {
                 Ok(self
@@ -472,6 +498,7 @@ mod tests {
         }
         assert_eq!(child.code().unwrap(), Some(0));
         assert!(child.durable_exit_sequence().unwrap().is_none());
+        assert!(child.committed_exit_sequence().unwrap().is_none());
         assert!(
             journal.events(handle, 0, false).unwrap()["events"]
                 .as_array()
@@ -492,5 +519,17 @@ mod tests {
         let events = journal.events(handle, 0, false).unwrap();
         assert_eq!(events["events"][0]["kind"], "exit");
         assert_eq!(events["events"][0]["sequence"], exit_sequence);
+
+        // A nextBatch reader can deliver the committed exit row before
+        // `publish_exit` marks it persisted. Restore that window: an open or
+        // retire decided after the delivery must still see the commit.
+        child
+            .exit_event_state
+            .store(ExitEventState::Persisting as u8, Ordering::Release);
+        assert!(child.durable_exit_sequence().unwrap().is_none());
+        assert_eq!(
+            child.committed_exit_sequence().unwrap(),
+            Some(exit_sequence)
+        );
     }
 }

@@ -228,7 +228,7 @@ impl Supervisor {
                         }
                         return self.open_result(handle, &child, true);
                     }
-                    if child.durable_exit_sequence()?.is_none() {
+                    if child.committed_exit_sequence()?.is_none() {
                         return Err(Error::Refused(
                             "Native child exit event is not yet durably recorded",
                         ));
@@ -567,7 +567,7 @@ impl Supervisor {
             Command::Detach { .. } => Ok(json!({"detached":true})),
             Command::RetireCommand { generation, .. } => {
                 let _write = lock(&child.write_lock)?;
-                let exit_event_durable = child.durable_exit_sequence()?.is_some();
+                let exit_event_durable = child.committed_exit_sequence()?.is_some();
                 self.journal
                     .retire(&handle, generation, exit_event_durable, exit_event_durable)?;
                 *lock(&slot.child)? = None;
