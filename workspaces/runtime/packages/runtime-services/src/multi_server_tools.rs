@@ -58,6 +58,16 @@ pub(crate) trait MultiServerToolPort: Send + Sync {
         key: &'a str,
         now: f64,
     ) -> BoxFuture<'a, Result<DispatchedOperation, Error>>;
+
+    /// Python `worker_call`: a remote worker's tool call answered by its home
+    /// server through the remote-parent link.
+    fn worker_call<'a>(
+        &'a self,
+        actor: &'a Actor,
+        action: &'a str,
+        args: &'a Value,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>>;
 }
 
 /// Production adapter over the paired-server outbox driver.
@@ -1039,6 +1049,182 @@ impl MultiServerToolPort for ServerTools {
     ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
         Box::pin(async move { settle(self.run(actor, args, key).await) })
     }
+
+    fn worker_call<'a>(
+        &'a self,
+        actor: &'a Actor,
+        action: &'a str,
+        args: &'a Value,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
+        Box::pin(async move { settle(self.worker(actor, action, args, key).await) })
+    }
+}
+
+impl ServerTools {
+    /// Python `worker_call`. The home server answers with a receipt: a refusal
+    /// is the tool's refusal, an unknown outcome stays unknown and saved.
+    async fn worker(
+        &self,
+        actor: &Actor,
+        action: &str,
+        args: &Value,
+        key: &str,
+    ) -> Result<Value, Step> {
+        let origin = actor.record().extra.get("remoteOrigin");
+        let home = origin
+            .and_then(|origin| origin.get("home"))
+            .and_then(Value::as_str);
+        let link = origin
+            .and_then(|origin| origin.get("link"))
+            .and_then(Value::as_str);
+        let (Some(home), Some(link)) = (home.map(str::to_owned), link.map(str::to_owned)) else {
+            return refuse("Unknown remote-parent link");
+        };
+        let key = identity(&[&actor.record().id.0, action, key]);
+        let actor_id = actor.record().id.0.clone();
+        let epoch = actor.record().epoch;
+        let link_for_read = link.clone();
+        let parent_epoch = self
+            .read(move |tx| {
+                let current = checked_actor(tx, &actor_id)?;
+                if current.epoch != epoch {
+                    return refuse("The worker was stopped");
+                }
+                let raw: Option<String> = tx
+                    .query_row(
+                        "SELECT record FROM runtime_server_links WHERE id=?1",
+                        [&link_for_read],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(raw) = raw else {
+                    return refuse("Unknown remote-parent link");
+                };
+                let record: Value = serde_json::from_str(&raw)
+                    .map_err(|_| Step::Refused("The remote-parent link is invalid".into()))?;
+                Ok(record.get("parentEpoch").cloned().unwrap_or(Value::Null))
+            })
+            .await?;
+        let payload = json!({
+            "link": link,
+            "worker": actor.record().id.0,
+            "epoch": epoch,
+            "parentEpoch": parent_epoch,
+            "args": args,
+        });
+        let mut receipt = self.deliver(&home, action, &payload, &key).await?;
+        match receipt["outcome"].as_str() {
+            Some("not_applied") => refuse(field(&receipt, "error")),
+            Some("applied") => Ok(receipt["value"].take()),
+            _ => {
+                receipt["detail"] = json!("The request is saved. Do not submit another identity.");
+                Ok(receipt)
+            }
+        }
+    }
+}
+
+/// Python `Runtime.dynamic` and `chat_message`: the tool calls of a remote
+/// worker (`remoteOrigin`) that its home server answers, as (worker-call
+/// action, call arguments). `None` runs the tool on this server. `Err` is a
+/// refusal before any write. Arguments are never resolved on this server.
+pub(crate) fn worker_route(
+    tool: &str,
+    args: &Value,
+    actor: &studio_runtime_store::AgentRecord,
+) -> Option<Result<(&'static str, Value), &'static str>> {
+    if !studio_runtime_store::truthy(actor.extra.get("remoteOrigin")) {
+        return None;
+    }
+    let moved = studio_runtime_store::truthy(actor.extra.get("movedFrom"));
+    let forward = |action: &'static str| Some(Ok((action, args.clone())));
+    match tool {
+        "orchestration_agent_manage" if moved && args.get("action") != Some(&json!("park")) => {
+            forward("move_manage")
+        }
+        "orchestration_context"
+            if matches!(
+                args.get("topic").and_then(Value::as_str),
+                Some("plan" | "complaints")
+            ) =>
+        {
+            forward("context")
+        }
+        "orchestration_task" => forward("task"),
+        "orchestration_complaint" => forward("complaint"),
+        "orchestration_interrupt" if moved => forward("move_interrupt"),
+        "orchestration_spawn" if moved => forward("move_spawn"),
+        "orchestration_send" if moved => forward("move_send"),
+        "orchestration_status" | "orchestration_peers" => {
+            Some(Ok(("directory", json!({"tool": tool, "arguments": args}))))
+        }
+        "orchestration_chat_read" => {
+            let room = args
+                .get("room_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (!room.starts_with("remote:") && !room.starts_with("federated:"))
+                .then(|| Ok(("chat_read", args.clone())))
+        }
+        "orchestration_message" => {
+            let target = args.get("target").and_then(Value::as_str)?;
+            if target == "user" || target.starts_with("federated:") || target.starts_with("remote:")
+            {
+                return None;
+            }
+            Some(worker_message(target, args))
+        }
+        _ => None,
+    }
+}
+
+/// Python `chat_message` checks before its `worker_call('message', ...)`.
+pub(crate) fn worker_message(
+    target: &str,
+    args: &Value,
+) -> Result<(&'static str, Value), &'static str> {
+    let importance = match args.get("importance") {
+        None => "message",
+        Some(value) => value.as_str().unwrap_or_default(),
+    };
+    if !matches!(
+        importance,
+        "message" | "progress" | "question" | "blocker" | "result"
+    ) {
+        return Err("Unknown message importance");
+    }
+    let progress_key = args.get("progress_key").filter(|value| !value.is_null());
+    let progress_version = args
+        .get("progress_version")
+        .filter(|value| !value.is_null());
+    if (progress_key.is_some() || progress_version.is_some())
+        && (importance != "progress"
+            || !progress_key
+                .and_then(Value::as_str)
+                .is_some_and(|key| (1..=200).contains(&key.chars().count()))
+            || !progress_version.is_some_and(|version| version.is_u64()))
+    {
+        return Err(
+            "Versioned progress requires a progress_key and nonnegative integer progress_version",
+        );
+    }
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .map(crate::event_write::python_strip)
+        .filter(|text| (1..=12_000).contains(&text.chars().count()))
+        .ok_or("Message must have 1 to 12000 characters")?;
+    Ok((
+        "message",
+        json!({
+            "target": target,
+            "text": text,
+            "importance": importance,
+            "progress_key": progress_key,
+            "progress_version": progress_version,
+        }),
+    ))
 }
 
 /// Python `checked_actor(db, actor, actor)`.

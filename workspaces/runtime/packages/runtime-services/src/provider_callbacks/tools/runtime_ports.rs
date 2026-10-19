@@ -119,6 +119,14 @@ impl ManagedToolRuntime {
             // The first attached driver stays the owner of these requests.
         }
     }
+
+    /// Attach the provider-session voice adapter that plays
+    /// `orchestration_speak` in a ready voice session.
+    pub fn attach_voice(&self, port: Arc<dyn crate::voice_runtime::VoiceRequestPort>) {
+        if self.ports.late.voice.set(port).is_err() {
+            // The first attached adapter stays the owner of voice requests.
+        }
+    }
 }
 
 struct ManagedChildCreationAdapter(

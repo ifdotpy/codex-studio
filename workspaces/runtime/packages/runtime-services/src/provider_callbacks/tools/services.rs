@@ -560,6 +560,34 @@ pub(super) async fn resolve_interrupt_target(
         .await
 }
 
+/// Python `dynamic` for `orchestration_send`: the visible target ID and
+/// whether it is a descendant of the caller.
+pub(super) async fn resolve_send_target(
+    store: &studio_runtime_store::RuntimeStore,
+    context: &CallbackContext,
+    supplied: &str,
+) -> Result<(String, bool), crate::managed_host_tools::Error> {
+    let context = context.clone();
+    let supplied = supplied.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::storage::snapshot(tx, &context)
+                .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+            let target =
+                messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
+                    CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+                    CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                    CallbackError::Invalid(message) => {
+                        crate::managed_host_tools::Error::Invalid(message)
+                    }
+                    _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+                })?;
+            let descendant = is_descendant(tx, &context.agent, &target)?;
+            Ok((target, descendant))
+        })
+        .await
+}
+
 impl From<event_write::EventWriteError> for CallbackError {
     fn from(error: event_write::EventWriteError) -> Self {
         use event_write::EventWriteError as E;
@@ -625,24 +653,17 @@ pub(super) fn execute(
             "The move is accepted. Finish this turn before the next task",
         ));
     }
-    let managed_host_tool = matches!(
-        kind,
-        ToolKind::Spawn
-            | ToolKind::Send
-            | ToolKind::Interrupt
-            | ToolKind::Status
-            | ToolKind::Search
-            | ToolKind::Context
-            | ToolKind::Complaint
-            | ToolKind::Watch
-            | ToolKind::Monitor
-            | ToolKind::Review
-    );
-    if studio_runtime_store::truthy(actor.get("remoteOrigin"))
-        && name != "orchestration_request"
-        && !managed_host_tool
-    {
-        return Err(CallbackError::Dependency("multi-server/worker-call"));
+    // The managed-tool dispatcher sends a remote worker's home-server calls
+    // first. Any such call that still arrives here had no dispatcher; the
+    // worker's other tools run on this server, as in Python.
+    if studio_runtime_store::truthy(actor.get("remoteOrigin")) {
+        let record = studio_runtime_store::AgentRecord::from_value(actor.clone())
+            .map_err(|_| CallbackError::Stale)?;
+        if crate::multi_server_tools::worker_route(name, args, &record).is_some() {
+            return Err(CallbackError::Dependency(
+                super::runtime_dispatch::WORKER_CALL_DEPENDENCY,
+            ));
+        }
     }
     let mut resolved_args = args.clone();
     let field = match kind {

@@ -2209,9 +2209,31 @@ fn compact_receipt(action: &str, result: &ExchangeOutcome, key: &str) -> Value {
     value
 }
 
-fn peer_replay_safe_sql_values() -> String {
+/// Worker calls that a remote worker sends to its home server (Python
+/// `worker_call`). The home server binds each request identity to a durable
+/// inbox claim, so the sender delivers the same envelope again after a lost
+/// reply, as Python `_retry` does. The receiver never runs a claimed write
+/// twice, so these actions are not replay-safe on the receiving side.
+pub(crate) const WORKER_CALL_RETRY_ACTIONS: &[&str] = &[
+    "task",
+    "complaint",
+    "context",
+    "directory",
+    "chat_read",
+    "move_manage",
+    "move_interrupt",
+    "move_spawn",
+];
+
+/// The sender may deliver this queued or crashed outbox envelope again.
+fn outgoing_retry(action: &str) -> bool {
+    peer_replay_safe(action) || WORKER_CALL_RETRY_ACTIONS.contains(&action)
+}
+
+fn outgoing_retry_sql_values() -> String {
     PEER_REPLAY_SAFE_ACTIONS
         .iter()
+        .chain(WORKER_CALL_RETRY_ACTIONS)
         .map(|action| format!("'{action}'"))
         .collect::<Vec<_>>()
         .join(",")
@@ -2267,7 +2289,7 @@ pub fn decide_delivery(
         return Ok(DeliveryDecision::Execute);
     }
     if outgoing
-        && peer_replay_safe(action)
+        && outgoing_retry(action)
         && matches!(snapshot.state.as_str(), "queued" | "running")
         && snapshot.next_at <= now as f64
     {
@@ -2847,7 +2869,7 @@ impl OrchestrationDriver {
                  WHERE next_at<=?1 AND (state='queued' OR (state='running' \
                    AND json_extract(body,'$.action') IN ({}))) \
                  ORDER BY rowid LIMIT ?2",
-                        peer_replay_safe_sql_values()
+                        outgoing_retry_sql_values()
                     );
                     let mut statement = tx.prepare(&sql)?;
                     let rows =
@@ -2883,7 +2905,7 @@ impl OrchestrationDriver {
             // A crash after claiming leaves a row running. Stable-identity
             // peer operations can safely replay; provider commands remain
             // one-shot and deliberately stay unknown after that crash point.
-            if state == "running" && !peer_replay_safe(&envelope.action) {
+            if state == "running" && !outgoing_retry(&envelope.action) {
                 continue;
             }
             // One row that cannot be delivered must not hold back the rows after it
@@ -2944,7 +2966,7 @@ impl OrchestrationDriver {
             result,
             ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting
         ) {
-            if peer_replay_safe(action) && table == "outbox" {
+            if outgoing_retry(action) && table == "outbox" {
                 let store_for_read = Arc::clone(&self.store);
                 let key_for_read = key.to_owned();
                 let attempts = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -3084,7 +3106,7 @@ fn outbox_next_due_at(
         "SELECT MIN(next_at) FROM runtime_server_outbox \
          WHERE state='queued' OR (state='running' AND \
            json_extract(body,'$.action') IN ({}))",
-        peer_replay_safe_sql_values()
+        outgoing_retry_sql_values()
     );
     // Python stores next_at as float seconds. Round up so the scheduler never wakes
     // before the row is due and spins until the next whole second.

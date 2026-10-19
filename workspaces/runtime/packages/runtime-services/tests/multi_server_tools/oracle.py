@@ -94,7 +94,19 @@ runtime.replies = []
 lead = runtime.create({"name": "Servers lead", "cwd": str(root), "prompt": "fixture"}, defer=True)
 worker = runtime.create({"name": "Servers worker", "cwd": str(root), "prompt": "fixture"}, defer=True)
 worker.update(parentId=lead["id"], rootId=lead["id"], isLead=False)
-for index, actor in enumerate([lead, worker]):
+# Workers that a lead on the paired server placed here, and one that moved here.
+LINK = "fixture-remote-link"
+remote = runtime.create({"name": "Remote worker", "cwd": str(root), "prompt": "fixture"}, defer=True)
+remote.update(isLead=False, remoteOrigin={"home": PEER, "link": LINK})
+moved = runtime.create({"name": "Moved worker", "cwd": str(root), "prompt": "fixture"}, defer=True)
+moved.update(isLead=False, remoteOrigin={"home": PEER, "link": LINK}, movedFrom=PEER)
+# The remote-parent link that the paired server's spawn created on this server.
+runtime.multi_server()
+with runtime.lock, runtime.db() as db:
+    db.execute("INSERT OR REPLACE INTO runtime_server_links(id,record) VALUES(?,?)", (LINK, json.dumps(
+        {"id": LINK, "side": "remote", "server": PEER, "parent": "home-parent", "parentEpoch": 4,
+         "workers": [remote["id"], moved["id"]]})))
+for index, actor in enumerate([lead, worker, remote, moved]):
     actor.update(autoWake=True, status="running", accountKey="default", threadId=f"thread-{index}",
                  turnId=f"turn-{index}", epoch=3, turnEpoch=3)
     with runtime.lock, runtime.db() as db:
@@ -117,7 +129,7 @@ shutil.copytree(root, python_root)
 managed = Quiet(python_root, lambda *_args, **_kwargs: None)
 managed.replies = []
 with managed.lock, managed.db() as db:
-    for actor in [lead, worker]:
+    for actor in [lead, worker, remote, moved]:
         managed.put(db, "agents", actor)
 baseline = scratch / "baseline.sqlite3"
 with managed.db() as db:
@@ -157,6 +169,23 @@ def reply(envelope):
     if action == "location_matches":
         return {"requestId": key, "outcome": "applied", "value": {"matches": [
             {"projectId": "/peer/project", "path": "/peer/project", "name": "project"}]}}
+    if action == "task":
+        return {"requestId": key, "outcome": "applied", "value": {"apiVersion": 2, "items": [
+            {"id": "home-task", "title": "Home task"}]}}
+    if action == "message":
+        return {"requestId": key, "outcome": "applied", "value": {"stored": True, "target": payload["args"]["target"]}}
+    if action == "directory":
+        return {"requestId": key, "outcome": "applied", "value": {"tool": payload["args"]["tool"], "agents": []}}
+    if action == "chat_read":
+        return {"requestId": key, "outcome": "applied", "value": {"messages": [], "room": payload["args"]["room_id"]}}
+    if action == "context":
+        if payload["args"].get("topic") == "complaints":
+            return {"requestId": key, "outcome": "unknown"}
+        return {"requestId": key, "outcome": "applied", "value": {"topic": "plan", "version": "v1", "content": "Home plan"}}
+    if action == "complaint":
+        return {"requestId": key, "outcome": "not_applied", "error": "The home server refused the complaint"}
+    if action in {"move_send", "move_spawn", "move_interrupt", "move_manage"}:
+        return {"requestId": key, "outcome": "applied", "value": {"forwarded": action}}
     raise AssertionError("unexpected fixture action " + action)
 
 
@@ -180,10 +209,10 @@ managed._cross_server_service = MultiServerService(managed, transport)
 cases = []
 
 
-def call(name, actor, arguments):
+def call(name, actor, arguments, tool="orchestration_servers"):
     message = {"id": f"rpc-{name}", "method": "item/tool/call", "params": {
         "threadId": actor["threadId"], "turnId": actor["turnId"], "callId": f"call-{name}",
-        "tool": "orchestration_servers", "arguments": arguments}}
+        "tool": tool, "arguments": arguments}}
     before = len(transport.sent)
     with patch("time.time", return_value=20.0):
         managed.dynamic(message, "default", "connection")
@@ -194,7 +223,7 @@ def call(name, actor, arguments):
     except ValueError:
         value = text
     cases.append({"name": name, "actor": actor["id"], "callId": message["params"]["callId"],
-                  "arguments": arguments, "success": result["success"], "value": value,
+                  "tool": tool, "arguments": arguments, "success": result["success"], "value": value,
                   "serverOutputExpiresAt": result.get("serverOutputExpiresAt"),
                   "sent": transport.sent[before:]})
     return value
@@ -223,11 +252,31 @@ call("add-location-again", lead, {"action": "add_location", "project": project_i
 call("remove-location", lead, {"action": "remove_location", "project": project_id, "server": PEER})
 with managed.read_db() as db:
     removed = json.loads(db.execute("SELECT record FROM runtime_projects WHERE id=?", (project_id,)).fetchone()[0])
+# Remote-worker calls that the home server answers (Python `worker_call`).
+call("remote-task", remote, {"action": "list"}, "orchestration_task")
+call("remote-message", remote, {"target": "lead", "text": "  progress  ", "importance": "progress",
+                                "progress_key": "build", "progress_version": 2}, "orchestration_message")
+call("remote-message-bad-importance", remote, {"target": "lead", "text": "x", "importance": "loud"}, "orchestration_message")
+call("remote-send-parent", remote, {"agent_id": "parent", "text": "done"}, "orchestration_send")
+call("remote-status", remote, {}, "orchestration_status")
+call("remote-peers", remote, {"scope": "team"}, "orchestration_peers")
+call("remote-chat-read", remote, {"room_id": "home-room"}, "orchestration_chat_read")
+call("remote-context-plan", remote, {"topic": "plan"}, "orchestration_context")
+call("remote-context-unknown", remote, {"topic": "complaints"}, "orchestration_context")
+call("remote-complaint-refused", remote, {"action": "submit", "text": "help"}, "orchestration_complaint")
+call("moved-send", moved, {"agent_id": "parent", "text": "moved hello"}, "orchestration_send")
+call("moved-spawn", moved, {"agents": [{"name": "Child", "prompt": "work"}]}, "orchestration_spawn")
+call("moved-interrupt", moved, {"agent_id": "some-child"}, "orchestration_interrupt")
+call("moved-manage", moved, {"action": "rename", "agent_id": "some-child", "name": "New"}, "orchestration_agent_manage")
+# Orchestrator speech without a voice session is saved, not played.
+call("speak-saved", lead, {"text": "Build finished"}, "orchestration_speak")
+call("speak-worker-refused", worker, {"text": "Hello"}, "orchestration_speak")
+call("speak-blank-refused", lead, {"text": "   "}, "orchestration_speak")
 managed.close()
 shutil.copy2(baseline, root / "canvas.sqlite3")
 for suffix in ("-wal", "-shm"):
     (root / ("canvas.sqlite3" + suffix)).unlink(missing_ok=True)
 print(json.dumps({"template": str(root), "localServer": local_server, "peer": PEER,
-                  "lead": lead, "worker": worker, "projectId": project_id,
+                  "lead": lead, "worker": worker, "remote": remote, "moved": moved, "projectId": project_id,
                   "projectAfterAdd": added, "projectAfterRemove": removed, "cases": cases},
                  ensure_ascii=False))

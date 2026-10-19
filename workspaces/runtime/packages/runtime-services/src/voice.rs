@@ -180,6 +180,118 @@ pub async fn record(store: &RuntimeStore, input: VoiceRecordInput) -> Result<Val
         .await
 }
 
+/// Characters that one `orchestration_speak` text may hold (Python `VoiceStore.speak`).
+const MAX_SPEECH_TEXT: usize = 4096;
+
+pub struct SpeakRequest {
+    pub store: std::sync::Arc<RuntimeStore>,
+    pub provider: Option<std::sync::Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
+    pub agent_id: String,
+    pub text: String,
+    /// The tool request identity; the record identity is `speak:<request_id>`.
+    pub request_id: String,
+    /// The caller's turn epoch, when the caller is a model turn.
+    pub epoch: Option<i64>,
+}
+
+/// Python `VoiceStore.speak`: save the orchestrator's speech once, then submit
+/// it to the ready voice session of that chat. Without a ready session the
+/// record stays saved and playback is not confirmed.
+pub async fn speak(request: SpeakRequest) -> Result<Value, provider::VoiceProviderError> {
+    let SpeakRequest {
+        store,
+        provider,
+        agent_id,
+        text,
+        request_id,
+        epoch,
+    } = request;
+    if text.chars().count() > MAX_SPEECH_TEXT || event_write::python_strip(&text).is_empty() {
+        return Err(
+            VoiceError::InvalidRequest("Speech text must contain 1 to 4096 characters").into(),
+        );
+    }
+    let agent_for_check = agent_id.clone();
+    let active = store.read_transaction_with_error(
+        move |connection| -> Result<Option<String>, VoiceError> {
+            let agent = AgentRepository::get(connection, &AgentId::from(agent_for_check.as_str()))?;
+            let Some(agent) = agent.filter(|agent| {
+                agent.extra.get("isLead").and_then(Value::as_bool) == Some(true)
+                    && !event_write::truthy(agent.extra.get("deletedAt"))
+            }) else {
+                return Err(VoiceError::InvalidRequest(
+                    "Voice is available in an orchestrator chat only",
+                ));
+            };
+            if epoch.is_some_and(|epoch| {
+                agent.epoch != epoch || agent.extra.get("autoWake") != Some(&Value::Bool(true))
+            }) {
+                return Err(VoiceError::InvalidRequest(
+                    "The orchestrator turn is stopped or replaced",
+                ));
+            }
+            ready_session(connection, &agent_for_check)
+        },
+    )?;
+    // A ready session needs the provider adapter. Refuse before the record
+    // exists rather than report a saved speech that could not play.
+    if active.is_some() && provider.is_none() {
+        return Err(provider::VoiceProviderError::RequiresDependency(
+            "voice/provider-session",
+        ));
+    }
+    let row = record(
+        &store,
+        VoiceRecordInput {
+            agent_id: agent_id.clone(),
+            session_id: String::new(),
+            event_id: format!("speak:{request_id}"),
+            kind: "orchestrator".to_owned(),
+            text,
+            item_id: String::new(),
+            previous_item_id: String::new(),
+            payload: None,
+            internal: true,
+        },
+    )
+    .await?;
+    let agent_for_session = agent_id.clone();
+    let active = store.read_transaction_with_error(move |connection| {
+        ready_session(connection, &agent_for_session)
+    })?;
+    let Some(session) = active else {
+        return Ok(json!({"record": row, "status": "saved", "playback": "not confirmed"}));
+    };
+    let provider = provider.ok_or(provider::VoiceProviderError::RequiresDependency(
+        "voice/provider-session",
+    ))?;
+    let record_id = row["id"]
+        .as_str()
+        .ok_or_else(|| invalid("voice_records", &agent_id))?
+        .to_owned();
+    let receipt = provider::speech(store, provider, agent_id, session, record_id, None).await?;
+    let mut value = json!({"record": row});
+    if let Some(fields) = receipt.as_object() {
+        for (key, field) in fields {
+            value[key] = field.clone();
+        }
+    }
+    Ok(value)
+}
+
+/// Python `speak`: the agent's ready, unended voice session.
+fn ready_session(connection: &Connection, agent_id: &str) -> Result<Option<String>, VoiceError> {
+    use rusqlite::OptionalExtension;
+    Ok(connection
+        .query_row(
+            "SELECT id FROM voice_sessions WHERE agent=?1 AND state='ready' AND ended IS NULL",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::from)?)
+}
+
 pub fn records(store: &RuntimeStore, agent_id: &str, after: i64) -> Result<Value, VoiceError> {
     let (agent, rows, delivered_batches, session) = store.read_transaction(|connection| {
         Ok((

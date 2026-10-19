@@ -77,6 +77,31 @@ fn reply(envelope: &Value) -> Value {
         }
         "location_matches" => json!({"requestId": key, "outcome": "applied", "value": {"matches": [
             {"projectId": "/peer/project", "path": "/peer/project", "name": "project"}]}}),
+        "task" => {
+            json!({"requestId": key, "outcome": "applied", "value": {"apiVersion": 2, "items": [
+            {"id": "home-task", "title": "Home task"}]}})
+        }
+        "message" => {
+            json!({"requestId": key, "outcome": "applied", "value": {"stored": true, "target": payload["args"]["target"]}})
+        }
+        "directory" => {
+            json!({"requestId": key, "outcome": "applied", "value": {"tool": payload["args"]["tool"], "agents": []}})
+        }
+        "chat_read" => {
+            json!({"requestId": key, "outcome": "applied", "value": {"messages": [], "room": payload["args"]["room_id"]}})
+        }
+        "context" if payload["args"]["topic"] == "complaints" => {
+            json!({"requestId": key, "outcome": "unknown"})
+        }
+        "context" => {
+            json!({"requestId": key, "outcome": "applied", "value": {"topic": "plan", "version": "v1", "content": "Home plan"}})
+        }
+        "complaint" => {
+            json!({"requestId": key, "outcome": "not_applied", "error": "The home server refused the complaint"})
+        }
+        action @ ("move_send" | "move_spawn" | "move_interrupt" | "move_manage") => {
+            json!({"requestId": key, "outcome": "applied", "value": {"forwarded": action}})
+        }
         action => panic!("unexpected fixture action {action}"),
     }
 }
@@ -142,7 +167,7 @@ fn context(actor: &Value) -> CallbackContext {
     }
 }
 
-fn frame(context: &CallbackContext, name: &str, call_id: &str, args: &Value) -> Frame {
+fn frame(context: &CallbackContext, tool: &str, name: &str, call_id: &str, args: &Value) -> Frame {
     Frame::Request(RequestFrame {
         id: RequestId::String(format!("rpc-{name}")),
         method: Method::ItemToolCall,
@@ -150,17 +175,23 @@ fn frame(context: &CallbackContext, name: &str, call_id: &str, args: &Value) -> 
             "threadId": context.thread,
             "turnId": context.turn,
             "callId": call_id,
-            "tool": "orchestration_servers",
+            "tool": tool,
             "arguments": args,
         })),
         fields: Default::default(),
     })
 }
 
-fn runtime_ports(tools: Option<Arc<dyn MultiServerToolPort>>) -> ManagedToolRuntimePorts {
+fn runtime_ports(
+    tools: Option<Arc<dyn MultiServerToolPort>>,
+    voice: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
+) -> ManagedToolRuntimePorts {
     let late = crate::provider_callbacks::tools::LatePorts::default();
     if let Some(tools) = tools {
         assert!(late.multi_server.set(tools).is_ok());
+    }
+    if let Some(voice) = voice {
+        assert!(late.voice.set(voice).is_ok());
     }
     ManagedToolRuntimePorts {
         status_watch: None,
@@ -182,8 +213,32 @@ async fn call_tool(
     args: &Value,
     tools: Option<Arc<dyn MultiServerToolPort>>,
 ) -> Value {
+    call_named_tool(
+        store,
+        actor,
+        "orchestration_servers",
+        name,
+        call_id,
+        args,
+        tools,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_named_tool(
+    store: &Arc<RuntimeStore>,
+    actor: &Value,
+    tool: &str,
+    name: &str,
+    call_id: &str,
+    args: &Value,
+    tools: Option<Arc<dyn MultiServerToolPort>>,
+    voice: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
+) -> Value {
     let context = context(actor);
-    let frame = frame(&context, name, call_id, args);
+    let frame = frame(&context, tool, name, call_id, args);
     let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
         store,
         &context,
@@ -191,7 +246,7 @@ async fn call_tool(
         ManagedToolPortsConfig {
             wake: Arc::new(tokio::sync::Notify::new()),
             monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
-            runtime_ports: runtime_ports(tools),
+            runtime_ports: runtime_ports(tools, voice),
         },
     )
     .unwrap();
@@ -231,25 +286,38 @@ async fn servers_tool_matches_python_envelopes_receipts_and_project_locations() 
         Arc::new(ServerTools::new(Arc::clone(&store), driver, false));
     for case in oracle["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
-        let actor = if case["actor"] == oracle["lead"]["id"] {
-            &oracle["lead"]
-        } else {
-            &oracle["worker"]
-        };
+        let actor = ["lead", "worker", "remote", "moved"]
+            .into_iter()
+            .map(|role| &oracle[role])
+            .find(|actor| actor["id"] == case["actor"])
+            .unwrap();
         let before = transport.sent.lock().unwrap().len();
-        let result = call_tool(
+        let result = call_named_tool(
             &store,
             actor,
+            case["tool"].as_str().unwrap(),
             name,
             case["callId"].as_str().unwrap(),
             &case["arguments"],
             Some(Arc::clone(&tools)),
+            None,
         )
         .await;
         let sent = transport.sent.lock().unwrap()[before..].to_vec();
         assert_eq!(json!(sent), case["sent"], "{name}: sent envelopes");
         assert_eq!(result["success"], case["success"], "{name}: {result}");
-        assert_eq!(parsed(&result), case["value"], "{name}: tool value");
+        let mut value = parsed(&result);
+        let mut expected = case["value"].clone();
+        if name.starts_with("speak") {
+            // The record clock and sequence belong to each store.
+            for record in [&mut value, &mut expected] {
+                if let Some(row) = record.get_mut("record").and_then(Value::as_object_mut) {
+                    row.remove("created");
+                    row.remove("seq");
+                }
+            }
+        }
+        assert_eq!(value, expected, "{name}: tool value");
         assert_eq!(
             result
                 .get("serverOutputExpiresAt")
@@ -552,4 +620,212 @@ async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
     assert_eq!(parsed(&again)["commit"], tip);
     assert_eq!(parsed(&again)["bytes"], 0);
     assert_eq!(transport.sent.lock().unwrap().len(), 4, "one export only");
+}
+
+/// A provider session that accepts every speech request.
+#[derive(Default)]
+struct RecordingVoice {
+    requests: Mutex<Vec<(String, Value)>>,
+}
+
+impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
+    fn prepare<'a>(
+        &'a self,
+        agent_id: &'a str,
+        _session_id: &'a str,
+        account_key: &'a str,
+        thread_id: &'a str,
+        epoch: i64,
+    ) -> crate::voice_runtime::VoiceFuture<
+        'a,
+        Result<
+            crate::voice_runtime::VoiceConnectionScope,
+            crate::voice_runtime::VoiceWriteCertainty,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(crate::voice_runtime::VoiceConnectionScope {
+                agent_id: agent_id.to_owned(),
+                epoch,
+                account_key: account_key.to_owned(),
+                thread_id: thread_id.to_owned(),
+                connection_id: "connection".into(),
+                generation: 7,
+            })
+        })
+    }
+
+    fn request<'a>(
+        &'a self,
+        _scope: crate::voice_runtime::VoiceConnectionScope,
+        operation_id: String,
+        _method: crate::voice_runtime::Method,
+        params: Value,
+        _deadline: std::time::Instant,
+    ) -> crate::voice_runtime::VoiceFuture<'a, crate::voice_runtime::VoiceRequestReceipt> {
+        Box::pin(async move {
+            self.requests.lock().unwrap().push((operation_id, params));
+            crate::voice_runtime::VoiceRequestReceipt {
+                certainty: crate::voice_runtime::VoiceWriteCertainty::Written,
+            }
+        })
+    }
+
+    fn reply<'a>(
+        &'a self,
+        _scope: crate::voice_runtime::VoiceConnectionScope,
+        _operation_id: String,
+        _reply: crate::voice_runtime::VoiceReply,
+        _deadline: std::time::Instant,
+    ) -> crate::voice_runtime::VoiceFuture<'a, crate::voice_runtime::VoiceRequestReceipt> {
+        Box::pin(async move {
+            crate::voice_runtime::VoiceRequestReceipt {
+                certainty: crate::voice_runtime::VoiceWriteCertainty::NotSent,
+            }
+        })
+    }
+}
+
+async fn ready_voice_session(store: &RuntimeStore, lead: &Value) {
+    let lead_id = lead["id"].as_str().unwrap().to_owned();
+    let thread = lead["threadId"].as_str().unwrap().to_owned();
+    store
+        .transaction_with(move |tx| -> Result<(), StoreError> {
+            tx.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('voice-session',?1,1,?2,'default','connection','ready')",
+                [&lead_id, &thread],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn speak_plays_once_in_the_ready_voice_session() {
+    let oracle = &oracle().value;
+    let (_directory, store) = python_written_store().await;
+    let lead = &oracle["lead"];
+    ready_voice_session(&store, lead).await;
+    let voice = Arc::new(RecordingVoice::default());
+    let port: Arc<dyn crate::voice_runtime::VoiceRequestPort> = voice.clone();
+    let args = json!({"text": "Build finished"});
+    let first = call_named_tool(
+        &store,
+        lead,
+        "orchestration_speak",
+        "speak",
+        "call-speak",
+        &args,
+        None,
+        Some(Arc::clone(&port)),
+    )
+    .await;
+    assert_eq!(first["success"], true, "{first}");
+    let value = parsed(&first);
+    assert_eq!(value["record"]["id"], "speak:thread-0:call-speak");
+    assert_eq!(value["record"]["text"], "Build finished");
+    assert_eq!(value["session"], "voice-session");
+    assert_eq!(value["state"], "submitted");
+    let requests = voice.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1["text"], "Build finished");
+    // The saved tool result answers an exact replay without a second request.
+    let replay = call_named_tool(
+        &store,
+        lead,
+        "orchestration_speak",
+        "speak",
+        "call-speak",
+        &args,
+        None,
+        Some(port),
+    )
+    .await;
+    assert_eq!(parsed(&replay), value);
+    assert_eq!(voice.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn speak_refuses_before_saving_when_a_ready_session_has_no_provider() {
+    let oracle = &oracle().value;
+    let (_directory, store) = python_written_store().await;
+    let lead = &oracle["lead"];
+    ready_voice_session(&store, lead).await;
+    let result = call_named_tool(
+        &store,
+        lead,
+        "orchestration_speak",
+        "speak-no-port",
+        "call-speak-no-port",
+        &json!({"text": "Hello"}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(result["success"], false, "{result}");
+    assert!(
+        parsed(&result)
+            .as_str()
+            .unwrap()
+            .contains("voice/provider-session"),
+        "{result}"
+    );
+    let records: i64 = store
+        .read_transaction(|tx| {
+            Ok(tx.query_row("SELECT count(*) FROM voice_records", [], |row| row.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(records, 0);
+}
+
+#[tokio::test]
+async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarded_ones() {
+    let oracle = &oracle().value;
+    let (_directory, store) = python_written_store().await;
+    let remote = &oracle["remote"];
+    // Python runs a remote worker's request reads on its own server.
+    let local = call_named_tool(
+        &store,
+        remote,
+        "orchestration_request",
+        "remote-request",
+        "call-remote-request",
+        &json!({"action": "list"}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(local["success"], true, "{local}");
+    // The task board belongs to the home server; without a driver the call
+    // names its dependency and writes nothing.
+    let forwarded = call_named_tool(
+        &store,
+        remote,
+        "orchestration_task",
+        "remote-task-unattached",
+        "call-remote-task-unattached",
+        &json!({"action": "list"}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(forwarded["success"], false, "{forwarded}");
+    assert!(
+        parsed(&forwarded)
+            .as_str()
+            .unwrap()
+            .contains("multi-server/worker-call"),
+        "{forwarded}"
+    );
+    let outbox: i64 = store
+        .read_transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT count(*) FROM runtime_server_outbox WHERE json_extract(body,'$.action')='task'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(outbox, 0);
 }
