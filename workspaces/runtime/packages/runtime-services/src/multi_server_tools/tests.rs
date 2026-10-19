@@ -829,3 +829,328 @@ async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarde
         .unwrap();
     assert_eq!(outbox, 0);
 }
+
+fn local_tools(store: &Arc<RuntimeStore>) -> Arc<dyn MultiServerToolPort> {
+    let driver = Arc::new(OrchestrationDriver::new(
+        Arc::clone(store),
+        Arc::new(RecordingTransport::default()),
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(store))),
+    ));
+    Arc::new(ServerTools::new(Arc::clone(store), driver, true))
+}
+
+async fn wait_for_status(
+    store: &Arc<RuntimeStore>,
+    lead: &Value,
+    tools: &Arc<dyn MultiServerToolPort>,
+    handle: &str,
+    name: &str,
+) -> Value {
+    for attempt in 0..250 {
+        let read = call_tool(
+            store,
+            lead,
+            &format!("{name}-{attempt}"),
+            &format!("call-{name}-{attempt}"),
+            &json!({"action": "exec_read", "handle": handle}),
+            Some(Arc::clone(tools)),
+        )
+        .await;
+        let value = parsed(&read)["value"].clone();
+        if !matches!(value["status"].as_str(), Some("starting" | "running")) {
+            return value;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+    panic!("{name}: the command did not finish");
+}
+
+fn exit_events(store: &RuntimeStore) -> Vec<Value> {
+    store
+        .read_transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT text FROM runtime_events WHERE kind='monitor_exit' ORDER BY created",
+            )?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows
+                .into_iter()
+                .map(|text| serde_json::from_str(&text).unwrap())
+                .collect())
+        })
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
+    let oracle = &oracle().value;
+    let (_directory, store) = python_written_store().await;
+    let local = store.local_server_id().unwrap().unwrap();
+    let lead = &oracle["lead"];
+    let tools = local_tools(&store);
+    let folder = tempfile::tempdir().unwrap();
+    let cwd = folder.path().to_str().unwrap();
+    // A short command answers with its final page.
+    let short = call_tool(
+        &store,
+        lead,
+        "exec-short",
+        "call-exec-short",
+        &json!({"action": "exec", "server": "local", "cwd": cwd, "timeout": 5,
+            "command": ["sh", "-c", "printf hi; printf err >&2; exit 3"]}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    assert_eq!(short["success"], true, "{short}");
+    let receipt = parsed(&short);
+    assert_eq!(receipt["outcome"], "applied", "{receipt}");
+    let value = &receipt["value"];
+    assert_eq!(value["status"], "completed", "{value}");
+    assert_eq!(value["exitCode"], 3);
+    assert_eq!(value["serverId"], local);
+    assert_eq!(value["stdout"], "hi");
+    assert_eq!(value["stderr"], "err");
+    assert_eq!(value["stdoutBytes"], 2);
+    let handle = receipt["requestId"].as_str().unwrap().to_owned();
+    assert_eq!(value["handle"], handle);
+    assert!(short["serverOutputExpiresAt"].is_number(), "{short}");
+    // The command record and its audit row exist once.
+    let (records, audits): (i64, i64) = store
+        .read_transaction(|tx| {
+            Ok((
+                tx.query_row("SELECT count(*) FROM runtime_server_exec", [], |row| {
+                    row.get(0)
+                })?,
+                tx.query_row(
+                    "SELECT count(*) FROM runtime_server_exec_audit WHERE end IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!((records, audits), (1, 1));
+    let read = call_tool(
+        &store,
+        lead,
+        "exec-short-read",
+        "call-exec-short-read",
+        &json!({"action": "exec_read", "handle": handle, "stdout_offset": 1}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    assert_eq!(parsed(&read)["value"]["stdout"], "i", "{read}");
+    // Input reaches a running command.
+    let started = call_tool(
+        &store,
+        lead,
+        "exec-input",
+        "call-exec-input",
+        &json!({"action": "exec", "cwd": cwd, "timeout": 30,
+            "command": ["sh", "-c", "read line; printf got:%s \"$line\""]}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    let started = parsed(&started);
+    assert_eq!(started["value"]["status"], "starting", "{started}");
+    let input_handle = started["requestId"].as_str().unwrap().to_owned();
+    let accepted = call_tool(
+        &store,
+        lead,
+        "exec-input-send",
+        "call-exec-input-send",
+        &json!({"action": "exec_input", "handle": input_handle, "input": "abc\n", "close_stdin": true}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    assert_eq!(parsed(&accepted)["value"]["accepted"], true, "{accepted}");
+    let finished = wait_for_status(&store, lead, &tools, &input_handle, "exec-input-read").await;
+    assert_eq!(finished["status"], "completed", "{finished}");
+    assert_eq!(finished["stdout"], "got:abc");
+    // Cancel stops the process group.
+    let sleeping = call_tool(
+        &store,
+        lead,
+        "exec-cancel",
+        "call-exec-cancel",
+        &json!({"action": "exec", "cwd": cwd, "timeout": 60, "command": ["sleep", "30"]}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    let cancel_handle = parsed(&sleeping)["requestId"].as_str().unwrap().to_owned();
+    let cancel = call_tool(
+        &store,
+        lead,
+        "exec-cancel-send",
+        "call-exec-cancel-send",
+        &json!({"action": "exec_cancel", "handle": cancel_handle}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    assert_eq!(parsed(&cancel)["value"]["accepted"], true, "{cancel}");
+    let cancelled = wait_for_status(&store, lead, &tools, &cancel_handle, "exec-cancel-read").await;
+    assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+    assert_eq!(cancelled["signal"], 9, "{cancelled}");
+    // Each final record told the lead once.
+    let events = exit_events(&store);
+    let handles: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["id"].as_str())
+        .collect();
+    for expected in [&handle, &input_handle, &cancel_handle] {
+        assert_eq!(
+            handles
+                .iter()
+                .filter(|id| **id == expected.as_str())
+                .count(),
+            1,
+            "{events:?}"
+        );
+    }
+    assert_eq!(
+        events[0]["detail"],
+        "Read output with orchestration_servers action=exec_read."
+    );
+    // The exact call replays its saved receipt; the command does not run again.
+    let replay = call_tool(
+        &store,
+        lead,
+        "exec-short",
+        "call-exec-short",
+        &json!({"action": "exec", "server": "local", "cwd": cwd, "timeout": 5,
+            "command": ["sh", "-c", "printf hi; printf err >&2; exit 3"]}),
+        Some(Arc::clone(&tools)),
+    )
+    .await;
+    assert_eq!(parsed(&replay), receipt);
+    let audits: i64 = store
+        .read_transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT count(*) FROM runtime_server_exec_audit",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(audits, 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
+    let oracle = &oracle().value;
+    let (_directory, store) = python_written_store().await;
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&store),
+        Arc::new(RecordingTransport::default()),
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
+    );
+    let folder = tempfile::tempdir().unwrap();
+    // Python `_exec_tool` on the paired server sends this envelope.
+    let envelope = json!({"requestId": "peer-exec-1", "action": "exec", "payload": {
+        "actor": "peer-lead", "cwd": folder.path(), "command": ["sh", "-c", "printf remote"],
+        "env": {}, "timeout": 5, "output_limit": 262144}});
+    let now = crate::event_write::unix_time().unwrap() as i64;
+    let outcome = driver.receive(PEER, &envelope, now).await.unwrap();
+    let ExchangeOutcome::Applied(value) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(value["status"], "completed", "{value}");
+    assert_eq!(value["stdout"], "remote");
+    // A replay of the same envelope answers from the receipt.
+    let replay = driver.receive(PEER, &envelope, now).await.unwrap();
+    assert_eq!(replay, ExchangeOutcome::Applied(value.clone()));
+    // Another server's handle is refused without an effect.
+    let foreign = driver
+        .receive(
+            PEER,
+            &json!({"requestId": "peer-read-1", "action": "exec_read",
+                "payload": {"actor": "another-lead", "handle": "peer-exec-1"}}),
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        foreign,
+        ExchangeOutcome::NotApplied("The command handle belongs to another actor or server".into())
+    );
+    let notice: String = store
+        .read_transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT body FROM runtime_server_outbox WHERE server=?1 AND json_extract(body,'$.action')='exec_event'",
+                [PEER],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    let notice: Value = serde_json::from_str(&notice).unwrap();
+    assert_eq!(
+        notice["requestId"],
+        crate::projects::cross_server_identity(&["command-exit", "peer-exec-1", "completed"])
+    );
+    assert_eq!(notice["payload"]["actor"], "peer-lead");
+    assert_eq!(notice["payload"]["handle"], "peer-exec-1");
+    assert_eq!(notice["payload"]["record"]["exitCode"], 0);
+    // Python reports a command that cannot start with `os.strerror`.
+    let missing = driver
+        .receive(
+            PEER,
+            &json!({"requestId": "peer-exec-2", "action": "exec", "payload": {
+                "actor": "peer-lead", "cwd": folder.path(), "command": ["/nonexistent/command"],
+                "timeout": 5}}),
+            now,
+        )
+        .await
+        .unwrap();
+    let ExchangeOutcome::Applied(missing) = missing else {
+        panic!("{missing:?}");
+    };
+    assert_eq!(missing["status"], "failed", "{missing}");
+    assert_eq!(missing["error"], "No such file or directory");
+    let _ = &oracle["lead"];
+}
+
+#[tokio::test]
+async fn a_command_without_a_final_record_after_a_restart_stays_unknown() {
+    let oracle = &oracle().value;
+    let (_directory, store) = python_written_store().await;
+    let lead = oracle["lead"]["id"].as_str().unwrap().to_owned();
+    let record = json!({"handle": "lost-command", "serverId": "x", "status": "running",
+        "startedAt": crate::event_write::unix_time().unwrap(), "finishedAt": null, "exitCode": null,
+        "signal": null, "duration": null, "timedOut": false, "outputLimit": 262144});
+    store
+        .transaction_with(move |tx| -> Result<(), StoreError> {
+            tx.execute(
+                "INSERT INTO runtime_server_exec VALUES('lost-command',?1,?2,?3)",
+                rusqlite::params![PEER, lead, record.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    struct Silent;
+    impl crate::server_exec::ExecEvents for Silent {
+        fn completed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a Value) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+    }
+    crate::server_exec::ServerExec::for_store(&store, Arc::new(Silent))
+        .await
+        .unwrap();
+    let saved: String = store
+        .read_transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT record FROM runtime_server_exec WHERE id='lost-command'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved["status"], "unknown");
+    assert_eq!(
+        saved["error"],
+        "Command outcome unknown; inspect the target server. The command was not run again."
+    );
+    assert!(saved["finishedAt"].is_number());
+}

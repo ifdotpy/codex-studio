@@ -112,8 +112,11 @@ impl ManagedToolRuntime {
         store: Arc<RuntimeStore>,
         driver: Arc<crate::multi_server_orchestration::OrchestrationDriver>,
     ) {
+        // The receiving runner of local commands exists on Unix servers.
         let tools = Arc::new(crate::multi_server_tools::ServerTools::new(
-            store, driver, false,
+            store,
+            driver,
+            cfg!(unix),
         ));
         if self.ports.late.multi_server.set(tools).is_err() {
             // The first attached driver stays the owner of these requests.

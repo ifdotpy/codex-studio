@@ -1342,6 +1342,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 | "location_matches"
                 | EXEC_EVENT_ACTION
         ) || GIT_CHANNEL_ACTIONS.contains(&action)
+            || (cfg!(unix) && SERVER_COMMAND_ACTIONS.contains(&action))
             || action == "projects"
             || (action == "stop" && self.lifecycle_ports.is_some())
     }
@@ -1359,7 +1360,97 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
 /// repositories and bundle exports (Python `_git_action`).
 const GIT_CHANNEL_ACTIONS: &[&str] = &["git", "export", "chunk", "release"];
 
+/// Command actions that this server runs for a lead (Python `_receive`).
+const SERVER_COMMAND_ACTIONS: &[&str] = &[EXEC_ACTION, "exec_read", "exec_input", "exec_cancel"];
+
+/// Python `exec_completed`: a command's exit notice for its lead. The lead of
+/// this server gets its event in the same transaction; a paired server's lead
+/// gets one durable `exec_event` envelope.
+struct ExecNotices {
+    store: Arc<RuntimeStore>,
+}
+
+impl crate::server_exec::ExecEvents for ExecNotices {
+    fn completed<'a>(
+        &'a self,
+        principal: &'a str,
+        actor: &'a str,
+        record: &'a Value,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let handle = text(record, "handle").to_owned();
+            let status = text(record, "status").to_owned();
+            let key = crate::projects::cross_server_identity(&["command-exit", &handle, &status]);
+            let payload = json!({"actor": actor, "handle": handle, "record": record});
+            let principal = principal.to_owned();
+            let store = Arc::clone(&self.store);
+            let local = store.local_server_id().ok().flatten().unwrap_or_default();
+            let Ok(now) = crate::event_write::unix_time() else {
+                return;
+            };
+            let result = self
+                .store
+                .transaction_with(move |tx| -> Result<(), AccessError> {
+                    if principal == local {
+                        receive_exec_event(tx, &principal, &payload, key, now)?;
+                        return Ok(());
+                    }
+                    let queued: Option<i64> = tx
+                        .query_row(
+                            "SELECT 1 FROM runtime_server_outbox WHERE id=?1 UNION SELECT 1 FROM runtime_server_retired WHERE id=?1 AND direction='out'",
+                            [&key],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if queued.is_none() {
+                        enqueue_in_transaction(tx, &principal, EXEC_EVENT_ACTION, &payload, &key, now as i64)?;
+                    }
+                    Ok(())
+                })
+                .await;
+            if let Err(error) = result {
+                eprintln!("server command exit notice failed: {error}");
+            }
+        })
+    }
+}
+
 impl RuntimeOrchestrationEffects {
+    /// Python `_receive` for `exec`, `exec_read`, `exec_input` and `exec_cancel`.
+    async fn server_command(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let unknown = || refused(503, "command_unknown", "The command outcome is unknown");
+        let runner = crate::server_exec::ServerExec::for_store(
+            &self.store,
+            Arc::new(ExecNotices {
+                store: Arc::clone(&self.store),
+            }),
+        )
+        .await
+        .map_err(|_| unknown())?;
+        let action = text(envelope, "action");
+        let key = text(envelope, "requestId");
+        let payload = &envelope["payload"];
+        let result = match action {
+            EXEC_ACTION => {
+                let local = self.store.local_server_id()?.unwrap_or_default();
+                runner.start(principal, &local, payload, key).await
+            }
+            "exec_read" => runner.read(principal, payload).await,
+            _ => runner.control(principal, action, payload, key).await,
+        };
+        match result {
+            Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+            Err(crate::server_exec::ExecError::Refused(message)) => {
+                Ok(ExchangeOutcome::NotApplied(message))
+            }
+            Err(crate::server_exec::ExecError::Failed(_)) => Err(unknown()),
+        }
+    }
+
     /// Python `runtime.projects()`: every project ordered by creation time and ID.
     async fn projects(&self) -> Result<ExchangeOutcome, AccessError> {
         let store = Arc::clone(&self.store);
@@ -1441,6 +1532,9 @@ impl RuntimeOrchestrationEffects {
         }
         if GIT_CHANNEL_ACTIONS.contains(&action) {
             return self.git_channel(envelope).await;
+        }
+        if SERVER_COMMAND_ACTIONS.contains(&action) {
+            return self.server_command(principal, envelope).await;
         }
         if action == "folders" {
             let path = envelope["payload"].get("cwd").and_then(Value::as_str);
@@ -2190,6 +2284,7 @@ const PEER_REPLAY_SAFE_ACTIONS: &[&str] = &[
     "folders",
     "git",
     "chunk",
+    "exec_read",
     // Removing a released bundle again has no further effect.
     "release",
 ];
