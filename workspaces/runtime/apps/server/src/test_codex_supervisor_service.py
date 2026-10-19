@@ -373,6 +373,42 @@ class Services(unittest.TestCase):
         self.assertTrue(all(job['KeepAlive'] and job['AbandonProcessGroup'] for job in jobs.values()))
         self.assertEqual(sorted(command[1] for command in commands), ['bootstrap'] * 2 + ['print'] * 6)
 
+    def test_rust_macos_waits_while_the_server_listens_before_it_serves(self) -> None:
+        environment = self.rust_binaries()
+        _, run = self.fake_launchd({})
+        self.save_config(port=4620)
+        ready = {'pid': 456, 'backendKind': 'rust', 'supervisorMode': True, 'backendBuild': 'b' * 64}
+        # The Rust server binds its listener before it opens the store: the first polls
+        # connect and time out, or the connection resets, before /api/desktop answers.
+        polls = [None, TimeoutError('timed out'), ConnectionResetError(), ready]
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop', side_effect=polls), patch('time.sleep'):
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertEqual((result['backend'], result['pid']), ('rust', 456))
+
+    def test_a_backend_that_does_not_answer_before_the_start_still_stops_enable(self) -> None:
+        environment = self.rust_binaries()
+        _, run = self.fake_launchd({})
+        self.save_config(port=4620)
+        with patch.object(sys, 'platform', 'darwin'), patch.dict('os.environ', environment), \
+                patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root), \
+                patch.object(service, 'desktop', side_effect=TimeoutError('timed out')):
+            with self.assertRaisesRegex(TimeoutError, 'timed out'):
+                service.enable(self.resources, self.state, 4620)
+        self.assertFalse((self.root / 'Library/LaunchAgents').exists())
+
+    def test_a_listener_that_does_not_answer_times_out_as_seen_live(self) -> None:
+        import socket
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            url = 'http://127.0.0.1:' + str(listener.getsockname()[1])
+            with patch.object(service, 'DESKTOP_REQUEST_SECONDS', .2):
+                with self.assertRaisesRegex(TimeoutError, '^timed out$'):
+                    service.desktop(url, self.state)
+                self.assertIsNone(service.starting_desktop(url, self.state))
+
     def test_rust_macos_over_registered_python_jobs_changes_nothing(self) -> None:
         environment = self.rust_binaries()
         before = self.save_config(port=4620, supervisorEnabled=True)

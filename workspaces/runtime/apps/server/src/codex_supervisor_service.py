@@ -145,7 +145,7 @@ def enable_rust_linux(resources: Path, state: Path, port: int) -> dict[str, Any]
     run(['systemctl', '--user', 'restart' if before else 'start', 'codex-studio.service'])
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        current = desktop(url, state)
+        current = starting_desktop(url, state)
         if current and current.get('backendKind') == 'rust' and current.get('pid') != (before or {}).get('pid'):
             return {'stateDir': str(state), 'previousPid': (before or {}).get('pid'), 'pid': current['pid'],
                     'backend': 'rust', 'backendBuild': current.get('backendBuild')}
@@ -189,12 +189,17 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+# Seconds that one GET /api/desktop may take before the backend counts as not answering.
+DESKTOP_REQUEST_SECONDS = 3.0
+
+
 def desktop(url: str, state: Path) -> dict[str, Any] | None:
     parsed = urlsplit(url)
     if parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'}:
         raise ValueError('Enable the supervisor through a local HTTP URL.')
     try:
-        with build_opener(ProxyHandler({}), NoRedirect()).open(url.rstrip('/') + '/api/desktop', timeout=3) as response:
+        with build_opener(ProxyHandler({}), NoRedirect()).open(url.rstrip('/') + '/api/desktop',
+                                                              timeout=DESKTOP_REQUEST_SECONDS) as response:
             result = json.load(response)
     except URLError as error:
         if isinstance(error.reason, ConnectionRefusedError):
@@ -206,6 +211,23 @@ def desktop(url: str, state: Path) -> dict[str, Any] | None:
         raise ValueError('The backend identity does not match the selected state directory.')
     return cast(dict[str, Any], result)
 
+
+
+def starting_desktop(url: str, state: Path) -> dict[str, Any] | None:
+    """GET /api/desktop while a started backend comes up; None while it does not answer yet.
+
+    The Rust server binds its listener before it opens the store, so a poll in that window
+    connects and then times out, or the connection resets. Only a wait loop after a start
+    uses this: an unanswered request there means "not ready yet", never "no backend".
+    """
+    try:
+        return desktop(url, state)
+    except (TimeoutError, ConnectionError):
+        return None
+    except URLError as error:
+        if isinstance(error.reason, (TimeoutError, ConnectionError)):
+            return None
+        raise
 
 def idle(state: Path) -> dict[str, int]:
     """Read current activity, never open a runtime or modify its database."""
@@ -465,7 +487,7 @@ def enable_rust_macos(resources: Path, state: Path, port: int, config: dict[str,
     install_macos(resources, state, python, config)
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        current = desktop(url, state)
+        current = starting_desktop(url, state)
         if current and current.get('backendKind') == 'rust':
             return {'stateDir': str(state), 'previousPid': (before or {}).get('pid'), 'pid': current['pid'],
                     'backend': 'rust', 'supervisorMode': current.get('supervisorMode') is True,
@@ -587,7 +609,7 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
             os.kill(before['pid'], signal.SIGTERM)
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        current = desktop(url, state)
+        current = starting_desktop(url, state)
         if (current and current.get('supervisorMode') is True
                 and (current.get('supervisor') or {}).get('protocol') == 1):
             return {'stateDir': str(state), 'previousPid': (before or {}).get('pid'),
