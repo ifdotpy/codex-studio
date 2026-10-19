@@ -1,6 +1,7 @@
 """A move target imports the agent record without state that only the source server can honor."""
 import importlib
 import unittest
+from typing import Any
 
 importlib.import_module('test_isolation').isolate_supervisor_environment()
 
@@ -8,11 +9,11 @@ from codex_agent_move import SOURCE_OPERATION_FIELDS, imported_record
 
 
 class ImportedRecord(unittest.TestCase):
-    def test_source_operation_projections_are_not_imported(self):
+    def test_source_operation_projections_are_not_imported(self) -> None:
         # Fields of the lead that moved to igor-mbp on 2026-10-18 while its
         # subagent transfer was pending on the source server. The target had no
         # transfer row, so every scheduler pass failed with "Unknown account transfer".
-        source = {
+        source: dict[str, Any] = {
             'id': 'lead', 'accountKey': 'claude-profile-source', 'threadId': 'native-thread', 'epoch': 0,
             'accountTransfer': {'id': 'abde1958-090d-4a79-8516-3780b6469e81', 'status': 'pending',
                                 'scope': 'subagents', 'targetAccountKey': 'default'},
