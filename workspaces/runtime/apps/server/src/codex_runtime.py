@@ -1994,6 +1994,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 start_vm_watchdog(self)
                 from codex_peer_updates import start as start_peer_updates
                 start_peer_updates(self)
+                # Report stranded or mismatched image workspace mounts; never repair them here.
+                from codex_workspace_images import start_mount_check
+                start_mount_check()
             self.resume_read_only_image_bases()
             with self.read_db() as db:
                 commands_saved = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone()

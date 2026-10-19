@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from codex_records import ImageWorkspaceBaseState
-    from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
+    from codex_workspace_images import (WorkspaceAttachment, WorkspaceBaseStaging, WorkspaceDelta,
+                                        WorkspaceMount)
 
 ATTR_CMNEXT_PRIVATESIZE = 0x00000008
 FSOPT_NOFOLLOW = 0x00000001
@@ -52,6 +53,19 @@ def _diskutil_plist(args: Sequence[str]) -> dict[str, Any]:
 
 def _mounted(path: str | Path) -> bool:
     return Path(path).is_mount()
+
+
+def _attachments_from_info(info: dict[str, Any]) -> list[WorkspaceAttachment]:
+    """Read attached images from `hdiutil info -plist`: image path, mount points, whole disk."""
+    result: list[WorkspaceAttachment] = []
+    for image in info.get('images', []):
+        entities = image.get('system-entities', [])
+        mounts = sorted({str(entry['mount-point']) for entry in entities if entry.get('mount-point')})
+        device = next((str(entry['dev-entry']) for entry in entities
+                       if re.fullmatch(r'/dev/disk\d+', str(entry.get('dev-entry', '')))), None)
+        path = image.get('image-path')
+        result.append({'image': str(path) if path else None, 'mounts': mounts, 'device': device})
+    return result
 
 
 def _device_for_mount(mount: str | Path) -> str | None:
@@ -473,12 +487,22 @@ class Backend:
         return image
 
     def mount_workspace(self, layer: Path, mount: Path, *, base_image: Path | None = None) -> WorkspaceMount:
+        """Attach at an empty mount point. The lifecycle checks mount identity first."""
         layer, mount = Path(layer), Path(mount)
         mount.mkdir(parents=True, exist_ok=True)
         if _mounted(mount):
-            return {'mount': str(mount)}
+            raise RuntimeError(f'Refusing to attach {layer}: a volume is already mounted at {mount}')
+        if any(mount.iterdir()):
+            raise RuntimeError(f'Refusing to attach {layer}: the mount point {mount} holds files')
         _diskutil_plist(['image', 'attach', '--nobrowse', '--mountPoint', str(mount), str(layer)])
         return {'mount': str(mount)}
+
+    def is_mounted(self, path: Path) -> bool:
+        return _mounted(path)
+
+    def attachments(self) -> list[WorkspaceAttachment]:
+        info = plistlib.loads(_run(['hdiutil', 'info', '-plist'], timeout=30).stdout)
+        return _attachments_from_info(info)
 
     def sync_delta(self, repo_root: Path, target_repo: Path, token: str | int | dict[str, object] | None, *, excludes: tuple[str, ...] = ()) -> WorkspaceDelta:
         current = token.get('token') if isinstance(token, dict) else token

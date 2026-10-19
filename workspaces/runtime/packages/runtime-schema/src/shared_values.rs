@@ -60,3 +60,21 @@ pub const DISK_FULL_RECHECK_SECONDS: u64 = 15;
 pub const DISK_FULL_MAX_RESUMES: u64 = 5;
 pub const DISK_FULL_ERROR_PATTERN: &str =
     "ENOSPC|No space left on device|database or disk is full|SQLITE_FULL";
+pub const IMAGE_WORKSPACE_MARKER_NAME: &str = ".studio-workspace.json";
+pub const IMAGE_WORKSPACE_MARKER_SCHEMA: u64 = 1;
+pub const IMAGE_MOUNT_STATUSES: &[&str] = &[
+    "mounted",
+    "detached",
+    "plain-folder",
+    "foreign-volume",
+    "image-replaced",
+    "attached-elsewhere",
+    "image-missing",
+];
+pub const IMAGE_MOUNT_PROBLEM_STATUSES: &[&str] = &[
+    "plain-folder",
+    "foreign-volume",
+    "image-replaced",
+    "attached-elsewhere",
+    "image-missing",
+];

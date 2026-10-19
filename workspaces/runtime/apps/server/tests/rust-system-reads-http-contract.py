@@ -242,6 +242,7 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "searchMigrationError",
             "runtimeLockOperations",
             "supervisor",
+            "imageMounts",
         }
         if self.rust_backend:
             expected_fields.add("blockingPoolMetrics")

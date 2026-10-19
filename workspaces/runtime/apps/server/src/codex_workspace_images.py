@@ -19,6 +19,8 @@ from typing import Callable, NotRequired, Protocol, TypedDict
 
 from codex_records import (ImageWorkspaceCollectResultRecord, ImageWorkspaceMount,
                            ImageWorkspaceRemovalResultRecord, JsonObject, JsonValue)
+from codex_shared_values import (IMAGE_MOUNT_PROBLEM_STATUSES, IMAGE_WORKSPACE_MARKER_NAME,
+                                 IMAGE_WORKSPACE_MARKER_SCHEMA)
 
 
 class WorkspaceBaseStaging(TypedDict):
@@ -36,6 +38,13 @@ class WorkspaceMount(TypedDict):
     layer: NotRequired[str]
     baseImage: NotRequired[str]
     pid: NotRequired[int]
+
+
+class WorkspaceAttachment(TypedDict):
+    """One attached disk image as the operating system reports it (hdiutil info)."""
+    image: str | None
+    mounts: list[str]
+    device: str | None
 
 
 class WorkspaceDelta(TypedDict):
@@ -57,6 +66,8 @@ class WorkspaceBackend(Protocol):
     def mount_workspace(self, layer: Path, mount: Path, *, base_image: Path | None = None) -> dict[str, Any]: ...
     def sync_delta(self, root: Path, target: Path, token: Any, *, excludes: tuple[str, ...]) -> Any: ...
     def unmount_workspace(self, mount: Path, *, force: bool = False) -> dict[str, Any]: ...
+    def is_mounted(self, path: Path) -> bool: ...
+    def attachments(self) -> list[WorkspaceAttachment]: ...
     def remove_layer(self, agent_dir: Path) -> None: ...
     def remove_base_version(self, path: Path) -> None: ...
     def private_bytes(self, path: Path) -> int: ...
@@ -831,6 +842,301 @@ def _mount_path(agent_id: str) -> Path:
     return _store() / 'mnt' / _safe_id(agent_id)
 
 
+# Mount identity. "Something is mounted here" is not proof that the agent's own volume is
+# mounted here: a moved or restored state folder can leave a plain folder, another volume, or a
+# volume of an older image file at the mount point. Studio uses a mount point only when its
+# volume carries this agent's marker and the image file still has the inode recorded at attach.
+
+
+class ImageMountError(RuntimeError):
+    """The mount point does not hold this agent's own volume; Studio used and deleted nothing."""
+
+    def __init__(self, agent_id: str, status: str, detail: str) -> None:
+        self.agent_id = agent_id
+        self.status = status
+        self.detail = detail
+        super().__init__(f'Image workspace mount check failed for {agent_id}: {status}: {detail}. '
+                         'Studio did not use or delete this workspace')
+
+
+def _file_identity(path: str | Path | None) -> tuple[int, int] | None:
+    if not path:
+        return None
+    try:
+        info = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _same_path(left: str | Path, right: str | Path) -> bool:
+    return os.path.realpath(left) == os.path.realpath(right)
+
+
+def _read_marker(mount: Path) -> JsonObject | None:
+    value = _read_json(Path(mount) / IMAGE_WORKSPACE_MARKER_NAME, None)
+    if (isinstance(value, dict) and value.get('schema') == IMAGE_WORKSPACE_MARKER_SCHEMA
+            and isinstance(value.get('agentId'), str)):
+        return value
+    return None
+
+
+def _marker_identity(marker: JsonObject) -> tuple[object, object]:
+    return marker.get('imageDevice'), marker.get('imageInode')
+
+
+def _attachment_agent(attachment: WorkspaceAttachment) -> str | None:
+    """The agent that owns an attached volume: its marker, else its image path."""
+    for mount in attachment['mounts']:
+        marker = _read_marker(Path(mount))
+        if marker is not None:
+            return str(marker['agentId'])
+    image = Path(attachment['image']) if attachment['image'] else None
+    if image is not None and image.name == 'workspace.asif' and image.parent.parent.name == 'agents':
+        return image.parent.name
+    return None
+
+
+def _attachment_belongs(attachment: WorkspaceAttachment, agent_id: str, image: Path | None,
+                        identity: tuple[int, int] | None) -> bool:
+    markers = [marker for mount in attachment['mounts']
+               if (marker := _read_marker(Path(mount))) is not None]
+    if markers:
+        return any(marker['agentId'] == agent_id for marker in markers)
+    attached = attachment['image']
+    if not attached:
+        return False
+    if image is not None and _same_path(attached, image):
+        return True
+    if identity is not None and _file_identity(attached) == identity:
+        return True
+    return _attachment_agent(attachment) == agent_id
+
+
+def _mount_entries(mount: Path) -> list[str] | None:
+    """Names in a plain mount point folder; None when the path is not a folder."""
+    try:
+        return sorted(os.listdir(mount))
+    except FileNotFoundError:
+        return []
+    except NotADirectoryError:
+        return None
+
+
+def _probe_mount(agent_id: str, state: JsonObject, backend: WorkspaceBackend,
+                 attachments: list[WorkspaceAttachment]) -> dict[str, Any]:
+    """Classify one agent's mount point without changing anything."""
+    image = Path(str(state['image'])) if state.get('image') else None
+    mount = Path(str(state.get('mount') or _mount_path(agent_id)))
+    identity = _file_identity(image)
+    here = [item for item in attachments if any(_same_path(path, mount) for path in item['mounts'])]
+    elsewhere = sorted({path for item in attachments if item not in here
+                        and _attachment_belongs(item, agent_id, image, identity)
+                        for path in (item['mounts'] or [item['image'] or 'an unmounted device'])})
+    mounted = backend.is_mounted(mount)
+    marker = _read_marker(mount) if mounted else None
+    status, detail = 'detached', f'{mount} is empty and no volume is attached there'
+    if mounted:
+        if marker is not None and marker['agentId'] != agent_id:
+            status, detail = 'foreign-volume', f'{mount} holds the volume of agent {marker["agentId"]}'
+        elif marker is not None and identity is None:
+            status, detail = 'image-missing', f'the image file {image} is missing while its volume is attached at {mount}'
+        elif marker is not None and _marker_identity(marker) != identity:
+            assert identity is not None
+            status, detail = 'image-replaced', (
+                f'the volume at {mount} was attached from an earlier image file; {image} changed since '
+                f'that attach (device and inode {list(_marker_identity(marker))}, now {list(identity)})')
+        elif marker is not None or (identity is not None and any(
+                _file_identity(item['image']) == identity for item in here)):
+            status, detail = 'mounted', f'{mount} holds the volume of image {image}'
+        else:
+            status, detail = 'foreign-volume', f'{mount} holds a volume that is not the image {image}'
+    else:
+        entries = _mount_entries(mount)
+        if entries is None:
+            status, detail = 'plain-folder', f'{mount} is a file, not a mount point folder'
+        elif entries:
+            status, detail = 'plain-folder', (
+                f'{mount} is a plain folder that holds {len(entries)} entries and no attached volume')
+        elif identity is None:
+            status, detail = 'image-missing', f'the image file {image} is missing'
+    if status in {'mounted', 'detached'} and elsewhere:
+        status, detail = 'attached-elsewhere', (
+            f'the volume of this agent is also attached at {", ".join(elsewhere)}')
+    device = next((item['device'] for item in here if item['device']), None)
+    return {'agentId': agent_id, 'state': state.get('state'), 'image': str(image) if image else None,
+            'mount': str(mount), 'status': status, 'detail': detail, 'mounted': mounted,
+            'marker': marker is not None, 'device': device, 'elsewhere': elsewhere}
+
+
+def _record_mount_identity(agent_id: str, state: JsonObject, mount: Path, device: str | None) -> None:
+    identity = _file_identity(str(state['image']))
+    if identity is None:
+        raise ImageMountError(agent_id, 'image-missing', f'the image file {state["image"]} is missing')
+    attached_at = time.time()
+    _write_json(mount / IMAGE_WORKSPACE_MARKER_NAME, {
+        'schema': IMAGE_WORKSPACE_MARKER_SCHEMA, 'agentId': agent_id, 'image': str(state['image']),
+        'imageDevice': identity[0], 'imageInode': identity[1], 'attachedAt': attached_at})
+    state['mountIdentity'] = {'image': str(state['image']), 'imageDevice': identity[0],
+                              'imageInode': identity[1], 'mount': str(mount), 'device': device,
+                              'attachedAt': attached_at}
+
+
+def _attach_verified(agent_id: str, state: JsonObject, *, base_image: Path | None) -> None:
+    """Use the agent's own attached volume, or attach it at an empty mount point."""
+    backend = _get_backend()
+    probe = _probe_mount(agent_id, state, backend, backend.attachments())
+    mount = Path(probe['mount'])
+    if probe['status'] == 'mounted':
+        if probe['marker'] and state.get('mountIdentity'):
+            return
+    elif probe['status'] == 'detached':
+        mount.mkdir(parents=True, exist_ok=True)
+        backend.mount_workspace(Path(str(state['image'])), mount, base_image=base_image)
+        if not backend.is_mounted(mount):
+            raise ImageMountError(agent_id, 'detached',
+                                  f'the attach of {state["image"]} returned, but no volume is mounted at {mount}')
+        marker = _read_marker(mount)
+        if marker is not None and marker['agentId'] != agent_id:
+            backend.unmount_workspace(mount, force=False)
+            raise ImageMountError(agent_id, 'foreign-volume',
+                                  f'the image {state["image"]} holds the volume of agent '
+                                  f'{marker["agentId"]}; Studio detached it again')
+        probe['device'] = next((item['device'] for item in backend.attachments()
+                                if item['device'] and any(_same_path(path, mount) for path in item['mounts'])),
+                               None)
+    else:
+        raise ImageMountError(agent_id, probe['status'], probe['detail'])
+    _record_mount_identity(agent_id, state, mount, probe['device'])
+
+
+def _detach_for_removal(agent_id: str, state: JsonObject, purpose: str) -> dict[str, Any]:
+    """Detach the agent's own volume, or prove that no part of it is attached."""
+    backend = _get_backend()
+    probe = _probe_mount(agent_id, state, backend, backend.attachments())
+    if probe['status'] == 'mounted':
+        return backend.unmount_workspace(Path(probe['mount']), force=True)
+    if probe['status'] == 'detached' or (
+            probe['status'] == 'image-missing' and not probe['mounted'] and not probe['elsewhere']):
+        return {'method': 'already-unmounted', 'terminatedPids': 0}
+    raise ImageMountError(agent_id, probe['status'], f'{probe["detail"]}; {purpose} was refused')
+
+
+def _remove_mount_point(mount: Path) -> None:
+    """Remove an empty mount point folder; a folder that holds files stays."""
+    try:
+        Path(mount).rmdir()
+    except OSError:
+        pass
+
+
+def _studio_attachment(attachment: WorkspaceAttachment) -> bool:
+    if any(_read_marker(Path(mount)) is not None for mount in attachment['mounts']):
+        return True
+    return Path(attachment['image'] or '').name in {'workspace.asif', 'base.asif'}
+
+
+def _base_staging_attachment(attachment: WorkspaceAttachment, store: Path) -> bool:
+    image = Path(os.path.realpath(attachment['image'] or '/'))
+    try:
+        parts = image.relative_to(os.path.realpath(store)).parts
+    except ValueError:
+        return False
+    return (len(parts) == 5 and parts[0] == 'bases' and parts[2] == 'versions'
+            and parts[4] == 'base.asif'
+            and all(_same_path(path, image.parent / 'mount') for path in attachment['mounts']))
+
+
+def _inside(path: str | Path, root: Path) -> bool:
+    return Path(os.path.realpath(path)).is_relative_to(Path(os.path.realpath(root)))
+
+
+def check_mounts() -> dict[str, Any]:
+    """Report every agent mount point and every Studio volume attached outside its place.
+
+    The check changes nothing. A problem status needs an operator; see
+    docs/restart-recovery.md ("Image workspace mounts").
+    """
+    backend = _get_backend()
+    store = _store()
+    attachments = backend.attachments()
+    agents = []
+    for path in sorted((store / 'agents').glob('*/agent.json')):
+        state = _read_json(path, {}) or {}
+        if not state.get('image'):
+            continue
+        probe = _probe_mount(path.parent.name, state, backend, attachments)
+        probe['repair'] = ('attach' if probe['status'] == 'detached' and state.get('state') == 'ready'
+                           and state.get('mounted') else None)
+        agents.append(probe)
+    accounted = [Path(item['mount']) for item in agents
+                 if item['mounted'] and item['status'] in {'mounted', 'attached-elsewhere'}]
+    stray = []
+    for attachment in attachments:
+        if not _studio_attachment(attachment) or _base_staging_attachment(attachment, store):
+            continue
+        if attachment['mounts'] and all(any(_same_path(path, known) for known in accounted)
+                                        for path in attachment['mounts']):
+            continue
+        stray.append({'image': attachment['image'], 'mounts': sorted(attachment['mounts']),
+                      'agentId': _attachment_agent(attachment),
+                      'imageExists': bool(attachment['image']) and Path(attachment['image']).exists()})
+    under_store = sorted({path for attachment in attachments for path in attachment['mounts']
+                          if _inside(path, store)}
+                         | {item['mount'] for item in agents if item['mounted']})
+    problems = [item for item in agents if item['status'] in IMAGE_MOUNT_PROBLEM_STATUSES]
+    return {'schema': 1, 'store': str(store), 'checkedAt': time.time(),
+            'ok': not problems and not stray, 'agents': agents, 'strayAttachments': stray,
+            'mountsUnderStore': under_store}
+
+
+_mount_report_lock = threading.Lock()
+_mount_report: JsonObject = {'state': 'pending', 'checkedAt': None, 'problems': [],
+                             'strayAttachments': 0}
+
+
+def mount_diagnostics() -> JsonObject:
+    """The startup mount check summary for /api/diagnostics: closed codes, no paths."""
+    with _mount_report_lock:
+        return json.loads(json.dumps(_mount_report))
+
+
+def _run_startup_mount_check() -> None:
+    global _mount_report
+    try:
+        report = check_mounts()
+    except Exception as error:  # A failed check is reported; it never blocks startup.
+        print(f'Image workspace mount check failed: {error}', file=sys.stderr)
+        summary: JsonObject = {'state': 'failed', 'checkedAt': time.time(), 'problems': [],
+                               'strayAttachments': 0}
+    else:
+        problems = [item for item in report['agents'] if item['status'] in IMAGE_MOUNT_PROBLEM_STATUSES]
+        for item in problems:
+            print(f'Image workspace mount problem: {item["agentId"]}: {item["status"]}: {item["detail"]}',
+                  file=sys.stderr)
+        for item in report['strayAttachments']:
+            print(f'Image workspace volume attached outside its mount point: {item["image"]} at '
+                  f'{", ".join(item["mounts"]) or "no mount point"}', file=sys.stderr)
+        summary = {'state': 'checked', 'checkedAt': report['checkedAt'],
+                   'problems': [{'agentId': item['agentId'], 'status': item['status']}
+                                for item in problems],
+                   'strayAttachments': len(report['strayAttachments'])}
+    with _mount_report_lock:
+        _mount_report = summary
+
+
+def start_mount_check() -> None:
+    """Check image mounts once at backend start, in the background; repair nothing."""
+    global _mount_report
+    if sys.platform != 'darwin':
+        with _mount_report_lock:
+            _mount_report = {'state': 'unsupported', 'checkedAt': None, 'problems': [],
+                             'strayAttachments': 0}
+        return
+    threading.Thread(target=_run_startup_mount_check, name='studio-image-mount-check',
+                     daemon=True).start()
+
+
 def supported(root) -> tuple[bool, str]:
     return _get_backend().supported(_root_path(root))
 
@@ -1069,9 +1375,9 @@ def create_workspace(root, agent_id) -> dict[str, str]:
     with _file_lock(agent_dir / '.workspace.lock'):
         state = _read_json(state_path, {}) or {}
         if state and state.get('schema') != 2:
-            _get_backend().unmount_workspace(mount, force=False)
+            _detach_for_removal(agent_id, state, 'the reset of an old workspace record')
             _get_backend().remove_layer(agent_dir)
-            shutil.rmtree(mount, ignore_errors=True)
+            _remove_mount_point(mount)
             state = {}
         if state and state.get('repoKey') != key:
             raise ValueError('Workspace identifier is already used by another folder')
@@ -1093,7 +1399,7 @@ def create_workspace(root, agent_id) -> dict[str, str]:
             if base is None:
                 base = _read_json(_base_state_path(key), {}) or {}
                 if state.get('image'):
-                    _get_backend().unmount_workspace(mount, force=False)
+                    _detach_for_removal(agent_id, state, 'the rebuild of a workspace without its base')
                     _get_backend().remove_layer(agent_dir)
                     agent_dir.mkdir(parents=True, exist_ok=True)
                 if base.get('state') != 'ready':
@@ -1112,8 +1418,9 @@ def create_workspace(root, agent_id) -> dict[str, str]:
                 state['image'] = str(image)
                 state['baseImage'] = base['image']
                 _write_json(state_path, state)
-            _get_backend().mount_workspace(Path(state['image']), mount,
-                                          base_image=Path(state.get('baseImage') or base['image']))
+            _attach_verified(agent_id, state,
+                             base_image=Path(state.get('baseImage') or base['image']))
+            _write_json(state_path, state)
             workspace_root = mount / 'repo'
             current_repositories = _repo_snapshots(folder, base.get('repositories', []))
             excludes = _delta_excludes(
@@ -1151,9 +1458,10 @@ def ensure_mounted(agent_id) -> dict[str, str]:
         raise ValueError('Unknown image workspace')
     mount = Path(state.get('mount') or _mount_path(agent_id))
     with _file_lock(_agent_dir(agent_id) / '.workspace.lock'):
-        _get_backend().mount_workspace(Path(state['image']), mount,
-                                       base_image=Path(state.get('baseImage') or _base_metadata(
-                                           state['repoKey'], state['baseVersion'])['image']))
+        state = _read_json(_agent_state_path(agent_id), {}) or state
+        _attach_verified(agent_id, state,
+                         base_image=Path(state.get('baseImage') or _base_metadata(
+                             state['repoKey'], state['baseVersion'])['image']))
         if state.get('state') == 'archived':
             state['state'] = 'ready'
         state['mounted'] = True
@@ -1168,10 +1476,11 @@ def archive_workspace(agent_id) -> dict[str, Any]:
     if not state:
         return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(_agent_dir(agent_id) / '.workspace.lock'):
-        mount = Path(state.get('mount') or _mount_path(agent_id))
-        unmount = _get_backend().unmount_workspace(mount, force=True)
+        state = _read_json(_agent_state_path(agent_id), {}) or state
+        unmount = _detach_for_removal(agent_id, state, 'the archive')
         state['state'] = 'archived'
         state['mounted'] = False
+        state.pop('mountIdentity', None)
         _write_json(_agent_state_path(agent_id), state)
     return {'freedBytes': 0, 'state': 'archived', 'unmount': unmount}
 
@@ -1184,10 +1493,11 @@ def remove_workspace(agent_id, *, force=False) -> dict[str, Any]:
     if not state:
         return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(agent_dir / '.workspace.lock'):
+        state = _read_json(_agent_state_path(agent_id), {}) or state
         mount = Path(state.get('mount') or _mount_path(agent_id))
-        unmount = _get_backend().unmount_workspace(mount, force=True)
+        unmount = _detach_for_removal(agent_id, state, 'the removal')
         _get_backend().remove_layer(agent_dir)
-        shutil.rmtree(mount, ignore_errors=True)
+        _remove_mount_point(mount)
         if state.get('repoKey'):
             _prune_base_versions(state['repoKey'])
     return {'freedBytes': None, 'state': 'removed', 'unmount': unmount}

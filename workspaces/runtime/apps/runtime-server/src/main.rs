@@ -331,6 +331,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("mounts") {
+        // Read-only `check`, or `repair` that only attaches at empty mount points.
+        let (report, ok) = studio_runtime_services::image_workspace::mounts_command(&args[1..])?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if args.first().map(String::as_str) == Some("progress-layout") {
         let (file, wait) = match &args[1..] {
             [file] => (file, 0.0),
@@ -404,6 +410,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     )
     .await?;
     startup_trace("store-recovery-completed");
+    // Report stranded or mismatched image workspace mounts; never repair them here.
+    std::thread::Builder::new()
+        .name("image-mount-check".to_owned())
+        .spawn(studio_runtime_services::image_workspace::run_startup_mount_check)?;
     let workspace_id =
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
     let state_root = store.root().canonicalize()?;

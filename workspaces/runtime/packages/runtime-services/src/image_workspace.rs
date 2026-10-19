@@ -213,6 +213,10 @@ pub trait WorkspaceBackend: Send + Sync {
         excludes: &[String],
     ) -> Result<WorkspaceDelta, ImageWorkspaceError>;
     fn unmount_workspace(&self, mount: &Path, force: bool) -> Result<Value, ImageWorkspaceError>;
+    /// Whether a volume is mounted at `path` (a mount point boundary, not its identity).
+    fn is_mounted(&self, path: &Path) -> Result<bool, ImageWorkspaceError>;
+    /// Every attached disk image with its mount points (`hdiutil info`).
+    fn attachments(&self) -> Result<Vec<WorkspaceAttachment>, ImageWorkspaceError>;
     fn remove_layer(&self, agent_dir: &Path) -> Result<(), ImageWorkspaceError>;
     fn remove_base_version(&self, path: &Path) -> Result<(), ImageWorkspaceError>;
     fn private_bytes(&self, path: &Path) -> Result<Option<u64>, ImageWorkspaceError>;
@@ -260,6 +264,14 @@ pub enum ImageWorkspaceError {
         purpose: &'static str,
         free: u64,
         required: u64,
+    },
+    #[error(
+        "Image workspace mount check failed for {agent_id}: {status}: {detail}. Studio did not use or delete this workspace"
+    )]
+    MountCheck {
+        agent_id: String,
+        status: &'static str,
+        detail: String,
     },
     #[error("Workspace mount is unavailable: {0}")]
     MountUnavailable(PathBuf),
@@ -606,9 +618,9 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         let _lock = FileLock::exclusive(&agent_dir.join(".workspace.lock"))?;
         let mut state = read_json(&state_path)?;
         if !state.is_null() && state.get("schema").and_then(Value::as_u64) != Some(STATE_SCHEMA) {
-            let _unmount = self.backend.unmount_workspace(&mount, false);
+            self.detach_for_removal(agent_id, &state, "the reset of an old workspace record")?;
             self.backend.remove_layer(&agent_dir)?;
-            let _cleanup = fs::remove_dir_all(&mount);
+            let _cleanup = fs::remove_dir(&mount);
             state = Value::Null;
         }
         if state
@@ -647,7 +659,6 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             return Err(ImageWorkspaceError::BaseNotReady);
         }
         fs::create_dir_all(&agent_dir)?;
-        fs::create_dir_all(&mount)?;
         if state.is_null() {
             state = json!({
                 "schema":STATE_SCHEMA,"repoRoot":root,"repoKey":key,"agentId":agent_id,
@@ -669,18 +680,12 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             state["baseImage"] = json!(base_image);
             write_json(&state_path, &state)?;
         }
-        let image = state
-            .get("image")
+        let base_image = state
+            .get("baseImage")
             .and_then(Value::as_str)
-            .ok_or(ImageWorkspaceError::InvalidState)?;
-        self.backend.mount_workspace(
-            Path::new(image),
-            &mount,
-            state
-                .get("baseImage")
-                .and_then(Value::as_str)
-                .map(Path::new),
-        )?;
+            .map(PathBuf::from);
+        self.attach_verified(agent_id, &mut state, base_image.as_deref())?;
+        write_json(&state_path, &state)?;
         let workspace_root = mount.join("repo");
         let excludes = base
             .get("excludes")
@@ -779,16 +784,15 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             .map(PathBuf::from)
             .unwrap_or_else(|| self.store.join("mnt").join(agent_id));
         let _lock = FileLock::exclusive(&agent_dir.join(".workspace.lock"))?;
-        let layer = state
-            .get("image")
-            .and_then(Value::as_str)
-            .ok_or(ImageWorkspaceError::InvalidState)?;
+        let current = read_json(&state_path)?;
+        if !current.is_null() {
+            state = current;
+        }
         let base = state
             .get("baseImage")
             .and_then(Value::as_str)
             .map(PathBuf::from);
-        self.backend
-            .mount_workspace(Path::new(layer), &mount, base.as_deref())?;
+        self.attach_verified(agent_id, &mut state, base.as_deref())?;
         if state.get("state").and_then(Value::as_str) == Some("archived") {
             state["state"] = json!("ready");
         }
@@ -808,14 +812,16 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             return Ok(json!({"freedBytes":0,"state":"removed"}));
         }
         let _lock = FileLock::exclusive(&agent_dir.join(".workspace.lock"))?;
-        let mount = state
-            .get("mount")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.store.join("mnt").join(agent_id));
-        let unmount = self.backend.unmount_workspace(&mount, true)?;
+        let current = read_json(&state_path)?;
+        if !current.is_null() {
+            state = current;
+        }
+        let unmount = self.detach_for_removal(agent_id, &state, "the archive")?;
         state["state"] = json!("archived");
         state["mounted"] = json!(false);
+        if let Some(object) = state.as_object_mut() {
+            object.remove("mountIdentity");
+        }
         write_json(&state_path, &state)?;
         Ok(json!({"freedBytes":0,"state":"archived","unmount":unmount}))
     }
@@ -828,19 +834,24 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         let agent_id = safe_id(agent_id)?;
         let agent_dir = self.store.join("agents").join(agent_id);
         let state_path = agent_dir.join("agent.json");
-        let state = read_json(&state_path)?;
+        let mut state = read_json(&state_path)?;
         if state.is_null() {
             return Ok(json!({"freedBytes":0,"state":"removed"}));
         }
         let _lock = FileLock::exclusive(&agent_dir.join(".workspace.lock"))?;
+        let current = read_json(&state_path)?;
+        if !current.is_null() {
+            state = current;
+        }
         let mount = state
             .get("mount")
             .and_then(Value::as_str)
             .map(PathBuf::from)
             .unwrap_or_else(|| self.store.join("mnt").join(agent_id));
-        let unmount = self.backend.unmount_workspace(&mount, true)?;
+        let unmount = self.detach_for_removal(agent_id, &state, "the removal")?;
         self.backend.remove_layer(&agent_dir)?;
-        let _cleanup = fs::remove_dir_all(&mount);
+        // Only an empty mount point folder is removed; files in it stay.
+        let _cleanup = fs::remove_dir(&mount);
         if let Some(key) = state.get("repoKey").and_then(Value::as_str) {
             self.prune_base_versions(key)?;
         }
@@ -1612,6 +1623,10 @@ fn git_output_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ImageWorkspac
     Ok(output.stdout.bytes)
 }
 
+#[path = "image_workspace_mounts.rs"]
+mod mounts;
+pub use mounts::{WorkspaceAttachment, mount_diagnostics, mounts_command, run_startup_mount_check};
+
 #[cfg(target_os = "macos")]
 #[path = "image_workspace_macos.rs"]
 mod macos;
@@ -1636,6 +1651,8 @@ mod tests {
         fail_once: Mutex<Option<&'static str>>,
         copy_gate: Option<CopyGate>,
         available_bytes: Option<u64>,
+        /// Mount point -> image. A detach moves the volume into `<image>.volume`.
+        mounted: Mutex<std::collections::BTreeMap<PathBuf, PathBuf>>,
     }
 
     impl FakeBackend {
@@ -1726,7 +1743,16 @@ mod tests {
             _: Option<&Path>,
         ) -> Result<WorkspaceMount, ImageWorkspaceError> {
             self.fail("mount")?;
+            let volume = layer.with_extension("volume");
+            if volume.exists() {
+                fs::remove_dir(mount)?;
+                fs::rename(&volume, mount)?;
+            }
             fs::create_dir_all(mount.join("repo"))?;
+            self.mounted
+                .lock()
+                .expect("mounted volumes")
+                .insert(mount.to_path_buf(), layer.to_path_buf());
             Ok(WorkspaceMount {
                 mount: mount.to_string_lossy().into_owned(),
                 layer: Some(layer.to_string_lossy().into_owned()),
@@ -1750,9 +1776,34 @@ mod tests {
                 refresh_base: false,
             })
         }
-        fn unmount_workspace(&self, _: &Path, _: bool) -> Result<Value, ImageWorkspaceError> {
+        fn unmount_workspace(&self, mount: &Path, _: bool) -> Result<Value, ImageWorkspaceError> {
             self.fail("unmount")?;
+            let layer = self.mounted.lock().expect("mounted volumes").remove(mount);
+            if let Some(layer) = layer {
+                fs::rename(mount, layer.with_extension("volume"))?;
+                fs::create_dir(mount)?;
+            }
             Ok(json!({"method":"fake","terminatedPids":0}))
+        }
+        fn is_mounted(&self, path: &Path) -> Result<bool, ImageWorkspaceError> {
+            Ok(self
+                .mounted
+                .lock()
+                .expect("mounted volumes")
+                .contains_key(path))
+        }
+        fn attachments(&self) -> Result<Vec<WorkspaceAttachment>, ImageWorkspaceError> {
+            Ok(self
+                .mounted
+                .lock()
+                .expect("mounted volumes")
+                .iter()
+                .map(|(mount, layer)| WorkspaceAttachment {
+                    image: Some(layer.clone()),
+                    mounts: vec![mount.clone()],
+                    device: None,
+                })
+                .collect())
         }
         fn remove_layer(&self, path: &Path) -> Result<(), ImageWorkspaceError> {
             self.fail("remove")?;
@@ -1939,6 +1990,7 @@ mod tests {
                     release: Mutex::new(release_rx),
                 }),
                 available_bytes: None,
+                ..FakeBackend::default()
             },
         ));
         let (result_tx, result_rx) = mpsc::channel();
@@ -1999,6 +2051,7 @@ mod tests {
                 fail_once: Mutex::new(None),
                 copy_gate: None,
                 available_bytes: None,
+                ..FakeBackend::default()
             },
         );
         let key = repo_key(&project.canonicalize().expect("canonical project"));
@@ -2034,6 +2087,7 @@ mod tests {
             fail_once: Mutex::new(Some("copy")),
             copy_gate: None,
             available_bytes: None,
+            ..FakeBackend::default()
         };
         let manager = WorkspaceLifecycle::with_backend(&store, backend);
 
@@ -2172,5 +2226,257 @@ mod tests {
         let remaining = manager.list_workspaces().expect("remaining workspaces");
         assert!(!remaining.iter().any(|row| row["agentId"] == "agent-1"));
         assert!(remaining.iter().any(|row| row["agentId"] == "agent-2"));
+    }
+
+    /// A ready workspace for each agent, attached through the fake volume model.
+    fn ready_workspaces(fixture: &Path, agents: &[&str]) -> WorkspaceLifecycle<FakeBackend> {
+        let store = fixture.join("store");
+        let project = fixture.join("project");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("file.txt"), "base").expect("source file");
+        let manager = WorkspaceLifecycle::with_backend(
+            &store,
+            FakeBackend {
+                store: store.clone(),
+                ..FakeBackend::default()
+            },
+        );
+        for agent in agents {
+            manager
+                .create_workspace(&project, agent)
+                .expect("ready workspace");
+        }
+        manager
+    }
+
+    fn agent_row(manager: &WorkspaceLifecycle<FakeBackend>, agent: &str) -> Value {
+        read_json(&manager.store.join("agents").join(agent).join("agent.json")).expect("agent row")
+    }
+
+    fn mount_status(error: ImageWorkspaceError) -> &'static str {
+        match error {
+            ImageWorkspaceError::MountCheck { status, .. } => status,
+            other => panic!("expected a mount check refusal, got {other}"),
+        }
+    }
+
+    /// Attach a volume at `mount` in the fake, with a marker that names `owner`.
+    fn attach_marked_volume(
+        manager: &WorkspaceLifecycle<FakeBackend>,
+        mount: &Path,
+        image: &Path,
+        owner: &str,
+    ) {
+        fs::create_dir_all(mount).expect("volume root");
+        fs::write(
+            mount.join(studio_runtime_schema::shared_values::IMAGE_WORKSPACE_MARKER_NAME),
+            json!({"schema":1,"agentId":owner,"image":image}).to_string(),
+        )
+        .expect("marker");
+        manager
+            .backend
+            .mounted
+            .lock()
+            .expect("mounted volumes")
+            .insert(mount.to_path_buf(), image.to_path_buf());
+    }
+
+    #[test]
+    fn attach_records_marker_and_identity_and_reuses_only_that_volume() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        let row = agent_row(&manager, "agent-1");
+        let mount = PathBuf::from(row["mount"].as_str().expect("mount"));
+        let marker = read_json(&mount.join(".studio-workspace.json")).expect("marker");
+        let image = fs::metadata(row["image"].as_str().expect("image")).expect("image file");
+        assert_eq!(marker["agentId"], "agent-1");
+        assert_eq!(marker["imageInode"], image.ino());
+        assert_eq!(row["mountIdentity"]["imageInode"], image.ino());
+        assert_eq!(row["mountIdentity"]["mount"], row["mount"]);
+        manager.ensure_mounted("agent-1").expect("same volume");
+        let report = manager.check_mounts().expect("check");
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["agents"][0]["status"], "mounted");
+    }
+
+    #[test]
+    fn plain_folder_at_the_mount_point_is_never_attached_over_or_deleted() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        manager.archive_workspace("agent-1").expect("archive");
+        let row = agent_row(&manager, "agent-1");
+        let mount = PathBuf::from(row["mount"].as_str().expect("mount"));
+        // A restore from a copy of a mounted volume leaves its files in a plain folder.
+        fs::create_dir_all(mount.join("repo")).expect("restored folder");
+        fs::write(mount.join("repo/work.txt"), "only copy").expect("restored file");
+        for result in [
+            manager.ensure_mounted("agent-1"),
+            manager.archive_workspace("agent-1"),
+            manager.remove_workspace("agent-1", true),
+        ] {
+            assert_eq!(mount_status(result.expect_err("refused")), "plain-folder");
+        }
+        assert!(Path::new(row["image"].as_str().expect("image")).exists());
+        assert_eq!(
+            fs::read_to_string(mount.join("repo/work.txt")).expect("kept"),
+            "only copy"
+        );
+        let report = manager.check_mounts().expect("check");
+        assert_eq!(report["ok"], false);
+        assert_eq!(report["agents"][0]["status"], "plain-folder");
+    }
+
+    #[test]
+    fn foreign_volume_at_the_mount_point_is_refused() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        manager.archive_workspace("agent-1").expect("archive");
+        let mount = manager.store.join("mnt/agent-1");
+        attach_marked_volume(
+            &manager,
+            &mount,
+            &fixture.path().join("other.asif"),
+            "agent-2",
+        );
+        let error = manager
+            .ensure_mounted("agent-1")
+            .expect_err("foreign volume");
+        assert!(error.to_string().contains("agent agent-2"), "{error}");
+        assert_eq!(mount_status(error), "foreign-volume");
+        assert_eq!(
+            mount_status(manager.remove_workspace("agent-1", true).expect_err("kept")),
+            "foreign-volume"
+        );
+        assert!(manager.store.join("agents/agent-1/workspace.asif").exists());
+    }
+
+    #[test]
+    fn second_attachment_of_an_agent_volume_is_refused_and_reported() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        manager.archive_workspace("agent-1").expect("archive");
+        // The old state folder was moved away with its volume still attached.
+        let moved = fixture.path().join("moved/workspaces");
+        attach_marked_volume(
+            &manager,
+            &moved.join("mnt/agent-1"),
+            &moved.join("agents/agent-1/workspace.asif"),
+            "agent-1",
+        );
+        let error = manager
+            .ensure_mounted("agent-1")
+            .expect_err("second attach");
+        assert!(
+            error.to_string().contains("moved/workspaces/mnt/agent-1"),
+            "{error}"
+        );
+        assert_eq!(mount_status(error), "attached-elsewhere");
+        for result in [
+            manager.archive_workspace("agent-1"),
+            manager.remove_workspace("agent-1", true),
+        ] {
+            assert_eq!(
+                mount_status(result.expect_err("kept")),
+                "attached-elsewhere"
+            );
+        }
+        assert!(manager.store.join("agents/agent-1/workspace.asif").exists());
+        let report = manager.check_mounts().expect("check");
+        assert_eq!(report["agents"][0]["status"], "attached-elsewhere");
+        assert_eq!(report["strayAttachments"][0]["agentId"], "agent-1");
+        mounts::record_startup_report(Ok(report));
+        let summary = mount_diagnostics();
+        assert_eq!(summary["state"], "checked");
+        assert_eq!(
+            summary["problems"],
+            json!([{"agentId":"agent-1","status":"attached-elsewhere"}])
+        );
+        assert_eq!(summary["strayAttachments"], 1);
+        assert!(!summary.to_string().contains("moved"), "{summary}");
+    }
+
+    #[test]
+    fn unmarked_volume_whose_image_is_another_file_is_refused() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        manager.archive_workspace("agent-1").expect("archive");
+        let mount = manager.store.join("mnt/agent-1");
+        let other = fixture.path().join("other.asif");
+        fs::write(&other, "other image").expect("other image");
+        manager
+            .backend
+            .mounted
+            .lock()
+            .expect("mounted volumes")
+            .insert(mount, other);
+        assert_eq!(
+            mount_status(manager.ensure_mounted("agent-1").expect_err("unmarked")),
+            "foreign-volume"
+        );
+    }
+
+    #[test]
+    fn replaced_image_file_is_refused_while_its_old_volume_is_attached() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        let image = manager.store.join("agents/agent-1/workspace.asif");
+        let restored = image.with_extension("restored");
+        fs::copy(&image, &restored).expect("restored copy");
+        fs::rename(&restored, &image).expect("restore over the image");
+        for result in [
+            manager.ensure_mounted("agent-1"),
+            manager.archive_workspace("agent-1"),
+        ] {
+            assert_eq!(mount_status(result.expect_err("refused")), "image-replaced");
+        }
+        assert!(
+            manager
+                .backend
+                .is_mounted(&manager.store.join("mnt/agent-1"))
+                .expect("probe")
+        );
+    }
+
+    #[test]
+    fn repair_attaches_only_recorded_mounts_at_empty_mount_points() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1", "agent-2", "agent-3"]);
+        // A backup step detached agent-1 and agent-3; agent.json still records them as mounted.
+        for agent in ["agent-1", "agent-3"] {
+            manager
+                .backend
+                .unmount_workspace(&manager.store.join("mnt").join(agent), false)
+                .expect("detach");
+        }
+        fs::write(manager.store.join("mnt/agent-3/copy.txt"), "only copy").expect("plain file");
+        manager.archive_workspace("agent-2").expect("archive");
+        let check = manager.check_mounts().expect("check");
+        let statuses = check["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .map(|agent| (agent["status"].clone(), agent["repair"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            vec![
+                (json!("detached"), json!("attach")),
+                (json!("detached"), Value::Null),
+                (json!("plain-folder"), Value::Null),
+            ]
+        );
+        let repaired = manager.repair_mounts().expect("repair");
+        assert_eq!(
+            repaired["actions"],
+            json!([{"agentId":"agent-1","action":"attached"}])
+        );
+        let after = repaired["report"]["agents"].as_array().expect("agents");
+        assert_eq!(after[0]["status"], "mounted");
+        assert_eq!(after[1]["status"], "detached");
+        assert_eq!(after[2]["status"], "plain-folder");
+        assert_eq!(
+            fs::read_to_string(manager.store.join("mnt/agent-3/copy.txt")).expect("kept"),
+            "only copy"
+        );
     }
 }

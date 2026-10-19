@@ -24,7 +24,9 @@ import codex_workspace_images as images
 
 class FakeBackend:
     def __init__(self):
-        self.mounted = set()
+        # Mount point -> layer folder. The layer plays the image: unmount moves the volume
+        # content back into it and leaves an empty mount point, as a real detach does.
+        self.mounted = {}
         self.mutate_after_copy = None
         self.fail_copy_once = False
         self.fail_mount_once = False
@@ -107,8 +109,15 @@ class FakeBackend:
         mount = pathlib.Path(mount)
         if mount not in self.mounted:
             shutil.copytree(layer, mount, symlinks=True, dirs_exist_ok=True)
-            self.mounted.add(mount)
+            self.mounted[mount] = pathlib.Path(layer)
         return {'mount': str(mount)}
+
+    def is_mounted(self, path):
+        return pathlib.Path(path) in self.mounted
+
+    def attachments(self):
+        return [{'image': str(layer), 'mounts': [str(mount)], 'device': None}
+                for mount, layer in self.mounted.items()]
 
     def sync_delta(self, root, target, token, *, excludes):
         self.delta_tokens.append(token)
@@ -116,7 +125,13 @@ class FakeBackend:
         return {'token': 1, 'changedPaths': ['.'], 'scanPaths': ['.']}
 
     def unmount_workspace(self, mount, *, force=False):
-        self.mounted.discard(pathlib.Path(mount))
+        mount = pathlib.Path(mount)
+        layer = self.mounted.pop(mount, None)
+        if layer is not None:
+            for child in layer.iterdir():
+                shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+            for child in mount.iterdir():
+                shutil.move(str(child), str(layer / child.name))
         return {'method': 'test-unmount', 'terminatedPids': 0}
 
     def remove_layer(self, agent_dir):
