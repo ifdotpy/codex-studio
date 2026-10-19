@@ -131,7 +131,8 @@ mod tests {
             Some("https://other.example.ts.net")
         );
         assert_eq!(
-            RemoteAccess::new(root.path(), Some("https://evil.test")).unwrap_err(),
+            RemoteAccess::new(root.path(), Some("https://evil.test"))
+                .expect_err("an invalid override is refused"),
             InvalidPublicOrigin
         );
     }
