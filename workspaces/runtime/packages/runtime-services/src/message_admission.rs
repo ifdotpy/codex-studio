@@ -45,11 +45,11 @@ impl PreparedAdmission {
         let Some(recipient) = AgentRepository::get(connection, &AgentId::from(recipient))? else {
             return Ok(Self::default());
         };
-        // Only the recipient's directory and the directories of agents holding a
-        // workspace operation are compared by `workspace`.
+        // The recipient's directory, the directories of live agents (they may
+        // start an operation before admission) and of operation holders.
         let mut paths = BTreeMap::new();
         for cwd in std::iter::once(Some(cwd(&recipient)?.to_owned()))
-            .chain(AgentIndexedReads::workspace_operation_cwds(connection)?)
+            .chain(AgentIndexedReads::admission_cwds(connection)?)
             .flatten()
         {
             paths

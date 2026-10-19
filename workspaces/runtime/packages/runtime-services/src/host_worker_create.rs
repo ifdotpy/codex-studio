@@ -715,6 +715,8 @@ mod tests {
         database
             .execute_batch(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE INDEX runtime_agent_live_root ON runtime_agents(json_extract(record,'$.rootId'),id)
+                     WHERE json_extract(record,'$.deletedAt') IS NULL;
                  CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
             )
             .expect("worker tables");

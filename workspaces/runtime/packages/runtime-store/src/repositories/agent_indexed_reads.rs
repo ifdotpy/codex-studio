@@ -76,16 +76,19 @@ impl AgentIndexedReads {
          WHERE json_type(record,'$.workspaceOperation')='text' \
          AND json_extract(record,'$.workspaceOperation')!=''";
 
-    /// SQL for the distinct working directories of agents holding a workspace
-    /// operation. The predicate is the one of `runtime_agent_reservation_cwd`.
+    /// SQL for the distinct working directories of live agents and of any agent
+    /// (live or not) holding a workspace operation: the directories a message
+    /// admission may have to compare. Tombstones cannot start an operation.
     #[doc(hidden)]
-    pub const WORKSPACE_OPERATION_CWDS_SQL: &'static str = "SELECT DISTINCT json_extract(record,'$.cwd') FROM runtime_agents \
+    pub const ADMISSION_CWDS_SQL: &'static str = "SELECT json_extract(record,'$.cwd') FROM runtime_agents \
+         WHERE json_extract(record,'$.deletedAt') IS NULL \
+         UNION SELECT json_extract(record,'$.cwd') FROM runtime_agents \
          WHERE json_type(record,'$.workspaceOperation')='text' \
          AND json_extract(record,'$.workspaceOperation')!=''";
 
-    pub fn workspace_operation_cwds(connection: &Connection) -> StoreResult<Vec<Option<String>>> {
+    pub fn admission_cwds(connection: &Connection) -> StoreResult<Vec<Option<String>>> {
         Ok(connection
-            .prepare_cached(Self::WORKSPACE_OPERATION_CWDS_SQL)?
+            .prepare_cached(Self::ADMISSION_CWDS_SQL)?
             .query_map([], |row| row.get(0))?
             .collect::<Result<_, _>>()?)
     }
@@ -232,8 +235,14 @@ mod tests {
             2
         );
         assert_eq!(
-            AgentIndexedReads::workspace_operation_cwds(&connection).expect("cwds"),
-            [Some("/x".to_owned())]
+            AgentIndexedReads::admission_cwds(&connection).expect("cwds"),
+            [
+                None,
+                Some("/w".to_owned()),
+                Some("/x".to_owned()),
+                Some("/y".to_owned()),
+                Some("/z".to_owned())
+            ]
         );
         // Every status-occupying local agent but the caller; tombstones still count.
         let old_global: i64 = connection
@@ -271,9 +280,9 @@ mod tests {
                 "runtime_agent_live_root",
             ),
             (
-                AgentIndexedReads::WORKSPACE_OPERATION_CWDS_SQL.to_owned(),
+                AgentIndexedReads::ADMISSION_CWDS_SQL.to_owned(),
                 vec![],
-                "runtime_agent_reservation_cwd",
+                "runtime_agent_live_root",
             ),
             (
                 AgentIndexedReads::WORKSPACE_OPERATION_IDS_SQL.to_owned(),
