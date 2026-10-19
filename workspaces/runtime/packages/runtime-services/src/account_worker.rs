@@ -1460,7 +1460,7 @@ impl Worker {
             } => {
                 if let Some(streams) = streams {
                     self.streams = streams;
-                    self.schedule_publication_drain();
+                    self.schedule_publication_drain()?;
                 }
                 let _sent = reply.send(result);
             }
@@ -1473,7 +1473,7 @@ impl Worker {
             } => self.interrupt(agent_id, thread_id, turn_id).await?,
             AccountCommand::RestartRecoveryDone => {
                 self.restart_recovery.take();
-                self.schedule_publication_drain();
+                self.schedule_publication_drain()?;
                 #[cfg(test)]
                 {
                     self.bridge
@@ -1485,7 +1485,7 @@ impl Worker {
             }
             AccountCommand::RestartStreams(streams) => {
                 self.streams = *streams;
-                self.schedule_publication_drain();
+                self.schedule_publication_drain()?;
             }
         }
         Ok(())
@@ -3240,7 +3240,7 @@ impl Worker {
             .fetch_add(committed.len(), std::sync::atomic::Ordering::SeqCst);
         self.streams = streams; // commit precedes buffer replacement and ACK
         self.arm_flush();
-        self.schedule_publication_drain();
+        self.schedule_publication_drain()?;
         let committed_any = !committed.is_empty();
         for (index, (entry, effect)) in committed.into_iter().enumerate() {
             #[cfg(not(test))]
@@ -3764,17 +3764,33 @@ impl Worker {
         self.streams = updated_streams;
         self.flush_at = None;
         self.arm_flush();
-        self.schedule_publication_drain();
+        self.schedule_publication_drain()?;
         Ok(())
     }
-    fn schedule_publication_drain(&mut self) {
-        if self.publication_retry_at.is_none() {
-            self.publication_retry_at = Some(tokio::time::Instant::now());
+    /// Start a drain pass now, or right after the running one. Commits drive
+    /// the drain here, joining a finished pass, because under load the serve
+    /// loop's biased select keeps finding a finished preparation first and
+    /// never reaches the drain branches.
+    fn schedule_publication_drain(&mut self) -> Result<(), WorkerError> {
+        let now = tokio::time::Instant::now();
+        if let Some(done) = self
+            .publication_drain
+            .as_mut()
+            .filter(|task| task.is_finished())
+            .and_then(futures_util::FutureExt::now_or_never)
+        {
+            self.publication_retry_at.get_or_insert(now);
+            return self.publication_drained(done);
         }
+        if self.publication_drain.is_some() {
+            self.publication_retry_at.get_or_insert(now);
+        } else if self.publication_retry_at.is_none_or(|at| at <= now) {
+            self.start_publication_drain();
+        }
+        Ok(())
     }
     /// Delivery runs off the worker's serial path as one single-flight task, so a
-    /// slow sink or analytics transaction never delays a submission. A schedule
-    /// raised while it runs is kept in `publication_retry_at` for the next pass.
+    /// slow sink or analytics transaction never delays a submission.
     fn start_publication_drain(&mut self) {
         self.publication_retry_at = None;
         let bridge = self.bridge.clone();
@@ -3797,8 +3813,9 @@ impl Worker {
         self.publication_drain = None;
         match done.map_err(|_| WorkerError::TaskFailed)? {
             Ok(count) => {
-                if count == store::PUBLICATION_DRAIN_LIMIT {
-                    self.schedule_publication_drain();
+                // A full page or a schedule raised during the pass runs another.
+                if count == store::PUBLICATION_DRAIN_LIMIT || self.publication_retry_at.is_some() {
+                    self.schedule_publication_drain()?;
                 }
                 Ok(())
             }
