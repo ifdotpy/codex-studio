@@ -49,7 +49,7 @@ async fn models(
     let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/models",
         move || match driver {
-            Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
+            Some(driver) => driver.listing_snapshot().map_err(|_| ApiError::internal()),
             None => Ok(account_policy.accounts()),
         },
     )
@@ -96,7 +96,13 @@ async fn account_catalog(
             {
                 return catalog_pending();
             }
-            catalog_unavailable()
+            match error {
+                // A refusal is a stable verdict about the account, not a transient fault.
+                studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                    message,
+                ) => (StatusCode::BAD_REQUEST, json!({"error": message})),
+                _ => catalog_unavailable(),
+            }
         })?;
     match catalog
         .read_until_ready(&account.key, &account.home, &account.provider, retry)
@@ -158,10 +164,11 @@ fn account_context(
         account.get("status").and_then(Value::as_str),
         Some("changed" | "error")
     ) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
-        ));
+        let message = account
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or(ACCOUNT_UNAVAILABLE_MESSAGE);
+        return Err((StatusCode::BAD_REQUEST, json!({"error": message})));
     }
     Ok(AccountContext {
         key: account_key.to_owned(),
@@ -453,6 +460,27 @@ mod tests {
             .expect_err("changed account must be refused");
             assert_eq!(error.0, StatusCode::BAD_REQUEST);
             assert_eq!(error.1, json!({"error":"Account is unavailable"}));
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_account_is_refused_with_its_own_message_for_every_provider() {
+        let message = studio_runtime_services::account_driver::CHANGED_ERROR;
+        for provider in ["claude", "codex"] {
+            let snapshot = snapshot(json!({
+                "id":"profile", "provider":provider, "status":"changed", "error":message
+            }));
+            let error = account_catalog(
+                &ModelCatalogService::new(),
+                &snapshot,
+                "profile",
+                true,
+                None,
+            )
+            .await
+            .expect_err("changed account must be refused");
+            assert_eq!(error.0, StatusCode::BAD_REQUEST);
+            assert_eq!(error.1, json!({"error":message}));
         }
     }
 

@@ -56,7 +56,8 @@ const AUTH_ERROR: &str = "Cannot read this profile's authentication";
 /// Error text of Python `codex_accounts.auth_metadata` for an unreadable,
 /// malformed or oversized Codex `auth.json`.
 const CODEX_AUTH_ERROR: &str = "Cannot read this Codex profile's authentication";
-const CHANGED_ERROR: &str =
+/// Refusal text of a profile whose live login is a different account.
+pub const CHANGED_ERROR: &str =
     "This profile's account changed. Restore its original login or add a separate profile.";
 const UNVERIFIED_ERROR: &str =
     "Cannot verify this profile's account. Sign in to its original account again.";

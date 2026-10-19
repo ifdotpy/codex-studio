@@ -2492,6 +2492,11 @@ fn account_identity_blocking(
         AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
         _ => OperationError::Internal,
     })?;
+    if status == AccountStatus::Changed {
+        return Err(OperationError::Invalid(
+            crate::account_driver::CHANGED_ERROR,
+        ));
+    }
     let snapshot = driver.snapshot().map_err(|_| OperationError::Internal)?;
     let row = snapshot
         .accounts

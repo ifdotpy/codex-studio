@@ -279,6 +279,10 @@ where
     .await
     .map_err(|_| ContinuationError::Unavailable("account-auth/status"))?
     .map_err(|_| ContinuationError::Unavailable("account-auth/status"))?;
+    if status == crate::account_driver::AccountStatus::Changed {
+        settle_blocked(&store, intent, crate::account_driver::CHANGED_ERROR).await?;
+        return Ok(false);
+    }
     if !provider.auth_blocks_start(status) {
         if same_selected_account(&selected_pin, &current) {
             return Ok(true);
