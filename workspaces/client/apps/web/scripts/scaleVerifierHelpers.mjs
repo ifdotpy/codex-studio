@@ -21,8 +21,8 @@ import { performance } from "node:perf_hooks";
 // that catalogue ids and served usage models must start with; `usageSource`
 // filters the usage ledger (null: every non-Claude-response row);
 // `processName` is the provider child process name sampled for RSS and CPU.
-// A Claude profile owns one account; a Codex profile spreads over every ready
-// Codex account and `accountKey` is only the fallback when discovery is off.
+// Every profile spreads over the ready accounts of its provider (the lead uses
+// the first); `accountKey` is only the fallback when discovery is off.
 export const SCALE_PROFILES = Object.freeze({
   "claude-haiku": Object.freeze({
     provider: "claude",
@@ -79,7 +79,6 @@ export function scaleProfile(name) {
 // Ready accounts of the profile's provider. The accounts route reports Codex
 // accounts without a provider field.
 export function scaleAccountKeys(accounts, profile) {
-  if (profile.provider === "claude") return [profile.accountKey];
   const keys = accounts
     .filter(
       (row) =>

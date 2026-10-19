@@ -1437,7 +1437,7 @@ async function main() {
       );
       await saveJournal(journalPath, journal);
       process.stdout.write(
-        `${JSON.stringify({ stage: workers, state: stage.state, elapsedMs: stage.elapsedMs, actualConcurrentTurns: peak, createP95Ms: stage.apiLatencyMs.create.p95Ms, messageP95Ms: stage.apiLatencyMs.message.p95Ms })}\n`,
+        `${JSON.stringify({ stage: workers, state: stage.state, elapsedMs: stage.elapsedMs, actualConcurrentTurns: stage.maxConcurrentTurns, createP95Ms: stage.apiLatencyMs.create.p95Ms, messageP95Ms: stage.apiLatencyMs.message.p95Ms })}\n`,
       );
       if (stage.elapsedMs > STAGE_DEADLINE_MS)
         throw new Error(`Stage ${workers} exceeded its five-minute deadline.`);
