@@ -33,6 +33,9 @@ const TASK_RETIRE_BATCH: usize = 100;
 /// Newest finished tasks the renderer task window keeps beside running ones;
 /// the workspace entity advertises it as `tasksHistoryLimit`. Unit: rows.
 pub const TASK_WINDOW_HISTORY_ROWS: usize = 100;
+/// Restricts a task query to tasks of live (not deleted) agents.
+const LIVE_TASK_AGENT: &str = "json_extract(t.record,'$.agent') IN \
+     (SELECT id FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL)";
 /// Newest runtime events the renderer event window keeps. Unit: rows. The
 /// runtime_events triggers in runtime-store's sync_schema.sql use the same
 /// bound; a parity test below checks every `LIMIT` there.
@@ -893,18 +896,14 @@ pub(crate) fn maintain_task_window(
     {
         return Ok(());
     }
-    // CROSS JOIN keeps tasks as the outer loop, so the runtime_task_status
-    // and runtime_task_history indexes bound both parts instead of a sort
-    // over every task of every live agent.
+    // The live-agent set is a subquery, so the runtime_task_status and
+    // runtime_task_history indexes bound both parts and the agent records are
+    // read once instead of once per task row.
     let mut rows = transaction.prepare(&format!(
-        "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents a \
-         ON json_extract(t.record,'$.agent')=a.id \
-         WHERE json_extract(a.record,'$.deletedAt') IS NULL \
-         AND json_extract(t.record,'$.status')='running' \
+        "SELECT t.id,t.record FROM runtime_tasks t \
+         WHERE json_extract(t.record,'$.status')='running' AND {LIVE_TASK_AGENT} \
          UNION ALL SELECT id,record FROM (SELECT t.id,t.record FROM runtime_tasks t \
-         CROSS JOIN runtime_agents a ON json_extract(t.record,'$.agent')=a.id \
-         WHERE json_extract(a.record,'$.deletedAt') IS NULL \
-         AND json_extract(t.record,'$.status')!='running' \
+         WHERE json_extract(t.record,'$.status')!='running' AND {LIVE_TASK_AGENT} \
          ORDER BY json_extract(t.record,'$.created') DESC LIMIT {TASK_WINDOW_HISTORY_ROWS})"
     ))?;
     let eligible = rows
@@ -955,9 +954,12 @@ pub(crate) fn maintain_task_window(
     Ok(())
 }
 
-/// Update one running task without rescanning the history window when its
-/// membership and ordering inputs are unchanged. All other writes rebuild the
-/// canonical window because they may change eligibility or rank.
+/// Apply one task write to the window without rescanning history. A running
+/// task is always in the window, so it only projects itself. A finished task
+/// joins the newest-first history, which then evicts at most one row (the
+/// 101st projected one, possibly the task itself). Writes that shrink the
+/// history (a finished task running again) or touch a deleted agent's task
+/// rebuild the canonical window, which is also the test oracle.
 pub(crate) fn maintain_task_window_after_write(
     transaction: &Transaction<'_>,
     previous: Option<&Value>,
@@ -970,41 +972,55 @@ pub(crate) fn maintain_task_window_after_write(
         [],
         |row| row.get(0),
     )?;
-    if !migration_complete {
-        return maintain_task_window(transaction, validate);
-    }
-
-    let stable_running_task = previous.is_some_and(|previous| {
-        previous.get("id") == task.get("id")
-            && previous.get("agent") == task.get("agent")
-            && previous.get("created") == task.get("created")
-            && previous.get("status").and_then(Value::as_str) == Some("running")
-            && task.get("status").and_then(Value::as_str) == Some("running")
-    });
-    if stable_running_task
+    let running = |value: &Value| value.get("status").and_then(Value::as_str) == Some("running");
+    let task_running = running(task);
+    let previous_finished = previous.is_some_and(|previous| !running(previous));
+    if migration_complete
+        && !(task_running && previous_finished)
         && table_exists(transaction, "runtime_agents")?
         && let Some(task_id) = task.get("id").and_then(Value::as_str)
         && let Some(agent_id) = task.get("agent").and_then(Value::as_str)
-    {
-        let agent_is_live: bool = transaction.query_row(
+        && let Some(projected) = project_persisted_record("task", task)
+        && transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1 \
              AND json_extract(record,'$.deletedAt') IS NULL)",
             [agent_id],
-            |row| row.get(0),
-        )?;
-        let task_is_projected: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sync_entities \
-             WHERE collection='task' AND id=?1 AND deleted=0)",
-            [task_id],
-            |row| row.get(0),
-        )?;
-        if agent_is_live
-            && task_is_projected
-            && let Some(projected) = project_persisted_record("task", task)
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        let unmoved_finished = previous_finished
+            && !task_running
+            && previous.is_some_and(|previous| {
+                previous.get("agent") == task.get("agent")
+                    && previous.get("created") == task.get("created")
+            });
+        if unmoved_finished
+            && !transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_entities \
+                 WHERE collection='task' AND id=?1 AND deleted=0)",
+                [task_id],
+                |row| row.get::<_, bool>(0),
+            )?
         {
-            put_projection(transaction, "task", task_id, projected, false, validate)?;
             return Ok(());
         }
+        put_projection(transaction, "task", task_id, projected, false, validate)?;
+        if !task_running {
+            let evicted: Option<String> = transaction
+                .query_row(
+                    "SELECT id FROM sync_entities WHERE collection='task' AND deleted=0 \
+                     AND json_extract(payload,'$.value.status')!='running' \
+                     ORDER BY json_extract(payload,'$.value.created') DESC \
+                     LIMIT 1 OFFSET ?1",
+                    [TASK_WINDOW_HISTORY_ROWS as i64],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(id) = evicted {
+                put_projection(transaction, "task", &id, json!({}), true, validate)?;
+            }
+        }
+        return Ok(());
     }
     maintain_task_window(transaction, validate)
 }
@@ -2327,9 +2343,11 @@ mod tests {
             .await
             .expect("maintain canonical task projection");
 
-        assert!(statements.iter().any(|sql| {
-            sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents")
-        }));
+        assert!(
+            statements
+                .iter()
+                .any(|sql| { sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t WHERE") })
+        );
         assert!(
             !statements
                 .iter()
@@ -2461,11 +2479,9 @@ mod tests {
         };
         let full_window_was_traced = || {
             TRACED_SQL.with_borrow(|statements| {
-                statements.iter().any(|sql| {
-                    sql.starts_with(
-                        "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents",
-                    )
-                })
+                statements
+                    .iter()
+                    .any(|sql| sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t WHERE"))
             })
         };
 
@@ -2530,8 +2546,8 @@ mod tests {
                     &|_, _, _, _| true,
                 )?;
                 assert!(
-                    full_window_was_traced(),
-                    "missing projection must force rebuild"
+                    !full_window_was_traced(),
+                    "a running write projects itself without a rebuild"
                 );
                 let repaired = task_projection(transaction);
                 maintain_task_window(transaction, &|_, _, _, _| true)?;
@@ -2571,9 +2587,7 @@ mod tests {
                 let full_window_was_traced = || {
                     TRACED_SQL.with_borrow(|statements| {
                         statements.iter().any(|sql| {
-                            sql.starts_with(
-                                "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents",
-                            )
+                            sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t WHERE")
                         })
                     })
                 };
@@ -2609,8 +2623,8 @@ mod tests {
                             &|_, _, _, _| true,
                         )?;
                         assert!(
-                            full_window_was_traced(),
-                            "eligibility/rank change must rebuild"
+                            !full_window_was_traced(),
+                            "a live-agent write must not rebuild the window"
                         );
                         let updated = task_projection(transaction);
                         maintain_task_window(transaction, &|_, _, _, _| true)?;
@@ -2668,6 +2682,136 @@ mod tests {
             })
             .await
             .expect("deleted-agent eligibility change must match a full rebuild");
+    }
+
+    /// Live task projections: id to payload.
+    fn live_task_projection(connection: &Connection) -> BTreeMap<String, Option<String>> {
+        connection
+            .prepare("SELECT id,payload FROM sync_entities WHERE collection='task' AND deleted=0")
+            .expect("task projection rows")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("task projection query")
+            .collect::<Result<_, _>>()
+            .expect("task projection snapshot")
+    }
+
+    /// Writes one task as `put_task` does and applies the incremental window.
+    fn write_task(transaction: &Transaction<'_>, task: &Value) -> StoreResult<()> {
+        let id = task["id"].as_str().expect("task id");
+        let previous: Option<Value> = transaction
+            .query_row(
+                "SELECT record FROM runtime_tasks WHERE id=?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()?;
+        transaction.execute(
+            "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2) \
+             ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+            rusqlite::params![id, task.to_string()],
+        )?;
+        maintain_task_window_after_write(transaction, previous.as_ref(), task, &|_, _, _, _| true)
+    }
+
+    async fn task_window_store() -> (tempfile::TempDir, studio_runtime_store::RuntimeStore) {
+        let root = tempfile::tempdir().expect("isolated state directory");
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open isolated runtime store");
+        store
+            .transaction(|transaction| {
+                for id in ["a", "b"] {
+                    let agent = studio_runtime_store::AgentRecord::from_value(json!({
+                        "id": id, "rootId": id, "epoch": 0, "status": "idle", "isLead": true
+                    }))?;
+                    studio_runtime_store::AgentRepository::put(transaction, &agent)?;
+                }
+                maintain_task_window(transaction, &|_, _, _, _| true)
+            })
+            .await
+            .expect("seed agents and mark the window migrated");
+        (root, store)
+    }
+
+    #[tokio::test]
+    async fn incremental_task_window_equals_full_rebuild_over_random_writes() {
+        let (_root, store) = task_window_store().await;
+        store
+            .transaction(|transaction| {
+                // Deterministic xorshift sequence; `created` is unique per task.
+                let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+                let mut next = move |bound: u64| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state % bound
+                };
+                let mut created = BTreeMap::<u64, u64>::new();
+                for step in 0..600_u64 {
+                    let index = next(170);
+                    let created = *created.entry(index).or_insert_with(|| step * 7 + 1);
+                    let status = ["running", "completed", "failed", "completed"][next(4) as usize];
+                    let agent = ["a", "b"][next(2) as usize];
+                    let task = json!({
+                        "id": format!("t{index}"), "agent": agent,
+                        "status": status, "created": created
+                    });
+                    write_task(transaction, &task)?;
+                    let incremental = live_task_projection(transaction);
+                    maintain_task_window(transaction, &|_, _, _, _| true)?;
+                    let full = live_task_projection(transaction);
+                    assert_eq!(full, incremental, "step {step} write {task}");
+                }
+                Ok(())
+            })
+            .await
+            .expect("random task writes");
+    }
+
+    #[tokio::test]
+    async fn task_write_cost_does_not_grow_with_history_size() {
+        let (_root, store) = task_window_store().await;
+        let mut statements = Vec::new();
+        for history in [150_i64, 1500] {
+            let count = store
+                .transaction(move |transaction| {
+                    for index in 0..history {
+                        transaction.execute(
+                            "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+                            rusqlite::params![
+                                format!("h{history}-{index}"),
+                                json!({"id": format!("h{history}-{index}"), "agent": "a",
+                                       "status": "completed", "created": index})
+                                .to_string()
+                            ],
+                        )?;
+                    }
+                    maintain_task_window(transaction, &|_, _, _, _| true)?;
+                    let running = json!({"id": format!("run{history}"), "agent": "a", "status": "running",
+                                         "created": 1_000_000 + history});
+                    TRACED_SQL.with_borrow_mut(Vec::clear);
+                    transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
+                    write_task(transaction, &running)?;
+                    let mut done = running.clone();
+                    done["status"] = json!("completed");
+                    write_task(transaction, &done)?;
+                    transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+                    Ok(TRACED_SQL.with_borrow_mut(std::mem::take))
+                })
+                .await
+                .expect("traced task writes");
+            assert!(
+                !count.iter().any(|sql| sql.contains("FROM runtime_tasks t")),
+                "a task write must not scan the task history: {count:?}"
+            );
+            statements.push(count.len());
+        }
+        assert_eq!(
+            statements[0], statements[1],
+            "statements per write are independent of history"
+        );
     }
 
     #[test]
