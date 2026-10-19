@@ -407,35 +407,39 @@ async fn admit_for_purpose(
     .map_err(|_| WorkerError::TaskFailed)??;
     let (identity, observation) = catalog(resources, intent)?;
     let intent = intent.clone();
-    scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let record = preconditions_for_purpose(
-            tx,
-            &intent,
-            &filesystem,
-            allow_paused_start,
-            prepared_host.as_ref(),
-        )?;
-        let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
-            .map_err(|e| refusal(e.to_string()))?;
-        let mut selected =
-            gates::select_execution(&observed, &observed, observation.as_ref(), Instant::now())
-                .map_err(catalog_admission_error)?;
-        // Python resolves absent nativeEffort against the account catalog before
-        // preparing a thread. Explicit null remains a deliberate provider default.
-        if matches!(selected.settings.native_effort, gates::StoredField::Missing) {
-            let catalog = observation.as_ref().ok_or_else(catalog_pending)?;
-            let (effort, native) = gates::validate_execution(&selected.settings, catalog, false)
+    // Validation only: one reader snapshot, and the submitted commit rechecks.
+    store
+        .read_async("runtime-services/account_worker_admission", move |tx| {
+            let record = preconditions_for_purpose(
+                tx,
+                &intent,
+                &filesystem,
+                allow_paused_start,
+                prepared_host.as_ref(),
+            )?;
+            let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
                 .map_err(|e| refusal(e.to_string()))?;
-            selected.settings.effort = effort;
-            selected.settings.native_effort =
-                native.map_or(gates::StoredField::Null, gates::StoredField::Value);
-            selected.catalog_precondition = Some((catalog.identity.clone(), catalog.expires_at));
-        }
-        Ok(Admission {
-            selection: selected,
+            let mut selected =
+                gates::select_execution(&observed, &observed, observation.as_ref(), Instant::now())
+                    .map_err(catalog_admission_error)?;
+            // Python resolves absent nativeEffort against the account catalog before
+            // preparing a thread. Explicit null remains a deliberate provider default.
+            if matches!(selected.settings.native_effort, gates::StoredField::Missing) {
+                let catalog = observation.as_ref().ok_or_else(catalog_pending)?;
+                let (effort, native) =
+                    gates::validate_execution(&selected.settings, catalog, false)
+                        .map_err(|e| refusal(e.to_string()))?;
+                selected.settings.effort = effort;
+                selected.settings.native_effort =
+                    native.map_or(gates::StoredField::Null, gates::StoredField::Value);
+                selected.catalog_precondition =
+                    Some((catalog.identity.clone(), catalog.expires_at));
+            }
+            Ok(Admission {
+                selection: selected,
+            })
         })
-    })
-    .await
+        .await
 }
 pub(crate) async fn workspace(
     store: Arc<RuntimeStore>,
@@ -1378,69 +1382,72 @@ pub(crate) async fn prepare_ready(
         filesystem,
         prepared_host,
         selection,
-    ) = scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let record = stage("turn_preparation.ready.preconditions", || {
-            preconditions(
-                tx,
-                &intent_for_snapshot,
-                &filesystem,
-                prepared_host.as_ref(),
-            )
-        })?;
-        let selection_for_snapshot = match admission {
-            Some(Admission { selection }) => selection,
-            None => frozen_selection(&record, &identity)?,
-        };
-        let mut frozen = selection_for_snapshot
-            .freeze_record(&record, &identity, Instant::now())
-            .map_err(|e| refusal(e.to_string()))?;
-        let cwd = token_for_snapshot
-            .validate(tx)?
-            .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
-        let vm_reviewer = vm_reviewer_permissions(&frozen);
-        if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
-            frozen["cwd"] = json!(execution_cwd);
-        }
-        if frozen.get("nativeEffort").is_none() {
-            frozen["effort"] = json!(selection_for_snapshot.settings.effort);
-            frozen["nativeEffort"] = json!(selection_for_snapshot.settings.native_effort);
-        }
-        let snapshot = stage("turn_preparation.ready.thread_snapshot", || {
-            thread_snapshot(
-                tx,
-                &resources_for_snapshot,
-                &frozen,
-                &generation,
-                &state_root,
-                &filesystem.thread_inputs,
-                None,
-            )
-        })?;
-        let (turn_snapshot, events) = stage("turn_preparation.ready.submission_snapshot", || {
-            submission_snapshot(
-                tx,
-                &resources_for_snapshot,
-                &frozen,
-                &intent_for_snapshot,
-                &state_root,
-            )
-        })?;
-        let mut prepared_intent = intent_for_snapshot.clone();
-        prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
-        prepared_intent.model = snapshot.settings.model.clone();
-        prepared_intent.thread_id = snapshot.actor.thread_id.clone();
-        Ok::<_, WorkerError>((
-            snapshot,
-            turn_snapshot,
-            events,
-            prepared_intent,
-            vm_reviewer,
-            filesystem,
-            prepared_host,
-            selection_for_snapshot,
-        ))
-    })
-    .await?;
+    ) = store
+        .read_async("runtime-services/account_worker_ready", move |tx| {
+            // Snapshots only: the submitted commit rechecks them under the writer.
+            let record = stage("turn_preparation.ready.preconditions", || {
+                preconditions(
+                    tx,
+                    &intent_for_snapshot,
+                    &filesystem,
+                    prepared_host.as_ref(),
+                )
+            })?;
+            let selection_for_snapshot = match admission {
+                Some(Admission { selection }) => selection,
+                None => frozen_selection(&record, &identity)?,
+            };
+            let mut frozen = selection_for_snapshot
+                .freeze_record(&record, &identity, Instant::now())
+                .map_err(|e| refusal(e.to_string()))?;
+            let cwd = token_for_snapshot
+                .validate(tx)?
+                .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
+            let vm_reviewer = vm_reviewer_permissions(&frozen);
+            if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
+                frozen["cwd"] = json!(execution_cwd);
+            }
+            if frozen.get("nativeEffort").is_none() {
+                frozen["effort"] = json!(selection_for_snapshot.settings.effort);
+                frozen["nativeEffort"] = json!(selection_for_snapshot.settings.native_effort);
+            }
+            let snapshot = stage("turn_preparation.ready.thread_snapshot", || {
+                thread_snapshot(
+                    tx,
+                    &resources_for_snapshot,
+                    &frozen,
+                    &generation,
+                    &state_root,
+                    &filesystem.thread_inputs,
+                    None,
+                )
+            })?;
+            let (turn_snapshot, events) =
+                stage("turn_preparation.ready.submission_snapshot", || {
+                    submission_snapshot(
+                        tx,
+                        &resources_for_snapshot,
+                        &frozen,
+                        &intent_for_snapshot,
+                        &state_root,
+                    )
+                })?;
+            let mut prepared_intent = intent_for_snapshot.clone();
+            prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
+            prepared_intent.model = snapshot.settings.model.clone();
+            prepared_intent.thread_id = snapshot.actor.thread_id.clone();
+            Ok::<_, WorkerError>((
+                snapshot,
+                turn_snapshot,
+                events,
+                prepared_intent,
+                vm_reviewer,
+                filesystem,
+                prepared_host,
+                selection_for_snapshot,
+            ))
+        })
+        .await?;
     let mut guard = CommitGuard {
         native_params: None,
         selection,
