@@ -71,33 +71,53 @@ fn put(transaction: &Transaction<'_>, value: Value) -> Result<Value, EventWriteE
     Ok(value)
 }
 
-/// Queue a notice under `message_id` and remember it on the record. The queue
-/// write and the record commit together, so `imageWorkspaceNoticeSent` is exact.
-fn queue_notice(
-    transaction: &Transaction<'_>,
-    value: &mut Value,
-    message_id: String,
+/// A notice that commits with the record it describes.
+struct Notice {
+    id: String,
     text: String,
+}
+
+/// Remember the notice on the record (Python `_send_image_workspace_notice`).
+fn mark_notice(value: &mut Value, notice: &Notice) {
+    value["imageWorkspaceNoticeId"] = json!(notice.id);
+    value["imageWorkspaceNoticeText"] = json!(notice.text);
+    value["imageWorkspaceNoticeSent"] = json!(notice.id);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("imageWorkspaceHandoffText");
+        object.remove("imageWorkspaceNoticeError");
+    }
+}
+
+/// Write the record, then queue its notice in the same transaction. The queue
+/// write moves an idle auto-waking agent to `queued`, so it must follow the
+/// record write; the stored record is returned.
+fn put_with_notice(
+    transaction: &Transaction<'_>,
+    mut value: Value,
+    notice: Option<Notice>,
     now: f64,
-) -> Result<(), EventWriteError> {
+) -> Result<Value, EventWriteError> {
+    if let Some(notice) = &notice {
+        mark_notice(&mut value, notice);
+    }
+    let value = put(transaction, value)?;
+    let Some(notice) = notice else {
+        return Ok(value);
+    };
     let id = value["id"].as_str().unwrap_or_default().to_owned();
     let record = AgentRecord::from_value(value.clone()).map_err(|_| invalid(&id))?;
     event_write::enqueue_event(
         transaction,
         &record,
-        message_id.clone(),
+        notice.id,
         "followup",
-        text.clone(),
+        notice.text,
         now,
     )?;
-    value["imageWorkspaceNoticeId"] = json!(message_id);
-    value["imageWorkspaceNoticeText"] = json!(text);
-    value["imageWorkspaceNoticeSent"] = json!(message_id);
-    if let Some(object) = value.as_object_mut() {
-        object.remove("imageWorkspaceHandoffText");
-        object.remove("imageWorkspaceNoticeError");
-    }
-    Ok(())
+    Ok(
+        AgentRepository::get(transaction, &AgentId::from(id.as_str()))?
+            .map_or(value, |agent| agent.value()),
+    )
 }
 
 /// Python `prepare_locked` after `ensure_mounted`: the record names the mounted turn
@@ -127,21 +147,14 @@ pub fn record_mounted(
         value["imageWorkspaceMount"] = json!(mount);
         changed = true;
     }
-    if !truthy(value.get("imageWorkspaceNoticeSent")) {
-        let text = ready_notice_text(&value, &cwd, now);
-        queue_notice(
-            transaction,
-            &mut value,
-            ready_notice_id(agent_id),
-            text,
-            now,
-        )?;
-        changed = true;
-    }
-    if !changed {
+    let notice = (!truthy(value.get("imageWorkspaceNoticeSent"))).then(|| Notice {
+        id: ready_notice_id(agent_id),
+        text: ready_notice_text(&value, &cwd, now),
+    });
+    if !changed && notice.is_none() {
         return Ok(Some(value));
     }
-    put(transaction, value).map(Some)
+    put_with_notice(transaction, value, notice, now).map(Some)
 }
 
 /// Python `complete_image_workspace` with a created copy, for a record the caller
@@ -171,11 +184,11 @@ pub fn record_ready(
     value["imageWorkspaceMount"] = json!(mount);
     value["imageWorkspaceCreatedAt"] = json!(now);
     let message_id = ready_notice_id(&agent_id);
-    if value["imageWorkspaceNoticeSent"] != message_id.as_str() {
-        let text = ready_notice_text(&value, &cwd, now);
-        queue_notice(transaction, &mut value, message_id, text, now)?;
-    }
-    put(transaction, value)
+    let notice = (value["imageWorkspaceNoticeSent"] != message_id.as_str()).then(|| Notice {
+        text: ready_notice_text(&value, &cwd, now),
+        id: message_id,
+    });
+    put_with_notice(transaction, value, notice, now)
 }
 
 /// The record still describes an image agent waiting in its read-only phase.
@@ -314,10 +327,11 @@ pub fn settle_failed(
             notice,
         )
     };
-    if value["imageWorkspaceNoticeSent"] != message_id.as_str() {
-        queue_notice(transaction, &mut value, message_id, notice.clone(), now)?;
-    }
-    let value = put(transaction, value)?;
+    let queued = (value["imageWorkspaceNoticeSent"] != message_id.as_str()).then(|| Notice {
+        id: message_id,
+        text: notice.clone(),
+    });
+    let value = put_with_notice(transaction, value, queued, now)?;
     crate::lifecycle_effects::notify_parent_of_image_workspace(
         transaction,
         &value,

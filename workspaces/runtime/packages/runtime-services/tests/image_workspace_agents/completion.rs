@@ -124,6 +124,10 @@ async fn a_mounted_turn_writes_its_path_back_and_sends_the_ready_notice_once() {
     assert_eq!(first["cwd"], "/mnt/mounted/repo/app");
     assert_eq!(first["imageWorkspaceMount"], "/mnt/mounted");
     assert_eq!(
+        first["status"], "queued",
+        "the idle agent wakes for its notice"
+    );
+    assert_eq!(
         first["imageWorkspaceNoticeSent"],
         "image-workspace-ready:mounted"
     );
@@ -208,6 +212,10 @@ async fn a_read_only_agent_gets_its_copy_once_the_base_is_ready() {
     assert_eq!(ready["imageWorkspaceReady"], true);
     assert_eq!(ready["imageWorkspacePhase"], "ready");
     assert_eq!(ready["imageWorkspaceBaseState"], "ready");
+    assert_eq!(
+        ready["status"], "queued",
+        "the idle agent wakes for its notice"
+    );
     assert!(ready["branch"].is_null());
     assert!(ready["imageWorkspaceCreatedAt"].as_f64().is_some());
     assert_eq!(stored(&store, "reader"), ready);
@@ -331,7 +339,10 @@ async fn an_implicit_image_request_falls_back_to_a_worktree_when_setup_fails() {
     assert!(fallback["workspaceBackend"].is_null());
     assert_eq!(fallback["workspaceMode"], "worktree");
     assert_eq!(fallback["worktree"], true);
-    assert_eq!(fallback["status"], "idle");
+    assert_eq!(
+        fallback["status"], "queued",
+        "the idle agent wakes for its notice"
+    );
     assert_eq!(fallback["autoWake"], true);
     assert_eq!(
         events(&store, "implicit"),
