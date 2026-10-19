@@ -146,7 +146,11 @@ pub const WAL_CHECKPOINT_CADENCE: Duration = Duration::from_secs(60);
 /// WAL size that permits an early maintenance checkpoint; the unit is bytes.
 const WAL_CHECKPOINT_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
 /// Maximum total Canvas reader connections, including the dedicated version reader.
-const CANVAS_READER_CONNECTION_CAPACITY: usize = 4;
+/// WAL readers never block the writer or each other, so the pool is sized for the
+/// concurrent read routes of 512 working agents (UI polls, sync pulls, per-turn
+/// reads) rather than for the three that fit a single user; an idle connection
+/// costs only its page cache, and readers are opened on first use.
+const CANVAS_READER_CONNECTION_CAPACITY: usize = 16;
 /// Reader connections reserved for the dedicated `PRAGMA data_version` query.
 const VERSION_READER_CONNECTION_RESERVATION: usize = 1;
 /// Maximum ordinary checked-out Canvas read connections after the version-reader reservation.
