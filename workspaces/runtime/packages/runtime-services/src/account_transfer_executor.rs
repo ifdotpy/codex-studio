@@ -1210,6 +1210,12 @@ pub async fn before_start(
             driver::adopt_receipt(store.as_ref(), operation, agent_id, now).await?;
         }
     } else {
+        let agent = match driver::active_summary_id(&agent) {
+            Some(_) => driver::drop_orphan_summary(store.as_ref(), agent_id)
+                .await?
+                .unwrap_or(agent),
+            None => agent,
+        };
         crate::account_transfer::before_start(&agent)?;
     }
     let read_store = Arc::clone(&store);
@@ -1587,6 +1593,97 @@ mod retained_executor_tests {
                 ))
             })
         }
+    }
+
+    /// A lead that moved to this server while its subagent transfer was pending
+    /// on the source server (igor-mbp, 2026-10-18): the record has the summary,
+    /// this store has no transfer row.
+    async fn store_with_orphan_summary(root: &Path) -> Arc<RuntimeStore> {
+        let store = Arc::new(
+            RuntimeStore::open(Some(root))
+                .await
+                .expect("test fixture operation succeeds"),
+        );
+        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":0,
+            "status":"queued","isLead":true,"autoWake":true,"accountKey":"source",
+            "provider":"codex","model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread",
+            "accountTransfer":{"id":"abde1958-090d-4a79-8516-3780b6469e81","status":"pending",
+                "scope":"subagents","targetAccountKey":"target","updated":1791278955.704289,
+                "finishHistory":true,"total":3,"completed":2,"moved":1,"movingNow":0,
+                "nativeHistoryPending":1,"canFinishHistory":false,"interrupted":[],
+                "leftOnSource":[],"blocked":[],"waitingCount":0,"needsAttention":true,
+                "canRetry":true,"waiting":"Waiting for background work or a tool response"}}))
+        .expect("test fixture operation succeeds");
+        store
+            .transaction_with_error(move |tx| {
+                AgentRepository::put(tx, &lead)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("test fixture operation succeeds");
+        store
+    }
+
+    fn stored_lead(store: &RuntimeStore) -> Value {
+        AgentRepository::get(
+            &store.read().expect("test fixture operation succeeds"),
+            &AgentId::from("lead"),
+        )
+        .expect("test fixture operation succeeds")
+        .expect("test fixture operation succeeds")
+        .value()
+    }
+
+    #[tokio::test]
+    async fn summary_without_its_transfer_row_does_not_hold_turn_start() {
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let store = store_with_orphan_summary(root.path()).await;
+        let catalog = ModelCatalogService::new();
+        let resources = crate::account_worker::preparation::PreparationResources {
+            instructions: String::new(),
+            progress_template: String::new(),
+            thread_config: Default::default(),
+            tools: vec![],
+            legacy_tools: vec![],
+            skills_root: PathBuf::from("/tmp/skills"),
+            role_guidance: Default::default(),
+            model_catalog: catalog.clone(),
+            account_home: "/tmp/source".into(),
+            server_source_root: PathBuf::from("/tmp/server"),
+            claude_account_pin: serde_json::Value::Null,
+            account_driver: None,
+            account_session: None,
+            guest_rpc: None,
+            vm_provider_launch: None,
+        };
+
+        let agent = before_start(Arc::clone(&store), None, &catalog, &resources, "lead", 2.0)
+            .await
+            .expect("an orphan summary is not a receipt hold");
+
+        assert!(agent.get("accountTransfer").is_none());
+        assert!(stored_lead(&store).get("accountTransfer").is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_without_its_transfer_row_does_not_block_a_new_transfer() {
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let store = store_with_orphan_summary(root.path()).await;
+        let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42281";
+
+        crate::account_transfer_driver::request(
+            &store,
+            transfer_id,
+            "lead",
+            "target",
+            "team",
+            "codex",
+            3.0,
+        )
+        .await
+        .expect("a new transfer replaces an orphan summary");
+
+        assert_eq!(stored_lead(&store)["accountTransfer"]["id"], transfer_id);
     }
 
     #[tokio::test]

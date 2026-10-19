@@ -552,7 +552,17 @@ class AccountTransfers:
                         if summary.get('id') != exact or summary.get('status') != 'pending':
                             self.save(db, op)
                 elif summary.get('status') == 'pending':
-                    operations.add(summary['id'])
+                    if db.execute('SELECT 1 FROM runtime_account_transfers WHERE id=?',
+                                  (summary['id'],)).fetchone():
+                        operations.add(summary['id'])
+                    else:
+                        # The summary mirrors its operation row. Without the row
+                        # it can never advance: a move to another server copies
+                        # the agent record, not the source server's transfer row.
+                        lead = rt.agent(a['id'], db)
+                        if (lead.get('accountTransfer') or {}).get('id') == summary['id']:
+                            lead.pop('accountTransfer')
+                            rt.put(db, 'agents', lead)
             # Derive reservations from durable operation identities. A pending
             # receipt retains its destination slot even after cancellation.
             busy_targets = {self.get(db, key)['targetAccountKey'] for key, _ in self.futures}

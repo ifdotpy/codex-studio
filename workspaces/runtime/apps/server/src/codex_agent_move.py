@@ -35,6 +35,12 @@ DEADLINE = 300
 MIN_TRANSFER_RATE = 64 * 1024
 # Source phases before any import on the target: a chat held there can be released.
 RELEASABLE = frozenset({'waiting', 'exported'})
+# Agent fields that mirror an operation row in the source server's database:
+# runtime_account_transfers, runtime_usage_resumes and runtime_capacity_retries.
+# Each names the source account. The rows stay on the source, so the target
+# import drops these projections instead of holding work for an operation it
+# does not have.
+SOURCE_OPERATION_FIELDS = frozenset({'accountTransfer', 'usageResume', 'capacityRetry'})
 
 
 def transfer_deadline(files: list[dict[str, Any]], start: float) -> float:
@@ -154,6 +160,16 @@ def worker_defaults_here(rows: list[dict[str, Any]], defaults: Any, source: Any)
     else:
         result.pop('accountKey', None)
     return result
+
+
+def imported_record(agent: dict[str, Any]) -> dict[str, Any]:
+    """The source agent record without the state that only the source server can honor."""
+    record = copy.deepcopy(agent)
+    for field in list(record):
+        if (field.startswith(('imageWorkspace', 'workerBase', 'worktree', 'remote'))
+                or field in {'startAttempt', 'executionMove', 'movedTo'} or field in SOURCE_OPERATION_FIELDS):
+            record.pop(field)
+    return record
 
 
 class AgentMoves:
@@ -1140,10 +1156,7 @@ class AgentMoves:
         if returning_home and previous_home and (not previous_home['autoWake']
                 or previous_home['epoch'] != descriptor['agent'].get('remoteControlEpoch', descriptor['agent']['epoch'])):
             raise ValueError('The original home agent was stopped or changed before import')
-        agent = copy.deepcopy(descriptor['agent'])
-        for field in list(agent):
-            if field.startswith(('imageWorkspace', 'workerBase', 'worktree', 'remote')) or field in {'startAttempt', 'executionMove', 'movedTo'}:
-                agent.pop(field, None)
+        agent = imported_record(descriptor['agent'])
         agent.update(accountKey=account['id'], cwd=descriptor['cwd'], sourceCwd=descriptor['cwd'],
                      environment='host', worktree=False, worktreeReady=True, inFlight=False, turnId=None,
                      activeTools=[], activity=None, error=None, autoWake=False, status='paused', threadId=descriptor['nativeThread'],
