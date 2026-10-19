@@ -277,7 +277,7 @@ impl SchedulerRepository {
                 .iter()
                 .any(|k| attempt[*k] == turn);
         let active_review = turn.is_empty()
-            && agent.extra.get("nativeReview").and_then(Value::as_bool) == Some(true)
+            && agent.extra.get("nativeReview").is_some_and(truthy)
             && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
             && attempt.get("action").and_then(Value::as_str) == Some("review")
             && attempt.get("submitted").and_then(Value::as_bool) == Some(true)

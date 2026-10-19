@@ -138,6 +138,10 @@ def actor_of(s):
             result[native] = copy.deepcopy(a[key])
     if a["deleted"]:
         result["deletedAt"] = "deleted"
+    if a.get("native_review"):
+        # The review object Python saves on a native review child.
+        result["nativeReview"] = {"target": {"type": "uncommittedChanges"}, "requestId": "review-request",
+                                  "actorId": "root", "status": "started"}
     return result
 
 

@@ -105,8 +105,10 @@ pub(crate) mod multi_server_tools;
 /// `PairedTransport` with a local fake peer.
 pub mod multi_server_transport;
 pub mod multi_server_transport_limits;
+pub mod native_action_ports;
 pub mod native_actions;
 pub mod native_review;
+pub mod native_review_turn;
 pub mod native_runtime;
 pub mod notification_dispatch;
 pub mod notification_runtime_effects;

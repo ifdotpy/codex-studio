@@ -210,7 +210,8 @@ impl ProductionLifecyclePorts {
             return Ok(());
         };
         let attempt = before.get("startAttempt").unwrap_or(&Value::Null);
-        let is_review = before.get("nativeReview").and_then(Value::as_bool) == Some(true)
+        // Python tests the stored review object for truth.
+        let is_review = studio_runtime_store::truthy(before.get("nativeReview"))
             && attempt.get("action").and_then(Value::as_str) == Some("review")
             && attempt.get("submitted").and_then(Value::as_bool) == Some(true)
             && studio_runtime_store::truthy(before.get("inFlight"))
@@ -1017,6 +1018,51 @@ fn notify_parent_with_id(
     effect: &LifecycleEffect,
     event_id_override: Option<&str>,
 ) -> Result<(), ManagementError> {
+    notify_parent_with_step(tx, effect, event_id_override, "send")
+}
+
+/// Python `child_stopped_event(db, a, "failed", reason, "start:" + attempt)`:
+/// a child whose native start failed before a turn existed tells its parent
+/// once. Python names the next step "recover" for a failed child.
+pub(crate) fn notify_parent_of_start_failure(
+    tx: &Transaction<'_>,
+    before: &Value,
+    failed: &Value,
+    attempt: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let id = format!(
+        "child-stop:{}:{}:start:{attempt}",
+        failed.get("id").and_then(Value::as_str).unwrap_or_default(),
+        failed
+            .get("epoch")
+            .and_then(Value::as_i64)
+            .unwrap_or_default()
+    );
+    let effect = LifecycleEffect::new(
+        LifecycleEffectKind::NotifyParent,
+        before.clone(),
+        failed.clone(),
+        at,
+    );
+    match notify_parent_with_step(tx, &effect, Some(&id), "recover") {
+        Ok(())
+        | Err(ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)) => {
+            Ok(())
+        }
+        Err(ManagementError::Store(error)) => Err(error),
+        Err(other) => Err(studio_runtime_store::StoreError::SchemaMismatch(
+            other.to_string(),
+        )),
+    }
+}
+
+fn notify_parent_with_step(
+    tx: &Transaction<'_>,
+    effect: &LifecycleEffect,
+    event_id_override: Option<&str>,
+    next_step: &str,
+) -> Result<(), ManagementError> {
     let agent = effect.stopped();
     if agent.get("isLead").and_then(Value::as_bool) == Some(true)
         || agent.get("parentId").and_then(Value::as_str).is_none()
@@ -1117,7 +1163,7 @@ fn notify_parent_with_id(
             .any(|task| task.get("result_submitted").and_then(Value::as_bool) == Some(true))
     );
     payload["tasks"] = json!(tasks);
-    payload["next_step"] = json!("send");
+    payload["next_step"] = json!(next_step);
     payload["requested_by_lead"] = json!(false);
     let stopped_turn = effect
         .before()

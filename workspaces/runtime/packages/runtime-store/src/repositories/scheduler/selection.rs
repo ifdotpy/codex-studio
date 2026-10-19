@@ -119,13 +119,22 @@ fn deliverable_pending(agent: &str, epoch: &str, held_after: &str) -> String {
     )
 }
 
+/// A queued native review child whose first turn is its stored review. Python
+/// `codex_agent_review.claim` starts it without a queued input event.
+fn account_wake_native_review(record: &str) -> String {
+    format!(
+        "({} AND json_extract({record},'$.nativeReview.status')='pending')",
+        account_wake_queued_candidate(record)
+    )
+}
+
 fn account_wake_pending(record: &str, held_after: &str) -> String {
     format!(
         "(({} AND {}) \
          OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
              AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending' \
              AND e.kind='user')) \
-         OR {})",
+         OR {} OR {})",
         account_wake_queued_candidate(record),
         deliverable_pending(
             "a.id",
@@ -133,7 +142,8 @@ fn account_wake_pending(record: &str, held_after: &str) -> String {
             held_after,
         ),
         account_wake_steer_candidate(record),
-        account_wake_capacity_candidate(record)
+        account_wake_capacity_candidate(record),
+        account_wake_native_review(record)
     )
 }
 
@@ -634,6 +644,17 @@ impl SchedulerRepository {
             || agent.extra.get("nativeFailureHold").is_some_and(truthy)
             || agent.extra.get("remoteWorker").is_some_and(truthy)
             || agent.extra.get("remoteAnchor").is_some_and(truthy)
+        {
+            return Ok(None);
+        }
+        // Python's dispatcher claims a pending native review before queued
+        // input (`codex_agent_review.claim`); the review driver owns this turn.
+        if agent
+            .extra
+            .get("nativeReview")
+            .and_then(|review| review.get("status"))
+            .and_then(Value::as_str)
+            == Some("pending")
         {
             return Ok(None);
         }
@@ -1775,6 +1796,34 @@ mod account_wake_index_tests {
             SchedulerRepository::account_wake_agents_after(&connection, "account-a", "zzz", 1, 0.0)
                 .expect("capacity continuation does not wrap the agent cursor");
         assert!(no_wrap.is_empty());
+    }
+
+    /// Python's dispatcher starts a queued native review child without a
+    /// queued input event (`codex_agent_review.claim`). Agent 8388eb70 waited
+    /// forever because the Rust wake page required an event.
+    #[test]
+    fn a_queued_native_review_child_wakes_without_an_input_event() {
+        let mut connection = old_schema();
+        let review = |status: &str| {
+            json!({
+                "accountKey":"default", "epoch":0, "status":"queued", "autoWake":true,
+                "inFlight":false, "nativeFailureHold":false, "provider":"codex",
+                "nativeReview":{"status":status,"target":{"type":"uncommittedChanges"}}
+            })
+        };
+        put_agent(&connection, "pending-review", review("pending"));
+        put_agent(&connection, "started-review", review("started"));
+        install_index(&mut connection);
+        let page =
+            SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8, 0.0)
+                .expect("wake page");
+        assert_eq!(
+            page,
+            BTreeMap::from([(
+                "default".to_owned(),
+                vec![("pending-review".to_owned(), 0, None)]
+            )])
+        );
     }
 
     #[test]

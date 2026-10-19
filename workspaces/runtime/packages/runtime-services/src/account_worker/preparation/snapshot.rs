@@ -893,9 +893,7 @@ pub(super) fn thread_snapshot(
     } else {
         None
     };
-    let unsupported = if studio_runtime_store::truthy(record.get("nativeReview")) {
-        Some(thread::Refusal::NativeReview)
-    } else if record
+    let unsupported = if record
         .get("frozenNativeParams")
         .is_some_and(|v| !v.is_null())
     {
@@ -924,6 +922,7 @@ pub(super) fn thread_snapshot(
             auto_wake: flag(record, "autoWake")?,
             native_effort_present: record.get("nativeEffort").is_some(),
             deleted: record.get("deletedAt").is_some_and(|v| !v.is_null()),
+            native_review: studio_runtime_store::truthy(record.get("nativeReview")),
         },
         account: thread::Account {
             key: text(record, "accountKey")?.unwrap_or_else(|| "default".into()),

@@ -788,6 +788,111 @@ async fn prepare_native_thread_for_transfer_owner(
     }
 }
 
+/// The fresh `thread/start` of a queued native review child: the same checked
+/// snapshot and planner as ordinary startup (Python `prepare_locked`), before
+/// the review action receipt exists. Role snapshots are written here, like the
+/// ordinary thread request.
+pub(crate) async fn prepare_review_thread(
+    store: Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    agent_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<super::PreparedReviewThread, WorkerError> {
+    let mut snapshot = prepare_native_snapshot(
+        Arc::clone(&store),
+        resources,
+        agent_id,
+        attempt_id,
+        generation,
+        true,
+        None,
+    )
+    .await?;
+    if !snapshot.actor.native_review || snapshot.actor.thread_id.is_some() {
+        return Err(refusal("native-review/thread-start-required".into()));
+    }
+    let attempt = match plan_native_thread(
+        &mut snapshot,
+        attempt_id,
+        &format!("native-review-thread:{agent_id}:{attempt_id}"),
+    ) {
+        thread::Outcome::Start(attempt) => attempt,
+        thread::Outcome::Refuse(reason) => {
+            return Err(refusal(format!("thread-preparation/{reason:?}")));
+        }
+        thread::Outcome::Hold(reason) => {
+            return Err(refusal(format!("thread-preparation/{reason:?}")));
+        }
+        _ => return Err(refusal("native-review/thread-start-required".into())),
+    };
+    for artifact in &attempt.artifacts {
+        let thread::ArtifactIntent::RememberRole { version, text } = artifact;
+        let state_root = store.root().to_path_buf();
+        let relative_path = format!("context-snapshots/{version}.txt");
+        let text = text.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_review_materialize_context",
+            move || materialize(&state_root, &relative_path, &text),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
+    }
+    Ok(super::PreparedReviewThread { attempt })
+}
+
+/// The agent fields saved before a review thread start is sent: the ordinary
+/// pre-submission patch, with the effort the snapshot selected.
+pub(crate) fn review_thread_submitted(
+    record: &mut Value,
+    prepared: &super::PreparedReviewThread,
+) -> Result<(), WorkerError> {
+    apply_patch(record, &prepared.attempt.before_submit)?;
+    record["nativeEffort"] = json!(prepared.attempt.snapshot.settings.native_effort);
+    Ok(())
+}
+
+/// Reduce an accepted review `thread/start` reply against the current record
+/// with the ordinary receipt reducer. `None` means the reply is stale or has no
+/// thread identity; the caller keeps the outcome uncertain.
+pub(crate) fn accept_review_thread(
+    tx: &Transaction<'_>,
+    resources: &PreparationResources,
+    root: &Path,
+    filesystem: &super::ReviewThreadFilesystem,
+    record: &Value,
+    prepared: &super::PreparedReviewThread,
+    reply: &Value,
+) -> Result<Option<Value>, WorkerError> {
+    let attempt = &prepared.attempt;
+    let current = thread_snapshot(
+        tx,
+        resources,
+        record,
+        &attempt.snapshot.account.connection_id,
+        root,
+        &filesystem.0.thread_inputs,
+        None,
+    )?;
+    let receipt = thread::ProviderReceipt {
+        identity: attempt.receipt_identity(),
+        thread_id: reply["thread"]["id"].as_str().map(str::to_owned),
+        fields: reply
+            .as_object()
+            .ok_or_else(|| invalid("review thread receipt"))?
+            .clone(),
+        reattached: false,
+    };
+    let thread::ReceiptOutcome::Accepted { patch, .. } =
+        thread::reduce_receipt(attempt, &current, Some(&receipt), None, json!(now()))
+    else {
+        return Ok(None);
+    };
+    let mut record = record.clone();
+    apply_patch(&mut record, &patch)?;
+    Ok(Some(record))
+}
+
 /// Prepare the permission portion of Python's monitor command path. Monitor
 /// ownership is checked by the monitor service; this snapshot only rechecks
 /// the actor epoch/deletion state and intentionally has no startAttempt gate.
@@ -1889,6 +1994,7 @@ mod daybreak_tests {
                 auto_wake: true,
                 native_effort_present: false,
                 deleted: false,
+                native_review: false,
             },
             root: thread::Root {
                 can_delegate: true,

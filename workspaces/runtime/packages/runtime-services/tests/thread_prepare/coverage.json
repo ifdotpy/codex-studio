@@ -88,7 +88,6 @@
     "native_catalog_mutation",
     "portable_history_import",
     "frozen_import",
-    "native_review",
     "browser_registration",
     "daybreak"
   ],

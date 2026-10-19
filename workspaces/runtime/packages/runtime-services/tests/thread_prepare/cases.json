@@ -7911,5 +7911,126 @@
       "reattached": false,
       "claude_read_submitted": false
     }
+  },
+  {
+    "family": "native-review",
+    "name": "native-review-start",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_review": true,
+        "parent_id": "root"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "medium"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "readOnly"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": null
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "native-review",
+    "name": "native-review-fast-start",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_review": true,
+        "parent_id": "root"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "readOnly"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": null
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "native-review",
+    "name": "native-review-later-turn",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_review": true,
+        "parent_id": "root",
+        "native_tool_source": "current"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": "thread",
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "medium"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "readOnly"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": null
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
   }
 ]

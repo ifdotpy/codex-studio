@@ -1677,6 +1677,7 @@ impl Worker {
             agent_id: agent,
             epoch,
             effect: self.effect_in_hand.take(),
+            resources: self.resources.clone(),
         };
         self.preparations.spawn(turn_preparation::wake(wake, start));
         Ok(())
@@ -1868,7 +1869,9 @@ impl Worker {
             turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::DiskFull(epoch)) => {
                 self.wait_for_disk_space(agent_id.clone(), epoch);
             }
-            turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::Nothing) => {}
+            turn_preparation::Outcome::Unclaimed(
+                turn_preparation::Unclaimed::Nothing | turn_preparation::Unclaimed::NativeReview,
+            ) => {}
             turn_preparation::Outcome::Committed(committed) => {
                 Box::pin(self.committed(committed)).await?;
             }

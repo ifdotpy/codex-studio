@@ -61,6 +61,8 @@ pub(super) enum Unclaimed {
     Steer(Box<TurnIntent>, String),
     /// The disk is full: the input stays queued at this epoch until the recheck.
     DiskFull(i64),
+    /// A queued native review child: its first turn is `review/start`.
+    NativeReview,
     /// Nothing to start now.
     Nothing,
 }
@@ -73,6 +75,8 @@ pub(super) struct Wake {
     pub agent_id: String,
     pub epoch: i64,
     pub effect: Option<String>,
+    /// Native review children run their first turn with these resources.
+    pub resources: preparation::PreparationResources,
 }
 
 pub(super) async fn run(run: Run) -> Box<Done> {
@@ -100,6 +104,23 @@ pub(super) async fn wake(
 ) -> Box<Done> {
     let outcome = match stage("turn_preparation.claim", claim(&wake)).await {
         Ok(Ok(intent)) => return run(start(intent, wake.effect)).await,
+        Ok(Err(Unclaimed::NativeReview)) => {
+            // The driver saves every outcome on the child before it returns.
+            if let Err(error) = crate::native_review_turn::run(
+                Arc::clone(&wake.bridge.store),
+                &wake.resources,
+                &wake.agent_id,
+                wake.epoch,
+            )
+            .await
+            {
+                eprintln!(
+                    "native review for agent {} did not start: {error}",
+                    wake.agent_id
+                );
+            }
+            Ok(Outcome::Unclaimed(Unclaimed::Nothing))
+        }
         Ok(Err(unclaimed)) => Ok(Outcome::Unclaimed(unclaimed)),
         Err(error) => Err(error),
     };
@@ -150,6 +171,10 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         // While the disk is full no new turn starts. The input stays queued
         // with its identity; the desktop shows one notice with the free space.
         return Ok(Err(Unclaimed::DiskFull(epoch)));
+    }
+    // Python's dispatcher claims a pending native review before queued input.
+    if crate::native_review_turn::candidate(&bridge.store, agent_id, epoch, account).await? {
+        return Ok(Err(Unclaimed::NativeReview));
     }
     loop {
         let (a, g) = (account.clone(), agent_id.clone());
