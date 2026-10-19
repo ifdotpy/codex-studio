@@ -26,7 +26,14 @@ const MAX_ERROR_CHARS: usize = 1200;
 pub(crate) enum ChildError {
     Failed(String),
     TimedOut,
-    Other,
+    /// The child did not run or its result could not be read. The text names
+    /// the step and the operating-system error, for example
+    /// `spawn: Too many open files (os error 24)`.
+    Launch(String),
+}
+
+fn launch(step: &str, error: impl std::fmt::Display) -> ChildError {
+    ChildError::Launch(format!("{step}: {error}"))
 }
 
 #[derive(Debug)]
@@ -101,9 +108,15 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
     ChildPriority::from_environment().apply_before_spawn(&mut command);
-    let mut child = command.spawn().map_err(|_| ChildError::Other)?;
-    let stdout = child.stdout().take().ok_or(ChildError::Other)?;
-    let stderr = child.stderr().take().ok_or(ChildError::Other)?;
+    let mut child = command.spawn().map_err(|error| launch("spawn", error))?;
+    let stdout = child
+        .stdout()
+        .take()
+        .ok_or_else(|| launch("stdout", "the pipe is missing"))?;
+    let stderr = child
+        .stderr()
+        .take()
+        .ok_or_else(|| launch("stderr", "the pipe is missing"))?;
     let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
     let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
     let stdout_reader =
@@ -113,11 +126,11 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
 
     if let Some(input) = input
         && let Some(mut stdin) = child.stdin().take()
-        && stdin.write_all(input).is_err()
+        && let Err(error) = stdin.write_all(input)
     {
         terminate(&mut *child);
         detach(stdout_reader, stderr_reader);
-        return Err(ChildError::Other);
+        return Err(launch("stdin write", error));
     }
 
     #[cfg(test)]
@@ -135,10 +148,10 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
                 detach(stdout_reader, stderr_reader);
                 return Err(ChildError::TimedOut);
             }
-            Err(_) => {
+            Err(error) => {
                 terminate(&mut *child);
                 detach(stdout_reader, stderr_reader);
-                return Err(ChildError::Other);
+                return Err(launch("wait", error));
             }
         }
     };
@@ -146,15 +159,15 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     // Reap ordinary descendants as soon as the command exits. A helper that escaped into a new
     // session may still own a pipe; recv_timeout below keeps that case within the same deadline.
     terminate(&mut *child);
-    let stdout = match receive_until(&stdout_receiver, deadline) {
-        Ok(output) => output.map_err(|_| ChildError::Other)?,
+    let stdout = match receive_until(&stdout_receiver, deadline, "stdout") {
+        Ok(output) => output.map_err(|error| launch("stdout read", error))?,
         Err(error) => {
             detach(stdout_reader, stderr_reader);
             return Err(error);
         }
     };
-    let stderr = match receive_until(&stderr_receiver, deadline) {
-        Ok(output) => output.map_err(|_| ChildError::Other)?,
+    let stderr = match receive_until(&stderr_receiver, deadline, "stderr") {
+        Ok(output) => output.map_err(|error| launch("stderr read", error))?,
         Err(error) => {
             detach(stdout_reader, stderr_reader);
             return Err(error);
@@ -164,7 +177,7 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     let stdout_joined = stdout_reader.join().is_ok();
     let stderr_joined = stderr_reader.join().is_ok();
     if !stdout_joined || !stderr_joined {
-        return Err(ChildError::Other);
+        return Err(launch("output reader", "the reader thread panicked"));
     }
     if Instant::now() >= deadline {
         return Err(ChildError::TimedOut);
@@ -184,12 +197,18 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     Ok(Output { stdout })
 }
 
-fn receive_until<T>(receiver: &mpsc::Receiver<T>, deadline: Instant) -> Result<T, ChildError> {
+fn receive_until<T>(
+    receiver: &mpsc::Receiver<T>,
+    deadline: Instant,
+    pipe: &str,
+) -> Result<T, ChildError> {
     receiver
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .map_err(|error| match error {
             mpsc::RecvTimeoutError::Timeout => ChildError::TimedOut,
-            mpsc::RecvTimeoutError::Disconnected => ChildError::Other,
+            mpsc::RecvTimeoutError::Disconnected => {
+                launch(pipe, "the reader thread ended without a result")
+            }
         })
 }
 
@@ -241,6 +260,29 @@ mod tests {
     use std::ffi::OsStr;
     use std::io::Cursor;
     use std::time::{Duration, Instant};
+
+    /// Cutover attempt 3 showed only "the Git process could not run". The error
+    /// must name the failing step and the operating-system error.
+    #[test]
+    fn a_child_that_cannot_start_reports_the_step_and_the_os_error() {
+        let root = tempfile::tempdir().expect("temporary fixture");
+        let missing = root.path().join("missing-program");
+        let result = run(Request {
+            program: missing.as_os_str(),
+            cwd: OsStr::new("/"),
+            args: &[],
+            environment: &[],
+            input: None,
+            stdout_limit: 16,
+            stderr_limit: 16,
+            timeout: Duration::from_secs(5),
+        });
+        let Err(ChildError::Launch(detail)) = result else {
+            panic!("a missing program cannot start: {result:?}");
+        };
+        assert!(detail.starts_with("spawn: "), "{detail}");
+        assert!(detail.contains("os error 2"), "{detail}");
+    }
 
     #[test]
     fn output_reader_drains_excess_and_retains_only_its_limit() {
