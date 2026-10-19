@@ -12,8 +12,9 @@ pub fn execution_ledger(connection: &Connection) -> Result<Value, rusqlite::Erro
     if !table_exists(connection, "runtime_execution_runs")? {
         return Ok(json!({"runs": [], "limit": RUN_LIMIT, "relatedLimit": RELATED_LIMIT}));
     }
-    let mut statement = connection
-        .prepare("SELECT record FROM runtime_execution_runs ORDER BY created DESC LIMIT ?1")?;
+    let mut statement = connection.prepare_cached(
+        "SELECT record FROM runtime_execution_runs ORDER BY created DESC LIMIT ?1",
+    )?;
     let raw_runs = statement
         .query_map([RUN_LIMIT as i64], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -68,19 +69,18 @@ pub fn durable_input_pending(connection: &Connection) -> Result<i64, rusqlite::E
     if !table_exists(connection, "runtime_events")? {
         return Ok(0);
     }
+    // Probe each pending row's agent by primary key; the deleted-agent set is never materialized.
     let deleted = if table_exists(connection, "runtime_agents")? {
         format!(
-            "AND agent NOT IN (SELECT id FROM runtime_agents WHERE {})",
+            "AND NOT EXISTS (SELECT 1 FROM runtime_agents a WHERE a.id=e.agent AND {})",
             studio_runtime_store::agent_management::DELETED_AGENT_SQL
         )
     } else {
         String::new()
     };
-    connection.query_row(
-        &format!("SELECT COUNT(*) FROM runtime_events WHERE status IN ('pending','reserved','dispatching','uncertain') {deleted}"),
-        [],
-        |row| row.get(0),
-    )
+    connection
+        .prepare_cached(&format!("SELECT COUNT(*) FROM runtime_events e WHERE e.status IN ('pending','reserved','dispatching','uncertain') {deleted}"))?
+        .query_row([], |row| row.get(0))
 }
 
 /// Read durable migration cursors using the Python diagnostics field names.
@@ -175,11 +175,11 @@ fn table_columns(
 }
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
-    connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |row| row.get(0),
-    )
+    connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        )?
+        .query_row([table], |row| row.get(0))
 }
 
 fn related_records(
@@ -197,7 +197,7 @@ fn related_records(
         return Ok(json!([]));
     }
     let sql = format!("SELECT record FROM {table} WHERE run=?1 LIMIT ?2");
-    let mut statement = connection.prepare(&sql)?;
+    let mut statement = connection.prepare_cached(&sql)?;
     let records = statement
         .query_map((run_id, RELATED_LIMIT as i64), |row| {
             row.get::<_, String>(0)
@@ -222,8 +222,8 @@ fn related_inputs(connection: &Connection, run_id: &str) -> Result<Vec<String>, 
     if !table_exists(connection, "runtime_execution_inputs")? {
         return Ok(Vec::new());
     }
-    let mut statement =
-        connection.prepare("SELECT event FROM runtime_execution_inputs WHERE run=?1 LIMIT ?2")?;
+    let mut statement = connection
+        .prepare_cached("SELECT event FROM runtime_execution_inputs WHERE run=?1 LIMIT ?2")?;
     statement
         .query_map((run_id, RELATED_LIMIT as i64), |row| row.get(0))?
         .collect()

@@ -925,6 +925,58 @@ async fn actorless_account_read_only_allows_non_refreshing_voice_shape() {
     worker.shutdown().await.unwrap();
 }
 
+fn retained_receipt_count(state: &State) -> i64 {
+    state
+        .bridge
+        .store
+        .read()
+        .expect("reader")
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count")
+}
+
+/// Both providers' diagnostics probes pass the retained validator with the adapter's own
+/// params (Codex was rejected for `{}` instead of `{"limit":100}`), return the provider
+/// reply, and leave no durable receipt.
+#[tokio::test]
+async fn diagnostics_probe_of_each_provider_replies_without_a_receipt() {
+    use crate::account_worker::retained::DIAGNOSTICS_OPERATION_PREFIX;
+    use crate::provider_adapter::adapter;
+    use studio_runtime_providers::ProviderKind;
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let receipts_before = retained_receipt_count(&state);
+    for (kind, wire_method) in [
+        (ProviderKind::Codex, "thread/loaded/list"),
+        (ProviderKind::Claude, "claude/diagnostics"),
+    ] {
+        let provider = adapter(kind);
+        let mut call = request(&state, &port, "unused");
+        call.operation = format!("{DIAGNOSTICS_OPERATION_PREFIX}{wire_method}");
+        call.actor = None;
+        call.expected_scope = Some(port.scope().clone());
+        call.method = provider.diagnostics_method();
+        call.params = provider.diagnostics_params();
+        let sender = port.clone();
+        let task = tokio::spawn(async move { sender.request(call).await });
+        let wire = peer.write(wire_method).await;
+        peer.reply(&wire, json!({"data":["thread-a","thread-b"]}))
+            .await;
+        assert_eq!(
+            task.await.unwrap().unwrap().result,
+            RequestResult::Reply(json!({"data":["thread-a","thread-b"]}))
+        );
+    }
+    assert_eq!(retained_receipt_count(&state), receipts_before);
+    worker.shutdown().await.unwrap();
+}
+
 async fn restart_history_case(outcome: &str) {
     let state = State::new().await;
     let agent_id = state.agent.clone();

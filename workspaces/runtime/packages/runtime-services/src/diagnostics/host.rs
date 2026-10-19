@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::{Mutex, PoisonError};
 
 use serde_json::{Value, json};
 use sysinfo::{
@@ -16,25 +17,92 @@ struct ProcessSnapshot {
     kind: &'static str,
 }
 
+/// The sampler outlives requests: a process's CPU percent is the change since its
+/// previous refresh, so a fresh `System` per request would always report 0.
+static SAMPLER: Mutex<Option<System>> = Mutex::new(None);
+
+/// Process ids of `root` and its descendants, read from the kernel's per-thread
+/// `children` lists so that only this server's own tree is visited. `None` when the
+/// kernel does not expose them (or off Linux); the caller then scans every process.
+#[cfg(target_os = "linux")]
+fn own_tree_pids(root: u32) -> Option<Vec<u32>> {
+    fn children(pid: u32, out: &mut Vec<u32>) -> std::io::Result<()> {
+        for task in std::fs::read_dir(format!("/proc/{pid}/task"))? {
+            let list = std::fs::read_to_string(task?.path().join("children"))?;
+            out.extend(
+                list.split_ascii_whitespace()
+                    .filter_map(|p| p.parse::<u32>().ok()),
+            );
+        }
+        Ok(())
+    }
+    let mut pids = vec![root];
+    let mut seen = HashSet::from([root]);
+    let mut next = 0;
+    while next < pids.len() && pids.len() < PROCESS_LIMIT {
+        let mut found = Vec::new();
+        match children(pids[next], &mut found) {
+            Ok(()) => {}
+            // The root's own list must exist; a child may exit while the tree is walked.
+            Err(_) if next > 0 => {}
+            Err(_) => return None,
+        }
+        for pid in found {
+            if pids.len() < PROCESS_LIMIT && seen.insert(pid) {
+                pids.push(pid);
+            }
+        }
+        next += 1;
+    }
+    Some(pids)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn own_tree_pids(_root: u32) -> Option<Vec<u32>> {
+    None
+}
+
 /// Read the reported host and process fields once, with a fixed process limit.
 pub fn system_snapshot(root_pid: u32) -> (Option<Value>, Value) {
-    let mut system = System::new();
+    let mut sampler = SAMPLER.lock().unwrap_or_else(PoisonError::into_inner);
+    let system = sampler.get_or_insert_with(System::new);
     system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
     system.refresh_cpu_list(CpuRefreshKind::nothing());
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing()
-            .with_memory()
-            .with_cpu()
-            .without_tasks(),
-    );
+    let own_tree = own_tree_pids(root_pid);
+    let listed_pids = own_tree
+        .as_ref()
+        .map(|pids| pids.iter().copied().collect::<HashSet<_>>());
+    let refresh = ProcessRefreshKind::nothing()
+        .with_memory()
+        .with_cpu()
+        .without_tasks();
+    match &own_tree {
+        Some(pids) => {
+            let pids = pids
+                .iter()
+                .map(|pid| Pid::from_u32(*pid))
+                .collect::<Vec<_>>();
+            system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, refresh);
+        }
+        None => {
+            system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
+        }
+    }
 
     let root = Pid::from_u32(root_pid);
     let mut rows = BTreeMap::new();
     if let Some(process) = system.process(root) {
         rows.insert(root_pid, process_snapshot(process));
-        for (pid, process) in system.processes().iter().filter(|(pid, _)| **pid != root) {
+        let listed = |pid: &Pid| {
+            listed_pids
+                .as_ref()
+                .is_none_or(|pids| pids.contains(&pid.as_u32()))
+        };
+        for (pid, process) in system
+            .processes()
+            .iter()
+            .filter(|(pid, _)| **pid != root && listed(pid))
+        {
             if rows.len() >= PROCESS_LIMIT {
                 break;
             }
@@ -184,6 +252,34 @@ mod tests {
         );
         assert_eq!(tree["processes"][0]["pid"], 1);
         assert_eq!(tree["rootPid"], 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn snapshot_covers_this_process_and_its_children_only() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a child");
+        let root = std::process::id();
+        let started = std::time::Instant::now();
+        let (tree, _) = system_snapshot(root);
+        eprintln!("own-tree snapshot took {:?}", started.elapsed());
+        let tree = tree.expect("this process is in its own tree");
+        let pids = tree["processes"]
+            .as_array()
+            .expect("process rows")
+            .iter()
+            .map(|row| row["pid"].as_u64().expect("pid"))
+            .collect::<Vec<_>>();
+        child.kill().expect("stop the child");
+        child.wait().expect("reap the child");
+        assert_eq!(pids[0], u64::from(root));
+        assert!(pids.contains(&u64::from(child.id())));
+        assert!(
+            !pids.contains(&1),
+            "unrelated host processes stay out of the tree"
+        );
     }
 
     #[test]

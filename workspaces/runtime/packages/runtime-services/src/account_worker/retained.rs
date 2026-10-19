@@ -30,6 +30,24 @@ pub struct SessionRequest {
     pub params: Value,
     pub deadline: Instant,
 }
+/// Operation-id prefix of a diagnostics probe: one unique, never retried, read-only
+/// provider query whose result is not worth a durable record.
+pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
+
+impl SessionRequest {
+    /// A diagnostics probe (actorless loaded-state read) leaves no receipt: it is
+    /// idempotent and never retried, so there is no outcome to recover after a crash.
+    pub(super) fn is_volatile_read(&self) -> bool {
+        self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
+            && self.actor.is_none()
+            && self.transfer.is_none()
+            && matches!(
+                self.method,
+                Method::ClaudeDiagnostics | Method::ThreadLoadedList
+            )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RequestResult {
     Reply(Value),
@@ -720,6 +738,9 @@ pub(super) struct PendingRequest {
     reply: Option<Reply>,
     result: Option<RequestResult>,
     result_cursor: u64,
+    /// No receipt exists (see `SessionRequest::is_volatile_read`): the reply is
+    /// sent as soon as the result arrives and nothing is written.
+    volatile: bool,
 }
 impl PendingRequest {
     /// The thread this request names, if any.

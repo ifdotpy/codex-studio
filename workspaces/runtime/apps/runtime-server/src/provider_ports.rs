@@ -31,7 +31,7 @@ use studio_runtime_services::{
         AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
     },
-    account_worker::retained::RequestActor,
+    account_worker::retained::{DIAGNOSTICS_OPERATION_PREFIX, RequestActor},
     provider_versions::{ActiveProviderConnections, ProviderProfile},
     title_generation::{
         TitleReceipt, TitleRequest, TitleRequestPort, WriteOutcome, normalize_title,
@@ -41,6 +41,9 @@ use studio_runtime_store::RuntimeStore;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_POLLS: u32 = 64;
+/// Time one account has to answer its diagnostics query before it is reported
+/// unavailable; accounts are queried concurrently, so this bounds the whole phase.
+const DIAGNOSTICS_ACCOUNT_DEADLINE: Duration = Duration::from_secs(1);
 static DIAGNOSTIC_OPERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Captures live provider diagnostics with bounded, read-only requests through
@@ -117,9 +120,8 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
         use studio_runtime_services::diagnostics::ProviderDiagnosticsSnapshot;
         let accounts = Arc::clone(&self.accounts);
         let session = Arc::clone(&self.session);
-        let store = Arc::clone(&self.store);
         Box::pin(async move {
-            let local = studio_runtime_process::blocking_pool::spawn_blocking(
+            let active = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-server/provider-diagnostics-local",
                 move || {
                     let registry = accounts
@@ -138,52 +140,49 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         })
                         .collect::<Vec<_>>();
                     active.sort_by(|left, right| left.0.cmp(&right.0));
-                    let queues = active
-                        .iter()
-                        .enumerate()
-                        .map(|(index, (account, _, _))| {
-                            let alias = format!("account{}", index + 1);
-                            let (callbacks, tool_requests) = account_queue_counts(&store, account);
-                            (alias, callbacks, tool_requests)
-                        })
-                        .collect::<Vec<_>>();
-                    let idle_limit_seconds = store
-                        .read()
-                        .ok()
-                        .and_then(|connection| {
-                            studio_runtime_store::OrchestrationSettingsRepository::idle_session_unload(
-                                &connection,
-                            )
-                            .ok()
-                        })
-                        .map_or(0, |delay| delay.map_or(0, |delay| delay.as_secs()));
-                    Ok::<_, AccountSessionError>((active, queues, idle_limit_seconds))
+                    Ok::<_, AccountSessionError>(active)
                 },
             )
             .await;
-            let Ok(Ok((active, local_queues, idle_limit_seconds))) = local else {
+            let Ok(Ok(active)) = active else {
                 return ProviderDiagnosticsSnapshot {
                     native_accounts: json!({}),
                     studio_loaded_threads: 0,
                     queues: serde_json::Map::new(),
                 };
             };
+            // The durable counts and every account's live read are independent;
+            // each account has its own deadline, so the slowest bounds the phase.
+            let accounts_keys = active
+                .iter()
+                .map(|(account, _, _)| account.clone())
+                .collect::<Vec<_>>();
+            let queue_counts = self.store.read_async(
+                "runtime-server/provider-diagnostics-queues",
+                move |connection| account_queue_counts(connection, &accounts_keys),
+            );
+            let deadline = Instant::now() + DIAGNOSTICS_ACCOUNT_DEADLINE;
+            let account_reads =
+                futures_util::future::join_all(active.iter().map(|(_, provider, scope)| {
+                    let adapter = studio_runtime_services::provider_adapter::adapter(*provider);
+                    provider_read(
+                        self.session.as_ref(),
+                        scope,
+                        None,
+                        adapter.diagnostics_method(),
+                        adapter.diagnostics_params(),
+                        deadline,
+                    )
+                }));
+            let (queue_counts, account_reads) = tokio::join!(queue_counts, account_reads);
+            let (local_queues, idle_limit_seconds) =
+                queue_counts.unwrap_or_else(|_| (vec![(0, 0); active.len()], 0));
             let mut native_accounts = serde_json::Map::new();
             let mut queues = serde_json::Map::new();
             let mut loaded_threads = 0_u64;
-            let deadline = Instant::now() + Duration::from_secs(5);
-            for (index, (_, provider, scope)) in active.iter().enumerate() {
+            for (index, ((_, provider, _), result)) in active.iter().zip(account_reads).enumerate()
+            {
                 let alias = format!("account{}", index + 1);
-                let result = provider_read(
-                    self.session.as_ref(),
-                    scope,
-                    None,
-                    studio_runtime_services::provider_adapter::adapter(*provider)
-                        .diagnostics_method(),
-                    json!({}),
-                    deadline,
-                )
-                .await;
                 match result {
                     Some(value) if *provider == ProviderKind::Claude => {
                         let mut row = serde_json::Map::new();
@@ -214,7 +213,8 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                     }
                 }
             }
-            for (alias, callbacks, tool_requests) in local_queues {
+            for (index, (callbacks, tool_requests)) in local_queues.into_iter().enumerate() {
+                let alias = format!("account{}", index + 1);
                 queues.insert(format!("{alias}.callbacks"), json!(callbacks));
                 queues.insert(format!("{alias}.clock_replies"), json!(0));
                 queues.insert(format!("{alias}.tool_requests"), json!(tool_requests));
@@ -229,38 +229,45 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
     }
 }
 
-fn account_queue_counts(store: &RuntimeStore, account: &str) -> (u64, u64) {
-    let Ok(connection) = store.read() else {
-        return (0, 0);
-    };
-    let callbacks = connection
-        .query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts submitted
-             WHERE submitted.id>=?1 AND submitted.id<?2
-               AND substr(submitted.id,-10)=':submitted'
-               AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts settled
-                 WHERE settled.id=substr(submitted.id,1,length(submitted.id)-10)||':written'
-                    OR settled.id=substr(submitted.id,1,length(submitted.id)-10)||':unknown')",
-            [
-                format!("account-worker:callback:{account}:"),
-                format!("account-worker:callback:{account}:~"),
-            ],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or_default()
-        .max(0) as u64;
-    let tool_requests = connection
-        .query_row(
-            "SELECT COUNT(*) FROM runtime_tool_requests r
-             JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
-             WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
-               AND json_extract(r.record,'$.stage') IN ('queued','running')",
-            [account],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or_default()
-        .max(0) as u64;
-    (callbacks, tool_requests)
+/// Unresolved callback receipts and queued or running tool requests of each account
+/// (in the order given), and the idle-session limit shared by all of them.
+fn account_queue_counts(
+    connection: &rusqlite::Connection,
+    accounts: &[String],
+) -> studio_runtime_store::StoreResult<(Vec<(u64, u64)>, u64)> {
+    let tool_requests =
+        studio_runtime_store::StartupRecoveryRepository::unsettled_tool_request_counts_by_account(
+            connection,
+        )?;
+    let mut statement = connection.prepare_cached(
+        "SELECT COUNT(*) FROM runtime_operation_receipts submitted
+         WHERE submitted.id>=?1 AND submitted.id<?2
+           AND substr(submitted.id,-10)=':submitted'
+           AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts settled
+             WHERE settled.id=substr(submitted.id,1,length(submitted.id)-10)||':written'
+                OR settled.id=substr(submitted.id,1,length(submitted.id)-10)||':unknown')",
+    )?;
+    let counts = accounts
+        .iter()
+        .map(|account| {
+            let callbacks = statement.query_row(
+                [
+                    format!("account-worker:callback:{account}:"),
+                    format!("account-worker:callback:{account}:~"),
+                ],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((
+                callbacks.max(0) as u64,
+                tool_requests.get(account).copied().unwrap_or_default(),
+            ))
+        })
+        .collect::<studio_runtime_store::StoreResult<Vec<_>>>()?;
+    let idle_limit_seconds =
+        studio_runtime_store::OrchestrationSettingsRepository::idle_session_unload(connection)
+            .ok()
+            .map_or(0, |delay| delay.map_or(0, |delay| delay.as_secs()));
+    Ok((counts, idle_limit_seconds))
 }
 
 async fn provider_read(
@@ -272,7 +279,7 @@ async fn provider_read(
     deadline: Instant,
 ) -> Option<Value> {
     let operation = format!(
-        "diagnostics:{}:{}:{}",
+        "{DIAGNOSTICS_OPERATION_PREFIX}{}:{}:{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1042,7 +1049,13 @@ mod tests {
             })
             .await
             .expect("seed durable pending work");
-        assert_eq!(account_queue_counts(&store, "account-a"), (1, 1));
-        assert_eq!(account_queue_counts(&store, "account-b"), (0, 0));
+        let accounts = vec!["account-a".to_owned(), "account-b".to_owned()];
+        let (counts, _idle) = store
+            .read_async("test", move |connection| {
+                account_queue_counts(connection, &accounts)
+            })
+            .await
+            .expect("queue counts");
+        assert_eq!(counts, vec![(1, 1), (0, 0)]);
     }
 }

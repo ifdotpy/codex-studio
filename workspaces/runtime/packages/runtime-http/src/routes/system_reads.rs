@@ -206,16 +206,8 @@ async fn diagnostics(
             }
         };
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let provider = provider_port.snapshot().await;
-    let (
-        provider,
-        supervisor,
-        process_tree,
-        host_resources,
-        durable_input_pending,
-        executions,
-        migrations,
-    ) = studio_runtime_process::blocking_pool::spawn_blocking(
+    // The provider reads, the host scan and the durable reads are independent.
+    let host = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/system_reads",
         move || {
             let supervisor = supervisor_port.snapshot();
@@ -223,118 +215,118 @@ async fn diagnostics(
                 studio_runtime_services::diagnostics::system_snapshot(
                     studio_runtime_services::diagnostics::current_process_id(),
                 );
-            let Some(process_tree) = process_tree else {
-                return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
-            };
             studio_runtime_services::diagnostics::log_on_demand_memory_snapshot();
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
-                .map_err(|_| {
-                    diagnostics_collection_error(DiagnosticsCollectionFailure::DurableInputPending)
-                })?;
-            let ledger = studio_runtime_services::diagnostics::execution_ledger(&connection)
-                .map_err(|_| {
-                    diagnostics_collection_error(DiagnosticsCollectionFailure::ExecutionLedger)
-                })?;
-            let migrations = studio_runtime_services::diagnostics::migration_status(&connection)
-                .map_err(|_| {
-                    diagnostics_collection_error(DiagnosticsCollectionFailure::MigrationStatus)
-                })?;
-            Ok::<_, ApiError>((
-                provider,
-                supervisor,
-                process_tree,
-                host_resources,
-                pending,
-                ledger,
-                migrations,
-            ))
+            (supervisor, process_tree, host_resources)
+        },
+    );
+    let durable = store.read_async("runtime-http/routes/system_reads", |connection| {
+        let pending = studio_runtime_services::diagnostics::durable_input_pending(connection)
+            .map_err(|_| collection_failure(DiagnosticsCollectionFailure::DurableInputPending))?;
+        let ledger = studio_runtime_services::diagnostics::execution_ledger(connection)
+            .map_err(|_| collection_failure(DiagnosticsCollectionFailure::ExecutionLedger))?;
+        let migrations = studio_runtime_services::diagnostics::migration_status(connection)
+            .map_err(|_| collection_failure(DiagnosticsCollectionFailure::MigrationStatus))?;
+        Ok::<_, DiagnosticsReadError>((pending, ledger, migrations))
+    });
+    let (provider, host, durable) = tokio::join!(provider_port.snapshot(), host, durable);
+    let (supervisor, process_tree, host_resources) = host.map_err(|_| ApiError::internal())?;
+    let Some(process_tree) = process_tree else {
+        return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
+    };
+    let (durable_input_pending, executions, migrations) = durable.map_err(|error| match error {
+        DiagnosticsReadError::Collection(error) => error,
+        DiagnosticsReadError::Store(_) => ApiError::internal(),
+    })?;
+
+    let validators = state.validators.clone();
+    let response = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/system_reads",
+        move || {
+        let mut queues = provider.queues;
+        queues.insert(
+            "durableInputPending".to_owned(),
+            serde_json::json!(durable_input_pending),
+        );
+        let mut attribution = vec![serde_json::json!({
+            "component": "process",
+            "operation": "ps",
+            "count": process_tree["processes"].as_array().map_or(0, Vec::len),
+        })];
+        if let Some(kinds) = process_tree["kinds"].as_object() {
+            for (kind, totals) in kinds {
+                attribution.push(serde_json::json!({
+                    "component": kind,
+                    "operation": "resident",
+                    "count": totals["count"],
+                    "residentBytes": (totals["rssMiB"].as_f64().unwrap_or_default() * 1024.0 * 1024.0).round() as u64,
+                }));
+            }
+        }
+        let supervisor = serde_json::json!({
+            "mode": supervisor.mode,
+            "fallback": supervisor.fallback,
+            "notice": supervisor.notice,
+            "health": supervisor.health,
+        });
+        let blocking_pool_metrics = {
+            let snapshot = studio_runtime_process::blocking_pool::snapshot();
+            serde_json::json!({
+                "enabled": snapshot.enabled,
+                "queued": snapshot.queued,
+                "running": snapshot.running,
+                "peakOccupancy": snapshot.peak_occupancy,
+                "groups": snapshot.groups.into_iter().map(|group| serde_json::json!({
+                    "group": group.group,
+                    "count": group.count,
+                    "queueWaitAvgMs": group.queue_wait_avg_ms,
+                    "queueWaitMaxMs": group.queue_wait_max_ms,
+                    "queueWaitP95Ms": group.queue_wait_p95_ms,
+                    "queueWaitP99Ms": group.queue_wait_p99_ms,
+                    "closureAvgMs": group.closure_avg_ms,
+                    "closureMaxMs": group.closure_max_ms,
+                    "closureP95Ms": group.closure_p95_ms,
+                    "closureP99Ms": group.closure_p99_ms,
+                })).collect::<Vec<_>>(),
+            })
+        };
+        let value = serde_json::json!({
+            "at": studio_runtime_services::diagnostics::now_rfc3339(),
+            "processTree": process_tree,
+            "hostResources": host_resources,
+            "resourceAttribution": attribution,
+            "nativeAccounts": provider.native_accounts,
+            "studioLoadedThreads": provider.studio_loaded_threads,
+            "queues": queues,
+            "runtimeLockSamples": studio_runtime_services::diagnostics::runtime_lock_samples(),
+            "executions": executions,
+            "sqliteContention": studio_runtime_services::diagnostics::sqlite_contention(),
+            "httpRequestMetrics": studio_runtime_services::diagnostics::http_request_metrics(),
+            "analyticsCapture": {"available": false},
+            "migrations": migrations,
+            "searchMigrationError": null,
+            "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
+            "supervisor": supervisor,
+            "blockingPoolMetrics": blocking_pool_metrics,
+            "imageMounts": studio_runtime_services::image_workspace::mount_diagnostics(),
+        });
+        let mut value = value;
+        redact_untrusted_diagnostic_text(&mut value);
+        strip_diagnostics_execution_extras(&validators, &mut value);
+        // The typed conversion below rejects any shape drift. The full schema walk over this
+        // ~115 KB document runs in debug builds and in tests only.
+        if cfg!(debug_assertions) && !validators.validate_stored("DiagnosticsResponse", &value) {
+            let (field, keyword) = diagnostics_schema_rejection(&validators, &value);
+            eprintln!(
+                "diagnostics response schema rejection: schema=DiagnosticsResponse field={field} keyword={keyword}"
+            );
+            return Err(ApiError::internal());
+        }
+        super::generated_json::<crate::generated::DiagnosticsResponse>(value)
         },
     )
     .await
     .map_err(|_| ApiError::internal())??;
-
-    let mut queues = provider.queues;
-    queues.insert(
-        "durableInputPending".to_owned(),
-        serde_json::json!(durable_input_pending),
-    );
-    let mut attribution = vec![serde_json::json!({
-        "component": "process",
-        "operation": "ps",
-        "count": process_tree["processes"].as_array().map_or(0, Vec::len),
-    })];
-    if let Some(kinds) = process_tree["kinds"].as_object() {
-        for (kind, totals) in kinds {
-            attribution.push(serde_json::json!({
-                "component": kind,
-                "operation": "resident",
-                "count": totals["count"],
-                "residentBytes": (totals["rssMiB"].as_f64().unwrap_or_default() * 1024.0 * 1024.0).round() as u64,
-            }));
-        }
-    }
-    let supervisor = serde_json::json!({
-        "mode": supervisor.mode,
-        "fallback": supervisor.fallback,
-        "notice": supervisor.notice,
-        "health": supervisor.health,
-    });
-    let blocking_pool_metrics = {
-        let snapshot = studio_runtime_process::blocking_pool::snapshot();
-        serde_json::json!({
-            "enabled": snapshot.enabled,
-            "queued": snapshot.queued,
-            "running": snapshot.running,
-            "peakOccupancy": snapshot.peak_occupancy,
-            "groups": snapshot.groups.into_iter().map(|group| serde_json::json!({
-                "group": group.group,
-                "count": group.count,
-                "queueWaitAvgMs": group.queue_wait_avg_ms,
-                "queueWaitMaxMs": group.queue_wait_max_ms,
-                "queueWaitP95Ms": group.queue_wait_p95_ms,
-                "queueWaitP99Ms": group.queue_wait_p99_ms,
-                "closureAvgMs": group.closure_avg_ms,
-                "closureMaxMs": group.closure_max_ms,
-                "closureP95Ms": group.closure_p95_ms,
-                "closureP99Ms": group.closure_p99_ms,
-            })).collect::<Vec<_>>(),
-        })
-    };
-    let value = serde_json::json!({
-        "at": studio_runtime_services::diagnostics::now_rfc3339(),
-        "processTree": process_tree,
-        "hostResources": host_resources,
-        "resourceAttribution": attribution,
-        "nativeAccounts": provider.native_accounts,
-        "studioLoadedThreads": provider.studio_loaded_threads,
-        "queues": queues,
-        "runtimeLockSamples": studio_runtime_services::diagnostics::runtime_lock_samples(),
-        "executions": executions,
-        "sqliteContention": studio_runtime_services::diagnostics::sqlite_contention(),
-        "httpRequestMetrics": studio_runtime_services::diagnostics::http_request_metrics(),
-        "analyticsCapture": {"available": false},
-        "migrations": migrations,
-        "searchMigrationError": null,
-        "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
-        "supervisor": supervisor,
-        "blockingPoolMetrics": blocking_pool_metrics,
-        "imageMounts": studio_runtime_services::image_workspace::mount_diagnostics(),
-    });
-    let mut value = value;
-    redact_untrusted_diagnostic_text(&mut value);
-    strip_diagnostics_execution_extras(&state.validators, &mut value);
-    if !state
-        .validators
-        .validate_stored("DiagnosticsResponse", &value)
-    {
-        let (field, keyword) = diagnostics_schema_rejection(&state.validators, &value);
-        eprintln!(
-            "diagnostics response schema rejection: schema=DiagnosticsResponse field={field} keyword={keyword}"
-        );
-        return Err(ApiError::internal());
-    }
-    super::generated_json::<crate::generated::DiagnosticsResponse>(value).map(Json)
+    Ok(Json(response))
 }
 
 fn diagnostics_schema_rejection(
@@ -381,6 +373,18 @@ fn strip_diagnostics_execution_extras(
     }
 }
 
+/// Failure of the durable diagnostics reads: a collection step, or the read itself.
+enum DiagnosticsReadError {
+    Collection(ApiError),
+    Store(#[allow(dead_code)] studio_runtime_store::StoreError),
+}
+
+impl From<studio_runtime_store::StoreError> for DiagnosticsReadError {
+    fn from(error: studio_runtime_store::StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum DiagnosticsCollectionFailure {
     DurableInputPending,
@@ -396,6 +400,10 @@ impl DiagnosticsCollectionFailure {
             Self::MigrationStatus => "migration_status",
         }
     }
+}
+
+fn collection_failure(failure: DiagnosticsCollectionFailure) -> DiagnosticsReadError {
+    DiagnosticsReadError::Collection(diagnostics_collection_error(failure))
 }
 
 fn diagnostics_collection_error(failure: DiagnosticsCollectionFailure) -> ApiError {

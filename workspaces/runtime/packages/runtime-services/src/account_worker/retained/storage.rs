@@ -514,6 +514,7 @@ pub(in crate::account_worker) async fn recover(
                 reply: None,
                 result: None,
                 result_cursor: 0,
+                volatile: false,
             }, request));
         }
         Ok(result)

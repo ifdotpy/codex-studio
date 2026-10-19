@@ -84,6 +84,10 @@ pub trait ProviderAdapter: Send + Sync + 'static {
     /// Native request that reports the provider session's loaded state for diagnostics.
     fn diagnostics_method(&self) -> Method;
 
+    /// Params of `diagnostics_method`, in the exact shape the retained-request
+    /// validator accepts for that method.
+    fn diagnostics_params(&self) -> Value;
+
     /// Provider-specific parts of `turn/start` params.
     fn shape_turn_params(&self, input: &TurnInput, params: &mut Map<String, Value>);
 
@@ -219,6 +223,10 @@ impl ProviderAdapter for CodexAdapter {
         Method::ThreadLoadedList
     }
 
+    fn diagnostics_params(&self) -> Value {
+        json!({"limit": 100})
+    }
+
     fn shape_turn_params(&self, _input: &TurnInput, params: &mut Map<String, Value>) {
         params.insert("cyberAccessProgram".into(), json!("standard"));
     }
@@ -332,6 +340,10 @@ impl ProviderAdapter for ClaudeAdapter {
 
     fn diagnostics_method(&self) -> Method {
         Method::ClaudeDiagnostics
+    }
+
+    fn diagnostics_params(&self) -> Value {
+        json!({})
     }
 
     /// A single-line `/` or `$` user message is passed to Claude Code as a command.

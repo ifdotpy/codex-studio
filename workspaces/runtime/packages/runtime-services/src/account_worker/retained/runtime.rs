@@ -40,6 +40,7 @@ impl Worker {
             self.forget_thread_proofs(thread);
         }
         let deferred_request = request.clone();
+        let volatile = request.is_volatile_read();
         let call = Call {
             scope: request.scope,
             operation: request.operation,
@@ -51,11 +52,14 @@ impl Worker {
         };
         let key = call.key();
         let check = call.clone();
-        let prior = self
-            .db("retained_replay", move |store| async move {
+        let prior = if volatile {
+            Ok(Replay::Miss)
+        } else {
+            self.db("retained_replay", move |store| async move {
                 replay(&store, &check).await
             })
-            .await?;
+            .await?
+        };
         let retry_ticket = match prior {
             Err(error) => {
                 let _ignored = reply.send(Err(error));
@@ -176,11 +180,14 @@ impl Worker {
         let recovery = prepared.recovery_record();
         let ticket = recovery.ticket.clone();
         let save_call = call.clone();
-        let authorized = self
-            .db("retained_submitted", move |s| async move {
+        let authorized = if volatile {
+            Ok(())
+        } else {
+            self.db("retained_submitted", move |s| async move {
                 submitted(&s, &save_call, &recovery, retry_ticket.as_ref()).await
             })
-            .await?;
+            .await?
+        };
         if let Err(error) = authorized {
             let _ignored = reply.send(Err(error));
             return Ok(());
@@ -194,6 +201,7 @@ impl Worker {
                 reply: Some(reply),
                 result: None,
                 result_cursor: 0,
+                volatile,
             },
         );
         // Once intent is durable, cancellation cannot authorize another write.
@@ -305,8 +313,11 @@ impl Worker {
             } => Some(store::record(recovery)),
             _ => None,
         };
-        let accepted = self
-            .db("retained_result", move |s| async move {
+        let volatile = pending.volatile;
+        let accepted = if volatile {
+            value.map(|value| (value, 0))
+        } else {
+            self.db("retained_result", move |s| async move {
                 scheduler::lifecycle_transaction_with(&s, move |tx| {
                     if let Some(written) = written {
                         store::replace(tx, &key, "written", written)?;
@@ -332,7 +343,8 @@ impl Worker {
                 })
                 .await
             })
-            .await?;
+            .await?
+        };
         if let Some((result, cursor)) = accepted
             && let Some(pending) = self.retained_requests.get_mut(&ticket.id)
         {
@@ -342,6 +354,19 @@ impl Worker {
         Ok(true)
     }
     pub(in crate::account_worker) async fn complete_retained(&mut self) -> Result<(), WorkerError> {
+        // A volatile read has no receipt and no journal position to wait for.
+        self.retained_requests.retain(|_, pending| {
+            if !pending.volatile {
+                return true;
+            }
+            let Some(result) = pending.result.take() else {
+                return true;
+            };
+            if let Some(reply) = pending.reply.take() {
+                let _ignored = reply.send(Ok(pending.call.receipt(pending.ticket.clone(), result)));
+            }
+            false
+        });
         if self.retained_requests.is_empty() && self.retained_barriers.is_empty() {
             return Ok(());
         }

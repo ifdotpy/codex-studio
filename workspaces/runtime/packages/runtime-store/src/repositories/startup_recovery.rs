@@ -183,6 +183,17 @@ pub(crate) fn unsettled_tool_request_predicate() -> String {
     TOOL_REQUESTS.predicate()
 }
 
+/// Per-account count of unsettled tool requests; its scan must stay on the partial index.
+fn tool_request_counts_sql() -> String {
+    format!(
+        "SELECT COALESCE(json_extract(a.record,'$.accountKey'),'default'), COUNT(*) \
+         FROM (SELECT json_extract(record,'$.agent') AS agent FROM {} WHERE {}) u \
+         JOIN runtime_agents a ON a.id=u.agent GROUP BY 1",
+        TOOL_REQUESTS.table,
+        TOOL_REQUESTS.predicate()
+    )
+}
+
 pub struct StartupRecoveryRepository;
 
 impl StartupRecoveryRepository {
@@ -240,6 +251,27 @@ impl StartupRecoveryRepository {
         REQUESTS.rows(connection)
     }
 
+    /// Queued or running tool requests per owning account key (`default` for an
+    /// agent without one), counted in one pass over the unsettled partial index.
+    /// A request whose agent row is gone is not counted.
+    pub fn unsettled_tool_request_counts_by_account(
+        connection: &Connection,
+    ) -> StoreResult<std::collections::BTreeMap<String, u64>> {
+        if !crate::schema::table_exists(connection, TOOL_REQUESTS.table)? {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        let mut statement = connection.prepare_cached(&tool_request_counts_sql())?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                ))
+            })?
+            .collect::<Result<_, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Ids of every queued or running tool request, ordered by id.
     pub fn unsettled_tool_request_ids(connection: &Connection) -> StoreResult<Vec<String>> {
         Ok(TOOL_REQUESTS
@@ -266,6 +298,58 @@ mod tests {
             .expect("tables");
         StartupRecoveryRepository::prepare_indexes(&connection).expect("indexes");
         connection
+    }
+
+    #[test]
+    fn tool_request_counts_use_the_partial_index_and_match_the_per_account_join() {
+        let connection = database();
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 INSERT INTO runtime_agents VALUES
+                   ('a1','{\"accountKey\":\"acc1\"}'),('a2','{\"accountKey\":\"acc2\"}'),
+                   ('a3','{}');
+                 INSERT INTO runtime_tool_requests VALUES
+                   ('r1','{\"agent\":\"a1\",\"stage\":\"queued\"}'),
+                   ('r2','{\"agent\":\"a1\",\"stage\":\"running\"}'),
+                   ('r3','{\"agent\":\"a1\",\"stage\":\"completed\"}'),
+                   ('r4','{\"agent\":\"a2\",\"stage\":\"running\"}'),
+                   ('r5','{\"agent\":\"a3\",\"stage\":\"queued\"}'),
+                   ('r6','{\"agent\":\"gone\",\"stage\":\"queued\"}');",
+            )
+            .expect("corpus");
+        let counts =
+            StartupRecoveryRepository::unsettled_tool_request_counts_by_account(&connection)
+                .expect("counts");
+        for account in ["acc1", "acc2", "default", "none"] {
+            let old: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM runtime_tool_requests r
+                     JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
+                     WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
+                       AND json_extract(r.record,'$.stage') IN ('queued','running')",
+                    [account],
+                    |row| row.get(0),
+                )
+                .expect("old count");
+            assert_eq!(
+                counts.get(account).copied().unwrap_or(0),
+                old as u64,
+                "{account}"
+            );
+        }
+        let plan = connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                super::tool_request_counts_sql()
+            ))
+            .expect("plan prepares")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("plan runs")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan rows")
+            .join(" ");
+        assert!(plan.contains(TOOL_REQUESTS.index), "{plan}");
     }
 
     #[test]
