@@ -247,6 +247,7 @@ async fn call_named_tool(
             wake: Arc::new(tokio::sync::Notify::new()),
             monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
             runtime_ports: runtime_ports(tools, voice),
+            preparation: None,
         },
     )
     .unwrap();
