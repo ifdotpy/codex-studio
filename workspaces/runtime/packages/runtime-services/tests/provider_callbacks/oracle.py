@@ -307,7 +307,8 @@ with managed.db() as db:
     baseline.close()
 managed_cases = []
 managed_tables = {
-    "orchestration_send": ["runtime_events", "runtime_event_meta", "runtime_rooms", "runtime_chat_messages", "runtime_agents"],
+    "orchestration_send": ["runtime_events", "runtime_event_meta", "runtime_rooms", "runtime_chat_messages", "runtime_agents", "runtime_complaints"],
+    "orchestration_message": ["runtime_events", "runtime_rooms", "runtime_chat_messages", "runtime_complaints"],
     "orchestration_complaint": ["runtime_events", "runtime_complaints", "runtime_agents"],
     "orchestration_search": [],
     "orchestration_context": ["runtime_monitors"],
@@ -385,6 +386,11 @@ managed_call(remote_worker,"orchestration_search",{"query":"fixture"},11)
 managed_call(remote_worker,"orchestration_context",{"topic":"monitor","id":managed_monitor["id"]},12)
 with managed.lock, managed.db() as db:
     managed.put(db,"agents",worker)
+# A lead's message to the user is a user-addressed message record. Python
+# resolves an orchestration_send agent_id, so "user" is refused there.
+managed_call(lead,"orchestration_send",{"agent_id":"user","text":"Report for the user"},13,allow_failure=True)
+managed_call(lead,"orchestration_message",{"target":"user","text":"  Second report  "},14)
+managed_call(worker,"orchestration_message",{"target":"user","text":"Worker report"},15,allow_failure=True)
 deleted_lead = {**lead,"deletedAt":20.0}
 with managed.lock, managed.db() as db:
     managed.put(db,"agents",deleted_lead)

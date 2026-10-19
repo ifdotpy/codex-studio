@@ -61,14 +61,12 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Supply agent_id for orchestration_send",
             ))?;
-        let sender = snapshot.actor();
-        if target == "user"
-            && !(sender["isLead"] == true
-                && sender["rootId"] == sender["id"]
-                && sender["parentId"].is_null())
-        {
+        // Python resolves every orchestration_send agent_id except parent, lead,
+        // broadcast, all and workspace as a visible agent ID, so "user" is a
+        // too-short ID there. A lead contacts the user with orchestration_message.
+        if target == "user" {
             return Err(crate::managed_host_tools::Error::Invalid(
-                "Only the lead can contact the user. Send your message to your lead.",
+                "Too short agent ID; use at least 8 characters",
             ));
         }
         if is_descendant(tx, snapshot.context().agent.as_str(), target)? {

@@ -121,6 +121,24 @@ pub(crate) fn submit_agent_complaint(
     Ok(record)
 }
 
+/// Python `send_to_user`: the lead submits a complaint to itself, which is
+/// addressed to the user, and the record is saved again as an ordinary message.
+pub(super) fn submit_user_message(
+    tx: &Transaction<'_>,
+    lead: &Value,
+    request_id: &str,
+    text: &str,
+    at: f64,
+) -> Result<Value, NotificationDispatchError> {
+    if lead["id"] != lead["rootId"] {
+        return Err(NotificationDispatchError::InvalidNotification);
+    }
+    let mut message = submit_agent_complaint(tx, lead, request_id, text, at)?;
+    message["sourceType"] = json!("message");
+    save_complaint_projection(tx, &message)?;
+    Ok(message)
+}
+
 /// Transaction-aware implementation of Runtime.complaint read/respond actions.
 /// The callback caller owns commit; the response event is durable in this write.
 pub(crate) fn agent_complaint_action(

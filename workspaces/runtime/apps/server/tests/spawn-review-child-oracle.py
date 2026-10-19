@@ -78,6 +78,10 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
     fallback = runtime.spawn_agents(lead, {"agents": [{"name": "Fallback", "prompt": "Use the first available account",
         "model": "gpt-6-luna", "workspace": "shared"}]}, "dispatcher-spawn-fallback")
     fallback_child = runtime.agent(fallback["agents"][0]["id"])
+    alternate = runtime.spawn_agents(lead, {"agents": [{"name": "Alternate", "prompt": "Work in the server folder",
+        "model": "gpt-6-luna", "workspace": "shared", "cwd": "workspaces/runtime/apps/server"}]},
+        "dispatcher-spawn-alternate")
+    alternate_child = runtime.agent(alternate["agents"][0]["id"])
     reviewed = __import__("codex_agent_review").request(runtime, lead,
         {"target": {"type": "uncommittedChanges"}, "cwd": review_cwd}, "dispatcher-review-api")
     review_child = runtime.agent(reviewed["agentId"])
@@ -116,6 +120,7 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
     print(json.dumps({"spawn": {"response": spawned, "child": spawn_child,
         "event": spawn_event, "effects": spawn_effects, "nodes": spawn_nodes},
         "fallback": {"response": fallback, "child": fallback_child},
+        "alternate": {"response": alternate, "child": alternate_child},
         "base": spawned["agents"][0],
         "workspaceRefused": workspace_refused,
         "capacity": {"error": capacity_error, "countBefore": count_before, "countAfter": count_after},

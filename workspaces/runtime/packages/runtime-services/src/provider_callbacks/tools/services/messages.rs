@@ -180,7 +180,7 @@ fn send_as_actor(
         target => target,
     };
     if target == "user" {
-        return Err(CallbackError::Dependency("user-messages/agent-admission"));
+        return send_to_user(tx, actor, who, message, id, now);
     }
     if target == "all" {
         return Err(CallbackError::Invalid(
@@ -249,10 +249,10 @@ fn send_as_actor(
             let root = event_write::checked_agent(tx, text(recipient, "rootId")?)?;
             event_write::assert_delegation(&root)?;
         }
-        let radio: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_rooms WHERE json_extract(record,'$.radio.active.agentId')=?1 AND EXISTS(SELECT 1 FROM json_each(record,'$.members') WHERE value=?2))", params![who,text(recipient,"id")?], |row|row.get(0))?;
-        if radio {
-            return Err(CallbackError::Dependency("radio/active-turn-message-guard"));
-        }
+        // Python `codex_radio.guard_message`: only the sender's live shared
+        // reply turn blocks a private message to a fellow room member.
+        crate::radio_runtime::guard_message(tx, who, text(recipient, "id")?)
+            .map_err(radio_guard_error)?;
     }
     let room_id = text(&room, "id")?.to_owned();
     if let Some(mut previous) = records::get(tx, "runtime_rooms", &room_id)? {
@@ -324,6 +324,77 @@ fn send_as_actor(
     let result = json!({"id":id,"room":room_id,"deliveries":deliveries});
     event_write::save_receipt(tx, Some(id), &event_write::request_signature(args), &result)?;
     Ok(result)
+}
+
+/// Python `codex_user_messages.send_to_user`: a lead's message to the user is a
+/// user-addressed complaint record of source type `message`, saved with the
+/// request receipt in the caller's transaction. `text` is already stripped and
+/// bounded by `send_as_actor`.
+fn send_to_user(
+    tx: &Transaction<'_>,
+    actor: &Value,
+    who: &str,
+    text: &str,
+    id: &str,
+    now: f64,
+) -> Result<Value, CallbackError> {
+    let key = crate::event_write::python_strip(id);
+    if id.chars().count() > 200 || key.is_empty() {
+        return Err(CallbackError::Invalid(
+            "Supply a request id with 1 to 200 characters",
+        ));
+    }
+    if actor["isLead"] != true
+        || actor["rootId"] != who
+        || studio_runtime_store::truthy(actor.get("parentId"))
+    {
+        return Err(CallbackError::Invalid(
+            "Only the lead can contact the user. Send your message to your lead.",
+        ));
+    }
+    let signature =
+        event_write::request_signature(&json!({"sender":who,"target":"user","text":text}));
+    if let Some(saved) = event_write::read_receipt(
+        tx,
+        Some(key),
+        &signature,
+        "runtime_operation_receipts",
+        key,
+        |saved| saved["recipient"] == "user" && saved["id"].is_string(),
+    )? {
+        return Ok(saved);
+    }
+    let message = crate::notification_dispatch::submit_user_message(tx, actor, key, text, now)
+        .map_err(|error| match error {
+            crate::notification_dispatch::NotificationDispatchError::Store(error) => {
+                CallbackError::Store(error)
+            }
+            crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
+                CallbackError::Invalid("This complaint id has different content")
+            }
+            crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject {
+                table,
+                id,
+            } => CallbackError::Stored(format!("{table}/{id}")),
+            crate::notification_dispatch::NotificationDispatchError::Dependency(name) => {
+                CallbackError::Dependency(name)
+            }
+            _ => CallbackError::Invalid("A complaint needs an existing lead"),
+        })?;
+    let result = json!({"id":message["id"],"room":format!("user:{who}"),"recipient":"user"});
+    event_write::save_receipt(tx, Some(key), &signature, &result)?;
+    Ok(result)
+}
+
+fn radio_guard_error(error: crate::projects::ProjectsError) -> CallbackError {
+    use crate::projects::ProjectsError as E;
+    match error {
+        E::Invalid(message) => CallbackError::Invalid(message),
+        E::Store(error) => CallbackError::Store(error),
+        E::Sqlite(error) => CallbackError::Store(error.into()),
+        E::InvalidStored { table, id } => CallbackError::Stored(format!("{table}/{id}")),
+        _ => CallbackError::Stored("runtime_rooms radio".into()),
+    }
 }
 
 fn map_federation_error(

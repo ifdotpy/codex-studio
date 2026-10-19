@@ -10,7 +10,7 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, QueueWriteRepository, RulesRepository, Transaction,
+    QueueEventId, QueueWriteRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -37,8 +37,6 @@ pub enum EventWriteError {
     InvalidRequest(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
-    #[error("Not implemented: requires rule-driver/event-rules")]
-    RuleDriverUnavailable,
     #[error("Not implemented: requires cross-server/remote-events")]
     RemoteEventsUnavailable,
     #[error("Not implemented: requires worker-driver/work-assignment")]
@@ -113,7 +111,6 @@ pub fn save_plan(
             "The plan event identity is already in use",
         ));
     }
-    refuse_active_event_rule(connection, &input.agent_id)?;
     let mut plan = match EventWriteRepository::plan(connection, &input.agent_id)? {
         Some(value) => {
             if value.get("id").and_then(Value::as_str) != Some(input.agent_id.as_str()) {
@@ -213,7 +210,6 @@ pub fn annotate(
             "The annotation event identity is already in use",
         ));
     }
-    refuse_active_event_rule(connection, &input.agent_id)?;
     let mut record = json!({
         "id": id,
         "agent": input.agent_id.clone(),
@@ -248,22 +244,6 @@ pub fn annotate(
 pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
     if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
         return Err(EventWriteError::RemoteEventsUnavailable);
-    }
-    Ok(())
-}
-
-fn refuse_active_event_rule(
-    connection: &Transaction<'_>,
-    agent_id: &str,
-) -> Result<(), EventWriteError> {
-    let (rules, _) = RulesRepository::list(connection)?;
-    if rules.iter().any(|rule| {
-        let record = rule.value();
-        record.get("agent").and_then(Value::as_str) == Some(agent_id)
-            && record.get("kind").and_then(Value::as_str) == Some("event")
-            && record.get("status").and_then(Value::as_str) == Some("active")
-    }) {
-        return Err(EventWriteError::RuleDriverUnavailable);
     }
     Ok(())
 }
@@ -923,26 +903,35 @@ mod tests {
     }
 
     #[test]
-    fn active_event_rule_refuses_plan_writes_without_changes() {
+    fn active_event_rule_does_not_block_plan_or_annotation_writes() {
+        // Python enqueues plan_update and user events through Runtime.enqueue,
+        // whose rule hook matches only the rule event names; neither kind is one.
         let mut connection = database();
+        let rule = r#"{"id":"r-event","agent":"a","status":"active","kind":"event","event":"worker_completed"}"#;
         connection
             .execute(
                 "INSERT INTO runtime_rules(id,record) VALUES(?1,?2)",
-                [
-                    "r-event",
-                    r#"{"id":"r-event","agent":"a","status":"active","kind":"event"}"#,
-                ],
+                ["r-event", rule],
             )
             .expect("event rule inserts");
-        let before = counts(&connection);
-        let result = with_transaction(&mut connection, |transaction| {
+        let plan = with_transaction(&mut connection, |transaction| {
             save_plan(transaction, plan_input(0, "allowed", "sig"))
-        });
-        assert!(matches!(
-            result,
-            Err(EventWriteError::RuleDriverUnavailable)
-        ));
-        assert_eq!(counts(&connection), before);
+        })
+        .expect("an active event rule does not refuse a plan write");
+        assert!(plan.event_inserted);
+        let note = with_transaction(&mut connection, |transaction| {
+            annotate(transaction, annotation("rule-note"))
+        })
+        .expect("an active event rule does not refuse an annotation");
+        assert!(note.event_inserted);
+        let stored: String = connection
+            .query_row(
+                "SELECT record FROM runtime_rules WHERE id='r-event'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("rule reads");
+        assert_eq!(stored, rule, "the rule is not triggered or changed");
     }
 
     #[test]

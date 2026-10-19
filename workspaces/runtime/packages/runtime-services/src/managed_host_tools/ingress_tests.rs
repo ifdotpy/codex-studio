@@ -1462,9 +1462,10 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
         .unwrap()
         .to_owned();
     // Runtime.dynamic routes movedFrom actors to move_send before target
-    // resolution (codex_runtime.py:9048-9049). Ordinary remote actors reach
-    // chat_message, where user uses send_to_user and remote/federated targets
-    // use federation locally (codex_runtime.py:9858-9877).
+    // resolution (codex_runtime.py:9048-9049). For other actors it resolves
+    // agent_id as a visible agent ID, so "user" is a too-short ID; remote and
+    // federated targets reach chat_message and use federation locally
+    // (codex_runtime.py:9858-9877).
     let cases = [
         (
             "moved descendant",
@@ -1476,7 +1477,7 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
             "remote to user",
             "user".to_owned(),
             json!({"remoteOrigin":"source-server"}),
-            "Only the lead can contact the user. Send your message to your lead.",
+            "Too short agent ID; use at least 8 characters",
         ),
         (
             "remote to remote target",
@@ -1582,6 +1583,30 @@ async fn managed_tools_match_python_rows_events_and_sync_projection() {
                     )?;
                     Ok(())
                 }).await
+                .unwrap();
+        } else {
+            // The oracle puts its original record back after the remote cases.
+            let originals = agents.clone();
+            store
+                .transaction_with::<_, StoreError>(move |tx| {
+                    for original in originals {
+                        let id = original["id"].as_str().unwrap().to_owned();
+                        let remote: bool = tx.query_row(
+                            "SELECT json_extract(record,'$.remoteOrigin') IS NOT NULL FROM runtime_agents WHERE id=?1",
+                            [&id],
+                            |row| row.get(0),
+                        )?;
+                        if remote {
+                            tx.execute(
+                                "UPDATE runtime_agents SET record=?2 WHERE id=?1",
+                                params![id, original.to_string()],
+                            )?;
+                            crate::agents_create::publish_agent(tx, &original)?;
+                        }
+                    }
+                    Ok(())
+                })
+                .await
                 .unwrap();
         }
         let frame = call(
@@ -2709,6 +2734,70 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         actual_fallback, expected_fallback,
         "complete implicit fallback child row"
     );
+    // Python `spawn_directory`: a relative cwd starts at the parent's folder.
+    let alternate = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Alternate","prompt":"Work in the server folder",
+            "model":"gpt-6-luna","workspace":"shared","cwd":"workspaces/runtime/apps/server"}]}),
+        "dispatcher-spawn-alternate",
+        20.75,
+        &CreationEnvironment,
+    )
+    .await
+    .expect("a host worker may work in another existing folder");
+    assert_eq!(alternate.value, expected["alternate"]["response"]);
+    let alternate_id = alternate.value["agents"][0]["id"].as_str().unwrap();
+    let alternate_child = studio_runtime_store::AgentRepository::get(
+        &store.read().unwrap(),
+        &studio_runtime_store::AgentId::from(alternate_id),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(alternate_child["cwd"], json!(review_directory));
+    let mut expected_alternate = expected["alternate"]["child"].clone();
+    let mut actual_alternate = alternate_child;
+    normalize_persisted_ids_and_times(&mut expected_alternate);
+    normalize_persisted_ids_and_times(&mut actual_alternate);
+    assert_eq!(
+        actual_alternate, expected_alternate,
+        "complete alternate-folder child row"
+    );
+    let agents_before_folder_refusals: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    for (index, (cwd, message)) in [
+        (
+            json!("missing-worker-folder"),
+            "cwd must be an existing folder",
+        ),
+        (json!(7), "cwd must be a folder path"),
+        (json!("   "), "cwd must be a folder path"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &json!({"agents":[{"name":"Refused","prompt":"Work elsewhere","workspace":"shared","cwd":cwd}]}),
+            &format!("dispatcher-spawn-folder-refusal-{index}"),
+            20.8,
+            &CreationEnvironment,
+        )
+        .await
+        .expect_err("an invalid worker folder is refused");
+        assert!(refused.to_string().contains(message), "{refused}");
+    }
+    let agents_after_folder_refusals: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(agents_before_folder_refusals, agents_after_folder_refusals);
     let read = store.read().unwrap();
     let event = read.query_row("SELECT json_object('id',id,'agent',agent,'kind',kind,'text',text,'status',status,'created',created,'epoch',epoch,'turn_id',turn_id,'error',error) FROM runtime_events WHERE id=?1", [format!("{spawned_child_id}:initial")], |row| row.get::<_, String>(0)).unwrap();
     let event: Value = serde_json::from_str(&event).unwrap();
