@@ -1289,6 +1289,9 @@ impl Worker {
         tokio::select! {
             biased;
             _ = Shutdown::cancelled(&mut self.stop) => ServeSignal::Shutdown,
+            // A finished preparation is a one-shot result, so it cannot starve the
+            // unbounded provider event stream below; the reverse order did.
+            prepared = self.preparations.join_next(), if !self.preparations.is_empty() => ServeSignal::Prepared(prepared),
             _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => ServeSignal::Flush,
             _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => ServeSignal::PublicationRetry,
             _ = tokio::time::sleep_until(self.auth_wait_at.unwrap_or_else(tokio::time::Instant::now)), if self.auth_wait_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWait,
@@ -1299,7 +1302,6 @@ impl Worker {
             vm_event = self.vm_events.recv() => ServeSignal::VmEvent(vm_event),
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
             callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
-            prepared = self.preparations.join_next(), if !self.preparations.is_empty() => ServeSignal::Prepared(prepared),
             changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
             _ = tokio::time::sleep_until(self.idle_deadline.unwrap_or_else(tokio::time::Instant::now)), if self.idle_deadline.is_some() => ServeSignal::IdleSweep,
             changed = self.idle_state_changes.changed(), if self.idle_snapshot.is_none() && self.idle_clocks.has_blocked_candidates() => ServeSignal::IdleStateChanged(changed),

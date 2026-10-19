@@ -565,17 +565,12 @@ impl Peer {
             })
             .ok();
         self.entries
-            .send(JournalEntry {
-                received_at_ms: self.clock.now_ms(),
-                cursor: EventCursor(self.cursor),
-                generation: self.generation,
-                payload: JournalPayload::Frame(
-                    studio_runtime_providers::LineDecoder::new()
-                        .push(format!("{value}\n").as_bytes())
-                        .unwrap()
-                        .remove(0),
-                ),
-            })
+            .send(journal_frame(
+                &self.clock,
+                self.generation,
+                self.cursor,
+                &value,
+            ))
             .await
             .unwrap();
         self.cursor
@@ -619,6 +614,24 @@ impl Peer {
     async fn completed(&mut self) {
         let cursor=self.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}})).await;
         self.acknowledged(cursor).await;
+    }
+}
+fn journal_frame(
+    clock: &SessionClock,
+    generation: Generation,
+    cursor: u64,
+    value: &Value,
+) -> JournalEntry {
+    JournalEntry {
+        received_at_ms: clock.now_ms(),
+        cursor: EventCursor(cursor),
+        generation,
+        payload: JournalPayload::Frame(
+            studio_runtime_providers::LineDecoder::new()
+                .push(format!("{value}\n").as_bytes())
+                .unwrap()
+                .remove(0),
+        ),
     }
 }
 struct State {
@@ -2161,6 +2174,55 @@ async fn worker_barrier(worker: &AccountHandle) {
         .await
         .expect("worker command deadline")
         .expect("worker command barrier");
+}
+
+/// Bounds how long a finished turn preparation may wait for submission while
+/// provider events keep the worker's event channel non-empty; unit: wall time.
+const PREPARED_TURN_UNDER_EVENT_FLOW_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+#[tokio::test]
+async fn prepared_turn_submits_while_provider_events_flow() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    let mut acks = std::mem::replace(&mut peer.acks, mpsc::channel(1).1);
+    let drain = tokio::spawn(async move { while acks.recv().await.is_some() {} });
+    peer.frame(json!({"id":resume["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
+        .await;
+    // Keep the provider journal full so an event is always ready to serve.
+    let (entries, clock, generation) = (peer.entries.clone(), peer.clock.clone(), peer.generation);
+    let mut cursor = peer.cursor;
+    let flood = tokio::spawn(async move {
+        loop {
+            cursor += 1;
+            let frame = json!({"method":"test/barrier","params":{}});
+            if entries
+                .send(journal_frame(&clock, generation, cursor, &frame))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let wire = tokio::time::timeout(PREPARED_TURN_UNDER_EVENT_FLOW_DEADLINE, peer.writes.recv())
+        .await
+        .expect("a prepared turn is submitted while events flow")
+        .expect("worker submits request");
+    flood.abort();
+    assert_eq!(wire.value["method"], "turn/start");
+    wire.receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .expect("write receipt receiver");
+    worker.shutdown().await.unwrap();
+    drain.abort();
 }
 
 #[tokio::test]
