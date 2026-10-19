@@ -1152,6 +1152,7 @@ pub(super) async fn journal_batch(
     claude_account_pin: &Value,
     expected_vm_actor: Option<(&str, i64)>,
     native_source: Option<crate::notification_dispatch::NativeProcessSource>,
+    delivered: Vec<DeliveredPublication>,
 ) -> Result<JournalBatchResult, WorkerError> {
     if entries.is_empty() {
         return Ok(Some((streams.clone(), Vec::new(), Vec::new())));
@@ -1204,6 +1205,8 @@ pub(super) async fn journal_batch(
     let analytics_link = store.analytics_connection();
     let streams = streams.clone();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
+        // Before this batch's receipts are counted against their bound.
+        delete_delivered_publications(tx, &delivered)?;
         with_analytics_commit(&analytics_link, |analytics| {
             let mut next = streams.clone();
             let mut committed = Vec::with_capacity(entries.len());
@@ -2381,8 +2384,93 @@ fn coalesce_token_rate_receipt(
     Ok(true)
 }
 
-/// Drain in sequence/index order. Publication is outside SQLite; deleting each
-/// row happens only after the sink accepts it, in its own short transaction.
+/// One delivered publication receipt: its id and the result the sink accepted.
+pub(super) type DeliveredPublication = (String, String);
+
+/// One drain pass over an account's publication receipts.
+pub(super) struct PublicationPass {
+    /// Receipts the sink accepted, in drain order.
+    pub delivered: Vec<DeliveredPublication>,
+    /// The pass read a full page, so more receipts may be pending.
+    pub full: bool,
+    /// The sink refused the receipt after the delivered prefix.
+    pub failure: Option<WorkerError>,
+}
+
+/// Deliver pending receipts in sequence/index order without a writer
+/// transaction. Publication is outside SQLite. The worker deletes the
+/// delivered receipts in its next canvas transaction; until then they are in
+/// `skip` and not delivered again. A crash before that deletion replays them,
+/// which the sink's delivery identity makes safe.
+pub(super) async fn deliver_publications(
+    store: Arc<RuntimeStore>,
+    account: String,
+    sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
+    skip: Vec<DeliveredPublication>,
+    mut after_publish: impl FnMut() -> Result<(), WorkerError> + Send,
+) -> Result<PublicationPass, WorkerError> {
+    let prefix = format!("account-worker:notification-publication:{account}:");
+    let read_store = Arc::clone(&store);
+    let page = PUBLICATION_DRAIN_LIMIT + skip.len();
+    let skip = skip.into_iter().collect::<BTreeSet<_>>();
+    let pending = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_publication_read",
+        move || {
+            let connection = read_store.read()?;
+            let mut statement = connection.prepare(
+                "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT ?3",
+            )?;
+            let rows = statement
+                .query_map(
+                    params![prefix, format!("{prefix}~"), page as i64],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, WorkerError>(
+                rows.into_iter()
+                    .filter(|row| !skip.contains(row))
+                    .take(PUBLICATION_DRAIN_LIMIT)
+                    .collect::<Vec<_>>(),
+            )
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
+    let full = pending.len() == PUBLICATION_DRAIN_LIMIT;
+    let mut delivered = Vec::with_capacity(pending.len());
+    let mut failure = None;
+    for (id, result) in pending {
+        if let Err(error) =
+            publish_pending(&store, sink.as_ref(), &id, &result, &mut after_publish).await
+        {
+            failure = Some(error);
+            break;
+        }
+        delivered.push((id, result));
+    }
+    Ok(PublicationPass {
+        delivered,
+        full,
+        failure,
+    })
+}
+
+/// Delete delivered receipts inside a canvas transaction. A changed result is
+/// a newer coalesced effect that still has to be delivered, so it stays.
+pub(super) fn delete_delivered_publications(
+    tx: &studio_runtime_store::Transaction<'_>,
+    delivered: &[DeliveredPublication],
+) -> Result<(), WorkerError> {
+    let mut delete =
+        tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id=?1 AND result=?2")?;
+    for (id, result) in delivered {
+        delete.execute(params![id, result])?;
+    }
+    Ok(())
+}
+
+/// One pass that deletes its delivered prefix in its own transaction.
+#[cfg(test)]
 pub(super) async fn drain_publications(
     store: Arc<RuntimeStore>,
     account: String,
@@ -2391,60 +2479,23 @@ pub(super) async fn drain_publications(
     drain_publications_with_hook(store, account, sink, || Ok(())).await
 }
 
+#[cfg(test)]
 pub(super) async fn drain_publications_with_hook(
     store: Arc<RuntimeStore>,
     account: String,
     sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
-    mut before_delete: impl FnMut() -> Result<(), WorkerError> + Send,
+    before_delete: impl FnMut() -> Result<(), WorkerError> + Send,
 ) -> Result<usize, WorkerError> {
-    let prefix = format!("account-worker:notification-publication:{account}:");
-    let read_store = Arc::clone(&store);
-    let pending = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_publication_read",
-        move || {
-            let connection = read_store.read()?;
-            let mut statement = connection.prepare(
-                "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT ?3",
-            )?;
-            Ok::<_, WorkerError>(statement
-                .query_map(
-                    params![prefix, format!("{prefix}~"), PUBLICATION_DRAIN_LIMIT as i64],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )?
-                .collect::<Result<Vec<_>, _>>()?)
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
-    let mut delivered = Vec::with_capacity(pending.len());
-    let mut failure = None;
-    for (id, result) in pending {
-        if let Err(error) =
-            publish_pending(&store, sink.as_ref(), &id, &result, &mut before_delete).await
-        {
-            failure = Some(error);
-            break;
-        }
-        delivered.push((id, result));
-    }
-    // One deletion for the delivered prefix. A crash before it replays that
-    // prefix, which the sink's delivery identity makes safe.
-    let count = delivered.len();
+    let pass =
+        deliver_publications(Arc::clone(&store), account, sink, Vec::new(), before_delete).await?;
+    let count = pass.delivered.len();
     if count > 0 {
+        let delivered = pass.delivered;
         store
-            .transaction_with(move |tx| {
-                // A changed result is a newer coalesced effect that still has to be delivered.
-                let mut delete = tx.prepare_cached(
-                    "DELETE FROM runtime_operation_receipts WHERE id=?1 AND result=?2",
-                )?;
-                for (id, result) in &delivered {
-                    delete.execute(params![id, result])?;
-                }
-                Ok::<(), WorkerError>(())
-            })
+            .transaction_with(move |tx| delete_delivered_publications(tx, &delivered))
             .await?;
     }
-    failure.map_or(Ok(count), Err)
+    pass.failure.map_or(Ok(count), Err)
 }
 
 /// Publish one pending receipt. Overflow diagnostics are persisted to
@@ -2455,7 +2506,7 @@ async fn publish_pending(
     sink: &dyn crate::notification_runtime_effects::NotificationPostCommitSink,
     id: &str,
     result: &str,
-    before_delete: &mut (impl FnMut() -> Result<(), WorkerError> + Send),
+    after_publish: &mut (impl FnMut() -> Result<(), WorkerError> + Send),
 ) -> Result<(), WorkerError> {
     let value: Value = serde_json::from_str(result).map_err(|_| invalid(id))?;
     let analytics_overflow = value
@@ -2509,7 +2560,7 @@ async fn publish_pending(
         let request_id = format!("coalesced-state-invalidation:{id}:{generation}");
         sink.invalidate_state(&request_id).await?;
     }
-    before_delete()
+    after_publish()
 }
 
 pub(crate) fn persist_streams(
@@ -2586,7 +2637,7 @@ pub(super) async fn restore_streams(
 pub(super) async fn flush_streams(
     store: Arc<RuntimeStore>,
     account: &str,
-    _streams: NotificationStreamBuffer,
+    delivered: Vec<DeliveredPublication>,
 ) -> Result<NotificationStreamBuffer, WorkerError> {
     let read_store = Arc::clone(&store);
     let publication = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -2598,6 +2649,7 @@ pub(super) async fn flush_streams(
     let account = account.to_owned();
     let analytics_link = store.analytics_connection();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
+        delete_delivered_publications(tx, &delivered)?;
         with_analytics_commit(&analytics_link, |analytics| {
             // A failed/cancelled journal job may have moved the live buffer. The
             // committed pending record, never that possibly empty cache, owns text.

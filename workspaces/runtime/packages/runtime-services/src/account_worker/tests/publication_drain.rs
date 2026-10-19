@@ -848,16 +848,25 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
     // effects of this one frame) until the off-path drain removes receipts.
     assert!(pending <= store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64 + 3);
     // The drain task delivers one bounded batch per pass and re-arms itself while
-    // a full batch remains, so the backlog empties without further journal turns.
+    // a full batch remains; later journal commits delete what it delivered.
+    let backlog_prefix = format!(
+        "account-worker:{}:%",
+        store::publication_operation("default", 10_000, 0)
+            .rsplit_once(':')
+            .expect("sequence prefix")
+            .0
+    );
     let pending = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut usage = 11;
         loop {
+            let prefix = backlog_prefix.clone();
             let pending = state
                 .bridge
                 .run(move |store| async move {
                     let connection = store.read()?;
                     Ok(connection.query_row(
-                        "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-                        [],
+                        "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE ?1",
+                        [prefix],
                         |row| row.get::<_, i64>(0),
                     )?)
                 })
@@ -866,6 +875,14 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
             if pending == 0 {
                 return pending;
             }
+            usage += 1;
+            let cursor = peer
+                .frame(json!({"method":"thread/tokenUsage/updated","params":{
+                    "threadId":"fake-thread-0","turnId":"turn","tokenUsage":{
+                        "total":{"inputTokens":usage,"outputTokens":1,"totalTokens":usage + 1},
+                        "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}}))
+                .await;
+            peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     })

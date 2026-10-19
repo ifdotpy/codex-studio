@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 struct GatedSink {
     gate: tokio::sync::Semaphore,
     delivered: Mutex<Vec<u64>>,
+    /// Every delivered effect by cursor and kind; one frame can carry several.
+    effects: Mutex<Vec<(u64, String)>>,
 }
 
 impl GatedSink {
@@ -16,6 +18,7 @@ impl GatedSink {
         Arc::new(Self {
             gate: tokio::sync::Semaphore::new(if open { usize::MAX >> 4 } else { 0 }),
             delivered: Mutex::new(Vec::new()),
+            effects: Mutex::new(Vec::new()),
         })
     }
     fn open(&self) {
@@ -48,9 +51,15 @@ impl NotificationPostCommitSink for GatedSink {
             | NotificationPostCommit::TokenRateUsage(observation) => observation.delivery.cursor,
             NotificationPostCommit::Recovered { .. } => 0,
         };
+        let kind = format!("{effect:?}")
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         Box::pin(async move {
             drop(self.gate.acquire().await.expect("gate"));
             self.delivered.lock().expect("delivered").push(cursor);
+            self.effects.lock().expect("effects").push((cursor, kind));
             Ok(())
         })
     }
@@ -221,5 +230,91 @@ async fn analytics_are_captured_in_the_journal_commit_with_one_writer_job() {
     );
     assert!(sink.delivered().is_empty(), "the sink is still shut");
     assert_eq!(jobs, 1, "one writer job per journaled frame");
+    worker.shutdown().await.expect("stop worker");
+}
+
+fn usage_frame(index: usize) -> Value {
+    json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fake-thread-0","turnId":"turn",
+        "tokenUsage":{"total":{"inputTokens":index,"outputTokens":1,"totalTokens":index + 1},
+            "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}})
+}
+
+/// Pending publication receipts that carry provider `cursor`.
+fn receipts_for(state: &State, cursor: u64) -> i64 {
+    state
+        .bridge
+        .store
+        .read()
+        .expect("reader")
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%' \
+             AND EXISTS(SELECT 1 FROM json_tree(result) WHERE key='cursor' AND value=?1)",
+            [cursor as i64],
+            |row| row.get(0),
+        )
+        .expect("publication receipts")
+}
+
+/// The drain writes nothing: the worker's next journal transaction deletes the
+/// receipts it delivered, so every frame costs one writer transaction, and no
+/// receipt is delivered twice while it waits for that deletion.
+#[tokio::test]
+async fn delivered_receipts_are_deleted_by_the_next_journal_commit() {
+    const FRAME_LIMIT: usize = 64;
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let sink = GatedSink::new(true);
+    let mut worker = peer
+        .open_worker_with_resources_and_sink(
+            state.bridge.clone(),
+            test_resources().unwrap(),
+            sink.clone(),
+        )
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
+    state
+        .bridge
+        .store
+        .set_diagnostics_callback(Some(count_writer_job))
+        .await
+        .expect("install writer job counter");
+    let jobs_before = WRITER_JOBS.load(std::sync::atomic::Ordering::Relaxed);
+    let first = peer.frame(usage_frame(0)).await;
+    peer.acknowledged_or_worker_exits(first, &mut worker).await;
+    assert!(receipts_for(&state, first) > 0, "committed with the frame");
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while !sink.delivered().contains(&first) {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("sink delivery deadline");
+    let mut frames = 1;
+    while receipts_for(&state, first) > 0 {
+        assert!(
+            frames < FRAME_LIMIT,
+            "a later journal commit deletes the receipt"
+        );
+        worker_barrier(&worker).await;
+        let cursor = peer.frame(usage_frame(frames)).await;
+        peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
+        frames += 1;
+    }
+    let jobs = WRITER_JOBS.load(std::sync::atomic::Ordering::Relaxed) - jobs_before;
+    assert_eq!(
+        jobs, frames,
+        "one writer job per journaled frame, none for the drain"
+    );
+    let effects = sink.effects.lock().expect("effects").clone();
+    let mut unique = effects.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(effects.len(), unique.len(), "no receipt delivered twice");
     worker.shutdown().await.expect("stop worker");
 }

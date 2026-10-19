@@ -64,6 +64,7 @@ async fn journal(
         &Value::Null,
         None,
         None,
+        Vec::new(),
     )
     .await
     .expect("journal batch")

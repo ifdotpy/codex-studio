@@ -739,6 +739,7 @@ pub async fn start_account_worker_with_publication_sink(
         publication_sink,
         publication_retry_at: Some(tokio::time::Instant::now()),
         publication_drain: None,
+        delivered_publications: Vec::new(),
         closing: false,
         restart_recovery_started: false,
         restart_recovery: None,
@@ -908,7 +909,9 @@ struct Worker {
     publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
     publication_retry_at: Option<tokio::time::Instant>,
     /// The single in-flight drain of this account's durable publication receipts.
-    publication_drain: Option<tokio::task::JoinHandle<Result<usize, WorkerError>>>,
+    publication_drain: Option<tokio::task::JoinHandle<Result<store::PublicationPass, WorkerError>>>,
+    /// Delivered receipts the next journal or stream flush transaction deletes.
+    delivered_publications: Vec<store::DeliveredPublication>,
     closing: bool,
     callbacks: BTreeMap<String, CallbackCursor>,
     managed_callback_cursors: BTreeSet<(Option<String>, Option<i64>, u64)>,
@@ -940,7 +943,7 @@ enum ServeSignal {
     Shutdown,
     Flush,
     PublicationRetry,
-    PublicationDrained(Result<Result<usize, WorkerError>, tokio::task::JoinError>),
+    PublicationDrained(Result<Result<store::PublicationPass, WorkerError>, tokio::task::JoinError>),
     AuthWait,
     VmCredentialRefresh,
     AuthWaitChanged(Result<(), watch::error::RecvError>),
@@ -3187,6 +3190,7 @@ impl Worker {
         let actor_epoch = source.map(|source| source.epoch);
         let journal_scope = self.journal_scope(actor_id);
         let streams = std::mem::take(&mut self.streams);
+        let delivered = std::mem::take(&mut self.delivered_publications);
         let claude_account_pin = self.resources.claude_account_pin.clone();
         let expected_vm_actor = actor_id
             .zip(actor_epoch)
@@ -3221,6 +3225,7 @@ impl Worker {
                         .as_ref()
                         .map(|(actor, epoch)| (actor.as_str(), *epoch)),
                     native_source,
+                    delivered,
                 )
                 .await;
                 Ok((streams, result))
@@ -3743,9 +3748,9 @@ impl Worker {
     }
     async fn flush(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
-        let streams = std::mem::take(&mut self.streams);
+        let delivered = std::mem::take(&mut self.delivered_publications);
         let flush = move |store: Arc<RuntimeStore>| async move {
-            store::flush_streams(store, &account, streams).await
+            store::flush_streams(store, &account, delivered).await
         };
         #[cfg(test)]
         let updated_streams = self
@@ -3796,37 +3801,40 @@ impl Worker {
         let bridge = self.bridge.clone();
         let account = self.account.clone();
         let sink = Arc::clone(&self.publication_sink);
+        let skip = self.delivered_publications.clone();
         self.publication_drain = Some(tokio::spawn(async move {
             // Not a fault-injected worker operation: it runs beside the worker, so
             // the crash matrix's operation order stays that of the serial path.
             bridge
                 .run(move |store| async move {
-                    store::drain_publications(store, account, sink).await
+                    store::deliver_publications(store, account, sink, skip, || Ok(())).await
                 })
                 .await
         }));
     }
     fn publication_drained(
         &mut self,
-        done: Result<Result<usize, WorkerError>, tokio::task::JoinError>,
+        done: Result<Result<store::PublicationPass, WorkerError>, tokio::task::JoinError>,
     ) -> Result<(), WorkerError> {
         self.publication_drain = None;
-        match done.map_err(|_| WorkerError::TaskFailed)? {
-            Ok(count) => {
+        let pass = done.map_err(|_| WorkerError::TaskFailed)??;
+        self.delivered_publications.extend(pass.delivered);
+        match pass.failure {
+            None => {
                 // A full page or a schedule raised during the pass runs another.
-                if count == store::PUBLICATION_DRAIN_LIMIT || self.publication_retry_at.is_some() {
+                if pass.full || self.publication_retry_at.is_some() {
                     self.schedule_publication_drain()?;
                 }
                 Ok(())
             }
-            Err(WorkerError::Notification(_)) => {
+            Some(WorkerError::Notification(_)) => {
                 // A failed sink leaves its receipt in place. Retry on a fixed
                 // cadence so a broken consumer cannot spin the account worker.
                 self.publication_retry_at =
                     Some(tokio::time::Instant::now() + PUBLICATION_RETRY_DELAY);
                 Ok(())
             }
-            Err(error) => Err(error),
+            Some(error) => Err(error),
         }
     }
     async fn drain_managed_callbacks(&mut self) -> Result<(), WorkerError> {
