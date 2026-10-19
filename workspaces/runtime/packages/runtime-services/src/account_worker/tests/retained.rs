@@ -1562,6 +1562,151 @@ async fn retained_authorization_refuses_deleted_agent() {
     worker.shutdown().await.unwrap();
 }
 
+fn monitor_request(
+    state: &State,
+    port: &RetainedSessionPort,
+    operation: String,
+    method: Method,
+    params: Value,
+) -> SessionRequest {
+    SessionRequest {
+        scope: port.scope().clone(),
+        expected_scope: Some(port.scope().clone()),
+        operation,
+        actor: Some(RequestActor {
+            agent: state.agent.clone(),
+            epoch: state.epoch,
+        }),
+        transfer: None,
+        deleted_actor_session: None,
+        method,
+        params,
+        deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
+    }
+}
+
+/// Wait for the provider write of `method`; a refusal before that write fails
+/// the test at once instead of at the write deadline.
+async fn monitor_write(
+    peer: &mut Peer,
+    task: &mut tokio::task::JoinHandle<
+        Result<crate::account_worker::retained::SessionReceipt, PortError>,
+    >,
+    method: &str,
+) -> Value {
+    tokio::select! {
+        wire = peer.write(method) => wire,
+        result = task => panic!("{method} ended before its provider write: {result:?}"),
+    }
+}
+
+/// Live defect 2026-10-19: an `orchestration_monitor` command of an agent on a
+/// non-default account stayed `starting` forever. The tool records no monitor
+/// `accountKey` (Python never did either), and this check read the missing key
+/// as `default`, so it refused the start before any provider write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let seed_cwd = cwd.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut row =
+                        AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    row.extra.insert("accountKey".into(), json!("profile-a"));
+                    AgentRepository::put(tx, &row)?;
+                    let monitor = |id: &str, extra: Value| {
+                        let mut record = json!({"id":id,"agent":agent,"epoch":epoch,
+                            "cwd":seed_cwd,"status":"starting","command":"true"});
+                        record
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(extra.as_object().unwrap().clone());
+                        record
+                    };
+                    for record in [
+                        monitor("tool-monitor", json!({})),
+                        monitor("foreign-rule", json!({"accountKey":"other-account"})),
+                        monitor(
+                            "foreign-command",
+                            json!({"status":"running","operation":{"accountKey":"other-account",
+                                "agent":agent,"epoch":epoch,"connectionId":"old"}}),
+                        ),
+                    ] {
+                        tx.execute(
+                            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                            (record["id"].as_str().unwrap(), record.to_string()),
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::identity("profile-a", 1, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+
+    let config = monitor_request(
+        &state,
+        &port,
+        format!("monitor-config:tool-monitor:{epoch}"),
+        Method::ConfigRead,
+        json!({"cwd":cwd,"includeLayers":false}),
+    );
+    let sender = port.clone();
+    let mut task = tokio::spawn(async move { sender.request(config).await });
+    let wire = monitor_write(&mut peer, &mut task, "config/read").await;
+    peer.reply(&wire, json!({"config":{}})).await;
+    assert_eq!(
+        task.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({"config":{}}))
+    );
+
+    let exec = |id: &str| {
+        monitor_request(
+            &state,
+            &port,
+            format!("monitor:{id}"),
+            Method::CommandExec,
+            json!({"command":["/bin/sh","-c","true"],"cwd":cwd,"processId":id}),
+        )
+    };
+    let sender = port.clone();
+    let call = exec("tool-monitor");
+    let mut task = tokio::spawn(async move { sender.request(call).await });
+    let wire = monitor_write(&mut peer, &mut task, "command/exec").await;
+    assert_eq!(wire["params"]["processId"], "tool-monitor");
+    peer.reply(&wire, json!({"exitCode":0,"stdout":"","stderr":""}))
+        .await;
+    assert!(task.await.unwrap().is_ok());
+
+    // A monitor bound to another account stays refused on this connection.
+    for refused in [
+        monitor_request(
+            &state,
+            &port,
+            format!("monitor-config:foreign-rule:{epoch}"),
+            Method::ConfigRead,
+            json!({"cwd":cwd,"includeLayers":false}),
+        ),
+        exec("foreign-command"),
+    ] {
+        assert_eq!(
+            port.request(refused).await.unwrap_err(),
+            PortError::Identity
+        );
+    }
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let state = State::new().await;
