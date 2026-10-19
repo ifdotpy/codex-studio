@@ -2948,6 +2948,21 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     );
     let queries = PathBuf::from(completed["cwd"].as_str().unwrap()).join(".queries");
     let (_query_watcher, mut query_events) = watch_file_changes(&queries);
+    // A loaded thread with unchanged settings keeps its live query for the
+    // next turn. Changed thread settings resume it in a new query, which the
+    // in-flight restart below observes.
+    let settings_agent_id = agent_id.clone();
+    fixture
+        .store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.profileInstructions','Resume with these instructions.') WHERE id=?1",
+                [&settings_agent_id],
+            )?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .unwrap();
     assert_eq!(
         app.clone()
             .oneshot(direct_message_post(
