@@ -87,11 +87,11 @@ async fn execute(
     if target.is_none() {
         result.expect("baseline scenario");
     }
-    if let Some((name, _, identity, _)) = &target
+    if let Some((name, occurrence, identity, _)) = &target
         && !context.faults.fired.load(Ordering::SeqCst)
     {
         assert!(
-            timing_dependent(name, identity.as_deref()),
+            *occurrence > 0 || timing_dependent(name, identity.as_deref()),
             "scenario {index} did not reach injection {target:?}"
         );
         if let Some((_, _, _, root)) = context.state.lock().unwrap().take() {
@@ -105,10 +105,10 @@ async fn execute(
     }
     Some(context)
 }
-/// Boundaries whose count varies with task interleaving: retained-session
+/// Boundaries whose first occurrence may be missed: retained-session
 /// requests, the history reads of restart reconciliation, and steer claims.
-/// A run may reach fewer of them than the baseline counted; every other
-/// boundary is deterministic and must be reached.
+/// Later occurrences of any boundary may also be missed, because their count
+/// varies with task interleaving; every other first occurrence must be reached.
 fn timing_dependent(name: &str, identity: Option<&str>) -> bool {
     name.starts_with("retained_")
         || name == "claim_steer"
