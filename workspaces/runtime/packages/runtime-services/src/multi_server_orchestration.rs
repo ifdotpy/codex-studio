@@ -1341,7 +1341,9 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 | "location_info"
                 | "location_matches"
                 | EXEC_EVENT_ACTION
-        ) || (action == "stop" && self.lifecycle_ports.is_some())
+        ) || GIT_CHANNEL_ACTIONS.contains(&action)
+            || action == "projects"
+            || (action == "stop" && self.lifecycle_ports.is_some())
     }
 
     fn execute<'a>(
@@ -1353,7 +1355,71 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
     }
 }
 
+/// Git channel actions that the receiving server answers from its own
+/// repositories and bundle exports (Python `_git_action`).
+const GIT_CHANNEL_ACTIONS: &[&str] = &["git", "export", "chunk", "release"];
+
 impl RuntimeOrchestrationEffects {
+    /// Python `runtime.projects()`: every project ordered by creation time and ID.
+    async fn projects(&self) -> Result<ExchangeOutcome, AccessError> {
+        let store = Arc::clone(&self.store);
+        let mut listed = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || crate::projects::list(&store),
+        )
+        .await
+        .map_err(|_| {
+            refused(
+                503,
+                "projects_unavailable",
+                "The project list is unavailable",
+            )
+        })?
+        .map_err(|_| {
+            refused(
+                503,
+                "projects_unavailable",
+                "The project list is unavailable",
+            )
+        })?;
+        if let Some(items) = listed.get_mut("items").and_then(Value::as_array_mut) {
+            items.sort_by(|left, right| {
+                let created =
+                    |value: &Value| value.get("created").and_then(Value::as_f64).unwrap_or(0.0);
+                created(left)
+                    .total_cmp(&created(right))
+                    .then_with(|| text(left, "id").cmp(text(right, "id")))
+            });
+        }
+        Ok(ExchangeOutcome::Applied(listed))
+    }
+
+    /// Python `_git_action` for Git reads and branch bundles. A refusal is a
+    /// not-applied receipt; a process failure leaves the outcome unknown.
+    async fn git_channel(&self, envelope: &Value) -> Result<ExchangeOutcome, AccessError> {
+        let root = self.store.root().to_path_buf();
+        let action = text(envelope, "action").to_owned();
+        let key = text(envelope, "requestId").to_owned();
+        let payload = envelope["payload"].clone();
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/multi_server_orchestration",
+            move || crate::server_git::receive(&root, &action, &payload, &key),
+        )
+        .await
+        .map_err(|_| refused(503, "git_unavailable", "The Git read could not run"))?;
+        match result {
+            Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+            Err(crate::server_git::GitError::Refused(message)) => {
+                Ok(ExchangeOutcome::NotApplied(message))
+            }
+            Err(crate::server_git::GitError::Failed(_)) => Err(refused(
+                503,
+                "git_unavailable",
+                "The Git read could not run",
+            )),
+        }
+    }
+
     async fn execute_async(
         &self,
         principal: &str,
@@ -1369,6 +1435,12 @@ impl RuntimeOrchestrationEffects {
         }
         if action == "stop" {
             return self.stop_worker(principal, envelope).await;
+        }
+        if action == "projects" {
+            return self.projects().await;
+        }
+        if GIT_CHANNEL_ACTIONS.contains(&action) {
+            return self.git_channel(envelope).await;
         }
         if action == "folders" {
             let path = envelope["payload"].get("cwd").and_then(Value::as_str);
@@ -1762,6 +1834,17 @@ fn exec_owner(
         && envelope.pointer("/payload/actor").unwrap_or(&Value::Null) == actor)
 }
 
+/// Python `_exec_owner` for the caller side of `exec_read`, `exec_input` and
+/// `exec_cancel`: the handle names this lead's `exec` row for that server.
+pub(crate) fn exec_handle_owned(
+    tx: &Transaction<'_>,
+    server: &str,
+    actor: &Value,
+    handle: &Value,
+) -> Result<bool, AccessError> {
+    exec_owner(tx, server, actor, handle)
+}
+
 /// Python `_exec_event`, with the `_evidence` lookup that answers a replayed
 /// claim: an existing event with this identity proves the effect.
 fn receive_exec_event(
@@ -2102,7 +2185,29 @@ const PEER_REPLAY_SAFE_ACTIONS: &[&str] = &[
     "stop",
     // The event row identity is the request identity, so a replay finds it.
     EXEC_EVENT_ACTION,
+    // Effect-free reads (Python `receive` runs them again for a running claim).
+    "projects",
+    "folders",
+    "git",
+    "chunk",
+    // Removing a released bundle again has no further effect.
+    "release",
 ];
+
+/// Python `receive` and `deliver` never answer a bundle chunk from its saved
+/// receipt: that receipt keeps no data, so each delivery reads the chunk again.
+const REREAD_ACTIONS: &[&str] = &["chunk"];
+
+/// Python `compact_receipt`: a stored chunk receipt keeps no chunk data.
+fn compact_receipt(action: &str, result: &ExchangeOutcome, key: &str) -> Value {
+    let mut value = result.to_value(key);
+    if REREAD_ACTIONS.contains(&action)
+        && let Some(applied) = value.get_mut("value").and_then(Value::as_object_mut)
+    {
+        applied.remove("data");
+    }
+    value
+}
 
 fn peer_replay_safe_sql_values() -> String {
     PEER_REPLAY_SAFE_ACTIONS
@@ -2141,6 +2246,9 @@ pub fn decide_delivery(
             "request_conflict",
             "This request id has different content",
         ));
+    }
+    if snapshot.state == "complete" && REREAD_ACTIONS.contains(&action) {
+        return Ok(DeliveryDecision::Execute);
     }
     if snapshot.state == "complete" {
         return Ok(DeliveryDecision::Return(
@@ -2306,13 +2414,16 @@ impl OrchestrationDriver {
         }
         let envelope_for_claim = envelope.clone();
         let server_for_claim = server.to_owned();
+        let in_flight_until = now.saturating_add(timeout.as_secs().max(1) as i64);
         let decision=self.store.transaction_with(move |tx| {
             if !is_local { require_paired(tx,&server_for_claim)?; }
             if retired(tx,&envelope_for_claim.key,"out",&envelope_for_claim.fingerprint,Some(&server_for_claim))? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
             let saved=outbox(tx,&envelope_for_claim.key,now)?;
             let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,&envelope_for_claim.action,now)?;
             if matches!(decision,DeliveryDecision::Execute) {
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,0) ON CONFLICT(id) DO UPDATE SET state='running'",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint])?;
+                // An in-flight claim is not due: the pump replays a running peer
+                // operation only after its exchange deadline has passed.
+                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,?6) ON CONFLICT(id) DO UPDATE SET state='running',next_at=?6",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint,in_flight_until])?;
             }
             Ok::<_,AccessError>(decision)
         }).await?;
@@ -2601,8 +2712,8 @@ impl OrchestrationDriver {
             if matches!(decision, DeliveryDecision::Execute) {
                 if saved.is_some() {
                     tx.execute(
-                        "UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state IN ('waiting','running')",
-                        [&envelope_for_claim.key],
+                        "UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND (state IN ('waiting','running') OR (state='complete' AND ?2))",
+                        params![&envelope_for_claim.key, REREAD_ACTIONS.contains(&envelope_for_claim.action.as_str())],
                     )?;
                 } else {
                     tx.execute(
@@ -2888,6 +2999,7 @@ impl OrchestrationDriver {
         }
         let table = table.to_owned();
         let key = key.to_owned();
+        let action = action.to_owned();
         let signature = signature.to_owned();
         let server = server.map(str::to_owned);
         let result = result.clone();
@@ -2895,7 +3007,7 @@ impl OrchestrationDriver {
             let saved=if table=="outbox"{outbox(tx,&key,now)?}else{inbox(tx,&key,now)?};
             let snapshot=saved.ok_or_else(||refused(409,"receipt_missing","The delivery claim is missing"))?;
             if snapshot.signature!=signature || snapshot.server.as_deref()!=server.as_deref() || snapshot.state!="running" { return Err(refused(409,"stale_receipt","The delivery receipt does not match its claim")); }
-            tx.execute(&format!("UPDATE runtime_server_{table} SET state='complete',result=?1,completed_at=?2 WHERE id=?3"),params![result.to_value(&key).to_string(),now,key])?;
+            tx.execute(&format!("UPDATE runtime_server_{table} SET state='complete',result=?1,completed_at=?2 WHERE id=?3"),params![compact_receipt(&action,&result,&key).to_string(),now,key])?;
             Ok(())
         }).await
     }

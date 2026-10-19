@@ -85,6 +85,7 @@ impl ManagedToolRuntime {
                 })),
                 monitor_cancel: Some(Arc::new(ManagedMonitorCancelAdapter { runtime: monitor })),
                 work_action,
+                late: Default::default(),
             },
             creation_environment: environment,
         })
@@ -102,6 +103,21 @@ impl ManagedToolRuntime {
 
     pub(crate) fn ports(&self) -> ManagedToolRuntimePorts {
         self.ports.clone()
+    }
+
+    /// Attach the paired-server outbox driver for `orchestration_servers`
+    /// once the HTTP state owns it. Ports cloned earlier share this slot.
+    pub fn attach_multi_server(
+        &self,
+        store: Arc<RuntimeStore>,
+        driver: Arc<crate::multi_server_orchestration::OrchestrationDriver>,
+    ) {
+        let tools = Arc::new(crate::multi_server_tools::ServerTools::new(
+            store, driver, false,
+        ));
+        if self.ports.late.multi_server.set(tools).is_err() {
+            // The first attached driver stays the owner of these requests.
+        }
     }
 }
 

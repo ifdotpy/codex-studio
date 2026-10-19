@@ -171,6 +171,7 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
                 monitor_input: None,
                 monitor_cancel: None,
                 work_action: None,
+                late: Default::default(),
             },
         },
     )
@@ -210,6 +211,7 @@ pub(crate) fn managed_tool_ports_with_bundle(
                 monitor_input: None,
                 monitor_cancel: None,
                 work_action: None,
+                late: Default::default(),
             });
     managed_tool_ports_with_runtime(
         store,

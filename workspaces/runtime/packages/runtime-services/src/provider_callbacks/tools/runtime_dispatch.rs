@@ -373,7 +373,23 @@ pub(crate) struct ManagedToolRuntimePorts {
     pub(crate) monitor_input: Option<std::sync::Arc<dyn MonitorInputPort>>,
     pub(crate) monitor_cancel: Option<std::sync::Arc<dyn MonitorCancelPort>>,
     pub(crate) work_action: Option<std::sync::Arc<dyn WorkActionPort>>,
+    /// Services that the host attaches after the HTTP state exists. Every
+    /// clone of these ports shares the same slots.
+    pub(crate) late: LatePorts,
 }
+
+/// Late-bound managed-tool services. The paired-server driver is created with
+/// the HTTP state, after the account worker registry owns these ports.
+#[derive(Clone, Default)]
+pub(crate) struct LatePorts {
+    pub(crate) multi_server: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<dyn crate::multi_server_tools::MultiServerToolPort>>,
+    >,
+}
+
+/// The dependency that `orchestration_servers` names until the host attaches
+/// the paired-server driver.
+pub(crate) const SERVERS_DEPENDENCY: &str = "multi-server/tool-coordinator";
 
 pub(super) struct DispatchRequest<'a> {
     pub(super) store: std::sync::Arc<RuntimeStore>,
@@ -402,7 +418,19 @@ pub(super) async fn dispatch(
     let store_ref = store.as_ref();
     let actor_id = actor.record().id.0.as_str();
     let actor_epoch = actor.record().epoch;
+    let execution_move = studio_runtime_store::truthy(actor.record().extra.get("executionMove"));
     let dispatched = match tool {
+        "orchestration_servers" => {
+            if execution_move {
+                return Ok(Some(not_sent(Error::Invalid(
+                    "The move is accepted. Finish this turn before the next task",
+                ))));
+            }
+            let Some(port) = ports.late.multi_server.get() else {
+                return Ok(Some(not_sent(Error::Unavailable(SERVERS_DEPENDENCY))));
+            };
+            port.servers(actor, args, request_id, now).await?
+        }
         "orchestration_status" => {
             if studio_runtime_store::truthy(actor.record().extra.get("remoteOrigin")) {
                 return Ok(Some(not_sent(Error::Unavailable(

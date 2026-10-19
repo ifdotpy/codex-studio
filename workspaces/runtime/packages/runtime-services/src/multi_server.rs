@@ -110,6 +110,45 @@ fn snapshot_in_transaction(
     }))
 }
 
+/// Paired servers in the shape of Python `ServerTransport.servers()`: the
+/// discovery-merged server list without unpaired or revoked rows.
+pub fn paired_servers(tx: &rusqlite::Transaction<'_>) -> Result<Vec<Value>, StoreError> {
+    // Python `MultiServerService._public` names every public field, null when absent.
+    const PUBLIC: [&str; 14] = [
+        "id",
+        "clientId",
+        "serverId",
+        "label",
+        "kind",
+        "origin",
+        "publicKey",
+        "tailscaleUser",
+        "status",
+        "created",
+        "lastAccess",
+        "revoked",
+        "alias",
+        "replacedBy",
+    ];
+    let mut clients = project_records(tx, "runtime_access_clients")?;
+    for client in clients
+        .iter_mut()
+        .filter(|client| client["kind"].as_str() == Some("server"))
+    {
+        if let Some(object) = client.as_object_mut() {
+            object.retain(|key, _| PUBLIC.contains(&key.as_str()));
+            for key in PUBLIC {
+                object.entry(key).or_insert(Value::Null);
+            }
+        }
+    }
+    let discovered = project_records(tx, "runtime_access_discovered")?;
+    Ok(server_list(&clients, discovered)
+        .into_iter()
+        .filter(|server| server["status"].as_str() == Some("paired"))
+        .collect())
+}
+
 /// Paired and discovered servers by ID. A saved server takes its activity from its discovery
 /// record. The rules are those of `ServerDiscovery.servers` in codex_server_discovery.py.
 fn server_list(clients: &[Value], discovered: Vec<Value>) -> Vec<Value> {
