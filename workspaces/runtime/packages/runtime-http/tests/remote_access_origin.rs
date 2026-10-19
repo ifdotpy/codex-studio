@@ -51,12 +51,14 @@ async fn send(app: &axum::Router, path: &str) -> (StatusCode, Value) {
 #[tokio::test]
 async fn the_state_file_origin_admits_serve_requests_until_it_is_disabled() {
     let root = tempfile::tempdir().unwrap();
-    configure(root.path(), true);
     let store = Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(root.path()))
             .await
             .unwrap(),
     );
+    // A fresh state directory accepts no configuration file; the owner
+    // enables Serve access in an existing one.
+    configure(root.path(), true);
     // The server resolves its startup origin the same way.
     let access = Arc::new(RemoteAccess::new(root.path(), None).unwrap());
     let startup_origin = access.origin();

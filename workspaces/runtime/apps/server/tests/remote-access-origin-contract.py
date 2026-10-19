@@ -31,10 +31,13 @@ class RemoteAccessOriginContract(TimedHTTPContractTest, unittest.TestCase):
             raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
         cls.backend = BackendProcess(Path(scratch))
         cls.addClassCleanup(cls.backend.close)
-        # The operator wrote this file before the server started. The fixture
-        # environment has no public-origin override.
-        cls.configure(enabled=True, origin=ORIGIN + "/")
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+        cls.backend.start()
+        # The owner enables Serve access in an existing state directory, as
+        # codex-mobile.py does. The fixture environment has no origin override,
+        # so the restarted server reads the file.
+        cls.configure(enabled=True, origin=ORIGIN + "/")
+        cls.backend.stop()
         cls.backend.start()
 
     @classmethod
