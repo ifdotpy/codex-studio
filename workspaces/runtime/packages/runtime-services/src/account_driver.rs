@@ -1537,6 +1537,19 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(registry_account(&state.value, account)?.clone())
     }
 
+    /// The account's turn start throttle, read under the registry lock
+    /// without copying the row; the Codex defaults for an unknown account,
+    /// like a row without a provider.
+    pub fn start_throttle(&self, account: &str) -> crate::account_start_gate::StartThrottle {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::account_start_gate::StartThrottle::of_record(
+            registry_account(&state.value, account).unwrap_or(&Value::Null),
+        )
+    }
+
     /// Stable, non-secret identity selected for a retained account session.
     pub fn auth_pin(&self, account: &str) -> Result<Value, AccountDriverError> {
         let record = self.internal_record(account)?;

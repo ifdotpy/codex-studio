@@ -244,19 +244,6 @@ pub struct StartSources {
     pub account: String,
 }
 
-impl StartSources {
-    /// The account's current settings; the Codex defaults for an unknown
-    /// account, like a registry row without a provider.
-    fn throttle(&self) -> StartThrottle {
-        StartThrottle::of_record(
-            &self
-                .driver
-                .internal_record(&self.account)
-                .unwrap_or(Value::Null),
-        )
-    }
-}
-
 /// A slot admitted for one start. Dropped before [`StartSlot::claimed`], it
 /// frees the slot: the wake started no turn.
 pub struct StartSlot {
@@ -320,7 +307,7 @@ impl StartGate {
         let mut accounts = sources.driver.change_signal().subscribe();
         let mut shown = None;
         loop {
-            let throttle = sources.throttle();
+            let throttle = sources.driver.start_throttle(&sources.account);
             // Mark the current agent-row generation seen before reading the
             // in-flight state, so a commit after the read wakes this waiter.
             sources.agent_changes.borrow_and_update();
