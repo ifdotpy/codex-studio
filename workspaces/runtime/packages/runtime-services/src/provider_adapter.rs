@@ -21,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use studio_runtime_process::ProviderLaunchSpec;
+use studio_runtime_providers::Method;
 pub use studio_runtime_providers::ProviderKind;
 
 /// Inputs for launching the retained provider session of one host account.
@@ -78,6 +79,12 @@ pub trait ProviderAdapter: Send + Sync + 'static {
         params: &mut Map<String, Value>,
         instructions: &mut String,
     );
+
+    /// Provider-specific parts of the `thread/start` params of an ephemeral title thread.
+    fn shape_title_thread_params(&self, params: &mut Map<String, Value>);
+
+    /// Native request that reports the provider session's loaded state for diagnostics.
+    fn diagnostics_method(&self) -> Method;
 
     /// Provider-specific parts of `turn/start` params.
     fn shape_turn_params(&self, input: &TurnInput, params: &mut Map<String, Value>);
@@ -208,6 +215,15 @@ impl ProviderAdapter for CodexAdapter {
 
     fn shape_thread_params(&self, _: &Snapshot, _: &mut Map<String, Value>, _: &mut String) {}
 
+    fn shape_title_thread_params(&self, params: &mut Map<String, Value>) {
+        params.insert("approvalPolicy".into(), json!("never"));
+        params.insert("sandbox".into(), json!("read-only"));
+    }
+
+    fn diagnostics_method(&self) -> Method {
+        Method::ThreadLoadedList
+    }
+
     fn shape_turn_params(&self, _input: &TurnInput, params: &mut Map<String, Value>) {
         params.insert("cyberAccessProgram".into(), json!("standard"));
     }
@@ -321,6 +337,12 @@ impl ProviderAdapter for ClaudeAdapter {
         if s.actor.parent_id.is_some() {
             params.insert("userMcp".into(), json!(false));
         }
+    }
+
+    fn shape_title_thread_params(&self, _: &mut Map<String, Value>) {}
+
+    fn diagnostics_method(&self) -> Method {
+        Method::ClaudeDiagnostics
     }
 
     /// A single-line `/` or `$` user message is passed to Claude Code as a command.

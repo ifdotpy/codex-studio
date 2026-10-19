@@ -24,7 +24,7 @@ use std::{
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use studio_runtime_providers::Method;
+use studio_runtime_providers::{Method, ProviderKind};
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
@@ -131,7 +131,7 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         .filter_map(|account| {
                             let key = account.get("id")?.as_str()?.to_owned();
                             let provider =
-                                studio_runtime_providers::ProviderKind::of_record(account).ok()?.key().to_owned();
+                                studio_runtime_providers::ProviderKind::of_record(account).ok()?;
                             let scope = session.current_scope(&key)?;
                             (scope.account == key && !scope.connection.is_empty())
                                 .then_some((key, provider, scope))
@@ -174,22 +174,18 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
             let deadline = Instant::now() + Duration::from_secs(5);
             for (index, (_, provider, scope)) in active.iter().enumerate() {
                 let alias = format!("account{}", index + 1);
-                let method = if provider == "claude" {
-                    Method::ClaudeDiagnostics
-                } else {
-                    Method::ThreadLoadedList
-                };
                 let result = provider_read(
                     self.session.as_ref(),
                     scope,
                     None,
-                    method,
+                    studio_runtime_services::provider_adapter::adapter(*provider)
+                        .diagnostics_method(),
                     json!({}),
                     deadline,
                 )
                 .await;
                 match result {
-                    Some(value) if provider == "claude" => {
+                    Some(value) if *provider == ProviderKind::Claude => {
                         let mut row = serde_json::Map::new();
                         row.insert("provider".to_owned(), json!("claude"));
                         if let Some(fields) = value.as_object() {
@@ -428,30 +424,31 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 agent: request.agent_id.clone(),
                 epoch: request.epoch,
             };
-            let claude = request.provider.as_deref() == Some("claude");
+            let Ok(provider) = request
+                .provider
+                .as_deref()
+                .map_or(Ok(ProviderKind::Codex), str::parse::<ProviderKind>)
+            else {
+                return title_receipt(&request, WriteOutcome::NotSent, None);
+            };
             let operation_root = operation_root(&request.request_id);
             let start_operation = format!("{operation_root}:thread");
             // Cancellation or process loss during a submitted write must leave
             // the same cwd available when the durable receipt is inspected.
             home.retain();
-            let thread_params = if claude {
-                json!({"cwd":home.path(),"model":request.model,"ephemeral":true})
-            } else {
-                json!({
-                    "cwd": home.path(),
-                    "model": request.model,
-                    "ephemeral": true,
-                    "approvalPolicy": "never",
-                    "sandbox": "read-only",
-                })
-            };
+            let mut thread_params = serde_json::Map::new();
+            thread_params.insert("cwd".into(), json!(home.path()));
+            thread_params.insert("model".into(), json!(request.model));
+            thread_params.insert("ephemeral".into(), json!(true));
+            studio_runtime_services::provider_adapter::adapter(provider)
+                .shape_title_thread_params(&mut thread_params);
             let started = self
                 .call(
                     &request.account_key,
                     &start_operation,
                     Some(actor.clone()),
                     Method::ThreadStart,
-                    thread_params,
+                    Value::Object(thread_params),
                     deadline,
                     None,
                 )
@@ -494,10 +491,8 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": request.prompt}],
                 "model": request.model,
+                "clientUserMessageId": format!("{operation_root}:turn"),
             });
-            if claude {
-                turn_params["clientUserMessageId"] = json!(format!("{operation_root}:turn"));
-            }
             if let Some(effort) = request.effort.as_deref() {
                 turn_params["effort"] = json!(effort);
             }

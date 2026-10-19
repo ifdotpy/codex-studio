@@ -46,6 +46,12 @@ pub enum UsageError {
     ScannerCancelled,
 }
 
+/// Claude accounts scan Claude JSONL transcripts; every other account scans Codex rollouts.
+fn is_claude_account(account: &Value) -> bool {
+    studio_runtime_providers::ProviderKind::of_record(account)
+        == Ok(studio_runtime_providers::ProviderKind::Claude)
+}
+
 /// Read an account's last locally scanned cost snapshot.
 ///
 /// The response reports stale caches as stale and never invokes a scanner,
@@ -68,9 +74,7 @@ pub fn account_cost_snapshot(
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .ok_or(UsageError::MissingProfile)?;
-    if account.get("provider").and_then(Value::as_str) == Some("claude")
-        || account_key == "claude-local"
-    {
+    if is_claude_account(account) {
         return claude_cost_snapshot(state_dir, account_key, &home, now);
     }
     let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
@@ -210,10 +214,7 @@ where
     let Some(_refresh) = begin_cost_refresh(refresh_key) else {
         return (false, Ok(()));
     };
-    let is_claude = studio_runtime_providers::ProviderKind::of_record(account)
-        == Ok(studio_runtime_providers::ProviderKind::Claude)
-        || account_key == "claude-local";
-    if is_claude {
+    if is_claude_account(account) {
         if cancelled.load(Ordering::Acquire) {
             return (false, Err(UsageError::ScannerCancelled));
         }
