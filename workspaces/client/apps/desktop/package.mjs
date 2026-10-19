@@ -2,6 +2,11 @@ import { buildLinuxVM } from "./native/linux-vm/build.mjs";
 import { signingIdentity, signApplication, signCode } from "./signing.mjs";
 import { setBundleDisplayName } from "./bundle-name.mjs";
 import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.mjs";
+import {
+  cargoReleaseArguments,
+  operationsLibraryName,
+  prebuiltReleaseDirectory,
+} from "./release-binaries.mjs";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
@@ -31,24 +36,18 @@ const bridgeSource = path.join(
   "workspaces/providers/apps/claude-bridge",
 );
 await access(path.join(rendererDist, "index.html"));
-if (!uiOnly) {
+// With CODEX_RELEASE_TARGET_DIR set, reuse release binaries that were built for
+// this exact commit (release-binaries.mjs verifies the commit and SHA-256 manifest);
+// otherwise build them here.
+const prebuiltRelease = uiOnly
+  ? null
+  : await prebuiltReleaseDirectory(repositoryRoot);
+if (!uiOnly && !prebuiltRelease) {
   try {
-    execFileSync(
-      "cargo",
-      [
-        "build",
-        "--locked",
-        "--release",
-        ...runtimeBinaries.flatMap((entry) => ["-p", entry.package]),
-        "-p",
-        "studio-diagnostics",
-        "-p",
-        "studio-operations-python",
-        "-p",
-        "studio-peer-link",
-      ],
-      { cwd: repositoryRoot, stdio: "inherit" },
-    );
+    execFileSync("cargo", cargoReleaseArguments(), {
+      cwd: repositoryRoot,
+      stdio: "inherit",
+    });
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
@@ -59,10 +58,9 @@ if (!uiOnly) {
     throw error;
   }
 }
-const cargoTargetDirectory = path.resolve(
-  repositoryRoot,
-  process.env.CARGO_TARGET_DIR || "target",
-);
+const cargoTargetDirectory =
+  prebuiltRelease ??
+  path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR || "target");
 const diagnosticsBinary = path.join(
   cargoTargetDirectory,
   "release/codex-diagnostics",
@@ -70,11 +68,7 @@ const diagnosticsBinary = path.join(
 const operationsLibrary = path.join(
   cargoTargetDirectory,
   "release",
-  process.platform === "darwin"
-    ? "libstudio_operations_native.dylib"
-    : process.platform === "win32"
-      ? "studio_operations_native.dll"
-      : "libstudio_operations_native.so",
+  operationsLibraryName(),
 );
 const operationsModuleName =
   process.platform === "win32"

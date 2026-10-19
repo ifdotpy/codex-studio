@@ -92,3 +92,30 @@ Exports read 32 records per transaction and normally write batches below 8 MiB.
 An encoded record above 64 MiB is rejected explicitly. The exporter requires the
 source desktop to be closed; its backend can remain running. A copy taken while
 the desktop runs is suitable for diagnostics, not a final migration snapshot.
+
+## Package cycle
+
+`package.mjs` builds the Tauri client and the Rust runtime binaries, signs the
+bundle with the configured identity, and writes the app to
+`CODEX_NATIVE_PACKAGE_OUT`. `check-package.mjs` and `check-package-start.py`
+verify it. The Rust release build is the longest step. Do it once per commit:
+
+```sh
+just build-release-binaries      # once per commit; writes studio-release-manifest.json
+just package-native /tmp/out     # host check, reuse binaries, package, checks
+just package-native /tmp/out --hosted-ci-passed
+```
+
+- `just build-release-binaries [dir]` builds the release binaries for `HEAD` into
+  a Cargo target directory (default `CODEX_RELEASE_TARGET_DIR`, else
+  `~/.cache/codex-studio/release-target`). It records the commit and the SHA-256
+  of every binary in `release/studio-release-manifest.json` next to them. A dirty
+  tracked tree is refused.
+- With `CODEX_RELEASE_TARGET_DIR` set, `package.mjs` (native and Electron) skips
+  its own Cargo build and uses that directory, which also holds the Tauri
+  build. It refuses binaries from another commit, a changed binary, or a dirty
+  tree. A rehearsal can use the same directory (`just verify-release-binaries`
+  checks it) instead of building a second copy in a private target.
+- `just package-native` runs the dev-profile host check first (`just
+test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
+  when hosted CI passed on the exact commit. The default runs the check.

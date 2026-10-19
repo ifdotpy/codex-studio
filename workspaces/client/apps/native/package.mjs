@@ -5,6 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { signingIdentity, signApplication } from "../desktop/signing.mjs";
 import { setBundleDisplayName } from "../desktop/bundle-name.mjs";
+import {
+  prebuiltReleaseDirectory,
+  releaseTargetEnvironment,
+} from "../desktop/release-binaries.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
@@ -13,6 +17,17 @@ if (process.platform !== "darwin")
 if (!process.env.CODEX_NATIVE_PACKAGE_OUT)
   throw new Error("Set CODEX_NATIVE_PACKAGE_OUT to a new artifact directory.");
 const output = path.resolve(process.env.CODEX_NATIVE_PACKAGE_OUT);
+// With CODEX_RELEASE_TARGET_DIR set, the Rust release binaries must come from that
+// directory and match this exact commit; a mismatch stops here, before any build.
+// The Tauri client builds in the same directory and reuses its compiled crates.
+const prebuiltRelease = await prebuiltReleaseDirectory(repository);
+const cargoEnvironment = prebuiltRelease
+  ? {
+      ...process.env,
+      [releaseTargetEnvironment]: prebuiltRelease,
+      CARGO_TARGET_DIR: prebuiltRelease,
+    }
+  : process.env;
 const identity = signingIdentity();
 // Refuse to overwrite a previously verified artifact.
 await mkdir(output, { recursive: false });
@@ -24,6 +39,7 @@ try {
     {
       cwd: root,
       stdio: "inherit",
+      env: cargoEnvironment,
     },
   );
   execFileSync(
@@ -33,16 +49,15 @@ try {
       cwd: repository,
       stdio: "inherit",
       env: {
-        ...process.env,
+        ...cargoEnvironment,
         CODEX_DESKTOP_PACKAGE_OUT: stage,
         CODEX_DESKTOP_UI_ONLY: "0",
       },
     },
   );
-  const target = path.resolve(
-    repository,
-    process.env.CARGO_TARGET_DIR || "target",
-  );
+  const target =
+    prebuiltRelease ??
+    path.resolve(repository, process.env.CARGO_TARGET_DIR || "target");
   const application = path.join(output, "Codex Studio.app");
   await cp(
     path.join(target, "release/bundle/macos/Codex Studio.app"),

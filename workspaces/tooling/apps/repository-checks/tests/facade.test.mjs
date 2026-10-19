@@ -180,6 +180,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "--test-name-pattern",
           "Cargo zero-match summaries",
           "workspaces/tooling/apps/repository-checks/tests/facade.test.mjs",
+          "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
         ],
       ],
     ],

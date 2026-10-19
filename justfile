@@ -11,6 +11,18 @@ build-server:
     pnpm --filter codex-agents-web run build
     cargo build --release --locked -p studio-runtime-server
 
+[doc("Build the Rust release binaries once for HEAD into a shared directory with a commit and SHA-256 manifest. Default directory: CODEX_RELEASE_TARGET_DIR or ~/.cache/codex-studio/release-target.")]
+build-release-binaries dir="":
+    @node workspaces/client/apps/desktop/release-binaries.mjs build {{quote(dir)}}
+
+[doc("Check that the prebuilt release binaries in the directory match HEAD and their SHA-256 manifest.")]
+verify-release-binaries dir="":
+    @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
+
+[doc("Native package cycle (signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
+package-native out *flags:
+    @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
+
 [doc("List pnpm, Cargo, and Python server packages discovered from their manifests.")]
 packages:
     @node {{quote(facade)}} packages
