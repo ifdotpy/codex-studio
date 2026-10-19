@@ -312,6 +312,58 @@ pub(crate) trait MonitorCancelPort: Send + Sync {
     ) -> BoxFuture<'a, Result<Value, Error>>;
 }
 
+/// The outcome of one lead or worker task action (claim, submit, accept).
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkActionOutcome {
+    /// The action committed; the full task record.
+    Written(Value),
+    /// The action was refused before any write; the message for the model.
+    Refused(String),
+    /// The action may have committed; the message for the model.
+    Unknown(String),
+}
+
+/// Python `model_work` hands claim, submit and accept to `work_action`, the
+/// same owner as `POST /api/work`. The HTTP host supplies that owner here, so
+/// the tool and the route share one implementation (receipts, VM evidence,
+/// rule checks, result files, and the archive after accept).
+pub trait WorkActionPort: Send + Sync {
+    fn act<'a>(
+        &'a self,
+        actor_id: &'a str,
+        args: &'a Value,
+        request_id: &'a str,
+    ) -> BoxFuture<'a, WorkActionOutcome>;
+}
+
+/// Task actions that need the work-action owner instead of the in-transaction
+/// tool service.
+pub(crate) fn work_action_tool(tool: &str, args: &Value) -> bool {
+    tool == "orchestration_task"
+        && matches!(args["action"].as_str(), Some("claim" | "submit" | "accept"))
+}
+
+/// Python `task_brief`.
+fn task_brief(task: &Value) -> Value {
+    let mut brief = serde_json::Map::new();
+    for key in ["id", "title", "owner", "status", "version", "blockedBy"] {
+        brief.insert(key.into(), task.get(key).cloned().unwrap_or(Value::Null));
+    }
+    if let Some(archive) = task
+        .get("archive")
+        .filter(|v| studio_runtime_store::truthy(Some(v)))
+    {
+        let mut kept = serde_json::Map::new();
+        for key in ["status", "reason"] {
+            if let Some(value) = archive.get(key).filter(|value| !value.is_null()) {
+                kept.insert(key.into(), value.clone());
+            }
+        }
+        brief.insert("archive".into(), Value::Object(kept));
+    }
+    Value::Object(brief)
+}
+
 #[derive(Clone)]
 pub(crate) struct ManagedToolRuntimePorts {
     pub(crate) status_watch: Option<std::sync::Arc<dyn StatusWatchPort>>,
@@ -320,6 +372,7 @@ pub(crate) struct ManagedToolRuntimePorts {
     pub(crate) interrupt: Option<std::sync::Arc<dyn InterruptPort>>,
     pub(crate) monitor_input: Option<std::sync::Arc<dyn MonitorInputPort>>,
     pub(crate) monitor_cancel: Option<std::sync::Arc<dyn MonitorCancelPort>>,
+    pub(crate) work_action: Option<std::sync::Arc<dyn WorkActionPort>>,
 }
 
 pub(super) struct DispatchRequest<'a> {
@@ -470,6 +523,42 @@ pub(super) async fn dispatch(
                     Ok(None) => not_sent(error),
                     Err(_) => unknown_input(),
                 },
+            }
+        }
+        "orchestration_task" if work_action_tool(tool, args) => {
+            // The same refusals as the in-transaction tool service.
+            if studio_runtime_store::truthy(actor.record().extra.get("executionMove")) {
+                return Ok(Some(not_sent(Error::Invalid(
+                    "The move is accepted. Finish this turn before the next task",
+                ))));
+            }
+            if studio_runtime_store::truthy(actor.record().extra.get("remoteOrigin")) {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    "multi-server/worker-call",
+                ))));
+            }
+            let Some(port) = ports.work_action.as_ref() else {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    "work-board/assignment-and-result-driver",
+                ))));
+            };
+            match port.act(actor_id, args, request_id).await {
+                WorkActionOutcome::Written(record) => {
+                    let mut value = task_brief(&record);
+                    value["requestId"] = json!(request_id);
+                    value["detail"] =
+                        json!({"tool":"orchestration_task","action":"get","task_id":record["id"]});
+                    written(value, Vec::new())
+                }
+                WorkActionOutcome::Refused(message) => DispatchedOperation {
+                    result: OperationResult {
+                        value: json!(message),
+                        signals: Vec::new(),
+                    },
+                    certainty: DeliveryCertainty::NotSent,
+                    applied: Some(false),
+                },
+                WorkActionOutcome::Unknown(message) => unknown(json!(message), Vec::new()),
             }
         }
         _ => return Ok(None),

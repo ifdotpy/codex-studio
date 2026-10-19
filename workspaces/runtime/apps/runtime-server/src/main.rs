@@ -761,11 +761,17 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             catalog.set_account_session(Some(Arc::clone(&account_session)));
             catalog
         });
+    // Python `model_work`: task claim, submit and accept use the `/api/work` owner.
+    let work_action = studio_runtime_http::routes::managed_work_port(
+        state.clone(),
+        Some(Arc::clone(&monitor_runtime)),
+    );
     let managed_tool_runtime =
-        studio_runtime_services::provider_callbacks::ManagedToolRuntime::with_creation(
+        studio_runtime_services::provider_callbacks::ManagedToolRuntime::with_creation_and_work(
             Arc::clone(&monitor_runtime),
             Arc::clone(&lifecycle_ports),
             creation_environment,
+            work_action,
         );
     #[cfg(unix)]
     startup_trace("host-runtime-started");

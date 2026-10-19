@@ -51,7 +51,8 @@ pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
 #[cfg(test)]
 pub(crate) use runtime_dispatch::{RulesActionResult, StatusWatchPort};
 pub use runtime_dispatch::{
-    WorkerAccountSelection, select_worker_account, validate_worker_model_choice,
+    WorkActionOutcome, WorkActionPort, WorkerAccountSelection, select_worker_account,
+    validate_worker_model_choice,
 };
 pub use runtime_ports::ManagedToolRuntime;
 impl From<tool_requests::ToolRequestError> for CallbackError {

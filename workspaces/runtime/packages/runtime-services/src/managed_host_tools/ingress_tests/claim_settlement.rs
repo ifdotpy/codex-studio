@@ -148,6 +148,7 @@ fn ports_with_wake(
                     interrupt: Some(Arc::new(UnusedInterrupt)),
                     monitor_input: None,
                     monitor_cancel: None,
+                    work_action: None,
                 },
             },
         )

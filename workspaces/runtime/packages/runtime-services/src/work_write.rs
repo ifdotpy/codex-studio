@@ -371,6 +371,7 @@ pub async fn accepted_archive_tick(
 /// has been delivered. The event ID stays in the agent record as the durable
 /// identity for every retry; scheduling commits before the archive operation.
 async fn reviewer_archive_tick(store: Arc<RuntimeStore>, now: f64) -> Result<(), WorkWriteError> {
+    retry_refused_reviewer_archives(&store).await?;
     store
         .transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
             let candidates = ReviewerArchiveRepository::candidates(tx)?;
@@ -547,6 +548,81 @@ async fn reviewer_archive_tick(store: Arc<RuntimeStore>, now: f64) -> Result<(),
             .await?;
     }
     Ok(())
+}
+
+/// Prefix of the error that a Rust lifecycle dependency writes when an archive
+/// was refused because Rust did not implement a step yet ("Not implemented:
+/// requires <dependency>"). Python never wrote it.
+const NOT_IMPLEMENTED_REFUSAL: &str = "Not implemented: requires ";
+
+/// Once per store and process, give each reviewer whose archive was refused by
+/// a missing Rust dependency its schedule back. Python keeps such an error final
+/// because only a real blocker or failure writes it; these refusals came from
+/// Rust gaps that a later build closes. A reviewer refused again keeps the new
+/// error until the next process start.
+async fn retry_refused_reviewer_archives(store: &Arc<RuntimeStore>) -> Result<(), WorkWriteError> {
+    static SWEPT: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>>,
+    > = std::sync::OnceLock::new();
+    let root = store.root().to_path_buf();
+    {
+        let mut swept = SWEPT
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !swept.insert(root) {
+            return Ok(());
+        }
+    }
+    store
+        .transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
+            let mut statement = tx
+                .prepare(
+                    "SELECT id,record FROM runtime_agents \
+                     WHERE json_extract(record,'$.role')='reviewer' \
+                       AND json_extract(record,'$.status')='completed' \
+                       AND substr(json_extract(record,'$.reviewArchiveError'),1,?1)=?2",
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let rows = statement
+                .query_map(
+                    rusqlite::params![
+                        NOT_IMPLEMENTED_REFUSAL.chars().count() as i64,
+                        NOT_IMPLEMENTED_REFUSAL
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(studio_runtime_store::StoreError::from)?;
+            drop(statement);
+            for (id, raw) in rows {
+                let mut record: Value =
+                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+                if event_write::truthy(record.get("agentArchive")) {
+                    continue;
+                }
+                if let Some(object) = record.as_object_mut() {
+                    for key in [
+                        "reviewArchiveError",
+                        "reviewArchiveScheduled",
+                        "reviewArchiveAttempts",
+                        "reviewArchiveNextAt",
+                    ] {
+                        object.remove(key);
+                    }
+                }
+                let agent = AgentRecord::from_value(record).map_err(|_| {
+                    studio_runtime_store::StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: id.clone(),
+                    }
+                })?;
+                AgentRepository::put(tx, &agent)?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 /// Find the next durable archive retry deadline. New reviewer candidates are
@@ -3422,6 +3498,49 @@ mod actor_tests {
                 marker.get("reviewArchiveScheduled")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn reviewer_archive_refused_by_a_missing_rust_dependency_is_retried_and_archived() {
+        // Live cutover 4: 18 completed reviewers kept "Not implemented: requires
+        // tool-driver/archive-reconciliation" (or account-worker/agent-interrupt)
+        // and were never scheduled again.
+        let (store, _root) = reviewer_archive_store("reviewer").await;
+        store
+            .transaction(|tx| {
+                let mut child =
+                    AgentRepository::get(tx, &AgentId::from("child"))?.expect("reviewer loads");
+                let mut record = child.value();
+                record["threadId"] = json!("thread-1");
+                record["lastCompletedTurn"] = json!("turn-9");
+                record["lastCompletedTurnStatus"] = json!("completed");
+                record["reviewArchiveError"] =
+                    json!("Not implemented: requires tool-driver/archive-reconciliation");
+                child = AgentRecord::from_value(record)?;
+                AgentRepository::put(tx, &child)?;
+                tx.execute(
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES (?1,?2)",
+                    rusqlite::params![
+                        "tool-done",
+                        json!({"id":"tool-done","agent":"child","stage":"completed","outcome":"applied"})
+                            .to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("refused reviewer inserts");
+
+        accepted_archive_tick(Arc::clone(&store), 10.0)
+            .await
+            .expect("maintenance tick succeeds");
+
+        let reviewer = reviewer_record(&store);
+        assert!(reviewer.get("reviewArchiveError").is_none(), "{reviewer}");
+        assert_eq!(
+            reviewer["agentArchive"]["reason"],
+            "Reviewer result delivered to parent"
+        );
     }
 
     #[tokio::test]

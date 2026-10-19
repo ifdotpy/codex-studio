@@ -1786,6 +1786,7 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
                 interrupt: None,
                 monitor_input: None,
                 monitor_cancel: None,
+                work_action: None,
             },
         ),
     );
@@ -1911,6 +1912,7 @@ async fn shutdown_drains_completed_managed_callback_and_writes_response() {
                 interrupt: None,
                 monitor_input: None,
                 monitor_cancel: None,
+                work_action: None,
             },
         ),
     );

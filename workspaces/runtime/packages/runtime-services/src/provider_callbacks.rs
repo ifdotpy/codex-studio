@@ -95,7 +95,10 @@ pub(crate) use tools::{
 };
 #[cfg(test)]
 pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
-pub use tools::{WorkerAccountSelection, select_worker_account, validate_worker_model_choice};
+pub use tools::{
+    WorkActionOutcome, WorkActionPort, WorkerAccountSelection, select_worker_account,
+    validate_worker_model_choice,
+};
 
 pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
@@ -167,6 +170,7 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
                 interrupt: None,
                 monitor_input: None,
                 monitor_cancel: None,
+                work_action: None,
             },
         },
     )
@@ -205,6 +209,7 @@ pub(crate) fn managed_tool_ports_with_bundle(
                 interrupt: None,
                 monitor_input: None,
                 monitor_cancel: None,
+                work_action: None,
             });
     managed_tool_ports_with_runtime(
         store,
