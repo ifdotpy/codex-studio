@@ -101,6 +101,7 @@ pub mod multi_server_discovery;
 pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
 pub mod multi_server_protocol_generated;
+pub(crate) mod multi_server_tools;
 /// Shared signed server-to-server transport API. Production callers use the
 /// durable HTTPS adapter; tests and transport alternatives implement
 /// `PairedTransport` with a local fake peer.
@@ -153,6 +154,7 @@ pub mod rules_engine;
 pub mod rules_tick;
 pub mod safety_buffering;
 pub mod scheduler;
+pub mod server_git;
 pub mod storage_retention;
 pub mod submit_gates;
 pub mod sync_documents;

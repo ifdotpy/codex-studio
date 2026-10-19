@@ -39,6 +39,8 @@ fn dispatch_gate(key: String) -> Result<Arc<tokio::sync::Mutex<()>>, CallbackErr
 mod runtime_dispatch;
 mod runtime_ports;
 pub(crate) mod services;
+#[cfg(test)]
+pub(crate) use runtime_dispatch::LatePorts;
 pub(crate) use runtime_dispatch::ManagedToolRuntimePorts;
 #[cfg(test)]
 pub(crate) use runtime_dispatch::MonitorCreatePort;
@@ -811,6 +813,22 @@ fn execute_once(
     Ok((value, signals))
 }
 
+/// Python `codex_server_exec.output_expiry`: the command expiry in a server
+/// receipt or an output-reference page.
+fn output_expiry(value: &Value) -> Option<f64> {
+    if let Some(expires) = value.get("outputExpiresAt").filter(|v| v.is_number())
+        && (value.get("handle").is_some() || value.get("outputRef").is_some())
+    {
+        return expires.as_f64();
+    }
+    ["value", "result"].into_iter().find_map(|field| {
+        value
+            .get(field)
+            .filter(|nested| nested.is_object())
+            .and_then(output_expiry)
+    })
+}
+
 fn finalize_dispatched(
     tx: &Transaction<'_>,
     id: &str,
@@ -828,7 +846,21 @@ fn finalize_dispatched(
     let success = dispatched
         .applied
         .unwrap_or(matches!(dispatched.certainty, DeliveryCertainty::Written));
+    // Python `dynamic`: a command page keeps its own expiry on the tool result.
+    let output_expires = matches!(
+        record["tool"].as_str(),
+        Some("orchestration_servers" | "orchestration_read")
+    )
+    .then(|| output_expiry(&dispatched.result.value))
+    .flatten();
     let mut value = tool_result(dispatched.result.value, success);
+    if let Some(expires) = output_expires {
+        value["serverOutputExpiresAt"] = json!(expires);
+        tx.execute(
+            "INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?1,?2)",
+            params![id, expires],
+        )?;
+    }
     let finalized = chrono::DateTime::from_timestamp_micros((now * 1_000_000.0).round() as i64)
         .ok_or(CallbackError::Invalid("Invalid callback clock"))?
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

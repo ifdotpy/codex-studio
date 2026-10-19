@@ -149,6 +149,7 @@ fn ports_with_wake(
                     monitor_input: None,
                     monitor_cancel: None,
                     work_action: None,
+                    late: Default::default(),
                 },
             },
         )

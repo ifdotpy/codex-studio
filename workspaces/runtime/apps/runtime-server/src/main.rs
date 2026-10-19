@@ -791,7 +791,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Some(Arc::clone(&native_runtime)),
         Arc::clone(&session_binaries),
         account_registry::AccountRegistryConfig::default(),
-        Some(managed_tool_runtime),
+        Some(Arc::clone(&managed_tool_runtime)),
     )
     .await
     {
@@ -835,6 +835,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         eprintln!("lifecycle startup reconciliation remains pending: {error}");
     }
     state = state.with_lifecycle_ports(Arc::clone(&lifecycle_ports));
+    // The paired-server driver exists only now; agent tools that use it
+    // (`orchestration_servers`) refuse with a named dependency until here.
+    if let Some(driver) = state.orchestration_driver_handle() {
+        managed_tool_runtime.attach_multi_server(Arc::clone(&store), driver);
+    }
     let sync_changes = state.sync_changes_handle();
     let cost_scan_cancelled = state.cost_scan_cancellation_handle();
     let vault_job_owner = VaultJobOwner::start();

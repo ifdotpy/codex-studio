@@ -1787,6 +1787,7 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
                 monitor_input: None,
                 monitor_cancel: None,
                 work_action: None,
+                late: Default::default(),
             },
         ),
     );
@@ -1913,6 +1914,7 @@ async fn shutdown_drains_completed_managed_callback_and_writes_response() {
                 monitor_input: None,
                 monitor_cancel: None,
                 work_action: None,
+                late: Default::default(),
             },
         ),
     );

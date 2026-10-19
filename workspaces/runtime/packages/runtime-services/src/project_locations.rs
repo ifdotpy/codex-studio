@@ -230,6 +230,67 @@ pub fn complete_in_transaction(
     Ok(decision.receipt)
 }
 
+/// Python `normalize` for a caller that holds a project row.
+pub(crate) fn normalize_project(
+    project: &mut Value,
+    local_server: &str,
+) -> Result<(), LocationError> {
+    normalize(project, local_server)
+}
+
+/// Python `applied` after the paired driver already completed the outbox row
+/// with `receipt`: commit the home location and its receipts once.
+pub(crate) fn apply_completed_in_transaction(
+    tx: &Transaction<'_>,
+    key: &str,
+    server: &str,
+    receipt: &Value,
+    local_server: &str,
+    now: f64,
+) -> Result<(), LocationError> {
+    let mut raw =
+        Repository::outbox(tx, key)?.ok_or(LocationError::Refused("Unknown location request"))?;
+    if raw["server"] != server || raw["state"] != "complete" || raw["result"] != *receipt {
+        return Err(LocationError::Refused(
+            "The location transport ticket has different content",
+        ));
+    }
+    let signature = raw
+        .pointer("/body/payload/signature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/signature"))?
+        .to_owned();
+    if let Some((prior_signature, prior)) = ProjectsRepository::receipt(tx, key)? {
+        if prior_signature != signature || prior != *receipt {
+            return Err(LocationError::Refused(
+                "This request ID has different content",
+            ));
+        }
+        return Ok(());
+    }
+    // Decide as Python does before the outbox completion in the same commit.
+    raw["state"] = json!("queued");
+    raw["result"] = Value::Null;
+    let project_id = raw
+        .pointer("/body/payload/project")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?
+        .to_owned();
+    let project = ProjectsRepository::get(tx, &project_id)?;
+    let snapshot =
+        CompletionSnapshot::from_records(&raw, project.as_ref().map(|(_, value)| value))?;
+    let decision = snapshot.decide(receipt, local_server, now)?;
+    if !decision.apply {
+        return Ok(());
+    }
+    ProjectsRepository::save_receipt(tx, key, &signature, receipt)?;
+    Repository::registration_receipt(tx, &project_id, key, receipt)?;
+    if let Some(project) = decision.project {
+        ProjectsRepository::put_project(tx, &project)?;
+    }
+    Ok(())
+}
+
 fn normalize(project: &mut Value, local_server: &str) -> Result<(), LocationError> {
     if project.get("locations").is_none() {
         project["homeServerId"] = json!(local_server);

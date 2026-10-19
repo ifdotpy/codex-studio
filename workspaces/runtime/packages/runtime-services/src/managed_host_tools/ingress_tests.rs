@@ -801,6 +801,7 @@ fn managed_ports(
             monitor_input,
             monitor_cancel,
             work_action: None,
+            late: Default::default(),
         },
     }
 }
@@ -3192,6 +3193,7 @@ fn work_ports(
                     monitor_input: None,
                     monitor_cancel: None,
                     work_action: Some(port),
+                    late: Default::default(),
                 },
             },
         )
