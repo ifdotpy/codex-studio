@@ -965,36 +965,7 @@ fn active_agents(
     tx: &Transaction<'_>,
     root_id: &str,
 ) -> Result<i64, crate::managed_host_tools::Error> {
-    let mut statement = tx.prepare_cached("SELECT id,record FROM runtime_agents")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut active = 0_i64;
-    for row in rows {
-        let (id, raw) = row?;
-        let value: Value = serde_json::from_str(&raw).map_err(|_| {
-            crate::managed_host_tools::Error::InvalidStored {
-                table: "runtime_agents",
-                id,
-                location: "/".to_owned(),
-            }
-        })?;
-        if value.get("rootId").and_then(Value::as_str) != Some(root_id)
-            || value
-                .get("deletedAt")
-                .is_some_and(|deleted| !deleted.is_null())
-        {
-            continue;
-        }
-        if !matches!(
-            value.get("status").and_then(Value::as_str),
-            Some("completed" | "failed" | "interrupted")
-        ) && !(value["status"] == "paused" && value["autoWake"] == false)
-        {
-            active += 1;
-        }
-    }
-    Ok(active)
+    Ok(studio_runtime_store::AgentIndexedReads::active_team_members(tx, root_id)?)
 }
 
 /// Preserve Python's best-effort execution history for a spawned child. The

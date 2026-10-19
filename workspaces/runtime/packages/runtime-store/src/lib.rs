@@ -73,6 +73,7 @@ pub use records::{
     TerminalRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
     TranscriptItemRecord, UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
 };
+pub use repositories::agent_indexed_reads::AgentIndexedReads;
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
 pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
@@ -1247,6 +1248,7 @@ impl RuntimeStore {
                 AgentRepository::prepare_change_journal(transaction)?;
                 feature_schema::prepare(transaction)?;
                 StartupRecoveryRepository::prepare_indexes(transaction)?;
+                AgentIndexedReads::prepare_index(transaction)?;
                 schema::verify_bootstrap(transaction)?;
                 verify_observed_tables_are_rowid(transaction)
             })

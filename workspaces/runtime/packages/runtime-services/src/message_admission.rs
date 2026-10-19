@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, StoreError, Transaction,
+    AgentId, AgentIndexedReads, AgentRecord, AgentRepository, Connection, RuntimeStore, StoreError,
+    Transaction,
 };
 
 use crate::coordination::CoordinationError;
@@ -41,24 +42,19 @@ pub struct PreparedAdmission {
 
 impl PreparedAdmission {
     pub fn load(connection: &Connection, recipient: &str) -> Result<Self, CoordinationError> {
-        if AgentRepository::get(connection, &AgentId::from(recipient))?.is_none() {
+        let Some(recipient) = AgentRepository::get(connection, &AgentId::from(recipient))? else {
             return Ok(Self::default());
-        }
-        let mut query = connection.prepare("SELECT id FROM runtime_agents")?;
-        let ids = query.query_map([], |row| row.get::<_, String>(0))?;
+        };
+        // Only the recipient's directory and the directories of agents holding a
+        // workspace operation are compared by `workspace`.
         let mut paths = BTreeMap::new();
-        for id in ids {
-            let id = id?;
-            let agent = AgentRepository::get(connection, &AgentId::from(id.as_str()))?.ok_or_else(
-                || CoordinationError::InvalidStored {
-                    object: "runtime_agents",
-                    id,
-                },
-            )?;
-            let cwd = cwd(&agent)?;
+        for cwd in std::iter::once(Some(cwd(&recipient)?.to_owned()))
+            .chain(AgentIndexedReads::workspace_operation_cwds(connection)?)
+            .flatten()
+        {
             paths
-                .entry(cwd.to_owned())
-                .or_insert_with(|| resolve_path(cwd));
+                .entry(cwd.clone())
+                .or_insert_with(|| resolve_path(&cwd));
         }
         Ok(Self { paths })
     }
@@ -70,10 +66,7 @@ impl MessageAdmission for PreparedAdmission {
         tx: &Transaction<'_>,
         agent: &AgentRecord,
     ) -> Result<Vec<Value>, CoordinationError> {
-        let mut query = tx.prepare(
-            "SELECT id FROM runtime_agents WHERE \
-             json_extract(record,'$.workspaceOperation') IS NOT NULL",
-        )?;
+        let mut query = tx.prepare_cached(AgentIndexedReads::WORKSPACE_OPERATION_IDS_SQL)?;
         let ids = query.query_map([], |row| row.get::<_, String>(0))?;
         let mut blockers = Vec::new();
         let mut unsupported_operation = false;

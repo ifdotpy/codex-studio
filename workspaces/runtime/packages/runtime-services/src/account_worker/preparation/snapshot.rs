@@ -857,12 +857,8 @@ pub(super) fn submission_snapshot(
         });
     }
     let mut workers = Vec::new();
-    let agents = records(tx, "runtime_agents")?;
-    for raw in agents.values() {
-        let v: Value = serde_json::from_str(raw).map_err(|_| invalid("worker"))?;
-        if v["rootId"] != root_id {
-            continue;
-        }
+    for (_, raw) in studio_runtime_store::AgentIndexedReads::team_records(tx, root_id)? {
+        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
         let status = match v["status"].as_str() {
             Some("completed") => turn::WorkerStatus::Completed,
             Some("failed") => turn::WorkerStatus::Failed,

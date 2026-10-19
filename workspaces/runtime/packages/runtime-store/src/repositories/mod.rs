@@ -1,5 +1,6 @@
 pub mod account_state;
 pub(crate) mod account_transfer;
+pub(crate) mod agent_indexed_reads;
 pub mod agent_management;
 pub(crate) mod agent_move;
 pub(crate) mod agents;

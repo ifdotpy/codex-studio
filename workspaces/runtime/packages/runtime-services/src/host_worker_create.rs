@@ -494,42 +494,10 @@ fn recheck_parent_epoch(
     let max_agents = field(&root, "maxAgents")
         .and_then(Value::as_i64)
         .unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
-    let mut statement = transaction
-        .prepare_cached("SELECT id,record FROM runtime_agents")
-        .map_err(studio_runtime_store::StoreError::from)?;
-    let records = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(studio_runtime_store::StoreError::from)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
-    drop(statement);
-    let mut active = 0_i64;
-    for (id, raw) in records {
-        let value: Value =
-            serde_json::from_str(&raw).map_err(|_| CreateError::InvalidStoredObject {
-                table: "runtime_agents",
-                id: id.clone(),
-            })?;
-        if value.get("rootId").and_then(Value::as_str) != Some(draft.root_id.0.as_str())
-            || value
-                .get("deletedAt")
-                .is_some_and(|deleted| !deleted.is_null())
-        {
-            continue;
-        }
-        let status = value
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let finished = matches!(status, "completed" | "failed" | "interrupted")
-            || (status == "paused"
-                && value.get("autoWake").and_then(Value::as_bool) == Some(false));
-        if !finished {
-            active += 1;
-        }
-    }
+    let active = studio_runtime_store::AgentIndexedReads::active_team_members(
+        transaction,
+        &draft.root_id.0,
+    )?;
     if active >= max_agents {
         return Err(CreateError::InvalidCreation("team active agent limit"));
     }

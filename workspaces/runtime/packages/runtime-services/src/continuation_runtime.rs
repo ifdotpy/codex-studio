@@ -284,15 +284,8 @@ impl continuation_driver::CapacityAdmission for RuntimeCapacityAdmission {
                 ));
             }
         }
-        let active_count: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 AND \
-                 json_extract(record,'$.status') IN ('starting','running','waiting','paused','approval') \
-                 AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0",
-                [agent_id],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
+        let active_count =
+            studio_runtime_store::AgentIndexedReads::global_slots_in_use(tx, agent_id)?;
         let global_limit = std::env::var("CODEX_CANVAS_CONCURRENCY")
             .ok()
             .and_then(|value| value.parse::<i64>().ok())
@@ -304,16 +297,8 @@ impl continuation_driver::CapacityAdmission for RuntimeCapacityAdmission {
             ));
         }
         if agent_id != root_id {
-            let team_active: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 AND id<>?2 \
-                     AND json_extract(record,'$.rootId')=?2 \
-                     AND json_extract(record,'$.status') IN ('starting','running','waiting','paused','approval') \
-                     AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0",
-                    rusqlite::params![agent_id, root_id],
-                    |row| row.get(0),
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
+            let team_active =
+                studio_runtime_store::AgentIndexedReads::team_slots_in_use(tx, agent_id, root_id)?;
             let team_limit = root.get("concurrency").and_then(Value::as_i64).unwrap_or(0);
             if team_active >= team_limit {
                 return Err(ContinuationError::Unavailable(

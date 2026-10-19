@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    ReviewerArchiveRepository, RuntimeStore, SchedulerRepository, StartupRecoveryRepository,
-    StoreError, TaskRepository, check_state_readonly,
+    AgentIndexedReads, ReviewerArchiveRepository, RuntimeStore, SchedulerRepository,
+    StartupRecoveryRepository, StoreError, TaskRepository, check_state_readonly,
 };
 
 // Rust-owned feature indexes stay outside Python lazy DDL. The runtime-owned
@@ -20,6 +20,7 @@ use studio_runtime_store::{
 const RUST_OWNED_FEATURE_SCHEMA_INDEXES: &[&str] = &["runtime_agent_callback_context"];
 const RUST_OWNED_RUNTIME_INDEX_NAMES: &[&str] = &[
     "runtime_agent_account_wake_candidates_v3",
+    "runtime_agent_capacity_slots",
     "runtime_agent_cleanup_intent",
     "runtime_agent_deleted_unsettled",
     "runtime_agent_reviewer_archive_pending",
@@ -459,6 +460,7 @@ fn owned_runtime_indexes() -> Vec<studio_runtime_store::OwnedRuntimeIndexDefinit
     definitions.extend(ReviewerArchiveRepository::index_definitions());
     definitions.extend(SchedulerRepository::child_result_hold_index_definitions());
     definitions.extend(StartupRecoveryRepository::index_definitions());
+    definitions.push(AgentIndexedReads::index_definition());
     definitions.sort_by_key(|definition| definition.name);
     definitions
 }
