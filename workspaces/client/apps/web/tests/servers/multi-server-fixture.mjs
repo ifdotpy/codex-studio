@@ -564,6 +564,10 @@ export async function fixture(
       response.end();
     }
   });
+  // Keep idle connections open until close(). Playwright's route.fetch reuses
+  // keep-alive sockets without an idle limit; Node's default expiry (5 s plus
+  // a 1 s buffer) can close one just as a reload reuses it (ECONNRESET).
+  server.keepAliveTimeout = 0;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
     origin: `http://127.0.0.1:${server.address().port}`,

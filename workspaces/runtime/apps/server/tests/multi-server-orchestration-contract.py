@@ -1180,6 +1180,53 @@ class CrossServer(unittest.TestCase):
             self.run_tick(service)
         self.assertEqual(len(reads), 1)
 
+    def test_a_woken_delivery_does_not_race_the_request_delivery_into_unknown(self):
+        # The request thread delivers its own queued location write while the queue wake
+        # starts the scheduler. A second concurrent exchange used to find the receiver's
+        # claim running and report unknown for a write that applied.
+        import codex_project_locations
+        service = self.network['home']
+        folder = self.root / 'home'
+        project = self.home.projects({'path': str(folder), 'name': 'Location race'})
+        entered, release, results = threading.Event(), threading.Event(), {}
+        original, calls = codex_project_locations.receive, []
+        def held_receive(*args):
+            calls.append(args[2])
+            entered.set()
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
+            return original(*args)
+        def run(name, call):
+            try:
+                results[name] = call()
+            except BaseException as error:
+                results[name] = error
+        request = {'action': 'add_location', 'project': project['id'], 'server': 'home',
+                   'path': str(folder.resolve()), 'request_id': 'location-race'}
+        with patch.object(codex_project_locations, 'receive', side_effect=held_receive):
+            first = threading.Thread(target=run, args=('request', lambda: self.home.projects(request)))
+            first.start()
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
+            key = identity('project-location', 'ui', 'location-race')
+            # The woken scheduler skips a key whose delivery is in flight.
+            self.run_tick(service)
+            with self.home.read_db() as db:
+                row = db.execute('SELECT state,attempts FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+            self.assertEqual((row['state'], row['attempts']), ('queued', 0))
+            # Another direct delivery of the same key waits for the first receipt.
+            second = threading.Thread(target=run, args=('retry', lambda: service.deliver(key)))
+            second.start()
+            second.join(0.2)
+            self.assertTrue(second.is_alive())
+            release.set()
+            first.join(HANG_GUARD_SECONDS)
+            second.join(HANG_GUARD_SECONDS)
+        self.assertEqual(calls, ['add_location'])
+        self.assertEqual(results['request']['outcome'], 'applied', results)
+        self.assertEqual(results['retry']['outcome'], 'applied', results)
+        self.assertEqual(service._delivery_turns, {})
+        stored = next(item for item in self.home.projects()['items'] if item['id'] == project['id'])
+        self.assertEqual([row['path'] for row in stored['locations']], [str(folder.resolve())])
+
     def test_review_incremental_fetch_releases_bundle_and_does_not_store_chunk_data(self):
         repo, git = self.review_repo()
         (repo / 'old-blob').write_bytes(os.urandom(2 * 1024 * 1024))

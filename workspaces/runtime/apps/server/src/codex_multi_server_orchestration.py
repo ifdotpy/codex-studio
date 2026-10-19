@@ -40,6 +40,9 @@ TIMEOUT = 20
 # One QUIC link stream of an export (docs/peer-link.md).
 STREAM_SECONDS = 600
 WAKE_RECHECK_SECONDS = 0.05
+# Seconds a caller waits while another thread delivers the same outbox request.
+# After this wait the caller reports the saved receipt or an unknown outcome.
+DELIVERY_TURN_WAIT_SECONDS = 20
 MAX_BUNDLE = 256 * 1024 * 1024
 CHUNK = 128 * 1024
 RECEIPT_AGE = 7 * 86400
@@ -268,6 +271,11 @@ class MultiServerService:
         # remote events (agent events, command exits, worker state) reach the paired server in
         # one exchange (docs/peer-link.md). The periodic tick stays the fallback.
         self._wake = threading.Event()
+        # One delivery of an outbox request at a time. The request thread and the woken
+        # scheduler can both deliver one key; a second concurrent exchange finds the
+        # receiver's claim running and would report a false unknown outcome.
+        self._delivery_turns: dict[str, list[Any]] = {}
+        self._delivery_turns_lock = threading.Lock()
         self._diagnostic_lock = threading.Lock()
         self._command_lock = threading.RLock()
         self._command_service: Any = None
@@ -410,7 +418,39 @@ class MultiServerService:
         """True once after a request was queued; the scheduler then delivers without waiting."""
         return self._wake.is_set()
 
+    def _delivery_turn(self, key: str, wait: float) -> bool:
+        """Claim the in-process delivery of one key; wait seconds for a concurrent holder."""
+        with self._delivery_turns_lock:
+            turn = self._delivery_turns.setdefault(key, [threading.Lock(), 0])
+            turn[1] += 1
+        if turn[0].acquire(timeout=wait) if wait else turn[0].acquire(blocking=False):
+            return True
+        self._end_delivery_turn(key, release=False)
+        return False
+
+    def _end_delivery_turn(self, key: str, release: bool = True) -> None:
+        with self._delivery_turns_lock:
+            turn = self._delivery_turns[key]
+            if release:
+                turn[0].release()
+            turn[1] -= 1
+            if not turn[1]:
+                del self._delivery_turns[key]
+
     def deliver(self, key: str) -> dict[str, Any]:
+        # Wait for a concurrent delivery of the same key and then read its receipt.
+        if not self._delivery_turn(key, DELIVERY_TURN_WAIT_SECONDS):
+            with self.runtime.read_db() as db:
+                row = db.execute('SELECT body,state,result FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+            if row and row['state'] == 'complete' and json.loads(row['body'])['action'] != 'chunk':
+                return live_receipt(json.loads(row['result']))
+            return {'requestId': key, 'outcome': 'unknown', 'queued': True}
+        try:
+            return self._deliver(key)
+        finally:
+            self._end_delivery_turn(key)
+
+    def _deliver(self, key: str) -> dict[str, Any]:
         # Retry only the same durable envelope. The receiver never repeats an
         # uncertain operation. Do not hold runtime or SQLite locks during HTTP.
         with self.runtime.read_db() as db:
@@ -558,7 +598,13 @@ class MultiServerService:
                 for key in keys:
                     if self.runtime.closed:
                         break
-                    self.deliver(key)
+                    # A request thread that delivers this key owns its receipt; skip it.
+                    if not self._delivery_turn(key, 0):
+                        continue
+                    try:
+                        self._deliver(key)
+                    finally:
+                        self._end_delivery_turn(key)
             finally:
                 with self._tick_lock:
                     self._running = False
