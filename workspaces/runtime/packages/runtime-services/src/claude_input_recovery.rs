@@ -1,7 +1,7 @@
 //! Frozen Claude input: the exact input and configuration of a Claude turn start,
 //! saved beside its Submitted receipt. This module has no I/O; `runtime` applies it
 //! inside the account worker's transaction. A positively rejected start is never
-//! retried here; legacy retry records stay held (see `runtime::start_input`).
+//! retried here; legacy retry records stay held (see `runtime::freeze_start`).
 pub mod runtime;
 
 use serde::{Deserialize, Serialize};

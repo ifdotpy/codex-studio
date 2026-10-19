@@ -1,7 +1,7 @@
 #[path = "support/prepared_python.rs"]
 mod python_test_support;
 use serde_json::{Value, json};
-use studio_runtime_services::claude_input_recovery::runtime::{freeze_start, start_input};
+use studio_runtime_services::claude_input_recovery::runtime::freeze_start;
 
 fn fixtures(root: &std::path::Path) -> Vec<Value> {
     let python = python_test_support::prepared_python(
@@ -48,39 +48,18 @@ fn fresh_freeze_matches_python_capture_and_legacy_retry_stays_held() {
                 || serde_json::from_value(case["transport"].clone()).expect("transport");
             let text = case["text"].as_str().expect("text");
             assert!(
-                start_input(
-                    &tx,
-                    "agent",
-                    attempt,
-                    transport(),
-                    case["params"].clone(),
-                    text.into()
-                )
-                .is_err()
-            );
-            assert!(
                 freeze_start(&tx, "agent", attempt, transport(), &case["params"], text).is_err()
             );
             assert_eq!(row(&tx, "runtime_agents", "agent"), before);
             continue;
         }
-        let input = start_input(
-            &tx,
-            "agent",
-            attempt,
-            serde_json::from_value(case["transport"].clone()).expect("transport"),
-            case["params"].clone(),
-            case["text"].as_str().expect("text").into(),
-        )
-        .expect("prepare");
-        assert_eq!(input.params, case["params"]);
         freeze_start(
             &tx,
             "agent",
             attempt,
             serde_json::from_value(case["transport"].clone()).expect("transport"),
-            &input.params,
-            &input.text,
+            &case["params"],
+            case["text"].as_str().expect("text"),
         )
         .expect("freeze");
         assert_eq!(

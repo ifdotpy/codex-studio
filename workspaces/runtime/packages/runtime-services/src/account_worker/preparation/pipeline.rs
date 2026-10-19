@@ -1538,7 +1538,7 @@ pub(crate) async fn prepare_ready(
         "clientUserMessageId".into(),
         json!(compiled.event_ids.first()),
     );
-    let mut submission = crate::notification_dispatch::PreparedSubmission {
+    let submission = crate::notification_dispatch::PreparedSubmission {
         first_event_id: compiled.event_ids[0].clone(),
         submitted_at: turn_snapshot.prepared_at,
         created_at: prepared_intent.events[0].created,
@@ -1561,31 +1561,6 @@ pub(crate) async fn prepare_ready(
         assets: json!(compiled.transcript.assets),
         radio_authorized: intent.radio_authorized,
     };
-    if intent.provider == studio_runtime_providers::ProviderKind::Claude {
-        let agent_id = intent.agent_id.clone();
-        let attempt_id = intent.attempt_id.clone();
-        let account_key = intent.account_key.clone();
-        let connection_id = connection_id.to_owned();
-        let prepared_params = Value::Object(params.clone());
-        let submission_text = submission.text.clone();
-        let prepared = scheduler::lifecycle_transaction_with(&store, move |tx| {
-            Ok::<_, WorkerError>(crate::claude_input_recovery::runtime::start_input(
-                tx,
-                &agent_id,
-                &attempt_id,
-                claude_transport(&account_key, &connection_id)?,
-                prepared_params,
-                submission_text,
-            )?)
-        })
-        .await?;
-        params = prepared
-            .params
-            .as_object()
-            .cloned()
-            .ok_or_else(|| invalid("claude params"))?;
-        submission.text = prepared.text;
-    }
     guard.native_params = Some(Value::Object(params.clone()));
     prepared_intent.thread_id = snapshot.actor.thread_id;
     Ok(RequestPreparation {

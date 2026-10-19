@@ -9,7 +9,7 @@ use serde_json::Value;
 use studio_runtime_store::Transaction;
 
 /// Worker Submitted transaction: call instead of freeze/commit/bind separately.
-/// Preparation has already resolved the frozen params and text with start_input.
+/// `freeze_start` checks the prepared params against the reserved attempt.
 /// Propagate every error to roll back the caller's entire transaction. Native I/O
 /// is permitted only after it commits. A failed ownership check is an error, so
 /// the freeze can never be accidentally committed with an Ok(false) result.

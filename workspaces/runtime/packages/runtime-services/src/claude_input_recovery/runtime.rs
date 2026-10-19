@@ -1,5 +1,5 @@
-//! Submission helpers for the account worker's existing transaction. Preparation
-//! calls `start_input`; the Submitted transaction calls `submission::commit_start`
+//! Submission helpers for the account worker's existing transaction. The
+//! Submitted transaction calls `submission::commit_start`
 //! with the exact prepared wire params and request generation. No provider call or journal ACK belongs here.
 use super::{TransportSnapshot, capture_input};
 use serde_json::{Value, json};
@@ -17,10 +17,6 @@ pub struct SubmittedBinding {
     pub generation: u64,
 }
 
-pub struct StartInput {
-    pub params: Value,
-    pub text: String,
-}
 fn invalid(agent: &str) -> StoreError {
     StoreError::InvalidStoredRecord {
         object: "claude submission",
@@ -84,25 +80,9 @@ fn reserved(
     Ok(rows)
 }
 
-/// Preserve the exact input and configuration of a positively rejected attempt.
+/// The prepared params must match the reserved attempt exactly.
 /// Dynamic tools alone may refresh. Newer queued events cannot join this batch.
-pub fn start_input(
-    tx: &Transaction<'_>,
-    agent: &str,
-    attempt: &str,
-    transport: TransportSnapshot,
-    params: Value,
-    text: String,
-) -> StoreResult<StartInput> {
-    let rows = reserved(tx, agent, attempt, &transport)?;
-    resolve(agent, &rows, params, text)
-}
-fn resolve(
-    agent: &str,
-    rows: &ClaudeRetryRecords,
-    params: Value,
-    text: String,
-) -> StoreResult<StartInput> {
+fn resolve(agent: &str, rows: &ClaudeRetryRecords, params: &Value) -> StoreResult<()> {
     let object = params.as_object().ok_or_else(|| invalid(agent))?;
     if object.get("threadId") != rows.agent.get("threadId")
         || object
@@ -128,7 +108,7 @@ fn resolve(
     {
         return Err(invalid(agent));
     }
-    Ok(StartInput { params, text })
+    Ok(())
 }
 
 /// Freeze beside the worker's Submitted receipt, in its transaction. Roll back
@@ -154,10 +134,7 @@ fn freeze_loaded(
     params: &Value,
     text: &str,
 ) -> StoreResult<()> {
-    let input = resolve(agent, &rows, params.clone(), text.into())?;
-    if &input.params != params || input.text != text {
-        return Err(invalid(agent));
-    }
+    resolve(agent, &rows, params)?;
     let frozen =
         capture_input(&rows.agent, &rows.events, params, text).map_err(|_| invalid(agent))?;
     rows.attempt["claudeInputRequest"] = frozen.clone();
