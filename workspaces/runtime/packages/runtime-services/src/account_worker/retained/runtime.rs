@@ -28,6 +28,17 @@ impl Worker {
             let _ignored = reply.send(Err(error));
             return Ok(());
         }
+        if !matches!(
+            request.method,
+            Method::ThreadRead
+                | Method::ThreadTurnsList
+                | Method::ThreadItemsList
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadQueueList
+        ) && let Some(thread) = request.params.get("threadId").and_then(Value::as_str)
+        {
+            self.forget_thread_proofs(thread);
+        }
         let deferred_request = request.clone();
         let call = Call {
             scope: request.scope,

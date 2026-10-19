@@ -605,6 +605,26 @@ impl Peer {
             }
         }
     }
+    /// The next turn/start; a thread this connection has not loaded is resumed first.
+    async fn write_turn_start(&mut self) -> Value {
+        let wire = self.next_write().await;
+        if wire.value["method"] == "thread/resume" {
+            let resume = wire.value;
+            let _ignored = wire.receipt.send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            });
+            self.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+                .await;
+            return self.write("turn/start").await;
+        }
+        assert_eq!(wire.value["method"], "turn/start");
+        let _ignored = wire.receipt.send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        });
+        wire.value
+    }
     async fn reply(&mut self, request: &Value, result: Value) {
         let cursor = self
             .frame(json!({"id":request["id"],"result":result}))
@@ -818,12 +838,21 @@ impl State {
             .await
             .unwrap();
     }
+    /// Wake the agent and return its turn/start. A thread this connection
+    /// has not loaded is resumed first.
     async fn start(&self, peer: &mut Peer, worker: &AccountHandle) -> Value {
         self.wake(worker).await;
-        let resume = peer.write("thread/resume").await;
-        peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-            .await;
-        let wire = peer.next_write().await;
+        let mut wire = peer.next_write().await;
+        if wire.value["method"] == "thread/resume" {
+            let resume = wire.value;
+            let _ignored = wire.receipt.send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            });
+            peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+                .await;
+            wire = peer.next_write().await;
+        }
         assert_eq!(wire.value["method"], "turn/start");
         let operation = wire.value["id"].as_str().unwrap().to_owned();
         self.bridge
@@ -888,10 +917,7 @@ async fn scenario_normal_turn_commits_transcript_before_ack_and_pending_event_wa
         .unwrap();
     assert_eq!(count, 1, "notification committed before ACK");
     peer.completed().await;
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let next = peer.write("turn/start").await;
+    let next = peer.write_turn_start().await;
     assert!(
         next["params"]["input"][0]["text"]
             .as_str()
@@ -1063,10 +1089,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     // dispatched by this same account worker.
     peer.completed().await;
     state.wake(&worker).await;
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let next = peer.write("turn/start").await;
+    let next = peer.write_turn_start().await;
     assert!(
         next["params"]["input"][0]["text"]
             .as_str()
@@ -2226,6 +2249,141 @@ async fn prepared_turn_submits_while_provider_events_flow() {
         .expect("write receipt receiver");
     worker.shutdown().await.unwrap();
     drain.abort();
+}
+
+#[cfg(unix)]
+/// Opens a worker for `provider` on the fixture agent.
+async fn provider_worker(
+    state: &State,
+    peer: &mut Peer,
+    provider: studio_runtime_providers::ProviderKind,
+) -> AccountHandle {
+    if provider == studio_runtime_providers::ProviderKind::Codex {
+        return peer.worker(state.bridge.clone()).await;
+    }
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |s| async move {
+            scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.extra.insert("provider".into(), json!("claude"));
+                row.extra.insert("nativeEffort".into(), json!("medium"));
+                row.extra.insert("claudeOptions".into(), json!({}));
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    peer.wire = provider.wire();
+    peer.open_worker_with_resources(
+        state.bridge.clone(),
+        claude_preparation::claude_resources(state),
+    )
+    .await
+}
+
+/// Wake the agent and return the method of its first provider request.
+async fn first_request_after_wake(state: &State, peer: &mut Peer, worker: &AccountHandle) -> Value {
+    state.enqueue(&uuid::Uuid::new_v4().to_string()).await;
+    state.wake(worker).await;
+    let wire = peer.next_write().await;
+    let value = wire.value.clone();
+    let _ignored = wire.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    value
+}
+
+/// Accept and complete the turn of `start` under a turn id of its own.
+async fn finish_turn(state: &State, peer: &mut Peer, start: &Value) {
+    let turn = uuid::Uuid::new_v4().to_string();
+    peer.reply(start, json!({"turn":{"id":turn}})).await;
+    let cursor = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":turn,"status":"completed"}}})).await;
+    peer.acknowledged(cursor).await;
+    assert_ne!(state.record().await["status"], "starting");
+}
+
+#[cfg(unix)]
+async fn scenario_loaded_thread_follow_up_starts_the_turn_directly(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let first = state.start(&mut peer, &worker).await;
+    finish_turn(&state, &mut peer, &first).await;
+    // The connection loaded the thread: one preparation, no thread request.
+    let follow_up = first_request_after_wake(&state, &mut peer, &worker).await;
+    assert_eq!(follow_up["method"], "turn/start", "{follow_up}");
+    let attempt = state.record().await["startAttempt"]["id"]
+        .as_str()
+        .expect("claimed attempt")
+        .to_owned();
+    assert_eq!(
+        follow_up["id"],
+        format!("account:default:{attempt}:turn/start"),
+        "the request keeps the exact durable operation identity"
+    );
+    let operation = follow_up["id"].as_str().unwrap().to_owned();
+    let submitted = state
+        .bridge
+        .run(move |store| async move { store::was_submitted(&store, &operation).await })
+        .await
+        .unwrap();
+    assert!(submitted, "the FULL submission commits before the write");
+    finish_turn(&state, &mut peer, &follow_up).await;
+    // Changed thread settings need the resume that applies them.
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |s| async move {
+            scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.extra
+                    .insert("profileInstructions".into(), json!("changed profile"));
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    let changed = first_request_after_wake(&state, &mut peer, &worker).await;
+    assert_eq!(changed["method"], "thread/resume", "{changed}");
+    peer.reply(&changed, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let turn = peer.write("turn/start").await;
+    finish_turn(&state, &mut peer, &turn).await;
+    // A provider that reports the thread closed must load it again.
+    let closed = peer
+        .frame(json!({"method":"thread/closed","params":{"threadId":"fake-thread-0"}}))
+        .await;
+    peer.acknowledged(closed).await;
+    let reloaded = first_request_after_wake(&state, &mut peer, &worker).await;
+    assert_eq!(reloaded["method"], "thread/resume", "{reloaded}");
+    worker.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_loaded_thread_follow_up_starts_the_turn_directly() {
+    scenario_loaded_thread_follow_up_starts_the_turn_directly(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_loaded_thread_follow_up_starts_the_turn_directly() {
+    scenario_loaded_thread_follow_up_starts_the_turn_directly(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -5708,10 +5866,7 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     let mut next = Peer::identity("default", 2, None);
     let mut replacement = next.worker(state.bridge.clone()).await;
     state.wake(&replacement).await;
-    let resume = next.write("thread/resume").await;
-    next.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let start = next.write("turn/start").await;
+    let start = next.write_turn_start().await;
     next.accepted(&start).await;
     assert_eq!(state.event_status("input").await, "delivered");
     worker_barrier(&replacement).await;

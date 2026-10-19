@@ -13,7 +13,7 @@ pub(crate) fn accept_thread(
     context: &Pending,
     ticket: &RequestTicket,
     value: &Value,
-) -> Result<Option<Effect>, WorkerError> {
+) -> Result<Option<(Effect, thread::LoadedIdentity)>, WorkerError> {
     let Some(attempt) = &context.thread else {
         return Ok(None);
     };
@@ -88,12 +88,13 @@ pub(crate) fn accept_thread(
         }
         AgentRepository::put(tx, &decode(record, &context.intent.agent_id)?)?;
         let mut intent = context.intent.clone();
-        intent.thread_id = Some(loaded.thread_id);
-        Ok(Some(if recovered {
+        intent.thread_id = Some(loaded.thread_id.clone());
+        let effect = if recovered {
             Effect::Wake(intent.agent_id, intent.epoch)
         } else {
             Effect::Submit(intent)
-        }))
+        };
+        Ok(Some((effect, loaded)))
     } else {
         Ok(None)
     }

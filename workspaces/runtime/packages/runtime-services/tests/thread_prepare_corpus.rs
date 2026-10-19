@@ -146,6 +146,14 @@ fn python_thread_preparation_corpus() {
             let saved = attempt(plan(&snapshot(&previous), "previous", "ticket"));
             value["pending"]["request_digest"] = json!(saved.request_digest);
         }
+        // Python drops its loaded mark whenever thread settings change, so a
+        // loaded case was loaded with the current settings.
+        if value["loaded"].is_object() {
+            let mut unloaded = value.clone();
+            unloaded["loaded"] = Value::Null;
+            let loaded = attempt(plan(&snapshot(&unloaded), "loaded", "ticket"));
+            value["loaded"]["settings_digest"] = json!(settings_digest(&loaded.params));
+        }
         let s = snapshot(&value);
         let planned = plan(&s, "attempt", "ticket");
         if let Some(expected_id) = case.get("expected_attempt_id") {
@@ -480,16 +488,21 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
     );
     s.catalog.source = CatalogSource::Legacy;
     s.catalog.saved_thread_id = Some("thread".into());
+    let settings = settings_digest(&attempt(plan(&s, "attempt", "ticket")).params);
     s.loaded = Some(LoadedIdentity {
         agent_id: s.actor.id.clone(),
         epoch: s.actor.epoch - 1,
         account_key: s.account.key.clone(),
         connection_id: s.account.connection_id.clone(),
         thread_id: "thread".into(),
+        settings_digest: settings,
     });
     assert!(matches!(plan(&s, "attempt", "ticket"), Outcome::Resume(_)));
     s.loaded.as_mut().expect("loaded").epoch = s.actor.epoch;
     assert!(matches!(plan(&s, "attempt", "ticket"), Outcome::Ready(_)));
+    // Changed thread settings need the resume that applies them.
+    s.settings.profile_instructions.push_str("changed");
+    assert!(matches!(plan(&s, "attempt", "ticket"), Outcome::Resume(_)));
 }
 
 #[test]

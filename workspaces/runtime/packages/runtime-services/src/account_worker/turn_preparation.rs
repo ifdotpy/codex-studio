@@ -17,6 +17,16 @@ pub(super) struct Run {
     pub agent_changes: watch::Receiver<u64>,
     /// Durable effect completed only after this preparation is handled.
     pub effect: Option<String>,
+    /// This connection's loaded-thread proof; with unchanged thread settings a
+    /// thread request becomes the turn itself.
+    pub loaded: Option<crate::thread_prepare::LoadedIdentity>,
+}
+
+impl Run {
+    /// The preparation may submit a turn, so the pre-start gates apply.
+    fn may_start_turn(&self) -> bool {
+        self.method == Method::TurnStart || self.loaded.is_some()
+    }
 }
 
 pub(super) struct Done {
@@ -46,13 +56,10 @@ async fn prepare(
         bridge,
         resources,
         intent,
-        method,
         ..
     } = run;
-    let method = *method;
-    if method == Method::TurnStart
-        && !stage("turn_preparation.account_auth", require_account_auth(run)).await?
-    {
+    let may_start_turn = run.may_start_turn();
+    if may_start_turn && !stage("turn_preparation.account_auth", require_account_auth(run)).await? {
         return Ok(store::PreparationStep::Settled);
     }
     let i = intent.clone();
@@ -60,7 +67,7 @@ async fn prepare(
     let selection = match stage(
         "turn_preparation.admit",
         bridge.prepare_run("preparation", move |s| async move {
-            if method == Method::TurnStart {
+            if may_start_turn {
                 crate::account_transfer_executor::before_start(
                     Arc::clone(&s),
                     r.account_session.clone(),
@@ -109,6 +116,7 @@ async fn ready(
     let method = run.method;
     let generation = run.generation;
     let connection_id = run.connection_id.clone();
+    let loaded = run.loaded.clone();
     let ready = run.bridge.prepare_run("preparation", move |s| async move {
         preparation::prepare_ready(
             Arc::clone(&s),
@@ -119,6 +127,7 @@ async fn ready(
             &connection_id,
             selection,
             token,
+            loaded,
         )
         .await
     });

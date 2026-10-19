@@ -88,10 +88,7 @@ async fn set_provider(state: &State, provider: &'static str) {
 async fn next_turn(state: &State, peer: &mut Peer, completed: Value) -> Value {
     set_provider(state, "codex").await;
     frame(peer, completed).await;
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    peer.write("turn/start").await
+    peer.write_turn_start().await
 }
 
 async fn input(state: &State) -> (String, Option<String>, Option<String>) {
@@ -236,10 +233,7 @@ async fn turn_ending_before_a_rejection_starts_the_next_turn_once(provider: &'st
     assert_eq!(input(&state).await.0, "failed");
     no_write(&mut peer).await;
     frame(&mut peer, rejection(&request)).await;
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let next = peer.write("turn/start").await;
+    let next = peer.write_turn_start().await;
     assert!(
         next.to_string().contains(TEXT),
         "the next turn carries the input"

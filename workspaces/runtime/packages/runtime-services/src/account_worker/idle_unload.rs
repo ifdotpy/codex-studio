@@ -328,6 +328,8 @@ impl Worker {
             self.idle_deadline = Some(tokio::time::Instant::now() + IDLE_RETRY_BACKOFF);
             return Ok(());
         };
+        self.thread_proofs
+            .retain(|_, proof| loaded.contains(&proof.thread_id));
         self.idle_clocks.replace_loaded(loaded);
         let loaded = self.idle_clocks.loaded().clone();
         let usage = self.idle_usage_snapshot(loaded.clone()).await?;
@@ -571,6 +573,7 @@ impl Worker {
         if method == "thread/closed"
             || params.is_some_and(|params| params["status"]["type"] == "notLoaded")
         {
+            self.forget_thread_proofs(thread);
             self.idle_clocks.remove_loaded(thread, Instant::now());
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
             return Ok(());
@@ -682,6 +685,8 @@ impl Worker {
     /// Unsubscribe `thread` once the provider confirms it is idle with no
     /// background terminal or queued input; true when it is unsubscribed.
     async fn unload_thread(&mut self, thread: &str) -> Result<UnloadResult, WorkerError> {
+        // Any unload attempt may succeed, even when its reply is lost.
+        self.forget_thread_proofs(thread);
         let Some(read) = self
             .idle_request(
                 Method::ThreadRead,

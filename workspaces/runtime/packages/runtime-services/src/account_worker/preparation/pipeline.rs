@@ -626,6 +626,7 @@ pub(crate) async fn prepare_with_connection_id(
         connection_id,
         selection,
         token,
+        None,
     )
     .await
 }
@@ -1279,7 +1280,9 @@ pub(crate) async fn prepare_ready(
     connection_id: &str,
     admission: Admission,
     token: crate::workspace_ready::ReadyToken,
+    loaded: Option<thread::LoadedIdentity>,
 ) -> Result<RequestPreparation, WorkerError> {
+    let mut method = method;
     let Admission { selection } = admission;
     // Workspace provisioning can update stored agent/project paths as well as
     // create the progress directory. Capture all filesystem observations after
@@ -1384,8 +1387,11 @@ pub(crate) async fn prepare_ready(
         filesystem,
         prepared_host,
     };
+    // The commit guard keeps the stored projection; only planning sees the
+    // connection's in-memory loaded-thread proof.
+    snapshot.loaded = loaded;
     if method == Method::ThreadResume {
-        let method = if snapshot.actor.thread_id.is_some() {
+        let thread_method = if snapshot.actor.thread_id.is_some() {
             Method::ThreadResume
         } else {
             Method::ThreadStart
@@ -1394,38 +1400,25 @@ pub(crate) async fn prepare_ready(
             "account:{}:{}:{}",
             intent.account_key,
             intent.attempt_id,
-            method.as_str()
+            thread_method.as_str()
         );
-        let attempt = match thread::plan(&snapshot, &intent.attempt_id, &operation) {
-            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => *attempt,
+        match thread::plan(&snapshot, &intent.attempt_id, &operation) {
+            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                return thread_request(
+                    &store,
+                    prepared_intent,
+                    thread_method,
+                    *attempt,
+                    guard,
+                    connection_id,
+                )
+                .await;
+            }
             thread::Outcome::Hold(e) => return Err(refusal(format!("thread-preparation/{e:?}"))),
             thread::Outcome::Refuse(e) => return Err(refusal(format!("thread-preparation/{e:?}"))),
-            thread::Outcome::Ready(_) => {
-                return Err(refusal("thread-preparation/unexpected-loaded-proof".into()));
-            }
-        };
-        for artifact in &attempt.artifacts {
-            let thread::ArtifactIntent::RememberRole { version, text } = artifact;
-            let state_root = store.root().to_path_buf();
-            let relative_path = format!("context-snapshots/{version}.txt");
-            let text = text.clone();
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/account_worker_ready_materialize_context",
-                move || materialize(&state_root, &relative_path, &text),
-            )
-            .await
-            .map_err(|_| WorkerError::TaskFailed)??;
+            // This connection loaded the thread with these settings: start the turn.
+            thread::Outcome::Ready(_) => method = Method::TurnStart,
         }
-        return Ok(RequestPreparation {
-            intent: prepared_intent,
-            method,
-            params: json!(attempt.params),
-            thread: Some(attempt),
-            compiled: None,
-            submission: None,
-            guard,
-            connection_id: connection_id.to_owned(),
-        });
     }
     continuation_gate(&snapshot, &intent.attempt_id)?;
     snapshot.actor.thread_id = prepared_intent.thread_id.clone();
@@ -1537,6 +1530,38 @@ pub(crate) async fn prepare_ready(
         thread: None,
         compiled: Some(compiled),
         submission: Some(submission),
+        guard,
+        connection_id: connection_id.to_owned(),
+    })
+}
+/// A thread start or resume request; its artifacts are written before submission.
+async fn thread_request(
+    store: &RuntimeStore,
+    intent: TurnIntent,
+    method: Method,
+    attempt: thread::PreparedAttempt,
+    guard: CommitGuard,
+    connection_id: &str,
+) -> Result<RequestPreparation, WorkerError> {
+    for artifact in &attempt.artifacts {
+        let thread::ArtifactIntent::RememberRole { version, text } = artifact;
+        let state_root = store.root().to_path_buf();
+        let relative_path = format!("context-snapshots/{version}.txt");
+        let text = text.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_ready_materialize_context",
+            move || materialize(&state_root, &relative_path, &text),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
+    }
+    Ok(RequestPreparation {
+        intent,
+        method,
+        params: json!(attempt.params),
+        thread: Some(attempt),
+        compiled: None,
+        submission: None,
         guard,
         connection_id: connection_id.to_owned(),
     })

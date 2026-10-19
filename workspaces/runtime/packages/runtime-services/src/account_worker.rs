@@ -710,6 +710,7 @@ pub async fn start_account_worker_with_publication_sink(
         preparation_waits: BTreeMap::new(),
         preparations: JoinSet::new(),
         preparing: BTreeMap::new(),
+        thread_proofs: BTreeMap::new(),
         effect_in_hand: None,
         idle_snapshot: None,
         #[cfg(test)]
@@ -877,7 +878,9 @@ struct Worker {
     /// Agents with a preparation in flight, and the epoch of a wake that
     /// arrived meanwhile (re-run when that preparation is handled).
     preparing: BTreeMap<String, Option<i64>>,
-    /// Workspace token of each agent's last thread preparation, by attempt.
+    /// Threads this connection loaded, by agent. A proof is published after
+    /// its acceptance commits and dropped when the thread may be unloaded.
+    thread_proofs: BTreeMap<String, crate::thread_prepare::LoadedIdentity>,
     /// Durable key of the effect being run; a spawned preparation takes it and
     /// completes it once handled.
     effect_in_hand: Option<String>,
@@ -1874,6 +1877,9 @@ impl Worker {
             connection_id: self.connection_id.clone(),
             agent_changes: self.bridge.agent_changes(),
             effect: self.effect_in_hand.take(),
+            loaded: (method == Method::ThreadResume)
+                .then(|| self.thread_proofs.get(&intent.agent_id).cloned())
+                .flatten(),
             intent,
             method,
         };
@@ -1892,6 +1898,11 @@ impl Worker {
                 );
             }
         }
+    }
+    /// The provider may have unloaded `thread` or changed its settings.
+    fn forget_thread_proofs(&mut self, thread: &str) {
+        self.thread_proofs
+            .retain(|_, proof| proof.thread_id != thread);
     }
     /// Handle one finished preparation on the serialized worker.
     async fn prepared(&mut self, done: turn_preparation::Done) -> Result<(), WorkerError> {
@@ -2891,11 +2902,43 @@ impl Worker {
             let account = self.account.clone();
             let resources = Arc::new(self.resources.clone());
             let closing = self.closing;
-            let (retire, effect) = self
+            // Any turn/start outcome but its write or accepted reply may mean
+            // the provider no longer has the thread loaded.
+            let turn_unsettled = pending.as_ref().is_some_and(|context| {
+                context.method == Method::TurnStart.as_str()
+                    && !matches!(
+                        outcome,
+                        SessionOutcome::Write {
+                            outcome: WriteOutcome::Written,
+                            ..
+                        } | SessionOutcome::Resolved {
+                            outcome: RequestOutcome::Reply {
+                                body: ResponseBody::Result(_),
+                                ..
+                            },
+                            ..
+                        }
+                    )
+            });
+            if turn_unsettled && let Some(context) = &pending {
+                self.thread_proofs.remove(&context.intent.agent_id);
+            }
+            let settled = self
                 .db_identified("outcome", identity, move |store| async move {
                     store::outcome(store, account, resources, pending, outcome, closing).await
                 })
                 .await?;
+            let store::SettledOutcome {
+                retired: retire,
+                effect,
+                loaded,
+            } = settled;
+            // A VM actor's thread lives in its own session, not this connection.
+            if actor_id.is_none()
+                && let Some(loaded) = loaded
+            {
+                self.thread_proofs.insert(loaded.agent_id.clone(), loaded);
+            }
             if retire && let Some(id) = id {
                 self.pending.remove(&id);
             }

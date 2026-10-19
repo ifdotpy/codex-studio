@@ -207,6 +207,9 @@ pub enum HoldReason {
     Inactive,
 }
 
+/// A thread this connection loaded with an accepted `thread/start` or
+/// `thread/resume`. While its settings are unchanged, the next turn needs no
+/// thread request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadedIdentity {
     pub agent_id: String,
@@ -214,6 +217,9 @@ pub struct LoadedIdentity {
     pub account_key: String,
     pub connection_id: String,
     pub thread_id: String,
+    /// `settings_digest` of the accepted thread request.
+    #[serde(default)]
+    pub settings_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,15 +418,6 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
     if s.workspace == WorkspaceReadiness::Pending {
         return Outcome::Hold(HoldReason::WorkspacePending);
     }
-    if let Some(loaded) = &s.loaded
-        && loaded.agent_id == s.actor.id
-        && loaded.epoch == s.actor.epoch
-        && loaded.account_key == s.account.key
-        && loaded.connection_id == s.account.connection_id
-        && Some(&loaded.thread_id) == s.actor.thread_id.as_ref()
-    {
-        return Outcome::Ready(loaded.clone());
-    }
     let source = s
         .actor
         .native_tool_source
@@ -534,6 +531,16 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
     if let Some(thread_id) = &s.actor.thread_id {
         params.insert("threadId".into(), json!(thread_id));
         params.insert("excludeTurns".into(), json!(true));
+    }
+    if let Some(loaded) = &s.loaded
+        && loaded.agent_id == s.actor.id
+        && loaded.epoch == s.actor.epoch
+        && loaded.account_key == s.account.key
+        && loaded.connection_id == s.account.connection_id
+        && Some(&loaded.thread_id) == s.actor.thread_id.as_ref()
+        && loaded.settings_digest == settings_digest(&params)
+    {
+        return Outcome::Ready(loaded.clone());
     }
     let request_digest = request_digest(&params);
     // A replaced connection discards an unanswered start. Resume is idempotent;
@@ -869,6 +876,7 @@ pub fn reduce_receipt(
             account_key: current.account.key.clone(),
             connection_id: current.account.connection_id.clone(),
             thread_id: thread_id.clone(),
+            settings_digest: settings_digest(&attempt.params),
         },
     }
 }
@@ -876,6 +884,18 @@ pub fn reduce_receipt(
 /// Canonical digest of one exact request; an identity cannot name changed params.
 pub fn request_digest(params: &Map<String, Value>) -> String {
     sha256_hex(crate::event_write::python_json(&json!(params)).as_bytes())
+}
+
+/// Digest of the thread settings a start or resume request applies. It leaves
+/// out the thread identity and the tool catalog: a resume of a loaded thread
+/// does not replace a Codex catalog, and providers whose catalog can change
+/// receive it with every turn.
+pub fn settings_digest(params: &Map<String, Value>) -> String {
+    let mut settings = params.clone();
+    for key in ["threadId", "excludeTurns", "dynamicTools"] {
+        settings.remove(key);
+    }
+    request_digest(&settings)
 }
 
 /// Existing catalog markers use sorted ASCII JSON with compact separators.

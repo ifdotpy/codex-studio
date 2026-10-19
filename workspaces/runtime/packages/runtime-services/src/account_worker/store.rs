@@ -779,6 +779,15 @@ pub(super) async fn submitted(
         result => result,
     }
 }
+#[derive(Default)]
+pub(super) struct SettledOutcome {
+    /// The request is settled and leaves the pending set.
+    pub retired: bool,
+    pub effect: Option<Effect>,
+    /// The committed thread acceptance; published only after its commit.
+    pub loaded: Option<crate::thread_prepare::LoadedIdentity>,
+}
+
 /// `session_closed` is true while the worker settles its ended session's outcomes.
 pub(super) async fn outcome(
     store: Arc<RuntimeStore>,
@@ -787,7 +796,7 @@ pub(super) async fn outcome(
     pending: Option<Pending>,
     outcome: SessionOutcome,
     session_closed: bool,
-) -> Result<(bool, Option<Effect>), WorkerError> {
+) -> Result<SettledOutcome, WorkerError> {
     let Some(context) = pending else {
         if let SessionOutcome::GenerationClosed { generation } = outcome {
             scheduler::lifecycle_transaction(&store, move |tx| {
@@ -795,7 +804,7 @@ pub(super) async fn outcome(
             })
             .await?;
         }
-        return Ok((false, None));
+        return Ok(SettledOutcome::default());
     };
     let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
@@ -821,12 +830,14 @@ pub(super) async fn outcome(
             if retired {
                 forget_request(tx, &context.operation)?;
             }
-            return Ok((
+            return Ok(SettledOutcome {
                 retired,
-                wake.map(|(agent, epoch)| Effect::Wake(agent, epoch)),
-            ));
+                effect: wake.map(|(agent, epoch)| Effect::Wake(agent, epoch)),
+                loaded: None,
+            });
         }
         let mut effect = None;
+        let mut loaded = None;
         let retired = match outcome {
             SessionOutcome::Write {
                 outcome: WriteOutcome::Written,
@@ -857,7 +868,7 @@ pub(super) async fn outcome(
                 match context.method()? {
                     Method::ThreadResume | Method::ThreadStart => {
                         if let ResponseBody::Result(ref value) = body
-                            && let Some(next) = preparation::accept_thread(
+                            && let Some((next, thread)) = preparation::accept_thread(
                                 tx,
                                 &state_root,
                                 &resources,
@@ -867,6 +878,7 @@ pub(super) async fn outcome(
                             )?
                         {
                             effect = Some(next);
+                            loaded = Some(thread);
                         } else {
                             // Name the provider's own error; a rejected reply names
                             // the identity check. The input is never sent here.
@@ -934,7 +946,7 @@ pub(super) async fn outcome(
                                     "uncertain",
                                     None,
                                 )?;
-                                return Ok((false, None));
+                                return Ok(SettledOutcome::default());
                             }
                         }
                         ResponseBody::Error(error) => {
@@ -982,7 +994,11 @@ pub(super) async fn outcome(
         if let Some(effect) = &effect {
             persist_effect(tx, &account, effect)?;
         }
-        Ok((retired, effect))
+        Ok(SettledOutcome {
+            retired,
+            effect,
+            loaded,
+        })
     })
     .await
 }

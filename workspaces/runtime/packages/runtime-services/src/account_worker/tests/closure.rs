@@ -727,10 +727,7 @@ async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
     // The pending preparation starts the refresh itself and wakes on its result.
     // The refresh reads the catalog over the account's retained session.
     catalog_pages.release();
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let turn = peer.write("turn/start").await;
+    let turn = peer.write_turn_start().await;
     assert_eq!(
         state.record().await["startAttempt"]["id"],
         held["startAttempt"]["id"]
@@ -797,10 +794,7 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     bridge.faults = state.bridge.faults.clone();
     let mut peer = Peer::new();
     let mut replacement = peer.worker(bridge).await;
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let turn = peer.write("turn/start").await;
+    let turn = peer.write_turn_start().await;
     peer.accepted(&turn).await;
     assert_eq!(state.event_status("input").await, "delivered");
     assert!(
@@ -921,10 +915,7 @@ async fn workspace_pending_wakes_when_the_blocking_owner_commits() {
         })
         .await
         .unwrap();
-    let resume = peer.write("thread/resume").await;
-    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let turn = peer.write("turn/start").await;
+    let turn = peer.write_turn_start().await;
     peer.accepted(&turn).await;
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
