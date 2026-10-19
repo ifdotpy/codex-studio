@@ -1412,7 +1412,7 @@ impl SchedulerRepository {
 
     /// Input that a claim owns or can still take. Python `pending_batch` reads
     /// `pending` rows of the current epoch; `reserved` rows belong to a claim.
-    fn has_claimable_input(
+    pub fn has_claimable_input(
         connection: &Connection,
         agent_id: &str,
         epoch: i64,

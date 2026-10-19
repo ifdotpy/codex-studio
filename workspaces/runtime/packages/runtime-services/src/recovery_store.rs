@@ -749,6 +749,24 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 } else {
                     None
                 };
+                // The reconciled worker kept its permission and has input that
+                // arrived meanwhile: queue it as settle_terminal does. Python's
+                // scheduler takes such input; Rust wakes only `queued` workers
+                // (rehearsal 19: be102fa0 kept 12 pending events).
+                if restart
+                    && continuation.is_none()
+                    && updated["autoWake"] == true
+                    && updated["status"] == "completed"
+                    && SchedulerRepository::has_pending_continuation_event(tx, id, epoch)?
+                {
+                    updated["status"] = json!(if SchedulerRepository::has_claimable_input(
+                        tx, id, epoch
+                    )? {
+                        "queued"
+                    } else {
+                        "waiting"
+                    });
+                }
                 persist_request_result(a, &mut updated, &result);
                 // A continued restart turn stays with this worker, as in Python:
                 // no stopped-child notice and no work release.

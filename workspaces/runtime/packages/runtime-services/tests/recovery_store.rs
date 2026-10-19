@@ -1243,6 +1243,11 @@ async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled()
         let record =
             studio_runtime_store::AgentRecord::from_value(agent.clone()).expect("agent fixture");
         AgentRepository::put(tx, &record)?;
+        // Input that arrived while the worker was down.
+        tx.execute(
+            "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL,epoch=0 WHERE id='event'",
+            [],
+        )?;
         Ok(())
     })
     .await
@@ -1269,9 +1274,13 @@ async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled()
         )
     );
     let after = snapshot(&store).record().clone();
-    assert_eq!(after["status"], "completed");
+    assert_eq!(
+        after["status"], "queued",
+        "the pending input runs next, as after any finished turn"
+    );
     assert_eq!(after["turnId"], serde_json::Value::Null);
     assert_eq!(after["lastCompletedTurn"], "turn");
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
     assert_eq!(after["autoWake"], true, "the worker keeps its permission");
     assert_eq!(after["restartRecovery"]["stage"], "finished");
     assert!(after.get("startAttempt").is_none());
