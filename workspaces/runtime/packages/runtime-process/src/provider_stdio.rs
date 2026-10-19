@@ -5,12 +5,13 @@ use crate::{child_priority::ChildPriority, operational_log::OperationalLog, prov
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     io::{self, Write as IoWrite},
     process::Stdio,
-    sync::OnceLock,
+    sync::{Arc, Mutex, OnceLock},
 };
 use studio_runtime_providers::{
-    DecodedJournalPayload, Method, RequestId, decode_journal_entry_borrowed,
+    DecodedJournalPayload, Frame, Method, RequestId, ResponseBody, decode_journal_entry_borrowed,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -26,6 +27,11 @@ const STDERR_LINE_LIMIT: usize = 64 * 1024;
 // Set to 1 only for the announced provider stdin timing profile.
 const STDIN_TIMING_DIAGNOSTICS_ENV: &str = "CODEX_RUNTIME_STDIN_TIMING_DIAGNOSTICS";
 const STDIN_TIMING_DIAGNOSTIC_PREFIX: &[u8] = b"studio_provider_stdin_write ";
+// Journals the reply to a witnessed request, under the same flag and owner.
+const REPLY_TIMING_DIAGNOSTIC_PREFIX: &[u8] = b"studio_provider_reply ";
+/// Requests whose physical stdin write and reply arrival the diagnostic journals.
+const WITNESSED_METHODS: [Method; 3] =
+    [Method::TurnStart, Method::ThreadStart, Method::ThreadResume];
 
 static STDIN_TIMING_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
 
@@ -45,13 +51,88 @@ fn stdin_timing_diagnostics_enabled() -> bool {
         .get_or_init(|| std::env::var(STDIN_TIMING_DIAGNOSTICS_ENV).is_ok_and(|value| value == "1"))
 }
 
-fn is_turn_start(write: &PreparedWrite) -> bool {
+fn witnessed_method(write: &PreparedWrite) -> Option<Method> {
     write
         .message()
         .get("method")
         .and_then(serde_json::Value::as_str)
         .and_then(Method::from_wire)
-        == Some(Method::TurnStart)
+        .filter(|method| WITNESSED_METHODS.contains(method))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplyTimingDiagnostic<'a> {
+    provider_handle: &'a str,
+    generation: Generation,
+    operation_id: &'a OperationId,
+    request_id: &'a RequestId,
+    method: &'static str,
+    reply_at_ns: u128,
+    /// `result` or `error`.
+    outcome: &'static str,
+}
+
+/// Witnessed requests written but not yet answered, shared by the writer and reader.
+#[derive(Clone, Default)]
+struct PendingReplies(Arc<Mutex<HashMap<RequestId, (OperationId, Method)>>>);
+
+impl PendingReplies {
+    fn register(&self, write: &PreparedWrite, method: Method) {
+        let Some(id) = write
+            .message()
+            .get("id")
+            .and_then(|id| serde_json::from_value(id.clone()).ok())
+        else {
+            return;
+        };
+        if let Ok(mut pending) = self.0.lock() {
+            pending.insert(id, (write.operation_id().clone(), method));
+        }
+    }
+
+    fn take(&self, id: &RequestId) -> Option<(OperationId, Method)> {
+        self.0.lock().ok()?.remove(id)
+    }
+}
+
+/// Reader-side half of the diagnostic: journals the reply to a witnessed request.
+#[derive(Clone)]
+struct ReplyWitness {
+    handle: ProviderHandle,
+    generation: Generation,
+    pending: PendingReplies,
+}
+
+impl ReplyWitness {
+    fn line(&self, frame: &Frame, sample_timestamp: impl FnOnce() -> u128) -> Option<Vec<u8>> {
+        let Frame::Response { id, body, .. } = frame else {
+            return None;
+        };
+        let (operation_id, method) = self.pending.take(id)?;
+        let diagnostic = ReplyTimingDiagnostic {
+            provider_handle: self.handle.as_str(),
+            generation: self.generation,
+            operation_id: &operation_id,
+            request_id: id,
+            method: method.as_str(),
+            reply_at_ns: sample_timestamp(),
+            outcome: match body {
+                ResponseBody::Result(_) => "result",
+                ResponseBody::Error(_) => "error",
+            },
+        };
+        diagnostic_line(REPLY_TIMING_DIAGNOSTIC_PREFIX, &diagnostic)
+    }
+}
+
+fn diagnostic_line(prefix: &[u8], diagnostic: &impl Serialize) -> Option<Vec<u8>> {
+    let payload = serde_json::to_vec(diagnostic).ok()?;
+    let mut line = Vec::with_capacity(prefix.len() + payload.len() + 1);
+    line.extend_from_slice(prefix);
+    line.extend_from_slice(&payload);
+    line.push(b'\n');
+    Some(line)
 }
 
 fn stdin_timing_diagnostic_line(
@@ -60,14 +141,7 @@ fn stdin_timing_diagnostic_line(
     write: &PreparedWrite,
     stdin_flushed_at_ns: u128,
 ) -> Option<Vec<u8>> {
-    let method = write
-        .message()
-        .get("method")
-        .and_then(serde_json::Value::as_str)
-        .and_then(Method::from_wire)?;
-    if method != Method::TurnStart {
-        return None;
-    }
+    let method = witnessed_method(write)?;
     let request_id = serde_json::from_value(write.message().get("id")?.clone()).ok()?;
     let diagnostic = StdinTimingDiagnostic {
         provider_handle: handle.as_str(),
@@ -77,12 +151,7 @@ fn stdin_timing_diagnostic_line(
         method: method.as_str(),
         stdin_flushed_at_ns,
     };
-    let payload = serde_json::to_vec(&diagnostic).ok()?;
-    let mut line = Vec::with_capacity(STDIN_TIMING_DIAGNOSTIC_PREFIX.len() + payload.len() + 1);
-    line.extend_from_slice(STDIN_TIMING_DIAGNOSTIC_PREFIX);
-    line.extend_from_slice(&payload);
-    line.push(b'\n');
-    Some(line)
+    diagnostic_line(STDIN_TIMING_DIAGNOSTIC_PREFIX, &diagnostic)
 }
 
 fn write_stdin_timing_diagnostic_best_effort(line: &[u8]) {
@@ -176,6 +245,12 @@ impl StdioProviderTaskFactory {
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (entries, journal) = mpsc::channel(LANE_CAPACITY);
             let diagnostic_handle = handle.clone();
+            let pending_replies = PendingReplies::default();
+            let reply_witness = stdin_timing_diagnostics_enabled().then(|| ReplyWitness {
+                handle: handle.clone(),
+                generation,
+                pending: pending_replies.clone(),
+            });
             let (state, status) = watch::channel(AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: true,
@@ -215,14 +290,21 @@ impl StdioProviderTaskFactory {
                         return Err(AdapterError::InvalidConfiguration);
                     }
                     tokio::try_join!(
-                        write_commands(stdin, inbox, diagnostic_handle, generation,),
+                        write_commands(
+                            stdin,
+                            inbox,
+                            diagnostic_handle,
+                            generation,
+                            pending_replies
+                        ),
                         read_entries(
                             stdout,
                             entries,
                             options.clock,
                             generation,
                             frame_limit,
-                            output_limit
+                            output_limit,
+                            reply_witness,
                         )
                     )?;
                     Ok(())
@@ -354,6 +436,7 @@ async fn write_commands(
     mut commands: mpsc::Receiver<AdapterCommand>,
     handle: ProviderHandle,
     generation: Generation,
+    pending_replies: PendingReplies,
 ) -> Result<(), AdapterError> {
     while let Some(command) = commands.recv().await {
         match command {
@@ -371,6 +454,7 @@ async fn write_commands(
                         handle: &handle,
                         generation,
                         enabled: stdin_timing_diagnostics_enabled(),
+                        pending_replies: &pending_replies,
                         sample_timestamp: crate::clock::monotonic_ns,
                         emit_diagnostic: write_stdin_timing_diagnostic_best_effort,
                     },
@@ -391,6 +475,7 @@ struct WriterTimingDiagnostics<'a, Sample, Emit> {
     handle: &'a ProviderHandle,
     generation: Generation,
     enabled: bool,
+    pending_replies: &'a PendingReplies,
     sample_timestamp: Sample,
     emit_diagnostic: Emit,
 }
@@ -406,12 +491,17 @@ where
     Sample: FnOnce() -> u128,
     Emit: FnOnce(&[u8]),
 {
+    let witnessed = witnessed_method(&write).filter(|_| timing.enabled);
+    if let Some(method) = witnessed {
+        // Register before the write: the reply can arrive before the flush returns.
+        timing.pending_replies.register(&write, method);
+    }
     let mut bytes =
         serde_json::to_vec(&write.message).map_err(|_| AdapterError::InvalidConfiguration)?;
     bytes.push(b'\n');
     stdin.write_all(&bytes).await.map_err(process_error)?;
     stdin.flush().await.map_err(process_error)?;
-    let stdin_flushed_at_ns = if timing.enabled && is_turn_start(&write) {
+    let stdin_flushed_at_ns = if witnessed.is_some() {
         Some((timing.sample_timestamp)())
     } else {
         None
@@ -443,6 +533,7 @@ async fn read_entries(
     generation: Generation,
     frame_limit: usize,
     output_limit: Option<usize>,
+    reply_witness: Option<ReplyWitness>,
 ) -> Result<(), AdapterError> {
     let mut reader = BufReader::new(stdout);
     let mut total = 0_usize;
@@ -463,7 +554,15 @@ async fn read_entries(
         cursor += 1;
         let decoded = decode_journal_entry_borrowed(cursor, generation.0, &line);
         let payload = match decoded.payload {
-            DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
+            DecodedJournalPayload::Frame(frame) => {
+                if let Some(line) = reply_witness
+                    .as_ref()
+                    .and_then(|witness| witness.line(&frame, crate::clock::monotonic_ns))
+                {
+                    write_stdin_timing_diagnostic_best_effort(&line);
+                }
+                JournalPayload::Frame(frame)
+            }
             DecodedJournalPayload::RawStdout { bytes, error } => {
                 JournalPayload::RawStdout { bytes, error }
             }
@@ -610,6 +709,133 @@ mod tests {
         );
     }
 
+    fn request_write(method: &str, id: &str) -> PreparedWrite {
+        let line = format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"{method}","params":{{}}}}"#);
+        let DecodedJournalPayload::Frame(frame) =
+            decode_journal_entry_borrowed(1, 7, line.as_bytes()).payload
+        else {
+            panic!("test request decodes as a frame");
+        };
+        PreparedWrite::new(OperationId(format!("op-{id}")), &frame).expect("request prepares")
+    }
+
+    fn response(id: &str, body: &str) -> Frame {
+        let line = format!(r#"{{"jsonrpc":"2.0","id":"{id}",{body}}}"#);
+        let DecodedJournalPayload::Frame(frame) =
+            decode_journal_entry_borrowed(1, 7, line.as_bytes()).payload
+        else {
+            panic!("test response decodes as a frame");
+        };
+        frame
+    }
+
+    async fn write_with(
+        write: PreparedWrite,
+        enabled: bool,
+        pending_replies: &PendingReplies,
+    ) -> Vec<Vec<u8>> {
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&emitted);
+        let mut stdin = FlushWitness {
+            flushed: Arc::new(AtomicBool::new(false)),
+            fail_write: false,
+        };
+        let (reply, _receiver) = tokio::sync::oneshot::channel();
+        let (observation, observed) = tokio::sync::oneshot::channel();
+        observation.send(()).expect("observation is delivered");
+        write_one_command(
+            &mut stdin,
+            write,
+            reply,
+            observed,
+            WriterTimingDiagnostics {
+                handle: &ProviderHandle::for_account("default"),
+                generation: Generation(7),
+                enabled,
+                pending_replies,
+                sample_timestamp: || 100,
+                emit_diagnostic: move |line: &[u8]| {
+                    sink.lock().expect("sink").push(line.to_vec());
+                },
+            },
+        )
+        .await
+        .expect("write succeeds");
+        let lines = emitted.lock().expect("sink").clone();
+        lines
+    }
+
+    #[tokio::test]
+    async fn thread_start_and_resume_writes_and_replies_are_journaled_under_the_flag() {
+        let pending = PendingReplies::default();
+        let witness = ReplyWitness {
+            handle: ProviderHandle::for_account("default"),
+            generation: Generation(7),
+            pending: pending.clone(),
+        };
+        for (method, id) in [("thread/start", "r1"), ("thread/resume", "r2")] {
+            let lines = write_with(request_write(method, id), true, &pending).await;
+            assert_eq!(
+                lines,
+                vec![
+                    format!(
+                        "studio_provider_stdin_write {{\"providerHandle\":\"account:default\",\"generation\":7,\"operationId\":\"op-{id}\",\"requestId\":\"{id}\",\"method\":\"{method}\",\"stdinFlushedAtNs\":100}}\n"
+                    )
+                    .into_bytes()
+                ]
+            );
+        }
+        let reply = witness
+            .line(&response("r1", r#""result":{}"#), || 250)
+            .expect("thread/start reply is journaled");
+        assert_eq!(
+            String::from_utf8(reply).expect("utf8"),
+            "studio_provider_reply {\"providerHandle\":\"account:default\",\"generation\":7,\"operationId\":\"op-r1\",\"requestId\":\"r1\",\"method\":\"thread/start\",\"replyAtNs\":250,\"outcome\":\"result\"}\n"
+        );
+        let error = witness
+            .line(
+                &response("r2", r#""error":{"code":-1,"message":"no"}"#),
+                || 300,
+            )
+            .expect("thread/resume error reply is journaled");
+        assert!(
+            String::from_utf8(error)
+                .expect("utf8")
+                .contains(r#""method":"thread/resume","replyAtNs":300,"outcome":"error""#)
+        );
+        // Each request is journaled once; unknown ids and non-responses are ignored.
+        assert!(
+            witness
+                .line(&response("r1", r#""result":{}"#), || 1)
+                .is_none()
+        );
+        assert!(
+            witness
+                .line(&response("other", r#""result":{}"#), || 1)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_methods_are_not_journaled_or_registered_when_the_flag_is_off() {
+        let pending = PendingReplies::default();
+        for method in ["thread/start", "thread/resume", "turn/start"] {
+            assert!(
+                write_with(request_write(method, "r1"), false, &pending)
+                    .await
+                    .is_empty()
+            );
+        }
+        assert!(pending.take(&RequestId::String("r1".into())).is_none());
+        // Methods outside the witnessed set stay silent with the flag on.
+        assert!(
+            write_with(request_write("thread/read", "r3"), true, &pending)
+                .await
+                .is_empty()
+        );
+        assert!(pending.take(&RequestId::String("r3".into())).is_none());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn failed_reap_reports_the_unconfirmed_child() {
         let error = super::reap_with_deadline::<()>(Some(12345), std::future::pending())
@@ -646,6 +872,7 @@ mod tests {
                 handle: &ProviderHandle::for_account("default"),
                 generation: Generation(7),
                 enabled: true,
+                pending_replies: &PendingReplies::default(),
                 sample_timestamp: move || {
                     assert!(sample_flushed.load(Ordering::SeqCst));
                     sample_count.fetch_add(1, Ordering::SeqCst);
@@ -688,6 +915,7 @@ mod tests {
                 handle: &ProviderHandle::for_account("default"),
                 generation: Generation(7),
                 enabled: true,
+                pending_replies: &PendingReplies::default(),
                 sample_timestamp: move || {
                     sample_count.fetch_add(1, Ordering::SeqCst);
                     123
@@ -804,7 +1032,8 @@ mod tests {
                 SessionClock::default(),
                 Generation(1),
                 16,
-                Some(20)
+                Some(20),
+                None
             )
             .await,
             Err(AdapterError::OutputLimit { limit: 20 })
@@ -826,7 +1055,8 @@ mod tests {
                 SessionClock::default(),
                 Generation(1),
                 8,
-                Some(100)
+                Some(100),
+                None
             )
             .await,
             Err(AdapterError::OutputLimit { limit: 8 })
@@ -845,6 +1075,7 @@ mod tests {
                 SessionClock::default(),
                 Generation(1),
                 16,
+                None,
                 None
             )
             .await,

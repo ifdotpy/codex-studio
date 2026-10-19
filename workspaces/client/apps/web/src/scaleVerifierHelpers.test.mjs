@@ -48,6 +48,7 @@ import {
   foreignLiveTeamRows,
   forEachBounded,
   normalizedWorktreePath,
+  parseProviderReplyJournalMessage,
   parseProviderStdinJournalMessage,
   parseWorkerWorkspace,
   releaseFifoBarriers,
@@ -64,6 +65,8 @@ import {
   parseStages,
   readCurrentTeamChildren,
   readRetainedInputRows,
+  summarizeEventTiming,
+  summarizeProviderThreadReplies,
   readServedModelRecords,
 } from "../scripts/verify-rust-chat-scale.mjs";
 
@@ -327,6 +330,63 @@ describe("scale verifier helpers", () => {
     expect(parseProviderStdinJournalMessage("unrelated service message")).toBe(
       null,
     );
+  });
+
+  it("reports thread/start reply latency per account and keeps turn/start joins unaffected", () => {
+    const stdin = (handle, id, method, at) => ({
+      providerHandle: handle,
+      generation: 1,
+      operationId: `op-${id}`,
+      requestId: id,
+      method,
+      stdinFlushedAtNs: at,
+    });
+    const reply = (handle, id, method, at, outcome = "result") => ({
+      providerHandle: handle,
+      generation: 1,
+      operationId: `op-${id}`,
+      requestId: id,
+      method,
+      replyAtNs: at,
+      outcome,
+    });
+    const stdinEntries = [
+      stdin("account:a", "t1", "thread/start", 1_000_000_000),
+      stdin("account:a", "t2", "thread/start", 2_000_000_000),
+      stdin("account:b", "t3", "thread/resume", 3_000_000_000),
+      stdin("account:b", "t4", "thread/start", 4_000_000_000),
+      stdin("account:a", "n1", "turn/start", 5_000_000_000),
+    ];
+    const replies = [
+      reply("account:a", "t1", "thread/start", 1_100_000_000),
+      reply("account:a", "t2", "thread/start", 2_300_000_000, "error"),
+      reply("account:b", "t3", "thread/resume", 3_050_000_000),
+      reply("account:b", "ghost", "thread/start", 9_000_000_000),
+    ];
+    const result = summarizeProviderThreadReplies(stdinEntries, replies);
+    expect(result.byAccountAndMethod["account:a thread/start"]).toMatchObject({
+      samples: 2,
+      p50Ms: 100,
+      p95Ms: 300,
+      maxMs: 300,
+    });
+    expect(result.byAccountAndMethod["account:b thread/resume"].maxMs).toBe(50);
+    expect(result.writesWithoutReply).toBe(1);
+    expect(result.unmatchedReplies).toBe(1);
+    // A thread/start line never becomes a turn/start timing gap or witness.
+    const timing = summarizeEventTiming({ events: [] }, stdinEntries);
+    expect(timing.readyToProviderStdinMs.gaps).toEqual([]);
+    expect(
+      parseProviderReplyJournalMessage(
+        `studio_provider_reply ${JSON.stringify(replies[0])}`,
+      ),
+    ).toMatchObject({ method: "thread/start", outcome: "result" });
+    expect(parseProviderReplyJournalMessage("unrelated")).toBe(null);
+    expect(
+      parseProviderStdinJournalMessage(
+        `studio_provider_reply ${JSON.stringify(replies[0])}`,
+      ),
+    ).toBe(null);
   });
 
   it("keeps original item indexes across bounded batches", async () => {

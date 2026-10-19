@@ -39,6 +39,7 @@ import {
   foreignLiveTeamRows,
   forEachBounded,
   normalizedWorktreePath,
+  parseProviderReplyJournalMessage,
   parseProviderStdinJournalMessage,
   parseWorkerWorkspace,
   readinessMarkerName,
@@ -47,6 +48,7 @@ import {
   requireScaleModel,
   resumeIntentState,
   RETAINED_INPUT_STATUSES,
+  THREAD_REQUEST_METHODS,
   scaleWorkerDefaults,
   sharedBarrierPaths,
   stateResourceVersion,
@@ -1387,6 +1389,11 @@ async function main() {
         stage.eventEvidence,
         stage.providerStdinJournal.entries,
       );
+      stage.timingEvidence.providerThreadReplyMs =
+        summarizeProviderThreadReplies(
+          stage.providerStdinJournal.entries,
+          stage.providerStdinJournal.replies,
+        );
       if (stage.timingEvidence.readyToProviderStdinMs.state !== "measured")
         journal.metricsGaps.push(
           `Stage ${workers}: exact-event ready-to-stdin p95 is incomplete; every exact input event needs one PID-, boot-, and stage-bounded provider stdin journal witness correlated to its execution attempt.`,
@@ -2655,6 +2662,7 @@ export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
   const startedAtUs = Date.parse(window.startedAt) * 1_000;
   const finishedAtUs = Date.parse(window.finishedAt) * 1_000;
   const entries = [];
+  const replies = [];
   for (const line of result.stdout.split("\n")) {
     if (!line) continue;
     const envelope = JSON.parse(line);
@@ -2676,12 +2684,15 @@ export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
       );
     const entry = parseProviderStdinJournalMessage(envelope.MESSAGE || "");
     if (entry) entries.push({ ...entry, journalTimeUs });
+    const reply = parseProviderReplyJournalMessage(envelope.MESSAGE || "");
+    if (reply) replies.push({ ...reply, journalTimeUs });
   }
   return {
     window,
     pid: backendIdentity.pid,
     bootId,
     entries,
+    replies,
   };
 }
 
@@ -2751,7 +2762,59 @@ finally: connection.close()
   return JSON.parse(result.stdout);
 }
 
-export function summarizeEventTiming(evidence, journalEntries) {
+// Evidence only, not a pass gate: reply latency of thread/start and
+// thread/resume per account, from the physical stdin flush to the reply line.
+export function summarizeProviderThreadReplies(stdinEntries, replies) {
+  const writes = new Map();
+  for (const entry of stdinEntries) {
+    if (!THREAD_REQUEST_METHODS.includes(entry.method)) continue;
+    writes.set(
+      JSON.stringify([
+        entry.providerHandle,
+        entry.generation,
+        entry.operationId,
+        entry.requestId,
+      ]),
+      entry,
+    );
+  }
+  const latencies = new Map();
+  let unmatchedReplies = 0;
+  const answered = new Set();
+  for (const reply of replies) {
+    const key = JSON.stringify([
+      reply.providerHandle,
+      reply.generation,
+      reply.operationId,
+      reply.requestId,
+    ]);
+    const write = writes.get(key);
+    const latencyMs = write
+      ? (reply.replyAtNs - write.stdinFlushedAtNs) / 1_000_000
+      : NaN;
+    if (!write || write.method !== reply.method || !(latencyMs >= 0)) {
+      unmatchedReplies += 1;
+      continue;
+    }
+    answered.add(key);
+    const group = `${reply.providerHandle} ${reply.method}`;
+    latencies.set(group, [...(latencies.get(group) || []), latencyMs]);
+  }
+  return {
+    state: "evidence",
+    note: "Per account and method: physical stdin flush to reply arrival, CLOCK_MONOTONIC. Evidence only; not a pass gate.",
+    byAccountAndMethod: Object.fromEntries(
+      [...latencies].map(([group, values]) => [group, summary(values)]),
+    ),
+    writesWithoutReply: writes.size - answered.size,
+    unmatchedReplies,
+  };
+}
+
+export function summarizeEventTiming(evidence, allJournalEntries) {
+  const journalEntries = allJournalEntries.filter(
+    (entry) => !THREAD_REQUEST_METHODS.includes(entry.method),
+  );
   const events = evidence?.events || [];
   const entriesByRequest = new Map();
   const operationCounts = new Map();
@@ -4035,6 +4098,12 @@ function aggregateMetrics(journal) {
         }),
       })),
     },
+    providerThreadReplyMs: stages.map((stage) => ({
+      workers: stage.workers,
+      ...(stage.timingEvidence?.providerThreadReplyMs || {
+        state: "unavailable",
+      }),
+    })),
     observedCompleteTurnDeliveryMs: Object.fromEntries(
       stages.map((stage) => [
         stage.workers,

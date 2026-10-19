@@ -163,6 +163,10 @@ export function requireScaleModel(catalog, profile = SCALE_PROVIDER) {
 }
 
 export const PROVIDER_STDIN_JOURNAL_PREFIX = "studio_provider_stdin_write ";
+export const PROVIDER_REPLY_JOURNAL_PREFIX = "studio_provider_reply ";
+// Requests whose stdin write and reply are journaled besides turn/start. Their
+// lines never join an exact input event.
+export const THREAD_REQUEST_METHODS = ["thread/start", "thread/resume"];
 
 // Linux exposes UUID text in /proc; journald stores the same boot ID as 32 hex digits.
 export function canonicalJournalBootId(value) {
@@ -215,6 +219,37 @@ export function parseProviderStdinJournalMessage(message) {
   assert.ok(
     Number.isSafeInteger(entry.stdinFlushedAtNs) && entry.stdinFlushedAtNs >= 0,
     "Provider stdin journal record has an invalid flush timestamp.",
+  );
+  return entry;
+}
+
+export function parseProviderReplyJournalMessage(message) {
+  if (!message.startsWith(PROVIDER_REPLY_JOURNAL_PREFIX)) return null;
+  const entry = JSON.parse(message.slice(PROVIDER_REPLY_JOURNAL_PREFIX.length));
+  assert.deepEqual(
+    Object.keys(entry).sort(),
+    [
+      "generation",
+      "method",
+      "operationId",
+      "outcome",
+      "providerHandle",
+      "replyAtNs",
+      "requestId",
+    ],
+    "Provider reply journal record has an unexpected shape.",
+  );
+  assert.ok(
+    typeof entry.providerHandle === "string" &&
+      typeof entry.operationId === "string" &&
+      typeof entry.method === "string" &&
+      Number.isSafeInteger(entry.generation) &&
+      (typeof entry.requestId === "string" ||
+        Number.isSafeInteger(entry.requestId)) &&
+      Number.isSafeInteger(entry.replyAtNs) &&
+      entry.replyAtNs >= 0 &&
+      (entry.outcome === "result" || entry.outcome === "error"),
+    "Provider reply journal record has an invalid field.",
   );
   return entry;
 }
