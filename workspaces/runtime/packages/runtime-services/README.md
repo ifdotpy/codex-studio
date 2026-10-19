@@ -292,9 +292,12 @@ processes as well. Windows retains direct-child termination and is outside this
 Rust cutover. The command's output is parsed in memory and is never logged.
 On macOS, Rust currently reports the named reason
 `macos-passive-auth-unavailable` and leaves the previous account status
-unchanged. Python can read passive Keychain authentication through its
-Security.framework helper; this slice does not add platform APIs or a new
-dependency to reproduce that behavior.
+unchanged when that status is ready. Python can read passive Keychain
+authentication through its Security.framework helper; this slice does not add
+platform APIs or a new dependency to reproduce that behavior. When the stored
+status is not ready, Rust runs the native `claude auth status --json` once
+(through the same cache), as Python does after its passive reader. A stale
+error, for example from one torn read, then cannot outlive a valid login.
 
 ## Provider session task
 
