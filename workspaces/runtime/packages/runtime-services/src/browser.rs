@@ -1616,6 +1616,203 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigD
     }
 }
 
+/// How long Studio waits for `skills/extraRoots/set` (shared with Python
+/// `codex_browser.ensure_skill`).
+pub const BROWSER_SKILL_TIMEOUT: Duration = Duration::from_secs(
+    studio_runtime_schema::shared_values::BROWSER_SKILL_TIMEOUT_SECONDS,
+);
+
+/// The native Chrome setup of one host Codex account's threads: Python
+/// `codex_browser.browser_status` and `skill_root` for the account home and the
+/// shared (base) Codex home. It reads both `config.toml` files and the plugin
+/// files; it sends nothing to a provider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountBrowser {
+    /// `thread/start` and `thread/resume` config overrides (`mcp_servers.node_repl`).
+    pub overrides: Map<String, Value>,
+    /// Text appended to the thread's developer instructions.
+    pub developer_instructions: Option<&'static str>,
+    /// The `skills/extraRoots/set` roots: the control-chrome skill root, or none.
+    pub skill_roots: Vec<String>,
+    /// Why the browser is off for this account; `None` when it is on.
+    pub unavailable_reason: Option<String>,
+}
+
+fn read_codex_config(home: &std::path::Path) -> Option<Value> {
+    let path = home.join("config.toml");
+    if !path.exists() {
+        return Some(json!({}));
+    }
+    let table: toml::Table = std::fs::read_to_string(path).ok()?.parse().ok()?;
+    serde_json::to_value(table).ok()
+}
+
+/// Python `codex_browser.skill_root`: the installed plugin's skills, else the
+/// local bundled marketplace copy of the same plugin version.
+fn control_chrome_root(
+    shared_home: &std::path::Path,
+    shared: &Value,
+) -> Option<std::path::PathBuf> {
+    let installed = shared_home.join("plugins/cache/openai-bundled/chrome/latest");
+    let root = installed.join("skills");
+    if root.join("control-chrome/SKILL.md").is_file() {
+        return std::fs::canonicalize(root).ok();
+    }
+    let source = shared
+        .pointer("/marketplaces/openai-bundled")
+        .filter(|market| market.get("source_type").and_then(Value::as_str) == Some("local"))?
+        .get("source")
+        .and_then(Value::as_str)?;
+    let plugin = std::path::Path::new(source).join("plugins/chrome");
+    let root = plugin.join("skills");
+    let version = plugin_version(&plugin);
+    if !root.join("control-chrome/SKILL.md").is_file()
+        || !plugin.join("scripts/browser-client.mjs").is_file()
+        || version.is_none()
+        || version != plugin_version(&installed)
+    {
+        return None;
+    }
+    std::fs::canonicalize(root).ok()
+}
+
+/// Decide the browser setup of a host Codex account.
+///
+/// Registered difference from Python: an unreadable `config.toml` turns the
+/// browser off with a reason. Python failed the thread request instead; an
+/// optional browser must not block ordinary text work.
+pub fn account_browser(home: &std::path::Path, shared_home: &std::path::Path) -> AccountBrowser {
+    let off = |reason: &str| AccountBrowser {
+        overrides: Map::new(),
+        developer_instructions: None,
+        skill_roots: Vec::new(),
+        unavailable_reason: Some(reason.to_owned()),
+    };
+    // Python resolves both homes; CODEX_HOME and the trusted paths use the result.
+    let resolve = |path: &std::path::Path| {
+        crate::projects::resolve_nonstrict(path).unwrap_or_else(|_| path.to_path_buf())
+    };
+    let (home, shared_home) = (resolve(home), resolve(shared_home));
+    let (Some(target), Some(shared)) = (read_codex_config(&home), read_codex_config(&shared_home))
+    else {
+        return off("Cannot read the Codex profile configuration");
+    };
+    let root = control_chrome_root(&shared_home, &shared);
+    let shared_node = shared.pointer("/mcp_servers/node_repl");
+    let services = shared_node
+        .and_then(|node| node.pointer("/env/NODE_REPL_TRUSTED_SERVICES"))
+        .and_then(Value::as_str)
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let assets = BrowserConfigAssets {
+        control_chrome_skill: root.as_ref().map(|root| {
+            root.join("control-chrome/SKILL.md")
+                .to_string_lossy()
+                .into_owned()
+        }),
+        node_runtime: shared_node
+            .and_then(|node| node.get("command"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        browser_service: services
+            .as_ref()
+            .and_then(|value| value.get("browser"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    };
+    let Ok(snapshot) = BrowserConfigSnapshot::from_stored_records(
+        &target,
+        &shared,
+        &home.to_string_lossy(),
+        &shared_home.to_string_lossy(),
+        assets,
+    ) else {
+        return off("node_repl configuration is invalid");
+    };
+    let decision = prepare_browser_config(snapshot);
+    if let Some(reason) = decision.unavailable_reason {
+        return off(reason);
+    }
+    let (Value::Object(overrides), Some(root)) = (decision.overrides, root) else {
+        return off("node_repl configuration is invalid");
+    };
+    AccountBrowser {
+        overrides,
+        developer_instructions: decision.developer_instructions,
+        skill_roots: vec![root.to_string_lossy().into_owned()],
+        unavailable_reason: None,
+    }
+}
+
+/// Fixture homes: a shared Codex home with the desktop's node_repl, browser
+/// service and installed Chrome plugin, and an account home with its own MCP
+/// server but no node_repl (like the Lumina profile on this Mac).
+#[cfg(test)]
+pub(crate) struct BrowserHomes {
+    pub root: tempfile::TempDir,
+    pub shared: std::path::PathBuf,
+    pub account: std::path::PathBuf,
+    pub node: std::path::PathBuf,
+    /// Canonical control-chrome skill root.
+    pub skills: std::path::PathBuf,
+}
+
+#[cfg(test)]
+pub(crate) fn browser_homes() -> BrowserHomes {
+    let root = tempfile::tempdir().expect("fixture root");
+    let (shared, account) = (root.path().join("shared"), root.path().join("account"));
+    let chrome = shared.join("plugins/cache/openai-bundled/chrome");
+    let skills = chrome.join("1.2.3/skills");
+    std::fs::create_dir_all(skills.join("control-chrome")).expect("skill dirs");
+    std::fs::write(skills.join("control-chrome/SKILL.md"), "skill").expect("skill");
+    std::os::unix::fs::symlink("1.2.3", chrome.join("latest")).expect("installed version");
+    std::fs::create_dir_all(&account).expect("account home");
+    let (node, service) = (
+        root.path().join("node_repl"),
+        root.path().join("browser.mjs"),
+    );
+    std::fs::write(&node, "node").expect("node");
+    std::fs::write(&service, "service").expect("service");
+    let services = json!({ "browser": service }).to_string();
+    std::fs::write(
+        shared.join("config.toml"),
+        format!(
+            "[mcp_servers.node_repl]\ncommand = {node:?}\nargs = []\n\n\
+             [mcp_servers.node_repl.env]\nNODE_REPL_TRUSTED_SERVICES = {services:?}\n\
+             OPENAI_API_KEY = \"not-copied\"\n"
+        ),
+    )
+    .expect("shared config");
+    std::fs::write(
+        account.join("config.toml"),
+        "[mcp_servers.anarlog]\ncommand = \"anarlog\"\n",
+    )
+    .expect("account config");
+    let skills = std::fs::canonicalize(skills).expect("skills root");
+    BrowserHomes {
+        root,
+        shared,
+        account,
+        node,
+        skills,
+    }
+}
+
+static REPORTED_BROWSER_STATUS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// Report each change of an account's browser status once, in Python's words.
+/// A disabled browser must not be silent.
+pub fn report_browser_status(account: &str, reason: Option<&str>) {
+    let status = reason.unwrap_or("enabled");
+    let Ok(mut reported) = REPORTED_BROWSER_STATUS.lock() else {
+        return;
+    };
+    let reported = reported.get_or_insert_with(HashMap::new);
+    if reported.get(account).map(String::as_str) != Some(status) {
+        reported.insert(account.to_owned(), status.to_owned());
+        eprintln!("Studio browser for account {account}: {status}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

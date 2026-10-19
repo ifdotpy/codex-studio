@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use studio_runtime_services::browser::{
     BrowserConfigSnapshot, BrowserError, BrowserForwarder, ExchangeOutcome, ForwardInput,
-    PairedExchange, prepare_browser_config,
+    PairedExchange, account_browser, prepare_browser_config,
 };
 use tokio::time::Instant;
 
@@ -572,6 +572,35 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         assert!(
             decision.developer_instructions == case["python"]["developerInstructions"].as_str(),
             "browser guidance differs"
+        );
+        // The thread preparation path discovers the same facts from the homes.
+        let account = account_browser(
+            std::path::Path::new(case["home"].as_str().expect("account home path")),
+            std::path::Path::new(case["sharedHome"].as_str().expect("shared home path")),
+        );
+        assert_eq!(
+            Value::Object(account.overrides),
+            *python_overrides,
+            "account browser config differs for {}",
+            case["name"]
+        );
+        assert_eq!(
+            account.unavailable_reason.as_deref(),
+            case["python"]["reason"].as_str(),
+            "account browser reason differs for {}",
+            case["name"]
+        );
+        assert_eq!(
+            account.developer_instructions,
+            case["python"]["developerInstructions"].as_str(),
+            "account browser guidance differs for {}",
+            case["name"]
+        );
+        assert_eq!(
+            json!(account.skill_roots),
+            case["python"]["skillRoots"],
+            "account browser skill roots differ for {}",
+            case["name"]
         );
     }
     let fixture_root = oracle["fixtureRoot"].as_str().expect("oracle fixture root");

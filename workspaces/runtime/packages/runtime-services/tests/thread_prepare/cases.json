@@ -4934,6 +4934,71 @@
   },
   {
     "family": "guidance",
+    "name": "codex-browser-lead-start",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true
+      },
+      "guidance": {
+        "browser": {
+          "instructions": "Use the native browser skill.",
+          "skill_roots": ["/shared/plugins/chrome/skills"]
+        }
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "codex-browser-worker-resume",
+    "snapshot": {
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "needs_title": true
+      },
+      "guidance": {
+        "browser": {
+          "instructions": "Use the native browser skill.",
+          "skill_roots": ["/shared/plugins/chrome/skills"]
+        }
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "codex-browser-off",
+    "snapshot": {
+      "account": {
+        "provider": "codex"
+      },
+      "guidance": {
+        "browser": {
+          "instructions": null,
+          "skill_roots": []
+        }
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
     "name": "no-progress",
     "snapshot": {
       "workspace": {

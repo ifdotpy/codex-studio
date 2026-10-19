@@ -193,6 +193,7 @@ impl HostRuntime {
             Arc::new(Mutex::new(BTreeMap::new())),
             config,
             None,
+            None,
         )
         .await
     }
@@ -211,6 +212,9 @@ impl HostRuntime {
         managed_tool_runtime: Option<
             Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>,
         >,
+        // The base Codex home (`resolve_codex_home`); `None` gives host Codex
+        // threads no native Chrome browser.
+        shared_codex_home: Option<PathBuf>,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -239,6 +243,9 @@ impl HostRuntime {
         .map_err(|_| WorkerError::TaskFailed)??;
         let claude_bridge_dir = install_root.claude_bridge_dir();
         resources.account_driver = Some(accounts.clone());
+        if let Some(home) = shared_codex_home {
+            resources.shared_home = home.to_string_lossy().into_owned();
+        }
         let vm_guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> = Arc::new(
             studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.root()),
         );
@@ -2468,6 +2475,7 @@ mod voice_composition_tests {
             role_guidance: BTreeMap::new(),
             model_catalog: ModelCatalogService::new(),
             account_home: String::new(),
+            shared_home: String::new(),
             server_source_root: directory.to_path_buf(),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,

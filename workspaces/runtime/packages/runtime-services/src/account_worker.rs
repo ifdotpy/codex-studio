@@ -690,6 +690,7 @@ pub async fn start_account_worker_with_publication_sink(
         resolving_vm_actors: BTreeSet::new(),
         vm_event_forwarders: Vec::new(),
         request_waiters: BTreeMap::new(),
+        browser_skill_roots: None,
         idle_clocks: idle_unload::IdleClocks::default(),
         idle_delay: None,
         idle_deadline: None,
@@ -859,6 +860,9 @@ struct Worker {
     vm_event_forwarders: Vec<JoinHandle<()>>,
     /// Replies to requests the worker sends for itself, by operation.
     request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
+    /// Skill roots this connection confirmed for `skills/extraRoots/set`;
+    /// `None` until a reply confirms them.
+    browser_skill_roots: Option<Vec<String>>,
     idle_clocks: idle_unload::IdleClocks,
     idle_delay: Option<std::time::Duration>,
     idle_deadline: Option<tokio::time::Instant>,
@@ -2073,6 +2077,18 @@ impl Worker {
         } else {
             None
         };
+        if actor_session.is_none()
+            && let Some(browser) = context
+                .thread
+                .as_ref()
+                .and_then(|attempt| attempt.snapshot.guidance.browser.as_ref())
+        {
+            self.ensure_browser_skill(browser.skill_roots.clone())
+                .await?;
+            if self.closing {
+                return Ok(());
+            }
+        }
         let control = actor_session
             .as_deref()
             .and_then(|agent| {
@@ -2681,6 +2697,76 @@ impl Worker {
                 ..
             }
             | RequestOutcome::Unknown => Err(WorkerError::CallbackUnknown),
+        }
+    }
+    /// Register the Chrome skill root with this Codex connection before a
+    /// thread request (Python `codex_browser.ensure_skill`). The roots are
+    /// process-wide in the app-server, so one confirmed reply covers every
+    /// later thread of this connection. Setting the same roots again is
+    /// idempotent: an error or an unknown outcome leaves them unconfirmed, and
+    /// the next thread request sends them again. A failed registration does
+    /// not hold the thread request; text work continues without the skill.
+    async fn ensure_browser_skill(&mut self, roots: Vec<String>) -> Result<(), WorkerError> {
+        if self.browser_skill_roots.as_ref() == Some(&roots) {
+            return Ok(());
+        }
+        self.browser_skill_roots = None;
+        let operation = format!(
+            "browser-skill:{}:{}",
+            self.connection_id,
+            uuid::Uuid::new_v4()
+        );
+        let timeout = crate::browser::BROWSER_SKILL_TIMEOUT;
+        let prepared = self
+            .control
+            .prepare(RequestSpec {
+                id: RequestId::String(operation.clone()),
+                operation_id: OperationId(operation.clone()),
+                method: Method::SkillsExtraRootsSet,
+                params: json!({ "extraRoots": roots }),
+                thread_id: None,
+                lightweight: false,
+                timeout_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+            })
+            .await;
+        let outcome = match prepared {
+            Ok(prepared) => {
+                let (reply, response) = tokio::sync::oneshot::channel();
+                self.request_waiters.insert(operation.clone(), reply);
+                let control = self.control.clone();
+                let outcome = match self.pump_until(control.submit(prepared)).await {
+                    Ok(Ok(_ticket)) => self
+                        .pump_until(tokio::time::timeout(timeout, response))
+                        .await
+                        .map(|reply| reply.ok().and_then(Result::ok)),
+                    Ok(Err(_not_admitted)) => Ok(None),
+                    Err(error) => Err(error),
+                };
+                self.request_waiters.remove(&operation);
+                outcome
+            }
+            Err(_unavailable) => Ok(None),
+        };
+        match outcome {
+            Ok(Some(RequestOutcome::Reply {
+                body: ResponseBody::Result(_),
+                ..
+            })) => {
+                self.browser_skill_roots = Some(roots);
+                Ok(())
+            }
+            Ok(_) => {
+                eprintln!(
+                    "Studio browser skill registration for account {} is not confirmed; the next thread request sends it again",
+                    self.account
+                );
+                Ok(())
+            }
+            Err(WorkerError::Closed) => {
+                self.closing = true;
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
     async fn stop_agent(&mut self, agent: String) -> Result<(), WorkerError> {

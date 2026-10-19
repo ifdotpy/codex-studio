@@ -95,6 +95,9 @@ pub struct PreparationResources {
     pub role_guidance: BTreeMap<PathBuf, String>,
     pub model_catalog: ModelCatalogService,
     pub account_home: String,
+    /// The shared (base) Codex home whose `node_repl` and Chrome plugin the
+    /// browser setup copies; empty leaves host Codex threads without a browser.
+    pub shared_home: String,
     pub server_source_root: PathBuf,
     pub claude_account_pin: Value,
     pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
@@ -183,6 +186,7 @@ impl PreparationResources {
             skills_root,
             model_catalog,
             account_home,
+            shared_home: String::new(),
             server_source_root,
             claude_account_pin: Value::Null,
             account_driver: None,
@@ -524,11 +528,62 @@ pub(super) fn guidance(
             thread_config.insert("mcp_servers".into(), Value::Object(servers));
         }
     }
+    let browser = browser_guidance(resources, record, &mut thread_config);
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
         progress,
         thread_config,
+        browser,
+    })
+}
+
+/// Python `codex_browser.configure_browser`: every host Codex agent (lead,
+/// worker or reviewer) gets the account's native Chrome setup; Claude and VM
+/// agents get none.
+fn browser_guidance(
+    resources: &PreparationResources,
+    record: &Value,
+    thread_config: &mut Map<String, Value>,
+) -> Option<thread::BrowserGuidance> {
+    if ProviderKind::of_record(record) != Ok(ProviderKind::Codex)
+        || record["executionMode"] == "vm"
+        || resources.account_home.is_empty()
+        || resources.shared_home.is_empty()
+    {
+        return None;
+    }
+    let browser = crate::browser::account_browser(
+        Path::new(&resources.account_home),
+        Path::new(&resources.shared_home),
+    );
+    crate::browser::report_browser_status(
+        record["accountKey"].as_str().unwrap_or("default"),
+        browser.unavailable_reason.as_deref(),
+    );
+    for (key, value) in browser.overrides {
+        // The order in which Codex applies these keys is not part of its
+        // contract, and a whole `mcp_servers` table applied after
+        // `mcp_servers.node_repl` could replace it. A worker's table of
+        // disabled servers therefore carries the browser server itself, which
+        // also replaces its own disabled entry.
+        match (
+            key.strip_prefix("mcp_servers."),
+            thread_config
+                .get_mut("mcp_servers")
+                .and_then(Value::as_object_mut),
+        ) {
+            (Some(server), Some(servers)) => {
+                servers.insert(server.to_owned(), value);
+            }
+            _ => {
+                thread_config.insert(key, value);
+            }
+        }
+    }
+    Some(thread::BrowserGuidance {
+        instructions: browser.developer_instructions.map(str::to_owned),
+        skill_roots: browser.skill_roots,
     })
 }
 
@@ -1278,6 +1333,87 @@ mod resource_tests {
             "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
         )));
         assert!(!bundle.progress.contains(".py"));
+    }
+
+    #[test]
+    fn every_host_codex_agent_gets_the_account_browser_like_python() {
+        let crate::browser::BrowserHomes {
+            root: _root,
+            shared,
+            account,
+            node,
+            skills,
+        } = crate::browser::browser_homes();
+        let mut resources = PreparationResources::bundled(
+            account.to_string_lossy().into_owned(),
+            ModelCatalogService::new(),
+        )
+        .expect("runtime resources");
+        let bundle = |resources: &PreparationResources, record: Value| {
+            guidance(resources, &record, Path::new("/state")).expect("guidance")
+        };
+        let lead = json!({"id":"l", "isLead":true, "provider":"codex", "accountKey":"profile-a"});
+        // Without a shared home (tests and the default constructor) nothing changes.
+        assert_eq!(bundle(&resources, lead.clone()).browser, None);
+        resources.shared_home = shared.to_string_lossy().into_owned();
+
+        let expected = Some(thread::BrowserGuidance {
+            instructions: Some(crate::browser::BROWSER_GUIDANCE.to_owned()),
+            skill_roots: vec![skills.to_string_lossy().into_owned()],
+        });
+        let lead = bundle(&resources, lead);
+        assert_eq!(lead.browser, expected);
+        let server = &lead.thread_config["mcp_servers.node_repl"];
+        assert_eq!(server["command"], json!(node));
+        assert_eq!(
+            server["env"]["CODEX_HOME"],
+            json!(std::fs::canonicalize(&account).expect("account"))
+        );
+        assert!(server["env"].get("OPENAI_API_KEY").is_none());
+        assert!(lead.thread_config.get("mcp_servers").is_none());
+
+        // A worker keeps the browser; its table of disabled user servers
+        // carries node_repl, so no key order can drop it.
+        for role in ["implementer", "reviewer"] {
+            let worker = bundle(
+                &resources,
+                json!({"id":"w", "parentId":"l", "role":role, "provider":"codex"}),
+            );
+            assert_eq!(worker.browser, expected, "{role}");
+            assert!(worker.thread_config.get("mcp_servers.node_repl").is_none());
+            let servers = &worker.thread_config["mcp_servers"];
+            assert_eq!(servers["anarlog"], json!({"enabled": false}));
+            assert_eq!(servers["node_repl"], *server, "{role}");
+        }
+
+        // Python's call site excludes Claude and VM agents.
+        for record in [
+            json!({"id":"c", "provider":"claude"}),
+            json!({"id":"v", "provider":"codex", "executionMode":"vm"}),
+        ] {
+            let other = bundle(&resources, record);
+            assert_eq!(other.browser, None);
+            assert!(other.thread_config.get("mcp_servers.node_repl").is_none());
+        }
+
+        // A disabled plugin clears the skill root and adds no server.
+        std::fs::write(
+            account.join("config.toml"),
+            "[plugins.\"chrome@openai-bundled\"]\nenabled = false\n",
+        )
+        .expect("disabled plugin");
+        let off = bundle(
+            &resources,
+            json!({"id":"l", "isLead":true, "provider":"codex"}),
+        );
+        assert_eq!(
+            off.browser,
+            Some(thread::BrowserGuidance {
+                instructions: None,
+                skill_roots: Vec::new(),
+            })
+        );
+        assert!(off.thread_config.get("mcp_servers.node_repl").is_none());
     }
 
     #[test]

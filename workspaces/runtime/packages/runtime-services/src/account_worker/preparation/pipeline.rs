@@ -1931,6 +1931,7 @@ mod daybreak_tests {
                 role: String::new(),
                 progress: String::new(),
                 thread_config: serde_json::Map::new(),
+                browser: None,
             },
             catalog: thread::CatalogSnapshot {
                 source: thread::CatalogSource::Current,

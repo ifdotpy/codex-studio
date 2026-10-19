@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 mod auth_wait_schedule;
+mod browser_skill;
 mod claude_preparation;
 mod idle_unload;
 mod journal_cost;
