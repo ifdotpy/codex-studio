@@ -6,7 +6,15 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Final
 from urllib.parse import urlsplit
+
+
+# The state-directory file that enables Serve access and names its exact origin.
+# The Rust server reads the same file through the generated multi-server contract.
+REMOTE_ACCESS_FILE: Final = "remote-access.json"
+# An operator override of that file. When it is set, the file is not read.
+PUBLIC_ORIGIN_ENVIRONMENT: Final = "CODEX_CANVAS_PUBLIC_ORIGIN"
 
 
 def validate_origin(value):
@@ -26,8 +34,8 @@ def validate_origin(value):
 
 class RemoteAccess:
     def __init__(self, root, origin=None):
-        self.path = Path(root) / "remote-access.json"
-        configured = origin if origin is not None else os.environ.get("CODEX_CANVAS_PUBLIC_ORIGIN")
+        self.path = Path(root) / REMOTE_ACCESS_FILE
+        configured = origin if origin is not None else os.environ.get(PUBLIC_ORIGIN_ENVIRONMENT)
         self.override = validate_origin(configured) if configured else None
 
     def origin(self):

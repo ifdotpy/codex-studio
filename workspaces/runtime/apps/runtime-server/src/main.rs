@@ -452,7 +452,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         );
     }
     let native_path = env::var("CODEX_BIN").ok();
-    let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
+    // The operator override, or `remote-access.json` in the state directory.
+    let remote_access = Arc::new(
+        studio_runtime_services::remote_access::RemoteAccess::from_environment(&state_root)?,
+    );
+    let public_origin = remote_access.origin();
     #[cfg(unix)]
     let peer_link_advert = Arc::new(std::sync::RwLock::new(None));
     let cache_root = env::var_os("XDG_CACHE_HOME")
@@ -572,6 +576,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Some(store.clone()),
         Some(account_policy.clone()),
     )
+    .with_remote_access(Arc::clone(&remote_access))
     .with_continuation_wake_handle(Arc::clone(&continuation_wake))
     .with_account_driver(account_driver.clone())
     .with_provider_versions(provider_versions)
