@@ -192,53 +192,30 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    *state.bridge.faults.pause_operation.lock().unwrap() = Some("complete_effect".into());
-    state.bridge.run(|store| async move { store.transaction_with(move |tx| {
-        tx.execute_batch("CREATE TRIGGER retain_effect BEFORE DELETE ON runtime_operation_receipts WHEN OLD.id LIKE 'account-worker:effect:%' BEGIN SELECT RAISE(ABORT,'effect retirement unavailable'); END;")?;
-        Ok(())
-    }).await }).await.unwrap();
     let start = state.start(&mut peer, &worker).await;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        state.bridge.faults.paused.notified(),
-    )
-    .await
-    .unwrap();
-    let accepted = json!({"id":start["id"],"result":{"turn":{"id":"turn"}}});
-    peer.frame(accepted.clone()).await;
-    *state.bridge.faults.pause_operation.lock().unwrap() = None;
-    state.bridge.faults.release.notify_one();
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
-            .await
-            .unwrap()
-            .is_err()
-    );
-    state
-        .bridge
-        .run(|store| async move {
-            store
-                .transaction_with(move |tx| {
-                    tx.execute_batch("DROP TRIGGER retain_effect")?;
-                    Ok(())
-                })
-                .await
+    // The submitted commit retires the Submit effect that owed it, so no
+    // effect outlives the durable submission.
+    let receipts = |pattern: &'static str| {
+        state.bridge.run(move |store| async move {
+            Ok(store.read()?.query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE ?1",
+                [pattern],
+                |row| row.get::<_, i64>(0),
+            )?)
         })
-        .await
-        .unwrap();
-    let mut peer = Peer::new();
-    peer.cursor = 1;
-    let mut replacement = peer.worker(state.bridge.clone()).await;
-    let cursor = peer.frame(accepted).await;
-    peer.acknowledged(cursor).await;
-    worker_barrier(&replacement).await;
-    assert!(
-        peer.writes.try_recv().is_err(),
-        "retained Submit must not re-admit accepted input"
+    };
+    assert_eq!(receipts("account-worker:effect:%").await.unwrap(), 0);
+    assert_eq!(
+        receipts("account-worker:account:%:turn/start:submitted")
+            .await
+            .unwrap(),
+        1
     );
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
     let count = state.bridge.run(|store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:%' OR id LIKE 'account-worker:account:%:submitted'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
-    assert_eq!(count, 0, "settlement retires effect and guard together");
-    replacement.shutdown().await.unwrap();
+    assert_eq!(count, 0, "settlement retires the submission guard");
+    worker.shutdown().await.unwrap();
 }
 
 #[tokio::test]

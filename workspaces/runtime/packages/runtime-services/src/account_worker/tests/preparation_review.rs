@@ -248,6 +248,7 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
                         submission: prepared.submission,
                         guard: Some(prepared.guard),
                         connection_id: "test-connection".into(),
+                        effect: None,
                     },
                 )
                 .await?
@@ -411,6 +412,7 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
                         submission: prepared.submission,
                         guard: Some(prepared.guard),
                         connection_id: "test-connection".into(),
+                        effect: None,
                     },
                 )
                 .await?

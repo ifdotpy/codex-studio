@@ -24,6 +24,8 @@ pub(super) struct Commit {
     pub submission: Option<crate::notification_dispatch::PreparedSubmission>,
     pub guard: Option<preparation::CommitGuard>,
     pub receipt_checked: bool,
+    /// The durable effect the submitted commit deletes.
+    pub effect: Option<String>,
 }
 
 pub(super) enum Committed {
@@ -70,7 +72,10 @@ impl Commit {
             let launch =
                 vm_launch_request(&self.bridge, &self.context.intent, self.generation).await;
             if !matches!(launch, Ok(None)) {
-                return Ok(Committed::Vm(Box::new(self), launch));
+                // The worker completes the effect after the VM commit.
+                let mut commit = self;
+                commit.effect = None;
+                return Ok(Committed::Vm(Box::new(commit), launch));
             }
         }
         let control = self.control.clone();
@@ -91,6 +96,7 @@ impl Commit {
             interrupt_turn,
             submission,
             guard,
+            effect,
             ..
         } = self;
         let prepared = match crate::diagnostics::measure_runtime_stage_async(
@@ -126,6 +132,7 @@ impl Commit {
                         submission,
                         guard,
                         connection_id,
+                        effect,
                     },
                 )
                 .await

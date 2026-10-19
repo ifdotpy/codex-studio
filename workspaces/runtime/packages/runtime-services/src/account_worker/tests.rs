@@ -1490,6 +1490,7 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                         submission: prepared.submission,
                         guard: Some(prepared.guard),
                         connection_id: "test-connection".into(),
+                        effect: None,
                     },
                 )
                 .await?
@@ -5810,6 +5811,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                     submission: prepared.submission,
                     guard: Some(prepared.guard),
                     connection_id: "test-connection".into(),
+                    effect: None,
                 },
             ).await?, "{mutation}");
             scheduler::lifecycle_transaction_with(&store, move |tx| {

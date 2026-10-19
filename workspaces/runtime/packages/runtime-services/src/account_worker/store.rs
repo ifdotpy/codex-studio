@@ -53,6 +53,9 @@ pub(super) struct SubmissionEvidence {
     pub submission: Option<PreparedSubmission>,
     pub guard: Option<preparation::CommitGuard>,
     pub connection_id: String,
+    /// The durable effect that owes this submission; an authorized commit
+    /// deletes it, since a replay would find the submitted receipt.
+    pub effect: Option<String>,
 }
 
 fn invalid(id: &str) -> WorkerError {
@@ -726,6 +729,7 @@ pub(super) async fn submitted(
         submission,
         guard,
         connection_id,
+        effect,
     } = evidence;
     let account = account.to_owned();
     let blocked_intent = context.intent.clone();
@@ -813,6 +817,9 @@ pub(super) async fn submitted(
         stage("turn_submission.submitted.persist", || {
             if let Some(compiled) = &context.compiled {
                 preparation::persist_compilation(tx, compiled)?;
+            }
+            if let Some(key) = &effect {
+                delete_effect(tx, key)?;
             }
             save(
                 tx,

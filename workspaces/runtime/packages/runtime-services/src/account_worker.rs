@@ -2077,6 +2077,7 @@ impl Worker {
             submission,
             guard,
             receipt_checked,
+            effect: None,
         }
     }
     /// Finish a commit on the worker: a VM actor first opens its own session

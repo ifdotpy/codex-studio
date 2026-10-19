@@ -111,16 +111,19 @@ pub(super) async fn wake(
     })
 }
 
-/// Commit a prepared request in the agent's task.
+/// Commit a prepared request in the agent's task. A ready commit deleted
+/// `effect` in its submitted transaction; otherwise the worker completes it.
 pub(super) async fn commit(
     agent_id: String,
     effect: Option<String>,
-    commit: submission::Commit,
+    mut commit: submission::Commit,
 ) -> Box<Done> {
+    commit.effect = effect.clone();
+    let outcome = commit.run().await;
     Box::new(Done {
         agent_id,
-        effect,
-        outcome: commit.run().await.map(Outcome::Committed),
+        effect: effect.filter(|_| !matches!(outcome, Ok(submission::Committed::Ready(_)))),
+        outcome: outcome.map(Outcome::Committed),
     })
 }
 
