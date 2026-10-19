@@ -1,0 +1,38 @@
+name: Download build output
+description: >-
+  Download files that upload-build-output stored in this run, and refuse them
+  unless they were built from the commit of this checkout and are unchanged.
+inputs:
+  name:
+    description: Artifact name given to upload-build-output.
+    required: true
+  directory:
+    description: Empty directory that receives the files.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: ${{ inputs.name }}-${{ github.sha }}
+        path: ${{ inputs.directory }}
+    - name: Check the commit and SHA-256 sums of the build output
+      shell: bash
+      env:
+        DIRECTORY: ${{ inputs.directory }}
+      run: |
+        commit="$(git rev-parse HEAD)"
+        built="$(cat "$DIRECTORY/BUILD-COMMIT")"
+        if [ "$built" != "$commit" ] || [ "$commit" != "$GITHUB_SHA" ]; then
+          echo "::error::The build output is from $built; this checkout is $commit and this run builds $GITHUB_SHA." >&2
+          exit 1
+        fi
+        cd "$DIRECTORY"
+        sha256sum --check --strict SHA256SUMS
+        listed="$(cut -c 67- SHA256SUMS | sort)"
+        present="$(find . -type f ! -name SHA256SUMS ! -name BUILD-COMMIT -printf '%P\n' | sort)"
+        if [ "$listed" != "$present" ]; then
+          echo "::error::The build output has files that SHA256SUMS does not list." >&2
+          diff <(echo "$listed") <(echo "$present") >&2 || true
+          exit 1
+        fi

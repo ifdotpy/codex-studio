@@ -71,10 +71,36 @@ test-fast-rest:
 test-fast-rest-non-rust:
     @node {{quote(facade)}} test-fast-rest-non-rust
 
-[doc("Run one hash partition of the comprehensive Rust workspace checks.")]
-test-fast-rust-partition partition count:
-    @cargo build -p studio-process-supervisor --locked
-    @STUDIO_SUPERVISOR_BINARY="$(node -p 'require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "debug", "codex-process-supervisor")')" CODEX_NODE="$(node -p 'process.execPath')" cargo nextest run --workspace --profile ci --locked --partition hash:{{quote(partition)}}/{{quote(count)}}
+[doc("Run one hash partition of the comprehensive Rust workspace checks. With an archive from build-rust-test-archive, run its prebuilt tests instead of compiling them.")]
+test-fast-rust-partition partition count archive="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "$3" ]; then
+      # The archive holds ./target of the build checkout; compiled paths such as
+      # CARGO_BIN_EXE_* point there, so extract it into this checkout's ./target.
+      source=(--archive-file "$3" --workspace-remap . --extract-to . --extract-overwrite)
+      supervisor="$PWD/target/debug/codex-process-supervisor"
+    else
+      cargo build -p studio-process-supervisor --locked
+      source=(--workspace --locked)
+      supervisor="$(node -p 'require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "debug", "codex-process-supervisor")')"
+    fi
+    STUDIO_SUPERVISOR_BINARY="$supervisor" CODEX_NODE="$(node -p 'process.execPath')" cargo nextest run "${source[@]}" --profile ci --partition "hash:$1/$2"
+
+[doc("Build the workspace tests of test-fast-rust-partition once into a nextest archive file.")]
+build-rust-test-archive file:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+      echo "Unset CARGO_TARGET_DIR: test-fast-rust-partition extracts the archive into ./target" >&2
+      exit 1
+    fi
+    cargo build -p studio-process-supervisor --locked
+    cargo nextest archive --workspace --locked --archive-file "$1"
+    if ! tar -tf "$1" | grep -x 'target/debug/codex-process-supervisor' >/dev/null; then
+      echo "The archive lacks target/debug/codex-process-supervisor, which test-fast-rust-partition selects" >&2
+      exit 1
+    fi
 
 [doc("Run one stable shard of the default server suites; index is zero-based.")]
 test-server-shard index count:

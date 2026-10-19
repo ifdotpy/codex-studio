@@ -1,5 +1,11 @@
 name: Fast tier setup
 description: Install the pinned tools and isolated runtime used by the fast tier.
+inputs:
+  rust-cache:
+    description: >-
+      Key of the Cargo dependency cache for a job that compiles the workspace
+      (see rust-dependency-cache); empty for no cache.
+    default: ""
 runs:
   using: composite
   steps:
@@ -26,6 +32,10 @@ runs:
       with:
         toolchain: ${{ steps.rust-toolchain.outputs.channel }}
         components: ${{ steps.rust-toolchain.outputs.components }}
+    - if: inputs.rust-cache != ''
+      uses: ./.github/actions/rust-dependency-cache
+      with:
+        key: ${{ inputs.rust-cache }}
     - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
       with:
         tool: nextest@0.9.146

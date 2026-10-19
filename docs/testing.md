@@ -61,8 +61,8 @@ are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
 Before the comprehensive server tier, build its Rust HTTP fixture with
-`cargo build --locked --release -p studio-runtime-server`. Hosted server jobs do
-this explicitly. The short local tier does not require that fixture binary;
+`cargo build --locked --release -p studio-runtime-server`. Hosted CI builds it
+once per run, and the server jobs use that binary. The short local tier does not require that fixture binary;
 building a native desktop package does not produce it.
 
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.
@@ -632,6 +632,19 @@ workflow runs the 27 audited automated suites, the bridge suite, and one focused
 Python suite; it does not run the whole default server run. Heavy and load-class
 suites are excluded from hosted CI. The audited automation step was restored
 after its timing-sensitive suites were made deterministic in PR #80.
+
+Hosted CI compiles the Linux Rust code once per profile. The
+`Build: Rust HTTP backend` job builds the release `studio-runtime-server` for the
+server shards. The `Build: Rust workspace tests` job builds the renderer and
+the workspace tests with `just build-rust-test-archive`. Each Rust partition
+runs its part of that nextest archive with
+`just test-fast-rust-partition <partition> 4 <archive>`. The upload and download
+actions in `.github/actions` record the commit and the SHA-256 sum of each file.
+A job refuses build output from another commit or with changed files. A server
+or Rust job also fails when its build job fails; it does not report a skip.
+Jobs that compile Rust restore a Cargo dependency cache. The cache key includes
+the toolchain and the hash of `Cargo.lock`, the `Cargo.toml` files, and
+`rust-toolchain.toml`. Workspace crates are always compiled from source.
 
 - `pnpm run lint:all` and `pnpm run format:check:all` currently exit 1 on
   `main` because of existing findings. M-03.5 will add conservative affected

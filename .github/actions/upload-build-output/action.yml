@@ -1,0 +1,50 @@
+name: Upload build output
+description: >-
+  Upload files built in this run, with the commit and SHA-256 sums that
+  download-build-output checks before a job uses them.
+inputs:
+  name:
+    description: Artifact name; the action appends the commit of this run.
+    required: true
+  directory:
+    description: Directory that holds only the files to upload.
+    required: true
+  compression-level:
+    description: Artifact zip compression level, 0 to 9. Use 0 for files that are already compressed.
+    default: "6"
+runs:
+  using: composite
+  steps:
+    - name: Record the commit and SHA-256 sums of the build output
+      shell: bash
+      env:
+        DIRECTORY: ${{ inputs.directory }}
+      run: |
+        commit="$(git rev-parse HEAD)"
+        if [ "$commit" != "$GITHUB_SHA" ]; then
+          echo "::error::The checkout is at $commit, but this run builds $GITHUB_SHA." >&2
+          exit 1
+        fi
+        if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+          echo "::error::Tracked files differ from $commit, so the build output does not match one commit." >&2
+          git status --short --untracked-files=no >&2
+          exit 1
+        fi
+        cd "$DIRECTORY"
+        rm -f BUILD-COMMIT SHA256SUMS
+        sums="$RUNNER_TEMP/build-output-sums-$$"
+        find . -type f -printf '%P\0' | sort -z | xargs -0 --no-run-if-empty sha256sum -- > "$sums"
+        test -s "$sums"
+        mv "$sums" SHA256SUMS
+        echo "$commit" > BUILD-COMMIT
+        cat SHA256SUMS
+        du -sh -- *
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.name }}-${{ github.sha }}
+        path: ${{ inputs.directory }}
+        if-no-files-found: error
+        # A rerun of the build job replaces its output for the same commit.
+        overwrite: true
+        retention-days: 3
+        compression-level: ${{ inputs.compression-level }}
