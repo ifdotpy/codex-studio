@@ -1,9 +1,6 @@
 //! Read-only access to Python-written transcript rows.
 
-use crate::records::{
-    AgentId, AgentRecord, RecordOrder, RecordPredicate, Table, TranscriptItemId,
-    TranscriptItemRecord,
-};
+use crate::records::{RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -264,10 +261,14 @@ impl TranscriptRepository {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// The checked agent row as JSON, without a typed round trip.
     pub fn agent(connection: &Connection, agent: &str) -> TranscriptStoreResult<Option<Value>> {
-        Table::<AgentRecord>::new(connection)
-            .get(&AgentId::from(agent))
-            .map(|record| record.map(AgentRecord::into_value))
+        connection
+            .prepare_cached("SELECT record FROM runtime_agents WHERE id=?1")?
+            .query_row([agent], |row| row.get::<_, String>(0))
+            .optional()?
+            .map(|encoded| crate::records::decode_agent_value(agent, &encoded))
+            .transpose()
             .map_err(map_store_error)
     }
 

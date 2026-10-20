@@ -51,7 +51,15 @@ fn report_writer_origins(provider: studio_runtime_providers::ProviderKind, turns
             hold.as_secs_f64() * 1000.0 / count as f64
         );
     }
-    eprintln!("  {:>6.2}  total", origins.len() as f64 / turns as f64);
+    let hold = origins
+        .iter()
+        .map(|(_, hold)| *hold)
+        .sum::<std::time::Duration>();
+    eprintln!(
+        "  {:>6.2}  {:>8.3} ms writer hold per turn  total",
+        origins.len() as f64 / turns as f64,
+        hold.as_secs_f64() * 1000.0 / turns as f64
+    );
 }
 
 /// `count` agents on one account: the fixture agent and clones of it, each

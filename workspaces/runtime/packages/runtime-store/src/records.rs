@@ -940,35 +940,9 @@ pub(crate) fn decode_value(
 
 pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
     if R::TABLE == "runtime_agents" {
-        let value: Value = serde_json::from_str(encoded).map_err(|_| {
-            invalid_agent_field(
-                row_id,
-                "",
-                &format!("invalid_json; record length {} bytes", encoded.len()),
-                None,
-            )
-        })?;
-        if !studio_runtime_schema::validate(R::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
-        {
-            let (pointer, reason) = studio_runtime_schema::first_error(R::SCHEMA, &value)
-                .map_err(crate::StoreError::SchemaValidation)?
-                .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
-            return Err(invalid_agent_field(row_id, &pointer, &reason, Some(&value)));
-        }
-        let record = serde_json::from_value::<R>(value.clone())
-            .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
-        if R::KEY_MODE == RecordKeyMode::PayloadId
-            && record.record_key().map(AsRef::as_ref) != Some(row_id)
-        {
-            return Err(invalid_agent_field(
-                row_id,
-                "/id",
-                "row_id_mismatch",
-                Some(&value),
-            ));
-        }
-        return Ok(record);
+        // The checked value already carries the typed fields; decode moves it.
+        return serde_json::from_value::<R>(decode_agent_value(row_id, encoded)?)
+            .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None));
     }
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
@@ -982,6 +956,49 @@ pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> Store
         return Err(invalid());
     }
     Ok(record)
+}
+
+/// An agent row as checked JSON: the schema, the [`AgentRecord`] typed fields
+/// and the row key, without building the typed record.
+pub(crate) fn decode_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
+    /// The fields [`AgentRecord`] types; every other field is free JSON.
+    #[derive(Deserialize)]
+    struct TypedFields<'a> {
+        id: &'a str,
+        #[serde(rename = "rootId")]
+        _root_id: &'a str,
+        #[serde(rename = "epoch")]
+        _epoch: i64,
+        #[serde(rename = "status")]
+        _status: &'a str,
+    }
+    let value: Value = serde_json::from_str(encoded).map_err(|_| {
+        invalid_agent_field(
+            row_id,
+            "",
+            &format!("invalid_json; record length {} bytes", encoded.len()),
+            None,
+        )
+    })?;
+    if !studio_runtime_schema::validate(AgentRecord::SCHEMA, &value)
+        .map_err(crate::StoreError::SchemaValidation)?
+    {
+        let (pointer, reason) = studio_runtime_schema::first_error(AgentRecord::SCHEMA, &value)
+            .map_err(crate::StoreError::SchemaValidation)?
+            .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
+        return Err(invalid_agent_field(row_id, &pointer, &reason, Some(&value)));
+    }
+    let fields = TypedFields::deserialize(&value)
+        .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
+    if fields.id != row_id {
+        return Err(invalid_agent_field(
+            row_id,
+            "/id",
+            "row_id_mismatch",
+            Some(&value),
+        ));
+    }
+    Ok(value)
 }
 
 pub(crate) fn invalid_agent_field(

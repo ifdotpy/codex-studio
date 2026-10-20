@@ -8939,12 +8939,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -8975,12 +8978,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -9011,12 +9017,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -9047,12 +9056,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -9083,12 +9095,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -9119,12 +9134,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -9155,12 +9173,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
@@ -12033,12 +12054,15 @@
     "steps": [
       {
         "frame": {
-          "method": "item/agentMessage/delta",
+          "method": "item/completed",
           "params": {
             "threadId": "thread",
             "turnId": "replay-turn-1",
-            "itemId": "answer",
-            "delta": "new"
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
           },
           "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }

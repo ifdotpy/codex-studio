@@ -297,6 +297,8 @@ pub fn dispatch_notification_with_effects(
     let mut next_streams = streams.clone();
     let (kind, params) = notification_parts(notification)?;
     let mut before = None;
+    // The stored agent after this dispatch when known without reading it back.
+    let mut after_known = AfterAgent::Unknown;
     let mut fresh = false;
     let mut post_commit = NotificationPublicationBatch::default();
     let mut command_output_monitor_present = None;
@@ -391,6 +393,8 @@ pub fn dispatch_notification_with_effects(
             }
             validate_agent(&agent, agent_id, &identity.provider_handle, kind, params)?;
             before = Some(agent.clone());
+            // Whether a flush below changed the agent after `before` was taken.
+            let mut agent_changed = false;
             if kind == "command/exec/outputDelta" {
                 command_output_monitor_present = Some(
                     if let Some(process_id) = params
@@ -452,6 +456,7 @@ pub fn dispatch_notification_with_effects(
                 )?;
                 if agent != before {
                     persist_agent(transaction, agent_id, &agent, publication)?;
+                    agent_changed = true;
                 }
             }
             if kind == "item/commandExecution/outputDelta" {
@@ -482,6 +487,7 @@ pub fn dispatch_notification_with_effects(
                     Some(&key),
                     observed_at,
                 )?;
+                agent_changed = true;
             }
             if kind == "item/started" && params["item"]["type"] == "commandExecution" {
                 let mut scoped = params.to_owned();
@@ -489,7 +495,9 @@ pub fn dispatch_notification_with_effects(
                 let key = command_key(agent_id, identity, &scoped)?;
                 kinds::preserve_command_base(transaction, agent_id, &mut next_streams, &key)?;
             }
-            before = Some(agent.clone());
+            if agent_changed {
+                before = Some(agent.clone());
+            }
             if let Some(outcome) = kinds::apply(
                 transaction,
                 &mut agent,
@@ -509,7 +517,8 @@ pub fn dispatch_notification_with_effects(
                 && turn_id
                     .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn));
 
-            let before = agent.clone();
+            // `kinds::apply` changes nothing for the kinds that reach here, so
+            // `before` is still the stored agent.
             let outcome = match kind {
                 "item/agentMessage/delta" => {
                     if stale_item {
@@ -625,9 +634,11 @@ pub fn dispatch_notification_with_effects(
             if kind == "item/agentMessage/delta"
                 || matches!(outcome, DispatchOutcome::Ignored { .. })
             {
-                if agent != before {
-                    persist_agent(transaction, agent_id, &agent, publication)?;
-                }
+                after_known = if before.as_ref() == Some(&agent) {
+                    AfterAgent::Unchanged
+                } else {
+                    AfterAgent::Stored(persist_agent(transaction, agent_id, &agent, publication)?)
+                };
                 return save_outcome(transaction, &receipt_id, &content_signature, outcome);
             }
             if !stale_item
@@ -639,16 +650,34 @@ pub fn dispatch_notification_with_effects(
                 update_common_agent_fields(&mut agent, kind, params, observed_at)?;
             }
             if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
-                persist_agent(transaction, agent_id, &agent, publication)?;
+                after_known =
+                    AfterAgent::Stored(persist_agent(transaction, agent_id, &agent, publication)?);
             }
             save_outcome(transaction, &receipt_id, &content_signature, outcome)
         })()?;
         if fresh {
-            let after = if before.is_some() {
-                NotificationDispatchRepository::agent_record(transaction, agent_id)?
-            } else {
-                None
+            let unchanged = matches!(after_known, AfterAgent::Unchanged);
+            let stored = match after_known {
+                AfterAgent::Stored(agent) => Some(agent),
+                AfterAgent::Unknown if before.is_some() => {
+                    NotificationDispatchRepository::agent_record(transaction, agent_id)?
+                }
+                AfterAgent::Unchanged | AfterAgent::Unknown => None,
             };
+            let after = if unchanged {
+                before.as_ref()
+            } else {
+                stored.as_ref()
+            };
+            // Every dispatch test witnesses that the tracked value is the row.
+            #[cfg(test)]
+            if before.is_some() {
+                assert_eq!(
+                    after,
+                    NotificationDispatchRepository::agent_record(transaction, agent_id)?.as_ref(),
+                    "tracked agent after {kind} differs from the stored row"
+                );
+            }
             if matches!(
                 kind,
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
@@ -662,7 +691,7 @@ pub fn dispatch_notification_with_effects(
             }
             let mut current = effects.post_commit(
                 before.as_ref(),
-                after.as_ref(),
+                after,
                 &notification_payload(notification),
                 identity,
                 observed_at,
@@ -1167,7 +1196,6 @@ fn write_text_notification(
         item: item_id.to_owned(),
         method: "item/agentMessage/delta".to_owned(),
     };
-    let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
     if let TextUpdate::Delta(delta) = update {
         return match streams.enqueue_delta(key.clone(), delta, params) {
             EnqueueResult::Buffered => Ok(true),
@@ -1186,11 +1214,6 @@ fn write_text_notification(
             EnqueueResult::Closed => Ok(false),
         };
     }
-    let previous = old
-        .as_ref()
-        .map(|(record, _)| saved_text(transaction, &id, record))
-        .transpose()?
-        .unwrap_or_default();
     let (text, streaming, phase, index_search, completed) = match update {
         TextUpdate::Started(snapshot, phase) => (
             snapshot.unwrap_or_default().to_owned(),
@@ -1199,7 +1222,7 @@ fn write_text_notification(
             true,
             false,
         ),
-        TextUpdate::Delta(_) => unreachable!("delta handled before transcript read"),
+        TextUpdate::Delta(_) => unreachable!("delta returned above"),
         TextUpdate::Completed(snapshot, phase) => {
             flush_selected(
                 transaction,
@@ -1209,18 +1232,19 @@ fn write_text_notification(
                 Some(&key),
                 observed_at,
             )?;
-            let latest =
-                NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
-            let latest_text = latest
-                .as_ref()
-                .map(|(record, _)| saved_text(transaction, &id, record))
-                .transpose()?
-                .unwrap_or(previous);
+            // The flush above leaves the stored text current; read it only
+            // when the provider sent no completed snapshot.
+            let text = match snapshot.filter(|text| !text.is_empty()) {
+                Some(text) => text.to_owned(),
+                None => {
+                    NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?
+                        .map(|(record, _)| saved_text(transaction, &id, &record))
+                        .transpose()?
+                        .unwrap_or_default()
+                }
+            };
             (
-                snapshot
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or(&latest_text)
-                    .to_owned(),
+                text,
                 false,
                 phase.cloned().unwrap_or(Value::Null),
                 true,
@@ -1750,12 +1774,13 @@ fn update_common_agent_fields(
     Ok(())
 }
 
+/// Store `agent` with its mode fields normalized and return the stored value.
 fn persist_agent(
     transaction: &Transaction<'_>,
     agent_id: &str,
     agent: &Value,
     publication: &PublicationContext,
-) -> Result<(), NotificationDispatchError> {
+) -> Result<Value, NotificationDispatchError> {
     let mut normalized = agent.clone();
     crate::agents_create::mode_fields(&mut normalized);
     let agent = &normalized;
@@ -1769,7 +1794,17 @@ fn persist_agent(
     let view = crate::sync_views::agent_entity_view(agent, &context)
         .ok_or_else(|| stored("runtime_agents", agent_id))?;
     SyncDocumentsRepository::put_entity(transaction, "agent", agent_id, view, false)?;
-    Ok(())
+    Ok(normalized)
+}
+
+/// The stored agent after one dispatch, when the dispatch knows it.
+enum AfterAgent {
+    /// Read it back: a write path not tracked here may have stored it.
+    Unknown,
+    /// The dispatch stored nothing; the stored agent is `before`.
+    Unchanged,
+    /// The value this dispatch stored last.
+    Stored(Value),
 }
 
 fn has_questions(value: Option<&Value>) -> bool {
