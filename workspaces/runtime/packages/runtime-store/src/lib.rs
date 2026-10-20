@@ -51,7 +51,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -822,8 +822,6 @@ pub struct RuntimeStore {
     analytics: Arc<Mutex<Connection>>,
     version_reader: Mutex<Connection>,
     read_pool: Arc<ReadConnectionPool>,
-    /// Admission for [`RuntimeStore::read_async`]; one permit per pooled reader.
-    read_admission: Arc<tokio::sync::Semaphore>,
     writer_waiters: AtomicUsize,
     writer_waiter_peak: AtomicUsize,
     identity_registry_path: PathBuf,
@@ -848,8 +846,12 @@ pub struct RuntimeStore {
 
 struct ReadConnectionPool {
     path: PathBuf,
+    /// One permit per pooled reader. [`RuntimeStore::read`] and
+    /// [`RuntimeStore::read_async`] both hold one for their whole checkout,
+    /// so they queue in one FIFO and a holder always finds a connection.
+    admission: Arc<tokio::sync::Semaphore>,
     state: Mutex<ReadConnectionPoolState>,
-    available: Condvar,
+    /// Threads blocked in [`RuntimeStore::read`] for a permit.
     waiters: AtomicUsize,
     waiter_peak: AtomicUsize,
 }
@@ -867,6 +869,8 @@ thread_local! {
 pub struct ReadConnection {
     connection: Option<Connection>,
     pool: Arc<ReadConnectionPool>,
+    /// Released after the connection is back in the idle list.
+    _admission: tokio::sync::OwnedSemaphorePermit,
     pool_id: usize,
     _thread_bound: PhantomData<Rc<()>>,
 }
@@ -899,7 +903,6 @@ impl Drop for ReadConnection {
         };
         if let Ok(mut state) = self.pool.state.lock() {
             state.idle.push(connection);
-            self.pool.available.notify_one();
         }
     }
 }
@@ -908,104 +911,31 @@ impl ReadConnectionPool {
     fn new(path: PathBuf) -> Self {
         Self {
             path,
+            admission: Arc::new(tokio::sync::Semaphore::new(READ_CONNECTION_POOL_CAPACITY)),
             state: Mutex::new(ReadConnectionPoolState {
                 idle: Vec::new(),
                 opened: 0,
             }),
-            available: Condvar::new(),
             waiters: AtomicUsize::new(0),
             waiter_peak: AtomicUsize::new(0),
         }
     }
 
-    fn checkout(self: &Arc<Self>) -> StoreResult<ReadConnection> {
+    fn pool_id(self: &Arc<Self>) -> StoreResult<usize> {
         let pool_id = Arc::as_ptr(self) as usize;
         if ACTIVE_READ_POOLS.with(|active| active.borrow().contains(&pool_id)) {
             return Err(StoreError::NestedRead);
         }
+        Ok(pool_id)
+    }
+
+    /// Check out a reader on this thread, blocking it while every permit is held.
+    fn checkout(self: &Arc<Self>) -> StoreResult<ReadConnection> {
+        self.pool_id()?;
         let started = Instant::now();
-        let mut waiting = false;
-        let mut state = self.state.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        loop {
-            if let Some(connection) = state.idle.pop() {
-                if waiting {
-                    let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
-                    emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
-                        waiting_threads,
-                        peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
-                        opened_connections: state.opened,
-                    });
-                }
-                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
-                    wait: started.elapsed(),
-                    waited: waiting,
-                    waiting_threads: self.waiters.load(Ordering::Relaxed),
-                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
-                    opened_connections: state.opened,
-                });
-                ACTIVE_READ_POOLS.with(|active| {
-                    active.borrow_mut().insert(pool_id);
-                });
-                return Ok(ReadConnection {
-                    connection: Some(connection),
-                    pool: Arc::clone(self),
-                    pool_id,
-                    _thread_bound: PhantomData,
-                });
-            }
-            if state.opened < READ_CONNECTION_POOL_CAPACITY {
-                state.opened += 1;
-                drop(state);
-                let result = open_database(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(
-                    |connection| {
-                        connection.pragma_update(None, "query_only", "ON")?;
-                        Ok(connection)
-                    },
-                );
-                if result.is_err()
-                    && let Ok(mut state) = self.state.lock()
-                {
-                    state.opened = state.opened.saturating_sub(1);
-                    self.available.notify_one();
-                }
-                if waiting {
-                    let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
-                    emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
-                        waiting_threads,
-                        peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
-                        opened_connections: self
-                            .state
-                            .lock()
-                            .map(|state| state.opened)
-                            .unwrap_or_default(),
-                    });
-                }
-                let opened_connections = self
-                    .state
-                    .lock()
-                    .map(|state| state.opened)
-                    .unwrap_or_default();
-                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
-                    wait: started.elapsed(),
-                    waited: waiting,
-                    waiting_threads: self.waiters.load(Ordering::Relaxed),
-                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
-                    opened_connections,
-                });
-                if result.is_ok() {
-                    ACTIVE_READ_POOLS.with(|active| {
-                        active.borrow_mut().insert(pool_id);
-                    });
-                }
-                return result.map(|connection| ReadConnection {
-                    connection: Some(connection),
-                    pool: Arc::clone(self),
-                    pool_id,
-                    _thread_bound: PhantomData,
-                });
-            }
-            if !waiting {
-                waiting = true;
+        let (permit, waited) = match Arc::clone(&self.admission).try_acquire_owned() {
+            Ok(permit) => (permit, false),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
                 let active = self.waiters.fetch_add(1, Ordering::Relaxed) + 1;
                 let peak_waiters = self
                     .waiter_peak
@@ -1014,31 +944,82 @@ impl ReadConnectionPool {
                 emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
                     waiting_threads: active,
                     peak_waiters,
-                    opened_connections: state.opened,
+                    opened_connections: self.opened(),
                 });
+                let permit =
+                    futures_executor::block_on(Arc::clone(&self.admission).acquire_owned());
+                let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                    waiting_threads,
+                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                    opened_connections: self.opened(),
+                });
+                (permit.map_err(|_| StoreError::ReadTaskFailed)?, true)
             }
-            state = match self.available.wait(state) {
-                Ok(state) => state,
-                Err(error) => {
-                    if waiting {
-                        let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
-                        emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
-                            waiting_threads,
-                            peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
-                            opened_connections: error.get_ref().opened,
-                        });
-                        emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
-                            wait: started.elapsed(),
-                            waited: true,
-                            waiting_threads: self.waiters.load(Ordering::Relaxed),
-                            peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
-                            opened_connections: error.get_ref().opened,
-                        });
-                    }
-                    return Err(StoreError::WriterPoisoned);
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(StoreError::ReadTaskFailed),
+        };
+        self.checkout_admitted(permit, started, waited)
+    }
+
+    /// Check out a reader for a held permit; with the permit one is idle or may be opened.
+    fn checkout_admitted(
+        self: &Arc<Self>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        started: Instant,
+        waited: bool,
+    ) -> StoreResult<ReadConnection> {
+        let pool_id = self.pool_id()?;
+        let idle = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .idle
+            .pop();
+        let connection = match idle {
+            Some(connection) => connection,
+            None => {
+                self.state
+                    .lock()
+                    .map_err(|_| StoreError::WriterPoisoned)?
+                    .opened += 1;
+                let opened = open_database(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(
+                    |connection| {
+                        connection.pragma_update(None, "query_only", "ON")?;
+                        Ok(connection)
+                    },
+                );
+                if opened.is_err()
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.opened = state.opened.saturating_sub(1);
                 }
-            };
-        }
+                opened?
+            }
+        };
+        emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
+            wait: started.elapsed(),
+            waited,
+            waiting_threads: self.waiters.load(Ordering::Relaxed),
+            peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+            opened_connections: self.opened(),
+        });
+        ACTIVE_READ_POOLS.with(|active| {
+            active.borrow_mut().insert(pool_id);
+        });
+        Ok(ReadConnection {
+            connection: Some(connection),
+            pool: Arc::clone(self),
+            _admission: permit,
+            pool_id,
+            _thread_bound: PhantomData,
+        })
+    }
+
+    fn opened(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.opened)
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -1054,7 +1035,16 @@ fn read_snapshot<T, E>(
 where
     E: From<StoreError>,
 {
-    let mut connection = pool.checkout()?;
+    snapshot_on(pool.checkout()?, operation)
+}
+
+fn snapshot_on<T, E>(
+    mut connection: ReadConnection,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<StoreError>,
+{
     let transaction = connection.transaction().map_err(StoreError::from)?;
     let value = operation(&transaction)?;
     transaction
@@ -1238,7 +1228,6 @@ impl RuntimeStore {
             analytics: Arc::new(Mutex::new(analytics)),
             version_reader: Mutex::new(version_reader),
             read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
-            read_admission: Arc::new(tokio::sync::Semaphore::new(READ_CONNECTION_POOL_CAPACITY)),
             writer_waiters: AtomicUsize::new(0),
             writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path,
@@ -1922,6 +1911,8 @@ impl RuntimeStore {
     }
 
     /// Open an independent read-only, query-only connection to the main DB.
+    /// It takes a [`Self::read_async`] permit and blocks this thread while
+    /// none is free, so call it only on a blocking thread.
     pub fn read(&self) -> StoreResult<ReadConnection> {
         self.read_pool.checkout()
     }
@@ -1951,7 +1942,9 @@ impl RuntimeStore {
     /// Callers wait for a reader as futures: a blocking-pool thread is taken
     /// only after one of the [`READ_CONNECTION_POOL_CAPACITY`] permits is held,
     /// so a read burst never parks more threads than there are readers.
-    /// `label` names the call site in the blocking-pool diagnostics.
+    /// Synchronous [`Self::read`] takes the same permits, so the held permit
+    /// always finds a connection. `label` names the call site in the
+    /// blocking-pool diagnostics.
     pub async fn read_async<T, E>(
         &self,
         label: &'static str,
@@ -1961,14 +1954,20 @@ impl RuntimeStore {
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
-        let permit = Arc::clone(&self.read_admission)
-            .acquire_owned()
-            .await
-            .map_err(|_| StoreError::ReadTaskFailed)?;
+        let started = Instant::now();
         let pool = Arc::clone(&self.read_pool);
+        let (permit, waited) = match Arc::clone(&pool.admission).try_acquire_owned() {
+            Ok(permit) => (permit, false),
+            Err(_) => (
+                Arc::clone(&pool.admission)
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| StoreError::ReadTaskFailed)?,
+                true,
+            ),
+        };
         blocking_pool::spawn_blocking(label, move || {
-            let _permit = permit;
-            read_snapshot(&pool, operation)
+            snapshot_on(pool.checkout_admitted(permit, started, waited)?, operation)
         })
         .await
         .map_err(|_| StoreError::ReadTaskFailed)?
@@ -2248,7 +2247,7 @@ mod read_pool_tests {
         }
         // Every permit is held by a gated closure; the other reads wait as
         // futures and have not been submitted to the blocking pool.
-        assert_eq!(store.read_admission.available_permits(), 0);
+        assert_eq!(store.read_pool.admission.available_permits(), 0);
         assert_eq!(
             running.load(Ordering::SeqCst),
             READ_CONNECTION_POOL_CAPACITY
@@ -2271,7 +2270,7 @@ mod read_pool_tests {
                 .await
                 .expect("open runtime store"),
         );
-        let held = Arc::clone(&store.read_admission)
+        let held = Arc::clone(&store.read_pool.admission)
             .acquire_many_owned(READ_CONNECTION_POOL_CAPACITY as u32)
             .await
             .expect("hold all read admission permits");
@@ -2294,11 +2293,11 @@ mod read_pool_tests {
         );
         drop(read);
         assert!(!ran.load(Ordering::Acquire));
-        assert_eq!(store.read_admission.available_permits(), 0);
+        assert_eq!(store.read_pool.admission.available_permits(), 0);
 
         drop(held);
         assert_eq!(
-            store.read_admission.available_permits(),
+            store.read_pool.admission.available_permits(),
             READ_CONNECTION_POOL_CAPACITY
         );
     }
@@ -2314,7 +2313,7 @@ mod read_pool_tests {
         let mut held = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY - 1);
         for _ in 1..READ_CONNECTION_POOL_CAPACITY {
             held.push(
-                Arc::clone(&store.read_admission)
+                Arc::clone(&store.read_pool.admission)
                     .acquire_owned()
                     .await
                     .expect("hold a read admission permit"),
@@ -2347,7 +2346,7 @@ mod read_pool_tests {
             assert!(matches!(canceled, Ok(Err(error)) if error.is_cancelled()));
             panic!("blocking read did not start within the test watchdog");
         }
-        assert_eq!(store.read_admission.available_permits(), 0);
+        assert_eq!(store.read_pool.admission.available_permits(), 0);
 
         task.abort();
         assert!(
@@ -2397,7 +2396,7 @@ mod read_pool_tests {
             panic!("waiting read did not reach admission within the test watchdog");
         }
         assert!(waiting_entered_rx.try_recv().is_err());
-        assert_eq!(store.read_admission.available_permits(), 0);
+        assert_eq!(store.read_pool.admission.available_permits(), 0);
 
         release_tx.send(()).expect("submitted read is gated");
         let waiting_admitted =
@@ -2424,7 +2423,53 @@ mod read_pool_tests {
         );
         drop(held);
         assert_eq!(
-            store.read_admission.available_permits(),
+            store.read_pool.admission.available_permits(),
+            READ_CONNECTION_POOL_CAPACITY
+        );
+    }
+
+    /// A synchronous read holds an async-read permit, so an async read never
+    /// takes a blocking thread only to wait there for a connection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synchronous_reads_hold_the_shared_read_admission() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        std::thread::scope(|scope| {
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                let (held_tx, store) = (held_tx.clone(), &store);
+                let release_rx = &release_rx;
+                scope.spawn(move || {
+                    let reader = store.read().expect("synchronous read");
+                    held_tx.send(()).expect("report held reader");
+                    let _released = release_rx.lock().map(|rx| rx.recv());
+                    drop(reader);
+                });
+            }
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                held_rx.recv().expect("reader held");
+            }
+            assert_eq!(store.read_pool.admission.available_permits(), 0);
+            let mut read = Box::pin(store.read_async(
+                "runtime-store/tests/read_async_behind_synchronous_reads",
+                |_| Ok::<_, StoreError>(()),
+            ));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                std::future::Future::poll(read.as_mut(), &mut context).is_pending(),
+                "the async read waits for a permit as a future"
+            );
+            drop(read);
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                release_tx.send(()).expect("release reader");
+            }
+        });
+        assert_eq!(
+            store.read_pool.admission.available_permits(),
             READ_CONNECTION_POOL_CAPACITY
         );
     }
