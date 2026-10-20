@@ -994,6 +994,7 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         .expect("read state invalidation");
     assert!(changes_since.entity_reset);
     assert_eq!(changes_since.resources, vec![json!({"kind":"state"})]);
+    token_rates.settled().await;
     let snapshot = token_rates.snapshot().to_value();
     assert_eq!(snapshot["rates"]["agent"]["turnId"], "turn");
     assert_eq!(snapshot["rates"]["agent"]["outputTokens"], 10.0);
@@ -1087,6 +1088,7 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
             .expect("analytics state invalidation")
             .entity_reset
     );
+    sink.token_rates.settled().await;
     snapshots.borrow_and_update();
     let before_delta = changes.snapshot().revision;
 
@@ -1097,6 +1099,7 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
             .expect("drain volatile token update"),
         1
     );
+    sink.token_rates.settled().await;
     assert!(snapshots.has_changed().expect("token-rate hub stays open"));
     let value = snapshots.borrow_and_update();
     assert_eq!(value.to_value()["rates"]["agent"]["active"], true);
@@ -1145,6 +1148,7 @@ async fn production_sink_replay_keeps_analytics_rows_unchanged() {
         .is_err()
     );
     let before = analytics_counts(&root);
+    sink.token_rates.settled().await;
     let revision = changes.snapshot().revision;
     let snapshot = sink.token_rates.snapshot();
     assert_eq!(pending_count(&store), 1);
@@ -1156,6 +1160,7 @@ async fn production_sink_replay_keeps_analytics_rows_unchanged() {
         1
     );
     assert_eq!(analytics_counts(&root), before);
+    sink.token_rates.settled().await;
     assert_eq!(changes.snapshot().revision, revision);
     assert_eq!(sink.token_rates.snapshot(), snapshot);
     assert_eq!(pending_count(&store), 0);
@@ -1294,6 +1299,7 @@ async fn stale_analytics_observation_settles_without_publication() {
     );
     advance_agent_epoch(&store, 1).await;
     let before = analytics_counts(&root);
+    sink.token_rates.settled().await;
     let revision = changes.snapshot().revision;
     let snapshot = sink.token_rates.snapshot();
 
@@ -1301,6 +1307,7 @@ async fn stale_analytics_observation_settles_without_publication() {
         .await
         .expect("superseded observation settles");
     assert_eq!(analytics_counts(&root), before);
+    sink.token_rates.settled().await;
     assert_eq!(changes.snapshot().revision, revision);
     assert_eq!(sink.token_rates.snapshot(), snapshot);
 

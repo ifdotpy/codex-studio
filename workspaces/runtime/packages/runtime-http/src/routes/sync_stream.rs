@@ -17,7 +17,9 @@ use studio_runtime_schema::shared_values::{
     MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_RESOURCE_HEARTBEAT_SECONDS,
 };
 use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
-use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
+use studio_runtime_services::change_notifications::{
+    ChangeSnapshot, MAX_SAFE_REVISION, SYNC_FRAME_MIN_INTERVAL,
+};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
 use studio_runtime_services::resource_notify::{
     ResourceChanges, ResourceNotifications, ResourceNotifyError,
@@ -504,11 +506,6 @@ fn resource_event(
     })
 }
 
-/// Minimum spacing of two frames of one kind on one stream, in milliseconds of wall time. The
-/// UI redraws far below this rate, and a token burst otherwise costs one full-snapshot frame
-/// per publication.
-const SYNC_FRAME_MIN_INTERVAL: Duration = Duration::from_millis(100);
-
 fn sse_event(name: &str, revision: Option<i64>, payload: Value) -> Event {
     let event = Event::default().event(name).data(payload.to_string());
     match revision {
@@ -854,7 +851,7 @@ mod tests {
     fn token_snapshot_keeps_cursor_guarded_during_a_competing_publication() {
         use std::sync::mpsc;
         let hub = Arc::new(ChangeNotificationHub::new());
-        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let tokens = Arc::new(TokenRateHub::with_change_hub(hub.clone()));
         tokens.publish(floating_test_rates(1)).expect("first");
         let mut reader = tokens.subscribe();
         let (captured, capture_gate) = mpsc::channel();
@@ -898,7 +895,7 @@ mod tests {
     {
         use futures_util::StreamExt;
         let hub = Arc::new(ChangeNotificationHub::new());
-        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let tokens = Arc::new(TokenRateHub::with_change_hub(hub.clone()));
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
         let mut first = Box::pin(stream::unfold(
             test_stream(
@@ -1000,7 +997,7 @@ mod tests {
         let expected: Vec<Vec<Value>> = serde_json::from_slice(&output.stdout).expect("documents");
         for (case, expected) in cases.as_array().expect("cases").iter().zip(expected) {
             let hub = Arc::new(ChangeNotificationHub::new());
-            let tokens = TokenRateHub::with_change_hub(hub.clone());
+            let tokens = Arc::new(TokenRateHub::with_change_hub(hub.clone()));
             let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
             let state = test_stream(
                 &hub,

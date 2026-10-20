@@ -2,16 +2,17 @@
 
 use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
-use crate::change_notifications::ChangeNotificationHub;
+use crate::change_notifications::{ChangeNotificationHub, SYNC_FRAME_MIN_INTERVAL};
 use crate::notification_dispatch::{NotificationObservation, NotificationPostCommit};
 use serde::{Deserialize, Serialize};
 use studio_runtime_schema::{
     TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
 };
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,11 +94,27 @@ pub enum TokenRateError {
 }
 
 /// A bounded watch channel; slow subscribers always receive the newest snapshot.
-#[derive(Clone)]
+///
+/// One projector task owns the per-agent state. An observation only queues for it, the task
+/// updates the one agent it names, and it builds one immutable snapshot per
+/// `SYNC_FRAME_MIN_INTERVAL` while observations arrive; it sleeps while none do.
 pub struct TokenRateHub {
+    publication: Arc<Publication>,
+    /// Queue of the projector task, which the first observation starts.
+    projector: OnceLock<mpsc::UnboundedSender<ProjectorCommand>>,
+}
+
+struct Publication {
     sender: watch::Sender<Arc<TokenRateSnapshot>>,
-    projector: Arc<Mutex<RateProjector>>,
     changes: Option<Arc<ChangeNotificationHub>>,
+}
+
+enum ProjectorCommand {
+    Observe {
+        effect: NotificationPostCommit,
+        effect_bit: u8,
+    },
+    Settle(oneshot::Sender<()>),
 }
 
 #[derive(Default)]
@@ -211,48 +228,42 @@ impl TokenRateSnapshot {
 impl TokenRateHub {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            sender: watch::channel(Arc::new(TokenRateSnapshot::empty())).0,
-            projector: Arc::default(),
-            changes: None,
-        }
+        Self::publishing(None)
     }
 
     /// Bind token-only publications to the shared cursor without invalidating resources.
     #[must_use]
     pub fn with_change_hub(changes: Arc<ChangeNotificationHub>) -> Self {
+        Self::publishing(Some(changes))
+    }
+
+    fn publishing(changes: Option<Arc<ChangeNotificationHub>>) -> Self {
         Self {
-            changes: Some(changes),
-            ..Self::new()
+            publication: Arc::new(Publication {
+                sender: watch::channel(Arc::new(TokenRateSnapshot::empty())).0,
+                changes,
+            }),
+            projector: OnceLock::new(),
         }
     }
 
     #[must_use]
     pub fn snapshot(&self) -> TokenRateSnapshot {
-        TokenRateSnapshot::clone(&self.sender.borrow())
+        TokenRateSnapshot::clone(&self.publication.sender.borrow())
     }
 
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<Arc<TokenRateSnapshot>> {
-        self.sender.subscribe()
+        self.publication.sender.subscribe()
     }
 
-    /// Project one committed provider observation into HTTP sync. The exact
-    /// provider/generation/cursor/effect watermark stays with this owner even
-    /// when its bounded snapshot entry is evicted.
+    /// Queue one committed provider observation for projection into HTTP sync. The exact
+    /// provider/generation/cursor/effect watermark stays with the projector even when its
+    /// bounded snapshot entry is evicted. Must be called inside a Tokio runtime.
     pub fn publish_observation(
         &self,
         effect: NotificationPostCommit,
-    ) -> Result<bool, TokenRateError> {
-        let Some(observation) = effect_observation(&effect) else {
-            return Err(TokenRateError::Unavailable);
-        };
-        let agent = observation
-            .agent
-            .as_ref()
-            .ok_or(TokenRateError::Unavailable)?;
-        let agent_id = agent["id"].as_str().ok_or(TokenRateError::Unavailable)?;
-        let delivery = &observation.delivery;
+    ) -> Result<(), TokenRateError> {
         let effect_bit = match effect {
             NotificationPostCommit::Analytics { .. }
             | NotificationPostCommit::AnalyticsCaptured(_)
@@ -265,94 +276,40 @@ impl TokenRateHub {
                 return Err(TokenRateError::Unavailable);
             }
         };
-        let snapshot = {
-            let mut projector = self
-                .projector
-                .lock()
-                .map_err(|_| TokenRateError::Unavailable)?;
-            let new_generation = match projector.watermarks.get_mut(&delivery.provider_handle) {
-                Some(watermark) if delivery.generation < watermark.generation => return Ok(false),
-                Some(watermark) if delivery.generation > watermark.generation => {
-                    *watermark = DeliveryWatermark {
-                        generation: delivery.generation,
-                        cursor: delivery.cursor,
-                        effects: effect_bit,
-                    };
-                    true
-                }
-                Some(watermark) if delivery.cursor < watermark.cursor => return Ok(false),
-                Some(watermark) if delivery.cursor == watermark.cursor => {
-                    if watermark.effects & effect_bit != 0 {
-                        return Ok(false);
-                    }
-                    watermark.effects |= effect_bit;
-                    false
-                }
-                Some(watermark) => {
-                    watermark.cursor = delivery.cursor;
-                    watermark.effects = effect_bit;
-                    false
-                }
-                None => {
-                    projector.watermarks.insert(
-                        delivery.provider_handle.clone(),
-                        DeliveryWatermark {
-                            generation: delivery.generation,
-                            cursor: delivery.cursor,
-                            effects: effect_bit,
-                        },
-                    );
-                    true
-                }
-            };
-            if new_generation {
-                projector.agents.remove(agent_id);
-            }
-            let entry = projector.agents.entry(agent_id.to_owned()).or_default();
-            entry.provider_handle.clone_from(&delivery.provider_handle);
-            entry.root = agent
-                .get("rootId")
-                .and_then(serde_json::Value::as_str)
-                .filter(|root| !root.is_empty())
-                .unwrap_or(agent_id)
-                .to_owned();
-            project_effect(entry, &effect, observation);
-            while projector.agents.len() > MAX_PROJECTED_AGENTS {
-                let oldest = projector.agents.keys().next().cloned();
-                if let Some(oldest) = oldest {
-                    projector.agents.remove(&oldest);
-                }
-            }
-            while projector.watermarks.len() > MAX_TOKEN_RATE_WATERMARKS {
-                let referenced = projector
-                    .agents
-                    .values()
-                    .map(|agent| agent.provider_handle.as_str())
-                    .collect::<BTreeSet<_>>();
-                let oldest = projector
-                    .watermarks
-                    .keys()
-                    .find(|provider| !referenced.contains(provider.as_str()))
-                    .cloned();
-                if let Some(oldest) = oldest {
-                    projector.watermarks.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
-            snapshot_from_projector(&projector)
-        };
-        self.publish_snapshot(snapshot.validated()?)
-            .map_err(|_| TokenRateError::InvalidSnapshot)
+        effect_agent_id(&effect).ok_or(TokenRateError::Unavailable)?;
+        self.queue(ProjectorCommand::Observe { effect, effect_bit })
+    }
+
+    /// Wait until every observation queued before this call is projected and published.
+    pub async fn settled(&self) {
+        let (sender, receiver) = oneshot::channel();
+        if self.queue(ProjectorCommand::Settle(sender)).is_ok() {
+            receiver.await.ok();
+        }
+    }
+
+    fn queue(&self, command: ProjectorCommand) -> Result<(), TokenRateError> {
+        self.projector
+            .get_or_init(|| {
+                let (sender, receiver) = mpsc::unbounded_channel();
+                tokio::spawn(run_projector(receiver, Arc::clone(&self.publication)));
+                sender
+            })
+            .send(command)
+            .map_err(|_| TokenRateError::Unavailable)
     }
 
     /// Publish one already validated producer snapshot; identical updates are coalesced.
     pub fn publish(&self, value: serde_json::Value) -> Result<bool, TokenRateError> {
-        self.publish_snapshot(TokenRateSnapshot::from_value(value)?)
+        Ok(self
+            .publication
+            .publish(TokenRateSnapshot::from_value(value)?))
     }
+}
 
-    fn publish_snapshot(&self, snapshot: TokenRateSnapshot) -> Result<bool, TokenRateError> {
-        Ok(self.sender.send_if_modified(|current| {
+impl Publication {
+    fn publish(&self, snapshot: TokenRateSnapshot) -> bool {
+        self.sender.send_if_modified(|current| {
             if **current == snapshot {
                 false
             } else if let Some(changes) = &self.changes {
@@ -361,8 +318,185 @@ impl TokenRateHub {
                 *current = Arc::new(snapshot);
                 true
             }
-        }))
+        })
     }
+}
+
+/// The projector task: it sleeps until an observation arrives, folds in everything that
+/// arrives before the next frame instant, and then publishes one snapshot. A settle request
+/// publishes at once. The task ends with the hub.
+async fn run_projector(
+    mut commands: mpsc::UnboundedReceiver<ProjectorCommand>,
+    publication: Arc<Publication>,
+) {
+    let mut projector = RateProjector::default();
+    let mut next_frame = Instant::now();
+    let mut settled = Vec::new();
+    let mut dirty = false;
+    while let Some(command) = commands.recv().await {
+        let mut open = true;
+        let mut command = Some(command);
+        let frame = tokio::time::sleep_until(next_frame);
+        tokio::pin!(frame);
+        loop {
+            match command.take() {
+                Some(ProjectorCommand::Observe { effect, effect_bit }) => {
+                    dirty |= projector.observe(&effect, effect_bit);
+                }
+                Some(ProjectorCommand::Settle(waiter)) => settled.push(waiter),
+                None => {}
+            }
+            if !settled.is_empty() {
+                break;
+            }
+            tokio::select! {
+                biased;
+                () = &mut frame => break,
+                next = commands.recv() => match next {
+                    Some(next) => command = Some(next),
+                    None => {
+                        open = false;
+                        break;
+                    }
+                },
+            }
+        }
+        if std::mem::take(&mut dirty) {
+            publication.publish(projector.snapshot());
+            next_frame = Instant::now() + SYNC_FRAME_MIN_INTERVAL;
+        }
+        for waiter in settled.drain(..) {
+            waiter.send(()).ok();
+        }
+        if !open {
+            return;
+        }
+    }
+}
+
+impl RateProjector {
+    /// Fold one observation into its agent; false when the delivery watermark already has it.
+    fn observe(&mut self, effect: &NotificationPostCommit, effect_bit: u8) -> bool {
+        let (Some(observation), Some(agent_id)) =
+            (effect_observation(effect), effect_agent_id(effect))
+        else {
+            return false;
+        };
+        let delivery = &observation.delivery;
+        let new_generation = match self.watermarks.get_mut(&delivery.provider_handle) {
+            Some(watermark) if delivery.generation < watermark.generation => return false,
+            Some(watermark) if delivery.generation > watermark.generation => {
+                *watermark = DeliveryWatermark {
+                    generation: delivery.generation,
+                    cursor: delivery.cursor,
+                    effects: effect_bit,
+                };
+                true
+            }
+            Some(watermark) if delivery.cursor < watermark.cursor => return false,
+            Some(watermark) if delivery.cursor == watermark.cursor => {
+                if watermark.effects & effect_bit != 0 {
+                    return false;
+                }
+                watermark.effects |= effect_bit;
+                false
+            }
+            Some(watermark) => {
+                watermark.cursor = delivery.cursor;
+                watermark.effects = effect_bit;
+                false
+            }
+            None => {
+                self.watermarks.insert(
+                    delivery.provider_handle.clone(),
+                    DeliveryWatermark {
+                        generation: delivery.generation,
+                        cursor: delivery.cursor,
+                        effects: effect_bit,
+                    },
+                );
+                true
+            }
+        };
+        if new_generation {
+            self.agents.remove(agent_id);
+        }
+        if !self.agents.contains_key(agent_id) {
+            self.agents
+                .insert(agent_id.to_owned(), ProjectedAgent::default());
+        }
+        let Some(entry) = self.agents.get_mut(agent_id) else {
+            return false;
+        };
+        entry.provider_handle.clone_from(&delivery.provider_handle);
+        let root = observation
+            .agent
+            .as_ref()
+            .and_then(|agent| agent["rootId"].as_str())
+            .filter(|root| !root.is_empty())
+            .unwrap_or(agent_id);
+        if entry.root != root {
+            root.clone_into(&mut entry.root);
+        }
+        project_effect(entry, effect, observation);
+        while self.agents.len() > MAX_PROJECTED_AGENTS {
+            self.agents.pop_first();
+        }
+        while self.watermarks.len() > MAX_TOKEN_RATE_WATERMARKS {
+            let referenced = self
+                .agents
+                .values()
+                .map(|agent| agent.provider_handle.as_str())
+                .collect::<BTreeSet<_>>();
+            let oldest = self
+                .watermarks
+                .keys()
+                .find(|provider| !referenced.contains(provider.as_str()))
+                .cloned();
+            if let Some(oldest) = oldest {
+                self.watermarks.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        true
+    }
+
+    /// The immutable snapshot of every agent with a turn. Entries whose identifiers break the
+    /// wire bounds are left out, so one bad identifier cannot stop publication.
+    fn snapshot(&self) -> TokenRateSnapshot {
+        let mut snapshot = TokenRateSnapshot::empty();
+        for (agent_id, state) in &self.agents {
+            if state.turn.is_empty()
+                || !valid_id(agent_id)
+                || !valid_id(&state.turn)
+                || !valid_id(&state.root)
+            {
+                continue;
+            }
+            let value = TokenRateValue {
+                turn_id: state.turn.clone(),
+                active: state.active,
+                estimated: state.estimated,
+                rate: FiniteRate(state.rate.clamp(0.0, MAX_TOKEN_RATE)),
+                output_tokens: FiniteRate(
+                    (state.actual + state.pending + state.response_duration_pending_tokens)
+                        .max(0.0),
+                ),
+            };
+            snapshot.rates.insert(agent_id.clone(), value.clone());
+            snapshot
+                .teams
+                .entry(state.root.clone())
+                .or_default()
+                .insert(agent_id.clone(), value);
+        }
+        snapshot
+    }
+}
+
+fn effect_agent_id(effect: &NotificationPostCommit) -> Option<&str> {
+    effect_observation(effect)?.agent.as_ref()?["id"].as_str()
 }
 
 fn effect_observation(effect: &NotificationPostCommit) -> Option<&NotificationObservation> {
@@ -657,31 +791,6 @@ fn append_response_duration(state: &mut ProjectedAgent, duration: f64, pending: 
     state.response_duration_pending_tokens += pending;
 }
 
-fn snapshot_from_projector(projector: &RateProjector) -> TokenRateSnapshot {
-    let mut snapshot = TokenRateSnapshot::empty();
-    for (agent_id, state) in &projector.agents {
-        if state.turn.is_empty() {
-            continue;
-        }
-        let value = TokenRateValue {
-            turn_id: state.turn.clone(),
-            active: state.active,
-            estimated: state.estimated,
-            rate: FiniteRate(state.rate.clamp(0.0, MAX_TOKEN_RATE)),
-            output_tokens: FiniteRate(
-                (state.actual + state.pending + state.response_duration_pending_tokens).max(0.0),
-            ),
-        };
-        snapshot.rates.insert(agent_id.clone(), value.clone());
-        snapshot
-            .teams
-            .entry(state.root.clone())
-            .or_default()
-            .insert(agent_id.clone(), value);
-    }
-    snapshot
-}
-
 fn round_rate(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
@@ -712,7 +821,7 @@ fn valid_rate(value: &TokenRateValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent,
+        MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent, RateProjector,
         TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
         TokenRateHub,
     };
@@ -904,112 +1013,240 @@ mod tests {
         );
     }
 
+    /// A usage observation folded into the projector, as the projector task does.
+    fn observe(projector: &mut RateProjector, effect: &NotificationPostCommit) -> bool {
+        projector.observe(effect, 1)
+    }
+
     #[test]
     fn delivery_watermark_survives_projection_eviction_and_acknowledgement_loss() {
-        let hub = TokenRateHub::new();
+        let mut projector = RateProjector::default();
         let original = usage_effect("agent-0000", "provider-a", 1, 1, "turn-a");
+        assert!(observe(&mut projector, &original));
+        let after_publish = projector.snapshot();
         assert!(
-            hub.publish_observation(original.clone())
-                .expect("first publish")
-        );
-        let after_publish = hub.snapshot();
-        assert!(
-            !hub.publish_observation(original.clone())
-                .expect("retry after lost acknowledgement")
+            !observe(&mut projector, &original),
+            "retry after lost acknowledgement"
         );
         assert!(
-            !hub.publish_observation(usage_effect(
-                "agent-other",
-                "provider-a",
-                1,
-                1,
-                "turn-other"
-            ))
-            .expect("provider identity deduplicates across replay")
+            !observe(
+                &mut projector,
+                &usage_effect("agent-other", "provider-a", 1, 1, "turn-other")
+            ),
+            "provider identity deduplicates across replay"
         );
-        assert_eq!(hub.snapshot(), after_publish);
+        assert_eq!(projector.snapshot(), after_publish);
 
-        {
-            let mut projector = hub.projector.lock().expect("token-rate projector");
-            for index in 1..MAX_PROJECTED_AGENTS {
-                projector
-                    .agents
-                    .insert(format!("agent-{index:04}"), ProjectedAgent::default());
-            }
+        for index in 1..MAX_PROJECTED_AGENTS {
+            projector
+                .agents
+                .insert(format!("agent-{index:04}"), ProjectedAgent::default());
         }
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent-zzzz", "provider-b", 1, 1, "turn-b")
+        ));
+        assert!(!projector.snapshot().rates.contains_key("agent-0000"));
         assert!(
-            hub.publish_observation(usage_effect("agent-zzzz", "provider-b", 1, 1, "turn-b"))
-                .expect("fill bounded projection")
+            !observe(&mut projector, &original),
+            "replay after projection eviction"
         );
-        assert!(!hub.snapshot().rates.contains_key("agent-0000"));
-        assert!(
-            !hub.publish_observation(original)
-                .expect("replay after projection eviction")
-        );
-        assert!(!hub.snapshot().rates.contains_key("agent-0000"));
+        assert!(!projector.snapshot().rates.contains_key("agent-0000"));
     }
 
     #[test]
     fn watermark_cap_preserves_provider_of_a_live_projection() {
-        let hub = TokenRateHub::new();
-        assert!(
-            hub.publish_observation(usage_effect("z-agent", "a-provider", 1, 1, "old-turn"))
-                .expect("first provider delivery")
-        );
-        assert!(
-            hub.publish_observation(usage_effect("z-agent", "a-provider", 1, 2, "current-turn"))
-                .expect("advance live projection")
-        );
-
-        {
-            let mut projector = hub.projector.lock().expect("token-rate projector");
-            for index in 0..(MAX_TOKEN_RATE_WATERMARKS - 1) {
-                projector.watermarks.insert(
-                    format!("b-provider-{index:04}"),
-                    super::DeliveryWatermark {
-                        generation: 1,
-                        cursor: 1,
-                        effects: 1,
-                    },
-                );
-            }
-            assert_eq!(projector.watermarks.len(), MAX_TOKEN_RATE_WATERMARKS);
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("z-agent", "a-provider", 1, 1, "old-turn")
+        ));
+        assert!(observe(
+            &mut projector,
+            &usage_effect("z-agent", "a-provider", 1, 2, "current-turn")
+        ));
+        for index in 0..(MAX_TOKEN_RATE_WATERMARKS - 1) {
+            projector.watermarks.insert(
+                format!("b-provider-{index:04}"),
+                super::DeliveryWatermark {
+                    generation: 1,
+                    cursor: 1,
+                    effects: 1,
+                },
+            );
         }
+        assert_eq!(projector.watermarks.len(), MAX_TOKEN_RATE_WATERMARKS);
 
-        assert!(
-            hub.publish_observation(usage_effect("a-agent", "z-provider", 1, 1, "other-turn"))
-                .expect("cross the watermark cap")
-        );
-        {
-            let projector = hub.projector.lock().expect("token-rate projector");
-            assert_eq!(projector.watermarks.len(), MAX_TOKEN_RATE_WATERMARKS);
-            assert!(projector.watermarks.contains_key("a-provider"));
-            assert!(!projector.watermarks.contains_key("b-provider-0000"));
-        }
+        assert!(observe(
+            &mut projector,
+            &usage_effect("a-agent", "z-provider", 1, 1, "other-turn")
+        ));
+        assert_eq!(projector.watermarks.len(), MAX_TOKEN_RATE_WATERMARKS);
+        assert!(projector.watermarks.contains_key("a-provider"));
+        assert!(!projector.watermarks.contains_key("b-provider-0000"));
 
-        let current = hub.snapshot();
+        let current = projector.snapshot();
         assert!(
-            !hub.publish_observation(usage_effect("z-agent", "a-provider", 1, 1, "old-turn"))
-                .expect("old committed delivery remains deduplicated")
+            !observe(
+                &mut projector,
+                &usage_effect("z-agent", "a-provider", 1, 1, "old-turn")
+            ),
+            "old committed delivery remains deduplicated"
         );
-        assert_eq!(hub.snapshot(), current);
-        assert_eq!(hub.snapshot().rates["z-agent"].turn_id, "current-turn");
+        assert_eq!(projector.snapshot(), current);
+        assert_eq!(
+            projector.snapshot().rates["z-agent"].turn_id,
+            "current-turn"
+        );
     }
 
     #[test]
     fn an_older_generation_cannot_replace_a_newer_projection() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider-a", 9, 1, "new-turn")
+        ));
+        let current = projector.snapshot();
+        assert!(!observe(
+            &mut projector,
+            &usage_effect("agent", "provider-a", 8, 99, "old-turn")
+        ));
+        assert_eq!(projector.snapshot(), current);
+        assert_eq!(projector.snapshot().rates["agent"].turn_id, "new-turn");
+    }
+
+    /// A mixed turn of both providers: Codex streams raw deltas, the Claude bridge streams
+    /// coalesced character counts; both report usage and tool items.
+    fn provider_turn(provider: &str, agent: &str, base: u64) -> Vec<(NotificationPostCommit, u8)> {
+        let observation =
+            |cursor: u64, method: &str, params: serde_json::Value| NotificationObservation {
+                agent: Some(SharedJson::new(
+                    json!({"id":agent,"rootId":"root","turnId":"turn","inFlight":true}),
+                )),
+                method: method.into(),
+                params: SharedJson::new(params),
+                delivery: ProviderDeliveryIdentity {
+                    provider_handle: provider.into(),
+                    generation: 1,
+                    cursor: base + cursor,
+                },
+                observed_at: (base + cursor) as f64 * 0.1,
+                provider_at: 0.0,
+            };
+        let delta = if provider.starts_with("claude") {
+            json!({"coalescedDeltaCharacters":40})
+        } else {
+            json!({"delta":"some streamed answer text"})
+        };
+        vec![
+            (
+                NotificationPostCommit::TokenRateUsage(observation(
+                    1,
+                    "turn/started",
+                    json!({"turnId":"turn"}),
+                )),
+                1,
+            ),
+            (
+                NotificationPostCommit::TokenRateStream(observation(
+                    2,
+                    "item/agentMessage/delta",
+                    delta.clone(),
+                )),
+                2,
+            ),
+            (
+                NotificationPostCommit::TokenRateStream(observation(
+                    3,
+                    "item/agentMessage/delta",
+                    delta,
+                )),
+                2,
+            ),
+            (
+                NotificationPostCommit::TokenRateAssociation(observation(
+                    4,
+                    "item/started",
+                    json!({"turnId":"turn","item":{"id":"tool","type":"commandExecution"}}),
+                )),
+                4,
+            ),
+            (
+                NotificationPostCommit::TokenRateAssociation(observation(
+                    5,
+                    "item/completed",
+                    json!({"turnId":"turn","item":{"id":"tool","type":"commandExecution"}}),
+                )),
+                4,
+            ),
+            (
+                NotificationPostCommit::TokenRateUsage(observation(
+                    6,
+                    "thread/tokenUsage/updated",
+                    json!({"turnId":"turn","tokenUsage":{"total":{"outputTokens":30},"last":{"outputTokens":12,"totalTokens":40}}}),
+                )),
+                1,
+            ),
+        ]
+    }
+
+    /// The projector task's coalesced snapshot equals the snapshot built synchronously from
+    /// the same observations, for Claude and Codex agents interleaved.
+    #[tokio::test(start_paused = true)]
+    async fn projector_task_snapshot_equals_the_direct_projection() {
         let hub = TokenRateHub::new();
-        assert!(
-            hub.publish_observation(usage_effect("agent", "provider-a", 9, 1, "new-turn"))
-                .expect("new generation publishes")
+        let mut direct = RateProjector::default();
+        let observations = (0..8)
+            .flat_map(|index| {
+                let provider = if index % 2 == 0 { "claude" } else { "codex" };
+                provider_turn(
+                    &format!("{provider}-{index}"),
+                    &format!("agent-{index}"),
+                    10,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (effect, bit) in observations {
+            direct.observe(&effect, bit);
+            hub.publish_observation(effect).expect("queue observation");
+        }
+        hub.settled().await;
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.rates.len(), 8);
+        assert_eq!(snapshot, direct.snapshot());
+        assert_eq!(snapshot.to_value(), direct.snapshot().to_value());
+    }
+
+    /// A burst of observations publishes once at its start and once per frame interval after.
+    #[tokio::test(start_paused = true)]
+    async fn an_observation_burst_publishes_one_snapshot_per_frame_interval() {
+        let changes =
+            std::sync::Arc::new(crate::change_notifications::ChangeNotificationHub::new());
+        let hub = TokenRateHub::with_change_hub(std::sync::Arc::clone(&changes));
+        let mut subscriber = hub.subscribe();
+        let turn = provider_turn("codex", "agent", 0);
+        let (started, _) = turn[0].clone();
+        hub.publish_observation(started).expect("queue start");
+        subscriber.changed().await.expect("leading frame");
+        let leading = tokio::time::Instant::now();
+        for cursor in 0..100 {
+            let mut delta = turn[1].0.clone();
+            if let NotificationPostCommit::TokenRateStream(observation) = &mut delta {
+                observation.delivery.cursor = 10 + cursor;
+            }
+            hub.publish_observation(delta).expect("queue delta");
+        }
+        subscriber.changed().await.expect("trailing frame");
+        assert!(leading.elapsed() >= super::SYNC_FRAME_MIN_INTERVAL);
+        hub.settled().await;
+        assert!(!subscriber.has_changed().expect("hub open"));
+        assert_eq!(
+            changes.snapshot().revision,
+            2,
+            "one leading and one trailing frame"
         );
-        let current = hub.snapshot();
-        assert!(
-            !hub.publish_observation(usage_effect("agent", "provider-a", 8, 99, "old-turn"))
-                .expect("old generation is stale")
-        );
-        assert_eq!(hub.snapshot(), current);
-        assert_eq!(hub.snapshot().rates["agent"].turn_id, "new-turn");
+        assert!(subscriber.borrow().rates["agent"].output_tokens.0 > 0.0);
     }
 
     #[test]
