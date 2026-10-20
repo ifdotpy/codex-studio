@@ -35,10 +35,10 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
         let store = first_pass.bridge.store.clone();
         let request_scope = first_pass.scope.clone();
         if let Ok(result) = reconcile_first_pass(
-            store,
+            Arc::clone(&store),
             &first_pass.account,
             request_scope,
-            first_pass.session,
+            first_pass.session.clone(),
         )
         .await
         {
@@ -62,6 +62,14 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
                 }
             }
         }
+        // Restart turns are settled above, so their commands are checked too.
+        super::background_commands::check_account(
+            store,
+            &first_pass.account,
+            &first_pass.scope,
+            &first_pass.session,
+        )
+        .await;
         let _result = first_pass
             .commands
             .send(AccountCommand::RestartRecoveryDone)

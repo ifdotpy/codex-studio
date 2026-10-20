@@ -33,6 +33,7 @@ use tokio::{
 };
 mod agent_fault;
 mod agent_wakes;
+mod background_commands;
 pub mod callback;
 mod connection_recovery;
 pub(crate) mod history;

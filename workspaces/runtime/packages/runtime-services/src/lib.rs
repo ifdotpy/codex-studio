@@ -174,6 +174,7 @@ pub mod system_reads;
 pub mod tar_gzip;
 pub mod task_recovery;
 pub mod task_recovery_store;
+pub mod task_settlement;
 pub mod terminal_driver;
 #[cfg(unix)]
 pub mod terminal_pty;

@@ -40,5 +40,8 @@ pub(crate) fn terminal(
         0.0
     };
     tx.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?1) WHERE agent=?2 AND json_extract(record,'$.turnId')=?3 AND created>=?4",rusqlite::params![status,agent.id.0,turn,since])?;
+    // The ended turn, and an earlier turn that ended without its report, can
+    // no longer report the end of their items (Python `turn/completed`).
+    crate::task_settlement::settle_agent_tasks(tx, &agent.id.0, at)?;
     Ok(())
 }

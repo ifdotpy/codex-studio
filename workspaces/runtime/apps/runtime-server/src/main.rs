@@ -414,6 +414,18 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         startup_recovery_time,
     )
     .await?;
+    // Tasks that settled turns left running; a running turn keeps its tasks.
+    // A failure leaves them running and does not stop the backend.
+    match studio_runtime_services::task_settlement::recover_on_startup(
+        &store,
+        startup_recovery_time,
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(closed) => eprintln!("closed {closed} tasks of settled turns"),
+        Err(error) => eprintln!("tasks of settled turns remain running: {error}"),
+    }
     startup_trace("store-recovery-completed");
     // Report stranded or mismatched image workspace mounts; never repair them here.
     std::thread::Builder::new()
