@@ -5,6 +5,7 @@ mod browser_skill;
 mod claude_preparation;
 mod idle_unload;
 mod journal_cost;
+mod late_thread_reply;
 #[cfg(unix)]
 mod many_agents;
 mod native_review;

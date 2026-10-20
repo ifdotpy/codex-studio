@@ -960,6 +960,13 @@ fn settle_outcome(
             outcome: RequestOutcome::Reply { body, .. },
         } => {
             match context.method()? {
+                Method::ThreadResume | Method::ThreadStart if start_settled(tx, &i.attempt_id)? => {
+                    // A reply after its attempt's start outcome settled (for
+                    // example held at the reply deadline) is stale for that
+                    // attempt, as in Python, which drops a reply whose
+                    // preparation already finished. It neither prepares nor
+                    // settles the attempt a second time.
+                }
                 Method::ThreadResume | Method::ThreadStart => {
                     if let ResponseBody::Result(ref value) = body
                         && let Some((next, thread)) = preparation::accept_thread(
@@ -1120,6 +1127,17 @@ pub(super) fn disconnect_provider_generation(
         crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent, at)?;
     }
     Ok(())
+}
+/// Whether the start outcome of `attempt` is already settled: its execution
+/// attempt holds an immutable `startResult` receipt.
+fn start_settled(
+    tx: &studio_runtime_store::Transaction<'_>,
+    attempt: &str,
+) -> Result<bool, WorkerError> {
+    Ok(
+        studio_runtime_store::ExecutionHistoryRepository::attempt(tx, attempt)?
+            .is_some_and(|saved| saved.pointer("/receipts/startResult").is_some()),
+    )
 }
 /// Settle a request whose provider outcome is unknown. Returns true when the
 /// request is retired because its attempt went back to the queue.
@@ -1866,7 +1884,7 @@ pub(super) fn effect_key(account: &str, effect: &Effect) -> Option<String> {
         studio_runtime_store::sha256_hex(&raw)
     ))
 }
-fn persist_effect(
+pub(super) fn persist_effect(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     effect: &Effect,

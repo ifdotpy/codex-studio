@@ -42,16 +42,44 @@ impl ExecutionHistoryRepository {
         kind: &str,
         input: &Value,
     ) -> StoreResult<Option<Value>> {
+        match Self::saved_result(tx, id, kind, input)? {
+            Some((true, result)) => Ok(Some(result)),
+            Some((false, _)) => Err(Self::invalid("runtime_execution_attempts", id)),
+            None => Ok(None),
+        }
+    }
+    /// [`Self::replay`] for a start error settlement, whose first outcome wins.
+    /// A saved receipt of `kind` with another input means a different outcome
+    /// already settled this attempt (for example a thread reply deadline that
+    /// held it). The later settlement is stale: it returns `false` and changes
+    /// nothing, as Python ignores a result for a finished preparation.
+    pub fn replay_settled(
+        tx: &Transaction<'_>,
+        id: &str,
+        kind: &str,
+        input: &Value,
+    ) -> StoreResult<Option<Value>> {
+        Ok(Self::saved_result(tx, id, kind, input)?
+            .map(|(same, result)| if same { result } else { Value::Bool(false) }))
+    }
+    /// The saved result of `kind`, and whether it was saved for `input`.
+    fn saved_result(
+        tx: &Transaction<'_>,
+        id: &str,
+        kind: &str,
+        input: &Value,
+    ) -> StoreResult<Option<(bool, Value)>> {
         let Some(saved) = Self::attempt(tx, id)? else {
             return Ok(None);
         };
         let Some(receipt) = saved.get("receipts").and_then(|r| r.get(kind)) else {
             return Ok(None);
         };
-        if receipt.get("input") != Some(input) || receipt.get("result").is_none() {
-            return Err(Self::invalid("runtime_execution_attempts", id));
-        }
-        Ok(receipt.get("result").cloned())
+        let result = receipt
+            .get("result")
+            .cloned()
+            .ok_or_else(|| Self::invalid("runtime_execution_attempts", id))?;
+        Ok(Some((receipt.get("input") == Some(input), result)))
     }
     pub fn save_receipt(
         tx: &Transaction<'_>,
