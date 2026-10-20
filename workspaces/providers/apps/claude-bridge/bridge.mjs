@@ -232,7 +232,21 @@ const queryBusy = (id, active) =>
     active.input.values.length ||
     operations.get(id),
   );
-const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+// Lines written in one event-loop turn leave in one stdout write at the end of
+// that turn, so a burst of events costs one syscall instead of one per event.
+let stdoutLines = [];
+function flushStdout() {
+  if (!stdoutLines.length) return;
+  const lines = stdoutLines;
+  stdoutLines = [];
+  process.stdout.write(lines.join(""));
+}
+// Linux pipes write synchronously, so this also delivers lines on exit.
+process.on("exit", flushStdout);
+const send = (value) => {
+  if (stdoutLines.push(JSON.stringify(value) + "\n") === 1)
+    setImmediate(flushStdout);
+};
 const emit = (method, params) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
 const limits = stallLimits();
