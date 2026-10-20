@@ -132,7 +132,7 @@ async function prepareBaseline() {
     join(baseline, "node_modules"),
     "dir",
   );
-  command("npm", ["run", "api:generate"], baseline);
+  command("npm", ["run", "contracts:generate"], baseline);
   const probeDir = join(baselineWeb, "src/components/prompt-composer");
   await mkdir(probeDir, { recursive: true });
   await copyFile(

@@ -18,7 +18,7 @@ from codex_terminals import HISTORY_LIMIT, TerminalManager
 
 
 def bootstrap_schema(root: Path) -> None:
-    snapshot = json.loads((SERVER_SOURCE.parent / "tests/fixtures/runtime-state-schema.json").read_text())
+    snapshot = json.loads((SERVER_SOURCE.parents[2] / "packages/runtime-store/src/runtime-state-schema.json").read_text())
     for name in ("canvas.sqlite3", "analytics.sqlite3"):
         connection = sqlite3.connect(root / name)
         try:

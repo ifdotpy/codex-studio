@@ -160,13 +160,6 @@ class CoreResponseTests(unittest.TestCase):
         expected_hash = generated_api_schema_hash()
 
         source_root = str(SERVER_SOURCE_ROOT)
-        generator_import = """
-import sys
-sys.path.insert(0, sys.argv[1])
-from studio_api.generate_types import openapi_document
-from studio_api.schema import api_schema_hash
-print(api_schema_hash(openapi_document()))
-"""
         server_import = """
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -212,16 +205,14 @@ print(api_schema_hash(openapi_document()))
                 check=True,
                 capture_output=True,
                 text=True,
-                # Three cold schema builds run at once; the bound only stops a hang.
+                # Two cold schema builds run at once; the bound only stops a hang.
                 timeout=3 * HANG_GUARD_SECONDS,
             )
             return result.stdout.strip()
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            generator_hash = executor.submit(schema_hash, generator_import)
+        with ThreadPoolExecutor(max_workers=2) as executor:
             fixture_hash = executor.submit(schema_hash, fixture_import)
             server_hash = executor.submit(schema_hash, server_import)
-            self.assertEqual(generator_hash.result(), expected_hash)
             self.assertEqual(fixture_hash.result(), expected_hash)
             self.assertEqual(server_hash.result(), expected_hash)
 

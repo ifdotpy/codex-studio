@@ -14,7 +14,7 @@ use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, 
 use thiserror::Error;
 
 use crate::managed_host_tools::MAX_SPAWN_BATCH_AGENTS;
-use studio_runtime_schema::agent_limits_generated::DEFAULT_MAX_TEAM_AGENTS;
+use studio_runtime_schema::agent_limits::DEFAULT_MAX_TEAM_AGENTS;
 const MAX_NAME_CHARS: usize = 100;
 const MAX_PROMPT_CHARS: usize = 32_000;
 /// Python's Linux VM review state save timeout, in seconds.

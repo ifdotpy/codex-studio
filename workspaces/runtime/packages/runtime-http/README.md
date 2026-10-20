@@ -16,14 +16,13 @@
   process token, workspace identity, and local diagnostics to `HttpState`.
 - **Focused check:** `cargo nextest run -p studio-runtime-http`.
 
-`openapi.json` is the full, human-readable API authority and outlives the Python
-application. It is emitted with sorted keys and two-space indentation by the
-Python exporter's deterministic JSON writer; Oxfmt intentionally does not own
-this file. Run `pnpm run api:generate` to refresh this document, TypeScript
-types/hash, and compile the build-generated Rust DTOs. `pnpm run api:check`
-checks model/document drift, byte-for-byte TypeScript output drift, and Rust
-DTO generation. TypeScript types are rendered from the full document so the
-generated client retains its titles and descriptions.
+`openapi.json` is the full, human-readable API authority and committed source:
+edit it together with the Rust DTOs, keeping sorted keys and two-space
+indentation; Oxfmt intentionally does not own this file. Run
+`pnpm run contracts:generate` to refresh the TypeScript types and schema hash;
+`pnpm run contracts:check` rejects byte-for-byte drift and limits that disagree
+with their Rust owners in `runtime-schema`. TypeScript types are rendered from
+the full document so the generated client retains its titles and descriptions.
 
 The server removes only OpenAPI documentation metadata, sorts the documented
 schema unions and map keys explicitly, then hashes compact JSON with SHA-256.
@@ -313,7 +312,7 @@ workspace dependencies. The build-only generator pulls its transitive parsing,
 schema-validation and code-formatting dependencies into the build graph, not
 the runtime dependency graph.
 
-Generated files should be refreshed through `pnpm run api:generate`; do not edit
+Generated files should be refreshed through `pnpm run contracts:generate`; do not edit
 them by hand.
 
 ## Sync compatibility details

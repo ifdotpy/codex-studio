@@ -31,7 +31,7 @@ from codex_browser_bridge import Bridge as BrowserBridge, token_hash
 NOW = int(os.environ.get("MULTI_SERVER_ORACLE_NOW", "1700000000"))
 OWNER = "owner@example.test"
 root.mkdir(parents=True, exist_ok=True)
-catalog = json.loads((source.parent / "tests/fixtures/runtime-state-schema.json").read_text())
+catalog = json.loads((source.parents[2] / "packages/runtime-store/src/runtime-state-schema.json").read_text())
 for name in ("canvas.sqlite3", "analytics.sqlite3"):
     with sqlite3.connect(":memory:") as db:
         entries = sorted(catalog[name]["sqlite_master"], key=lambda e: {"table": 0,"index": 1,"view": 2}.get(e["type"],3))

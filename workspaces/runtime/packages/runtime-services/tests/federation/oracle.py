@@ -104,7 +104,7 @@ def run(target):
         cases.append({"name":kind,"envelope":envelope,"room":prior,"expected":expected})
     (target/"oracle.json").write_text(json.dumps({"seed":seeds,"cases":cases},ensure_ascii=False))
     # Python creates the established database catalog once. Rust clones this template.
-    catalog=json.loads((ROOT/"workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json").read_text())
+    catalog=json.loads((ROOT/"workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json").read_text())
     template=target/"template";template.mkdir()
     for filename in ("canvas.sqlite3","analytics.sqlite3"):
         conn=sqlite3.connect(template/filename)

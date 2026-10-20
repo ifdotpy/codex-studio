@@ -3,7 +3,7 @@ use std::io::{BufRead, Read, Write};
 use serde_json::Value;
 
 use crate::protocol::SupervisorError;
-use crate::shared_values_generated::MAX_SUPERVISOR_FRAME_BYTES;
+use crate::supervisor_contract::MAX_SUPERVISOR_FRAME_BYTES;
 
 pub(crate) const MAX_FRAME_BYTES: usize = MAX_SUPERVISOR_FRAME_BYTES;
 

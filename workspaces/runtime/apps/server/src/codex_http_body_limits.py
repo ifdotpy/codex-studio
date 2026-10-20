@@ -1,4 +1,4 @@
-"""Canonical HTTP API request-body limits shared with the Rust edge."""
+"""Python copy of runtime-http/src/http_body_limits.rs, the owner; removed with the Python server."""
 
 from codex_federation_limits import FEDERATION_BODY_LIMIT, FEDERATION_PATHS
 

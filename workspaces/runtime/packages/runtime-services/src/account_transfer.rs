@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::account_session_runtime::RequestCertainty;
-use studio_runtime_schema::agent_limits_generated::MAX_TRANSFER_AGENT_RECORDS;
+use studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";

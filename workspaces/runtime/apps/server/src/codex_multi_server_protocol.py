@@ -1,4 +1,4 @@
-"""Canonical version and signing domain for the multi-server access wire protocol."""
+"""Python copy of runtime-schema/src/multi_server_protocol.rs, the owner; removed with the Python server."""
 
 from typing import Final
 

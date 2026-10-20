@@ -1,4 +1,4 @@
-"""Canonical limits for federation messages, batches, and HTTP bodies."""
+"""Python copy of runtime-services/src/federation_limits.rs, the owner; removed with the Python server."""
 
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
 

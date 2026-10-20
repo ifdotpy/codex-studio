@@ -5,7 +5,6 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-import json
 import os
 import subprocess
 import sys
@@ -14,20 +13,10 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_layout import REPOSITORY_ROOT, WEB_ROOT
+from codex_layout import REPOSITORY_ROOT
 from codex_sync_protocol import (
     SYNC_ENTITY_SCOPE as OWNER_ENTITY_SCOPE,
     SYNC_PROTOCOL_VERSION as OWNER_PROTOCOL_VERSION,
-)
-from studio_api.generate_types import (
-    OPENAPI_AUTHORITY,
-    SYNC_PROTOCOL_NODE_OUTPUT,
-    SYNC_PROTOCOL_OUTPUT,
-    SYNC_PROTOCOL_PYTHON_OUTPUT,
-    render_sync_protocol_python,
-    render_sync_protocol_node,
-    render_sync_protocol_rust,
-    render_sync_protocol_typescript,
 )
 from studio_api.sync.models import SyncProtocolResponse
 from studio_api.sync.protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
@@ -61,25 +50,7 @@ class SyncProtocolContract(unittest.TestCase):
                     SYNC_PROTOCOL_VERSION,
                 )
 
-    def test_generated_runtime_constants_match_the_python_owner(self):
-        document = json.loads(OPENAPI_AUTHORITY.read_text(encoding="utf-8"))
-        self.assertEqual(
-            SYNC_PROTOCOL_OUTPUT.read_text(encoding="utf-8"),
-            render_sync_protocol_rust(document),
-        )
-        self.assertEqual(
-            SYNC_PROTOCOL_PYTHON_OUTPUT.read_text(encoding="utf-8"),
-            render_sync_protocol_python(document),
-        )
-        api_types = (WEB_ROOT / "src/generated/api.ts").read_text(encoding="utf-8")
-        self.assertIn(
-            f"\n{render_sync_protocol_typescript(document)}\n",
-            api_types,
-        )
-        self.assertEqual(
-            SYNC_PROTOCOL_NODE_OUTPUT.read_text(encoding="utf-8"),
-            render_sync_protocol_node(document),
-        )
+    def test_runtime_consumers_use_the_named_entity_scope(self):
         sources = (
             "workspaces/runtime/apps/server/src/codex_api_client.py",
             "workspaces/runtime/apps/server/src/codex_sync.py",
@@ -108,7 +79,6 @@ class SyncProtocolContract(unittest.TestCase):
             "workspaces/runtime/apps/server/src/codex_sync.py",
             "workspaces/runtime/apps/server/src/codex_http_traces.py",
             "workspaces/runtime/apps/server/src/studio_api/testing.py",
-            "workspaces/runtime/apps/server/src/studio_api/generate_types.py",
             "workspaces/runtime/apps/server/src/sync/benchmarks/benchmark.py",
         )
         for source in sources:

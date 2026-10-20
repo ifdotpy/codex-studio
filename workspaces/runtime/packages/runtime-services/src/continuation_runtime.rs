@@ -196,8 +196,8 @@ impl continuation_driver::CapacityAdmission for RuntimeCapacityAdmission {
         let global_limit = std::env::var("CODEX_CANVAS_CONCURRENCY")
             .ok()
             .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(studio_runtime_schema::agent_limits_generated::DEFAULT_GLOBAL_CONCURRENCY)
-            .max(studio_runtime_schema::agent_limits_generated::MIN_GLOBAL_CONCURRENCY);
+            .unwrap_or(studio_runtime_schema::agent_limits::DEFAULT_GLOBAL_CONCURRENCY)
+            .max(studio_runtime_schema::agent_limits::MIN_GLOBAL_CONCURRENCY);
         if active_count >= global_limit {
             return Err(ContinuationError::Unavailable(
                 "turn-driver/capacity-global-slots",

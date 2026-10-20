@@ -14,7 +14,7 @@ use base64::engine::general_purpose::URL_SAFE;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use studio_runtime_schema::agent_limits_generated::{
+use studio_runtime_schema::agent_limits::{
     DEFAULT_GLOBAL_CONCURRENCY, DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
     MAX_SUBAGENT_CONCURRENCY, MIN_GLOBAL_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY,
 };

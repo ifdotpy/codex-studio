@@ -1,4 +1,4 @@
-"""Authoritative cross-language values for generated consumers."""
+"""Python copy of runtime-schema/src/shared_values.rs, the owner; removed with the Python server."""
 
 from typing import Final
 

@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     import sqlite3
     from codex_runtime import Runtime
 
-# Authoritative agent capacity values. API and persisted schemas import these
-# values so generated contracts stay aligned with runtime enforcement.
+# Python copy of runtime-schema/src/agent_limits.rs, the owner; removed with the
+# Python server.
 MIN_SUBAGENT_CONCURRENCY = 0
 DEFAULT_SUBAGENT_CONCURRENCY = 32
 MAX_SUBAGENT_CONCURRENCY = 2048

@@ -12,8 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import unittest
 
-from studio_api.generate_shared_values import main
-from studio_api.generate_http_body_limits import OUTPUT as HTTP_LIMITS_OUTPUT, render_rust_http_body_limits
 from codex_process_supervisor import MAX_FRAME_BYTES, PROTOCOL
 from codex_layout import REPOSITORY_ROOT
 from codex_http_body_limits import REQUEST_BODY_READ_TIMEOUT_SECONDS
@@ -42,9 +40,6 @@ from studio_api.sync.models import DraftPushRequest
 
 
 class SharedValuesContract(unittest.TestCase):
-    def test_generated_cross_language_values_match_the_authority(self):
-        self.assertEqual(main(["--check"]), 0)
-
     def test_account_limits_freshness_uses_generated_rust_and_python_values(self):
         rust_values = (
             REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
@@ -210,7 +205,6 @@ class SharedValuesContract(unittest.TestCase):
             REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-http/src/middleware.rs"
         ).read_text(encoding="utf-8")
         self.assertEqual(REQUEST_BODY_READ_TIMEOUT_SECONDS, 10)
-        self.assertEqual(HTTP_LIMITS_OUTPUT.read_text(encoding="utf-8"), render_rust_http_body_limits())
         self.assertIn("REQUEST_READ_TIMEOUT_SECONDS = float(REQUEST_BODY_READ_TIMEOUT_SECONDS)", middleware)
         self.assertIn("Duration::from_secs(REQUEST_BODY_READ_TIMEOUT_SECONDS)", rust_middleware)
 

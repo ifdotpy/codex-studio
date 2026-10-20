@@ -1989,9 +1989,7 @@ async fn multi_server_corpus_witness() {
             .expect("access snapshot");
     assert_eq!(
         snapshot["protocol"],
-        serde_json::json!(
-            studio_runtime_services::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION
-        )
+        serde_json::json!(studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION)
     );
 
     let report = studio_runtime_store::check_state_readonly(fixture().root.path())

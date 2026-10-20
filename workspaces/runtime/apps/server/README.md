@@ -13,20 +13,18 @@ Focused check from the repository root: `pnpm run test:server:python -- --filter
 
 ## Persisted state schemas
 
-The account registry and workspace usage-limit schemas are generated from the
-Python models. Regenerate them with `pnpm run state-schemas:generate` and check
-for drift with `pnpm run state-schemas:check`. To validate a disposable state
+The persisted-state JSON schemas are committed source in
+[`runtime-schema/src/schemas`](../../packages/runtime-schema/src/schemas). To validate a disposable state
 directory without opening it for writes, run
 `python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.state_check --state-dir <state-directory>`.
 This checker validates the account registry and the workspace usage-limit
 projection in `canvas.sqlite3`; it does not compare Rust sync tables.
 
-The per-file user attachment cap, per-secret value byte cap, per-agent
-`PROGRESS.md` byte cap, and inline workspace preview byte cap are owned in
-[codex_shared_values.py](src/codex_shared_values.py). The generator maintains
-Rust attachment/progress/preview values, TypeScript attachment/secret values,
-and VM guest secret values. Regenerate them with
-`pnpm run shared-values:generate`; the server fast tier checks for drift.
+Cross-language values are owned by Rust in
+[`runtime-schema/src/shared_values.rs`](../../packages/runtime-schema/src/shared_values.rs).
+`pnpm run contracts:generate` renders the TypeScript, Swift, and VM guest copies;
+`pnpm run contracts:check` rejects drift. `codex_shared_values.py` is a Python
+copy that remains until the Python server is removed.
 
 ## Navigation
 

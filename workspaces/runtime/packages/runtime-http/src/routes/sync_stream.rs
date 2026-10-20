@@ -110,12 +110,16 @@ async fn sync_stream(
     let renderer_hash = request_headers
         .get(API_SCHEMA_HASH_HEADER)
         .and_then(|value| value.to_str().ok())
-        .or_else(|| query.typed_value("apiSchema").and_then(Value::as_str));
+        .or_else(|| {
+            query
+                .typed_value(crate::schema::API_SCHEMA_HASH_PARAM)
+                .and_then(Value::as_str)
+        });
     if renderer_hash.is_some_and(|value| value != server_hash) {
         return event_response(stream::iter([Ok(sse_event(
             "api-schema",
             None,
-            json!({"hash": server_hash, "mismatch": true}),
+            json!({"hash": server_hash, (crate::schema::API_SCHEMA_MISMATCH_FIELD): true}),
         ))]));
     }
 

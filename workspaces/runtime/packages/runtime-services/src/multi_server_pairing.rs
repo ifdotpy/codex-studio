@@ -13,7 +13,7 @@ use crate::multi_server_auth::{
     self as auth, AccessError, AccessSnapshot, OwnerObservation, SignedRequest, VerifiedPrincipal,
     refused, text,
 };
-use crate::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION;
+use studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION;
 
 const PAIRING_WINDOW_SECONDS: i64 = 60;
 const MAX_PAIRING_ATTEMPTS: usize = 128;

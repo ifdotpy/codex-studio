@@ -465,9 +465,9 @@ impl FederationRepository {
             }
         } else {
             let (count, bytes) = super::federation_messaging::queued_outbox_size(tx, &peer_state)?;
-            if count >= studio_runtime_schema::federation_limits_generated::MAX_QUEUE_ROWS
+            if count >= studio_runtime_schema::federation_limits::MAX_QUEUE_ROWS
                 || bytes + queued.to_string().len() as u64
-                    > studio_runtime_schema::federation_limits_generated::MAX_QUEUE_BYTES
+                    > studio_runtime_schema::federation_limits::MAX_QUEUE_BYTES
             {
                 return Err(StoreError::SchemaMismatch(
                     "federation queue is full".into(),

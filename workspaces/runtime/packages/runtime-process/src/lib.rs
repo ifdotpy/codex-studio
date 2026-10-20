@@ -21,11 +21,11 @@ pub mod provider_stdio;
 pub mod provider_task;
 #[cfg(unix)]
 mod pty_host;
-mod shared_values_generated;
 #[cfg(unix)]
 pub mod stream_child;
 #[cfg(unix)]
 mod supervisor_child;
+mod supervisor_contract;
 #[cfg(unix)]
 pub mod supervisor_daemon;
 #[cfg(unix)]
@@ -41,7 +41,7 @@ pub use pty_host::{
     LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
     terminal_environment_from,
 };
-pub use shared_values_generated::MAX_SUPERVISOR_FRAME_BYTES;
+pub use supervisor_contract::MAX_SUPERVISOR_FRAME_BYTES;
 pub use transport::SupervisorTransport;
 
 #[cfg(test)]

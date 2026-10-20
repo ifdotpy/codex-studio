@@ -102,8 +102,8 @@ jobs:
           XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: Strict runtime mypy ratchet
         run: pnpm run typecheck:runtime
-      - name: API generated-types check
-        run: pnpm run api:check
+      - name: Generated contract check
+        run: pnpm run contracts:check
 
   # The Rust code is compiled once per profile in the two build jobs below. The
   # server shards and the Rust partitions download the output instead of

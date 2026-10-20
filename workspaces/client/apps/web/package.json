@@ -13,7 +13,7 @@
     "test:performance": "pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=performance",
     "test:mutation": "stryker run stryker.config.mjs",
     "dev": "pnpm run build:wasm && vite --force --host 127.0.0.1",
-    "build": "pnpm run build:wasm && pnpm --workspace-root run api:check && tsc --noEmit && vite build",
+    "build": "pnpm run build:wasm && pnpm --workspace-root run contracts:check && tsc --noEmit && vite build",
     "build:bundle": "pnpm run build:wasm && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "pnpm run test:unit && pnpm run test:browser",

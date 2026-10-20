@@ -7,8 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::{StoreError, StoreResult};
 
 #[cfg(test)]
-const SCHEMA_SNAPSHOT: &str =
-    include_str!("../../../apps/server/tests/fixtures/runtime-state-schema.json");
+const SCHEMA_SNAPSHOT: &str = include_str!("runtime-state-schema.json");
 
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     verify_core(canvas_path, analytics_path)?;

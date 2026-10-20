@@ -25,7 +25,7 @@ from codex_runtime import Runtime  # noqa: E402
 from codex_canvas import Canvas  # noqa: E402
 
 
-SNAPSHOT = Path(__file__).with_name("fixtures") / "runtime-state-schema.json"
+SNAPSHOT = Path(__file__).resolve().parents[3] / "packages/runtime-store/src/runtime-state-schema.json"
 UPDATE_SNAPSHOT = os.environ.get("UPDATE_RUNTIME_STATE_SCHEMA_SNAPSHOT") == "1"
 
 

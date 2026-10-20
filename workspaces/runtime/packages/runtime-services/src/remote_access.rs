@@ -6,10 +6,10 @@
 //! names its exact origin. The file is read again for each call, so an owner
 //! can disable access without a restart.
 
-use crate::multi_server_protocol_generated::{PUBLIC_ORIGIN_ENVIRONMENT, REMOTE_ACCESS_FILE};
 use crate::remote_transport::validate_federation_origin;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use studio_runtime_schema::multi_server_protocol::{PUBLIC_ORIGIN_ENVIRONMENT, REMOTE_ACCESS_FILE};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("The public origin override must be an HTTPS origin ending in .ts.net, without a path")]

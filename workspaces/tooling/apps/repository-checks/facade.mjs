@@ -2058,7 +2058,7 @@ function byWorkspaceDependency(manifestPath, dependency, packages) {
 }
 
 export function runContractsCheck(root = rootFrom()) {
-  for (const script of ["api:check", "state-schemas:check"]) {
+  for (const script of ["contracts:check"]) {
     process.stdout.write(
       `Checking generated contracts without writing files: pnpm run ${script}\n`,
     );

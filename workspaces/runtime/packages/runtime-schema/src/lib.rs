@@ -1,6 +1,11 @@
-//! Compiled persisted-state validators and generated shared runtime values.
+//! Compiled persisted-state validators and the Rust owners of the shared
+//! runtime contracts (`contracts` renders their copies in other languages).
 
-pub mod federation_limits_generated;
+pub mod agent_limits;
+pub mod api_schema;
+pub mod contracts;
+pub mod federation_limits;
+pub mod multi_server_protocol;
 pub mod shared_values;
 
 use std::collections::BTreeMap;
@@ -11,7 +16,6 @@ pub use jsonschema::{
 };
 use serde_json::{Value, json};
 
-pub mod agent_limits_generated;
 pub mod sync_protocol;
 pub use sync_protocol::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 mod token_rate_limits;
@@ -903,7 +907,7 @@ mod tests {
 
     #[test]
     fn generated_agent_contracts_supply_runtime_capacity_values() {
-        use super::agent_limits_generated as limits;
+        use super::agent_limits as limits;
         assert_eq!(
             limits::MAX_TEAM_AGENTS as i64,
             limits::MAX_SUBAGENT_CONCURRENCY + limits::TEAM_AGENT_HEADROOM

@@ -1206,7 +1206,7 @@ mod tests {
             .expect("tmpfs state root creates");
         let root = directory.path();
         let schema: Value = serde_json::from_str(include_str!(
-            "../../../apps/server/tests/fixtures/runtime-state-schema.json"
+            "../../runtime-store/src/runtime-state-schema.json"
         ))
         .expect("runtime schema fixture parses");
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {

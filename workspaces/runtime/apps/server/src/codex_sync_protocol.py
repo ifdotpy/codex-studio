@@ -1,4 +1,4 @@
-"""Lightweight owner of the shared sync wire identifiers."""
+"""Python copy of runtime-schema/src/sync_protocol.rs, the owner; removed with the Python server."""
 
 from typing import Final
 

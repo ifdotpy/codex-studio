@@ -33,7 +33,7 @@ use studio_runtime_store::supervisor_journal::{
     JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, launch_signature,
 };
 
-use crate::shared_values_generated::{SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY};
+use crate::supervisor_contract::{SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY};
 
 const MAX_REQUEST_BYTES: u64 = crate::transport::MAX_FRAME_BYTES as u64;
 const MAX_CONNECTIONS: usize = 512;

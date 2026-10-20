@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-This is a source-only compatibility matrix for the Python runtime at the assigned Rust base. It uses the Python schema owners, [`runtime-state-formats.md`](runtime-state-formats.md), [`runtime-state-schema.json`](../workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json), and Rust store/repository implementations under [`runtime-store`](../workspaces/runtime/packages/runtime-store/src/) plus [`runtime-server`](../workspaces/runtime/apps/runtime-server/src/). No live state directory or live database was opened. Schema fixture names describe source-owned schema, not user data.
+This is a source-only compatibility matrix for the Python runtime at the assigned Rust base. It uses the Python schema owners, [`runtime-state-formats.md`](runtime-state-formats.md), [`runtime-state-schema.json`](../workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json), and Rust store/repository implementations under [`runtime-store`](../workspaces/runtime/packages/runtime-store/src/) plus [`runtime-server`](../workspaces/runtime/apps/runtime-server/src/). No live state directory or live database was opened. Schema fixture names describe source-owned schema, not user data.
 
 Rust store compatibility is repository-scoped. `RuntimeStore::open` validates state structure, checks registered repository table/column/trigger contracts and migration gates, takes `runtime.lock`, prepares sync schema, and recovers checkpoint captures. This does not mean every Python-owned record family is loaded or preserved by a Rust route. Several routes remain refusals on this base; see the cutover inventory. Do not enable the Rust backend for a user state until all required data families and user flows have an accepted compatibility proof.
 

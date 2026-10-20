@@ -17,10 +17,10 @@ an already accepted write retain their own request identities and lifecycles.
 
 ### Authoritative types
 
-[Python resource models](../workspaces/runtime/apps/server/src/studio_api/sync/resources/models.py) own the
-closed resource union and named event envelopes. OpenAPI publishes those models;
-`pnpm run api:generate` emits TypeScript declarations and the SHA-256 identity of
-the canonical OpenAPI JSON. `pnpm run api:check` rejects stale output. API
+The committed [OpenAPI document](../workspaces/runtime/packages/runtime-http/openapi.json)
+owns the closed resource union and named event envelopes.
+`pnpm run contracts:generate` emits TypeScript declarations and the SHA-256 identity of
+the canonical OpenAPI JSON. `pnpm run contracts:check` rejects stale output. API
 responses include the server identity. Hash-bearing protocol-3 connections begin
 with an `api-schema` event; mismatches get only that handshake before close.
 Hashless non-renderer clients retain the existing event sequence. Mutating

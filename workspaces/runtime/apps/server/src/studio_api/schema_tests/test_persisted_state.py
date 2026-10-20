@@ -16,18 +16,11 @@ from runtime_test_environment import make_runtime
 
 from codex_accounts import AccountStore
 from codex_runtime import Runtime
-from studio_api.generate_state_schemas import generated_schemas
 from studio_api.persisted_models import PersistedAgentRecord
 from studio_api.state_check import check_state_directory, main as state_check_main
 
 
 class PersistedStateSchemaTests(unittest.TestCase):
-    def test_committed_state_schemas_match_the_models(self) -> None:
-        for path, expected in generated_schemas().items():
-            with self.subTest(schema=path.name):
-                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), expected)
-                self.assertNotIn(b'"default"', path.read_bytes())
-
     def test_persisted_agent_accepts_absent_and_nullable_optional_fields(self) -> None:
         value = {
             "id": "agent-1",

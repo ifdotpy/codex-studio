@@ -468,7 +468,7 @@ async fn accept_invite(
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The invitation is invalid"))?;
     if invitation["protocol"]
-        != studio_runtime_services::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION
+        != studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION
     {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -505,7 +505,7 @@ async fn accept_invite(
     let local_id = local["serverId"].as_str().unwrap_or_default();
     let local_label = local["label"].as_str().unwrap_or("Studio server");
     let request_body = serde_json::json!({
-        "protocol": studio_runtime_services::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION,
+        "protocol": studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION,
         "inviteId": invitation["inviteId"], "token": invitation["token"],
         "clientId": local_id, "label": local_label, "kind": "server",
         "publicKey": local["publicKey"], "origin": origin_local, "requestId": request_id,

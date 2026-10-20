@@ -1142,7 +1142,7 @@ mod tests {
             .expect("test state root");
         let root = directory.path().to_path_buf();
         let snapshot: Value = serde_json::from_str(include_str!(
-            "../../../apps/server/tests/fixtures/runtime-state-schema.json"
+            "../../runtime-store/src/runtime-state-schema.json"
         ))
         .expect("schema fixture");
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {

@@ -14,7 +14,6 @@ from runtime_test_environment import make_runtime
 
 import contextlib
 import importlib.util
-import json
 from pathlib import Path
 import sys
 import tempfile
@@ -29,13 +28,6 @@ from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
 from codex_agent_modes import MAX_SUBAGENT_CONCURRENCY
 from codex_streaming import StreamBuffer
-from studio_api.generate_types import (
-    OPENAPI_AUTHORITY,
-    TOKEN_RATE_LIMITS_OUTPUT,
-    _token_rate_max_entries,
-    render_token_rate_limits,
-    render_token_rate_typescript_constant,
-)
 from studio_api.sync.resources.models import (
     MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
     MAX_TOKEN_RATE_ENTRIES,
@@ -303,29 +295,6 @@ class RateContract(unittest.TestCase):
         )
         self.assertEqual(len(snapshot['rates']), codex_token_rate.MAX_RATE_ENTRIES)
         self.assertEqual(total_values, MAX_TOKEN_RATE_TOTAL_ENTRIES)
-
-    def test_generated_token_rate_caps_match_the_pydantic_openapi_contract(self):
-        document = json.loads(OPENAPI_AUTHORITY.read_text(encoding='utf-8'))
-        self.assertEqual(_token_rate_max_entries(document), MAX_TOKEN_RATE_ENTRIES)
-        typescript = render_token_rate_typescript_constant(document)
-        self.assertTrue(
-            (ROOT / 'workspaces/client/apps/web/src/generated/api.ts')
-            .read_text(encoding='utf-8')
-            .endswith(f'\n{typescript}\n')
-        )
-        self.assertEqual(MAX_TOKEN_RATE_TOTAL_ENTRIES, MAX_TOKEN_RATE_ENTRIES * 2)
-        self.assertEqual(
-            TOKEN_RATE_LIMITS_OUTPUT.read_text(encoding='utf-8'),
-            render_token_rate_limits(document),
-        )
-        self.assertIn(
-            f"TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = {MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS};",
-            render_token_rate_limits(document),
-        )
-        self.assertIn(
-            f"export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS} as const;",
-            render_token_rate_typescript_constant(document),
-        )
 
     def test_event_producer_does_not_wait_for_snapshot_publication(self):
         class DeferredTimer:

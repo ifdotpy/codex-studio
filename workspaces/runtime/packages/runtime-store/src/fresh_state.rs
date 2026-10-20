@@ -1,10 +1,8 @@
 //! Creates the committed fresh-state catalog when the canvas and analytics
 //! databases do not exist. A supervisor journal that already exists is kept.
 //!
-//! `apps/server/tests/fixtures/runtime-state-schema.json` is generated from the
-//! Python startup path by `runtime-state-schema-contract.py`; it is the schema
-//! source for this bootstrap. That contract also checks the created catalog
-//! against a disposable Python-created state.
+//! The committed `runtime-state-schema.json` beside this file is the schema
+//! source for this bootstrap.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,8 +14,7 @@ use uuid::Uuid;
 
 use crate::{StoreError, StoreResult};
 
-const SNAPSHOT: &str =
-    include_str!("../../../apps/server/tests/fixtures/runtime-state-schema.json");
+const SNAPSHOT: &str = include_str!("runtime-state-schema.json");
 const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
 /// The process supervisor's journal (`codex_process_supervisor.Journal` and
 /// `supervisor_journal::SupervisorJournal`). The supervisor owns it once it exists.

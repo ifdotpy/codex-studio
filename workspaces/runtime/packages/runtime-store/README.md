@@ -31,7 +31,7 @@
 - **Configuration owner:** `codex_state.py` currently defines state path
   resolution; this crate mirrors its environment and platform rules. The
   committed `runtime-state-schema.json` describes SQLite catalog requirements;
-  JSON-record schemas are generated under `runtime-schema/src/schemas`.
+  JSON-record schemas are committed source under `runtime-schema/src/schemas`.
 - **Focused check:** with the isolated Python environment prepared, run
   `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache XDG_STATE_HOME=/var/tmp/cs-rust-store/state TMPDIR=/var/tmp/cs-rust-store/tests CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
   Python subprocesses create disposable state under the system temporary
@@ -349,9 +349,9 @@ the feature and migration inventory is in
 [the state-format inventory](../../../../docs/runtime-state-formats.md#feature-and-migration-schema-beyond-a-fresh-start).
 The one-time cutover upgrade is not part of this crate method.
 
-The Python schema-drift guard owns the fresh-start snapshot at
-`workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json`.
-Runtime-store's crate tests reference that same file; the opener does not
+This crate owns the fresh-start snapshot at
+`workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json`.
+Fresh-state bootstrap and the crate tests read that file; the opener does not
 compare the entire catalog. See [the state-format inventory](../../../../docs/runtime-state-formats.md#feature-and-migration-schema-beyond-a-fresh-start)
 for optional creator families and observed migration differences. When the
 Python runtime is removed, move the snapshot under this crate and update the

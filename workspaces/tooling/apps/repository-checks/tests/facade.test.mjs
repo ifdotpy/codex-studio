@@ -30,7 +30,6 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
@@ -1090,70 +1089,5 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("contracts check mode detects an authoritative schema field change without writing tracked files", () => {
-  const root = path.resolve(
-    new URL("../../../../../", import.meta.url).pathname,
-  );
-  const server = path.join(root, "workspaces/runtime/apps/server/src");
-  const apiTypes = path.join(
-    root,
-    "workspaces/client/apps/web/src/generated/api.ts",
-  );
-  const schemaTypes = path.join(
-    root,
-    "workspaces/client/apps/web/src/generated/apiSchema.ts",
-  );
-  const before = [readFileSync(apiTypes), readFileSync(schemaTypes)];
-  const workingTreeBefore = [
-    execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
-      cwd: root,
-    }),
-    execFileSync("git", ["diff", "--binary", "HEAD"], {
-      cwd: root,
-      maxBuffer: 32 * 1024 * 1024,
-    }),
-  ];
-  const directory = mkdtempSync(
-    path.join(os.tmpdir(), "codex-contract-drift-"),
-  );
-  try {
-    const script = path.join(directory, "check.py");
-    writeFileSync(
-      path.join(directory, ".oxfmtrc.json"),
-      readFileSync(path.join(root, ".oxfmtrc.json")),
-    );
-    writeFileSync(
-      script,
-      `from pathlib import Path\nfrom studio_api import generate_types as g\ndirectory = Path(${JSON.stringify(directory)})\ndoc = g.openapi_document()\nrequest_id = doc["components"]["schemas"]["AcceptInvite"]["properties"]["requestId"]\nrequest_id["type"] = "integer"\nrequest_id.pop("maxLength", None)\nrequest_id.pop("minLength", None)\ng.openapi_document = lambda: doc\ng.ROOT = directory\ng.OUTPUT = directory / "api.ts"\ng.SCHEMA_OUTPUT = directory / "apiSchema.ts"\ng.OUTPUT.write_bytes(Path(${JSON.stringify(apiTypes)}).read_bytes())\ng.SCHEMA_OUTPUT.write_bytes(Path(${JSON.stringify(schemaTypes)}).read_bytes())\nsnapshot = (g.OUTPUT.read_bytes(), g.SCHEMA_OUTPUT.read_bytes())\nresult = g.main(["--check"])\nassert result == 1, result\nassert snapshot == (g.OUTPUT.read_bytes(), g.SCHEMA_OUTPUT.read_bytes()), "check mode rewrote generated files"\n`,
-    );
-    const runner = path.join(server, "codex_python.py");
-    execFileSync("python3", [runner, "--exec", script], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    assert.deepEqual(
-      [readFileSync(apiTypes), readFileSync(schemaTypes)],
-      before,
-    );
-    assert.deepEqual(
-      [
-        execFileSync(
-          "git",
-          ["status", "--porcelain", "--untracked-files=all"],
-          { cwd: root },
-        ),
-        execFileSync("git", ["diff", "--binary", "HEAD"], {
-          cwd: root,
-          maxBuffer: 32 * 1024 * 1024,
-        }),
-      ],
-      workingTreeBefore,
-      "check mode changed working tree bytes",
-    );
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
   }
 });

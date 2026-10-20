@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 use crate::error::{
     ApiError, InternalErrorCause, InternalErrorKind, error_response, with_api_headers,
 };
-use crate::http_body_limits_generated::{REQUEST_BODY_READ_TIMEOUT_SECONDS, request_limit};
+use crate::http_body_limits::{REQUEST_BODY_READ_TIMEOUT_SECONDS, request_limit};
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
 use crate::validation::RawRequest;

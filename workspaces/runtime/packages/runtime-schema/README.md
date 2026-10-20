@@ -24,7 +24,11 @@
 The crate shares one lazily initialized set of persisted-record validators.
 HTTP request validators use `registry_for_document` to prepare references
 against the same OpenAPI document and the persisted-state schema documents.
-The Rust values in `src/shared_values.rs` are generated from the Python owner
-[`codex_shared_values.py`](../../apps/server/src/codex_shared_values.py); the
-web client consumes the matching generated TypeScript output. Check generated
-value drift with `pnpm run shared-values:check`.
+This crate owns the shared runtime contracts: `src/shared_values.rs`,
+`src/agent_limits.rs`, `src/api_schema.rs`, `src/multi_server_protocol.rs`,
+`src/sync_protocol.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
+binary (`src/contracts.rs`) renders their TypeScript, Swift, and VM guest copies
+and the web API types of `runtime-http/openapi.json`, and holds the committed
+OpenAPI and persisted-state schemas to these owners. Refresh the copies with
+`pnpm run contracts:generate`; `pnpm run contracts:check` rejects drift. The
+JSON schemas in `src/schemas` are committed source.

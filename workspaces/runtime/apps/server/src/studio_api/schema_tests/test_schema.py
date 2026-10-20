@@ -49,14 +49,7 @@ from studio_api.sync.resources.models import (
 import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
-from studio_api.generate_state_schemas import render_rust_agent_limits
-from studio_api.generate_multi_server_protocol import OUTPUTS as MULTI_SERVER_PROTOCOL_OUTPUTS
 from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
-from studio_api.generate_types import (
-    render,
-    render_schema_identity,
-    render_token_rate_limits,
-)
 from studio_api.persisted_account_transfer import PersistedAccountTransferRecord
 from studio_api.schema import (
     canonical_openapi_json,
@@ -271,31 +264,6 @@ class SchemaContractTests(unittest.TestCase):
             assert isinstance(protocol, dict)
             with self.subTest(model=model_name):
                 self.assertEqual(protocol["const"], ACCESS_PROTOCOL_VERSION)
-        for path, expected in MULTI_SERVER_PROTOCOL_OUTPUTS.items():
-            with self.subTest(generated=path.name):
-                self.assertEqual(path.read_text(encoding="utf-8"), expected)
-
-    def assert_token_rate_limit_exports(
-        self, generated: str, document: dict[str, JsonValue]
-    ) -> None:
-        self.assertIn(
-            f"export const TOKEN_RATE_MAX_ENTRIES = {MAX_TOKEN_RATE_ENTRIES} as const;",
-            generated,
-        )
-        self.assertIn(
-            f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;",
-            generated,
-        )
-        self.assertIn(
-            "export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = "
-            f"{MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS} as const;",
-            generated,
-        )
-        self.assertIn(
-            "TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = "
-            f"{MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS};",
-            render_token_rate_limits(document),
-        )
 
     def test_agent_capacity_contracts_derive_from_runtime_limits(self) -> None:
         document = shared_openapi_document()
@@ -330,20 +298,6 @@ class SchemaContractTests(unittest.TestCase):
 
         persisted_schema = PersistedAccountTransferRecord.model_json_schema()
         self.assertEqual(persisted_schema["properties"]["members"]["maxProperties"], MAX_TEAM_AGENTS)
-        generated_identity = render_schema_identity(api_schema_hash(document), document)
-        for name, value in (
-            ("MIN_SUBAGENT_CONCURRENCY", MIN_SUBAGENT_CONCURRENCY),
-            ("DEFAULT_SUBAGENT_CONCURRENCY", DEFAULT_SUBAGENT_CONCURRENCY),
-            ("MAX_SUBAGENT_CONCURRENCY", MAX_SUBAGENT_CONCURRENCY),
-            ("MIN_TEAM_AGENTS", MIN_TEAM_AGENTS),
-            ("DEFAULT_MAX_TEAM_AGENTS", DEFAULT_MAX_TEAM_AGENTS),
-            ("MAX_TEAM_AGENTS", MAX_TEAM_AGENTS),
-        ):
-            self.assertIn(f"export const {name} = {value};", generated_identity)
-        generated_api = REPOSITORY_ROOT / "workspaces/client/apps/web/src/generated/apiSchema.ts"
-        self.assertEqual(generated_api.read_text(encoding="utf-8"), generated_identity)
-        generated_rust = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/agent_limits_generated.rs"
-        self.assertEqual(generated_rust.read_text(encoding="utf-8"), render_rust_agent_limits())
 
     def test_openapi_defaults_ignore_unrelated_same_named_models(self) -> None:
         from pydantic import BaseModel
@@ -1665,20 +1619,6 @@ class SchemaContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "JsonValue"):
             normalize_json_value_schema(document)
 
-    def test_openapi_typescript_emits_paths_components_and_entity_aliases(self) -> None:
-        document = sample_document({"$ref": "#/components/schemas/AgentEntityDto"})
-        generated = render(document)
-        self.assertIn('export interface paths', generated)
-        self.assertIn('export interface components', generated)
-        self.assertIn('JsonValue: JsonValue;', generated)
-        self.assertIn("export type JsonValue =", generated)
-        self.assertIn("| JsonValue[]", generated)
-        self.assertIn("{ [key: string]: JsonValue }", generated)
-        self.assertIn('export type AgentEntityDto = components["schemas"]["AgentEntityDto"];', generated)
-        self.assertIn('export type TaskEntityDto = components["schemas"]["TaskEntityDto"];', generated)
-        self.assertIn('Status: "idle" | "running";', generated)
-        self.assert_token_rate_limit_exports(generated, document)
-
     def test_sync_pull_registers_entity_payload_union_and_all_dtos(self) -> None:
         document = shared_openapi_document()
         components = document["components"]
@@ -1780,74 +1720,6 @@ class SchemaContractTests(unittest.TestCase):
 
         assert_numeric_unions(paths, "paths")
         assert_numeric_unions(schemas, "components.schemas")
-
-    def test_generator_exports_the_named_sync_entity_payload_union(self) -> None:
-        document = sample_document({"type": "string"})
-        components = document["components"]
-        assert isinstance(components, dict)
-        schemas = components["schemas"]
-        assert isinstance(schemas, dict)
-        schemas["SyncEntityPayload"] = {
-            "oneOf": [
-                {"$ref": "#/components/schemas/AgentEntityDto"},
-                {"$ref": "#/components/schemas/TaskEntityDto"},
-            ]
-        }
-        generated = render(document)
-        self.assertIn(
-            'export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];',
-            generated,
-        )
-        self.assert_token_rate_limit_exports(generated, document)
-
-    def test_generator_preserves_required_and_optional_defaulted_properties(self) -> None:
-        document = sample_document({"$ref": "#/components/schemas/ResponseContract"})
-        components = document["components"]
-        assert isinstance(components, dict)
-        schemas = components["schemas"]
-        assert isinstance(schemas, dict)
-        schemas["MonitorInput"] = {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "text": {"type": "string", "default": ""},
-                "rows": {
-                    "type": "integer", "minimum": 0,
-                    "maximum": MAX_SAFE_INTEGER, "default": 24,
-                },
-            },
-            "required": ["id"],
-        }
-        schemas["ResponseContract"] = {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "status": {"type": "string", "default": "idle"},
-            },
-            "required": ["id", "status"],
-        }
-        path_item = document["paths"]
-        assert isinstance(path_item, dict)
-        operation = path_item["/api/example"]
-        assert isinstance(operation, dict)
-        get_operation = operation["get"]
-        assert isinstance(get_operation, dict)
-        get_operation["requestBody"] = {
-            "content": {
-                "application/json": {"schema": {"$ref": "#/components/schemas/MonitorInput"}}
-            }
-        }
-
-        generated = render(document)
-        self.assert_token_rate_limit_exports(generated, document)
-
-        monitor_input = generated.split("MonitorInput: {", 1)[1].split("\n    };", 1)[0]
-        response_contract = generated.split("ResponseContract: {", 1)[1].split("\n    };", 1)[0]
-        self.assertIn("id: string", monitor_input)
-        self.assertIn("text?: string", monitor_input)
-        self.assertIn("rows?: number", monitor_input)
-        self.assertIn("id: string", response_contract)
-        self.assertIn("status: string", response_contract)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ use crate::protocol::{
     HealthRequest, NativeId, NextBatchRequest, OpenRequest, OperationStatusRequest,
     RetireCommandRequest, WriteRequest,
 };
-use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
+use crate::supervisor_contract::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use crate::{
     BackendIdentity, OperationId, SUPERVISOR_PROTOCOL_V2, SupervisorAction, SupervisorError,
     SupervisorHandle, SupervisorHandshakeV2, SupervisorHandshakeV2Result,

@@ -32,8 +32,6 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import AppServer, ResponseTimeout, Runtime
 from codex_native_errors import NativeRpcError
 from codex_provider_limits import CALLBACK_QUEUE_LIMIT
-from studio_api.generate_provider_limits import OUTPUT as RUST_LIMIT_OUTPUT
-from studio_api.generate_provider_limits import render_rust_callback_queue_limit
 
 
 class Pipe:
@@ -85,9 +83,8 @@ class Process:
 
 
 class ReaderContract(unittest.TestCase):
-    def test_callback_queue_limit_matches_generated_rust_contract(self):
+    def test_callback_queue_limit_uses_the_shared_owner(self):
         self.assertEqual(AppServer.CALLBACK_QUEUE_LIMIT, CALLBACK_QUEUE_LIMIT)
-        self.assertEqual(RUST_LIMIT_OUTPUT.read_text(encoding="utf-8"), render_rust_callback_queue_limit())
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

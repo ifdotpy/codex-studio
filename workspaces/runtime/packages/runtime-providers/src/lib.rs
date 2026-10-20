@@ -2,7 +2,7 @@
 //!
 //! Provider sessions are pure state machines; a thin caller owns split byte I/O.
 
-mod callback_queue_limit_generated;
+mod callback_queue_limit;
 mod codec;
 mod connection;
 mod initialize;
@@ -10,7 +10,7 @@ mod provider_kind;
 mod session;
 pub mod supervisor_v1;
 
-pub use callback_queue_limit_generated::CALLBACK_QUEUE_LIMIT;
+pub use callback_queue_limit::CALLBACK_QUEUE_LIMIT;
 pub use codec::{
     CodecError, DecodedJournalEntry, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES,
     MAX_FRAME_DELIMITER_BYTES, Method, NotificationFrame, RequestFrame, RequestId, ResponseBody,

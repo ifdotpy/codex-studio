@@ -40,7 +40,6 @@ from studio_api.persisted_federation import (
     FederationRoomPayload,
     PersistedFederationRoom,
 )
-from studio_api.generate_federation_limits import OUTPUTS
 
 
 class FederationLimitsContract(unittest.TestCase):
@@ -85,11 +84,6 @@ class FederationLimitsContract(unittest.TestCase):
             SignedPairResult.model_json_schema()["properties"]["protocol"]["const"],
             PROTOCOL_VERSION,
         )
-
-    def test_generated_rust_output_matches_the_python_owner(self):
-        for path, expected in OUTPUTS.items():
-            with self.subTest(path=path.name):
-                self.assertEqual(path.read_text(encoding="utf-8"), expected)
 
     def test_message_and_list_schemas_use_the_owner(self):
         self.assertEqual(

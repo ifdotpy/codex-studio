@@ -7,7 +7,7 @@ use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use studio_runtime_providers::ProviderKind;
-use studio_runtime_schema::agent_limits_generated::{
+use studio_runtime_schema::agent_limits::{
     DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY,
     MAX_TEAM_AGENTS, MIN_SUBAGENT_CONCURRENCY, MIN_TEAM_AGENTS, TEAM_AGENT_HEADROOM,
 };
@@ -3687,7 +3687,7 @@ mod tests {
     async fn conversation_catalog_account_is_not_the_child_worker_default() {
         let root = tempfile::tempdir().expect("temporary state");
         let schema: Value = serde_json::from_str(include_str!(
-            "../../../../apps/server/tests/fixtures/runtime-state-schema.json"
+            "../../../runtime-store/src/runtime-state-schema.json"
         ))
         .expect("schema");
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -3945,7 +3945,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("creation-recheck-{}", new_id().expect("id")));
         std::fs::create_dir_all(&root).expect("temporary state");
         let schema: Value = serde_json::from_str(include_str!(
-            "../../../../apps/server/tests/fixtures/runtime-state-schema.json"
+            "../../../runtime-store/src/runtime-state-schema.json"
         ))
         .expect("schema");
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {

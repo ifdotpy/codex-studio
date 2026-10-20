@@ -148,7 +148,7 @@ fn snapshot(op: &Value, agent: &Value) -> Snapshot {
 #[test]
 fn transfer_snapshot_accepts_configured_team_ceiling_and_rejects_one_more_record() {
     let (mut op, agent, _) = fixture();
-    let max_records = studio_runtime_schema::agent_limits_generated::MAX_TRANSFER_AGENT_RECORDS;
+    let max_records = studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
     let records = |op: &mut Value, count: usize| {
         (0..count)
             .map(|index| {

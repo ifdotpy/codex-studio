@@ -19,8 +19,8 @@ use thiserror::Error;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::event_write::python_json_compact;
-use crate::multi_server_protocol_generated::MULTI_SERVER_SIGNING_DOMAIN;
 pub use crate::multi_server_transport_limits::{MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES};
+use studio_runtime_schema::multi_server_protocol::MULTI_SERVER_SIGNING_DOMAIN;
 use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError, sha256_hex};
 
 pub const CLOCK_SKEW_SECONDS: i64 = 300;
@@ -1752,7 +1752,7 @@ pub(crate) mod tests {
         ));
         fs::create_dir_all(&root).expect("temporary state directory creates");
         let snapshot: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../apps/server/tests/fixtures/runtime-state-schema.json"
+            "../../runtime-store/src/runtime-state-schema.json"
         ))
         .expect("committed state schema parses");
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {

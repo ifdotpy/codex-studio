@@ -237,12 +237,6 @@ class EntityReadLockContract(unittest.TestCase):
                     "SELECT id,payload FROM sync_entities WHERE collection='event' AND deleted=0")}
             self.assertEqual(actual, expected)
 
-    def test_generated_rust_event_trigger_sql_matches_its_python_owner(self):
-        from studio_api.generate_sync_schema import SCHEMA_PATH, generated_schema
-        source = SCHEMA_PATH.read_text()
-        self.assertEqual(source, generated_schema(source),
-                         'codex_sync_entities.event_trigger_sql owns generated Rust event trigger SQL')
-
     def test_noop_and_startup_repair_do_not_advance_event_sequences(self):
         with self.connect() as db:
             db.execute("INSERT INTO runtime_events VALUES ('event','owner','user','pending',1,NULL)")

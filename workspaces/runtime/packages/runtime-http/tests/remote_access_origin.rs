@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
-use studio_runtime_services::multi_server_protocol_generated::REMOTE_ACCESS_FILE;
+use studio_runtime_schema::multi_server_protocol::REMOTE_ACCESS_FILE;
 use studio_runtime_services::remote_access::RemoteAccess;
 use tower::ServiceExt;
 

@@ -1,4 +1,4 @@
-"""Canonical byte limits for signed multi-server HTTP exchanges."""
+"""Python copy of runtime-services/src/multi_server_transport_limits.rs, the owner; removed with the Python server."""
 
 MULTI_SERVER_MAX_REQUEST_BYTES = 256 * 1024
 MULTI_SERVER_MAX_RESPONSE_BYTES = 1024 * 1024

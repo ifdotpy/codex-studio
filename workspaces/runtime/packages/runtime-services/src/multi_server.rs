@@ -1,11 +1,11 @@
 //! Local multi-server access projections and state mutations.
-use crate::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::hmac;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION;
 use studio_runtime_store::{MultiServerRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 

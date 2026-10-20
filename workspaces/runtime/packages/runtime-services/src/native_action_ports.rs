@@ -90,10 +90,8 @@ impl Admission for MessageNativeAdmission {
                 .map(|value| value.parse::<i64>())
                 .transpose()
                 .map_err(|_| NativeError::Invalid("review/global-concurrency"))?
-                .unwrap_or(
-                    studio_runtime_schema::agent_limits_generated::DEFAULT_GLOBAL_CONCURRENCY,
-                )
-                .max(studio_runtime_schema::agent_limits_generated::MIN_GLOBAL_CONCURRENCY);
+                .unwrap_or(studio_runtime_schema::agent_limits::DEFAULT_GLOBAL_CONCURRENCY)
+                .max(studio_runtime_schema::agent_limits::MIN_GLOBAL_CONCURRENCY);
             let global_limit = usize::try_from(global_limit)
                 .map_err(|_| NativeError::Invalid("review/global-concurrency"))?;
             let active = tx
