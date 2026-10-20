@@ -328,6 +328,13 @@ Do not treat silence as proof of failure. Do not archive a worker to hide an err
 
 Add `reason` for `archive`. Never replace the worker ID with a thread ID.
 
+## Browser sign-in
+
+A command that opens a browser to sign in goes through Studio by `BROWSER`.
+Studio shows the person a card, and the person signs in from any window, also a phone.
+If a command ignores `BROWSER` and has a browser command option, pass `"$BROWSER"` to it.
+Keep the command waiting until the person finishes. Do not open sign-in links in another way.
+
 ## Layr VM chats
 
 Read [the layr reference](references/layr.md) when the chat uses `layr`.

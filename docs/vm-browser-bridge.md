@@ -441,8 +441,7 @@ there opens on the Mac where the person works.
   Native agents of one user can act for each other, so the hint is not a security boundary;
   the approval card is the consent. Cards carry `source: "host"`.
 - A window on the same server opens the link without a forward: the tool listens on that Mac.
-- Open: Codex native chats get no `BROWSER` yet; a thread needs a per-thread
-  `shell_environment_policy` that keeps its native settings identity.
+- Codex native chats get `BROWSER` through per-thread overrides (section 6.4).
 
 ### A window on another Mac
 
@@ -596,7 +595,23 @@ chat stops; the existing rules then expire the pending record.
   sessions through `studio-browser.json` and Codex threads through the per-thread
   `shell_environment_policy.set` overrides. The Codex app-server launch command does not
   change. A folder `<state>/browser-host/bin` holds `xdg-open`, `x-www-browser` and
-  `www-browser` links to the shim for tools that search `PATH`.
+  `www-browser` links to the launcher for tools that search `PATH`.
+  - Owners: Python `codex_browser_host.py` (`session_environment`, `thread_environment`) and
+    Rust `browser_environment.rs`; `tests/browser_environment_differential.rs` compares them.
+  - Codex gets the three names only for a host Codex chat (not Claude, not VM), and only when
+    `<state>/browser-host/studio-browser` exists. The value is stable for each chat, so the
+    thread settings digest changes once.
+  - Measured on 2026-10-20 with codex-cli 0.160.1, a throwaway `CODEX_HOME` and a fake
+    Responses provider on the loopback: with the overrides `shell_environment_policy.set.BROWSER`
+    and `.STUDIO_BROWSER_SESSION` in `thread/start` `config`, the thread's `exec_command`
+    (`/bin/zsh -lc`) printed both values; without them, `BROWSER` was empty.
+  - `PATH` for Codex: in the same run, `shell_environment_policy.set.PATH` replaced the whole
+    `PATH` of the command (the login shell did not add the person's entries back). Studio
+    therefore does not set `PATH` for Codex threads, and their tools that search `PATH` do not
+    find the links. Claude sessions get the link folder first on `PATH`
+    (`STUDIO_BROWSER_PATH` in `studio-browser.json`).
+  - On macOS some tools run `open` and ignore `BROWSER` (kubelogin). Studio does not replace
+    `open`. The agent guidance says to pass `"$BROWSER"` to a browser command option.
 - Web: the sign-in card (`SignInCard.tsx`), paste mode for every window that cannot hold the
   port, and the countdown.
 - Desktop (Electron and Tauri): no change. They keep `openSignIn` and the forward.

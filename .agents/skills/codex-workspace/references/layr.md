@@ -52,8 +52,9 @@ The browser on the Mac opens only after the person approves.
 Run the sign-in command, ask the person to approve the card, and wait for the command.
 Give a printed sign-in link to `studio-browser <link>` when the command does not open it.
 Do not open sign-in links in another way.
-Only the window on the Mac that runs the server can approve a loopback sign-in.
-Use the tool's device-code mode in other windows.
+The person can approve from any window, also from a phone.
+A phone sends the sign-in result back through the card, so keep the command waiting.
+The tool's device-code mode also works in every window.
 
 The host owns account sign-in and credential refresh.
 The guest receives private access credentials through the existing account sync.

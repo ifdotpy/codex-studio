@@ -807,7 +807,8 @@ class NativeChats(unittest.TestCase):
         publish(account, self.root)
         value = json.loads((account / SESSION_FILE).read_text())
         self.assertEqual(value, {"BROWSER": str(self.root / "browser-host" / "studio-browser"),
-                                 "STUDIO_BROWSER_SOCKET": str(self.root / "browser-host" / "open.sock")})
+                                 "STUDIO_BROWSER_SOCKET": str(self.root / "browser-host" / "open.sock"),
+                                 "STUDIO_BROWSER_PATH": str(self.root / "browser-host" / "bin")})
         self.assertEqual((account / SESSION_FILE).stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / "browser-host").stat().st_mode & 0o777, 0o700)
         repository = Path(__file__).resolve().parents[5]

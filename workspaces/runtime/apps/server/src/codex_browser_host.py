@@ -35,6 +35,11 @@ from browser_bridge import BridgeError, BrowserBridge, Listener, proc_listeners 
 FOLDER = "browser-host"
 SESSION_FILE = "studio-browser.json"
 HOST_BROWSER_CONTROL_SOCKET_NAME = "control.sock"
+LAUNCHER = "studio-browser"
+# The folder of launcher links for tools that search PATH instead of reading BROWSER. The Rust
+# backend (runtime-services browser_host.rs) writes the same folder and names.
+PATH_FOLDER = "bin"
+PATH_NAMES = ("xdg-open", "x-www-browser", "www-browser")
 
 
 def lsof_listeners(text: str) -> list[Listener]:
@@ -112,10 +117,41 @@ def session_environment(state: Path) -> dict[str, str]:
     folder = Path(state) / FOLDER
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     folder.chmod(0o700)
-    shim = folder / "studio-browser"
+    shim = folder / LAUNCHER
     _write(shim, "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -I "
            + shlex.quote(str(VM_GUEST_ROOT / "studio_browser.py")) + ' "$@"\n', 0o755)
-    return {"BROWSER": str(shim), "STUDIO_BROWSER_SOCKET": str(folder / "open.sock")}
+    links = folder / PATH_FOLDER
+    links.mkdir(mode=0o700, exist_ok=True)
+    for name in PATH_NAMES:
+        _link(links / name, Path("..") / LAUNCHER)
+    return {"BROWSER": str(shim), "STUDIO_BROWSER_SOCKET": str(folder / "open.sock"),
+            "STUDIO_BROWSER_PATH": str(links)}
+
+
+def _link(path: Path, target: Path) -> None:
+    if path.is_symlink() and Path(os.readlink(path)) == target:
+        return
+    temporary = path.with_name("." + path.name + "-" + uuid.uuid4().hex[:8])
+    temporary.symlink_to(target)
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def thread_environment(state: Path, agent_id: str) -> dict[str, str]:
+    """Per-thread Codex config overrides that send a host Codex chat's browser links to this
+    server (docs/vm-browser-bridge.md, section 6.4). Codex applies `shell_environment_policy.set`
+    to the commands of the thread; its app-server launch stays unchanged. PATH is not set: a
+    Codex `set.PATH` replaces the whole PATH of the command. Nothing is set before the launcher
+    exists, so a server without the host bridge keeps the tool's own browser behaviour."""
+    folder = Path(state) / FOLDER
+    launcher = folder / LAUNCHER
+    if not launcher.is_file():
+        return {}
+    return {"shell_environment_policy.set.BROWSER": str(launcher),
+            "shell_environment_policy.set.STUDIO_BROWSER_SOCKET": str(folder / "open.sock"),
+            "shell_environment_policy.set.STUDIO_BROWSER_SESSION": agent_id}
 
 
 def publish(root: Path, state: Path) -> None:

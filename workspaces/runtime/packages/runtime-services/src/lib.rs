@@ -34,6 +34,7 @@ pub mod atomic_file;
 pub mod bounded_child;
 pub mod browser;
 pub mod browser_answer;
+pub mod browser_environment;
 pub mod budget;
 pub mod budget_runtime;
 pub mod budget_service;
