@@ -1408,7 +1408,6 @@ pub(super) async fn journal_batch(
         let mut parked = Vec::new();
         let mut deferred = Vec::new();
         let mut deferred_agent = None;
-        let mut persist_snapshot = false;
         let mut outbox = PublicationOutbox::default();
         let mut entries = entries.into_iter();
         while let Some(entry) = entries.next() {
@@ -1450,9 +1449,8 @@ pub(super) async fn journal_batch(
                 )
             })?;
             match applied {
-                Ok(Some((updated, effect, changed))) => {
+                Ok(Some((updated, effect))) => {
                     next = updated;
-                    persist_snapshot |= changed;
                     committed.push((entry, effect));
                 }
                 Ok(None) => {
@@ -1474,7 +1472,9 @@ pub(super) async fn journal_batch(
                 }
             }
         }
-        if persist_snapshot {
+        // Entries that left every stream untouched share each allocation
+        // with the batch's input, so the comparison reads no stream text.
+        if next.changed_from(&streams) {
             crate::diagnostics::measure_runtime_stage("journal.persist_streams", || {
                 persist_streams(tx, &account, &next)
             })?;
@@ -1548,7 +1548,7 @@ fn journal_one(
     limits_observation: Option<&crate::usage_resume::LimitsObservation>,
     outbox: &mut PublicationOutbox,
     policy: JournalPolicy<'_>,
-) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
+) -> Result<Option<(NotificationStreamBuffer, Option<Effect>)>, WorkerError> {
     let JournalIdentity {
         account,
         journal_scope,
@@ -1562,14 +1562,14 @@ fn journal_one(
         return Err(WorkerError::StaleVmActor);
     }
     if entry.cursor.0 <= checkpoint(tx, journal_scope, entry.generation.0)? {
-        return Ok(Some((streams.clone(), None, false)));
+        return Ok(Some((streams.clone(), None)));
     }
     if let Some(old) = receipt(tx, &operation, "settled")? {
         if old["digest"] != digest {
             return Err(invalid(&operation));
         }
         if old["committed"] == true {
-            return Ok(Some((streams.clone(), None, false)));
+            return Ok(Some((streams.clone(), None)));
         }
     }
     let mut next = streams.clone();
@@ -1727,7 +1727,7 @@ fn journal_one(
                             streams,
                             now(),
                         )?
-                        .unwrap_or_else(|| streams.clone());
+                        .unwrap_or(next);
                         publications.push(next.take_post_commit()?);
                         let agent_before =
                             NotificationDispatchRepository::agent_record(tx, &identity.agent_id)?
@@ -1801,7 +1801,7 @@ fn journal_one(
                             &crate::notification_runtime_effects::RuntimeNotificationEffects,
                         )?;
                         publications.push(dispatched.post_commit);
-                        let staged = dispatched.stream_update.unwrap_or_else(|| streams.clone());
+                        let staged = dispatched.stream_update.unwrap_or(next);
                         next = if staged.pending_bytes() >= STREAM_FLUSH_BYTES {
                             let flushed = flush_notification_streams(
                                 tx,
@@ -1839,7 +1839,7 @@ fn journal_one(
         "settled",
         json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
     )?;
-    Ok(Some((next, effect, true)))
+    Ok(Some((next, effect)))
 }
 pub(super) async fn save_recovery(
     store: &RuntimeStore,

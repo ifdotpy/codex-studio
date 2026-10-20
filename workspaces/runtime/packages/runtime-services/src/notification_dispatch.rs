@@ -1336,7 +1336,7 @@ pub fn flush_notification_streams(
         if agent != before {
             persist_agent(transaction, agent_id, &agent, publication)?;
         }
-        Ok((next != *streams).then_some(next))
+        Ok(next.changed_from(streams).then_some(next))
     })
 }
 

@@ -416,3 +416,49 @@ async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
         (1..=ENTRIES).collect::<Vec<_>>()
     );
 }
+
+/// The durable stream metadata text of the `default` account, if any.
+fn stream_metadata(store: &RuntimeStore) -> Option<String> {
+    store
+        .read()
+        .expect("reader")
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:streams:default:metadata'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+}
+
+/// A batch whose events leave every stream untouched writes no stream
+/// snapshot; a later batch that changes a stream persists exactly the buffer
+/// a restart restores.
+#[tokio::test]
+async fn journal_batch_persists_streams_only_when_they_change() {
+    let store = running_store().await;
+    let streams = journal(&store, NotificationStreamBuffer::default(), vec![delta(1)]).await;
+    store
+        .transaction_with(|tx| -> Result<(), WorkerError> {
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result='\"unchanged\"' WHERE id='account-worker:streams:default:metadata'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("mark the stored snapshot");
+    let rate_limits = entry(
+        2,
+        json!({"method":"account/rateLimits/updated","params":{"rateLimits":{}}}),
+    );
+    let streams = journal(&store, streams, vec![rate_limits]).await;
+    assert_eq!(stream_metadata(&store).as_deref(), Some("\"unchanged\""));
+    let streams = journal(&store, streams, vec![delta(3)]).await;
+    assert_ne!(stream_metadata(&store).as_deref(), Some("\"unchanged\""));
+    let restored = store
+        .transaction_with(|tx| store::load_streams(tx, "default"))
+        .await
+        .expect("restore streams");
+    assert_eq!(restored, streams);
+    assert_eq!(restored.pending_bytes(), 2);
+}

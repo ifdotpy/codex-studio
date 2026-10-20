@@ -408,7 +408,7 @@ impl NotificationStreamBuffer {
             analytics_overflow: std::mem::take(&mut self.analytics_overflow),
         })
     }
-    pub(super) fn changed_from(&self, previous: &Self) -> bool {
+    pub(crate) fn changed_from(&self, previous: &Self) -> bool {
         self.publication_sequence != previous.publication_sequence
             || self.analytics_overflow != previous.analytics_overflow
             || shared_entries_changed(&self.entries, &previous.entries)
