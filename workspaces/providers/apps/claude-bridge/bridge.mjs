@@ -125,14 +125,44 @@ function assistantBlockState(active, messageId, kind) {
       blocks: [],
       streams: new Map(),
       frames: new Set(),
+      // The joined text is built when read, at most once per change, not per delta.
+      text: "",
+      dirty: false,
+      // The streaming item's index in its turn, so a delta finds it in O(1).
+      itemTurn: null,
+      itemIndex: -1,
     });
   return active.assistantBlocks.get(key);
 }
+const streamingItems = new WeakSet();
 function assistantText(state) {
-  return state.blocks
-    .map((block) => block.text)
-    .filter(Boolean)
-    .join("\n");
+  if (state.dirty) {
+    state.text = state.blocks
+      .map((block) => block.text)
+      .filter(Boolean)
+      .join("\n");
+    state.dirty = false;
+  }
+  return state.text;
+}
+// A streaming item reads its text from the block state, so a delta costs O(1)
+// and the full text is joined only when the item is saved or sent. Assigning
+// `text` (as a finished copy does) turns it back into a plain value.
+function streamText(item, state) {
+  Object.defineProperty(item, "text", {
+    enumerable: true,
+    configurable: true,
+    get: () => assistantText(state),
+    set(value) {
+      streamingItems.delete(item);
+      Object.defineProperty(item, "text", {
+        value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    },
+  });
 }
 let lastLimits;
 const root = process.argv[2];
@@ -1735,26 +1765,42 @@ async function startSession(s, active, p) {
           const index = Number.isInteger(e.index) ? e.index : 0;
           let block = state.streams.get(index);
           if (!block) {
-            block = { text: "", complete: false };
+            block = {
+              text: "",
+              complete: false,
+              position: state.blocks.length,
+            };
             state.streams.set(index, block);
             state.blocks.push(block);
           }
-          const separator =
-            block.text === "" && state.blocks.indexOf(block) > 0 ? "\n" : "";
-          if (!block.complete) block.text += delta;
-          let item = turn.items.find((i) => i.id === id);
-          if (!item) {
-            item = {
-              id,
-              type: "agentMessage",
-              phase: "commentary",
-              text: "",
-              thinking,
-            };
-            turn.items.push(item);
-          }
+          const separator = block.text === "" && block.position > 0 ? "\n" : "";
           if (!block.complete) {
-            item.text = assistantText(state);
+            block.text += delta;
+            state.dirty = true;
+          }
+          if (
+            state.itemTurn !== turn ||
+            turn.items[state.itemIndex]?.id !== id
+          ) {
+            state.itemTurn = turn;
+            state.itemIndex = turn.items.findIndex((i) => i.id === id);
+            if (state.itemIndex < 0) {
+              state.itemIndex =
+                turn.items.push({
+                  id,
+                  type: "agentMessage",
+                  phase: "commentary",
+                  text: "",
+                  thinking,
+                }) - 1;
+            }
+          }
+          const item = turn.items[state.itemIndex];
+          if (!block.complete) {
+            if (!streamingItems.has(item)) {
+              streamingItems.add(item);
+              streamText(item, state);
+            }
             emit("item/agentMessage/delta", {
               threadId: s.id,
               turnId: turn.id,
@@ -1817,7 +1863,10 @@ async function startSession(s, active, p) {
               (old) => !old.complete && old.text === block[field],
             );
             if (pending) pending.complete = true;
-            else state.blocks.push({ text: block[field], complete: true });
+            else {
+              state.blocks.push({ text: block[field], complete: true });
+              state.dirty = true;
+            }
           }
           return assistantText(state);
         };
