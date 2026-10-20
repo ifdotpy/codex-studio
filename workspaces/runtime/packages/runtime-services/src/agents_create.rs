@@ -651,6 +651,7 @@ fn rename(
     Ok(result)
 }
 
+// Kept until lane A4 strips the n-z callers.
 #[cfg(test)]
 #[allow(clippy::duplicate_mod)]
 #[path = "../tests/support/prepared_python.rs"]
@@ -664,9 +665,6 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::{Value, json};
 
-    fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
-        super::prepared_python_test_support::prepared_python(source)
-    }
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         create_schema(&connection);
@@ -692,36 +690,6 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
-    }
-
-    #[test]
-    fn mode_fields_matches_python_on_schema_boundary_corpus() {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-        let corpus =
-            include_str!("../../../apps/server/tests/fixtures/rust-agents-create/mode-corpus.json");
-        let mut actual: Vec<serde_json::Value> = serde_json::from_str(corpus).expect("mode corpus");
-        for record in &mut actual {
-            super::mode_fields(record);
-        }
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python(&source);
-        let mut child = Command::new(python).args(["-c", "import json,sys; from codex_agent_modes import mode_fields; print(json.dumps([mode_fields(row) for row in json.load(sys.stdin)]))"])
-            .env("PYTHONPATH", source).env("PYTHONDONTWRITEBYTECODE", "1")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Python oracle starts");
-        child
-            .stdin
-            .take()
-            .expect("oracle stdin")
-            .write_all(corpus.as_bytes())
-            .expect("send corpus");
-        let output = child.wait_with_output().expect("oracle exits");
-        assert!(output.status.success());
-        let expected: Vec<serde_json::Value> =
-            serde_json::from_slice(&output.stdout).expect("oracle output");
-        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
-            assert_eq!(actual, expected, "mode corpus input {index}");
-        }
     }
 
     #[test]

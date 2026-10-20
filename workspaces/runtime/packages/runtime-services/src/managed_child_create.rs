@@ -1667,10 +1667,7 @@ mod vm_review_identity_tests {
     use serde_json::json;
 
     #[test]
-    fn guest_review_ids_are_bounded_and_match_the_named_python_limit() {
-        let python = include_str!("../../../apps/server/src/codex_linux_vm.py");
-        assert!(python.contains("GUEST_REQUEST_ID_MAX_CHARS = 128"));
-        assert!(python.contains("len(identity) <= GUEST_REQUEST_ID_MAX_CHARS"));
+    fn guest_review_ids_are_bounded_by_the_named_limit() {
         let rust_guest = include_str!("linux_vm_guest.rs");
         assert!(rust_guest.contains("chars().count() > GUEST_REQUEST_ID_MAX_CHARS"));
         let long = "r".repeat(4096);

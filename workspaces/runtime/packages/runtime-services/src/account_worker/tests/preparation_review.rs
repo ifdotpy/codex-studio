@@ -191,96 +191,12 @@ async fn context_repair_phases_and_complaint_ownership_match_python() {
     }
 }
 
-/// Real Python `Runtime.prepare_locked` and `reconcile_unknown` over the same
-/// saved row, with only the runtime host replaced. A release Python ignores
-/// reaches the next preparation call (`proceed`); a raise keeps the input
-/// queued (`hold`); `unsubscribe` is the native release retry that the Rust
-/// adapter holds for instead.
-const NATIVE_RELEASE_ORACLE: &str = r#"
-import contextlib, json, sys, threading
-sys.path.insert(0, sys.argv[1])
-from oracle_guard import install_guard
-_GUARD = install_guard(block_processes=True)
-sys.path.insert(0, sys.argv[2])
-import codex_context_repair, codex_native_tools
-from codex_runtime import Runtime
-
-class Proceed(Exception):
-    pass
-
-class Preparations(dict):
-    def get(self, *args):
-        raise Proceed
-
-class Server:
-    def __init__(self):
-        self.methods = []
-    def call(self, method, params, timeout=None):
-        self.methods.append(method)
-        return {"status": "unsubscribed"}
-
-class Host:
-    def __init__(self, record, connection):
-        self.record, self.connection = record, connection
-        self.lock, self.closed, self.loaded = threading.RLock(), False, set()
-        self.preparations, self.server = Preparations(), Server()
-    @contextlib.contextmanager
-    def db(self):
-        yield None
-    def agent(self, agent_id, db=None):
-        return json.loads(json.dumps(self.record))
-    def put(self, db, table, record):
-        self.record = record
-    def agent_connection(self, agent):
-        return self.connection
-    def server_for(self, account, connection):
-        return self.server
-    def connect_agent(self, agent):
-        return self.server
-
-codex_context_repair.assert_context_available = lambda agent: None
-codex_native_tools.account_reserved = lambda runtime, account: False
-outcomes = []
-for case in json.loads(sys.argv[3]):
-    host = Host(case["agent"], case["connection"])
-    try:
-        Runtime.prepare_locked(host, host.agent(None))
-        outcomes.append("returned")
-    except Proceed:
-        outcomes.append("unsubscribe" if host.server.methods else "proceed")
-    except Exception:
-        outcomes.append("hold")
-print(json.dumps(outcomes))
-"#;
-
-fn python_native_release_outcomes(cases: &Value) -> Vec<String> {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = manifest.join("../../apps/server/src");
-    let output = Command::new("timeout")
-        .arg("120")
-        .arg(crate::agents_create::prepared_python(&source))
-        .arg("-B")
-        .arg("-c")
-        .arg(NATIVE_RELEASE_ORACLE)
-        .arg(manifest.join("tests/turn_lifecycle"))
-        .arg(&source)
-        .arg(cases.to_string())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
 /// A release inspection that found native work (`blocked`) never unsubscribed,
-/// so the thread stayed loaded. Python prepares such an agent normally; only a
+/// so the thread stayed loaded. Such an agent prepares normally; only a
 /// pending tool reset or an unsettled release on the current thread and
 /// connection keeps the input queued.
 #[tokio::test]
-async fn native_release_phases_match_python() {
+async fn native_release_phases_hold_only_unsettled_releases() {
     // Turn preparation names its connection by the provider generation.
     const GENERATION: u64 = 1;
     const CONNECTION: &str = "1";
@@ -321,10 +237,12 @@ async fn native_release_phases_match_python() {
                 release("earlier-connection", json!("blocked")),
                 json!({"error":"native background command is active"}),
             ),
+            false,
         ),
         (
             "blocked-current-connection",
             release(CONNECTION, json!("blocked")),
+            false,
         ),
         (
             "superseded-inspection",
@@ -332,33 +250,50 @@ async fn native_release_phases_match_python() {
                 release(CONNECTION, Value::Null),
                 json!({"inspectionPhase":"superseded"}),
             ),
+            false,
         ),
-        ("released", release(CONNECTION, json!("released"))),
-        ("resumed", release(CONNECTION, json!("resumed"))),
-        ("unrecognized-phase", release(CONNECTION, json!("pending"))),
+        ("released", release(CONNECTION, json!("released")), false),
+        ("resumed", release(CONNECTION, json!("resumed")), false),
+        (
+            "unrecognized-phase",
+            release(CONNECTION, json!("pending")),
+            false,
+        ),
         (
             "reset-pending",
             with(
                 release(CONNECTION, json!("released")),
                 json!({"resetPending":true}),
             ),
+            true,
         ),
         (
             "unsubscribing-current",
             release(CONNECTION, json!("unsubscribing")),
+            true,
         ),
         (
             "unsubscribing-earlier-connection",
             release("earlier-connection", json!("unsubscribing")),
+            false,
         ),
-        ("unknown-current", release(CONNECTION, json!("unknown"))),
-        ("checking-current", release(CONNECTION, json!("checking"))),
+        (
+            "unknown-current",
+            release(CONNECTION, json!("unknown")),
+            true,
+        ),
+        (
+            "checking-current",
+            release(CONNECTION, json!("checking")),
+            true,
+        ),
         (
             "checking-inspection",
             with(
                 release(CONNECTION, json!("checking")),
                 json!({"inspectionPhase":"inspecting"}),
             ),
+            false,
         ),
         (
             "captured-reset-without-closure",
@@ -366,23 +301,10 @@ async fn native_release_phases_match_python() {
                 release(CONNECTION, json!("unsubscribing")),
                 json!({"resetActorEpoch":base["epoch"],"submittedAt":101.0}),
             ),
+            true,
         ),
     ];
-    let python =
-        python_native_release_outcomes(&json!(
-        cases
-            .iter()
-            .map(|(_, release)| json!({"agent":with(base.clone(), json!({"nativeRelease":release})),
-                "connection":CONNECTION}))
-            .collect::<Vec<_>>()
-    ));
-    assert_eq!(python.len(), cases.len());
-    for ((name, release), python) in cases.into_iter().zip(python) {
-        let held = match python.as_str() {
-            "proceed" => false,
-            "hold" | "unsubscribe" => true,
-            other => panic!("{name}: unexpected Python outcome {other}"),
-        };
+    for (name, release, held) in cases {
         let state = State::new().await;
         change_agent(&state, "nativeRelease", release).await;
         let id = state.agent.clone();
@@ -408,11 +330,11 @@ async fn native_release_phases_match_python() {
             .await
             .unwrap();
         match result {
-            Ok(()) => assert!(!held, "{name}: Python {python} holds, Rust prepared"),
+            Ok(()) => assert!(!held, "{name}: expected a hold, Rust prepared"),
             Err(WorkerError::PreparationRefused(reason))
                 if reason == "thread-preparation/NativeRelease" =>
             {
-                assert!(held, "{name}: Python prepares, Rust held")
+                assert!(held, "{name}: expected preparation, Rust held")
             }
             Err(error) => panic!("{name}: {error}"),
         }

@@ -1,7 +1,5 @@
 #[path = "claude_runtime/login_fixture.rs"]
 mod fixture;
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
 use fixture::*;
 use std::sync::atomic::Ordering;
 use studio_runtime_services::claude_login::ports::LoginReceipts;
@@ -425,35 +423,41 @@ exit 0
     }
 }
 
-fn oracle(args: &[&str]) -> serde_json::Value {
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .args([
-        "-B",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/claude_runtime/login_oracle.py"
-        ),
-    ])
-    .args(args)
-    .output()
-    .expect("Python writer");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    if output.stdout.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&output.stdout).expect("oracle")
+/// Write the two bare receipts that an early version left for `key`.
+fn seed_legacy_receipts(f: &Fixture, key: &str) {
+    for request in [ID, "987edcdc-0e86-4fdf-a1c6-1513517d3ad0"] {
+        let snapshot = studio_runtime_services::claude_login::LoginSnapshot::from_record(
+            serde_json::json!({"requestId":request,"accountKey":key,"status":"pending","email":"fixture@example.test"}),
+        )
+        .expect("legacy receipt");
+        f.receipts.save(&snapshot).expect("seed receipt");
     }
 }
 
 #[tokio::test]
-async fn add_label_and_email_admission_match_python_before_any_write() {
-    for case in oracle(&[])["admissions"].as_array().expect("admissions") {
+async fn add_label_and_email_admission_refusals_write_nothing() {
+    let long = "x".repeat(33);
+    let accented = "é".repeat(33);
+    let cases: Vec<(Option<&str>, Option<&str>)> = vec![
+        (None, None),
+        (Some(""), None),
+        (Some(" "), None),
+        (Some("a"), None),
+        (Some(&long), None),
+        (Some(&accented), None),
+        (Some("  Team  "), Some("  fixture@example.test  ")),
+        (None, Some("")),
+        (None, Some(" ")),
+        (None, Some("x")),
+        (None, Some("a@b")),
+        (None, Some("a@@b.test")),
+        (None, Some("a b@c.test")),
+        (None, Some("a@b.c")),
+        (None, Some("é@example.test")),
+        (None, Some("a@b.test\nextra")),
+        (None, Some("a@b.test")),
+    ];
+    for (label, email) in cases {
         let f = Fixture::new();
         let registry = std::fs::read(f.directory.join("registry.json")).expect("registry");
         let s = f.open().await;
@@ -461,27 +465,19 @@ async fn add_label_and_email_admission_match_python_before_any_write() {
             .start(
                 ID.into(),
                 None,
-                case["email"].as_str().map(str::to_owned),
-                case["label"].as_str().map(str::to_owned),
+                email.map(str::to_owned),
+                label.map(str::to_owned),
             )
             .await;
-        assert_eq!(
-            result.is_ok(),
-            case["admitted"].as_bool().expect("admitted"),
-            "{case}"
-        );
         if result.is_ok() {
             let saved = f.receipts.load().expect("receipt").pop().expect("saved");
             assert_eq!(
                 saved.record()["metadata"]["label"],
-                case["label"]
-                    .as_str()
-                    .map(str::trim)
-                    .unwrap_or("Claude Code")
+                label.map(str::trim).unwrap_or("Claude Code")
             );
             assert_eq!(
                 saved.record()["metadata"]["emailHint"].as_str(),
-                case["email"].as_str().map(str::trim)
+                email.map(str::trim)
             );
             s.cancel(ID).await.expect("cancel");
         } else {
@@ -503,7 +499,7 @@ async fn add_label_and_email_admission_match_python_before_any_write() {
 }
 
 #[tokio::test]
-async fn python_legacy_reauth_resolves_free_lease_or_explicit_exact_cancel() {
+async fn legacy_reauth_resolves_free_lease_or_explicit_exact_cancel() {
     use serde_json::json;
     use studio_runtime_services::claude_login::LoginError;
     const OTHER: &str = "987edcdc-0e86-4fdf-a1c6-1513517d3ad0";
@@ -525,8 +521,8 @@ async fn python_legacy_reauth_resolves_free_lease_or_explicit_exact_cancel() {
                 &metadata,
             )
             .expect("account");
-        oracle(&["legacy", f.directory.to_str().expect("path"), &key]);
-        let original = f.receipts.load().expect("Python receipts");
+        seed_legacy_receipts(&f, &key);
+        let original = f.receipts.load().expect("legacy receipts");
         assert_eq!(original.len(), 2);
         assert!(original.iter().all(|s| s.record()["metadata"] == json!({})));
         let registry = std::fs::read(f.directory.join("registry.json")).expect("registry");
@@ -634,11 +630,7 @@ async fn unknown_receipt_cancel_write_failures_reopen_without_resend() {
     for after in [false, true] {
         let f = Fixture::new();
         // An unavailable legacy account prevents automatic lease proof.
-        oracle(&[
-            "legacy",
-            f.directory.to_str().expect("path"),
-            "removed-account",
-        ]);
+        seed_legacy_receipts(&f, "removed-account");
         let service = f.open().await;
         f.receipts.fail.store(true, Ordering::SeqCst);
         f.receipts.after.store(after, Ordering::SeqCst);

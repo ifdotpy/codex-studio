@@ -1,8 +1,5 @@
 #[path = "monitors/fixtures.rs"]
 mod fixtures;
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     monitor_output::MonitorOutput,
@@ -189,7 +186,6 @@ async fn output_queued_before_a_finish_is_ignored_without_a_cursor_gap() {
 #[tokio::test]
 async fn malformed_pending_result_receipt_is_retained_and_skipped() {
     let root = fixtures::tempdir();
-    fixtures::corpus(root.path());
     let store = fixtures::store(root.path(), "corrupt-receipt").await;
     let directory = store.root().join("monitor-results");
     std::fs::create_dir(&directory).expect("monitor fixture");

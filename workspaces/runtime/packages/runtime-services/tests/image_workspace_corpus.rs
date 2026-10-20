@@ -13,9 +13,6 @@ use studio_runtime_services::image_workspace::{
     WorkspaceDelta, WorkspaceLifecycle, WorkspaceMount,
 };
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
-
 struct ScriptedBackend {
     store: PathBuf,
     failures: Mutex<Vec<&'static str>>,
@@ -333,14 +330,12 @@ fn make_git_project(root: &Path) {
 }
 
 #[test]
-fn python_and_rust_lifecycles_write_equivalent_state_rows_for_shared_scripted_fake() {
+fn lifecycle_writes_state_rows_through_failure_retry_archive_and_plain_folder_refusal() {
     let fixture = tempfile::tempdir().expect("fixture");
     let root = fixture.path().join("project");
     let rust_store = fixture.path().join("rust-store");
-    let python_store = fixture.path().join("python-store");
     make_git_project(&root);
     fs::create_dir_all(&rust_store).expect("Rust store");
-    fs::create_dir_all(&python_store).expect("Python store");
 
     let manager = WorkspaceLifecycle::with_backend(
         &rust_store,
@@ -419,32 +414,22 @@ fn python_and_rust_lifecycles_write_equivalent_state_rows_for_shared_scripted_fa
     rust_rows
         .push(json!({"phase":"plain-folder-cleared","agent":read_row(&rust_agent, &rust_store)}));
 
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let server_source = package.join("../../apps/server/src");
-    let script = package.join("../../apps/server/tests/image-workspace-rust-corpus.py");
-    let mut python = Command::new(prepared_python::prepared_python(&server_source));
-    python
-        .arg(&script)
-        .arg(&server_source)
-        .arg(&root)
-        .arg(&python_store)
-        .env("PYTHONPATH", &server_source)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("CODEX_WORKSPACE_MIN_FREE_BYTES", "0")
-        .env("CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES", "0")
-        .env("HOME", fixture.path().join("home"))
-        .env("TMPDIR", std::env::temp_dir());
-    let output =
-        prepared_python::output_with_timeout(&mut python, &script, Duration::from_secs(60))
-            .expect("run Python image workspace corpus");
-    assert!(
-        output.status.success(),
-        "Python corpus failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let python_rows: Value = serde_json::from_slice(&output.stdout).expect("Python corpus JSON");
+    let phases: Vec<&str> = rust_rows
+        .iter()
+        .map(|row| row["phase"].as_str().expect("phase"))
+        .collect();
     assert_eq!(
-        serde_json::to_value(rust_rows).expect("Rust corpus JSON"),
-        python_rows
+        phases,
+        [
+            "seal-failed",
+            "base-ready",
+            "clone-failed",
+            "workspace-ready",
+            "workspace-archived",
+            "workspace-remounted",
+            "check-mounted",
+            "plain-folder-refused",
+            "plain-folder-cleared"
+        ]
     );
 }

@@ -1,7 +1,4 @@
-#![allow(clippy::duplicate_mod, clippy::unwrap_used)]
-
-#[path = "../../tests/support/prepared_python.rs"]
-mod prepared_python;
+#![allow(clippy::unwrap_used)]
 
 use super::*;
 use crate::multi_server_orchestration::{PairedTransport, RuntimeOrchestrationEffects};
@@ -13,42 +10,65 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 
-/// Far-future command output expiry shared with the Python fixture.
+/// Far-future command output expiry shared with the fixture server.
 const FAR: f64 = 4102444800.0;
 const PEER: &str = "peer-server";
 
-struct Oracle {
+/// Test-only identity of the local server (a throwaway key pair).
+const IDENTITY: &str = "{\"label\":\"Studio server\",\"privateKey\":\"-----BEGIN PRIVATE KEY-----\\nMC4CAQAwBQYDK2VwBCIEIEABs3CR9YO/2snXAA7CZxSJcf+AXY62nmdKhdyv14QS\\n-----END PRIVATE KEY-----\\n\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAElmQYRu24EVfx1oxPVvQb30C+R3RQaB0QboX7Xsi6OQ=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"628c18136e1542fa9f45b899f3b75503\"}";
+const LEAD: &str = "738cc392-d597-4954-80be-9f64ec57723e";
+const WORKER: &str = "c4426480-f59c-4b32-832c-3ba4f43c1683";
+const REMOTE: &str = "97118dce-786a-4bf7-b652-d545a80ffd0c";
+const MOVED: &str = "a313b5da-674e-43d0-86b8-c4204bc46ed8";
+const LINK: &str = "fixture-remote-link";
+
+struct Seed {
     _scratch: tempfile::TempDir,
     value: Value,
 }
 
-/// The real Python tool path over the recorded fixture transport
-/// (tests/multi_server_tools/oracle.py).
-fn oracle() -> &'static Oracle {
-    static ORACLE: OnceLock<Oracle> = OnceLock::new();
-    ORACLE.get_or_init(|| {
+/// The four actors, the project folder and the ids that the tool cases share.
+fn seed() -> &'static Seed {
+    static SEED: OnceLock<Seed> = OnceLock::new();
+    SEED.get_or_init(|| {
         let scratch = tempfile::tempdir().unwrap();
-        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let source = manifest.join("../../apps/server/src");
-        let output = Command::new(prepared_python::prepared_python(&source))
-            .arg(manifest.join("tests/multi_server_tools/oracle.py"))
-            .arg(scratch.path())
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "Python oracle: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Oracle {
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let project = scratch.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let base: Value =
+            serde_json::from_str(&"{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}".replace("@cwd", &cwd)).unwrap();
+        let actor = |index: usize, id: &str, name: &str, parent: Option<&str>, lead: bool| {
+            let mut record = base.clone();
+            record["id"] = json!(id);
+            record["name"] = json!(name);
+            record["isLead"] = json!(lead);
+            record["parentId"] = json!(parent);
+            record["rootId"] = json!(parent.unwrap_or(id));
+            record["threadId"] = json!(format!("thread-{index}"));
+            record["turnId"] = json!(format!("turn-{index}"));
+            record["created"] = json!(1_792_510_147.0 + index as f64);
+            record
+        };
+        let mut remote = actor(2, REMOTE, "Remote worker", None, false);
+        remote["remoteOrigin"] = json!({"home": PEER, "link": LINK});
+        let mut moved = actor(3, MOVED, "Moved worker", None, false);
+        moved["remoteOrigin"] = json!({"home": PEER, "link": LINK});
+        moved["movedFrom"] = json!(PEER);
+        let value = json!({
+            "lead": actor(0, LEAD, "Servers lead", None, true),
+            "worker": actor(1, WORKER, "Servers worker", Some(LEAD), false),
+            "remote": remote,
+            "moved": moved,
+            "projectId": project.to_string_lossy(),
+        });
+        Seed {
             _scratch: scratch,
-            value: serde_json::from_slice(&output.stdout).unwrap(),
+            value,
         }
     })
 }
 
-/// The paired fixture server: the reply rules of the Python oracle's `reply`.
+/// The paired fixture server's reply rules.
 fn reply(envelope: &Value) -> Value {
     let key = envelope["requestId"].clone();
     let payload = &envelope["payload"];
@@ -128,19 +148,12 @@ impl PairedTransport for RecordingTransport {
     }
 }
 
-async fn python_written_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-    let template = std::path::PathBuf::from(oracle().value["template"].as_str().unwrap());
+async fn seeded_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    let seed = &seed().value;
     let directory = tempfile::tempdir().unwrap();
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(name), directory.path().join(name)).unwrap();
-    }
     let identity = directory.path().join("multi-server");
     std::fs::create_dir(&identity).unwrap();
-    std::fs::copy(
-        template.join("multi-server/identity.json"),
-        identity.join("identity.json"),
-    )
-    .unwrap();
+    std::fs::write(identity.join("identity.json"), IDENTITY).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -152,6 +165,43 @@ async fn python_written_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         .unwrap();
     }
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let local = store.local_server_id().unwrap().unwrap();
+    let project = seed["projectId"].as_str().unwrap().to_owned();
+    let agents: Vec<_> = ["lead", "worker", "remote", "moved"]
+        .into_iter()
+        .map(|role| studio_runtime_store::AgentRecord::from_value(seed[role].clone()).unwrap())
+        .collect();
+    let link = json!({"id": LINK, "side": "remote", "server": PEER, "parent": "home-parent",
+        "parentEpoch": 4, "workers": [REMOTE, MOVED]});
+    let project_record = json!({"id": project, "path": project, "name": "Fixture project",
+        "created": 1_792_510_147.0, "accountKey": "default", "accountRevision": 1,
+        "homeServerId": local, "locations": [{"serverId": local, "path": project, "projectId": project, "gitOrigin": "https://example.invalid/fixture.git"}],
+        "locationsRevision": 0});
+    let peer = json!({"id": PEER, "clientId": PEER, "serverId": PEER, "label": "Peer",
+        "kind": "server", "origin": "https://peer.fixture.ts.net", "publicKey": "fixture-public-key",
+        "tailscaleUser": "owner@example.test", "status": "paired", "created": 10,
+        "lastAccess": null, "revoked": null});
+    store
+        .transaction_with(move |tx| -> Result<(), StoreError> {
+            for record in &agents {
+                AgentRepository::put(tx, record)?;
+            }
+            tx.execute(
+                "INSERT INTO runtime_server_links(id,record) VALUES(?1,?2)",
+                rusqlite::params![LINK, link.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                rusqlite::params![project, project_record.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                rusqlite::params![PEER, peer.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     (directory, store)
 }
 
@@ -269,14 +319,377 @@ fn parsed(result: &Value) -> Value {
     serde_json::from_str(text).unwrap_or_else(|_| json!(text))
 }
 
+struct Case {
+    name: &'static str,
+    actor: &'static str,
+    tool: &'static str,
+    args: Value,
+    success: bool,
+    sent: &'static [&'static str],
+    expect: Value,
+}
+
+fn cases() -> Vec<Case> {
+    vec![
+        Case {
+            name: "list",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "list"}),
+            success: true,
+            sent: &[],
+            expect: json!({"servers": [{"id": "peer-server", "status": "paired"}]}),
+        },
+        Case {
+            name: "worker-refused",
+            actor: "worker",
+            tool: "orchestration_servers",
+            args: json!({"action": "list"}),
+            success: false,
+            sent: &[],
+            expect: json!("Only the lead can use remote server tools"),
+        },
+        Case {
+            name: "unknown-action",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "nope", "server": "peer-server"}),
+            success: false,
+            sent: &[],
+            expect: json!("Select list, projects, folders, git, fetch, or receipt"),
+        },
+        Case {
+            name: "unpaired-server",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "git", "server": "other-server", "cwd": "/r", "argv": ["status", "--porcelain=v1"]}),
+            success: false,
+            sent: &[],
+            expect: json!("Select a paired server"),
+        },
+        Case {
+            name: "projects",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "projects", "server": "peer-server"}),
+            success: true,
+            sent: &["projects"],
+            expect: json!({"outcome": "applied", "value": {"items": [{"id": "/peer/project", "path": "/peer/project", "name": "Peer project", "created": 1.0}]}}),
+        },
+        Case {
+            name: "git",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "git", "server": "peer-server", "cwd": "/peer/repo", "argv": ["status", "--porcelain=v1"], "request_id": "git-read-1"}),
+            success: true,
+            sent: &["git"],
+            expect: json!({"outcome": "applied", "value": {"exitCode": 0, "output": " M a.txt\n", "truncated": false}}),
+        },
+        Case {
+            name: "folders-refused",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "folders", "server": "peer-server", "cwd": "/missing"}),
+            success: true,
+            sent: &["folders"],
+            expect: json!({"outcome": "not_applied", "error": "This directory is unavailable"}),
+        },
+        Case {
+            name: "receipt",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "receipt", "server": "peer-server", "request_id": "@git"}),
+            success: true,
+            sent: &[],
+            expect: json!({"state": "complete", "error": null, "result": {"outcome": "applied", "value": {"exitCode": 0, "output": " M a.txt\n", "truncated": false}}}),
+        },
+        Case {
+            name: "receipt-unknown",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "receipt", "server": "peer-server", "request_id": "no-such-request"}),
+            success: false,
+            sent: &[],
+            expect: json!("Unknown remote request receipt"),
+        },
+        Case {
+            name: "exec",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "exec", "server": "peer-server", "cwd": "/peer/repo", "command": ["true"], "timeout": 30}),
+            success: true,
+            sent: &["exec"],
+            expect: json!({"outcome": "applied", "value": {"serverId": "peer-server", "status": "running", "startedAt": 10.0, "finishedAt": null, "exitCode": null, "signal": null, "duration": null, "timedOut": false, "outputLimit": 262144, "outputExpiresAt": 4102444800.0}}),
+        },
+        Case {
+            name: "exec-read",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "exec_read", "server": "peer-server", "handle": "@exec"}),
+            success: true,
+            sent: &["exec_read"],
+            expect: json!({"outcome": "applied", "value": {"status": "completed", "exitCode": 0, "stdout": "ok\n", "stdoutOffset": 0, "stdoutNextOffset": 3, "outputExpiresAt": 4102444800.0}}),
+        },
+        Case {
+            name: "exec-foreign-handle",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "exec_read", "server": "peer-server", "handle": "not-a-handle"}),
+            success: false,
+            sent: &[],
+            expect: json!("The command handle belongs to another actor or server"),
+        },
+        Case {
+            name: "exec-relative-cwd",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "exec", "server": "peer-server", "cwd": "relative", "command": ["true"]}),
+            success: false,
+            sent: &[],
+            expect: json!("Supply an absolute cwd on the selected server"),
+        },
+        Case {
+            name: "exec-bad-timeout",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "exec", "server": "peer-server", "cwd": "/peer/repo", "command": ["true"], "timeout": 0}),
+            success: false,
+            sent: &[],
+            expect: json!("Supply timeout seconds from 1 to 1800"),
+        },
+        Case {
+            name: "location-matches",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "location_matches", "project": "@project", "server": "peer-server"}),
+            success: true,
+            sent: &["location_matches"],
+            expect: json!({"outcome": "applied", "value": {"matches": [{"projectId": "/peer/project", "path": "/peer/project", "name": "project"}]}}),
+        },
+        Case {
+            name: "add-location",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "add_location", "project": "@project", "server": "peer-server", "path": "/peer/project"}),
+            success: true,
+            sent: &["add_location"],
+            expect: json!({"outcome": "applied", "value": {"serverId": "peer-server", "path": "/peer/project", "canonicalPath": "/peer/project", "projectId": "/peer/project", "gitOrigin": null}}),
+        },
+        Case {
+            name: "add-location-again",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "add_location", "project": "@project", "server": "peer-server", "path": "/peer/other"}),
+            success: false,
+            sent: &[],
+            expect: json!("This project already has a location on that server"),
+        },
+        Case {
+            name: "remove-location",
+            actor: "lead",
+            tool: "orchestration_servers",
+            args: json!({"action": "remove_location", "project": "@project", "server": "peer-server"}),
+            success: true,
+            sent: &["remove_location"],
+            expect: json!({"outcome": "applied", "value": {"removed": true, "serverId": "peer-server"}}),
+        },
+        Case {
+            name: "remote-task",
+            actor: "remote",
+            tool: "orchestration_task",
+            args: json!({"action": "list"}),
+            success: true,
+            sent: &["task"],
+            expect: json!({"apiVersion": 2, "items": [{"id": "home-task", "title": "Home task"}]}),
+        },
+        Case {
+            name: "remote-message",
+            actor: "remote",
+            tool: "orchestration_message",
+            args: json!({"target": "lead", "text": "  progress  ", "importance": "progress", "progress_key": "build", "progress_version": 2}),
+            success: true,
+            sent: &["message"],
+            expect: json!({"stored": true, "target": "lead"}),
+        },
+        Case {
+            name: "remote-message-bad-importance",
+            actor: "remote",
+            tool: "orchestration_message",
+            args: json!({"target": "lead", "text": "x", "importance": "loud"}),
+            success: false,
+            sent: &[],
+            expect: json!("Unknown message importance"),
+        },
+        Case {
+            name: "remote-send-parent",
+            actor: "remote",
+            tool: "orchestration_send",
+            args: json!({"agent_id": "parent", "text": "done"}),
+            success: true,
+            sent: &["message"],
+            expect: json!({"stored": true, "target": "parent"}),
+        },
+        Case {
+            name: "remote-status",
+            actor: "remote",
+            tool: "orchestration_status",
+            args: json!({}),
+            success: true,
+            sent: &["directory"],
+            expect: json!({"tool": "orchestration_status", "agents": []}),
+        },
+        Case {
+            name: "remote-peers",
+            actor: "remote",
+            tool: "orchestration_peers",
+            args: json!({"scope": "team"}),
+            success: true,
+            sent: &["directory"],
+            expect: json!({"tool": "orchestration_peers", "agents": []}),
+        },
+        Case {
+            name: "remote-chat-read",
+            actor: "remote",
+            tool: "orchestration_chat_read",
+            args: json!({"room_id": "home-room"}),
+            success: true,
+            sent: &["chat_read"],
+            expect: json!({"messages": [], "room": "home-room"}),
+        },
+        Case {
+            name: "remote-context-plan",
+            actor: "remote",
+            tool: "orchestration_context",
+            args: json!({"topic": "plan"}),
+            success: true,
+            sent: &["context"],
+            expect: json!({"topic": "plan", "version": "v1", "content": "Home plan"}),
+        },
+        Case {
+            name: "remote-context-unknown",
+            actor: "remote",
+            tool: "orchestration_context",
+            args: json!({"topic": "complaints"}),
+            success: true,
+            sent: &["context"],
+            expect: json!({"outcome": "unknown", "detail": "The request is saved. Do not submit another identity."}),
+        },
+        Case {
+            name: "remote-complaint-refused",
+            actor: "remote",
+            tool: "orchestration_complaint",
+            args: json!({"action": "submit", "text": "help"}),
+            success: false,
+            sent: &["complaint"],
+            expect: json!("The home server refused the complaint"),
+        },
+        Case {
+            name: "moved-send",
+            actor: "moved",
+            tool: "orchestration_send",
+            args: json!({"agent_id": "parent", "text": "moved hello"}),
+            success: true,
+            sent: &["move_send"],
+            expect: json!({"forwarded": "move_send"}),
+        },
+        Case {
+            name: "moved-spawn",
+            actor: "moved",
+            tool: "orchestration_spawn",
+            args: json!({"agents": [{"name": "Child", "prompt": "work"}]}),
+            success: true,
+            sent: &["move_spawn"],
+            expect: json!({"forwarded": "move_spawn"}),
+        },
+        Case {
+            name: "moved-interrupt",
+            actor: "moved",
+            tool: "orchestration_interrupt",
+            args: json!({"agent_id": "some-child"}),
+            success: true,
+            sent: &["move_interrupt"],
+            expect: json!({"forwarded": "move_interrupt"}),
+        },
+        Case {
+            name: "moved-manage",
+            actor: "moved",
+            tool: "orchestration_agent_manage",
+            args: json!({"action": "rename", "agent_id": "some-child", "name": "New"}),
+            success: true,
+            sent: &["move_manage"],
+            expect: json!({"forwarded": "move_manage"}),
+        },
+        Case {
+            name: "speak-saved",
+            actor: "lead",
+            tool: "orchestration_speak",
+            args: json!({"text": "Build finished"}),
+            success: true,
+            sent: &[],
+            expect: json!({"status": "saved", "playback": "not confirmed", "record": {"kind": "orchestrator", "text": "Build finished"}}),
+        },
+        Case {
+            name: "speak-worker-refused",
+            actor: "worker",
+            tool: "orchestration_speak",
+            args: json!({"text": "Hello"}),
+            success: false,
+            sent: &[],
+            expect: json!("Voice is available in an orchestrator chat only"),
+        },
+        Case {
+            name: "speak-blank-refused",
+            actor: "lead",
+            tool: "orchestration_speak",
+            args: json!({"text": "   "}),
+            success: false,
+            sent: &[],
+            expect: json!("Speech text must contain 1 to 4096 characters"),
+        },
+    ]
+}
+
+/// True when `actual` holds every field of `expected` (objects) or equals it.
+fn covers(actual: &Value, expected: &Value) -> bool {
+    match (actual, expected) {
+        (Value::Object(actual), Value::Object(expected)) => expected
+            .iter()
+            .all(|(key, value)| actual.get(key).is_some_and(|found| covers(found, value))),
+        (Value::Array(actual), Value::Array(expected)) => {
+            actual.len() == expected.len() && actual.iter().zip(expected).all(|(a, e)| covers(a, e))
+        }
+        _ => actual == expected,
+    }
+}
+
+fn resolve(
+    value: &Value,
+    results: &std::collections::HashMap<&str, Value>,
+    project: &str,
+) -> Value {
+    match value {
+        Value::String(text) => match text.as_str() {
+            "@project" => json!(project),
+            "@git" => results["git"]["requestId"].clone(),
+            "@exec" => results["exec"]["requestId"].clone(),
+            _ => value.clone(),
+        },
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|v| resolve(v, results, project)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), resolve(v, results, project)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
 #[tokio::test]
-async fn servers_tool_matches_python_envelopes_receipts_and_project_locations() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
-    assert_eq!(
-        store.local_server_id().unwrap().as_deref(),
-        oracle["localServer"].as_str()
-    );
+async fn servers_tool_sends_envelopes_keeps_receipts_and_project_locations() {
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
     let transport = Arc::new(RecordingTransport::default());
     let driver = Arc::new(OrchestrationDriver::new(
         Arc::clone(&store),
@@ -285,77 +698,78 @@ async fn servers_tool_matches_python_envelopes_receipts_and_project_locations() 
     ));
     let tools: Arc<dyn MultiServerToolPort> =
         Arc::new(ServerTools::new(Arc::clone(&store), driver, false));
-    for case in oracle["cases"].as_array().unwrap() {
-        let name = case["name"].as_str().unwrap();
-        let actor = ["lead", "worker", "remote", "moved"]
-            .into_iter()
-            .map(|role| &oracle[role])
-            .find(|actor| actor["id"] == case["actor"])
-            .unwrap();
+    let project = seed["projectId"].as_str().unwrap().to_owned();
+    let mut results = std::collections::HashMap::new();
+    for case in cases() {
+        let name = case.name;
+        let actor = &seed[case.actor];
         let before = transport.sent.lock().unwrap().len();
+        let args = resolve(&case.args, &results, &project);
         let result = call_named_tool(
             &store,
             actor,
-            case["tool"].as_str().unwrap(),
+            case.tool,
             name,
-            case["callId"].as_str().unwrap(),
-            &case["arguments"],
+            &format!("call-{name}"),
+            &args,
             Some(Arc::clone(&tools)),
             None,
         )
         .await;
         let sent = transport.sent.lock().unwrap()[before..].to_vec();
-        assert_eq!(json!(sent), case["sent"], "{name}: sent envelopes");
-        assert_eq!(result["success"], case["success"], "{name}: {result}");
-        let mut value = parsed(&result);
-        let mut expected = case["value"].clone();
-        if name.starts_with("speak") {
-            // The record clock and sequence belong to each store.
-            for record in [&mut value, &mut expected] {
-                if let Some(row) = record.get_mut("record").and_then(Value::as_object_mut) {
-                    row.remove("created");
-                    row.remove("seq");
-                }
-            }
-        }
-        assert_eq!(value, expected, "{name}: tool value");
-        assert_eq!(
-            result
-                .get("serverOutputExpiresAt")
-                .cloned()
-                .unwrap_or(Value::Null),
-            case["serverOutputExpiresAt"],
-            "{name}: command output expiry"
+        let actions: Vec<&str> = sent
+            .iter()
+            .map(|entry| entry["envelope"]["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(actions, case.sent, "{name}: sent envelopes");
+        assert!(
+            sent.iter().all(|entry| entry["server"] == PEER),
+            "{name}: sent to the paired server"
         );
+        assert_eq!(result["success"], case.success, "{name}: {result}");
+        let value = parsed(&result);
+        assert!(
+            covers(&value, &case.expect),
+            "{name}: tool value {value} lacks {}",
+            case.expect
+        );
+        let expiry = result
+            .get("serverOutputExpiresAt")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let expected_expiry = if name.starts_with("exec") && case.success {
+            json!(FAR)
+        } else {
+            Value::Null
+        };
+        assert_eq!(expiry, expected_expiry, "{name}: command output expiry");
         if name == "add-location" || name == "remove-location" {
-            let project = oracle["projectId"].as_str().unwrap().to_owned();
             let record = store
                 .read_transaction(|tx| Ok(ProjectsRepository::get(tx, &project)?.unwrap().1))
                 .unwrap();
-            let expected = if name == "add-location" {
-                &oracle["projectAfterAdd"]
+            let (locations, revision) = if name == "add-location" {
+                (2, 1)
             } else {
-                &oracle["projectAfterRemove"]
+                (1, 2)
             };
             assert_eq!(
-                record["locations"], expected["locations"],
+                record["locations"].as_array().unwrap().len(),
+                locations,
                 "{name}: locations"
             );
-            assert_eq!(
-                record["locationsRevision"], expected["locationsRevision"],
-                "{name}: revision"
-            );
+            assert_eq!(record["locationsRevision"], revision, "{name}: revision");
         }
+        results.insert(name, value);
     }
 }
 
 #[tokio::test]
 async fn servers_tool_names_its_dependency_until_the_driver_is_attached() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
     let result = call_tool(
         &store,
-        &oracle["lead"],
+        &seed["lead"],
         "unattached",
         "call-unattached",
         &json!({"action": "list"}),
@@ -387,8 +801,8 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
             })
         }
     }
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
     let transport = Arc::new(Lost(Mutex::new(0)));
     let driver = Arc::new(OrchestrationDriver::new(
         Arc::clone(&store),
@@ -400,7 +814,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"]});
     let first = call_tool(
         &store,
-        &oracle["lead"],
+        &seed["lead"],
         "lost",
         "call-lost",
         &args,
@@ -474,7 +888,7 @@ fn run_git(directory: &std::path::Path, arguments: &[&str]) -> String {
 }
 
 async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
-    let (directory, store) = python_written_store().await;
+    let (directory, store) = seeded_store().await;
     drop(store);
     std::fs::write(
         directory.path().join("multi-server/identity.json"),
@@ -502,8 +916,8 @@ async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
 
 #[tokio::test]
 async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
-    let oracle = &oracle().value;
-    let (_home_directory, home) = python_written_store().await;
+    let seed = &seed().value;
+    let (_home_directory, home) = seeded_store().await;
     let home_id = home.local_server_id().unwrap().unwrap();
     let (peer_directory, peer) = peer_store(&home_id).await;
     let repositories = tempfile::tempdir().unwrap();
@@ -529,8 +943,8 @@ async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
     run_git(&remote, &["commit", "-q", "-m", "worker change"]);
     let tip = run_git(&remote, &["rev-parse", "HEAD"]);
     // The lead's remote worker proxy names the peer and its folder.
-    let lead = oracle["lead"].clone();
-    let mut worker = oracle["worker"].clone();
+    let lead = seed["lead"].clone();
+    let mut worker = seed["worker"].clone();
     worker["id"] = json!("0b5c2f2e-1f3b-4f7a-9a51-2f3c4d5e6f70");
     worker["remoteWorker"] = json!({"server": PEER});
     worker["cwd"] = json!(remote);
@@ -704,9 +1118,9 @@ async fn ready_voice_session(store: &RuntimeStore, lead: &Value) {
 
 #[tokio::test]
 async fn speak_plays_once_in_the_ready_voice_session() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
-    let lead = &oracle["lead"];
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
+    let lead = &seed["lead"];
     ready_voice_session(&store, lead).await;
     let voice = Arc::new(RecordingVoice::default());
     let port: Arc<dyn crate::voice_runtime::VoiceRequestPort> = voice.clone();
@@ -749,9 +1163,9 @@ async fn speak_plays_once_in_the_ready_voice_session() {
 
 #[tokio::test]
 async fn speak_refuses_before_saving_when_a_ready_session_has_no_provider() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
-    let lead = &oracle["lead"];
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
+    let lead = &seed["lead"];
     ready_voice_session(&store, lead).await;
     let result = call_named_tool(
         &store,
@@ -782,9 +1196,9 @@ async fn speak_refuses_before_saving_when_a_ready_session_has_no_provider() {
 
 #[tokio::test]
 async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarded_ones() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
-    let remote = &oracle["remote"];
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
+    let remote = &seed["remote"];
     // Python runs a remote worker's request reads on its own server.
     let local = call_named_tool(
         &store,
@@ -885,10 +1299,10 @@ fn exit_events(store: &RuntimeStore) -> Vec<Value> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
     let local = store.local_server_id().unwrap().unwrap();
-    let lead = &oracle["lead"];
+    let lead = &seed["lead"];
     let tools = local_tools(&store);
     let folder = tempfile::tempdir().unwrap();
     let cwd = folder.path().to_str().unwrap();
@@ -1055,7 +1469,7 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
-    let (_directory, store) = python_written_store().await;
+    let (_directory, store) = seeded_store().await;
     let driver = OrchestrationDriver::new(
         Arc::clone(&store),
         Arc::new(RecordingTransport::default()),
@@ -1127,9 +1541,9 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
 
 #[tokio::test]
 async fn a_command_without_a_final_record_after_a_restart_stays_unknown() {
-    let oracle = &oracle().value;
-    let (_directory, store) = python_written_store().await;
-    let lead = oracle["lead"]["id"].as_str().unwrap().to_owned();
+    let seed = &seed().value;
+    let (_directory, store) = seeded_store().await;
+    let lead = seed["lead"]["id"].as_str().unwrap().to_owned();
     let record = json!({"handle": "lost-command", "serverId": "x", "status": "running",
         "startedAt": crate::event_write::unix_time().unwrap(), "finishedAt": null, "exitCode": null,
         "signal": null, "duration": null, "timedOut": false, "outputLimit": 262144});

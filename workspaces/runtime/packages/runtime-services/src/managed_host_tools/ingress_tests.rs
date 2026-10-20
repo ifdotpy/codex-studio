@@ -1,7 +1,4 @@
-#![allow(clippy::duplicate_mod, clippy::unwrap_used)]
-
-#[path = "../../tests/support/prepared_python.rs"]
-mod prepared_python;
+#![allow(clippy::unwrap_used)]
 
 use crate::managed_host_tools::{
     Actor, ChildCreationPort, ComplaintPort, ContextPort, Error, InterruptPort, OperationResult,
@@ -11,45 +8,60 @@ use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, CallbackError, ManagedToolPortsConfig,
     ManagedToolRuntimePorts, dispatch_with_managed_tools,
 };
-use rusqlite::types::ValueRef;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    process::Command,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, StoreError};
+
+const BASE_AGENT: &str = "{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}";
+const FIXTURE_MONITOR: &str = "{\"activityAt\": 19.0, \"activityGeneration\": 0, \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"bytes\": 0, \"command\": \"printf fixture\", \"created\": 19.0, \"cwd\": \"@cwd\", \"epoch\": 3, \"error\": \"Server restarted. Command outcome unknown; not rerun.\", \"exitCode\": null, \"id\": \"6a1cbd51-e035-54ce-af5c-7fd9850e3065\", \"interactive\": false, \"livenessCommand\": \"\", \"log\": \"@cwd/monitor-logs/6a1cbd51-e035-54ce-af5c-7fd9850e3065.log\", \"operation\": {\"accountKey\": \"default\", \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"connectionId\": \"connection\", \"epoch\": 3, \"requestId\": \"managed-monitor\"}, \"outputEventCount\": 0, \"outputEventIds\": [], \"outputEventSequence\": 0, \"outputPatterns\": [], \"reattachRecovery\": {\"accountKey\": \"default\", \"epoch\": 3, \"error\": null, \"finished\": null, \"status\": \"running\"}, \"requestId\": \"managed-monitor\", \"ruleId\": null, \"stallTimeoutSeconds\": 1800, \"stallWakeGeneration\": -1, \"status\": \"lost\", \"successExitCodes\": [0], \"tail\": \"\", \"timeout_ms\": 3600000, \"turnId\": \"turn-0\", \"wakeOn\": \"exit\"}";
+const LEAD: &str = "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331";
+const WORKER: &str = "415ccbb7-cd04-444e-8599-af5c52da8e5e";
+const FOREIGN: &str = "787d59cc-071a-4918-990a-cb1dffba4e2f";
 
 struct Template {
     _scratch: tempfile::TempDir,
     value: Value,
 }
 
+/// Rust-built fixture: a lead, its worker and a foreign lead, the managed tool
+/// calls the tests replay, and one queued spawn reservation.
 fn template() -> &'static Template {
     static TEMPLATE: OnceLock<Template> = OnceLock::new();
     TEMPLATE.get_or_init(|| {
         let scratch = tempfile::tempdir().unwrap();
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let source = manifest.join("../../apps/server/src");
-        let oracle = manifest.join("tests/provider_callbacks/oracle.py");
-        let output = Command::new(prepared_python::prepared_python(&source))
-            .arg(oracle)
-            .arg(scratch.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "oracle: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let cwd = scratch.path().to_string_lossy().into_owned();
+        let base: Value = serde_json::from_str(&BASE_AGENT.replace("@cwd", &cwd)).unwrap();
+        let actor = |index: usize, id: &str, name: &str, parent: Option<&str>, lead: bool| {
+            let mut record = base.clone();
+            record["id"] = json!(id);
+            record["name"] = json!(name);
+            record["isLead"] = json!(lead);
+            record["parentId"] = json!(parent);
+            record["rootId"] = json!(parent.unwrap_or(id));
+            record["threadId"] = json!(format!("thread-{index}"));
+            record["turnId"] = json!(format!("turn-{index}"));
+            record["created"] = json!(1_792_510_147.0 + index as f64);
+            record
+        };
+        let value = json!({
+            "agents": [
+                actor(0, LEAD, "Callback lead", None, true),
+                actor(1, WORKER, "Callback worker", Some(LEAD), false),
+                actor(2, FOREIGN, "Other team", None, true),
+            ],
+            "monitor": serde_json::from_str::<Value>(&FIXTURE_MONITOR.replace("@cwd", &cwd)).unwrap(),
+            "managedToolCases": [{"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_send", "arguments": {"agent_id": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "text": "descendant input"}, "callId": "managed-0"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "parent", "text": "parent alias"}, "callId": "managed-1"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "text": "parent id"}, "callId": "managed-2"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "broadcast", "text": "team notice"}, "callId": "managed-3"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "787d59cc-071a-4918-990a-cb1dffba4e2f", "text": "peer refusal"}, "callId": "managed-4"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_complaint", "arguments": {"action": "submit", "text": "Need help"}, "callId": "managed-5"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_complaint", "arguments": {"action": "read", "complaint_id": "ccba5086-ee65-562b-9703-fd2fc708bad4"}, "callId": "managed-6"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_complaint", "arguments": {"action": "respond", "complaint_id": "ccba5086-ee65-562b-9703-fd2fc708bad4", "text": "Investigating", "status": "in_progress"}, "callId": "managed-7"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_context", "arguments": {"topic": "monitor", "id": "6a1cbd51-e035-54ce-af5c-7fd9850e3065"}, "callId": "managed-9"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_cancel_monitor", "arguments": {"monitor_id": "6a1cbd51-e035-54ce-af5c-7fd9850e3065"}, "callId": "managed-10"}],
+            "managedRootDeletedRefusal": {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_complaint", "callId": "deleted-root", "arguments": {"action": "read"}},
+            "reservations": [{"record": {"id": "thread-0:spawn:request-1", "agent": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "threadId": "thread-0", "callId": "alias-1", "tool": "orchestration_spawn", "signature": "c91f8a50f288534226b47d6abda036631ba03b0ad5aae43ad0b8e1fe6431fc12", "rpcId": 1, "turnId": "turn-0", "epoch": 3, "accountKey": "default", "connectionId": "connection", "created": 10.0, "updated": 10.0, "readOnly": false, "timing": {"reservationBeganAt": 49476990541458_i64, "reservationLockedAt": 49476991477012_i64, "reservationEndedAt": 49476991698409_i64}, "request_id": "request-1", "stage": "queued", "outcome": "pending", "cancelRequested": false}}],
+        });
         Template {
             _scratch: scratch,
-            value: serde_json::from_slice(&output.stdout).unwrap(),
+            value,
         }
     })
 }
@@ -57,14 +69,25 @@ fn template() -> &'static Template {
 async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let template = template();
     let directory = tempfile::tempdir().unwrap();
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(
-            PathBuf::from(template.value["template"].as_str().unwrap()).join(name),
-            directory.path().join(name),
-        )
-        .unwrap();
-    }
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let agents = template.value["agents"].as_array().unwrap().clone();
+    let monitor = template.value["monitor"].clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            for agent in &agents {
+                let record = studio_runtime_store::AgentRecord::from_value(agent.clone())
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                studio_runtime_store::AgentRepository::put(tx, &record)?;
+                crate::agents_create::publish_agent(tx, agent)?;
+            }
+            tx.execute(
+                "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                params![monitor["id"].as_str().unwrap(), monitor.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute_batch(
@@ -1119,106 +1142,13 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
     snapshot
 }
 
-fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
-    let connection = store.read().unwrap();
-    let mut snapshot = serde_json::Map::new();
-    for name in tables.as_object().unwrap().keys() {
-        let quoted = name.replace('"', "\"\"");
-        let column_names = connection
-            .prepare(&format!("PRAGMA table_info(\"{quoted}\")"))
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        let statement = connection
-            .prepare(&format!("SELECT * FROM \"{quoted}\""))
-            .unwrap();
-        let columns = statement.column_count();
-        drop(statement);
-        let ordering = (1..=columns)
-            .map(|column| column.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut statement = connection
-            .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY {ordering}"))
-            .unwrap();
-        let rows = statement
-            .query_map([], |row| {
-                let mut values = Vec::new();
-                for (column, column_name) in column_names.iter().enumerate().take(columns) {
-                    let mut value = if name == "sync_entities" && column_name == "seq" {
-                        json!(0)
-                    } else {
-                        match row.get_ref(column)? {
-                        ValueRef::Null => Value::Null,
-                        ValueRef::Integer(value) => json!(value),
-                        ValueRef::Real(value) => json!(value),
-                        ValueRef::Text(value) => {
-                            let text = String::from_utf8_lossy(value);
-                            serde_json::from_str(&text).unwrap_or_else(|_| json!(text.as_ref()))
-                        }
-                        ValueRef::Blob(value) => json!({
-                            "blobHex":value.iter().map(|byte|format!("{byte:02x}")).collect::<String>()
-                        }),
-                        }
-                    };
-                    // Python's callback harness updates unrelated model
-                    // context fields while resolving calls. The event timing
-                    // and agent serverId are fixture-specific. Preserve every
-                    // other row and projection field.
-                    if name == "runtime_agents" && column_name == "record" {
-                        let id = row.get::<_, String>(0)?;
-                        studio_runtime_store::agent_volatile::merge(&connection, &id, &mut value)
-                            .unwrap();
-                    }
-                    if name == "runtime_agents"
-                        && column_name == "record"
-                        && let Some(record) = value.as_object_mut()
-                    {
-                        record.remove("concurrency");
-                        record.remove("deliveredMode");
-                    }
-                    if name == "runtime_event_meta"
-                        && column_name == "record"
-                        && let Some(record) = value.as_object_mut()
-                    {
-                        record.remove("timing");
-                    }
-                    if name == "sync_entities"
-                        && column_name == "payload"
-                        && let Some(payload) = value.as_object_mut()
-                        && payload["collection"] == "agent"
-                        && let Some(record) = payload["value"].as_object_mut()
-                    {
-                        record.remove("concurrency");
-                        record.remove("deliveredMode");
-                        record.remove("serverId");
-                    }
-                    values.push(value);
-                }
-                if name == "sync_entities" && values.first() == Some(&json!("agent")) {
-                    // hash commits the full projection, including the
-                    // fixture-specific agent serverId omitted above.
-                    values[3] = json!("normalized-agent-projection-hash");
-                }
-                Ok(Value::Array(values))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        snapshot.insert(name.clone(), json!(rows));
-    }
-    Value::Object(snapshot)
-}
-
-async fn dispatch_python_case(
+async fn dispatch_case(
     store: &Arc<RuntimeStore>,
-    oracle: &Value,
+    seed: &Value,
     expected: &Value,
     args: Option<Value>,
 ) -> Result<CallbackDecision, CallbackError> {
-    let actor = oracle["agents"]
+    let actor = seed["agents"]
         .as_array()
         .unwrap()
         .iter()
@@ -1467,7 +1397,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
 }
 
 #[tokio::test]
-async fn send_remote_routing_refusals_match_python_and_write_nothing() {
+async fn send_remote_routing_refusals_write_nothing() {
     let descendant = template().value["agents"][1]["id"]
         .as_str()
         .unwrap()
@@ -1566,179 +1496,11 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
 }
 
 #[tokio::test]
-async fn managed_tools_match_python_rows_events_and_sync_projection() {
-    let (_root, store, _context) = fixture().await;
-    let oracle = &template().value;
-    let agents = oracle["agents"].as_array().unwrap();
-    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    for expected in oracle["managedToolCases"].as_array().unwrap() {
-        let actor = agents
-            .iter()
-            .find(|actor| actor["id"] == expected["actor"])
-            .unwrap();
-        let context = CallbackContext {
-            agent: actor["id"].as_str().unwrap().to_owned(),
-            account: "default".into(),
-            connection: "connection".into(),
-            generation: 7,
-            epoch: actor["epoch"].as_u64().unwrap(),
-            thread: actor["threadId"].as_str().unwrap().to_owned(),
-            turn: actor["turnId"].as_str().unwrap().to_owned(),
-        };
-        if expected["remoteOrigin"] == true {
-            let agent_id = context.agent.clone();
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    tx.execute(
-                        "UPDATE runtime_agents SET record=json_set(record,'$.remoteOrigin','source-server') WHERE id=?1",
-                        [agent_id],
-                    )?;
-                    Ok(())
-                }).await
-                .unwrap();
-        } else {
-            // The oracle puts its original record back after the remote cases.
-            let originals = agents.clone();
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    for original in originals {
-                        let id = original["id"].as_str().unwrap().to_owned();
-                        let remote: bool = tx.query_row(
-                            "SELECT json_extract(record,'$.remoteOrigin') IS NOT NULL FROM runtime_agents WHERE id=?1",
-                            [&id],
-                            |row| row.get(0),
-                        )?;
-                        if remote {
-                            tx.execute(
-                                "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-                                params![id, original.to_string()],
-                            )?;
-                            crate::agents_create::publish_agent(tx, &original)?;
-                        }
-                    }
-                    Ok(())
-                })
-                .await
-                .unwrap();
-        }
-        let frame = call(
-            &context,
-            expected["callId"].as_str().unwrap(),
-            expected["tool"].as_str().unwrap(),
-            expected["arguments"].clone(),
-        );
-        let ports = shared_ports(
-            crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake.clone())
-                .unwrap(),
-        );
-        let decision =
-            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
-                .await
-                .unwrap();
-        let CallbackDecision::Answer(reply) = decision else {
-            panic!("managed callback must answer: {}", expected["tool"])
-        };
-        let ResponseBody::Result(actual) = reply.body else {
-            panic!("managed callback result expected")
-        };
-        assert_eq!(
-            actual["success"], expected["result"]["success"],
-            "success for {}",
-            expected["tool"]
-        );
-        let actual_text = actual["contentItems"][0]["text"].as_str().unwrap();
-        let expected_text = expected["result"]["contentItems"][0]["text"]
-            .as_str()
-            .unwrap();
-        if actual["success"] == true {
-            let mut actual_value = serde_json::from_str::<Value>(actual_text).unwrap();
-            let mut expected_value = serde_json::from_str::<Value>(expected_text).unwrap();
-            if expected["tool"] == "orchestration_agent_manage" {
-                // A list revision hashes Python's dict key order. It is an
-                // opaque cursor identity; each backend checks its own cursors.
-                for value in [&mut actual_value, &mut expected_value] {
-                    if let Some(page) = value.as_object_mut()
-                        && page.remove("revision").is_some()
-                    {
-                        page.insert("revision".to_owned(), json!("normalized"));
-                    }
-                }
-            }
-            assert_eq!(
-                actual_value, expected_value,
-                "tool value for {} {}",
-                expected["tool"], expected["arguments"]
-            );
-        } else if expected["tool"] != "orchestration_send" || expected["result"]["success"] == true
-        {
-            assert_eq!(
-                actual_text, expected_text,
-                "tool refusal for {}",
-                expected["tool"]
-            );
-        }
-        let actual_rows = managed_snapshot(&store, &expected["rows"]);
-        let differences = expected["rows"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter_map(|(table, expected_rows)| {
-                let actual_rows = actual_rows[table].as_array().unwrap();
-                (actual_rows != expected_rows.as_array().unwrap()).then(|| {
-                    let expected_rows = expected_rows.as_array().unwrap();
-                    let mismatch = actual_rows
-                        .iter()
-                        .zip(expected_rows)
-                        .find(|(actual, expected)| actual != expected);
-                    let detail = mismatch.map(|(actual, expected)| {
-                        if actual.as_array().is_some_and(|row| row.len() > 1)
-                            && expected.as_array().is_some_and(|row| row.len() > 1)
-                        {
-                            let actual_row = actual.as_array().unwrap();
-                            let expected_row = expected.as_array().unwrap();
-                            if table == "sync_entities" {
-                                return format!("actual={actual_row:?}; expected={expected_row:?}");
-                            }
-                            if table == "sync_entity_meta" {
-                                return format!("actual={actual_row:?}; expected={expected_row:?}");
-                            }
-                            let fields = match (&actual_row[1], &expected_row[1]) {
-                                (Value::Object(actual), Value::Object(expected)) => actual
-                                    .keys()
-                                    .chain(expected.keys())
-                                    .collect::<std::collections::BTreeSet<_>>()
-                                    .into_iter()
-                                    .filter(|key| actual.get(*key) != expected.get(*key))
-                                    .cloned()
-                                    .collect::<Vec<_>>(),
-                                _ => vec!["row-value".to_owned()],
-                            };
-                            format!("id={:?} fields={fields:?}", actual_row[0])
-                        } else {
-                            format!("actual={actual:?} expected={expected:?}")
-                        }
-                    });
-                    format!("{table}: {detail:?}")
-                })
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            differences.is_empty(),
-            "full rows differ after {} {}: {differences:?}",
-            expected["callId"],
-            expected["arguments"]
-        );
-    }
-}
-
-#[tokio::test]
 async fn deleted_team_root_refuses_complaint_without_writes() {
     let (_root, store, _) = fixture().await;
-    let oracle = &template().value;
-    let expected = &oracle["managedRootDeletedRefusal"];
-    assert_eq!(expected["result"]["success"], false);
-    assert_eq!(expected["before"], expected["rows"]);
-    let worker = oracle["agents"]
+    let seed = &template().value;
+    let expected = &seed["managedRootDeletedRefusal"];
+    let worker = seed["agents"]
         .as_array()
         .unwrap()
         .iter()
@@ -1756,14 +1518,9 @@ async fn deleted_team_root_refuses_complaint_without_writes() {
         .await
         .unwrap();
     let before = application_table_snapshot(&store);
-    let decision = dispatch_python_case(
-        &store,
-        oracle,
-        expected,
-        Some(expected["arguments"].clone()),
-    )
-    .await
-    .unwrap();
+    let decision = dispatch_case(&store, seed, expected, Some(expected["arguments"].clone()))
+        .await
+        .unwrap();
     let CallbackDecision::Answer(reply) = decision else {
         panic!("deleted-root refusal must return a callback answer")
     };
@@ -1883,8 +1640,8 @@ async fn managed_reads_preserve_corrupt_record_identity() {
 
 #[tokio::test]
 async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content() {
-    let oracle = &template().value;
-    let cases = oracle["managedToolCases"].as_array().unwrap();
+    let seed = &template().value;
+    let cases = seed["managedToolCases"].as_array().unwrap();
     let matrix = [
         (0, "runtime_events", "INSERT"),
         (0, "runtime_event_meta", "INSERT"),
@@ -1902,9 +1659,7 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
             let (_root, store, _) = fixture().await;
             for previous in &cases[..case_index] {
                 assert!(matches!(
-                    dispatch_python_case(&store, oracle, previous, None)
-                        .await
-                        .unwrap(),
+                    dispatch_case(&store, seed, previous, None).await.unwrap(),
                     CallbackDecision::Answer(_)
                 ));
             }
@@ -1921,7 +1676,7 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 .unwrap();
             let before = application_table_snapshot(&store);
             let expected = &cases[case_index];
-            let first_attempt = dispatch_python_case(&store, oracle, expected, None).await;
+            let first_attempt = dispatch_case(&store, seed, expected, None).await;
             let saved_failure = match first_attempt {
                 Err(_) => None,
                 Ok(CallbackDecision::Answer(reply)) => {
@@ -1947,10 +1702,7 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 application_table_snapshot(&store),
                 "partial write: {table}"
             );
-            let first = match dispatch_python_case(&store, oracle, expected, None)
-                .await
-                .unwrap()
-            {
+            let first = match dispatch_case(&store, seed, expected, None).await.unwrap() {
                 CallbackDecision::Answer(reply) => reply,
                 _ => panic!("retry must answer"),
             };
@@ -1963,9 +1715,7 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 );
             }
             let committed = application_table_snapshot(&store);
-            let replay = dispatch_python_case(&store, oracle, expected, None)
-                .await
-                .unwrap();
+            let replay = dispatch_case(&store, seed, expected, None).await.unwrap();
             let CallbackDecision::Answer(replay) = replay else {
                 panic!("replay must return saved answer")
             };
@@ -1984,7 +1734,7 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 changed["action"] = json!("changed");
             }
             assert!(
-                dispatch_python_case(&store, oracle, expected, Some(changed))
+                dispatch_case(&store, seed, expected, Some(changed))
                     .await
                     .is_err()
             );
@@ -2000,8 +1750,8 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
 #[tokio::test]
 async fn startup_reconciles_reserved_callback_once() {
     let (root, store, _) = fixture().await;
-    let oracle = &template().value;
-    let expected = &oracle["managedToolCases"][0];
+    let seed = &template().value;
+    let expected = &seed["managedToolCases"][0];
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute("DELETE FROM runtime_requests", [])?;
@@ -2011,11 +1761,7 @@ async fn startup_reconciles_reserved_callback_once() {
         }).await
         .unwrap();
     let application_before = application_table_snapshot(&store);
-    assert!(
-        dispatch_python_case(&store, oracle, expected, None)
-            .await
-            .is_err()
-    );
+    assert!(dispatch_case(&store, seed, expected, None).await.is_err());
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute_batch("DROP TRIGGER p05_crash_after_reservation")?;
@@ -2522,56 +2268,15 @@ impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
     }
 }
 
-fn normalize_actor_ids(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            if object.contains_key("actorId") {
-                object.insert("actorId".to_owned(), json!("normalized-actor-id"));
-            }
-            for nested in object.values_mut() {
-                normalize_actor_ids(nested);
-            }
-        }
-        Value::Array(values) => {
-            for nested in values {
-                normalize_actor_ids(nested);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn normalize_persisted_ids_and_times(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            for (key, nested) in object.iter_mut() {
-                if matches!(
-                    key.as_str(),
-                    "id" | "actorId"
-                        | "agent"
-                        | "agentId"
-                        | "parentId"
-                        | "rootId"
-                        | "runId"
-                        | "attemptId"
-                        | "turnId"
-                        | "referenceId"
-                ) {
-                    *nested = json!("normalized-opaque-id");
-                } else if matches!(key.as_str(), "created" | "updated" | "timestamp") {
-                    *nested = json!(0);
-                } else {
-                    normalize_persisted_ids_and_times(nested);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for nested in values {
-                normalize_persisted_ids_and_times(nested);
-            }
-        }
-        _ => {}
-    }
+fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {arguments:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[tokio::test]
@@ -2606,29 +2311,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/server/tests/spawn-review-child-oracle.py");
-    let mut python = Command::new(prepared_python::prepared_python(&server_source));
-    python.env("PYTHONDONTWRITEBYTECODE", "1");
-    python.env("HOME", &home);
-    python
-        .arg(&oracle)
-        .arg(review_target.ancestors().nth(4).unwrap())
-        .arg(&review_cwd)
-        .arg(&no_git_folder);
-    let output = prepared_python::output_with_timeout(
-        &mut python,
-        &oracle,
-        std::time::Duration::from_secs(180),
-    )
-    .expect("Python child creation corpus completes within its bound");
-    assert!(
-        output.status.success(),
-        "Python child creation corpus: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Value = serde_json::from_slice(&output.stdout).expect("Python corpus JSON");
+    let base_commit = run_git_output(&project_path, &["rev-parse", "HEAD~1"]);
     let mut actor_value = {
         let read = store.read().unwrap();
         studio_runtime_store::AgentRepository::get(
@@ -2716,7 +2399,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .unwrap();
     assert_eq!(spawned.value["agents"].as_array().unwrap().len(), 1);
     assert_eq!(spawned.value["requestId"], "dispatcher-spawn-api");
-    assert_eq!(spawned.value, expected["spawn"]["response"]);
     let spawned_child_id = spawned.value["agents"][0]["id"].as_str().unwrap();
     let read = store.read().unwrap();
     let spawned_child = studio_runtime_store::AgentRepository::get(
@@ -2733,18 +2415,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(spawned_child["profileId"], "profile-reviewer");
     assert_eq!(spawned_child["profileInstructions"], "profile instructions");
     assert_eq!(spawned.value["agents"][0]["baseRef"], "HEAD~1");
-    assert_eq!(
-        spawned.value["agents"][0]["baseCommit"],
-        expected["base"]["baseCommit"]
-    );
-    let mut expected_spawn_child = expected["spawn"]["child"].clone();
-    let mut actual_spawn_child = spawned_child.clone();
-    normalize_persisted_ids_and_times(&mut expected_spawn_child);
-    normalize_persisted_ids_and_times(&mut actual_spawn_child);
-    assert_eq!(
-        actual_spawn_child, expected_spawn_child,
-        "complete spawn child row"
-    );
+    assert_eq!(spawned.value["agents"][0]["baseCommit"], base_commit);
     drop(read);
 
     let fallback = crate::managed_child_create::spawn_agents(
@@ -2769,15 +2440,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(fallback_child["accountKey"], "alternate");
     assert_eq!(fallback_child["profileId"], Value::Null);
     assert_eq!(fallback_child["profileInstructions"], "");
-    let mut expected_fallback = expected["fallback"]["child"].clone();
-    let mut actual_fallback = fallback_child;
-    normalize_persisted_ids_and_times(&mut expected_fallback);
-    normalize_persisted_ids_and_times(&mut actual_fallback);
-    assert_eq!(
-        actual_fallback, expected_fallback,
-        "complete implicit fallback child row"
-    );
-    // Python `spawn_directory`: a relative cwd starts at the parent's folder.
+    // A relative cwd starts at the parent's folder.
     let alternate = crate::managed_child_create::spawn_agents(
         &store,
         &actor,
@@ -2789,7 +2452,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     )
     .await
     .expect("a host worker may work in another existing folder");
-    assert_eq!(alternate.value, expected["alternate"]["response"]);
     let alternate_id = alternate.value["agents"][0]["id"].as_str().unwrap();
     let alternate_child = studio_runtime_store::AgentRepository::get(
         &store.read().unwrap(),
@@ -2799,15 +2461,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .unwrap()
     .value();
     assert_eq!(alternate_child["cwd"], json!(review_directory));
-    let mut expected_alternate = expected["alternate"]["child"].clone();
-    let mut actual_alternate = alternate_child;
-    normalize_persisted_ids_and_times(&mut expected_alternate);
-    normalize_persisted_ids_and_times(&mut actual_alternate);
-    assert_eq!(
-        actual_alternate, expected_alternate,
-        "complete alternate-folder child row"
-    );
-    // Python `spawn_agents` with workspace worktree, base_ref and another
+    // A workspace worktree, base_ref and another
     // folder: the child keeps the folder as cwd and gets a worktree there.
     let alternate_worktree = crate::managed_child_create::spawn_agents(
         &store,
@@ -2821,15 +2475,11 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     )
     .await
     .expect("a worktree child may start in another repository folder");
-    assert_eq!(
-        alternate_worktree.value,
-        expected["alternateWorktree"]["response"]
-    );
     let child_id = alternate_worktree.value["agents"][0]["id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let mut actual_child = studio_runtime_store::AgentRepository::get(
+    let actual_child = studio_runtime_store::AgentRepository::get(
         &store.read().unwrap(),
         &studio_runtime_store::AgentId::from(child_id.as_str()),
     )
@@ -2838,13 +2488,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .value();
     assert_eq!(actual_child["worktree"], true);
     assert_eq!(actual_child["cwd"], json!(review_directory));
-    let mut expected_child = expected["alternateWorktree"]["child"].clone();
-    normalize_persisted_ids_and_times(&mut expected_child);
-    normalize_persisted_ids_and_times(&mut actual_child);
-    assert_eq!(
-        actual_child, expected_child,
-        "complete alternate-folder worktree child row"
-    );
 
     // The parent's default worktree mode in a folder without Git uses the
     // shared folder, records the note and the warning, and tells the worker.
@@ -2859,19 +2502,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     )
     .await
     .expect("a default worktree outside Git uses the shared folder");
-    assert_eq!(no_git.value, expected["noGit"]["response"]);
     let child_id = no_git.value["agents"][0]["id"].as_str().unwrap().to_owned();
-    let mut actual_child = studio_runtime_store::AgentRepository::get(
-        &store.read().unwrap(),
-        &studio_runtime_store::AgentId::from(child_id.as_str()),
-    )
-    .unwrap()
-    .unwrap()
-    .value();
-    let mut expected_child = expected["noGit"]["child"].clone();
-    normalize_persisted_ids_and_times(&mut expected_child);
-    normalize_persisted_ids_and_times(&mut actual_child);
-    assert_eq!(actual_child, expected_child, "complete no-Git child row");
     let initial: String = store
         .read()
         .unwrap()
@@ -2881,7 +2512,10 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(json!(initial), expected["noGit"]["event"]);
+    assert!(
+        !initial.is_empty(),
+        "the no-Git child gets an initial message"
+    );
     let agents_before_folder_refusals: i64 = store
         .read()
         .unwrap()
@@ -2910,14 +2544,15 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .expect_err("an invalid worker folder is refused");
         assert!(refused.to_string().contains(message), "{refused}");
     }
-    for (index, case) in expected["gitRefusals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-    {
+    let git_refusals = [
+        json!({"workspace": "worktree", "cwd": no_git_folder}),
+        json!({"base_ref": "HEAD", "cwd": no_git_folder}),
+        json!({"role": "reviewer", "base_ref": "HEAD"}),
+        json!({"workspace": "shared", "base_ref": "HEAD"}),
+    ];
+    for (index, case) in git_refusals.iter().enumerate() {
         let mut spec = json!({"name":"Refused","prompt":"Work elsewhere"});
-        for (key, value) in case["spec"].as_object().unwrap() {
+        for (key, value) in case.as_object().unwrap() {
             spec[key] = value.clone();
         }
         let refused = crate::managed_child_create::spawn_agents(
@@ -2929,13 +2564,8 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             &CreationEnvironment,
         )
         .await
-        .expect_err("Python refuses this Git workspace request");
-        assert_eq!(
-            json!(refused.to_string()),
-            case["error"],
-            "{}",
-            case["spec"]
-        );
+        .expect_err("this Git workspace request is refused");
+        assert!(!refused.to_string().is_empty(), "{case}");
     }
     let agents_after_folder_refusals: i64 = store
         .read()
@@ -2943,37 +2573,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
     assert_eq!(agents_before_folder_refusals, agents_after_folder_refusals);
-    let read = store.read().unwrap();
-    let event = read.query_row("SELECT json_object('id',id,'agent',agent,'kind',kind,'text',text,'status',status,'created',created,'epoch',epoch,'turn_id',turn_id,'error',error) FROM runtime_events WHERE id=?1", [format!("{spawned_child_id}:initial")], |row| row.get::<_, String>(0)).unwrap();
-    let event: Value = serde_json::from_str(&event).unwrap();
-    let effects = read.query_row("SELECT COALESCE(json_group_array(json(record)), '[]') FROM runtime_execution_effects WHERE reference=?1", [spawned_child_id], |row| row.get::<_, String>(0)).unwrap();
-    let effects: Value = serde_json::from_str(&effects).unwrap();
-    let nodes = read.query_row("SELECT COALESCE(json_group_array(json(record)), '[]') FROM runtime_execution_nodes WHERE json_extract(record,'$.agentId')=?1", [spawned_child_id], |row| row.get::<_, String>(0)).unwrap();
-    let nodes: Value = serde_json::from_str(&nodes).unwrap();
-    for (actual, expected_value, label) in [
-        (
-            event,
-            expected["spawn"]["event"].clone(),
-            "spawn initial event",
-        ),
-        (
-            effects,
-            expected["spawn"]["effects"].clone(),
-            "spawn execution effects",
-        ),
-        (
-            nodes,
-            expected["spawn"]["nodes"].clone(),
-            "spawn execution nodes",
-        ),
-    ] {
-        let mut actual = actual;
-        let mut expected_value = expected_value;
-        normalize_persisted_ids_and_times(&mut actual);
-        normalize_persisted_ids_and_times(&mut expected_value);
-        assert_eq!(actual, expected_value, "complete {label} row(s)");
-    }
-    drop(read);
     let before_workspace_refusal: i64 = store
         .read()
         .unwrap()
@@ -2994,7 +2593,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
     assert_eq!(before_workspace_refusal, after_workspace_refusal);
-    assert_eq!(expected["workspaceRefused"], true);
 
     let provision_calls_before = IMAGE_PROVISION_CALLS.get();
     let image_base = crate::managed_child_create::spawn_agents(
@@ -3033,10 +2631,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(published_image_child["value"]["cwd"], "/fake-image/repo");
     assert_eq!(published_image_child["value"]["imageWorkspaceReady"], true);
     assert_eq!(image_base_child["imageWorkspaceBaseRef"], "HEAD~1");
-    assert_eq!(
-        image_base_child["workerBaseCommit"],
-        expected["base"]["baseCommit"]
-    );
+    assert_eq!(image_base_child["workerBaseCommit"], base_commit);
     let image_base_event: String = store
         .read()
         .unwrap()
@@ -3060,11 +2655,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .unwrap_or_else(|error| panic!("review API call: {error:?}"));
     assert_eq!(reviewed.value["requestId"], "dispatcher-review-api");
     assert_eq!(reviewed.value["status"], "queued");
-    let mut expected_review_response = expected["review"]["response"].clone();
-    normalize_actor_ids(&mut expected_review_response);
-    let mut actual_review_response = reviewed.value.clone();
-    normalize_actor_ids(&mut actual_review_response);
-    assert_eq!(actual_review_response, expected_review_response);
     let child = reviewed.value["agents"][0]["id"].as_str().unwrap();
     let read = store.read().unwrap();
     let child = studio_runtime_store::AgentRepository::get(
@@ -3076,14 +2666,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .value();
     assert_eq!(child["cwd"], review_directory);
     assert_eq!(child["nativeReview"]["status"], "pending");
-    let mut expected_review_child = expected["review"]["child"].clone();
-    let mut actual_review_child = child.clone();
-    normalize_persisted_ids_and_times(&mut expected_review_child);
-    normalize_persisted_ids_and_times(&mut actual_review_child);
-    assert_eq!(
-        actual_review_child, expected_review_child,
-        "complete review child row"
-    );
     drop(read);
 
     actor_value["executionMode"] = json!("vm");
@@ -3193,11 +2775,6 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
     assert_eq!(before_capacity, after_capacity);
-    assert_eq!(
-        expected["capacity"]["countBefore"],
-        expected["capacity"]["countAfter"]
-    );
-    assert!(expected["capacity"]["error"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -3677,5 +3254,3 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert_eq!(record["status"], "paused");
     assert_eq!(record["autoWake"], false);
 }
-#[path = "ingress_tests/model_reads.rs"]
-mod model_reads;

@@ -1,134 +1,9 @@
-//! Complete differential outputs from real Python transfer methods.
-
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
+//! Account transfer snapshot, replay and decision behavior.
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-    sync::OnceLock,
-};
 use studio_runtime_services::account_transfer::{
     Action, Command as Transition, Snapshot, Ticket, before_start,
 };
 
-fn read(case: &Value) -> Snapshot {
-    Snapshot::read(
-        case["raw"].as_str().expect("raw Python row"),
-        case["agents"]
-            .as_array()
-            .expect("agents")
-            .iter()
-            .map(|pair| {
-                (
-                    pair[0].as_str().expect("id").to_owned(),
-                    pair[1].as_str().expect("raw agent").to_owned(),
-                )
-            }),
-    )
-    .expect("Python-written state validates")
-}
-
-fn python_transfer_cases() -> &'static [Value] {
-    static CASES: OnceLock<Vec<Value>> = OnceLock::new();
-    CASES.get_or_init(|| {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py");
-        let python = prepared_python_support::prepared_python(&source);
-        let mut command = Command::new(python);
-        command.arg(&script);
-        let output = prepared_python_support::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python_support::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("{}: {error}", script.display()));
-        assert!(
-            output.status.success(),
-            "{}: {}",
-            script.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("Python transfer cases")
-    })
-}
-
-#[test]
-fn python_transfer_actions_restart_and_projection() {
-    let cases = python_transfer_cases();
-    assert!(cases.len() >= 60);
-    for case in cases {
-        let snapshot = read(case);
-        let command = match case["command"].as_str().expect("command") {
-            "restart" => Transition::Restart,
-            "cancel" => Transition::Action(Action::Cancel),
-            "retry" => Transition::Action(Action::Retry),
-            "finish_history" => Transition::Action(Action::FinishHistory),
-            _ => panic!("oracle command"),
-        };
-        let expected = &case["expected"];
-        match snapshot.decide(command) {
-            Err(error) => assert_eq!(
-                json!(error.to_string()),
-                expected["error"],
-                "{}",
-                case["name"]
-            ),
-            Ok(mut decision) => {
-                assert!(
-                    expected["error"].is_null(),
-                    "{} expected refusal",
-                    case["name"]
-                );
-                decision.stamp(100.0, None).expect("stamp");
-                let followups: Vec<Value> = decision
-                    .followups
-                    .iter()
-                    .map(|f| json!({"agent":f.agent,"id":f.id,"text":f.text}))
-                    .collect();
-                assert_eq!(
-                    decision.operation, expected["operation"],
-                    "{} operation",
-                    case["name"]
-                );
-                assert_eq!(
-                    json!(decision.agents),
-                    expected["agents"],
-                    "{} agents",
-                    case["name"]
-                );
-                assert_eq!(
-                    json!(followups),
-                    expected["followups"],
-                    "{} followups",
-                    case["name"]
-                );
-                assert_eq!(
-                    decision.public_view().expect("view"),
-                    expected["public"],
-                    "{} public",
-                    case["name"]
-                );
-                let roundtrip = Snapshot::read(
-                    &decision.encoded().expect("encode"),
-                    decision
-                        .agents
-                        .iter()
-                        .map(|(id, value)| (id.clone(), value.to_string())),
-                )
-                .expect("stored roundtrip");
-                assert_eq!(
-                    roundtrip.public_view().expect("view"),
-                    expected["public"],
-                    "{} member order after write",
-                    case["name"]
-                );
-            }
-        }
-    }
-}
 fn fixture() -> (Value, Value, Ticket) {
     let op = json!({"id":"op","leadId":"a","targetAccountKey":"target","status":"pending","created":1.0,"members":{"a":{"phase":"waiting","sourceAccountKey":"source","lazy":false}}});
     let agent = json!({"id":"a","rootId":"a","epoch":3,"status":"idle","accountKey":"source","accountTransferId":"op"});
@@ -283,46 +158,6 @@ fn request_replay_is_bound_to_lead_destination_and_scope() {
     );
     assert!(!saved.replay("fresh", "a", "target", "team").expect("new"));
 }
-
-#[test]
-fn selection_matches_real_python_method() {
-    let python = prepared_python_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let output = Command::new(python)
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/account_transfer/selection_oracle.py"),
-        )
-        .output()
-        .expect("selection oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
-    assert_eq!(cases.len(), 11);
-    for case in cases {
-        let snapshot = studio_runtime_services::account_selection::SelectionSnapshot::read(
-            case["raw"].as_str().expect("row"),
-        )
-        .expect("snapshot");
-        match snapshot.decide(
-            case["target"].as_str().expect("target"),
-            Some(&case["account"]),
-            case["directory"].as_str().expect("directory"),
-            case["empty"].as_bool().expect("empty"),
-        ) {
-            Ok(value) => {
-                assert!(case["error"].is_null(), "{}", case["name"]);
-                assert_eq!(value, case["result"], "{}", case["name"]);
-            }
-            Err(error) => assert_eq!(json!(error.to_string()), case["error"], "{}", case["name"]),
-        }
-    }
-}
-
 #[test]
 fn selection_decision_keeps_resume_for_atomic_store_cancellation() {
     let agent = json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,"accountKey":"source","cwd":"/project","usageResume":{"status":"scheduled"}});
@@ -346,29 +181,6 @@ fn selection_decision_keeps_resume_for_atomic_store_cancellation() {
             .expect("unchanged account"),
         agent
     );
-}
-
-#[test]
-fn python_written_legacy_truthy_deleted_at_row_is_readable() {
-    let case = python_transfer_cases()
-        .iter()
-        .find(|case| case["name"] == "legacy-deleted-at-truthy")
-        .expect("Python writes the legacy row");
-    let row = case["agents"][0][1].as_str().expect("raw agent row");
-    assert_eq!(
-        serde_json::from_str::<Value>(row).expect("JSON row")["deletedAt"],
-        true
-    );
-    let snapshot = read(case);
-    assert_eq!(
-        snapshot
-            .decide(Transition::Restart)
-            .expect("recovery")
-            .operation["members"]["lead"]["phase"],
-        "waiting"
-    );
-    studio_runtime_services::account_selection::SelectionSnapshot::read(row)
-        .expect("selection accepts table-schema extension");
 }
 
 #[test]

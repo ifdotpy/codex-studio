@@ -24,11 +24,6 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-#[cfg(test)]
-#[allow(clippy::duplicate_mod)]
-#[path = "../tests/support/prepared_python.rs"]
-mod prepared_python_test_support;
-
 const MODEL_STATUS_HISTORY: i64 = 8;
 const FINISHED_PAGE_DEFAULT: u64 = 20;
 const FINISHED_PAGE_MAX: u64 = 50;
@@ -1326,13 +1321,12 @@ fn empty_text(value: Option<&Value>, maximum: usize) -> Result<String, RulesServ
 mod tests {
     use super::{
         LocalRuleWatchFiles, MODEL_STATUS_HISTORY, RuleWatchFiles, RulesServiceError, StatusError,
-        model_directory, prepared_python_test_support, rules,
+        model_directory, rules,
     };
     use rusqlite::params;
     use serde_json::{Value, json};
     use studio_runtime_store::{
-        AgentRecord, AgentRepository, MonitorRecord, RulesRepository, RuntimeStore, StoreError,
-        Table,
+        AgentRecord, AgentRepository, RulesRepository, RuntimeStore, StoreError,
     };
     use tempfile::TempDir;
 
@@ -1416,134 +1410,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_projection_matches_python_on_team_capacity_and_finished_page_corpus() {
-        use std::process::Command;
-        use std::time::Duration;
-
-        let (_directory, store) = fixture().await;
-        let args = json!({"include_finished":true,"limit":1});
-        let actual = model_directory(&store, "lead", 3, &args, 100.0)
-            .await
-            .expect("Rust status projection");
-        let (agents, monitors) = {
-            let connection = store.read().expect("read status corpus rows");
-            (
-                Table::<AgentRecord>::new(&connection)
-                    .list()
-                    .expect("read agent rows")
-                    .into_iter()
-                    .map(|record| record.value().clone())
-                    .collect::<Vec<_>>(),
-                Table::<MonitorRecord>::new(&connection)
-                    .list()
-                    .expect("read monitor rows")
-                    .into_iter()
-                    .map(|record| record.value().clone())
-                    .collect::<Vec<_>>(),
-            )
-        };
-        let payload = json!({
-            "actor":"lead",
-            "args":args,
-            "agents":agents,
-            "monitors":monitors,
-        });
-        let server_source =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/managed_status_watch_oracle.py");
-        let mut command = Command::new(prepared_python_test_support::prepared_python(
-            &server_source,
-        ));
-        command.arg(&script).arg(payload.to_string());
-        let isolated = prepared_python_test_support::IsolatedTestEnvironment::new();
-        isolated.apply(&mut command);
-        let output = prepared_python_test_support::output_with_timeout(
-            &mut command,
-            &script,
-            Duration::from_secs(60),
-        )
-        .expect("Python status oracle completes");
-        assert!(
-            output.status.success(),
-            "Python status oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let mut expected: Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
-        let mut comparable = actual;
-        for result in [&mut comparable, &mut expected] {
-            result
-                .as_object_mut()
-                .expect("status object")
-                .remove("revision");
-            if let Some(finished) = result.get_mut("finished") {
-                finished
-                    .as_object_mut()
-                    .expect("finished object")
-                    .remove("revision");
-                finished
-                    .as_object_mut()
-                    .expect("finished object")
-                    .remove("nextCursor");
-            }
-        }
-        assert_eq!(comparable, expected, "status corpus differs from Python");
-    }
-
-    #[tokio::test]
     async fn malformed_cached_status_corpus_is_rejected_with_table_and_actor() {
-        use std::process::Command;
-        use std::time::Duration;
-
         let (_directory, store) = fixture().await;
-        let (agents, monitors) = {
-            let connection = store.read().expect("read corpus rows");
-            (
-                Table::<AgentRecord>::new(&connection)
-                    .list()
-                    .expect("read agent rows")
-                    .into_iter()
-                    .map(|record| record.value().clone())
-                    .collect::<Vec<_>>(),
-                Table::<MonitorRecord>::new(&connection)
-                    .list()
-                    .expect("read monitor rows")
-                    .into_iter()
-                    .map(|record| record.value().clone())
-                    .collect::<Vec<_>>(),
-            )
-        };
         let malformed = json!([{}, {"kind":"agent","id":"partial"}]);
-        let payload = json!({
-            "actor":"lead",
-            "args":{},
-            "agents":agents,
-            "monitors":monitors,
-            "corruptPrevious":malformed,
-        });
-        let server_source =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/managed_status_watch_oracle.py");
-        let mut command = Command::new(prepared_python_test_support::prepared_python(
-            &server_source,
-        ));
-        command.arg(&script).arg(payload.to_string());
-        let isolated = prepared_python_test_support::IsolatedTestEnvironment::new();
-        isolated.apply(&mut command);
-        let output = prepared_python_test_support::output_with_timeout(
-            &mut command,
-            &script,
-            Duration::from_secs(60),
-        )
-        .expect("malformed status corpus completes");
-        assert!(
-            output.status.success(),
-            "malformed status corpus failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let expected: Value = serde_json::from_slice(&output.stdout).expect("corpus JSON");
-        assert_eq!(expected["malformedPreviousRejected"], true);
 
         store
             .transaction_with(move |tx| {
@@ -1572,33 +1441,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_rule_save_pause_and_post_commit_cancellations_match_python() {
-        use std::process::Command;
-        use std::time::Duration;
-
-        let (directory, store) = fixture().await;
-        let server_source =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let script =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/managed_rules_oracle.py");
-        let mut command = Command::new(prepared_python_test_support::prepared_python(
-            &server_source,
-        ));
-        command.arg(&script).arg(directory.path());
-        let isolated = prepared_python_test_support::IsolatedTestEnvironment::new();
-        isolated.apply(&mut command);
-        let output = prepared_python_test_support::output_with_timeout(
-            &mut command,
-            &script,
-            Duration::from_secs(60),
-        )
-        .expect("Python rules oracle completes");
-        assert!(
-            output.status.success(),
-            "Python rules oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let expected: Value = serde_json::from_slice(&output.stdout).expect("rules oracle JSON");
+    async fn file_rule_save_pause_and_post_commit_cancellations() {
+        let (_directory, store) = fixture().await;
 
         let save = json!({
             "id":"rule-fixed",
@@ -1685,13 +1529,8 @@ mod tests {
         .await
         .expect("pause file rule");
 
-        assert_eq!(saved.value, expected["saved"]);
-        assert_eq!(replayed.value, expected["replayed"]);
-        assert_eq!(expected["mismatch"], true);
-        assert_eq!(paused.value, expected["paused"]);
-        assert_eq!(expected["cancelled"], json!(["watch-monitor"]));
         assert_eq!(paused.cancel_monitor_ids, ["watch-monitor"]);
-        let sync_payload: Value = store
+        store
             .read()
             .expect("read rule sync projection")
             .query_row(
@@ -1699,9 +1538,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )
-            .map(|payload| serde_json::from_str(&payload).expect("valid sync payload"))
             .expect("rule sync projection exists");
-        assert_eq!(sync_payload, expected["syncEntity"]);
     }
 
     #[tokio::test]

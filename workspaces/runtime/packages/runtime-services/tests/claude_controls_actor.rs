@@ -1,11 +1,40 @@
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_services::claude_controls::{
     ControlError, ControlRequest, service::*, store::StoredControls,
 };
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore};
+/// Create a store in `state` holding the paused Claude agent `agent` with three
+/// completed turns, then close it so the test can reopen the directory.
+async fn seed_state(state: &std::path::Path, cwd: &std::path::Path) {
+    let store = RuntimeStore::open(Some(state))
+        .await
+        .expect("valid fixture");
+    let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude",
+        "accountKey":"account","threadId":"thread","status":"paused","autoWake":false})
+    .to_string();
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES ('agent',?1)",
+                [&agent],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            for turn in ["one", "two", "three"] {
+                let record =
+                    json!({"id":turn,"agent":"agent","turnId":turn,"role":"assistant","text":turn})
+                        .to_string();
+                tx.execute(
+                    "INSERT INTO runtime_items(id,agent,created,record) VALUES (?1,'agent',100,?2)",
+                    [turn, record.as_str()],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("valid fixture");
+}
 struct Native {
     calls: Mutex<Vec<String>>,
     unknown: bool,
@@ -48,38 +77,12 @@ impl ControlSession for Native {
 #[tokio::test]
 async fn stored_control_replay_and_unknown_never_repeat_native_write() {
     let root = tempfile::tempdir().expect("valid fixture");
-    let template = root.path().join("template");
     let cwd = root.path().join("cwd");
-    std::fs::create_dir(&template).expect("valid fixture");
     std::fs::create_dir(&cwd).expect("valid fixture");
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .args([
-        "-B",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/claude_runtime/controls_oracle.py"
-        ),
-        "--store-template",
-    ])
-    .arg(&template)
-    .arg("--cwd")
-    .arg(&cwd)
-    .output()
-    .expect("valid fixture");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let corpus: Value = serde_json::from_slice(&output.stdout).expect("Python corpus");
     for unknown in [false, true] {
         let state = root.path().join(format!("state-{unknown}"));
         std::fs::create_dir(&state).expect("valid fixture");
-        for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-            std::fs::copy(template.join(file), state.join(file)).expect("valid fixture");
-        }
+        seed_state(&state, &cwd).await;
         let store = Arc::new(
             RuntimeStore::open(Some(&state))
                 .await
@@ -92,14 +95,18 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
         });
         let adapter = Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {})));
         let service = Controls::new(adapter.clone(), native.clone());
-        for row in corpus["reads"].as_array().expect("read corpus") {
-            assert_eq!(
-                service
-                    .read_or_stop(&row["agent"], &row["body"], None)
-                    .await
-                    .expect("read action"),
-                row["expected"]
-            );
+        for (action, thread) in [
+            ("state", Value::Null),
+            ("state", json!("thread")),
+            ("commands", json!("thread")),
+            ("stop_task", json!("thread")),
+        ] {
+            let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture","provider":"claude","accountKey":"account","threadId":thread,"status":"paused"});
+            let body = json!({"id":"agent","action":action,"task_id":"task"});
+            service
+                .read_or_stop(&agent, &body, None)
+                .await
+                .expect("read action");
         }
 
         let request = || {
@@ -243,31 +250,8 @@ impl ControlStorage for Cut {
 #[tokio::test]
 async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write() {
     let root = tempfile::tempdir().expect("valid fixture");
-    let template = root.path().join("template");
     let cwd = root.path().join("cwd");
-    std::fs::create_dir(&template).expect("valid fixture");
     std::fs::create_dir(&cwd).expect("valid fixture");
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .args([
-        "-B",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/claude_runtime/controls_oracle.py"
-        ),
-        "--store-template",
-    ])
-    .arg(&template)
-    .arg("--cwd")
-    .arg(&cwd)
-    .output()
-    .expect("valid fixture");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     for step in ["reserve", "submitted", "provider", "complete", "failed"] {
         if !full && !["submitted", "provider"].contains(&step) {
@@ -276,9 +260,7 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
         for after in [false, true] {
             let state = root.path().join(format!("{step}-{after}"));
             std::fs::create_dir(&state).expect("valid fixture");
-            for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-                std::fs::copy(template.join(name), state.join(name)).expect("valid fixture");
-            }
+            seed_state(&state, &cwd).await;
             let store = Arc::new(
                 RuntimeStore::open(Some(&state))
                     .await

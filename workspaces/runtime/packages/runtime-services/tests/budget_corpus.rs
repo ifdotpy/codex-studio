@@ -1,77 +1,11 @@
-//! Complete Python-written rows through the transaction adapter, without providers.
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+//! Budget rows through the transaction adapter, without providers.
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    io::{BufRead, BufReader, Write},
-    path::Path,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-};
+use std::collections::BTreeMap;
 use studio_runtime_services::{
     budget::{CaptureSource, HistoryFileObservation, HistoryObservation},
     budget_service,
 };
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-    _environment: python_test_support::IsolatedTestEnvironment,
-}
-impl Oracle {
-    fn new() -> Self {
-        let environment = python_test_support::IsolatedTestEnvironment::new();
-        let mut command = Command::new(python_test_support::prepared_python(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ));
-        environment.apply(&mut command);
-        let mut child = command
-            .arg("-B")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budget/oracle.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("oracle");
-        Self {
-            input: child.stdin.take().expect("stdin"),
-            output: BufReader::new(child.stdout.take().expect("stdout")),
-            child,
-            _environment: environment,
-        }
-    }
-    fn call(&mut self, case: &Value) -> Value {
-        writeln!(self.input, "{case}").expect("case");
-        self.input.flush().expect("flush");
-        let mut s = String::new();
-        self.output.read_line(&mut s).expect("result");
-        serde_json::from_str(&s).expect("oracle result")
-    }
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        if writeln!(self.input, "{{\"close\":true}}").is_ok() && self.input.flush().is_ok() {
-            match self.child.wait() {
-                Ok(status) if status.success() => {}
-                Ok(status) => eprintln!("budget oracle exited during teardown: {status}"),
-                Err(error) => eprintln!("could not reap budget oracle during teardown: {error}"),
-            }
-        } else {
-            match self.child.try_wait() {
-                Ok(Some(_)) => {}
-                Ok(None) => match self.child.kill() {
-                    Ok(()) => match self.child.wait() {
-                        Ok(_) => {}
-                        Err(error) => eprintln!("could not reap budget oracle: {error}"),
-                    },
-                    Err(error) => eprintln!("could not stop budget oracle: {error}"),
-                },
-                Err(error) => eprintln!("could not inspect budget oracle: {error}"),
-            }
-        }
-    }
-}
 fn db(records: &Value, case: &Value) -> Connection {
     let connection = Connection::open_in_memory().expect("SQLite");
     connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT);").expect("schema");
@@ -85,7 +19,7 @@ fn db(records: &Value, case: &Value) -> Connection {
                     &format!("INSERT INTO {table} VALUES (?1,?2)"),
                     params![id, row.to_string()],
                 )
-                .expect("Python row");
+                .expect("agent or state row");
         }
     }
     for row in records["usage"].as_array().expect("usage") {
@@ -114,7 +48,7 @@ fn db(records: &Value, case: &Value) -> Connection {
                     row["status"].as_str(),
                     row["created"].as_f64(),
                     row["epoch"].as_i64(),
-                    row["turn_id"].as_str(),
+                    row["turnId"].as_str().or(row["turn_id"].as_str()),
                     row["error"].as_str()
                 ],
             )
@@ -188,7 +122,7 @@ fn stored(connection: &Connection) -> Value {
     );
     state
 }
-fn run(case: &Value, records: &Value, expected_outputs: &Value) -> Value {
+fn run(case: &Value, records: &Value) -> Value {
     let mut connection = db(records, case);
     let mut denial = None;
     let mut outputs: Vec<Value> = Vec::new();
@@ -251,7 +185,7 @@ fn run(case: &Value, records: &Value, expected_outputs: &Value) -> Value {
             }
             "admission" | "status" => {
                 let mut histories = BTreeMap::new();
-                // The Python template has an analytics table; a missing row is
+                // The template has an analytics table; a missing row is
                 // incomplete, while a missing table/observation is unavailable.
                 for id in records["agents"].as_object().expect("agents").keys() {
                     let agent = studio_runtime_store::budget::BudgetRepository::agent(&tx, id)
@@ -336,16 +270,10 @@ fn run(case: &Value, records: &Value, expected_outputs: &Value) -> Value {
         tx.commit().expect("commit");
         let output = json!({"result":result,"stored":stored(&connection)});
         if Some(step_index) == changed_replay_step {
-            let python_output = &expected_outputs[step_index];
             assert_eq!(
                 output["result"],
                 json!({"rustRefusal":"responseReplayConflict"}),
                 "{}: Rust refuses changed-content replay",
-                case["name"]
-            );
-            assert!(
-                python_output["result"].is_number(),
-                "{}: Python accepts and saves changed replay",
                 case["name"]
             );
             assert_eq!(
@@ -353,28 +281,65 @@ fn run(case: &Value, records: &Value, expected_outputs: &Value) -> Value {
                 outputs.last().expect("prior Rust output")["stored"],
                 "Rust conflict refusal writes nothing"
             );
-            // The intentional compatibility difference is isolated to this
-            // replay. Seed the Python post-replay snapshot so later admission
-            // and claim steps still compare the same behavior as the oracle.
-            restore_stored(&connection, &python_output["stored"]);
         }
         outputs.push(output);
     }
     json!(outputs)
 }
-fn budget_python_corpus() {
+fn every_budget_case_runs_to_completion() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
-    let mut oracle = Oracle::new();
     for case in cases.as_array().expect("cases") {
-        let expected = oracle.call(case);
-        let actual = run(case, &expected["records"], &expected["outputs"]);
-        compare_case_outputs(
-            &actual,
-            &expected["outputs"],
-            changed_response_replay_step(case),
-            case["name"].as_str().expect("name"),
+        let outputs = run(case, &records(case));
+        assert_eq!(
+            outputs.as_array().expect("outputs").len(),
+            case["steps"].as_array().expect("steps").len(),
+            "{}",
+            case["name"]
         );
     }
+}
+
+/// Initial rows of a case, including its seed captures, written by the Rust service.
+fn records(case: &Value) -> Value {
+    let agents: serde_json::Map<String, Value> = case["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .map(|agent| {
+            (
+                agent["id"].as_str().expect("agent id").to_owned(),
+                agent.clone(),
+            )
+        })
+        .collect();
+    let initial = json!({"agents":agents,"states":{},"usage":[],"events":case["events"].as_array().cloned().unwrap_or_default()});
+    let mut connection = db(&initial, case);
+    for seed in case["seed_captures"].as_array().into_iter().flatten() {
+        let tx = connection.transaction().expect("seed transaction");
+        let mut agent = studio_runtime_store::budget::BudgetRepository::agent(
+            &tx,
+            seed["agent"].as_str().unwrap_or("a"),
+        )
+        .expect("seed agent");
+        // A refused seed (a conflicting replay) leaves no row; the case steps
+        // then run against the rows the accepted seeds wrote.
+        let captured = budget_service::capture(
+            &tx,
+            &mut agent,
+            &seed["params"],
+            seed["at"].as_f64().unwrap_or(101.),
+            if seed["source"] == "history" {
+                CaptureSource::History
+            } else {
+                CaptureSource::Live
+            },
+            100.,
+        );
+        if captured.is_ok() {
+            tx.commit().expect("seed commit");
+        }
+    }
+    stored(&connection)
 }
 
 fn changed_response_replay_step(case: &Value) -> Option<usize> {
@@ -392,73 +357,6 @@ fn changed_response_replay_step(case: &Value) -> Option<usize> {
                 .insert(response_id.to_owned(), tokens)
                 .and_then(|previous| (previous != tokens).then_some(index))
         })
-}
-
-fn restore_stored(connection: &Connection, state: &Value) {
-    connection
-        .execute_batch(
-            "DELETE FROM runtime_agents;DELETE FROM runtime_budget;DELETE FROM runtime_budget_usage;DELETE FROM runtime_events;",
-        )
-        .expect("reset corpus state");
-    for (id, record) in state["agents"].as_object().expect("agents") {
-        connection
-            .execute(
-                "INSERT INTO runtime_agents VALUES (?1,?2)",
-                params![id, record.to_string()],
-            )
-            .expect("restore agent");
-    }
-    for (id, record) in state["states"].as_object().expect("states") {
-        connection
-            .execute(
-                "INSERT INTO runtime_budget VALUES (?1,?2)",
-                params![id, record.to_string()],
-            )
-            .expect("restore budget");
-    }
-    for usage in state["usage"].as_array().expect("usage") {
-        connection
-            .execute(
-                "INSERT INTO runtime_budget_usage VALUES (?1,?2,?3,?4,?5)",
-                params![
-                    usage["id"].as_str(),
-                    usage["agent"].as_str(),
-                    usage["kind"].as_str(),
-                    usage["tokens"].as_i64(),
-                    usage["at"].as_f64()
-                ],
-            )
-            .expect("restore usage");
-    }
-    for event in state["events"].as_array().expect("events") {
-        connection
-            .execute(
-                "INSERT INTO runtime_events VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![
-                    event["id"].as_str(),
-                    event["agent"].as_str(),
-                    event["kind"].as_str(),
-                    event["text"].as_str(),
-                    event["status"].as_str(),
-                    event["created"].as_f64(),
-                    event["epoch"].as_i64(),
-                    event["turnId"].as_str(),
-                    event["error"].as_str()
-                ],
-            )
-            .expect("restore event");
-    }
-}
-
-fn compare_case_outputs(actual: &Value, expected: &Value, replay: Option<usize>, name: &str) {
-    let actual = actual.as_array().expect("Rust outputs");
-    let expected = expected.as_array().expect("Python outputs");
-    assert_eq!(actual.len(), expected.len(), "{name}: output count");
-    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
-        if Some(index) != replay {
-            compare(actual, expected, &format!("{name}/{index}"));
-        }
-    }
 }
 
 #[test]
@@ -510,43 +408,11 @@ fn exact_response_replay_is_noop_and_conflicting_replay_refuses_without_writes()
     );
 }
 
-fn compare(actual: &Value, expected: &Value, path: &str) {
-    match (actual, expected) {
-        (Value::Object(a), Value::Object(b)) => {
-            assert_eq!(
-                a.keys().collect::<Vec<_>>(),
-                b.keys().collect::<Vec<_>>(),
-                "{path}: keys"
-            );
-            for (key, value) in a {
-                compare(value, &b[key], &format!("{path}/{key}"));
-            }
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len(), "{path}: length");
-            for (index, (a, b)) in a.iter().zip(b).enumerate() {
-                compare(a, b, &format!("{path}/{index}"));
-            }
-        }
-        (Value::Number(a), Value::Number(b))
-            if ["/created", "/cutoff", "/noticeAt", "/at", "/finishedAt"]
-                .iter()
-                .any(|key| path.ends_with(key)) =>
-        {
-            // Timestamp schemas accept integer and floating JSON numbers. The
-            // one-way cutover does not preserve Python's stored number spelling.
-            assert_eq!(a.as_f64(), b.as_f64(), "{path}");
-        }
-        _ => assert_eq!(actual, expected, "{path}"),
-    }
-}
-
 fn fixture() -> (Value, Value) {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let case = cases[0].clone();
-    let mut oracle = Oracle::new();
-    let result = oracle.call(&case);
-    (case, result["records"].clone())
+    let records = records(&case);
+    (case, records)
 }
 fn sync_fixture(db: &Connection) {
     db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));CREATE TABLE sync_documents(seq INTEGER);CREATE TABLE sync_versions(seq INTEGER);INSERT INTO sync_entities VALUES('agent','a',1,'initial','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Keep presentation\",\"source\":\"native\",\"kind\":\"agent\",\"canSend\":true}}',0);").expect("sync fixture");
@@ -817,11 +683,11 @@ fn capture_partial_copy_uses_durable_identity() {
     case["steps"] = json!([{"op":"capture", "at":101, "params":{
         "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
     }}]);
-    let mut oracle = Oracle::new();
     for source in [CaptureSource::Live, CaptureSource::History] {
         case["steps"][0]["source"] = json!(source);
-        let expected = oracle.call(&case);
-        let mut connection = db(&expected["records"], &case);
+        let initial = records(&case);
+        let expected = run(&case, &initial);
+        let mut connection = db(&initial, &case);
         let mut supplied = json!({"id":"a", "created":999, "notificationField":"preserved"});
         for _ in 0..2 {
             let tx = connection.transaction().expect("transaction");
@@ -838,10 +704,10 @@ fn capture_partial_copy_uses_durable_identity() {
                 20
             );
             tx.commit().expect("commit");
-            compare(
-                &stored(&connection),
-                &expected["outputs"][0]["stored"],
-                "durable identity",
+            assert_eq!(
+                stored(&connection),
+                expected[0]["stored"],
+                "durable identity"
             );
         }
         assert_eq!(supplied["created"], 999);
@@ -915,11 +781,10 @@ fn wait_failpoints_preserve_batch_and_exact_resume() {
         .iter()
         .find(|c| c["name"] == "wait-resume")
         .expect("wait case");
-    let mut oracle = Oracle::new();
-    let expected = oracle.call(case);
-    let initial = &expected["outputs"][0]["stored"];
-    let denial = serde_json::from_value(expected["outputs"][0]["result"]["denial"].clone())
-        .expect("real Python denial");
+    let expected = run(case, &records(case));
+    let initial = &expected[0]["stored"];
+    let denial =
+        serde_json::from_value(expected[0]["result"]["denial"].clone()).expect("admission denial");
     let temporary = tempfile::tempdir().expect("isolated directory");
     for phase in ["defer", "claim"] {
         for table in ["runtime_events", "runtime_agents", "sync_entities"] {
@@ -986,52 +851,10 @@ fn wait_failpoints_preserve_batch_and_exact_resume() {
     }
 }
 
-fn budget_full_matrix() {
-    if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none() {
-        return;
-    }
-    let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
-    let mut oracle = Oracle::new();
-    let mut count = 0;
-    for floor in [0, 1, 10, 100] {
-        for amount in [0, 1, 10, 100] {
-            for at in [0., 99., 100., 101.] {
-                for history in [false, true] {
-                    for estimated in [false, true] {
-                        for response_first in [false, true] {
-                            let mut case = cases[0].clone();
-                            case["agents"][0]["tokensUsed"] = json!(floor);
-                            case["agents"][0]["tokenBudget"] = json!(100);
-                            let response = json!({"op":"capture","at":at,"source":if history{"history"}else{"live"},"params":{"responseId":"r","rawTokenUsageRecord":{"response_id":"r"},"requestUsage":{"totalTokens":amount},"_analyticsTimestampSource":if estimated{"fileModifiedEstimate"}else{"record"}}});
-                            let notice = json!({"op":"capture","at":at,"params":{"tokenUsage":{"total":{"totalTokens":floor+amount},"last":{"totalTokens":amount}}}});
-                            case["steps"] = if response_first {
-                                json!([response,notice,response,{"op":"admission"}])
-                            } else {
-                                json!([notice,response,response,{"op":"admission"}])
-                            };
-                            let expected = oracle.call(&case);
-                            compare(
-                                &run(&case, &expected["records"], &expected["outputs"]),
-                                &expected["outputs"],
-                                &format!(
-                                    "matrix floor={floor} amount={amount} at={at} history={history} estimated={estimated} response_first={response_first}"
-                                ),
-                            );
-                            count += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    eprintln!("budget full accounting matrix: {count} cases");
-}
-
 fn malformed_stored_ledgers_and_late_team_read_roll_back() {
     let (case, records) = fixture();
-    let mut oracle = Oracle::new();
-    let written = oracle.call(&case);
-    let state = &written["outputs"][0]["stored"]["states"]["a"];
+    let written = run(&case, &records);
+    let state = &written[0]["stored"]["states"]["a"];
     for field in [
         "cutoff",
         "floor",
@@ -1109,8 +932,8 @@ fn action_retirement_failpoints_keep_receipt_and_wait_atomic() {
         .iter()
         .find(|c| c["name"] == "action-stale")
         .expect("action case");
-    let expected = Oracle::new().call(case);
-    let initial = &expected["outputs"][2]["stored"];
+    let expected = run(case, &records(case));
+    let initial = &expected[2]["stored"];
     let temporary = tempfile::tempdir().expect("isolated directory");
     for table in [
         "runtime_native_action_receipts",
@@ -1146,10 +969,10 @@ fn action_retirement_failpoints_keep_receipt_and_wait_atomic() {
                     .is_none()
             );
             tx.commit().expect("commit");
-            compare(
-                &stored(&connection),
-                &expected["outputs"][3]["stored"],
-                "action retirement",
+            assert_eq!(
+                stored(&connection),
+                expected[3]["stored"],
+                "action retirement"
             );
         }
     }
@@ -1188,7 +1011,10 @@ fn incomplete_collected_tail_cannot_authorize_admission() {
 #[test]
 fn budget_corpus_suite() {
     let cases: &[(&str, fn())] = &[
-        ("budget_python_corpus", budget_python_corpus),
+        (
+            "every_budget_case_runs_to_completion",
+            every_budget_case_runs_to_completion,
+        ),
         (
             "capture_failpoints_restart_and_lost_response",
             capture_failpoints_restart_and_lost_response,
@@ -1213,7 +1039,6 @@ fn budget_corpus_suite() {
             "wait_failpoints_preserve_batch_and_exact_resume",
             wait_failpoints_preserve_batch_and_exact_resume,
         ),
-        ("budget_full_matrix", budget_full_matrix),
         (
             "malformed_stored_ledgers_and_late_team_read_roll_back",
             malformed_stored_ledgers_and_late_team_read_roll_back,

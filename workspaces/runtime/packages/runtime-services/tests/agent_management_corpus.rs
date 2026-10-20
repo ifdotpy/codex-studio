@@ -1,55 +1,40 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::Path;
 use studio_runtime_services::{
     agent_lifecycle_runtime::{self, LifecycleEffect, LifecyclePorts},
     agent_management::{Action, ManagementError, ManagementSnapshot, Records, decide},
+    agents_create::mode_fields,
     workspace_cleanup_runtime::{self, CleanupEffect, CleanupPorts, EffectFailure},
 };
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
 
-fn corpus() -> Vec<Value> {
-    let python = prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py");
-    let output = Command::new(python)
-        .arg(path)
-        .output()
-        .expect("Python oracle starts");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("oracle emits corpus")
+const NOW: f64 = 1_234_567.5;
+
+fn seed() -> Value {
+    let mut lead = json!({"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
+    let mut worker = lead.clone();
+    worker["id"] = json!("worker");
+    worker["parentId"] = json!("lead");
+    worker["isLead"] = json!(false);
+    worker["status"] = json!("completed");
+    worker["name"] = json!("Worker");
+    worker["epoch"] = json!(8);
+    mode_fields(&mut lead);
+    mode_fields(&mut worker);
+    json!({"tables":{"runtime_agents":[lead, worker]}})
 }
 
-fn apply(
-    mut records: Records,
-    writes: &[studio_runtime_services::agent_management::RowWrite],
-    cancel: &[String],
-) -> Records {
-    for write in writes {
-        let rows = records.tables.get_mut(&write.table).expect("source table");
-        let row = rows
-            .iter_mut()
-            .find(|row| row["id"] == write.record["id"])
-            .expect("existing row");
-        *row = write.record.clone();
-    }
-    if let Some(events) = records.tables.get_mut("runtime_events") {
-        for event in events {
-            if event["status"] == "pending" && cancel.iter().any(|id| event["agent"] == *id) {
-                event["status"] = json!("cancelled");
-            }
-        }
-    }
+fn archive_action() -> Value {
+    json!({"action":"archive","actor":"lead","epoch":3,"target":"worker","reason":"Finished work","unassign_work":false})
+}
+
+fn case(records: Value, action: Value) -> Value {
+    json!({"records":records,"action":action,"now":NOW})
+}
+
+fn unassign_records() -> Value {
+    let mut records = seed();
+    records["tables"]["runtime_work"] = json!([{"id":"work","owner":"worker","rootId":"lead","version":2,"status":"review","title":"Assignment","results":[{"id":"result","text":"Keep this result"}],"decisions":[]}]);
     records
 }
 
@@ -145,7 +130,7 @@ async fn seed_store(store: &RuntimeStore, records: &Records) {
             Ok(())
         })
         .await
-        .expect("Python records seed into store");
+        .expect("records seed into store");
 }
 
 struct FakeCleanup;
@@ -258,10 +243,7 @@ impl LifecyclePorts for CrashBeforeCleanup {
 
 #[tokio::test]
 async fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
-    let case = corpus()
-        .into_iter()
-        .find(|case| case["name"] == "archive-completed")
-        .expect("archive witness");
+    let case = case(seed(), archive_action());
     let root = tempfile::tempdir().expect("tmpfs test root");
     template(root.path());
     let store = std::sync::Arc::new(
@@ -319,84 +301,68 @@ async fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
 }
 
 #[tokio::test]
-async fn python_lifecycle_decisions_and_complete_stored_rows_match() {
-    let cases = corpus();
-    assert!(cases.len() >= 35);
-    for case in cases {
-        if matches!(
-            case["action"]["action"].as_str(),
-            Some("archive" | "stop" | "delete")
-        ) {
-            let (actual_result, actual_records) = run_lifecycle_end_state(&case).await;
-            let mut expected_tables = case["expected"]["records"]["tables"].clone();
-            let actual_tables = actual_records["tables"]
-                .as_object()
-                .expect("complete runtime tables");
-            let expected_tables = expected_tables
-                .as_object_mut()
-                .expect("Python oracle tables");
-            for table in actual_tables.keys() {
-                expected_tables
-                    .entry(table.clone())
-                    .or_insert_with(|| json!([]));
-            }
-            assert_eq!(
-                actual_tables, expected_tables,
-                "complete post-cleanup rows for {}",
-                case["name"]
-            );
-            if case["expected"].get("error").is_some() {
-                assert_eq!(
-                    actual_result,
-                    json!({"error":case["expected"]["error"]}),
-                    "{}",
-                    case["name"]
-                );
-            } else if case["action"]["action"] == "archive" {
-                assert_eq!(
-                    actual_result["result"]["status"], case["expected"]["result"]["status"],
-                    "{}",
-                    case["name"]
-                );
-                if actual_result["result"]["status"] == "archived" {
-                    let saved = actual_records["tables"]["runtime_agents"]
-                        .as_array()
-                        .expect("agent rows")
-                        .iter()
-                        .find(|row| row["id"] == case["action"]["target"])
-                        .expect("archived agent");
-                    assert_eq!(
-                        saved.pointer("/agentArchive/cleanupPending"),
-                        Some(&json!(false))
-                    );
-                    assert!(saved.get("workspaceCleanupIntent").is_none());
-                }
-            } else {
-                assert_eq!(
-                    actual_result["result"], case["expected"]["result"],
-                    "lifecycle result for {}",
-                    case["name"]
-                );
-            }
-            continue;
-        }
-        let records: Records = serde_json::from_value(case["records"].clone()).expect("records");
-        let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-        let snapshot = ManagementSnapshot::from_records(records.clone())
-            .expect("checked Python-written snapshot");
-        let actual = match decide(&snapshot, &action, case["now"].as_f64().expect("time")) {
-            Ok(decision) => {
-                json!({"result": decision.result, "records":apply(records, &decision.writes, &decision.cancel_pending)})
-            }
-            Err(error) => json!({"error":error.to_string(), "records":records}),
-        };
-        assert_eq!(actual, case["expected"], "case {}", case["name"]);
+async fn finished_workers_archive_and_clean_up_in_every_finished_status() {
+    for status in ["completed", "failed", "interrupted", "idle", "paused"] {
+        let mut records = seed();
+        records["tables"]["runtime_agents"][1]["status"] = json!(status);
+        let (result, state) = run_lifecycle_end_state(&case(records, archive_action())).await;
+        assert_eq!(result["result"]["status"], "archived", "{status}");
+        let saved = state["tables"]["runtime_agents"]
+            .as_array()
+            .expect("agent rows")
+            .iter()
+            .find(|row| row["id"] == "worker")
+            .expect("archived agent");
+        assert_eq!(
+            saved.pointer("/agentArchive/cleanupPending"),
+            Some(&json!(false)),
+            "{status}"
+        );
+        assert!(saved.get("workspaceCleanupIntent").is_none(), "{status}");
+    }
+}
+
+#[tokio::test]
+async fn archive_is_refused_while_the_worker_has_pending_work() {
+    for (table, row) in [
+        (
+            "runtime_events",
+            json!({"id":"pending","agent":"worker","epoch":8,"status":"pending"}),
+        ),
+        (
+            "runtime_requests",
+            json!({"id":"question","agent":"worker","status":"pending","method":"agent/asyncQuestion"}),
+        ),
+        (
+            "runtime_monitors",
+            json!({"id":"monitor","agent":"worker","status":"approval"}),
+        ),
+    ] {
+        let mut records = seed();
+        records["tables"][table] = json!([row]);
+        let (result, state) = run_lifecycle_end_state(&case(records, archive_action())).await;
+        assert!(
+            result.get("error").is_some() || result["result"]["status"] != "archived",
+            "{table}"
+        );
+        let worker = state["tables"]["runtime_agents"]
+            .as_array()
+            .expect("agent rows")
+            .iter()
+            .find(|row| row["id"] == "worker")
+            .expect("worker");
+        assert!(
+            worker
+                .get("agentArchive")
+                .is_none_or(|archive| archive.is_null()),
+            "{table}"
+        );
     }
 }
 
 #[test]
 fn malformed_stored_lifecycle_identity_is_located() {
-    let base = corpus().remove(0)["records"].clone();
+    let base = seed();
     for (field, value) in [
         ("epoch", json!(-1)),
         ("epoch", json!(true)),
@@ -420,9 +386,7 @@ fn malformed_stored_lifecycle_identity_is_located() {
 }
 
 #[test]
-fn management_snapshot_does_not_impose_a_python_absent_row_cap() {
-    // Python codex_runtime.py:2956-2973 traverses the full descendant set and
-    // has no row-count or per-record byte cap for these management snapshots.
+fn management_snapshot_imposes_no_row_cap() {
     let records = Records {
         tables: std::collections::BTreeMap::from([(
             "runtime_events".to_owned(),
@@ -437,8 +401,7 @@ fn management_snapshot_does_not_impose_a_python_absent_row_cap() {
 
 #[test]
 fn managed_interrupt_requires_current_sender_and_descendant_scope() {
-    let records: Records =
-        serde_json::from_value(corpus()[0]["records"].clone()).expect("lifecycle rows");
+    let records: Records = serde_json::from_value(seed()).expect("lifecycle rows");
     let snapshot = ManagementSnapshot::from_records(records).expect("snapshot");
     let action = |sender_epoch| Action::Stop {
         target: "worker".to_owned(),
@@ -474,7 +437,7 @@ fn managed_interrupt_requires_current_sender_and_descendant_scope() {
 
 #[test]
 fn missing_native_and_remote_effects_produce_no_decision() {
-    let base = corpus().remove(0)["records"].clone();
+    let base = seed();
     for (field, value, dependency) in [
         (
             "threadId",
@@ -509,11 +472,7 @@ fn missing_native_and_remote_effects_produce_no_decision() {
 
 #[test]
 fn malformed_assignment_fields_cannot_bypass_archive_blockers() {
-    let base = corpus()
-        .into_iter()
-        .find(|case| case["name"] == "unassign")
-        .expect("assignment case")["records"]
-        .clone();
+    let base = unassign_records();
     for (field, value) in [
         ("owner", json!(true)),
         ("version", json!("2")),

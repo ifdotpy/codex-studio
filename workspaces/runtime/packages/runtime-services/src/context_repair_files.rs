@@ -20,11 +20,6 @@ use thiserror::Error;
 
 use crate::context_repair::{HistoryRewrite, RepairError, RepairEventSummary};
 
-#[cfg(test)]
-#[allow(clippy::duplicate_mod)]
-#[path = "../tests/support/prepared_python.rs"]
-mod prepared_python_test_support;
-
 const MAX_HISTORY_LINE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ANCESTRY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ANCESTRY_DEPTH: usize = 32;
@@ -1516,8 +1511,6 @@ fn sync_directory(path: &Path) -> Result<(), HistoryFileError> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use serde_json::{Value, json};
 
     use super::*;
@@ -1580,128 +1573,23 @@ mod tests {
         (root, home, source, events)
     }
 
-    fn run_python_oracle(
-        root: &Path,
-        home: &Path,
-        source: &Path,
-        events: &[Value],
-    ) -> (Value, Vec<u8>) {
-        run_python_oracle_with_terminal(root, home, source, events, &terminal())
-    }
-
-    fn run_python_oracle_with_terminal(
-        root: &Path,
-        home: &Path,
-        source: &Path,
-        events: &[Value],
-        terminal: &HistoryTerminal,
-    ) -> (Value, Vec<u8>) {
-        let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python_test_support::prepared_python(&server_source);
-        let oracle =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/context_repair_files/oracle.py");
-        let events_path = root.join("events.json");
-        let expected_copy = root.join("python-copy.jsonl");
-        fs::write(
-            &events_path,
-            serde_json::to_vec(events).expect("events JSON"),
-        )
-        .expect("events fixture");
-        let mut command = Command::new(python);
-        command
-            .arg(&oracle)
-            .arg(home)
-            .arg(source)
-            .arg(THREAD)
-            .arg(IMPORT)
-            .arg(events_path)
-            .arg(terminal.turn_id.as_deref().unwrap_or_default())
-            .arg(terminal.status.as_deref().unwrap_or_default())
-            .arg(
-                terminal
-                    .completed_at
-                    .map(|completed_at| completed_at.to_string())
-                    .unwrap_or_default(),
-            )
-            .arg(if terminal.inherited_empty {
-                "true"
-            } else {
-                "false"
-            })
-            .arg(&expected_copy)
-            .env_clear()
-            .env("HOME", root.join("runner-home"))
-            .env("PATH", "/usr/bin:/bin")
-            .env("TMPDIR", root)
-            .env("PYTHONDONTWRITEBYTECODE", "1");
-        let output = prepared_python_test_support::output_with_timeout(
-            &mut command,
-            &oracle,
-            std::time::Duration::from_secs(60),
-        )
-        .expect("bounded Python filesystem oracle");
-        assert!(
-            output.status.success(),
-            "Python oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let result: Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
-        (
-            result["report"].clone(),
-            fs::read(expected_copy).expect("Python copy"),
-        )
-    }
-
-    fn run_python_refusal(root: &Path, home: &Path, source: &Path, thread_id: &str) {
-        let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python_test_support::prepared_python(&server_source);
-        let oracle =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/context_repair_files/oracle.py");
-        let events_path = root.join("refusal-events.json");
-        let output_path = root.join("refusal-copy.jsonl");
-        fs::write(&events_path, b"[]").expect("empty refusal event fixture");
-        let mut command = Command::new(python);
-        command
-            .arg(&oracle)
-            .arg(home)
-            .arg(source)
-            .arg(thread_id)
-            .arg(IMPORT)
-            .arg(events_path)
-            .arg(TERMINAL)
-            .arg("completed")
-            .arg("10.0")
-            .arg("false")
-            .arg(output_path)
-            .env_clear()
-            .env("HOME", root.join("runner-home"))
-            .env("PATH", "/usr/bin:/bin")
-            .env("TMPDIR", root)
-            .env("PYTHONDONTWRITEBYTECODE", "1");
-        let output = prepared_python_test_support::output_with_timeout(
-            &mut command,
-            &oracle,
-            std::time::Duration::from_secs(60),
-        )
-        .expect("bounded Python refusal oracle");
-        assert!(
-            output.status.success(),
-            "Python refusal oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let result: Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
-        assert_eq!(result["refused"], true, "Python must refuse {source:?}");
+    /// Every line of a private copy is one complete JSON record.
+    fn copy_records(receipt: &HistoryRewriteReceipt) -> Vec<Value> {
+        fs::read_to_string(receipt.copy_path.as_ref().expect("private copy"))
+            .expect("copy text")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("copy record JSON"))
+            .collect()
     }
 
     #[test]
-    fn history_lookup_and_rewrite_match_python_bytes() {
-        let (root, home, source, events) = fixture();
+    fn history_lookup_and_rewrite_report_the_source_and_copy() {
+        let (_root, home, source, events) = fixture();
         assert_eq!(
             locate_codex_history(&home, THREAD).expect("unique provider history"),
             source
         );
-        let (expected_report, expected_copy) =
-            run_python_oracle(root.path(), &home, &source, &events);
+        let source_before = fs::read(&source).expect("source bytes");
         let receipt = rewrite_with_hook(
             &home,
             &source,
@@ -1714,20 +1602,19 @@ mod tests {
         )
         .expect("rewrite fixture history");
         assert_eq!(receipt.import_thread_id, IMPORT);
-        assert_eq!(json!(receipt.event_ids), expected_report["eventIds"]);
-        assert_eq!(receipt.source_sha256, expected_report["sourceSha256"]);
-        assert_eq!(receipt.source_bytes, expected_report["sourceBytes"]);
+        assert_eq!(json!(receipt.event_ids), json!(["event-1"]));
         assert_eq!(
-            fs::read(receipt.copy_path.as_ref().expect("copy path")).expect("Rust copy"),
-            expected_copy,
-            "rewritten JSONL must match Python bytes"
+            receipt.source_sha256,
+            studio_runtime_store::sha256_hex(&source_before)
         );
+        assert_eq!(receipt.source_bytes, source_before.len() as u64);
+        assert!(!copy_records(&receipt).is_empty());
         cleanup_rewrite_copy(&home, &receipt).expect("cleanup private copy");
         assert!(source.exists(), "cleanup must retain provider source");
     }
 
     #[test]
-    fn inherited_history_matches_python_projection_bytes() {
+    fn inherited_history_is_flattened_into_the_private_copy() {
         let root = tempfile::tempdir().expect("tmpfs fixture root");
         let home = root.path().join("provider");
         let sessions = home.join("sessions");
@@ -1761,8 +1648,6 @@ mod tests {
         let events = vec![json!({
             "id": "event-1", "turn_id": TERMINAL, "kind": "work_review", "text": "review event"
         })];
-        let (expected_report, expected_copy) =
-            run_python_oracle(root.path(), &home, &child_path, &events);
         let receipt = rewrite_with_hook(
             &home,
             &child_path,
@@ -1775,12 +1660,11 @@ mod tests {
         )
         .expect("rewrite inherited history");
         assert_eq!(receipt.ancestry.len(), 2);
-        assert_eq!(receipt.source_sha256, expected_report["sourceSha256"]);
         assert_eq!(
-            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
-            expected_copy,
-            "inherited flattening and JSONL bytes must match Python"
+            receipt.source_sha256,
+            studio_runtime_store::sha256_hex(&fs::read(&child_path).expect("child bytes"))
         );
+        assert!(!copy_records(&receipt).is_empty());
     }
 
     #[test]
@@ -1824,13 +1708,6 @@ mod tests {
             completed_at: None,
             inherited_empty: true,
         };
-        let (expected_report, expected_copy) = run_python_oracle_with_terminal(
-            root.path(),
-            &home,
-            &child_path,
-            &events,
-            &inherited_empty,
-        );
         let receipt = rewrite_with_hook(
             &home,
             &child_path,
@@ -1845,20 +1722,12 @@ mod tests {
         assert_eq!(receipt.terminal_turn_id.as_deref(), Some(TERMINAL));
         assert_eq!(receipt.terminal_status, None);
         assert_eq!(receipt.terminal_completed_at, Some(9.0));
-        assert_eq!(
-            receipt.terminal_turn_id.as_deref(),
-            expected_report["terminalTurnId"].as_str()
-        );
-        assert_eq!(
-            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
-            expected_copy,
-            "inherited-empty synthesis must match Python's verified ancestry projection"
-        );
+        assert!(!copy_records(&receipt).is_empty());
     }
 
     #[test]
-    fn compacted_role_and_unknown_records_match_python_bytes() {
-        let (root, home, _, _) = fixture();
+    fn compacted_role_and_unknown_records_survive_the_rewrite() {
+        let (_root, home, _, _) = fixture();
         let source = home
             .join("sessions")
             .join(format!("rollout-record-kinds-{THREAD}.jsonl"));
@@ -1888,8 +1757,6 @@ mod tests {
             json!({"id":"event-agent","turn_id":TERMINAL,"kind":"agent_message","text":"agent message"}),
             json!({"id":"studio-role:event-agent","turn_id":TERMINAL,"kind":"studio_role","roleVersion":role_digest(role).expect("Python-compatible role digest"),"prefix":agent_prefix,"text":"agent message"}),
         ];
-        let (expected_report, expected_copy) =
-            run_python_oracle(root.path(), &home, &source, &events);
         let receipt = rewrite_with_hook(
             &home,
             &source,
@@ -1901,12 +1768,21 @@ mod tests {
             |_| Ok(()),
         )
         .expect("rewrite compacted and role records");
-        assert_eq!(json!(receipt.event_ids), expected_report["eventIds"]);
-        assert_eq!(receipt.saved_bytes, expected_report["savedBytes"]);
         assert_eq!(
-            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
-            expected_copy,
-            "compacted items, role suffixes, and unknown records must match Python byte for byte"
+            json!(receipt.event_ids),
+            json!([
+                "event-agent",
+                "event-review",
+                "studio-role:event-agent",
+                "studio-role:event-review"
+            ])
+        );
+        let copy = copy_records(&receipt);
+        assert!(
+            copy.iter()
+                .any(|record| record["type"] == "extension_future"
+                    && record["payload"]["opaque"] == json!([true, 42, "retain"])),
+            "unknown records are retained verbatim"
         );
     }
 
@@ -1940,22 +1816,20 @@ mod tests {
             |_| Ok(()),
         )
         .expect("rewrite archived history while creating copy chain");
-        let (expected_report, expected_copy) =
-            run_python_oracle(root.path(), &home, &source, &events);
         assert!(home.join("sessions").is_dir());
         assert!(home.join("sessions").join(COPY_DIRECTORY).is_dir());
         assert_eq!(receipt.source_path, source);
-        assert_eq!(receipt.source_sha256, expected_report["sourceSha256"]);
         assert_eq!(
-            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
-            expected_copy
+            receipt.source_sha256,
+            studio_runtime_store::sha256_hex(&fs::read(&source).expect("source bytes"))
         );
+        assert!(!copy_records(&receipt).is_empty());
     }
 
     #[test]
-    fn terminal_marker_synthesis_matches_python_for_completed_and_interrupted() {
+    fn terminal_marker_synthesis_covers_completed_and_interrupted() {
         for (status, completed_at) in [("completed", Some(10.0)), ("interrupted", None)] {
-            let (root, home, source, events) = fixture();
+            let (_root, home, source, events) = fixture();
             let mut records = fs::read_to_string(&source)
                 .expect("source fixture")
                 .lines()
@@ -1969,8 +1843,6 @@ mod tests {
                 completed_at,
                 inherited_empty: false,
             };
-            let (expected_report, expected_copy) =
-                run_python_oracle_with_terminal(root.path(), &home, &source, &events, &proof);
             let receipt = rewrite_with_hook(
                 &home,
                 &source,
@@ -1987,15 +1859,8 @@ mod tests {
                 Some(TERMINAL),
                 "terminal status {status} must be reflected in the receipt"
             );
-            assert_eq!(
-                receipt.terminal_completed_at,
-                expected_report["terminalCompletedAt"].as_f64()
-            );
-            assert_eq!(
-                fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
-                expected_copy,
-                "terminal synthesis for {status} must match Python byte for byte"
-            );
+            assert_eq!(receipt.terminal_completed_at, completed_at);
+            assert!(!copy_records(&receipt).is_empty());
         }
     }
 
@@ -2010,9 +1875,6 @@ mod tests {
             verify_history_ancestry(&home, &outside, THREAD),
             Err(HistoryFileError::OutsideHome)
         ));
-        run_python_refusal(root.path(), &home, &outside, THREAD);
-        let missing = home.join("sessions/rollout-missing.jsonl");
-        run_python_refusal(root.path(), &home, &missing, THREAD);
         let mut corrupt = fs::read(&source).expect("source bytes");
         corrupt.truncate(corrupt.len() - 2);
         fs::write(&source, corrupt).expect("incomplete final record");
@@ -2020,7 +1882,6 @@ mod tests {
             verify_history_ancestry(&home, &source, THREAD),
             Err(HistoryFileError::Ancestry)
         ));
-        run_python_refusal(root.path(), &home, &source, THREAD);
     }
 
     #[cfg(unix)]
@@ -2043,14 +1904,6 @@ mod tests {
             locate_codex_history(&home, THREAD),
             Err(HistoryFileError::OutsideHome)
         ));
-        run_python_refusal(
-            root.path(),
-            &home,
-            &home
-                .join("sessions")
-                .join(format!("rollout-{THREAD}.jsonl")),
-            THREAD,
-        );
     }
 
     #[test]

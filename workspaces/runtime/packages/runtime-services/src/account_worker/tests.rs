@@ -25,14 +25,11 @@ use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{
     path::PathBuf,
-    process::Command,
     sync::{Arc, atomic::AtomicUsize},
 };
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
-
-const FIXTURE_LOCK_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
     preparation::PreparationResources::bundled(
@@ -40,44 +37,6 @@ fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
         crate::model_catalog::ModelCatalogService::new(),
     )
 }
-const CREATE_AGENTS: &str = r#"
-import json, pathlib, sqlite3, sys
-sys.path.insert(0, sys.argv[4])
-from oracle_guard import install_guard
-_GUARD = install_guard()  # Runtime initialization owns a local Node crypto helper.
-sys.path.insert(0, sys.argv[2])
-from codex_runtime import Runtime
-import codex_runtime
-from unittest.mock import patch
-class QuietRuntime(Runtime):
-    def schedule(self):
-        return
-root = pathlib.Path(sys.argv[1])
-# Enable the runtime WAL mode before its first schema transaction.
-with sqlite3.connect(root / "canvas.sqlite3") as db:
-    db.execute("PRAGMA journal_mode=WAL")
-# Only disposable schema construction skips syncs. All tested Rust transactions
-# reopen this database with their normal durability settings.
-_connect = codex_runtime.sqlite_connect
-def fixture_connect(*args, **kwargs):
-    db = _connect(*args, **kwargs)
-    db.execute("PRAGMA synchronous=OFF")
-    return db
-with patch.object(codex_runtime, "sqlite_connect", fixture_connect):
-    runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
-agents = []
-for index in range(int(sys.argv[3])):
-    agent = runtime.create({"name":"Rust turn fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
-    agent.update(autoWake=True, status="queued", accountKey="default",
-                 threadId="fake-thread-" + str(index), model="fake-model",
-                 worktree=False, workspaceMode="shared", nativeEffort=None)
-    with runtime.lock, runtime.db() as db:
-        runtime.put(db, "agents", agent)
-    agents.append({"id":agent["id"], "epoch":agent["epoch"]})
-print(json.dumps(agents))
-runtime.close()
-"#;
-
 // The bridge observes both sides of each whole store operation. No production
 // transaction is changed by injection; after-commit failures retain its writes.
 #[derive(Default)]
@@ -322,65 +281,51 @@ fn outcome_boundary_identity_is_stable_across_replay_interleaving() {
     assert_eq!(replay, expected);
 }
 
-fn copy_template(source: &std::path::Path, target: &std::path::Path) {
-    std::fs::create_dir_all(target).unwrap();
-    std::fs::set_permissions(target, std::fs::metadata(source).unwrap().permissions()).unwrap();
-    for entry in std::fs::read_dir(source).unwrap() {
-        let entry = entry.unwrap();
-        let destination = target.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_template(&entry.path(), &destination);
-        } else {
-            std::fs::copy(entry.path(), destination).unwrap();
-        }
-    }
-}
 fn test_root() -> PathBuf {
     std::env::var_os("STUDIO_ACCOUNT_TEST_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("studio-account-worker-tests"))
 }
-fn template() -> (PathBuf, Value) {
-    let parent = test_root();
-    std::fs::create_dir_all(&parent).unwrap();
-    let digest = studio_runtime_store::sha256_hex(CREATE_AGENTS.as_bytes());
-    let root = parent.join(format!("template-{}", &digest[..16]));
-    let lock = std::fs::File::create(parent.join("template.lock")).unwrap();
-    let (lock_ready, acquired_lock) = std::sync::mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let result = lock.lock().map(|()| lock);
-        lock_ready.send(result).ok();
+/// The one queued fixture agent every account-worker test starts from.
+const FIXTURE_AGENT_ID: &str = "fixture-agent";
+const FIXTURE_AGENT_EPOCH: i64 = 0;
+
+/// Create a fresh store at `root` holding the fixture agent, then close it.
+async fn seed_fixture_root(root: &std::path::Path) {
+    std::fs::create_dir_all(root).unwrap();
+    let store = RuntimeStore::open(Some(root)).await.unwrap();
+    let mut record = json!({
+        "id":FIXTURE_AGENT_ID,"rootId":FIXTURE_AGENT_ID,"epoch":FIXTURE_AGENT_EPOCH,
+        "status":"queued","name":"Rust turn fixture","cwd":root,"autoWake":true,
+        "accountKey":"default","threadId":"fake-thread-0","model":"fake-model",
+        "worktree":false,"workspaceMode":"shared","nativeEffort":null,"effort":"medium","events":0
     });
-    let _lock = acquired_lock
-        .recv_timeout(FIXTURE_LOCK_HANG_GUARD)
-        .expect("fixture lock acquisition hang guard")
-        .expect("fixture lock acquisition");
-    let manifest = root.join("agents.json");
-    if !manifest.exists() {
-        std::fs::create_dir_all(&root).unwrap();
-        let output = Command::new("timeout")
-            .arg("120")
-            .arg(crate::agents_create::prepared_python(
-                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-            ))
-            .arg("-c")
-            .arg(CREATE_AGENTS)
-            .arg(&root)
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"))
-            .arg("1")
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle"))
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        std::fs::write(&manifest, output.stdout).unwrap();
-    }
-    let agents = serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-    (root, agents)
+    record.as_object_mut().unwrap().extend(json!({
+        "executionSettingsAccountKey":"default","provider":"codex","yoloMode":true,
+        "prompt":"temporary","role":"orchestrator","isLead":true,"needsTitle":false,
+        "parentId":null,"fastMode":false,"daybreakEnabled":false,"maxAgents":8,"tokenBudget":null,
+        "turnId":null,"inFlight":false,"turnEpoch":0,"usageResumeEnabled":true,"tokensUsed":0,
+        "compactions":0,"compactionsObservedOnly":false,"contextUsage":null,"created":1.0,
+        "error":null,"tail":"","executionMode":"native","hostProjectPath":root,"layrReady":false,
+        "worktreeReady":false,"environment":"host","imageWorkspace":false,"imageWorkspaceReady":false
+    }).as_object().unwrap().clone());
+    record.as_object_mut().unwrap().extend(json!({
+        "profileId":null,"profileInstructions":"","workspaceBackend":null,"workspaceModeExplicit":false,
+        "workspaceInGit":false,"imageWorkspacePhase":null,"imageWorkspaceRepo":null,
+        "imageWorkspaceSubpath":".","imageWorkspaceBaseRef":null,"imageWorkspaceHasGit":false,
+        "imageWorkspaceCreatedAt":null,"imageWorkspaceError":null,"worktreeWarning":null,
+        "workerBaseRef":null,"workerBaseCommit":null,"workerBaseBehindMain":null,"workerBaseMainRef":null,
+        "cyberAccessProgram":null,"subagentConcurrencyVersion":2,"maxAgentsExplicit":false,"concurrency":1
+    }).as_object().unwrap().clone());
+    let record = AgentRecord::from_value(record).unwrap();
+    store
+        .transaction(move |tx| {
+            AgentRepository::put(tx, &record)?;
+            crate::agents_create::publish_agent(tx, &record.value())?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 struct Factory(std::sync::Mutex<Option<ProviderAttachment>>);
@@ -755,33 +700,22 @@ async fn test_bridge(store: Arc<RuntimeStore>) -> StoreBridge {
 
 impl State {
     async fn new() -> Self {
-        let (agent, epoch, root) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker/tests",
-            || {
-                let root = test_root().join(format!(
-                    "worker-{}",
-                    uuid::Uuid::new_v5(
-                        &uuid::Uuid::NAMESPACE_OID,
-                        format!(
-                            "{}-{:?}-{:?}",
-                            std::process::id(),
-                            SystemTime::now(),
-                            std::thread::current().id()
-                        )
-                        .as_bytes()
-                    )
-                ));
-                let (source, agents) = template();
-                copy_template(&source, &root);
-                (
-                    agents[0]["id"].as_str().unwrap().to_owned(),
-                    agents[0]["epoch"].as_i64().unwrap(),
-                    root,
+        let root = test_root().join(format!(
+            "worker-{}",
+            uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                format!(
+                    "{}-{:?}-{:?}",
+                    std::process::id(),
+                    SystemTime::now(),
+                    std::thread::current().id()
                 )
-            },
-        )
-        .await
-        .unwrap();
+                .as_bytes()
+            )
+        ));
+        seed_fixture_root(&root).await;
+        let agent = FIXTURE_AGENT_ID.to_owned();
+        let epoch = FIXTURE_AGENT_EPOCH;
         let store = Arc::new(RuntimeStore::open(Some(&root)).await.unwrap());
         let mut bridge = test_bridge(store).await;
         let retained = MATRIX

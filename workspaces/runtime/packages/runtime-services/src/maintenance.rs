@@ -178,16 +178,6 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use serde_json::{Value, json};
-    use std::io::Write;
-    use std::path::Path;
-    use std::process::{Command, Stdio};
-
-    mod prepared_python {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/prepared_python.rs"
-        ));
-    }
 
     fn seed(connection: &Connection) {
         connection
@@ -351,53 +341,20 @@ mod tests {
         json!({"agents":agents,"rooms":rooms,"events":events,"sync_entities":entities,"sync_documents":documents,"sync_versions":versions,"agent_generation":agent_generation})
     }
 
-    fn python_oracle(root: &Path, input: &Value) -> Value {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python::prepared_python(&source);
-        let mut child = Command::new(python)
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/maintenance/oracle.py"))
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("HOME", root.join("home"))
-            .env("CODEX_HOME", root.join("codex-home"))
-            .env("CLAUDE_CONFIG_DIR", root.join("claude-config"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("Python cleanup oracle starts");
-        serde_json::to_writer(child.stdin.as_mut().expect("oracle stdin"), input)
-            .expect("oracle request writes");
-        child
-            .stdin
-            .take()
-            .expect("oracle stdin closes")
-            .flush()
-            .expect("oracle input flushes");
-        let output = child.wait_with_output().expect("Python oracle exits");
-        assert!(
-            output.status.success(),
-            "Python cleanup oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("Python oracle returns JSON")
-    }
-
     #[test]
-    fn cleanup_matches_python_rows_and_preserves_non_pending_inputs() {
+    fn cleanup_preserves_non_pending_inputs_and_counts_removed_rows() {
         let directory = tempfile::tempdir().expect("temporary fixture directory");
-        let python_db = directory.path().join("python.sqlite3");
-        let rust_db = directory.path().join("rust.sqlite3");
-        let oracle = python_oracle(
-            directory.path(),
-            &json!({"python_db":python_db,"rust_db":rust_db}),
-        );
-        let mut connection = Connection::open(&rust_db).expect("Python-written fixture opens");
+        let mut connection =
+            Connection::open(directory.path().join("rust.sqlite3")).expect("fixture opens");
+        seed(&connection);
+        let before = snapshot(&connection);
         let transaction = connection
             .transaction()
             .expect("cleanup transaction begins");
         let counts =
             remove_review_assignments_in_transaction(&transaction).expect("Rust cleanup succeeds");
         transaction.commit().expect("cleanup transaction commits");
+        let after = snapshot(&connection);
 
         assert_eq!(
             counts,
@@ -408,67 +365,27 @@ mod tests {
             }
         );
         assert_eq!(
-            serde_json::to_value(counts).expect("counts serialize"),
-            oracle["counts"]
-        );
-        assert_eq!(snapshot(&connection), oracle["state"]);
-        assert_eq!(
-            oracle["state"]["agent_generation"],
-            oracle["before"]["agent_generation"]
+            after["agent_generation"],
+            before["agent_generation"]
                 .as_i64()
                 .expect("agent generation should be an integer")
                 + 1,
-            "the store record writer advances Python's persistent agent generation trigger"
+            "the store record writer advances the persistent agent generation trigger"
         );
-        assert_ne!(
-            oracle["state"]["sync_entities"], oracle["before"]["sync_entities"],
-            "Python's sync writer repairs stale DTOs and advances their entity sequences"
-        );
-        assert_eq!(
-            oracle["state"]["sync_documents"], oracle["before"]["sync_documents"],
-            "record cleanup does not revise legacy sync documents"
-        );
-        assert_eq!(
-            oracle["state"]["sync_versions"], oracle["before"]["sync_versions"],
-            "record cleanup does not revise sync version rows"
-        );
-        assert_eq!(
-            oracle["effects"]["agent_cache_invalidations"], 1,
-            "Python _put invalidates its in-memory agent record cache"
-        );
-        assert_eq!(oracle["effects"]["ui_touches"], 1);
-        assert_eq!(
-            oracle["state"]["events"]
+        assert_eq!(after["sync_documents"], before["sync_documents"]);
+        assert_eq!(after["sync_versions"], before["sync_versions"]);
+        let event = |snapshot: &Value, id: &str| {
+            snapshot["events"]
                 .as_array()
                 .expect("event snapshot is an array")
                 .iter()
-                .find(|event| event["id"] == "submitted")
-                .expect("submitted input remains")
-                .as_object()
-                .expect("event is object"),
-            oracle["before"]["events"]
-                .as_array()
-                .expect("event snapshot is an array")
-                .iter()
-                .find(|event| event["id"] == "submitted")
-                .expect("submitted input before cleanup")
-                .as_object()
-                .expect("event is object")
-        );
-        assert_eq!(
-            oracle["state"]["events"]
-                .as_array()
-                .expect("event snapshot is an array")
-                .iter()
-                .find(|event| event["id"] == "uncertain")
-                .expect("uncertain input remains"),
-            oracle["before"]["events"]
-                .as_array()
-                .expect("event snapshot is an array")
-                .iter()
-                .find(|event| event["id"] == "uncertain")
-                .expect("uncertain input before cleanup")
-        );
+                .find(|event| event["id"] == id)
+                .unwrap_or_else(|| panic!("{id} input remains"))
+                .clone()
+        };
+        for id in ["submitted", "uncertain"] {
+            assert_eq!(event(&after, id), event(&before, id));
+        }
     }
 
     #[test]

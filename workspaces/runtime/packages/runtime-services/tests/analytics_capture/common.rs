@@ -1,5 +1,95 @@
+#![allow(dead_code)]
 use rusqlite::{Connection, types::Value as SqlValue};
 use serde_json::{Value, json};
+use std::path::Path;
+
+/// Analytics tables compared before and after a capture.
+pub const TABLES: [&str; 9] = [
+    "analytics_agents",
+    "analytics_turns",
+    "analytics_items",
+    "analytics_usage",
+    "analytics_notifications",
+    "analytics_limits",
+    "analytics_meta",
+    "analytics_usage_roots",
+    "analytics_history",
+];
+
+pub fn tables() -> Value {
+    Value::Object(
+        TABLES
+            .iter()
+            .map(|t| ((*t).to_owned(), json!([])))
+            .collect(),
+    )
+}
+
+pub fn agent() -> Value {
+    json!({"id":"a","name":"Agent","rootId":"a","parentId":null,"accountKey":"default","accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn","model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
+}
+
+/// Creates the schema with the Rust store, then seeds the agent in both databases.
+pub async fn seed_state(root: &Path) -> Value {
+    let agent = agent();
+    let store = studio_runtime_store::RuntimeStore::open(Some(root))
+        .await
+        .expect("fresh store");
+    let record = agent.to_string();
+    let id = "a".to_owned();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                [&id, &record],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed runtime agent");
+    drop(store);
+    let projection: Value = [
+        "id",
+        "name",
+        "rootId",
+        "parentId",
+        "accountKey",
+        "accountHistory",
+        "provider",
+        "threadId",
+        "model",
+        "effort",
+        "fastMode",
+        "daybreakEnabled",
+        "cyberAccessProgram",
+        "cwd",
+        "deletedAt",
+    ]
+    .iter()
+    .map(|key| ((*key).to_owned(), agent[*key].clone()))
+    .collect();
+    analytics(root)
+        .execute(
+            "INSERT INTO analytics_agents VALUES(?1,?2)",
+            ["a", projection.to_string().as_str()],
+        )
+        .expect("seed analytics agent");
+    agent
+}
+
+pub fn seed_state_blocking(root: &Path) -> Value {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(seed_state(root))
+}
+
+pub fn analytics(root: &Path) -> Connection {
+    let db = Connection::open(root.join("analytics.sqlite3")).expect("analytics database");
+    studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
+    db
+}
 pub fn actual(db: &Connection, expected: &Value) -> Value {
     let mut result = json!({});
     for (table, _) in expected.as_object().expect("tables") {
@@ -31,54 +121,4 @@ pub fn actual(db: &Connection, expected: &Value) -> Value {
         result[table] = json!(values);
     }
     result
-}
-pub fn compare(actual: &Value, expected: &Value, path: &str) {
-    compare_with_fingerprint(actual, expected, path, None)
-}
-/// The only registered representation deviation is a new Claude content hash.
-/// All other fields, including unchanged legacy fingerprints, compare exactly.
-pub fn compare_with_fingerprint(
-    actual: &Value,
-    expected: &Value,
-    path: &str,
-    canonical: Option<(&str, &Value)>,
-) {
-    if let Some((allowed_path, value)) = canonical
-        && path == allowed_path
-        && actual != expected
-    {
-        assert_eq!(actual, value, "canonical Claude fingerprint {path}");
-        return;
-    }
-    match (actual, expected) {
-        (Value::Object(a), Value::Object(b)) => {
-            assert_eq!(
-                a.keys().collect::<Vec<_>>(),
-                b.keys().collect::<Vec<_>>(),
-                "keys {path}"
-            );
-            for k in b.keys() {
-                compare_with_fingerprint(&a[k], &b[k], &format!("{path}/{k}"), canonical);
-            }
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len(), "length {path}");
-            for (i, (a, b)) in a.iter().zip(b).enumerate() {
-                compare_with_fingerprint(a, b, &format!("{path}/{i}"), canonical);
-            }
-        }
-        (Value::Number(a), Value::Number(b)) => assert_eq!(a.as_f64(), b.as_f64(), "number {path}"),
-        (Value::String(a), Value::String(b))
-            if path.ends_with("/record") || path.ends_with("/value") =>
-        {
-            match (
-                serde_json::from_str::<Value>(a),
-                serde_json::from_str::<Value>(b),
-            ) {
-                (Ok(a), Ok(b)) => compare_with_fingerprint(&a, &b, path, canonical),
-                _ => assert_eq!(actual, expected, "{path}"),
-            }
-        }
-        _ => assert_eq!(actual, expected, "{path}"),
-    }
 }

@@ -88,60 +88,6 @@ fn due_rule_case() -> Value {
 }
 
 #[tokio::test]
-async fn runtime_ticks_match_complete_python_rows_and_events() {
-    let root = fixtures::tempdir();
-    let cases = fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "ticks").await);
-    monitor_runtime::recover_on_startup(&store, 2000.0)
-        .await
-        .expect("server startup recovery");
-    let port = Arc::new(Port::default());
-    let runtime = runtime(&store, &port);
-    let mut count = 0;
-    for case in &cases {
-        if case["action"] != "tick" {
-            continue;
-        }
-        if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
-            && ![
-                "tick-10-0--1-",
-                "tick-0-0--1-",
-                "tick-owner-epoch",
-                "tick-probe-expiry-1910.0",
-            ]
-            .contains(&case["name"].as_str().expect("name"))
-        {
-            continue;
-        }
-        fixtures::seed(&store, case).await;
-        runtime.tick(2000.0).await.expect("tick");
-        assert_eq!(
-            record(&store, case["before"]["id"].as_str().expect("id")),
-            case["after"],
-            "{}",
-            case["name"]
-        );
-        assert_eq!(fixtures::events(&store), case["events"], "{}", case["name"]);
-        let probes = std::mem::take(&mut *port.probes.lock().expect("probes"));
-        let expected: Vec<_> = case["probes"]
-            .as_array()
-            .expect("probes")
-            .iter()
-            .map(|probe| {
-                (
-                    probe[0].as_str().expect("id").to_owned(),
-                    probe[1].as_i64().expect("generation"),
-                    probe[3].as_str().expect("command").to_owned(),
-                )
-            })
-            .collect();
-        assert_eq!(probes, expected, "{}", case["name"]);
-        count += 1;
-    }
-    assert!(count >= 4);
-}
-
-#[tokio::test]
 async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());

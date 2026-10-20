@@ -1,15 +1,5 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-    sync::{
-        OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use studio_runtime_services::{
     account_session_runtime::{ConnectionScope, RequestCertainty},
     account_transfer::{Action, Ticket},
@@ -20,31 +10,27 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 const OP: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
-fn template() -> &'static Path {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let root =
-            std::env::temp_dir().join(format!("account-transfer-template-{}", std::process::id()));
-        let output = Command::new(prepared_python_support::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/template.py"))
-        .arg(&root)
-        .output()
-        .expect("Python template");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        root
-    })
-}
-fn state() -> tempfile::TempDir {
+async fn state() -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("isolated state");
-    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template().join(db), root.path().join(db)).expect("clone Python template");
-    }
+    let path = root.path().display().to_string();
+    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+    let agent = json!({"id":"lead","rootId":"lead","epoch":3,"status":"idle","isLead":true,"autoWake":false,"accountKey":"source","threadId":"source-thread","cwd":path,"name":"Lead","model":"gpt-6-astra","accountTransferId":OP}).to_string();
+    let operation = json!({"id":OP,"leadId":"lead","targetAccountKey":"target","status":"pending","scope":"team","created":1.0,"members":{"lead":{"phase":"waiting","sourceAccountKey":"source","sourceThreadId":"source-thread","name":"Lead","provider":"codex","lazy":false}},"requests":{}}).to_string();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",
+                [&agent],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_account_transfers(id,record) VALUES(?1,?2)",
+                [OP, operation.as_str()],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed transfer state");
+    drop(store);
     root
 }
 fn ticket() -> Ticket {
@@ -103,7 +89,7 @@ impl TransferTransport for Native<'_> {
     }
 }
 async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
-    let root = state();
+    let root = state().await;
     let store = RuntimeStore::open(Some(root.path())).await.expect("open");
     driver::begin_read(&store, OP, "lead", 10.0)
         .await
@@ -196,7 +182,7 @@ async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
     assert_eq!(operation(&store)["updated"], 14.0);
 }
 async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
-    let root = state();
+    let root = state().await;
     let store = RuntimeStore::open(Some(root.path())).await.expect("open");
     let tables = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
         vec![
@@ -255,7 +241,7 @@ async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
 }
 
 async fn replay_and_conflict_have_no_writes() {
-    let root = state();
+    let root = state().await;
     let store = RuntimeStore::open(Some(root.path())).await.expect("open");
     let before = operation(&store);
     driver::request(&store, OP, "lead", "target", "team", "codex", 2.0)

@@ -1,79 +1,46 @@
-use serde_json::Value;
-use std::{path::Path, sync::OnceLock};
+use serde_json::{Value, json};
+use std::path::Path;
 use studio_runtime_store::{AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table};
 
+/// The monitor cases the recovery witnesses start from: one running command
+/// of agent `agent`, and the exit event its successful finish must queue.
 pub fn corpus(root: &Path) -> Vec<Value> {
-    static TEMPLATE: OnceLock<(tempfile::TempDir, Vec<Value>)> = OnceLock::new();
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let (template_root, cases) = TEMPLATE.get_or_init(|| {
-        let template_root = tempfile::tempdir().expect("monitor fixture template");
-        let source = manifest.join("../../apps/server/src");
-        let script = manifest.join("tests/monitors/oracle.py");
-        let mut command =
-            std::process::Command::new(crate::prepared_python_support::prepared_python(&source));
-        command
-            .arg("-B")
-            .arg(&script)
-            .arg(&source)
-            .arg(template_root.path());
-        let output = crate::prepared_python_support::output_with_timeout(
-            &mut command,
-            &script,
-            crate::prepared_python_support::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("{}: {error}", script.display()));
-        assert!(
-            output.status.success(),
-            "{}: {}",
-            script.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let cases = serde_json::from_slice(&output.stdout).expect("monitor fixture");
-        (template_root, cases)
-    });
-    let template = template_root.path().join("template");
-    let destination = root.join("template");
-    std::fs::create_dir(&destination).expect("monitor fixture");
-    for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(database), destination.join(database))
-            .expect("monitor fixture");
-    }
-    let mut cases = cases.clone();
-    for case in &mut cases {
-        rebase_fixture_paths(case, template_root.path(), root);
-    }
-    cases
-}
-
-fn rebase_fixture_paths(value: &mut Value, from: &Path, to: &Path) {
-    match value {
-        Value::String(path) => {
-            let source = Path::new(path);
-            if let Ok(relative) = source.strip_prefix(from) {
-                *path = to.join(relative).to_string_lossy().into_owned();
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                rebase_fixture_paths(value, from, to);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values_mut() {
-                rebase_fixture_paths(value, from, to);
-            }
-        }
-        _ => {}
-    }
+    let cwd = root.to_string_lossy().into_owned();
+    let id = "f8fc5c50-e4e4-50bc-8ff5-885105058c9d";
+    let log = root.join("monitor-logs").join(format!("{id}.log"));
+    let log = log.to_string_lossy().into_owned();
+    let operation =
+        json!({"agent":"agent","epoch":2,"accountKey":"default","connectionId":"connection"});
+    let before = json!({"id":id,"agent":"agent","epoch":2,"turnId":null,"requestId":"monitor-corpus",
+        "command":"printf marker","cwd":cwd,"timeout_ms":3600000,"stallTimeoutSeconds":1800,
+        "livenessCommand":"","activityAt":2000.0,"activityGeneration":0,"stallWakeGeneration":-1,
+        "wakeOn":"exit","successExitCodes":[0,2],"outputPatterns":[],"outputEventSequence":0,
+        "outputEventCount":0,"outputEventIds":[],"status":"running","created":2000.0,
+        "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,"log":log,
+        "operation":operation,"cancelRequested":false});
+    let actor = json!({"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
+        "cwd":cwd,"accountKey":"default"});
+    let events = json!([{"id":format!("monitor:{id}"),"agent":"agent","kind":"monitor_exit",
+        "text":{"id":id,"command":"printf marker","status":"completed","exitCode":0,"error":null,
+            "tail":"","log":log,"bytes":0},
+        "status":"pending","created":2000.0,"epoch":2,"turn_id":null,"error":null}]);
+    let mut after = before.clone();
+    after["status"] = json!("completed");
+    after["exitCode"] = json!(0);
+    after["outputUtf8Pending"] = json!({});
+    after["error"] = Value::Null;
+    after["finished"] = json!(2000.0);
+    after["configurationPending"] = json!(false);
+    vec![
+        json!({"name":"finish-0-None-False","action":"finish","before":before,"after":after,"actor":actor,
+        "argument":[0,null],"events":events,"priorEvents":[],"probes":[],"probeResults":[],
+        "submissions":[]}),
+    ]
 }
 
 pub async fn store(root: &Path, name: &str) -> RuntimeStore {
     let target = root.join(name);
     std::fs::create_dir(&target).expect("monitor fixture");
-    for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(root.join("template").join(database), target.join(database))
-            .expect("monitor fixture");
-    }
     RuntimeStore::open(Some(&target))
         .await
         .expect("monitor fixture")

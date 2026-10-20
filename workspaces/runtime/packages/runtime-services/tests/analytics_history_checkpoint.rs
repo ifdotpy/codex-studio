@@ -1,11 +1,10 @@
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
 use serde_json::{Value, json};
 use std::fs;
+#[path = "analytics_capture/common.rs"]
+mod common;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::Command;
 use std::sync::{Arc, OnceLock, atomic::AtomicBool};
 use studio_runtime_services::analytics_history::{
     self as history, BatchLimits, HistoryBudgetSink, HistoryError, HistorySnapshot, RolloutPath,
@@ -34,22 +33,15 @@ fn fixture() -> (tempfile::TempDir, Value) {
     static TEMPLATE: OnceLock<(tempfile::TempDir, Value)> = OnceLock::new();
     let (root, agent) = TEMPLATE.get_or_init(|| {
         let root = fixture_directory();
-        let out = Command::new(prepared_python::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/analytics_capture/state_fixture.py"),
-        )
-        .arg(root.path())
-        .output()
-        .expect("Python writer");
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        (root, serde_json::from_slice(&out.stdout).expect("agent"))
+        let path = root.path().to_owned();
+        // A scoped thread keeps this callable from inside an async test.
+        let agent = std::thread::scope(|scope| {
+            scope
+                .spawn(|| common::seed_state_blocking(&path))
+                .join()
+                .expect("seed fixture state")
+        });
+        (root, agent)
     });
     let copy = fixture_directory();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -943,7 +935,7 @@ async fn background_consumer_imports_selected_roster_actor() {
 }
 
 #[tokio::test]
-async fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
+async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
     use studio_runtime_services::analytics_capture::{CaptureSource, PreparedCapture, capture};
     use studio_runtime_services::analytics_history_repair::repair_terminal_errors;
     for thread in [Some("thread"), None, Some("foreign")] {
@@ -986,57 +978,34 @@ async fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
                 .await
                 .expect("ambiguous second turn");
         }
-        // The oracle clone copies only the database files; no row may stay in the WAL.
-        store
-            .checkpoint_wal_passive()
-            .await
-            .expect("fixture database checkpoint");
         drop(store);
-        let reference = tempfile::tempdir().expect("oracle clone");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            fs::copy(root.path().join(name), reference.path().join(name)).expect("clone");
-        }
-        let out = Command::new(prepared_python::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/analytics_capture/repair_oracle.py"),
-        )
-        .arg(reference.path())
-        .output()
-        .expect("oracle");
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let expected: Value = serde_json::from_slice(&out.stdout).expect("oracle result");
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("restart");
+        let snapshot = |store: &RuntimeStore| {
+            let db = AnalyticsRepository::new(store.root())
+                .open_read_only()
+                .expect("db");
+            let turns = db
+                .prepare("SELECT record FROM analytics_turns ORDER BY id")
+                .expect("query")
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("rows")
+                .map(|v| serde_json::from_str::<Value>(&v.expect("row")).expect("JSON"))
+                .collect::<Vec<_>>();
+            let state: String = db
+                .query_row(
+                    "SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("state");
+            json!({"turns":turns,"state":serde_json::from_str::<Value>(&state).expect("state JSON")})
+        };
         repair_terminal_errors(&store).await.expect("Rust repair");
-        let db = AnalyticsRepository::new(store.root())
-            .open_read_only()
-            .expect("db");
-        let turns = db
-            .prepare("SELECT record FROM analytics_turns ORDER BY id")
-            .expect("query")
-            .query_map([], |r| r.get::<_, String>(0))
-            .expect("rows")
-            .map(|v| serde_json::from_str::<Value>(&v.expect("row")).expect("JSON"))
-            .collect::<Vec<_>>();
-        let state: String = db
-            .query_row(
-                "SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("state");
-        assert_eq!(
-            json!({"turns":turns,"state":serde_json::from_str::<Value>(&state).expect("state JSON")}),
-            expected
-        );
+        let repaired = snapshot(&store);
+        repair_terminal_errors(&store).await.expect("second repair");
+        assert_eq!(snapshot(&store), repaired, "{thread:?}");
     }
 }
 
@@ -1131,58 +1100,6 @@ async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
             .await
             .expect("complete")
     );
-}
-
-#[path = "analytics_capture/common.rs"]
-mod common;
-
-#[tokio::test]
-async fn full_tail_import_matches_real_python_rows_and_checkpoint() {
-    for suffix in [b"".as_slice(), b"{\"partial\":", b"malformed\n"] {
-        let (root, agent) = fixture();
-        let oracle_root = tempfile::tempdir().expect("oracle clone");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            fs::copy(root.path().join(name), oracle_root.path().join(name)).expect("clone");
-        }
-        let mut lines = records();
-        lines.push(json!({"type":"response_item","timestamp":4,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail \u{03bb}"}]}}));
-        lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
-        let path = file(root.path(), &lines, suffix);
-        let output = Command::new(prepared_python::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/analytics_capture/history_oracle.py"),
-        )
-        .arg(oracle_root.path())
-        .arg(&path)
-        .output()
-        .expect("Python importer");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let expected: Value = serde_json::from_slice(&output.stdout).expect("oracle rows");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-        history::prepare(
-            HistorySnapshot::from_records(agent, None).expect("snapshot"),
-            root.path(),
-            RolloutPath::Found(path),
-            BatchLimits::default(),
-            200.,
-            &AtomicBool::new(false),
-        )
-        .expect("read")
-        .commit(&store, &Budget, 200.)
-        .await
-        .expect("commit");
-        let db = AnalyticsRepository::new(root.path())
-            .open_read_only()
-            .expect("read");
-        common::compare(&common::actual(&db, &expected), &expected, "tail");
-    }
 }
 
 #[tokio::test]

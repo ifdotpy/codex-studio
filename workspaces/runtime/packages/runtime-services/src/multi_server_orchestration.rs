@@ -1826,10 +1826,8 @@ impl RuntimeOrchestrationEffects {
     }
 }
 
-// Cross-server command receipts. Python `codex_multi_server_orchestration.py`
-// owns these names and texts (`deliver`, `_compact_exec`, `_exec_owner`,
-// `_exec_event` and the `exec_receipt` branch of `_receive`); the Python-oracle
-// corpus in `tests/multi_server_corpus.rs` checks the values below against it.
+// Cross-server command receipts. These names and texts are the wire contract
+// between paired servers.
 
 /// The one-shot action that starts a command on a paired server.
 pub const EXEC_ACTION: &str = "exec";

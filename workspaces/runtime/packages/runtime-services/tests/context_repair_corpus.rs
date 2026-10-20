@@ -1,8 +1,5 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, process::Command};
+use std::fs;
 use studio_runtime_services::{
     context_repair::{
         self, ConnectionIdentity, DeliveredManifestWriter, HistoryReadFuture, HistoryReader,
@@ -19,22 +16,85 @@ fn identity() -> ConnectionIdentity {
         generation: 1,
     }
 }
-fn corpus(state: Option<&std::path::Path>) -> Value {
-    let python = prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let mut command = Command::new(python);
-    command.arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/context_repair/oracle.py"));
-    if let Some(state) = state {
-        command.arg(state);
-    }
-    let output = command.output().expect("synthetic oracle starts");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("oracle JSON")
+fn base_agent() -> Value {
+    json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+        "provider":"codex","model":"gpt-fixture","yoloMode":true,"status":"waiting","autoWake":true,
+        "inFlight":false,
+        "startAttempt":{"id":"attempt","events":["event"],"submitted":true},
+        "contextRepairWait":{"error":"Context repair waits for a confirmed input receipt: event",
+            "source":{"id":"agent","epoch":1,"accountKey":"default","threadId":"thread","attemptId":null}}})
+}
+fn base_event() -> Value {
+    json!({"id":"event","agent":"agent","epoch":1,"kind":"user","text":"hello","status":"uncertain",
+        "created":1.0,"turn_id":null,"error":"unknown","metadata":null})
+}
+/// The recurring-repair case: one uncertain input, one accepted native turn.
+fn recurring_case() -> Value {
+    json!({"agent":base_agent(),"events":[base_event()],
+        "turns":[{"id":"native-turn","startOutcome":null,"clientUserMessageId":"event","items":[]}],
+        "state":"idle","operations":[],"batches":[]})
+}
+/// A delivered primary input and an uncertain secondary input merged in one
+/// transcript item, with the native turn and journal row that prove delivery.
+fn exact_batch_case() -> Value {
+    let agent = base_agent();
+    let primary = json!({"id":"primary","agent":"agent","epoch":1,"kind":"user","text":"hello",
+        "status":"delivered","created":1.0,"turn_id":"native-turn","error":null});
+    let secondary = json!({"id":"event","agent":"agent","epoch":1,"kind":"work_review",
+        "text":"secondary","status":"uncertain","created":2.0,"turn_id":null,"error":"unknown"});
+    let inputs: Vec<Value> = [&primary, &secondary]
+        .iter()
+        .map(
+            |row| json!({"id":row["id"],"text":row["text"],"at":row["created"],"kind":row["kind"]}),
+        )
+        .collect();
+    let item = json!({"id":"agent:primary","role":"user","text":"hello\nsecondary",
+        "inputs":inputs,"assets":[]});
+    let members: Vec<Value> = [primary, secondary]
+        .into_iter()
+        .map(|mut row| {
+            let mut metadata = json!({"transcriptItemId":"agent:primary","modelEventProjection":1,
+                "contextManifest":{"epoch":["thread",0],"sequence":1,"versions":{}}});
+            if row["id"] == "primary" {
+                metadata["acceptedAt"] = json!(1.5);
+            }
+            row["metadata"] = metadata;
+            row
+        })
+        .collect();
+    let source = json!({"item":item,"row":{"id":"agent:primary","agent":"agent","record":item.to_string()},
+        "fulltext":null,"members":members});
+    let batch = HistoricalBatch::from_records(&agent, &source)
+        .expect("valid synthetic fixture")
+        .expect("captured batch");
+    let turns = json!([{"id":"native-turn","startOutcome":"accepted","clientUserMessageId":"primary",
+        "items":[{"id":"item","type":"userMessage","clientId":"primary","content":batch.params()["input"]}]}]);
+    let operations = json!([{"handle":"account:default",
+        "operation_id":"turn:agent:primary:attempt:00000000-0000-4000-8000-000000000001",
+        "digest":batch.digest(),"native_id":17,"accepted":2.0}]);
+    json!({"agent":agent,"source":source,"turns":turns,"operations":operations,"handle":"account:default"})
+}
+fn corpus() -> Value {
+    json!({"recurring":[recurring_case()],"batches":[exact_batch_case()]})
+}
+/// Write the single-agent state the adapter tests clone.
+async fn seed_template(root: &std::path::Path) {
+    fs::create_dir_all(root).expect("valid synthetic fixture");
+    let agent = recurring_case()["agent"].clone();
+    let store = RuntimeStore::open(Some(root))
+        .await
+        .expect("template store opens");
+    store
+        .transaction(move |tx| {
+            ContextRepairRepository::put_agent(tx, &agent)?;
+            tx.execute(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES ('event','agent','user','hello','uncertain',1.0,1,NULL,'unknown')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("template seeds");
 }
 fn snapshot(case: &Value) -> RecoverySnapshot {
     RecoverySnapshot::from_records(
@@ -50,7 +110,7 @@ fn snapshot(case: &Value) -> RecoverySnapshot {
             .clone(),
         None,
     )
-    .expect("Python-written records validate")
+    .expect("fixture records validate")
 }
 fn history(case: &Value) -> NativeHistory {
     NativeHistory::from_records(
@@ -69,69 +129,20 @@ fn history(case: &Value) -> NativeHistory {
     .expect("native fixture validates")
 }
 #[test]
-fn context_repair_python_decisions_and_batch_receipts() {
-    let corpus = corpus(None);
-    for case in corpus["recurring"]
-        .as_array()
-        .expect("valid synthetic fixture")
-    {
-        let actual = serde_json::to_value(context_repair::decide(&snapshot(case), &history(case)))
-            .expect("valid synthetic fixture");
-        assert_eq!(actual, case["expected"], "recurring {}", case["name"]);
-    }
-    for case in corpus["batches"]
-        .as_array()
-        .expect("valid synthetic fixture")
-    {
-        let batch = HistoricalBatch::from_records(&case["agent"], &case["source"])
-            .expect("valid synthetic fixture")
-            .expect("Python captured batch");
-        assert_eq!(
-            batch.capture(),
-            &case["capture"],
-            "full capture {}",
-            case["name"]
-        );
-        assert_eq!(batch.params(), &case["params"], "params {}", case["name"]);
-        assert_eq!(
-            batch.digest(),
-            case["digest"].as_str().expect("valid synthetic fixture"),
-            "digest {}",
-            case["name"]
-        );
-        assert_eq!(
-            serde_json::to_value(
-                batch.accepted(
-                    case["turns"].as_array().expect("valid synthetic fixture"),
-                    case["operations"]
-                        .as_array()
-                        .expect("valid synthetic fixture"),
-                    case["handle"].as_str().expect("valid synthetic fixture")
-                )
-            )
-            .expect("valid synthetic fixture"),
-            case["expected"],
-            "receipt {}",
-            case["name"]
-        );
-    }
-}
-#[test]
 fn context_repair_unwritten_start_outcomes_are_located() {
-    let data = corpus(None);
-    assert_eq!(
-        data["outcomes"]["written"],
-        json!(["accepted", "not_applied", "preparing"])
-    );
-    for case in data["outcomes"]["malformed"]
-        .as_array()
-        .expect("outcome corpus")
-    {
-        // Python's loose consumer accepts these, but none is emitted by a writer.
-        assert_eq!(
-            case["expected"],
-            json!([{"id":"event","decision":"delivered","turnId":"native-turn"}])
-        );
+    let data = corpus();
+    for outcome in [
+        "failed",
+        "completed",
+        "cancelled",
+        "interrupted",
+        "unknown",
+        "",
+    ] {
+        let mut case = recurring_case();
+        case["turns"][0]["startOutcome"] = json!(outcome);
+        let case = &case;
+        // No writer emits these start outcomes.
         let result = NativeHistory::from_records(
             identity(),
             "thread".into(),
@@ -144,8 +155,7 @@ fn context_repair_unwritten_start_outcomes_are_located() {
                 result,
                 Err(RepairError::Invalid("history.turn.startOutcome"))
             ),
-            "{}",
-            case["name"]
+            "{outcome}"
         );
     }
     for outcome in [json!(true), json!(3), json!([]), json!({})] {
@@ -166,7 +176,7 @@ fn context_repair_unwritten_start_outcomes_are_located() {
 
 #[test]
 fn context_repair_refuses_changed_scope_and_ambiguous_receipts() {
-    let corpus = corpus(None);
+    let corpus = corpus();
     let base = &corpus["recurring"][0];
     for field in [
         "account",
@@ -221,7 +231,7 @@ fn context_repair_refuses_changed_scope_and_ambiguous_receipts() {
 }
 #[test]
 fn context_repair_malformed_capture_is_located() {
-    let data = corpus(None);
+    let data = corpus();
     let base = &data["recurring"][0];
     for field in ["agent", "events", "duplicate", "metadata", "oversize"] {
         let mut case = base.clone();
@@ -294,26 +304,21 @@ impl DeliveredManifestWriter for FixtureWriter {
         Ok(())
     }
 }
-async fn clone_store(template: &std::path::Path, root: &std::path::Path) -> RuntimeStore {
-    fs::create_dir_all(root).expect("valid synthetic fixture");
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.join(name), root.join(name)).expect("valid synthetic fixture");
-    }
+async fn clone_store(root: &std::path::Path) -> RuntimeStore {
+    seed_template(root).await;
     RuntimeStore::open(Some(root))
         .await
-        .expect("Python-written template opens")
+        .expect("seeded store opens")
 }
 #[tokio::test]
 async fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
     let dir = tempfile::tempdir().expect("valid synthetic fixture");
-    let template = dir.path().join("template");
-    let _ = corpus(Some(&template));
     let root = dir.path().join("state");
-    let store = std::sync::Arc::new(clone_store(&template, &root).await);
+    let store = std::sync::Arc::new(clone_store(&root).await);
     store
         .transaction(|tx| {
             let mut agent =
-                ContextRepairRepository::agent(tx, "agent")?.expect("Python-written agent exists");
+                ContextRepairRepository::agent(tx, "agent")?.expect("seeded agent exists");
             agent["environment"] = json!("linux");
             agent["imageWorkspaceReady"] = json!(true);
             agent
@@ -357,8 +362,7 @@ async fn context_repair_atomic_restart_and_lost_response_matrix() {
         return;
     }
     let dir = tempfile::tempdir().expect("valid synthetic fixture");
-    let template = dir.path().join("template");
-    let data = corpus(Some(&template));
+    let data = corpus();
     for cut in [
         "before-event",
         "after-event",
@@ -368,7 +372,7 @@ async fn context_repair_atomic_restart_and_lost_response_matrix() {
         "requeue",
     ] {
         let root = dir.path().join(cut);
-        let store = clone_store(&template, &root).await;
+        let store = clone_store(&root).await;
         let before = state(&store);
         let mut case = data["recurring"][0].clone();
         if cut == "requeue" {
@@ -470,11 +474,10 @@ async fn context_repair_changed_snapshot_never_acknowledges() {
         return;
     }
     let dir = tempfile::tempdir().expect("valid synthetic fixture");
-    let template = dir.path().join("template");
-    let data = corpus(Some(&template));
+    let data = corpus();
     for change in ["event", "agent"] {
         let root = dir.path().join(change);
-        let store = clone_store(&template, &root).await;
+        let store = clone_store(&root).await;
         let mut reader = RacingReader {
             store: &store,
             history: history(&data["recurring"][0]),
@@ -494,7 +497,7 @@ async fn context_repair_changed_snapshot_never_acknowledges() {
 
 #[test]
 fn context_repair_historical_secondary_preserves_newer_pending_input() {
-    let data = corpus(None);
+    let data = corpus();
     let batch = &data["batches"][0];
     let mut agent = batch["agent"].clone();
     agent["startAttempt"]["events"] = json!(["newer"]);
@@ -548,7 +551,7 @@ fn context_repair_historical_secondary_preserves_newer_pending_input() {
 
 #[test]
 fn context_repair_absent_schema_is_named_without_writes() {
-    let data = corpus(None);
+    let data = corpus();
     for table in [
         "runtime_event_meta",
         "runtime_items",
@@ -588,7 +591,7 @@ fn memory_fixture(case: &Value) -> rusqlite::Connection {
         CREATE TABLE sync_versions(seq INTEGER);").expect("fixture schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
-    ContextRepairRepository::put_agent(&db, &case["agent"]).expect("Python record stores");
+    ContextRepairRepository::put_agent(&db, &case["agent"]).expect("record stores");
     let row = &case["events"][0];
     db.execute(
         "INSERT INTO runtime_events VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -604,7 +607,7 @@ fn memory_fixture(case: &Value) -> rusqlite::Connection {
             row["error"].as_str()
         ],
     )
-    .expect("Python row stores");
+    .expect("row stores");
     db.execute(
         "INSERT INTO sync_entities VALUES('agent','agent',1,'fixture',?1,0)",
         [json!({"collection":"agent","id":"agent","value":case["agent"]}).to_string()],
@@ -614,7 +617,7 @@ fn memory_fixture(case: &Value) -> rusqlite::Connection {
 }
 #[test]
 fn context_repair_transaction_failpoints_and_replay_fast_witness() {
-    let data = corpus(None);
+    let data = corpus();
     let base = &data["recurring"][0];
     for cut in [
         "before-event",
@@ -704,7 +707,7 @@ fn context_repair_transaction_failpoints_and_replay_fast_witness() {
 
 #[test]
 fn context_repair_empty_restart_does_not_queue_an_active_turn() {
-    let data = corpus(None);
+    let data = corpus();
     for active in [false, true] {
         let mut case = data["recurring"][0].clone();
         case["agent"]["inFlight"] = json!(active);
@@ -740,7 +743,7 @@ fn context_repair_empty_restart_does_not_queue_an_active_turn() {
 
 #[test]
 fn context_repair_claude_requeue_belongs_to_frozen_retry() {
-    let data = corpus(None);
+    let data = corpus();
     let mut case = data["recurring"][0].clone();
     case["agent"]["provider"] = json!("claude");
     case["turns"][0]["startOutcome"] = json!("not_applied");

@@ -3476,9 +3476,6 @@ mod tests {
             parent_project_path(&parent, &root, "/guest/project/lines/main"),
             "/host/project"
         );
-
-        let python = include_str!("../../../../apps/server/src/codex_runtime.py");
-        assert!(python.contains("\"hostProjectPath\": (root.get(\"hostProjectPath\") or root[\"cwd\"]) if root and vm_execution else cwd"));
     }
 
     #[test]
@@ -3510,9 +3507,6 @@ mod tests {
                 .expect("host project exists"),
             project
         );
-
-        let python = include_str!("../../../../apps/server/src/codex_runtime.py");
-        assert!(python.contains("\"hostProjectPath\": (root.get(\"hostProjectPath\") or root[\"cwd\"]) if root and vm_execution else cwd"));
     }
 
     #[test]
@@ -3550,12 +3544,6 @@ mod tests {
             "imageWorkspacePhase":"creating","status":"completed"});
         assert!(!should_resume_image_provisioning(&terminal));
         assert!(!should_resume_image_provisioning(&non_image));
-
-        let python = include_str!("../../../../apps/server/src/codex_runtime.py");
-        assert!(python.contains("not previous.get(\"layrReady\")"));
-        assert!(
-            python.contains("previous.get(\"workspaceMode\", \"worktree\") == selected_workspace")
-        );
     }
 
     #[test]

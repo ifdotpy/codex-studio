@@ -1,44 +1,74 @@
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
 use studio_runtime_services::{
     continuation::{ContinuationError, Result},
     continuation_driver::{self, Boundary, Fault},
     usage_resume,
 };
 use studio_runtime_store::{ContinuationTable, RuntimeStore};
-fn template_kind(kind: &str) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("isolated template");
-    let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/turn_lifecycle/continuation_oracle.py");
-    let result = Command::new(prepared_python::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(oracle)
-    .arg("template")
-    .arg(dir.path())
-    .arg(kind)
-    .output()
-    .expect("Python writer");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    dir
-}
-fn template() -> tempfile::TempDir {
-    template_kind("usage")
-}
-fn clone_template(root: &Path) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("case");
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(root.join(name), dir.path().join(name)).expect("clone Python template");
+/// A fresh state holding agent `a` with a scheduled usage resume; `capacity`
+/// adds a scheduled capacity retry and `wake` the events of a progress batch.
+async fn seeded(kind: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("isolated state");
+    let store = RuntimeStore::open(Some(dir.path()))
+        .await
+        .expect("fresh state opens");
+    let mut agent = json!({"id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default",
+        "threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,
+        "cwd":"/fixture","isLead":true});
+    let resume = json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,
+        "turnId":"turn","cause":"usage_limit","status":"scheduled","failedAt":900.0,"authAttempt":0,
+        "authRefreshMarker":null,"dueAt":990.0,"resetAt":null,"plannedAt":null,"reason":null,
+        "taskClaims":[],"updatedAt":800.0});
+    agent["usageResume"] = resume.clone();
+    let mut rows = vec![("runtime_usage_resumes", resume)];
+    if kind == "capacity" {
+        let retry = json!({"id":"retry","accountKey":"default","threadId":"thread","epoch":1,
+            "turnId":"turn","cause":"serverOverloaded","status":"scheduled","dueAt":990.0,
+            "attempt":1,"maxAttempts":4,"cwd":"/fixture","settings":{},"taskClaims":[],
+            "updatedAt":800.0});
+        agent["capacityRetry"] = retry.clone();
+        rows.push(("runtime_capacity_retries", retry));
     }
+    let events: Vec<Value> = if kind == "wake" {
+        let cases: Value =
+            serde_json::from_str(include_str!("continuation/cases.json")).expect("corpus JSON");
+        cases
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|c| c["name"] == "progress-(1, 2)")
+            .expect("progress fixture")["input"]["events"]
+            .as_array()
+            .expect("events")
+            .clone()
+    } else {
+        vec![]
+    };
+    store
+        .transaction_with(move |tx| {
+            for (table, record) in &rows {
+                tx.execute(
+                    &format!("INSERT INTO {table}(id,agent,record) VALUES (?1,'a',?2)"),
+                    [record["id"].as_str().expect("id"), record.to_string().as_str()],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES ('a',?1)",
+                [agent.to_string()],
+            )?;
+            for e in &events {
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                    rusqlite::params![e["id"].as_str(), e["agent"].as_str(), e["kind"].as_str(),
+                        e["text"].as_str(), e["status"].as_str(), e["created"].as_f64(),
+                        e["epoch"].as_i64(), e["turn_id"].as_str(), e["error"].as_str()],
+                )?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("seed state");
+    drop(store);
     dir
 }
 fn read(store: &RuntimeStore) -> Value {
@@ -83,7 +113,6 @@ fn observation() -> usage_resume::LimitsObservation {
 }
 #[tokio::test]
 async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
-    let template = template();
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
     for boundary in [
         Boundary::BeforeSnapshot,
@@ -107,10 +136,10 @@ async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup()
         {
             continue;
         }
-        let root = clone_template(template.path());
+        let root = seeded("usage").await;
         let store = RuntimeStore::open(Some(root.path()))
             .await
-            .expect("Python state opens");
+            .expect("seeded state opens");
         let before = read(&store);
         let result = continuation_driver::drive_with_fault(
             &store,
@@ -159,8 +188,7 @@ async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup()
 }
 #[tokio::test]
 async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
-    let template = template();
-    let root = clone_template(template.path());
+    let root = seeded("usage").await;
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     store.transaction(|tx|{
         let mut a:Value=serde_json::from_str(&tx.query_row("SELECT record FROM runtime_agents WHERE id='a'",[],|r|r.get::<_,String>(0))?)?;
@@ -196,8 +224,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
 
 #[tokio::test]
 async fn foreign_followup_identity_refuses_and_rolls_back() {
-    let template = template();
-    let root = clone_template(template.path());
+    let root = seeded("usage").await;
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     store.transaction(|tx|{tx.execute("INSERT INTO runtime_events VALUES('usage-resume:resume','foreign','followup','foreign payload','pending',1.0,2,NULL,NULL)",[])?;Ok(())}).await.expect("foreign event");
     let before = read(&store);
@@ -237,7 +264,6 @@ fn wake_state(store: &RuntimeStore) -> WakeState {
 }
 #[tokio::test]
 async fn wakeup_event_and_metadata_writes_restart_atomically() {
-    let template = template_kind("wake");
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
     for boundary in [
         Boundary::BeforeEvent,
@@ -250,7 +276,7 @@ async fn wakeup_event_and_metadata_writes_restart_atomically() {
         if !full && !matches!(boundary, Boundary::AfterEvent | Boundary::AfterMetadata) {
             continue;
         }
-        let root = clone_template(template.path());
+        let root = seeded("wake").await;
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = wake_state(&store);
         let result = continuation_driver::drive_with_fault(
@@ -297,17 +323,17 @@ async fn wakeup_event_and_metadata_writes_restart_atomically() {
 
 #[tokio::test]
 async fn corrupt_continuation_rows_name_the_table_and_identity() {
-    let template = template_kind("capacity");
+    let template = seeded("capacity").await;
     let store = RuntimeStore::open(Some(template.path()))
         .await
-        .expect("Python template");
+        .expect("seeded state");
     let agent: String = store
         .read()
         .expect("reader")
         .query_row("SELECT record FROM runtime_agents WHERE id='a'", [], |r| {
             r.get(0)
         })
-        .expect("Python agent");
+        .expect("seeded agent");
     for (table, id) in [
         (ContinuationTable::Usage, "resume"),
         (ContinuationTable::Capacity, "retry"),
@@ -372,7 +398,6 @@ impl continuation_driver::CapacityAdmission for FixtureAdmission {
 #[tokio::test]
 async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends() {
     use studio_runtime_services::capacity_retry::{self, Action};
-    let template = template_kind("capacity");
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
     for boundary in [
         Boundary::BeforeSnapshot,
@@ -396,7 +421,7 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
         {
             continue;
         }
-        let root = clone_template(template.path());
+        let root = seeded("capacity").await;
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = capacity_state(&store);
         // The default adapter still refuses absent admission without persisting a claim.
@@ -525,10 +550,10 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
 
 #[tokio::test]
 async fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_hold() {
-    let template = template_kind("capacity");
+    let template = seeded("capacity").await;
     let store = RuntimeStore::open(Some(template.path()))
         .await
-        .expect("Python state opens");
+        .expect("seeded state opens");
     store
         .transaction_with(|tx| {
             let mut agent: Value = tx
@@ -581,10 +606,10 @@ fn capacity_start(effects: &[studio_runtime_services::continuation::Effect]) -> 
 
 #[tokio::test]
 async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
-    let template = template_kind("capacity");
+    let template = seeded("capacity").await;
     let store = RuntimeStore::open(Some(template.path()))
         .await
-        .expect("Python state opens");
+        .expect("seeded state opens");
     let before = capacity_state(&store);
     let staged = store
         .transaction_with(|tx| {
@@ -641,11 +666,10 @@ async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
 
 #[tokio::test]
 async fn a_disk_full_turn_failure_creates_a_free_space_retry() {
-    let template = template();
-    let root = clone_template(template.path());
+    let root = seeded("usage").await;
     let store = RuntimeStore::open(Some(root.path()))
         .await
-        .expect("Python state opens");
+        .expect("seeded state opens");
     let turn = json!({"id":"turn","status":"failed","error":{"message":INCIDENT}});
     let staged = store
         .transaction_with(move |tx| {

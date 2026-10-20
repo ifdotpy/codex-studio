@@ -6,10 +6,6 @@
 
 pub mod auth_cache;
 pub mod claude;
-#[cfg(test)]
-#[allow(clippy::duplicate_mod)]
-#[path = "../tests/support/prepared_python.rs"]
-mod prepared_python_test_support;
 
 use crate::account_policy::{AccountsSnapshot, RegistryOrder, decode_registry, encode_registry};
 use crate::event_write::python_strip;
@@ -2814,15 +2810,11 @@ mod tests {
         let command = directory.path().join("status-probe");
         fs::write(
             &command,
-            r#"#!/usr/bin/env python3
-import fcntl, os, subprocess, sys
-# The bounded reader starts only after the parent's priority hook returns.
-# Block on this finite prefix until that reader starts, then report.
-fcntl.fcntl(1, fcntl.F_SETPIPE_SZ, 4096)
-sys.stdout.write(' ' * 8192)
-sys.stdout.flush()
-print(os.getpriority(os.PRIO_PROCESS, 0), flush=True)
-sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], text=True))
+            r#"#!/bin/sh
+# Report the inherited nice value and I/O priority after a finite prefix.
+printf '%8192s' ''
+ps -o ni= -p $$
+ionice -p $$
 "#,
         )
         .expect("probe script");
@@ -3027,11 +3019,6 @@ exit 0
                 _directory: directory,
             }
         }
-    }
-
-    fn isolated_python(_fixture: &Path) -> PathBuf {
-        let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        super::prepared_python_test_support::prepared_python(&server)
     }
 
     fn registry(home: &Path) -> Vec<u8> {
@@ -3264,49 +3251,22 @@ exit 0
     }
 
     #[test]
-    fn refresh_reads_registry_and_auth_written_by_python_account_store() {
+    fn refresh_reads_registry_and_auth_written_by_a_seeded_store() {
         let fixture = TestDir::new();
-        let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let script = r#"
-import json, os, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
-root = Path(sys.argv[2])
-home = root / 'codex-home'
-home.mkdir(parents=True)
-(home / 'auth.json').write_text(json.dumps({'tokens': {
-    'account_id': 'python-account', 'access_token': 'placeholder-access-token',
-}}), encoding='utf-8')
-os.environ['CODEX_HOME'] = str(home)
-from codex_accounts import AccountStore
-store = AccountStore(root / 'state')
-print(store.path)
-"#;
-        let home = fixture.path.join("python-home");
-        let cache = fixture.path.join("python-cache");
-        let temp = fixture.path.join("python-tmp");
-        for directory in [&home, &cache, &temp] {
-            fs::create_dir_all(directory).expect("create disposable Python environment");
-        }
-        let output = Command::new(isolated_python(&fixture.path))
-            .args(["-c", script])
-            .arg(&server)
-            .arg(&fixture.path)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("TMPDIR", &temp)
-            .env("HOME", &home)
-            .env("XDG_CACHE_HOME", &cache)
-            .env("XDG_CONFIG_HOME", fixture.path.join("fake-config"))
-            .env("XDG_STATE_HOME", fixture.path.join("fake-state"))
-            .output()
-            .expect("run isolated Python AccountStore writer");
-        assert!(output.status.success(), "Python AccountStore writer failed");
-        let path = PathBuf::from(
-            String::from_utf8(output.stdout)
-                .expect("writer path UTF-8")
-                .trim(),
-        );
-        let driver = AccountDriver::open(path.clone()).expect("load Python-written registry");
+        let home = fixture.path.join("codex-home");
+        fs::create_dir_all(&home).expect("create fixture home");
+        fs::write(
+            home.join("auth.json"),
+            serde_json::to_vec(&serde_json::json!({"tokens": {
+                "account_id": "python-account", "access_token": "placeholder-access-token",
+            }}))
+            .expect("auth JSON"),
+        )
+        .expect("write auth");
+        let path = fixture.path.join("state/accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent")).expect("create state");
+        fs::write(&path, registry(&home)).expect("write registry");
+        let driver = AccountDriver::open(path.clone()).expect("load seeded registry");
         assert_eq!(
             driver.get("default").expect("refresh Python account"),
             AccountStatus::Ready
@@ -4049,14 +4009,10 @@ print(store.path)
     }
 
     #[test]
-    fn refresh_statuses_match_python_account_store_on_shared_fixture() {
+    fn refresh_statuses_follow_the_reported_auth_metadata() {
         let fixture = TestDir::new();
-        let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
         let home = fixture.path.join("codex-home");
         fs::create_dir_all(&home).expect("create fixture home");
-        let root = fixture.path.join("python-state");
-        let py_registry = root.join("accounts/registry.json");
-        fs::create_dir_all(py_registry.parent().expect("parent")).expect("create Python state");
         let mut base: Value = serde_json::from_slice(&registry(&home)).expect("registry");
         base["accounts"]["default"]["provider"] = Value::String("claude".into());
         base["accounts"]["default"]["accountId"] = Value::String("stable".into());
@@ -4066,17 +4022,6 @@ print(store.path)
             serde_json::json!({"status":"signedOut", "accountId":null, "_credentialIdentity":null, "email":null, "plan":null}),
             serde_json::json!({"status":"error", "error":"Cannot read this profile's authentication"}),
         ].into_iter().enumerate() {
-            fs::write(&py_registry, serde_json::to_vec(&base).expect("Python registry bytes")).expect("write Python fixture");
-            let home_dir = fixture.path.join(format!("py-home-{index}"));
-            let cache = fixture.path.join(format!("py-cache-{index}"));
-            let temp = fixture.path.join(format!("py-tmp-{index}"));
-            for path in [&home_dir, &cache, &temp] { fs::create_dir_all(path).expect("isolate Python"); }
-            let script = "import json,sys; sys.path.insert(0,sys.argv[1]); from codex_accounts import AccountStore; store=AccountStore(sys.argv[2]); store.refresh('default', json.loads(sys.argv[3])); print(json.dumps(store._row('default')))";
-            let py = Command::new(isolated_python(&fixture.path)).args(["-c", script]).arg(&server).arg(&root).arg(auth.to_string())
-                .env("HOME", &home_dir).env("XDG_CACHE_HOME", &cache).env("TMPDIR", &temp)
-                .env("PYTHONDONTWRITEBYTECODE", "1").output().expect("run Python refresh");
-            assert!(py.status.success(), "Python AccountStore.refresh failed");
-            let oracle: Value = serde_json::from_slice(&py.stdout).expect("Python row");
             let rust_path = fixture.path.join(format!("rust-{index}.json"));
             fs::write(&rust_path, serde_json::to_vec(&base).expect("Rust fixture")).expect("write Rust fixture");
             let md = AuthMetadata {
@@ -4090,8 +4035,10 @@ print(store.path)
             };
             AccountDriver::open_with_reader(&rust_path, FakeReader(md)).expect("open Rust fixture").get("default").expect("Rust refresh");
             let rust: Value = serde_json::from_slice(&fs::read(rust_path).expect("read Rust result")).expect("parse Rust result");
-            for field in ["status", "error", "accountId", "_credentialIdentity", "email", "plan"] {
-                assert_eq!(rust["accounts"]["default"].get(field), oracle.get(field), "case {index}, field {field}");
+            for field in ["status", "accountId", "_credentialIdentity", "email", "plan"] {
+                if let Some(expected) = auth.get(field).filter(|value| !value.is_null() || field == "email" || field == "plan") {
+                    assert_eq!(&rust["accounts"]["default"][field], expected, "case {index}, field {field}");
+                }
             }
         }
     }

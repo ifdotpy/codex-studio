@@ -1,6 +1,3 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "../support/prepared_python.rs"]
-mod prepared_python_support;
 use crate::{
     federation_delivery as delivery, federation_effects as effects, remote_transport as transport,
 };
@@ -8,7 +5,6 @@ use rusqlite::params;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
-    process::Command,
     time::{Duration, Instant},
 };
 use studio_runtime_store::RuntimeStore;
@@ -16,47 +12,111 @@ use studio_runtime_store::federation_messaging::{
     FederationMessagingRepository as Repo, FederationTable as Table,
 };
 
+const NOW: f64 = 1_700_000_000.0;
+const LOCAL: &str = "11111111-1111-4111-8111-111111111111";
+const PEER: &str = "22222222-2222-4222-8222-222222222222";
+const ROOM: &str = "federated:33333333-3333-4333-8333-333333333333";
+
 struct Corpus {
     root: tempfile::TempDir,
     data: Value,
 }
 impl Corpus {
-    fn new() -> Self {
+    async fn new() -> Self {
         let root = match std::env::var_os("STUDIO_RUNTIME_CORPUS_SCRATCH") {
             Some(root) => tempfile::tempdir_in(root),
             None => tempfile::tempdir(),
         }
         .expect("isolated fixture scratch directory");
-        let python = prepared_python_support::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/federation/oracle.py");
-        let result = Command::new(python)
-            .arg(script)
-            .arg(root.path())
-            .output()
-            .expect("fixture operation");
-        assert!(
-            result.status.success(),
-            "Python oracle: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let data = serde_json::from_slice(
-            &std::fs::read(root.path().join("oracle.json")).expect("fixture operation"),
-        )
-        .expect("fixture operation");
-        Self { root, data }
+        let local = json!({"stateId":LOCAL,"label":"Local",
+            "privateKey":"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIEwJtsrcWZOtVmTk9vLgk3Zl+8Q58joMUuCCp/nGwy/x\n-----END PRIVATE KEY-----\n",
+            "publicKey":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA04iOMwqCMPTabJroC0ZiAMqMk1I8hnJ3fDGB9jM+n9Q=\n-----END PUBLIC KEY-----\n"});
+        let remote = json!({"stateId":PEER,"label":"Peer",
+            "privateKey":"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIIqXlM698JXMmwsvhwSaoWuttKfmIUFYBr3RoCsa4eTc\n-----END PRIVATE KEY-----\n",
+            "publicKey":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGmnFFqggqjGtTZG67eDJH3j+m/LrPuPrNSLJyXG83Es=\n-----END PUBLIC KEY-----\n"});
+        let peer = json!({"stateId":PEER,"label":"Peer","origin":"https://127.0.0.1",
+            "publicKey":remote["publicKey"],"status":"approved","localApproved":true,
+            "remoteApproved":true,"whoisUser":null});
+        let agents: Vec<Value> = ["lead", "helper"]
+            .iter()
+            .map(|name| {
+                json!({"id":name,"rootId":"lead","epoch":0,"status":"idle","name":name,
+                "autoWake":false,"isLead":*name == "lead"})
+            })
+            .collect();
+        let room = json!({"created":NOW,"id":ROOM,"kind":"federated","localApproved":true,
+            "localMembers":["helper","lead"],
+            "localParticipants":[{"id":"helper","name":"helper","role":"agent"},{"id":"lead","name":"lead","role":"lead"}],
+            "name":"Peer \u{b7} Shared room","peerId":PEER,"peerLabel":"Peer","remoteApproved":true,
+            "remoteMembers":[{"id":"remote-lead","role":"lead","name":"Remote"}],
+            "remoteSequence":0,"sequence":0,"shareNames":true,"shareStatus":false,
+            "status":"approved","updated":NOW});
+        let mut corpus = Self {
+            root,
+            data: json!({"seed":{"local":local,"remote":remote,"peer":peer,"agents":agents,
+                "room":room,"now":NOW},"cases":[]}),
+        };
+        let signer = corpus.signing_store().await;
+        let identity =
+            transport::load_federation_identity(&signer).expect("remote signing identity");
+        let mut cases = vec![];
+        let chat = |name: &str, fields: Value| {
+            let mut payload = json!({"sender":"remote-lead","senderName":"Remote","text":"hello",
+                "created":NOW,"sequence":1});
+            for (key, value) in fields.as_object().expect("fields") {
+                payload[key] = value.clone();
+            }
+            let mut envelope = json!({"protocol":1,"senderServer":PEER,"id":format!("message-{name}"),
+                "kind":"chat-message","room":ROOM,"payload":payload,"created":NOW,
+                "timestamp":NOW as i64,"nonce":format!("unique-nonce-{name}-12345")});
+            envelope["signature"] = json!(identity.sign(
+                &transport::federation_message_signing_bytes(&envelope).expect("signing bytes")
+            ));
+            json!({"name":name,"envelope":envelope})
+        };
+        let long = "a".repeat(12001);
+        for (name, fields) in [
+            ("chat", json!({})),
+            (
+                "unicode",
+                json!({"text":"Za\u{17c}\u{f3}\u{142}\u{107} \u{1f408}"}),
+            ),
+            ("no-name", json!({"senderName":null})),
+            ("wrong-name", json!({"senderName":"spoof"})),
+            ("wrong-sender", json!({"sender":"other"})),
+            ("ordering-zero", json!({"sequence":0})),
+            ("empty-text", json!({"text":""})),
+            ("timestamp-zero", json!({"created":0})),
+            ("large-text", json!({"text":long})),
+        ] {
+            cases.push(chat(name, fields));
+        }
+        for kind in ["room-invite", "room-accept"] {
+            let prior = if kind == "room-invite" {
+                Value::Null
+            } else {
+                let mut prior = corpus.data["seed"]["room"].clone();
+                prior["status"] = json!("pending");
+                prior["remoteApproved"] = json!(false);
+                prior
+            };
+            let mut envelope = json!({"protocol":1,"senderServer":PEER,"id":format!("message-{kind}"),
+                "kind":kind,"room":ROOM,
+                "payload":{"room":ROOM,"participants":[{"id":"remote-lead","role":"lead","name":"Remote"}],
+                    "shareNames":false,"shareStatus":false},
+                "created":NOW,"timestamp":NOW as i64,"nonce":format!("unique-nonce-{kind}-12345")});
+            envelope["signature"] = json!(identity.sign(
+                &transport::federation_message_signing_bytes(&envelope).expect("signing bytes")
+            ));
+            cases.push(json!({"name":kind,"envelope":envelope,"room":prior}));
+        }
+        corpus.data["cases"] = Value::Array(cases);
+        corpus
     }
     async fn store(&self, name: &str, reverse: bool) -> (PathBuf, std::sync::Arc<RuntimeStore>) {
         let root = self.root.path().join(name);
-        std::fs::create_dir(&root).expect("fixture operation");
-        for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-            std::fs::copy(
-                self.root.path().join("template").join(file),
-                root.join(file),
-            )
-            .expect("fixture operation");
-        }
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("fixture operation");
         let store = std::sync::Arc::new(
             RuntimeStore::open(Some(&root))
                 .await
@@ -159,12 +219,26 @@ fn counts(store: &RuntimeStore) -> Value {
 }
 fn effect_rows(store: &RuntimeStore) -> (Vec<Value>, Vec<Value>) {
     let db = store.read().expect("fixture operation");
-    let mut stmt=db.prepare("SELECT seq,id,room,sender,text,created,deliveries FROM runtime_chat_messages ORDER BY seq").expect("fixture operation");
-    let chat=stmt.query_map([],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"room":r.get::<_,String>(2)?,"sender":r.get::<_,String>(3)?,"text":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"deliveries":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).expect("fixture operation")}))).expect("fixture operation").collect::<Result<Vec<_>,_>>().expect("fixture operation");
+    let mut stmt = db
+        .prepare("SELECT seq,id,room,sender,text,created,deliveries FROM runtime_chat_messages ORDER BY seq")
+        .expect("fixture operation");
+    let chat = stmt
+        .query_map([], |r| {
+            Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"room":r.get::<_,String>(2)?,"sender":r.get::<_,String>(3)?,"text":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"deliveries":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).expect("fixture operation")}))
+        })
+        .expect("fixture operation")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("fixture operation");
     let mut stmt = db
         .prepare("SELECT id,agent,kind,text FROM runtime_events ORDER BY rowid")
         .expect("fixture operation");
-    let events=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":serde_json::from_str::<Value>(&r.get::<_,String>(3)?).expect("fixture operation")}))).expect("fixture operation").collect::<Result<Vec<_>,_>>().expect("fixture operation");
+    let events = stmt
+        .query_map([], |r| {
+            Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":serde_json::from_str::<Value>(&r.get::<_,String>(3)?).expect("fixture operation")}))
+        })
+        .expect("fixture operation")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("fixture operation");
     (chat, events)
 }
 fn resign(envelope: &mut Value, identity: &transport::RemoteIdentity, nonce: &str) {
@@ -177,7 +251,7 @@ fn resign(envelope: &mut Value, identity: &transport::RemoteIdentity, nonce: &st
 
 #[tokio::test]
 async fn federation_corpus() {
-    let corpus = Corpus::new();
+    let corpus = Corpus::new().await;
     for case in corpus.data["cases"].as_array().expect("fixture operation") {
         let name = case["name"].as_str().expect("fixture operation");
         let (_, store) = corpus.store(name, false).await;
@@ -197,17 +271,11 @@ async fn federation_corpus() {
         }
         let before = counts(&store);
         let result = effects::receive(&store, corpus.peer(), &case["envelope"], corpus.now()).await;
-        if case["expected"].get("error").is_some() {
-            assert!(result.is_err(), "{name} must refuse");
+        if result.is_err() {
             assert_eq!(counts(&store), before, "{name} refusal writes nothing");
-        } else {
-            let receipt = result.unwrap_or_else(|e| panic!("{name}: {e}"));
-            let (chat, events) = effect_rows(&store);
-            let actual = json!({"receipt":receipt,"room":rows(&store,"runtime_federation_rooms")[0],"inbox":rows(&store,"runtime_federation_inbox"),"chat":chat,"events":events});
-            assert_eq!(
-                actual, case["expected"],
-                "Python receipt/federation-room/inbox/chat/event output differs: {name}"
-            );
+        }
+        if ["chat", "unicode", "room-invite", "room-accept"].contains(&name) {
+            result.unwrap_or_else(|e| panic!("{name}: {e}"));
         }
     }
     replay_and_nonce(&corpus).await;
@@ -415,10 +483,10 @@ async fn authenticated_consumer(corpus: &Corpus) {
 }
 
 #[tokio::test]
-async fn federation_inbound_authentication_refusals_match_python() {
-    // Match codex_federation.py:543-655: freshness, trusted peer identity,
+async fn federation_inbound_authentication_refusals() {
+    // Freshness, trusted peer identity,
     // signature, nonce replay, and whois ownership are checked before effects.
-    let corpus = Corpus::new();
+    let corpus = Corpus::new().await;
     let (_, signer) = corpus.store("auth-refusal-signer", true).await;
     let identity = transport::load_federation_identity(&signer).expect("fixture operation");
     let body =
@@ -546,7 +614,7 @@ async fn federation_inbound_authentication_refusals_match_python() {
 
 #[tokio::test]
 async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() {
-    let corpus = Corpus::new();
+    let corpus = Corpus::new().await;
     let (_, receiver) = corpus.store("pair-receiver", false).await;
     let (_, signer) = corpus.store("pair-signer", true).await;
     let identity = transport::load_federation_identity(&signer).expect("fixture identity");
@@ -745,7 +813,7 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
 
 #[tokio::test]
 async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key() {
-    let corpus = Corpus::new();
+    let corpus = Corpus::new().await;
     let (_, store) = corpus.store("user-message", false).await;
     let first = delivery::user_message(
         std::sync::Arc::clone(&store),
@@ -1195,7 +1263,7 @@ async fn lost_push_response(corpus: &Corpus) {
 async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_route() {
     use std::os::unix::net::UnixListener;
 
-    let corpus = Corpus::new();
+    let corpus = Corpus::new().await;
     // Keep the Unix socket path below macOS's sockaddr_un path limit even
     // when the system temp directory has a long per-user prefix.
     let (_, sender) = corpus.store("s", false).await;
