@@ -156,7 +156,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
         .expect("Python records seed");
 }
 fn state(store: &RuntimeStore, tables: &Value) -> Value {
-    let db = store.read().expect("read");
+    let db = store.test_reader().expect("read");
     let mut result = serde_json::Map::new();
     for table in tables.as_object().expect("tables").keys() {
         let order = if table == "chat_messages" {
@@ -271,7 +271,7 @@ fn normalize(value: &mut Value) {
     }
 }
 async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value, ProjectsError> {
-    let prepared = PreparedHost::load(&store)?;
+    let prepared = PreparedHost::load(&store).await?;
     let case = case.clone();
     let mode = case["mode"].as_str().expect("mode").to_owned();
     match mode.as_str() {
@@ -546,7 +546,7 @@ async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
 }
 
 fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
-    let db = store.read().expect("database snapshot");
+    let db = store.test_reader().expect("database snapshot");
     let tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         .expect("tables")
@@ -590,8 +590,8 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
-    assert!(radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("floor"));
-    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     store.transaction_with(move |db|->Result<(),ProjectsError> {
         assert!(radio_runtime::route_question_answer(db,&prepared,&case["body"]["question"],"answer",None,1000.0)?);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
@@ -603,8 +603,10 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
             .await
             .expect("restart"),
     );
-    assert!(!radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("released"));
-    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    assert!(
+        !radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("released")
+    );
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     let prepared_for_tick = std::sync::Arc::clone(&prepared);
     store
         .transaction_with(move |db| {
@@ -613,7 +615,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
         .await
         .expect("next input");
     let committed = database_rows(&store);
-    let prepared = PreparedHost::load(&store).expect("prepare");
+    let prepared = PreparedHost::load(&store).await.expect("prepare");
     store
         .transaction_with(move |db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
         .await
@@ -659,7 +661,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
-    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     let prepared_for_tick = std::sync::Arc::clone(&prepared);
     let first = store
         .transaction_with(move |db| {
@@ -680,7 +682,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .await
             .expect("restart with pending"),
     );
-    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     let prepared_for_tick = std::sync::Arc::clone(&prepared);
     let recovered = store
         .transaction_with(move |db| {
@@ -710,7 +712,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .await
             .expect("restart after claim"),
     );
-    let prepared = PreparedHost::load(&store).expect("prepare");
+    let prepared = PreparedHost::load(&store).await.expect("prepare");
     let held = store
         .transaction_with(move |db| radio_runtime::tick(db, &prepared, &mut Ingress, 1003.0))
         .await
@@ -727,7 +729,8 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .expect("open crash state"),
     );
     seed(&crash_store, &case["before"]).await;
-    let crash_prepared = std::sync::Arc::new(PreparedHost::load(&crash_store).expect("prepare"));
+    let crash_prepared =
+        std::sync::Arc::new(PreparedHost::load(&crash_store).await.expect("prepare"));
     let prepared_for_tick = std::sync::Arc::clone(&crash_prepared);
     let pending = crash_store
         .transaction_with(move |db| {
@@ -755,7 +758,8 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .await
             .expect("restart after claim crash"),
     );
-    let crash_prepared = std::sync::Arc::new(PreparedHost::load(&crash_store).expect("prepare"));
+    let crash_prepared =
+        std::sync::Arc::new(PreparedHost::load(&crash_store).await.expect("prepare"));
     let mut transport = TransportDouble::accepted();
     assert!(
         !radio_runtime::handoff_interrupt(
@@ -805,7 +809,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
-    let prepared = PreparedHost::load(&store).expect("prepare");
+    let prepared = PreparedHost::load(&store).await.expect("prepare");
     store
         .transaction(|db| {
             db.execute(
@@ -833,7 +837,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
             Ok(())
         }).await
         .expect("same-dispatch identity");
-    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    let prepared = PreparedHost::load(&store).await.expect("fresh prepare");
     store
         .transaction(|db| {
             db.execute(
@@ -850,7 +854,9 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         })
         .await
         .expect("same dispatch status change preserves prepared paths");
-    let prepared = PreparedHost::load(&store).expect("fresh prepare for startup progression");
+    let prepared = PreparedHost::load(&store)
+        .await
+        .expect("fresh prepare for startup progression");
     store
         .transaction(|db| {
             db.execute(
@@ -877,7 +883,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         .await
         .expect("same start attempt progressing to running is permitted");
     for terminal_status in ["interrupted", "archived"] {
-        let prepared = PreparedHost::load(&store).expect("fresh prepare");
+        let prepared = PreparedHost::load(&store).await.expect("fresh prepare");
         store
             .transaction(move |db| {
                 db.execute(
@@ -898,7 +904,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
             Err(ProjectsError::Conflict(_))
         ));
     }
-    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    let prepared = PreparedHost::load(&store).await.expect("fresh prepare");
     store
         .transaction(|db| {
             db.execute(
@@ -918,7 +924,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
             .await,
         Err(ProjectsError::Conflict(_))
     ));
-    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    let prepared = PreparedHost::load(&store).await.expect("fresh prepare");
     store
         .transaction(|db| {
             db.execute(
@@ -937,7 +943,7 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
             .await,
         Err(ProjectsError::Conflict(_))
     ));
-    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    let prepared = PreparedHost::load(&store).await.expect("fresh prepare");
     store
         .transaction(|db| {
             db.execute(

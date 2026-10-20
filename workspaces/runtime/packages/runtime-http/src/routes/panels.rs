@@ -65,13 +65,11 @@ async fn panel(
             .ok_or_else(|| validation_error("agent"))?
             .to_owned();
         let store = state.store.ok_or_else(ApiError::internal)?;
+        checked_agent(&store, &agent).await?;
         let root = store.root().to_owned();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/panels",
-            move || {
-                checked_agent(&store, &agent)?;
-                progress_panel::read_progress(&root, &agent).map_err(panel_read_error)
-            },
+            move || progress_panel::read_progress(&root, &agent).map_err(panel_read_error),
         )
         .await
         .map_err(|_| ApiError::internal())??;
@@ -101,13 +99,11 @@ async fn save_panel_layout(
             .ok_or_else(|| validation_error("agent"))?
             .to_owned();
         let store = state.store.ok_or_else(ApiError::internal)?;
+        checked_agent(&store, &agent).await?;
         let root = store.root().to_owned();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/panels",
-            move || {
-                checked_agent(&store, &agent)?;
-                progress_panel::record_layout(&root, &body).map_err(layout_error)
-            },
+            move || progress_panel::record_layout(&root, &body).map_err(layout_error),
         )
         .await
         .map_err(|_| ApiError::internal())??;
@@ -117,11 +113,13 @@ async fn save_panel_layout(
     }
 }
 
-fn checked_agent(store: &RuntimeStore, id: &str) -> Result<(), ApiError> {
-    let connection = store.read().map_err(|_| ApiError::internal())?;
+async fn checked_agent(store: &RuntimeStore, id: &str) -> Result<(), ApiError> {
     let id = AgentId::from(id);
-    let agent = AgentRepository::get(&connection, &id)
-        .map_err(|_| ApiError::internal())?
+    let agent = store
+        .read_async("runtime-http/routes/panels", move |connection| {
+            AgentRepository::get(connection, &id).map_err(|_| ApiError::internal())
+        })
+        .await?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
     if agent
         .extra
@@ -171,16 +169,12 @@ async fn profiles(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::ProfileList>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let profiles = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/panels",
-        move || -> Result<Value, ApiError> {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let records = ProfileRepository::list(&connection).map_err(profile_read_error)?;
-            Ok(json!({"profiles": records}))
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let records = store
+        .read_async("runtime-http/routes/panels", |connection| {
+            ProfileRepository::list(connection).map_err(profile_read_error)
+        })
+        .await?;
+    let profiles = json!({"profiles": records});
     Ok(Json(
         super::generated_json::<crate::generated::ProfileList>(profiles)?,
     ))
@@ -195,15 +189,11 @@ async fn update_profiles(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let id = if requested_id.is_empty() {
         let id_store = store.clone();
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/panels",
-            move || {
-                let connection = id_store.read().map_err(|_| ApiError::internal())?;
-                ProfileRepository::new_id(&connection).map_err(|_| ApiError::internal())
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??
+        id_store
+            .read_async("runtime-http/routes/panels", move |connection| {
+                ProfileRepository::new_id(connection).map_err(|_| ApiError::internal())
+            })
+            .await?
     } else {
         requested_id
     };

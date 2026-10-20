@@ -544,34 +544,37 @@ pub(super) async fn claim(
 ) -> Result<Option<TurnIntent>, WorkerError> {
     let account = account.to_owned();
     let agent = agent.to_owned();
-    let read_store = store.clone();
     let read_agent = agent.clone();
-    let (snapshot, prepared) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_claim_read",
-        move || {
-            let snapshot =
-                AgentRepository::get(&*read_store.read()?, &AgentId::from(read_agent.as_str()))?;
-            let has_radio_turn = read_store.read()?.query_row_cached(
+    let (snapshot, has_radio_turn) = store
+        .read_async("runtime-services/account_worker_claim_read", move |tx| {
+            let snapshot = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?;
+            let has_radio_turn = tx.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
                  AND status='pending' AND kind='radio_turn')",
                 rusqlite::params![read_agent.as_str(), epoch],
                 |row| row.get::<_, bool>(0),
             )?;
-            let prepared = if has_radio_turn {
-                let prepared = crate::host_project_runtime::PreparedHost::load(&read_store)
-                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            Ok::<_, WorkerError>((snapshot, has_radio_turn))
+        })
+        .await?;
+    let prepared = if has_radio_turn {
+        let prepared = crate::host_project_runtime::PreparedHost::load(&store)
+            .await
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_claim_host",
+            move || {
                 prepared
                     .recheck_paths()
                     .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                Some(prepared)
-            } else {
-                None
-            };
-            Ok::<_, WorkerError>((snapshot, prepared))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+                Ok::<_, WorkerError>(Some(prepared))
+            },
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??
+    } else {
+        None
+    };
     if snapshot.as_ref().is_none_or(|record| {
         record.epoch != epoch
             || account_key(record) != account.as_str()
@@ -1370,40 +1373,34 @@ pub(super) async fn journal_batch(
                 if frame.method.as_str() == "turn/completed"
         )
     });
-    let read_store = Arc::clone(&store);
     let account_for_read = account.to_owned();
-    let (publication, limits_observation) = crate::diagnostics::measure_runtime_stage_async(
-        "journal.snapshot",
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker_journal_snapshot",
-            move || {
-                let publication =
-                    crate::notification_dispatch::PublicationContext::load(&read_store)?.with_native_source(native_source);
-                let limits_observation = if needs_limits {
-                    let reader = read_store.read()?;
-                    let limits = studio_runtime_store::account_state::limits_snapshots(&reader)?
-                        .snapshots
-                        .into_iter()
-                        .find(|(key, _)| key == &account_for_read)
-                        .map(|(_, limits)| limits)
-                        .unwrap_or_else(|| {
-                            json!({"accountKey":account_for_read,"at":null,"error":null,"data":null,"stale":true})
-                        });
-                    Some(
-                        crate::usage_resume::LimitsObservation::from_record(limits, None)
-                            .map_err(|error| {
-                                WorkerError::PreparationRefused(error.to_string())
-                            })?,
-                    )
-                } else {
-                    None
-                };
-                Ok::<_, WorkerError>((publication, limits_observation))
-            },
-        ),
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+    let (publication, limits_observation) =
+        crate::diagnostics::measure_runtime_stage_async("journal.snapshot", async {
+            let publication = crate::notification_dispatch::PublicationContext::load(&store)?
+                .with_native_source(native_source);
+            let limits_observation = if needs_limits {
+                Some(
+                    store
+                        .read_async("runtime-services/account_worker_journal_snapshot", move |tx| {
+                            let limits = studio_runtime_store::account_state::limits_snapshots(tx)?
+                                .snapshots
+                                .into_iter()
+                                .find(|(key, _)| key == &account_for_read)
+                                .map(|(_, limits)| limits)
+                                .unwrap_or_else(|| {
+                                    json!({"accountKey":account_for_read,"at":null,"error":null,"data":null,"stale":true})
+                                });
+                            crate::usage_resume::LimitsObservation::from_record(limits, None)
+                                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+                        })
+                        .await?,
+                )
+            } else {
+                None
+            };
+            Ok::<_, WorkerError>((publication, limits_observation))
+        })
+        .await?;
     let account = account.to_owned();
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
@@ -2668,13 +2665,10 @@ pub(super) async fn deliver_publications(
     mut after_publish: impl FnMut() -> Result<(), WorkerError> + Send,
 ) -> Result<PublicationPass, WorkerError> {
     let prefix = format!("account-worker:notification-publication:{account}:");
-    let read_store = Arc::clone(&store);
     let page = PUBLICATION_DRAIN_LIMIT + skip.len();
     let skip = skip.into_iter().collect::<BTreeSet<_>>();
-    let pending = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_publication_read",
-        move || {
-            let connection = read_store.read()?;
+    let pending = store
+        .read_async("runtime-services/account_worker_publication_read", move |connection| {
             let mut statement = connection.prepare(
                 "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT ?3",
             )?;
@@ -2690,10 +2684,8 @@ pub(super) async fn deliver_publications(
                     .take(PUBLICATION_DRAIN_LIMIT)
                     .collect::<Vec<_>>(),
             )
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+        })
+        .await?;
     let full = pending.len() == PUBLICATION_DRAIN_LIMIT;
     let mut delivered = Vec::with_capacity(pending.len());
     let mut failure = None;

@@ -66,29 +66,32 @@ impl VoiceRequestPort for AccountSessionVoicePort {
         let thread_id = thread_id.to_owned();
         let thread_id_for_check = thread_id.clone();
         Box::pin(async move {
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/voice/account_session",
-                move || {
-                    let connection = store.read().map_err(|_| VoiceWriteCertainty::NotSent)?;
-                    let agent = super::checked_agent(&connection, &agent_id_for_check)
-                        .map_err(|_| VoiceWriteCertainty::NotSent)?;
-                    if agent.epoch != epoch
-                        || agent.extra.get("threadId").and_then(Value::as_str)
-                            != Some(thread_id_for_check.as_str())
-                        || agent
-                            .extra
-                            .get("accountKey")
-                            .and_then(Value::as_str)
-                            .unwrap_or("default")
-                            != account_key_for_check
-                    {
-                        return Err(VoiceWriteCertainty::NotSent);
-                    }
-                    Ok(())
-                },
-            )
-            .await
-            .unwrap_or(Err(VoiceWriteCertainty::Unknown))?;
+            let current = store
+                .read_async(
+                    "runtime-services/voice/account_session",
+                    move |connection| {
+                        let Ok(agent) = super::checked_agent(connection, &agent_id_for_check)
+                        else {
+                            return Ok(false);
+                        };
+                        Ok::<_, studio_runtime_store::StoreError>(
+                            agent.epoch == epoch
+                                && agent.extra.get("threadId").and_then(Value::as_str)
+                                    == Some(thread_id_for_check.as_str())
+                                && agent
+                                    .extra
+                                    .get("accountKey")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("default")
+                                    == account_key_for_check,
+                        )
+                    },
+                )
+                .await
+                .map_err(|_| VoiceWriteCertainty::NotSent)?;
+            if !current {
+                return Err(VoiceWriteCertainty::NotSent);
+            }
 
             let operation = format!("voice:prepare:{session_id}");
             let receipt = session
@@ -221,58 +224,38 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                     certainty: VoiceWriteCertainty::NotSent,
                 };
             }
-            let check_store = Arc::clone(&store);
-            let check_session = Arc::clone(&session);
-            let check_scope = scope.clone();
-            let check_rpc_id = reply.rpc_id.clone();
-            let preflight_request_id = request_id.to_owned();
-            let preflight = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/voice/account_session",
-                move || {
-                    if !callback_request_matches(
-                        &check_store,
-                        &preflight_request_id,
-                        &check_scope,
-                        &check_rpc_id,
-                    ) {
-                        return Err(VoiceWriteCertainty::NotSent);
-                    }
-                    let expected_session = ConnectionScope {
-                        account: check_scope.account_key.clone(),
-                        connection: check_scope.connection_id.clone(),
-                        generation: check_scope.generation,
-                    };
-                    if check_session
-                        .current_scope(&check_scope.account_key)
-                        .as_ref()
-                        != Some(&expected_session)
+            let preflight = async {
+                if !callback_request_matches(&store, request_id, &scope, &reply.rpc_id).await {
+                    return Err(VoiceWriteCertainty::NotSent);
+                }
+                let expected_session = ConnectionScope {
+                    account: scope.account_key.clone(),
+                    connection: scope.connection_id.clone(),
+                    generation: scope.generation,
+                };
+                if session.current_scope(&scope.account_key).as_ref() != Some(&expected_session) {
+                    return Err(VoiceWriteCertainty::NotSent);
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0.0, |duration| duration.as_secs_f64());
+                match crate::provider_callbacks::pending_native_delete_context(&store, request_id)
+                    .await
+                {
+                    Ok(Some(context))
+                        if context.agent == scope.agent_id
+                            && context.epoch == scope.epoch as u64
+                            && context.account == scope.account_key
+                            && context.connection == scope.connection_id
+                            && context.generation == scope.generation
+                            && context.thread == scope.thread_id =>
                     {
-                        return Err(VoiceWriteCertainty::NotSent);
+                        Ok((now, context))
                     }
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0.0, |duration| duration.as_secs_f64());
-                    let context = match crate::provider_callbacks::pending_native_delete_context(
-                        &check_store,
-                        &preflight_request_id,
-                    ) {
-                        Ok(Some(context))
-                            if context.agent == check_scope.agent_id
-                                && context.epoch == check_scope.epoch as u64
-                                && context.account == check_scope.account_key
-                                && context.connection == check_scope.connection_id
-                                && context.generation == check_scope.generation
-                                && context.thread == check_scope.thread_id =>
-                        {
-                            context
-                        }
-                        _ => return Err(VoiceWriteCertainty::NotSent),
-                    };
-                    Ok((now, context))
-                },
-            )
-            .await
-            .unwrap_or(Err(VoiceWriteCertainty::Unknown));
+                    _ => Err(VoiceWriteCertainty::NotSent),
+                }
+            }
+            .await;
             let (now, context) = match preflight {
                 Ok(value) => value,
                 Err(certainty) => return VoiceRequestReceipt { certainty },
@@ -292,20 +275,27 @@ impl VoiceRequestPort for AccountSessionVoicePort {
     }
 }
 
-fn callback_request_matches(
+async fn callback_request_matches(
     store: &RuntimeStore,
     id: &str,
     scope: &VoiceConnectionScope,
     rpc_id: &VoiceRpcId,
 ) -> bool {
-    let Ok(connection) = store.read() else {
-        return false;
-    };
-    let raw = connection.query_row(
-        "SELECT record FROM runtime_requests WHERE id=?1",
-        [id],
-        |row| row.get::<_, String>(0),
-    );
+    let id = id.to_owned();
+    let raw = store
+        .read_async(
+            "runtime-services/voice/account_session",
+            move |connection| {
+                connection
+                    .query_row(
+                        "SELECT record FROM runtime_requests WHERE id=?1",
+                        [id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)
+            },
+        )
+        .await;
     let Ok(raw) = raw else {
         return false;
     };

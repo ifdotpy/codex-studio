@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use studio_runtime_store::{AccessNonceOutcome, RemoteTransportRepository, RuntimeStore};
+use studio_runtime_store::{
+    AccessNonceOutcome, RemoteTransportRepository, RuntimeStore, StoreError,
+};
 
 use crate::multi_server_auth::{
     self as auth, AccessError, AccessSnapshot, OwnerObservation, SignedRequest, VerifiedPrincipal,
@@ -117,43 +119,31 @@ impl MultiServerBoundary {
     ) -> Result<PreparedAccessRequest, AccessError> {
         let invite_id = text(request.body(), "inviteId").to_owned();
         let invite_id_for_read = invite_id.clone();
-        let store_for_read = Arc::clone(&store);
         let client_id = request.client_id().to_owned();
-        let (client, invite, auto_pair) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/multi_server_pairing",
-            move || {
-                store_for_read.read_transaction(|tx| {
-                    let client = tx
-                        .query_row(
-                            "SELECT record FROM runtime_access_clients WHERE id=?1",
-                            [&client_id],
-                            |r| r.get::<_, String>(0),
-                        )
-                        .optional()?;
-                    let invite = tx
-                        .query_row(
-                            "SELECT record FROM runtime_access_invites WHERE id=?1",
-                            [&invite_id_for_read],
-                            |r| r.get::<_, String>(0),
-                        )
-                        .optional()?;
-                    let auto_pair = tx.query_row(
-                        "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
-                        [],
-                        |r| r.get::<_, bool>(0),
-                    )?;
-                    Ok((client, invite, auto_pair))
-                })
-            },
-        )
-        .await
-        .map_err(|_| {
-            refused(
-                503,
-                "access_unavailable",
-                "The server access service is unavailable",
-            )
-        })??;
+        let (client, invite, auto_pair) = store
+            .read_async("runtime-services/multi_server_pairing", move |tx| {
+                let client = tx
+                    .query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1",
+                        [&client_id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let invite = tx
+                    .query_row(
+                        "SELECT record FROM runtime_access_invites WHERE id=?1",
+                        [&invite_id_for_read],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let auto_pair = tx.query_row(
+                    "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )?;
+                Ok::<_, StoreError>((client, invite, auto_pair))
+            })
+            .await?;
         let snapshot = AccessSnapshot::from_records(
             request.client_id(),
             client.as_deref(),
@@ -242,30 +232,19 @@ impl MultiServerBoundary {
                 "Invalid signed server request",
             ));
         }
-        let store_for_read = Arc::clone(&store);
         let client_id = request.client_id().to_owned();
-        let saved_client = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/multi_server_pairing",
-            move || {
-                store_for_read.read_transaction(|tx| {
-                    Ok(tx
-                        .query_row(
-                            "SELECT record FROM runtime_access_clients WHERE id=?1",
-                            [&client_id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?)
-                })
-            },
-        )
-        .await
-        .map_err(|_| {
-            refused(
-                503,
-                "access_unavailable",
-                "The server access service is unavailable",
-            )
-        })??;
+        let saved_client = store
+            .read_async("runtime-services/multi_server_pairing", move |tx| {
+                Ok::<_, StoreError>(
+                    tx.query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1",
+                        [&client_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?,
+                )
+            })
+            .await?;
         let observed_snapshot = AccessSnapshot::from_records(
             request.client_id(),
             saved_client.as_deref(),
@@ -395,27 +374,15 @@ impl MultiServerBoundary {
         }
         let mut identity = (self.identity)(&store).await?;
         auth::schema("ServerIdentityResponse", &identity)?;
-        let store_for_read = Arc::clone(&store);
-        let enabled = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/multi_server_pairing",
-            move || {
-                store_for_read.read_transaction(|tx| {
-                    Ok(tx.query_row(
-                        "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
-                        [],
-                        |r| r.get::<_, bool>(0),
-                    )?)
-                })
-            },
-        )
-        .await
-        .map_err(|_| {
-            refused(
-                503,
-                "access_unavailable",
-                "The server access service is unavailable",
-            )
-        })??;
+        let enabled = store
+            .read_async("runtime-services/multi_server_pairing", move |tx| {
+                Ok::<_, StoreError>(tx.query_row(
+                    "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })
+            .await?;
         identity["protocol"] = json!(ACCESS_PROTOCOL_VERSION);
         identity["autoPair"] = json!(enabled);
         identity["tailscaleUser"] = json!(owner.login());

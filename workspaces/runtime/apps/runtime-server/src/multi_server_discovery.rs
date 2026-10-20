@@ -269,28 +269,22 @@ impl TailscaleServerDiscovery {
         remaining: Duration,
     ) {
         let id = text(peer, "serverId").to_owned();
-        let paired_store = Arc::clone(&store);
         let paired_id = id.clone();
-        let paired = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/discovery-paired-check",
-            move || {
-                paired_store.read_transaction(|tx| {
-                    tx.query_row(
-                        "SELECT record FROM runtime_access_clients WHERE id=?1",
-                        [&paired_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(Into::into)
-                })
-            },
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .flatten()
-        .and_then(|record| serde_json::from_str::<Value>(&record).ok())
-        .is_some_and(|record| text(&record, "status") == "paired");
+        let paired = store
+            .read_async("runtime-server/discovery-paired-check", move |tx| {
+                tx.query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id=?1",
+                    [&paired_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|record| serde_json::from_str::<Value>(&record).ok())
+            .is_some_and(|record| text(&record, "status") == "paired");
         if !paired {
             return;
         }
@@ -524,20 +518,14 @@ async fn mark_missing_peers_unreachable(
     store: &Arc<RuntimeStore>,
     snapshot: &DiscoverySnapshot,
 ) -> Result<(), AccessError> {
-    let read_store = Arc::clone(store);
-    let origins = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/discovery-read-peers",
-        move || {
-            read_store.read_transaction(|tx| {
-                let mut statement = tx.prepare("SELECT record FROM runtime_access_discovered")?;
-                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
-            })
-        },
-    )
-    .await
-    .map_err(|_| unavailable("Stored discovery state is unavailable"))?
-    .map_err(|_| unavailable("Stored discovery state is unavailable"))?;
+    let origins = store
+        .read_async("runtime-server/discovery-read-peers", |tx| {
+            let mut statement = tx.prepare("SELECT record FROM runtime_access_discovered")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            Ok::<_, studio_runtime_store::StoreError>(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .map_err(|_| unavailable("Stored discovery state is unavailable"))?;
     for raw in origins {
         let peer: Value = serde_json::from_str(&raw)
             .map_err(|_| unavailable("Stored discovery identity is invalid"))?;
@@ -617,7 +605,7 @@ mod tests {
             "the durable request identity is recovered after restart"
         );
         let saved: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT json_extract(record,'$.requestId') FROM runtime_access_auto_attempts WHERE id='peer'",
@@ -627,7 +615,7 @@ mod tests {
             .unwrap();
         assert_eq!(saved, first);
         let state: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT json_extract(record,'$.state') FROM runtime_access_auto_attempts WHERE id='peer'",
@@ -681,7 +669,7 @@ mod tests {
             })
         ));
         let clients: i64 = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row("SELECT COUNT(*) FROM runtime_access_clients", [], |row| {
                 row.get(0)
@@ -717,7 +705,7 @@ mod tests {
         )
         .expect("absolute HTTPS request fingerprint");
         let saved: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT json_extract(record,'$.autoPairingHash') FROM runtime_access_clients WHERE id='peer'",

@@ -153,11 +153,13 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                         Some("control-one")
                     );
                 }
-                let agent =
-                    AgentRepository::get(&store.read().expect("read"), &AgentId("agent".into()))
-                        .expect("read")
-                        .expect("agent")
-                        .value();
+                let agent = AgentRepository::get(
+                    &store.test_reader().expect("read"),
+                    &AgentId("agent".into()),
+                )
+                .expect("read")
+                .expect("agent")
+                .value();
                 assert_eq!(
                     agent["workspaceOperation"],
                     if held {

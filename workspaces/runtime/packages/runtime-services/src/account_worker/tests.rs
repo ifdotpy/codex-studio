@@ -736,16 +736,18 @@ impl State {
         };
         if let Ok(context) = MATRIX.try_with(Arc::clone) {
             let agent = state.agent.clone();
-            let seed = state
-                .bridge
-                .run(move |store| async move {
-                    Ok(
-                        AgentRepository::get(&*store.read()?, &AgentId::from(agent.as_str()))?
-                            .expect("seed"),
-                    )
-                })
-                .await
-                .unwrap();
+            let seed =
+                state
+                    .bridge
+                    .run(move |store| async move {
+                        Ok(AgentRepository::get(
+                            &store.test_reader()?,
+                            &AgentId::from(agent.as_str()),
+                        )?
+                        .expect("seed"))
+                    })
+                    .await
+                    .unwrap();
             *context.agent_seed.lock().unwrap() = Some(seed);
         }
         state.enqueue("input").await;
@@ -814,10 +816,11 @@ impl State {
         let agent = self.agent.clone();
         self.bridge
             .run(move |store| async move {
-                Ok(
-                    studio_runtime_store::agent_volatile::merged_record(&*store.read()?, &agent)?
-                        .expect("agent row"),
-                )
+                Ok(studio_runtime_store::agent_volatile::merged_record(
+                    &store.test_reader()?,
+                    &agent,
+                )?
+                .expect("agent row"))
             })
             .await
             .unwrap()
@@ -826,7 +829,7 @@ impl State {
         let id = format!("annotation:{id}");
         self.bridge
             .run(move |store| async move {
-                Ok(store.read()?.query_row(
+                Ok(store.test_reader()?.query_row(
                     "SELECT status FROM runtime_events WHERE id=?1",
                     [id],
                     |r| r.get(0),
@@ -913,7 +916,7 @@ async fn scenario_normal_turn_commits_transcript_before_ack_and_pending_event_wa
     let count = state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.role')='assistant'",
                 [],
                 |r| r.get::<_, i64>(0),
@@ -993,7 +996,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                     )?;
                     Ok::<_, StoreError>(())
                 }).await?;
-                Ok(store.read()?.query_row(
+                Ok(store.test_reader()?.query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
                     [&bad_id],
                     |row| row.get::<_, String>(0),
@@ -1022,7 +1025,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         .run({
             let bad_id = bad_id.clone();
             move |store| async move {
-                let db = store.read()?;
+                let db = store.test_reader()?;
                 let raw: String = db.query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
                     [&bad_id],
@@ -1154,7 +1157,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .expect("seed malformed row");
 
     let observed = {
-        let reader = store.read().expect("read connection opens");
+        let reader = store.test_reader().expect("read connection opens");
         AgentRepository::get(&reader, &AgentId::from("racy"))
             .expect_err("malformed root id is rejected")
     };
@@ -1186,7 +1189,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .await
         .expect("stale hold is safely ignored");
 
-    let reader = store.read().expect("read connection opens");
+    let reader = store.test_reader().expect("read connection opens");
     let receipt: bool = reader
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
@@ -1278,7 +1281,7 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                 }).await?;
 
                 let recovered = store::recover(&store, "default", Generation(1), true).await?;
-                let unresolved: i64 = store.read()?.query_row(
+                let unresolved: i64 = store.test_reader()?.query_row(
                     "SELECT COUNT(*) FROM runtime_operation_receipts \
                      WHERE id='account-worker:account:default:uncertain-start:submitted'",
                     [],
@@ -1386,7 +1389,7 @@ async fn scenario_duplicate_stale_and_completion_before_reply_preserve_order() {
     peer.acknowledged(duplicate).await;
     let stale=peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"stale","item":{"id":"stale","type":"agentMessage","text":"wrong"}}})).await;
     peer.acknowledged(stale).await;
-    let count=state.bridge.run(move |store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.role')='assistant'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.role')='assistant'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 0);
     worker.shutdown().await.unwrap();
 }
@@ -2683,7 +2686,7 @@ async fn accepted_turn_reattaches_and_keeps_notification_effects() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let cursor = peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"reattached","type":"agentMessage","text":"after restart"}}})).await;
     peer.acknowledged(cursor).await;
-    let count = state.bridge.run(move |store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.text')='after restart'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let count = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.text')='after restart'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 1);
     peer.completed().await;
     assert_eq!(state.record().await["status"], "completed");
@@ -2703,7 +2706,7 @@ async fn rejected_start_restarts_without_unresolved_transport_receipts() {
     worker.shutdown().await.unwrap();
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    let unresolved = state.bridge.run(move |store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:account:%:submitted'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let unresolved = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:account:%:submitted'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(unresolved, 0);
     assert_ne!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();
@@ -2796,7 +2799,7 @@ async fn acknowledged_journal_prefix_is_compacted() {
             .await;
         peer.acknowledged(cursor).await;
     }
-    let rows = state.bridge.run(move |store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let rows = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(rows, 0);
     worker.shutdown().await.unwrap();
 }
@@ -3128,7 +3131,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     let full_size = state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT length(body) FROM runtime_item_fulltext WHERE id LIKE '%:base'",
                 [],
                 |row| row.get::<_, i64>(0),
@@ -3150,7 +3153,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     let (text, bases) = state
         .bridge
         .run(move |store| async move {
-            let db = store.read()?;
+            let db = store.test_reader()?;
             let text: String = db.query_row(
                 "SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:base'",
                 [],
@@ -3360,7 +3363,7 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
         let cursor=peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":format!("turn-{turn}"),"status":"completed"}}})).await;
         peer.acknowledged(cursor).await;
         worker_barrier(&worker).await;
-        let count=state.bridge.run(move |store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
+        let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
         assert!(count <= 4, "turn {turn}: retained {count} worker rows");
     }
     worker.shutdown().await.unwrap();
@@ -3624,7 +3627,7 @@ async fn scenario_new_thread_freezes_settings_and_accepts_context() {
     let before = state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT count(*) FROM runtime_context_manifests",
                 [],
                 |r| r.get::<_, i64>(0),
@@ -3637,7 +3640,7 @@ async fn scenario_new_thread_freezes_settings_and_accepts_context() {
     let after = state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT count(*) FROM runtime_context_manifests",
                 [],
                 |r| r.get::<_, i64>(0),
@@ -4351,7 +4354,7 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
         let sibling_record = state
             .bridge
             .run(move |store| async move {
-                let connection = store.read()?;
+                let connection = store.test_reader()?;
                 Ok(
                     AgentRepository::get(&connection, &AgentId::from(sibling.as_str()))?
                         .map(|record| record.value()),
@@ -4525,7 +4528,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
         let records = state
             .bridge
             .run(move |store| async move {
-                let connection = store.read()?;
+                let connection = store.test_reader()?;
                 Ok((
                     AgentRepository::get(&connection, &AgentId::from(primary.as_str()))?
                         .map(|record| record.value()),
@@ -4575,7 +4578,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
     let (primary_record, sibling_record) = state
         .bridge
         .run(move |store| async move {
-            let connection = store.read()?;
+            let connection = store.test_reader()?;
             Ok((
                 AgentRepository::get(&connection, &AgentId::from(primary.as_str()))?
                     .expect("primary record")
@@ -4804,7 +4807,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
     )
     .await
     .expect("VM actor journal entry is durable");
-    let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from("sibling"))
+    let saved = AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("sibling"))
         .unwrap()
         .unwrap();
     assert_eq!(saved.status, studio_runtime_store::AgentStatus::Running);
@@ -4853,7 +4856,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             .unwrap()
     );
     let (retired, surviving) = store
-        .read()
+        .test_reader()
         .map(|connection| {
             (
                 AgentRepository::get(&connection, &AgentId::from("vm-actor"))
@@ -4878,7 +4881,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             .await
             .unwrap()
     );
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     assert_eq!(
         AgentRepository::get(&connection, &AgentId::from("vm-completed"))
             .unwrap()
@@ -5543,7 +5546,7 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     let receipt = state
         .bridge
         .run(move |store| async move {
-            let connection = store.read()?;
+            let connection = store.test_reader()?;
             Ok(EventWriteRepository::receipt(&connection, &receipt_id)?
                 .expect("uncertain start keeps its durable reservation"))
         })
@@ -5700,7 +5703,7 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
         .await
         .unwrap();
 
-    let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from(agent_id))
+    let saved = AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from(agent_id))
         .unwrap()
         .unwrap()
         .value();
@@ -5953,7 +5956,7 @@ async fn child_stop_notices(state: &State, parent: &str) -> i64 {
     state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND kind='child_result' AND id LIKE 'child-stop:%'",
                 [parent],
                 |r| r.get::<_, i64>(0),

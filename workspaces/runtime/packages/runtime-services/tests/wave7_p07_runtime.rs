@@ -109,7 +109,7 @@ async fn seed(store: &RuntimeStore, agent: &Value) {
 }
 fn agent(store: &RuntimeStore) -> Value {
     serde_json::from_str(
-        &AgentRepository::get_raw(&store.read().expect("read"), &AgentId::from("agent"))
+        &AgentRepository::get_raw(&store.test_reader().expect("read"), &AgentId::from("agent"))
             .expect("agent")
             .expect("row"),
     )
@@ -204,7 +204,7 @@ fn terminal(case: &Value) -> RecoveryAction {
 }
 fn records(store: &RuntimeStore, table: &str) -> Vec<Value> {
     store
-        .read()
+        .test_reader()
         .expect("read")
         .prepare(&format!("SELECT record FROM {table} ORDER BY id"))
         .expect("prepare")
@@ -251,7 +251,7 @@ async fn connection_completion_matches_python_full_records_and_results() {
             "{}",
             case["name"]
         );
-        let read = store.read().expect("read");
+        let read = store.test_reader().expect("read");
         let full: Vec<(String, String)> = read
             .prepare("SELECT id,body FROM runtime_item_fulltext ORDER BY id")
             .expect("prepare")
@@ -347,7 +347,7 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
             assert!(records(&store, "runtime_items").is_empty());
             assert_eq!(
                 store
-                    .read()
+                    .test_reader()
                     .expect("read")
                     .query_row("SELECT count(*) FROM runtime_completed_turns", [], |r| r
                         .get::<_, i64>(0))
@@ -573,7 +573,7 @@ async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     assert_eq!(agent(&store)["turnId"], "turn");
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .expect("read")
             .query_row(
                 "SELECT status FROM runtime_events WHERE id='event'",
@@ -596,7 +596,7 @@ async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     assert_eq!(agent(&store)["lastAnswer"], "recovered");
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .expect("read")
             .query_row("SELECT count(*) FROM runtime_events", [], |r| r
                 .get::<_, i64>(0))
@@ -823,7 +823,9 @@ async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_sc
     let mut cursor = RecoveryCursor::default();
     let mut observed = Vec::new();
     for _ in 0..34 {
-        let jobs = load_recovery_jobs(&store, "default", &mut cursor).expect("agent candidate");
+        let jobs = load_recovery_jobs(&store, "default", &mut cursor)
+            .await
+            .expect("agent candidate");
         assert_eq!(jobs.len(), 1);
         let RecoveryJob::Connection { snapshot, .. } = &jobs[0] else {
             panic!("connection");
@@ -831,6 +833,7 @@ async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_sc
         observed.push(snapshot.record()["id"].as_str().expect("id").to_owned());
         assert!(
             load_recovery_jobs(&store, "default", &mut cursor)
+                .await
                 .expect("task page")
                 .is_empty()
         );
@@ -841,16 +844,19 @@ async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_sc
     );
     assert!(
         load_recovery_jobs(&store, "default", &mut cursor)
+            .await
             .expect("exhausted")
             .is_empty()
     );
     assert!(
         load_recovery_jobs(&store, "default", &mut cursor)
+            .await
             .expect("task page")
             .is_empty()
     );
     assert_eq!(
         load_recovery_jobs(&store, "default", &mut cursor)
+            .await
             .expect("wrap")
             .len(),
         1
@@ -921,7 +927,7 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
             assert_eq!(agent(&store), before);
             assert_eq!(
                 store
-                    .read()
+                    .test_reader()
                     .expect("read")
                     .query_row(
                         "SELECT status FROM runtime_events WHERE id='event'",
@@ -1027,7 +1033,9 @@ async fn held_scan_survives_257_full_pages_and_check_eviction() {
     let mut scan = RecoveryScan::default();
     let now = Instant::now();
     for n in 0..ROWS {
-        let jobs = load_recovery_jobs(&store, "default", &mut cursor).expect("scan");
+        let jobs = load_recovery_jobs(&store, "default", &mut cursor)
+            .await
+            .expect("scan");
         let job = scan
             .take(jobs, now, 1000.)
             .expect("each held candidate once");
@@ -1043,6 +1051,7 @@ async fn held_scan_survives_257_full_pages_and_check_eviction() {
         .expect("hold");
         assert!(
             load_recovery_jobs(&store, "default", &mut cursor)
+                .await
                 .expect("tasks")
                 .is_empty()
         );
@@ -1085,10 +1094,11 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         let mut cursor = RecoveryCursor::default();
         let result = load_recovery_jobs(&store, "default", &mut cursor);
         let error = if bad == "agent" {
-            result.err().expect("agent rejected")
+            result.await.err().expect("agent rejected")
         } else {
-            result.expect("agent valid");
+            result.await.expect("agent valid");
             load_recovery_jobs(&store, "default", &mut cursor)
+                .await
                 .err()
                 .expect("task/receipt rejected")
         }
@@ -1106,7 +1116,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         let mut later_task = false;
         let mut next_pass_error = false;
         for _ in 0..8 {
-            match load_recovery_jobs(&store, "default", &mut cursor) {
+            match load_recovery_jobs(&store, "default", &mut cursor).await {
                 Ok(jobs) => {
                     for job in jobs {
                         match job {
@@ -1211,7 +1221,7 @@ async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     .await
     .expect("accept");
     assert_eq!(agent(&store), case["after"]);
-    let rows: Vec<Value> = store.read().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")
+    let rows: Vec<Value> = store.test_reader().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")
         .query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"epoch":r.get::<_,i64>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?}))).expect("rows").collect::<Result<_,_>>().expect("events");
     assert_eq!(json!(rows), case["events"]);
     assert_eq!(json!(records(&store, "runtime_items")), case["items"]);
@@ -1221,7 +1231,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
     // Include the receipt records and sync publication contents, not just row
     // counts: rollback must restore existing rows as well as remove new ones.
     fn durable_rows(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
-        let db = store.read().expect("read evidence");
+        let db = store.test_reader().expect("read evidence");
         [
             "runtime_agents",
             "runtime_events",
@@ -1325,7 +1335,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
                 assert_eq!(agent(&store), *before);
                 assert_eq!(
                     store
-                        .read()
+                        .test_reader()
                         .expect("read")
                         .query_row("SELECT status FROM runtime_events", [], |r| r
                             .get::<_, String>(0))

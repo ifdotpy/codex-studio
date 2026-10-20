@@ -174,16 +174,11 @@ async fn native_action(
             .as_str()
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "A turn ID is required"))?
             .to_owned();
-        let prepare_store = store.clone();
-        let prepare_agent = agent.clone();
-        let (actor, resources) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agent_management",
-            move || {
-                let connection = prepare_store.read().map_err(|_| ApiError::internal())?;
-                let record =
-                    AgentRepository::get(&connection, &AgentId::from(prepare_agent.as_str()))
-                        .map_err(|_| ApiError::internal())?
-                        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+        let read_agent = agent.clone();
+        let (account, epoch) = store
+            .read_async("runtime-http/routes/agent_management", move |tx| {
+                let record = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
+                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
                 let account = record
                     .extra
                     .get("accountKey")
@@ -193,34 +188,31 @@ async fn native_action(
                 let epoch = record.value()["epoch"]
                     .as_i64()
                     .ok_or_else(ApiError::internal)?;
-                let actor = studio_runtime_services::account_worker::retained::RequestActor {
-                    agent: prepare_agent,
-                    epoch,
-                };
-                drop(connection);
-                let account_driver = account_driver.ok_or_else(|| {
-                    ApiError::new(
-                        StatusCode::NOT_IMPLEMENTED,
-                        "Not implemented: requires account-driver/provider-home",
-                    )
-                })?;
-                let accounts = account_driver
-                    .snapshot()
-                    .map_err(|_| ApiError::internal())?;
-                let provider_home = accounts
-                    .accounts
-                    .iter()
-                    .find(|row| row["id"] == account)
-                    .and_then(|row| row["home"].as_str())
-                    .ok_or_else(ApiError::internal)?;
-                let mut resources = resources.as_ref().clone();
-                resources.account_home = provider_home.to_owned();
-                let resources = Arc::new(resources);
-                Ok::<_, ApiError>((actor, resources))
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+                Ok::<_, ApiError>((account, epoch))
+            })
+            .await?;
+        let actor = studio_runtime_services::account_worker::retained::RequestActor {
+            agent: agent.clone(),
+            epoch,
+        };
+        let account_driver = account_driver.ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires account-driver/provider-home",
+            )
+        })?;
+        let accounts = account_driver
+            .snapshot()
+            .map_err(|_| ApiError::internal())?;
+        let provider_home = accounts
+            .accounts
+            .iter()
+            .find(|row| row["id"] == account)
+            .and_then(|row| row["home"].as_str())
+            .ok_or_else(ApiError::internal)?;
+        let mut resources = resources.as_ref().clone();
+        resources.account_home = provider_home.to_owned();
+        let resources = Arc::new(resources);
         let result = studio_runtime_services::safety_buffering::execute_action(
             store,
             port.as_ref(),
@@ -268,22 +260,15 @@ async fn native_action(
     // request consumer is connected, matching Python's read-only preconditions.
     let preflight_store = state.store.clone().ok_or_else(ApiError::internal)?;
     let preflight_request = request.clone();
-    let preflight_result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agent_management",
-        move || {
+    let preflight_result = preflight_store
+        .read_async("runtime-http/routes/agent_management", move |tx| {
             if let Some(replayed) =
-                native_actions::replay_if_settled(&preflight_store, &preflight_request)
-                    .map_err(native_error)?
+                native_actions::replay_if_settled(tx, &preflight_request).map_err(native_error)?
             {
                 return Ok::<_, ApiError>(Some(replayed));
             }
-            let connection = preflight_store.read().map_err(ApiError::stored)?;
-            let agent = AgentRepository::get(
-                &connection,
-                &AgentId::from(preflight_request.agent.as_str()),
-            )
-            .map_err(ApiError::stored)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
+            let agent = AgentRepository::get(tx, &AgentId::from(preflight_request.agent.as_str()))?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
             let agent = agent.value();
             if agent
                 .get("threadId")
@@ -308,10 +293,8 @@ async fn native_action(
                 ));
             }
             Ok(None)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     if let Some(replayed) = preflight_result {
         return Ok(Json(replayed));
     }
@@ -331,53 +314,47 @@ async fn native_action(
     let account_driver = state.account_driver.clone();
     let guest = state.browser_answer_guest.clone();
     let admission_override = state.message_admission.clone();
-    let (provider, _guest, bridge, preparation_run) =
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agent_management",
-            move || {
-                let connection = store.read().map_err(|_| ApiError::internal())?;
-                let agent =
-                    AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))
-                        .map_err(|_| ApiError::internal())?
-                        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-                let (provider, guest) =
-                    native_action_provider(&store, &agent, host_port.clone(), guest)?;
-                let prepared: Box<dyn MessageAdmission> = if admission_override.is_some() {
-                    Box::new(
-                        studio_runtime_services::message_admission::PreparedAdmission::load(
-                            &connection,
-                            &request.agent,
-                        )
-                        .map_err(|_| ApiError::internal())?,
+    let read_store = Arc::clone(&store);
+    let read_agent = request.agent.clone();
+    let use_prepared = admission_override.is_some();
+    let (agent, prepared) = store
+        .read_async("runtime-http/routes/agent_management", move |tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+            let prepared: Box<dyn MessageAdmission> = if use_prepared {
+                Box::new(
+                    studio_runtime_services::message_admission::PreparedAdmission::load(
+                        tx,
+                        &read_agent,
                     )
-                } else {
-                    Box::new(
-                        studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                            Arc::clone(&store),
-                            &connection,
-                            &request.agent,
-                        )
-                        .map_err(|_| ApiError::internal())?,
+                    .map_err(|_| ApiError::internal())?,
+                )
+            } else {
+                Box::new(
+                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                        read_store,
+                        tx,
+                        &read_agent,
                     )
-                };
-                drop(connection);
-                let admission: Arc<dyn MessageAdmission> =
-                    admission_override.unwrap_or_else(|| Arc::from(prepared));
-                let bridge: Arc<dyn Admission> =
-                    Arc::new(native_action_ports::MessageNativeAdmission::new(admission));
-                let preparation_run = NativeActionPreparationRun {
-                    store: store.clone(),
-                    provider: provider.clone(),
-                    account_driver,
-                    repair,
-                    preparation: resources,
-                    guest: guest.clone(),
-                };
-                Ok::<_, ApiError>((provider, guest, bridge, preparation_run))
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+                    .map_err(|_| ApiError::internal())?,
+                )
+            };
+            Ok::<_, ApiError>((agent, prepared))
+        })
+        .await?;
+    let (provider, guest) = native_action_provider(&store, &agent, host_port, guest)?;
+    let admission: Arc<dyn MessageAdmission> =
+        admission_override.unwrap_or_else(|| Arc::from(prepared));
+    let bridge: Arc<dyn Admission> =
+        Arc::new(native_action_ports::MessageNativeAdmission::new(admission));
+    let preparation_run = NativeActionPreparationRun {
+        store: store.clone(),
+        provider: provider.clone(),
+        account_driver,
+        repair,
+        preparation: resources,
+        guest,
+    };
     let now = unix_time();
     let result = native_actions::execute_provider_prepared(
         &execute_store,
@@ -414,47 +391,32 @@ struct NativeActionPreparationRun {
     guest: Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
 }
 impl NativeActionPreparationRun {
-    fn is_vm(&self, request: &native_actions::Request) -> native_actions::Result<bool> {
-        let connection = self.store.read()?;
-        let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
-            .ok_or(NativeError::Changed)?;
-        Ok(agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm"))
-    }
-
-    fn vm_home(
+    async fn agent(
         &self,
         request: &native_actions::Request,
-    ) -> native_actions::Result<std::path::PathBuf> {
-        let connection = self.store.read()?;
-        let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
-            .ok_or(NativeError::Changed)?;
-        agent
-            .extra
-            .get("layrHome")
-            .and_then(Value::as_str)
-            .filter(|home| !home.is_empty())
-            .map(std::path::PathBuf::from)
-            .ok_or(NativeError::Unavailable("workspace-state/vm-home"))
+    ) -> native_actions::Result<AgentRecord> {
+        let agent_id = AgentId::from(request.agent.as_str());
+        self.store
+            .read_async(
+                "runtime-http/routes/agent_management/preparation",
+                move |tx| AgentRepository::get(tx, &agent_id)?.ok_or(NativeError::Changed),
+            )
+            .await
     }
 
-    fn provider_home(
+    /// The provider home of a host agent, or `None` for a VM agent.
+    fn host_provider_home(
         &self,
-        request: &native_actions::Request,
-    ) -> native_actions::Result<std::path::PathBuf> {
-        if self.is_vm(request)? {
-            return self.vm_home(request);
+        agent: &AgentRecord,
+    ) -> native_actions::Result<Option<std::path::PathBuf>> {
+        if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+            return Ok(None);
         }
-        let account = {
-            let connection = self.store.read()?;
-            let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
-                .ok_or(NativeError::Changed)?;
-            agent
-                .extra
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                .to_owned()
-        };
+        let account = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
         let account_driver = self
             .account_driver
             .as_ref()
@@ -467,29 +429,29 @@ impl NativeActionPreparationRun {
             .iter()
             .find(|row| row["id"] == account)
             .and_then(|row| row["home"].as_str())
-            .map(std::path::PathBuf::from)
+            .map(|home| Some(std::path::PathBuf::from(home)))
             .ok_or(NativeError::Unavailable("account-driver/provider-home"))
+    }
+
+    fn provider_home(&self, agent: &AgentRecord) -> native_actions::Result<std::path::PathBuf> {
+        if let Some(home) = self.host_provider_home(agent)? {
+            return Ok(home);
+        }
+        agent
+            .extra
+            .get("layrHome")
+            .and_then(Value::as_str)
+            .filter(|home| !home.is_empty())
+            .map(std::path::PathBuf::from)
+            .ok_or(NativeError::Unavailable("workspace-state/vm-home"))
     }
 
     async fn repair_before_reserve(
         &self,
         request: &native_actions::Request,
     ) -> native_actions::Result<()> {
-        let preparation = self.clone();
-        let request_for_preflight = request.clone();
-        let provider_home = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agent_management/preparation",
-            move || {
-                if preparation.is_vm(&request_for_preflight)? {
-                    Ok::<_, NativeError>(None)
-                } else {
-                    preparation.provider_home(&request_for_preflight).map(Some)
-                }
-            },
-        )
-        .await
-        .map_err(|_| NativeError::Unavailable("context-repair/repair-idle-broker"))??;
-        let Some(provider_home) = provider_home else {
+        let agent = self.agent(request).await?;
+        let Some(provider_home) = self.host_provider_home(&agent)? else {
             return Ok(());
         };
         self.repair
@@ -513,22 +475,7 @@ impl NativeActionPreparationRun {
         request: &native_actions::Request,
         ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
     ) -> native_actions::Result<()> {
-        let store = Arc::clone(&self.store);
-        let agent_id = request.agent.clone();
-        let agent = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agent_management/preparation",
-            move || {
-                let connection = store.read()?;
-                Ok::<_, NativeError>(
-                    AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))?
-                        .ok_or(NativeError::Changed)?
-                        .value()
-                        .clone(),
-                )
-            },
-        )
-        .await
-        .map_err(|_| NativeError::Unavailable("workspace-state/vm-workspace"))??;
+        let agent = self.agent(request).await?.value().clone();
         if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
             return Ok(());
         }
@@ -581,26 +528,12 @@ impl native_actions::Preparation for NativeActionPreparationRun {
         Box::pin(async move {
             let preparation = self.clone();
             let request_for_prepare = request.clone();
-            let preparation_for_home = preparation.clone();
-            let request_for_home = request_for_prepare.clone();
             let ticket_for_prepare = ticket.clone();
             preparation
                 .prepare_vm_workspace(&request_for_prepare, &ticket_for_prepare)
                 .await?;
-            let (mut resources, provider_home) =
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-http/routes/agent_management/preparation",
-                    move || {
-                        let provider_home =
-                            preparation_for_home.provider_home(&request_for_home)?;
-                        Ok::<_, NativeError>((
-                            preparation.preparation.as_ref().clone(),
-                            provider_home,
-                        ))
-                    },
-                )
-                .await
-                .map_err(|_| NativeError::Unavailable("thread-preparation/native-action"))??;
+            let provider_home = preparation.provider_home(&preparation.agent(request).await?)?;
+            let mut resources = preparation.preparation.as_ref().clone();
             resources.account_home = provider_home.to_string_lossy().into_owned();
             let prepared =
                 studio_runtime_services::account_worker::preparation::prepare_native_action(
@@ -790,14 +723,14 @@ mod native_review_preflight_tests {
             .await
             .expect("save agent");
         let before_agent = {
-            let connection = store.read().expect("read store");
+            let connection = store.test_reader().expect("read store");
             AgentRepository::get(&connection, &original.id)
                 .expect("read agent")
                 .expect("agent exists")
                 .value()
         };
         let before_receipts: i64 = {
-            let connection = store.read().expect("read store");
+            let connection = store.test_reader().expect("read store");
             connection
                 .query_row(
                     "SELECT COUNT(*) FROM runtime_native_action_receipts",
@@ -874,14 +807,14 @@ mod native_review_preflight_tests {
         assert!(vm_result.is_ok());
         assert_eq!(
             preparation
-                .provider_home(&request)
+                .provider_home(&preparation.agent(&request).await.expect("stored VM agent"))
                 .expect("VM provider home comes from layr")
                 .as_path(),
             Path::new("/guest/provider-home")
         );
         assert_eq!(repair.0.load(Ordering::SeqCst), 0);
         assert_eq!(provider.0.load(Ordering::SeqCst), 0);
-        let connection = store.read().expect("read unchanged store");
+        let connection = store.test_reader().expect("read unchanged store");
         let after_agent = AgentRepository::get(&connection, &original.id)
             .expect("read unchanged agent")
             .expect("agent remains")
@@ -971,7 +904,7 @@ mod native_review_preflight_tests {
             if method == "upload.begin"
                 && let Some(store) = &self.intent_store
             {
-                let connection = store.read().expect("read durable import intent");
+                let connection = store.test_reader().expect("read durable import intent");
                 let agent = AgentRepository::get(&connection, &AgentId::from("vm-lead"))
                     .expect("read VM lead")
                     .expect("VM lead exists")
@@ -1157,7 +1090,7 @@ mod native_review_preflight_tests {
             .await,
             Err(NativeError::Unavailable(_))
         ));
-        let connection = store.read().expect("read store");
+        let connection = store.test_reader().expect("read store");
         let saved = AgentRepository::get(&connection, &record_id)
             .expect("read agent")
             .expect("agent exists")
@@ -1290,7 +1223,7 @@ mod native_review_preflight_tests {
             Some(vm_preparation::vm_guest_request_id("layr-context", "vm-lead").as_str())
         );
         drop(calls);
-        let connection = store.read().expect("read store");
+        let connection = store.test_reader().expect("read store");
         let saved = AgentRepository::get(&connection, &record.id)
             .expect("read VM agent")
             .expect("agent exists")
@@ -1486,7 +1419,7 @@ mod native_review_preflight_tests {
         );
         assert_eq!(calls.len(), 6);
         drop(calls);
-        let connection = store.read().expect("read store");
+        let connection = store.test_reader().expect("read store");
         let saved = AgentRepository::get(&connection, &record.id)
             .expect("read agent")
             .unwrap()

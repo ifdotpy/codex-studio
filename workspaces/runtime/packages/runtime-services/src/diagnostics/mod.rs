@@ -23,7 +23,7 @@
 //! SQL is discarded. Python stack frames, holder identity, and transaction
 //! journals are not available. Rust counts terminal SQLite busy/locked errors
 //! crossing the RuntimeStore typed error boundary; raw rusqlite errors handled
-//! directly through `ReadConnection` and service-specific error conversions are
+//! inside `read_async` closures and service-specific error conversions are
 //! outside that boundary. A zero count means none were observed at that boundary,
 //! not that all-process count is zero. Startup marks capture
 //! opt-in Linux current RSS; peak RSS and allocation traces are unavailable.

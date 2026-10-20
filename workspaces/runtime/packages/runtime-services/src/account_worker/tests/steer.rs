@@ -95,7 +95,7 @@ async fn input(state: &State) -> (String, Option<String>, Option<String>) {
     state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT status,turn_id,error FROM runtime_events WHERE id=?1",
                 [INPUT],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -110,7 +110,7 @@ async fn transcript(state: &State) -> i64 {
     state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT COUNT(*) FROM runtime_items WHERE id=?1 AND json_extract(record,'$.role')='user'",
                 [id],
                 |r| r.get::<_, i64>(0),
@@ -304,7 +304,7 @@ async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
         .bridge
         .run(move |store| async move {
             store::recover(&store, "default", Generation(2), true).await?;
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT json_extract(result,'$.stage') FROM runtime_operation_receipts \
                  WHERE signature='claude-steer'",
                 [],

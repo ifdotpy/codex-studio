@@ -43,11 +43,9 @@ async fn log(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let state_dir = state.state_dir.clone();
     let response_id = id.clone();
-    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/monitors",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let monitor = MonitorsRepository::get(&connection, &id)
+    let prepared = store
+        .read_async("runtime-http/routes/monitors", move |connection| {
+            let monitor = MonitorsRepository::get(connection, &id)
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
             let monitor_id = monitor.id().as_ref();
@@ -56,7 +54,7 @@ async fn log(
                 .get("agent")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_monitor(monitor_id))?;
-            let agent = AgentRepository::get(&connection, &AgentId::from(owner))
+            let agent = AgentRepository::get(connection, &AgentId::from(owner))
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
             let agent_value = agent.value();
@@ -104,10 +102,8 @@ async fn log(
                 end,
                 status,
             })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     prepared.response(&response_id)
 }
 

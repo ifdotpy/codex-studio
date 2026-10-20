@@ -336,14 +336,14 @@ async fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
         .expect("guest history is skipped");
     assert_eq!(result["id"], "agent");
     assert_eq!(
-        ContextRepairRepository::agent(&store.read().expect("store readable"), "agent")
+        ContextRepairRepository::agent(&store.test_reader().expect("store readable"), "agent")
             .expect("agent read")
             .expect("agent present")["contextRepairNote"],
         "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed."
     );
 }
 fn state(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("valid synthetic fixture");
+    let db = store.test_reader().expect("valid synthetic fixture");
     let agent = ContextRepairRepository::agent(&db, "agent")
         .expect("valid synthetic fixture")
         .expect("valid synthetic fixture");

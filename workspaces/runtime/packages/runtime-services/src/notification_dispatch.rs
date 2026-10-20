@@ -2386,7 +2386,7 @@ mod tests {
                     assert_eq!(agent_updates, 0, "{provider} notification {index}");
                 }
             }
-            let connection = store.read().unwrap();
+            let connection = store.test_reader().unwrap();
             let agent = AgentRepository::get(&connection, &"agent".into())
                 .unwrap()
                 .unwrap()
@@ -2418,7 +2418,7 @@ mod tests {
             }
             Ok::<_,super::NotificationDispatchError>(())
         }).await.unwrap();
-        let connection = store.read().unwrap();
+        let connection = store.test_reader().unwrap();
         for (item, expected) in [
             ("command", json!("actual-connection-uuid")),
             ("old-command", Value::Null),
@@ -2477,7 +2477,7 @@ mod tests {
             .await
             .unwrap();
         let raw: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT record FROM runtime_items WHERE id='agent:toolu_contract'",

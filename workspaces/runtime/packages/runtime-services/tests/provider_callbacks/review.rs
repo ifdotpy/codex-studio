@@ -17,7 +17,7 @@ async fn put_record(store: &RuntimeStore, table: &str, record: &Value) {
 }
 fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
     let raw: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             &format!("SELECT record FROM {table} WHERE id=?1"),
@@ -27,7 +27,7 @@ fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
         .unwrap();
     let mut record = serde_json::from_str(&raw).unwrap();
     studio_runtime_store::agent_volatile::merge_if_agent(
-        &store.read().unwrap(),
+        &store.test_reader().unwrap(),
         table,
         id,
         &mut record,
@@ -123,7 +123,7 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
             assert_eq!(actual, expected, "{}", case["args"]);
             if case["args"]["action"] == "reject" {
                 assert_eq!(actual["decisions"][0]["by"], context.agent);
-                let events:i64=store.read().unwrap().query_row("SELECT count(*) FROM runtime_events WHERE kind='work_decision' AND agent=?1",[&context.agent],|r|r.get(0)).unwrap();
+                let events:i64=store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_events WHERE kind='work_decision' AND agent=?1",[&context.agent],|r|r.get(0)).unwrap();
                 assert_eq!(events, 0);
                 assert!(case["events"].as_array().unwrap().is_empty());
             }
@@ -382,7 +382,7 @@ async fn model_projection_matches_python_and_keeps_full_result() {
     let preview = tool_value(&result);
     assert_eq!(preview["truncated"], true);
     let raw: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT result FROM runtime_tool_results WHERE id=?1",

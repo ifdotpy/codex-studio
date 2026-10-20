@@ -194,22 +194,13 @@ pub(crate) async fn perform(
     };
     if action == "accept" {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let receipt_agent = agent.clone();
-        let request = request_id.clone();
-        let receipt_signature = signature.clone();
-        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/work_write",
-            move || {
-                work_write::read_work_receipt(
-                    &store,
-                    &receipt_agent,
-                    request.as_deref(),
-                    &receipt_signature,
-                )
-            },
+        let receipt = work_write::read_work_receipt(
+            &store,
+            agent.clone(),
+            request_id.clone(),
+            signature.clone(),
         )
         .await
-        .map_err(|_| ApiError::internal())?
         .map_err(write_error)?;
         if let Some(receipt) = receipt {
             return Ok(receipt);
@@ -532,6 +523,9 @@ enum AcceptedArchivePreparation {
     },
 }
 
+/// A host owner's working directory and result revision, checked with Git after the read.
+type HostGitCheck = (String, String);
+
 async fn finalize_accepted_archive(
     state: &HttpState,
     record: Value,
@@ -540,76 +534,99 @@ async fn finalize_accepted_archive(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let work_id = record["id"].as_str().unwrap_or_default().to_owned();
     let work_id_for_read = work_id.clone();
-    let read_store = store.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/work_write", move || -> Result<(Value, AcceptedArchivePreparation), ApiError> {
-        let connection = read_store.read().map_err(|_| ApiError::internal())?;
-        let work = studio_runtime_store::WorkItemsRepository::work_record(&connection, &work_id_for_read)
+    let read = store.read_async("runtime-http/routes/work_write", move |connection| -> Result<(Value, AcceptedArchivePreparation, Option<HostGitCheck>), ApiError> {
+        let work = studio_runtime_store::WorkItemsRepository::work_record(connection, &work_id_for_read)
             .map_err(|_| ApiError::internal())?
             .ok_or_else(ApiError::internal)?;
         let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
         let root_id = work["rootId"].as_str().unwrap_or_default().to_owned();
         if owner_id.is_empty() || owner_id == root_id {
-            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"}), false)));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"}), false), None));
         }
         let owner = studio_runtime_store::AgentRepository::get(
-            &connection,
+            connection,
             &studio_runtime_store::AgentId::from(owner_id.as_str()),
         )?.ok_or_else(ApiError::internal)?;
         let lead = studio_runtime_store::AgentRepository::get(
-            &connection,
+            connection,
             &studio_runtime_store::AgentId::from(root_id.as_str()),
         )?.ok_or_else(ApiError::internal)?;
         let owner_value = owner.value();
-        let open_tasks = studio_runtime_store::WorkItemsRepository::work(&connection)?
+        let open_tasks = studio_runtime_store::WorkItemsRepository::work(connection)?
             .into_iter()
             .filter_map(|item| item.record.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()))
             .filter(|item| item["owner"] == owner_id && !matches!(item["status"].as_str(), Some("accepted" | "cancelled")))
             .filter_map(|item| item["id"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
         if !open_tasks.is_empty() {
-            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner has another open task","tasks":open_tasks.into_iter().take(20).collect::<Vec<_>>(),"retryable":true}), true)));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner has another open task","tasks":open_tasks.into_iter().take(20).collect::<Vec<_>>(),"retryable":true}), true), None));
         }
         if owner_value.get("deletedAt").is_some_and(|value| !value.is_null()) {
-            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner is already removed"}), false)));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner is already removed"}), false), None));
         }
         if owner_value.get("remoteWorker").is_some_and(|value| {
             !value.is_null() && value != false && value != ""
         }) {
-            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}), false)));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}), false), None));
         }
         let latest = work["results"].as_array().and_then(|values| values.last()).cloned().unwrap_or(Value::Null);
         let revision = latest["revision"].as_str().unwrap_or_default();
         let execution_mode = owner_value.get("executionMode").and_then(Value::as_str).unwrap_or_default();
-        if execution_mode != "vm" {
-            let cwd = owner_value.get("cwd").and_then(Value::as_str).unwrap_or_default();
-            if cwd.is_empty()
-                || !std::path::Path::new(cwd).is_dir()
-                || !work_write::accepted_revision_is_on_local_main(cwd, revision)
-            {
-                let remote_origin = !cwd.is_empty() && work_write::repository_has_origin(cwd);
-                let reason = if remote_origin {
-                    "Remote-origin main verification requires cross-server/remote-transport"
-                } else {
-                    "The result commit is not reachable from local main"
-                };
-                return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":reason}), false)));
-            }
-        } else if !studio_runtime_services::work_write::vm_merge_confirmed(
-            &connection,
+        // A host owner's Git checks run after this read ends.
+        let host_check = (execution_mode != "vm").then(|| {
+            (
+                owner_value.get("cwd").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                revision.to_owned(),
+            )
+        });
+        if host_check.is_none() && !studio_runtime_services::work_write::vm_merge_confirmed(
+            connection,
             &work_id_for_read,
             latest["id"].as_str().unwrap_or_default(),
             revision,
         )
         .map_err(write_error)?
         {
-            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The layr result merge is not confirmed"}), false)));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The layr result merge is not confirmed"}), false), None));
         }
         Ok((work, AcceptedArchivePreparation::Archive {
             owner_id,
             root_id,
             lead_epoch: u64::try_from(lead.epoch).map_err(|_| ApiError::internal())?,
-        }))
-    }).await.map_err(|_| ApiError::internal())??;
+        }, host_check))
+    }).await?;
+    let result = match read {
+        (work, archive @ AcceptedArchivePreparation::Archive { .. }, Some((cwd, revision))) => {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/work_write",
+                move || {
+                    if cwd.is_empty()
+                        || !std::path::Path::new(&cwd).is_dir()
+                        || !work_write::accepted_revision_is_on_local_main(&cwd, &revision)
+                    {
+                        let remote_origin =
+                            !cwd.is_empty() && work_write::repository_has_origin(&cwd);
+                        let reason = if remote_origin {
+                            "Remote-origin main verification requires cross-server/remote-transport"
+                        } else {
+                            "The result commit is not reachable from local main"
+                        };
+                        return (
+                            work,
+                            AcceptedArchivePreparation::Finished(
+                                serde_json::json!({"status":"kept","reason":reason}),
+                                false,
+                            ),
+                        );
+                    }
+                    (work, archive)
+                },
+            )
+            .await
+            .map_err(|_| ApiError::internal())?
+        }
+        (work, preparation, _) => (work, preparation),
+    };
     let (mut work, outcome, retryable) = match result {
         (work, AcceptedArchivePreparation::Finished(outcome, retryable)) => {
             (work, outcome, retryable)

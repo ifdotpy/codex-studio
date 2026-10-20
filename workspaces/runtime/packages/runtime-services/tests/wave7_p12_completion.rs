@@ -57,7 +57,7 @@ fn limits() -> LimitsObservation {
 }
 
 fn usage_rows(store: &RuntimeStore) -> (i64, Option<String>) {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let count = db
         .query_row("SELECT count(*) FROM runtime_usage_resumes", [], |row| {
             row.get(0)
@@ -74,7 +74,7 @@ fn usage_rows(store: &RuntimeStore) -> (i64, Option<String>) {
 }
 
 fn all_usage_rows(store: &RuntimeStore) -> Vec<Value> {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let mut stmt = db
         .prepare("SELECT record FROM runtime_usage_resumes ORDER BY id")
         .expect("query");
@@ -85,7 +85,7 @@ fn all_usage_rows(store: &RuntimeStore) -> Vec<Value> {
 }
 
 fn complete_continuation_rows(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let table_exists = |table: &str| -> bool {
         db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -540,7 +540,7 @@ async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_lat
     assert!(first.changed());
     assert!(second.changed());
     {
-        let db = store.read().expect("reader");
+        let db = store.test_reader().expect("reader");
         let alpha_cursor: Option<String> = db
             .query_row("SELECT json_extract(record,'$.authResumeProofPending.default.afterId') FROM runtime_agents WHERE id='a'", [], |row| row.get(0))
             .expect("alpha cursor");
@@ -592,7 +592,7 @@ async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_lat
         68
     );
     {
-        let db = store.read().expect("reader");
+        let db = store.test_reader().expect("reader");
         let marker: Option<String> = db
             .query_row(
                 "SELECT json_extract(record,'$.authResumeProofPending') FROM runtime_agents WHERE id='a'",

@@ -378,7 +378,7 @@ async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {
     };
     assert!(matches!(&first.body, ResponseBody::Result(value) if value["success"] == true));
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let receipt = studio_runtime_store::system_reads::all(&connection, "runtime_tool_requests")
         .unwrap()
         .into_iter()
@@ -590,7 +590,7 @@ fn real_monitor_runtime_ports(
         .ports()
 }
 
-fn production_managed_ports(
+async fn production_managed_ports(
     store: &Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &Frame,
@@ -608,6 +608,7 @@ fn production_managed_ports(
                 preparation: None,
             },
         )
+        .await
         .unwrap(),
     )
 }
@@ -632,7 +633,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
             json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
         );
         activate_fixture_monitor(&store, &context, &managed_monitor_id()).await;
-        let ports = production_managed_ports(&store, &context, &frame, fake.clone());
+        let ports = production_managed_ports(&store, &context, &frame, fake.clone()).await;
         let first =
             dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
                 .await
@@ -649,7 +650,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         assert_eq!(tickets.len(), 1, "same native ticket must not be resent");
         assert!(tickets[0].contains("production-monitor-input"));
         let row = studio_runtime_store::system_reads::all(
-            &store.read().unwrap(),
+            &store.test_reader().unwrap(),
             "runtime_tool_requests",
         )
         .unwrap()
@@ -687,7 +688,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         "orchestration_monitor_input",
         json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
-    let ports = production_managed_ports(&store, &worker_context, &frame, fake.clone());
+    let ports = production_managed_ports(&store, &worker_context, &frame, fake.clone()).await;
     let before = callback_intent_snapshot(&store);
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -715,7 +716,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         "orchestration_monitor_input",
         json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
-    let ports = production_managed_ports(&store, &stale_context, &frame, fake.clone());
+    let ports = production_managed_ports(&store, &stale_context, &frame, fake.clone()).await;
     let before = callback_intent_snapshot(&store);
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -809,7 +810,7 @@ async fn unavailable_provider_model_list_refuses_without_callback_writes() {
 }
 
 fn callback_intent_snapshot(store: &RuntimeStore) -> Value {
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     json!({
         "requests": connection.prepare("SELECT id,record FROM runtime_tool_requests ORDER BY id").unwrap()
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
@@ -909,6 +910,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
                 &frame,
                 managed_ports(Some(fake.clone()), Some(fake.clone())),
             )
+            .await
             .unwrap(),
         );
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
@@ -923,7 +925,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             ["thread-0:stable-monitor-input"]
         );
         let row = studio_runtime_store::system_reads::all(
-            &store.read().unwrap(),
+            &store.test_reader().unwrap(),
             "runtime_tool_requests",
         )
         .unwrap()
@@ -969,6 +971,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             &frame,
             managed_ports(Some(fake.clone()), Some(fake.clone())),
         )
+        .await
         .unwrap(),
     );
     assert!(
@@ -1047,6 +1050,7 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
                 &frame,
                 managed_ports(None, None),
             )
+            .await
             .unwrap(),
         );
         let decision =
@@ -1078,7 +1082,7 @@ fn call(context: &CallbackContext, rpc: &str, tool: &str, args: Value) -> Frame 
 
 fn intent_count(store: &RuntimeStore, kind: &str) -> i64 {
     store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM p05_test_intents WHERE kind=?1",
@@ -1090,7 +1094,7 @@ fn intent_count(store: &RuntimeStore, kind: &str) -> i64 {
 
 fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
     use rusqlite::types::ValueRef;
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let mut tables = connection
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .unwrap();
@@ -1179,12 +1183,15 @@ async fn dispatch_case(
         expected["tool"].as_str().unwrap(),
         args.unwrap_or_else(|| expected["arguments"].clone()),
     );
-    let ports = shared_ports(crate::provider_callbacks::managed_tool_ports(
-        store,
-        &context,
-        &frame,
-        std::sync::Arc::new(tokio::sync::Notify::new()),
-    )?);
+    let ports = shared_ports(
+        crate::provider_callbacks::managed_tool_ports(
+            store,
+            &context,
+            &frame,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        )
+        .await?,
+    );
     dispatch_with_managed_tools(Arc::clone(store), &context, &frame, 20.0, ports).await
 }
 
@@ -1243,7 +1250,9 @@ async fn named_refusals_leave_all_application_tables_unchanged() {
         let frame = call(&context, &rpc, tool, args);
         let wake = std::sync::Arc::new(tokio::sync::Notify::new());
         let ports = shared_ports(
-            crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap(),
+            crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake)
+                .await
+                .unwrap(),
         );
         let decision =
             dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
@@ -1299,10 +1308,11 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
             Arc::new(tokio::sync::Notify::new()),
             Some(&runtime),
         )
+        .await
         .unwrap(),
     );
     let count_before: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
             row.get(0)
@@ -1314,7 +1324,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
             .unwrap();
     assert!(matches!(first, CallbackDecision::Answer(_)));
     let count: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
             row.get(0)
@@ -1323,7 +1333,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
     assert_eq!(count, count_before + 1);
     let saved: Value = serde_json::from_str(
         &store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT record FROM runtime_monitors WHERE json_extract(record, '$.command')=?1",
@@ -1344,7 +1354,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
     );
 
     let actor_record = {
-        let read = store.read().unwrap();
+        let read = store.test_reader().unwrap();
         studio_runtime_store::AgentRepository::get(
             &read,
             &studio_runtime_store::AgentId::from(context.agent.as_str()),
@@ -1383,7 +1393,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
             .unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
     let replayed_count: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
             row.get(0)
@@ -1392,7 +1402,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
     assert_eq!(replayed_count, count_before + 1);
     let replayed: Value = serde_json::from_str(
         &store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT record FROM runtime_monitors WHERE id=?1",
@@ -1487,6 +1497,7 @@ async fn send_remote_routing_refusals_write_nothing() {
                 &frame,
                 std::sync::Arc::new(tokio::sync::Notify::new()),
             )
+            .await
             .unwrap(),
         );
         let decision =
@@ -1563,6 +1574,7 @@ async fn managed_reads_preserve_corrupt_record_identity() {
             &search,
             std::sync::Arc::new(tokio::sync::Notify::new()),
         )
+        .await
         .unwrap(),
     );
     // Prepare the search directory first; the corrupt row is deliberately
@@ -1628,6 +1640,7 @@ async fn managed_reads_preserve_corrupt_record_identity() {
             &context_call,
             std::sync::Arc::new(tokio::sync::Notify::new()),
         )
+        .await
         .unwrap(),
     );
     let context_result = dispatch_with_managed_tools(
@@ -1780,7 +1793,7 @@ async fn startup_reconciles_reserved_callback_once() {
         .await
         .unwrap();
     let running_claim: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='running' AND json_extract(record,'$.outcome')='pending'",
@@ -1821,7 +1834,7 @@ async fn startup_reconciles_reserved_callback_once() {
         "recovery does not resend an uncertain managed operation"
     );
     let (stage, outcome): (String, String) = restarted
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT json_extract(record,'$.stage'),json_extract(record,'$.outcome') FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send'",
@@ -1940,7 +1953,7 @@ async fn spawn_intent_is_reconciled_after_restart_when_no_signal_was_released() 
             .unwrap();
     }
     let starts: i64 = restarted
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM p05_test_starts", [], |row| row.get(0))
         .unwrap();
@@ -2030,6 +2043,7 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
                 &frame,
                 std::sync::Arc::new(tokio::sync::Notify::new()),
             )
+            .await
             .unwrap(),
         );
         let CallbackDecision::Answer(reply) =
@@ -2087,7 +2101,7 @@ async fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
         })
         .await
         .unwrap();
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let cancelled =
         studio_runtime_store::system_reads::get(&connection, "runtime_tool_requests", &request_id)
             .unwrap()
@@ -2322,7 +2336,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .into_owned();
     let base_commit = run_git_output(&project_path, &["rev-parse", "HEAD~1"]);
     let mut actor_value = {
-        let read = store.read().unwrap();
+        let read = store.test_reader().unwrap();
         studio_runtime_store::AgentRepository::get(
             &read,
             &studio_runtime_store::AgentId::from(context.agent.as_str()),
@@ -2409,7 +2423,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(spawned.value["agents"].as_array().unwrap().len(), 1);
     assert_eq!(spawned.value["requestId"], "dispatcher-spawn-api");
     let spawned_child_id = spawned.value["agents"][0]["id"].as_str().unwrap();
-    let read = store.read().unwrap();
+    let read = store.test_reader().unwrap();
     let spawned_child = studio_runtime_store::AgentRepository::get(
         &read,
         &studio_runtime_store::AgentId::from(spawned_child_id),
@@ -2440,7 +2454,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .unwrap();
     let fallback_id = fallback.value["agents"][0]["id"].as_str().unwrap();
     let fallback_child = studio_runtime_store::AgentRepository::get(
-        &store.read().unwrap(),
+        &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(fallback_id),
     )
     .unwrap()
@@ -2463,7 +2477,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .expect("a host worker may work in another existing folder");
     let alternate_id = alternate.value["agents"][0]["id"].as_str().unwrap();
     let alternate_child = studio_runtime_store::AgentRepository::get(
-        &store.read().unwrap(),
+        &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(alternate_id),
     )
     .unwrap()
@@ -2489,7 +2503,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .unwrap()
         .to_owned();
     let actual_child = studio_runtime_store::AgentRepository::get(
-        &store.read().unwrap(),
+        &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(child_id.as_str()),
     )
     .unwrap()
@@ -2513,7 +2527,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .expect("a default worktree outside Git uses the shared folder");
     let child_id = no_git.value["agents"][0]["id"].as_str().unwrap().to_owned();
     let initial: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT text FROM runtime_events WHERE id=?1",
@@ -2526,7 +2540,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         "the no-Git child gets an initial message"
     );
     let agents_before_folder_refusals: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2577,13 +2591,13 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         assert!(!refused.to_string().is_empty(), "{case}");
     }
     let agents_after_folder_refusals: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
     assert_eq!(agents_before_folder_refusals, agents_after_folder_refusals);
     let before_workspace_refusal: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2597,7 +2611,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     ).await
     .is_err());
     let after_workspace_refusal: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2616,7 +2630,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(IMAGE_PROVISION_CALLS.get(), provision_calls_before + 1);
     let image_base_id = image_base.value["agents"][0]["id"].as_str().unwrap();
     let image_base_child = studio_runtime_store::AgentRepository::get(
-        &store.read().unwrap(),
+        &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(image_base_id),
     )
     .unwrap()
@@ -2628,7 +2642,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(image_base.value["agents"][0]["cwd"], "/fake-image/repo");
     assert_eq!(image_base.value["agents"][0]["imageWorkspaceReady"], true);
     let published_image_child: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
@@ -2642,7 +2656,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(image_base_child["imageWorkspaceBaseRef"], "HEAD~1");
     assert_eq!(image_base_child["workerBaseCommit"], base_commit);
     let image_base_event: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT text FROM runtime_events WHERE id=?1",
@@ -2665,7 +2679,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(reviewed.value["requestId"], "dispatcher-review-api");
     assert_eq!(reviewed.value["status"], "queued");
     let child = reviewed.value["agents"][0]["id"].as_str().unwrap();
-    let read = store.read().unwrap();
+    let read = store.test_reader().unwrap();
     let child = studio_runtime_store::AgentRepository::get(
         &read,
         &studio_runtime_store::AgentId::from(child),
@@ -2699,7 +2713,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let vm_actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
     VM_REVIEW_GUEST_CALLS.set(0);
     let before_vm_review: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2720,7 +2734,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         ))
     ));
     let after_vm_review: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2730,7 +2744,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     );
     assert_eq!(VM_REVIEW_GUEST_CALLS.get(), 0, "refusal precedes line.save");
     let after_uncertain_review: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2753,7 +2767,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .await
         .unwrap();
     let latest_actor_value = {
-        let read = store.read().unwrap();
+        let read = store.test_reader().unwrap();
         studio_runtime_store::AgentRepository::get(
             &read,
             &studio_runtime_store::AgentId::from(context.agent.as_str()),
@@ -2765,7 +2779,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let latest_actor =
         Actor::from_record(&latest_actor_value, &context.agent, context.epoch).unwrap();
     let before_capacity: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2779,7 +2793,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     ).await
     .is_err());
     let after_capacity: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
@@ -2791,7 +2805,7 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
     for failpoint in ["child", "first-turn"] {
         let (_root, store, context) = fixture().await;
         let actor_value = {
-            let read = store.read().unwrap();
+            let read = store.test_reader().unwrap();
             studio_runtime_store::AgentRepository::get(
                 &read,
                 &studio_runtime_store::AgentId::from(context.agent.as_str()),
@@ -2838,7 +2852,7 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
             .is_err(),
             "expected {failpoint} write failure"
         );
-        let read = store.read().unwrap();
+        let read = store.test_reader().unwrap();
         assert!(
             studio_runtime_store::AgentRepository::get(
                 &read,
@@ -2867,7 +2881,7 @@ async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
     for (provider, model) in [("codex", "gpt-6-luna"), ("claude", "claude-haiku-4-5")] {
         let (_root, store, context) = fixture().await;
         let mut lead = {
-            let read = store.read().unwrap();
+            let read = store.test_reader().unwrap();
             studio_runtime_store::AgentRepository::get(
                 &read,
                 &studio_runtime_store::AgentId::from(context.agent.as_str()),
@@ -2880,12 +2894,12 @@ async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
         lead["model"] = json!(model);
         lead["workerDefaults"] = json!({"model": model});
         let active = studio_runtime_store::AgentIndexedReads::active_team_members(
-            &store.read().unwrap(),
+            &store.test_reader().unwrap(),
             lead["rootId"].as_str().unwrap(),
         )
         .unwrap();
         let running = {
-            let read = store.read().unwrap();
+            let read = store.test_reader().unwrap();
             read.query_row(
                 "SELECT count(*) FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 \
                  AND id!=?1 AND json_extract(record,'$.status') IN ('running','starting','approval')",
@@ -2964,7 +2978,7 @@ async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
 
         let count = |store: &RuntimeStore| -> i64 {
             store
-                .read()
+                .test_reader()
                 .unwrap()
                 .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
                 .unwrap()
@@ -3017,7 +3031,7 @@ impl crate::provider_callbacks::WorkActionPort for ScriptedWorkPort {
     }
 }
 
-fn work_ports(
+async fn work_ports(
     store: &Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &Frame,
@@ -3044,6 +3058,7 @@ fn work_ports(
                 preparation: None,
             },
         )
+        .await
         .unwrap(),
     )
 }
@@ -3086,7 +3101,7 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
             "orchestration_task",
             json!({"action":action,"task_id":"task-1","version":3,"result":"done"}),
         );
-        let ports = work_ports(&store, &context, &frame, Arc::clone(&port));
+        let ports = work_ports(&store, &context, &frame, Arc::clone(&port)).await;
         let first =
             dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
                 .await
@@ -3131,7 +3146,7 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
         "orchestration_task",
         json!({"action":"submit","task_id":"task-1","version":3,"result":"done"}),
     );
-    let ports = work_ports(&store, &context, &frame, refusing);
+    let ports = work_ports(&store, &context, &frame, refusing).await;
     let (success, value) = tool_reply(
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 22.0, ports)
             .await
@@ -3180,6 +3195,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
                     &frame,
                     Arc::new(tokio::sync::Notify::new()),
                 )
+                .await
                 .unwrap(),
             );
             tool_reply(
@@ -3191,7 +3207,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     };
     let worker_record = |store: &RuntimeStore, id: &str| -> Value {
         studio_runtime_store::AgentRepository::get(
-            &store.read().unwrap(),
+            &store.test_reader().unwrap(),
             &studio_runtime_store::AgentId::from(id),
         )
         .unwrap()

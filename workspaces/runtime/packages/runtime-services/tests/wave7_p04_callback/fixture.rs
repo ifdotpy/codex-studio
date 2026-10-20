@@ -87,7 +87,7 @@ pub async fn card(store: &RuntimeStore, value: &Value) {
 }
 pub fn stored(store: &RuntimeStore, id: &str) -> Value {
     let raw: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT record FROM runtime_requests WHERE id=?1",
@@ -170,9 +170,12 @@ pub async fn checkpoint(store: &RuntimeStore, context: &CallbackContext, cursor:
 }
 
 pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
-    studio_runtime_store::agent_volatile::merged_record(&store.read().unwrap(), &context.agent)
-        .unwrap()
-        .unwrap()
+    studio_runtime_store::agent_volatile::merged_record(
+        &store.test_reader().unwrap(),
+        &context.agent,
+    )
+    .unwrap()
+    .unwrap()
 }
 pub async fn put_actor(store: &RuntimeStore, value: &Value) {
     let id = value["id"].as_str().unwrap().to_owned();
@@ -208,7 +211,7 @@ pub fn physical_snapshot(store: &RuntimeStore) -> Value {
 }
 fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
     use rusqlite::types::ValueRef;
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let mut names=connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
     let tables = names
         .query_map([], |r| r.get::<_, String>(0))

@@ -193,7 +193,7 @@ fn projection_log_rows(state: &State) -> i64 {
     state
         .bridge
         .store
-        .read()
+        .test_reader()
         .expect("reader")
         .query_row(
             "SELECT count(*) FROM runtime_analytics_projection",
@@ -269,7 +269,7 @@ fn receipts_for(state: &State, cursor: u64) -> i64 {
     state
         .bridge
         .store
-        .read()
+        .test_reader()
         .expect("reader")
         .query_row(
             "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%' \

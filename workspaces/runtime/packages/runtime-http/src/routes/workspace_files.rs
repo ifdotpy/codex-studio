@@ -53,16 +53,10 @@ pub(crate) async fn file_info(
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
+    let target = file_target(&store, agent_id, path, asset_id).await?;
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/workspace_files",
-        move || {
-            read_info(
-                &store,
-                agent_id.as_deref(),
-                path.as_deref(),
-                asset_id.as_deref(),
-            )
-        },
+        move || read_info(target),
     )
     .await
     .map_err(|_| ApiError::internal())??;
@@ -85,16 +79,10 @@ pub(crate) async fn file_content(
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
+    let target = file_target(&store, agent_id, path, asset_id).await?;
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/workspace_files",
-        move || {
-            read_content(
-                &store,
-                agent_id.as_deref(),
-                path.as_deref(),
-                asset_id.as_deref(),
-            )
-        },
+        move || read_content(target),
     )
     .await
     .map_err(|_| ApiError::internal())??;
@@ -106,99 +94,97 @@ pub(crate) async fn file_content(
     .map(Json)
 }
 
-fn read_info(
-    store: &RuntimeStore,
-    agent_id: Option<&str>,
-    path: Option<&str>,
-    asset_id: Option<&str>,
-) -> Result<workspace_files::FileInfo, ApiError> {
-    if let Some(asset_id) = asset_id {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
-            .map_err(map_store_error)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-        let asset_value = asset.value();
-        let owner_id = asset_value
-            .get("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
-            .to_owned();
-        drop(connection);
-        validate_agent(store, &owner_id)?;
-        let path = asset_value
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?;
-        let mut info = workspace_files::file_info(path, None).map_err(file_error)?;
-        info.mime = asset_value
-            .get("mime")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
-            .to_owned();
-        return Ok(info);
-    }
-    let context = workspace_context(store, agent_id)?;
-    let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
-    if context.image_workspace_ready {
-        workspace_files::image_file_info(path, &context.cwd).map_err(file_error)
-    } else {
-        workspace_files::file_info(path, Some(&context.cwd)).map_err(file_error)
-    }
+/// A file to read once the store lookups are done.
+enum FileTarget {
+    Asset {
+        path: String,
+        mime: String,
+    },
+    Workspace {
+        context: WorkspaceContext,
+        path: String,
+    },
 }
 
-fn read_content(
+/// Resolve an attachment or a workspace path with one store read.
+async fn file_target(
     store: &RuntimeStore,
-    agent_id: Option<&str>,
-    path: Option<&str>,
-    asset_id: Option<&str>,
-) -> Result<workspace_files::FileContent, ApiError> {
+    agent_id: Option<String>,
+    path: Option<String>,
+    asset_id: Option<String>,
+) -> Result<FileTarget, ApiError> {
     if let Some(asset_id) = asset_id {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
-            .map_err(map_store_error)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-        let asset_value = asset.value();
-        let owner_id = asset_value
-            .get("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
-            .to_owned();
-        drop(connection);
-        validate_agent(store, &owner_id)?;
-        let path = asset_value
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?;
-        let mut content = workspace_files::file_content(path, None).map_err(file_error)?;
-        content.mime = asset_value
-            .get("mime")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
-            .to_owned();
-        return Ok(content);
+        return store
+            .read_async("runtime-http/routes/workspace_files", move |connection| {
+                let asset = WorkspaceFilesRepository::asset(connection, &asset_id)
+                    .map_err(map_store_error)?
+                    .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
+                let asset_value = asset.value();
+                let field = |name: &str| {
+                    asset_value
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))
+                };
+                let owner_id = field("agent")?;
+                validate_agent(connection, &owner_id)?;
+                Ok(FileTarget::Asset {
+                    path: field("path")?,
+                    mime: field("mime")?,
+                })
+            })
+            .await;
     }
-    let context = workspace_context(store, agent_id)?;
-    let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
-    if context.image_workspace_ready {
-        workspace_files::image_file_content(path, &context.cwd).map_err(file_error)
-    } else {
-        workspace_files::file_content(path, Some(&context.cwd)).map_err(file_error)
-    }
-}
-
-fn workspace_context(
-    store: &RuntimeStore,
-    agent_id: Option<&str>,
-) -> Result<WorkspaceContext, ApiError> {
     let agent_id = agent_id
         .filter(|agent| !agent.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Supply an agent ID"))?;
-    validate_agent(store, agent_id)
+    let context = store
+        .read_async("runtime-http/routes/workspace_files", move |connection| {
+            validate_agent(connection, &agent_id)
+        })
+        .await?;
+    let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
+    Ok(FileTarget::Workspace { context, path })
 }
 
-fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceContext, ApiError> {
-    let connection = store.read().map_err(|_| ApiError::internal())?;
-    let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))
+fn read_info(target: FileTarget) -> Result<workspace_files::FileInfo, ApiError> {
+    match target {
+        FileTarget::Asset { path, mime } => {
+            let mut info = workspace_files::file_info(&path, None).map_err(file_error)?;
+            info.mime = mime;
+            Ok(info)
+        }
+        FileTarget::Workspace { context, path } if context.image_workspace_ready => {
+            workspace_files::image_file_info(&path, &context.cwd).map_err(file_error)
+        }
+        FileTarget::Workspace { context, path } => {
+            workspace_files::file_info(&path, Some(&context.cwd)).map_err(file_error)
+        }
+    }
+}
+
+fn read_content(target: FileTarget) -> Result<workspace_files::FileContent, ApiError> {
+    match target {
+        FileTarget::Asset { path, mime } => {
+            let mut content = workspace_files::file_content(&path, None).map_err(file_error)?;
+            content.mime = mime;
+            Ok(content)
+        }
+        FileTarget::Workspace { context, path } if context.image_workspace_ready => {
+            workspace_files::image_file_content(&path, &context.cwd).map_err(file_error)
+        }
+        FileTarget::Workspace { context, path } => {
+            workspace_files::file_content(&path, Some(&context.cwd)).map_err(file_error)
+        }
+    }
+}
+
+fn validate_agent(
+    connection: &studio_runtime_store::Connection,
+    agent_id: &str,
+) -> Result<WorkspaceContext, ApiError> {
+    let agent = AgentRepository::get(connection, &AgentId::from(agent_id))
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
     let record = agent.value();

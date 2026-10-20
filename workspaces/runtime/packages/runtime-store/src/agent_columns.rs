@@ -482,7 +482,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("store opens");
-        let triggers = catalog(&store.read().expect("reader"), "trigger");
+        let triggers = catalog(&store.test_reader().expect("reader"), "trigger");
         store
             .transaction(|tx| {
                 // Back to the old format: a record-only table, its triggers and
@@ -519,7 +519,7 @@ mod tests {
             .await
             .expect("old-format state");
         let (rows_before, journal_before) = {
-            let reader = store.read().expect("reader");
+            let reader = store.test_reader().expect("reader");
             (rows(&reader), journal(&reader))
         };
         assert_eq!(
@@ -532,7 +532,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("store migrates");
-        let reader = store.read().expect("reader");
+        let reader = store.test_reader().expect("reader");
         assert_eq!(rows(&reader), rows_before, "rowid, id and record are kept");
         assert_eq!(
             journal(&reader),
@@ -612,7 +612,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("store reopens");
-        let reader = store.read().expect("reader");
+        let reader = store.test_reader().expect("reader");
         assert_eq!(
             schema(&reader),
             schema_after,

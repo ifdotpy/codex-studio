@@ -450,7 +450,7 @@ mod tests {
 
     fn stored(store: &RuntimeStore, id: &str) -> Value {
         let raw: String = store
-            .read()
+            .test_reader()
             .expect("read")
             .query_row(
                 "SELECT record FROM runtime_tasks WHERE id=?1",
@@ -462,7 +462,7 @@ mod tests {
     }
 
     fn checks(store: &RuntimeStore) -> Vec<CommandCheck> {
-        absent_command_checks(&store.read().expect("read"), "default").expect("checks")
+        absent_command_checks(&store.test_reader().expect("read"), "default").expect("checks")
     }
 
     /// Live 2026-10-20: completed chats kept a running command of a turn that

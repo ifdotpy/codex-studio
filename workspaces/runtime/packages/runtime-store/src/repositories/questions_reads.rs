@@ -87,7 +87,7 @@ mod tests {
             })
             .await
             .expect("seed corpus");
-        let connection = store.read().expect("reader");
+        let connection = store.test_reader().expect("reader");
         let family = QuestionsReadsRepository::agent_family(&connection, "c1").expect("family");
         let family_ids = family
             .iter()

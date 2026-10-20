@@ -308,7 +308,7 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
     assert_eq!(renamed["label"], "Renamed receiver");
 
     let invite_count = receiver_store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             tx.query_row("SELECT count(*) FROM runtime_access_invites", [], |row| {
                 row.get::<_, i64>(0)
             })
@@ -821,7 +821,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     .expect("receipt JSON");
     assert_eq!(receipt["outcome"], "applied");
     assert_eq!(receipt["value"]["eventId"], "python-event-http");
-    let db = store.read().expect("test store reader");
+    let db = store.test_reader().expect("test store reader");
     let count: i64 = db
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='python-event-http' AND agent='event-parent' AND text='signed owner event'",
@@ -996,7 +996,7 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
     let project_id = value["value"]["projectId"]
         .as_str()
         .expect("created project ID");
-    let reader = receiver_store.read().expect("project store read");
+    let reader = receiver_store.test_reader().expect("project store read");
     let (_, project) = ProjectsRepository::get(&reader, project_id)
         .expect("created project loads")
         .expect("created project exists");

@@ -431,8 +431,14 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     std::thread::Builder::new()
         .name("image-mount-check".to_owned())
         .spawn(studio_runtime_services::image_workspace::run_startup_mount_check)?;
-    let workspace_id =
-        studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
+    let (workspace_id, limits_read) = store
+        .read_async("runtime-server/startup", |db| {
+            Ok::<_, studio_runtime_store::StoreError>((
+                studio_runtime_store::SyncDocumentsRepository::workspace_id(db)?,
+                account_state::limits_snapshots(db)?,
+            ))
+        })
+        .await?;
     let state_root = store.root().canonicalize()?;
     // Free space of the state volume gates new turns and disk-full holds.
     studio_runtime_services::disk_space::install(state_root.clone());
@@ -445,7 +451,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         path: registry_path,
         bytes: registry_bytes,
     } = startup_registry(&state_root, &base_home)?;
-    let limits_read = account_state::limits_snapshots(&*store.read()?)?;
     let account_policy = Arc::new(
         AccountPolicyState::from_store(registry_bytes.as_deref(), limits_read).map_err(
             |error| {
@@ -1065,27 +1070,17 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             let now = tokio::time::Instant::now();
             let wall_now = epoch_seconds();
             let mut read_retry_due = None;
-            let pairings_store = Arc::clone(&federation_store);
-            let pairings = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/federation-pairing-scan",
-                move || {
-                    studio_runtime_services::federation_delivery::pending_pairings(&pairings_store)
-                },
-            )
-            .await;
+            let pairings =
+                studio_runtime_services::federation_delivery::pending_pairings(&federation_store)
+                    .await;
             let pairings = match pairings {
-                Ok(Ok(pairings)) => {
+                Ok(pairings) => {
                     let pending = pairings
                         .iter()
                         .cloned()
                         .collect::<std::collections::BTreeSet<_>>();
                     pairing_retries.retain(|id, _| pending.contains(id));
                     pairings
-                }
-                Ok(Err(error)) => {
-                    eprintln!("federation pairing scan failed: {error}");
-                    read_retry_due = Some(now + SCHEDULER_FAILURE_RETRY);
-                    Vec::new()
                 }
                 Err(error) => {
                     eprintln!("federation pairing scan failed: {error}");
@@ -1131,14 +1126,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                     }
                 }
             }
-            let snapshot_store = Arc::clone(&federation_store);
-            let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/federation-peer-snapshot",
-                move || studio_runtime_services::federation::snapshot(&snapshot_store),
-            )
-            .await;
-            match snapshot {
-                Ok(Ok(snapshot)) => {
+            match studio_runtime_services::federation::snapshot(&federation_store).await {
+                Ok(snapshot) => {
                     let approved = snapshot["peers"]
                         .as_array()
                         .into_iter()
@@ -1176,27 +1165,18 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                         }
                     }
                 }
-                Ok(Err(error)) => {
-                    eprintln!("federation peer snapshot failed: {error}");
-                    read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
-                }
                 Err(error) => {
                     eprintln!("federation peer snapshot failed: {error}");
                     read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
                 }
             }
-            let deadlines_store = Arc::clone(&federation_store);
-            let delivery_deadlines = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/federation-delivery-deadlines",
-                move || {
-                    studio_runtime_services::federation_delivery::delivery_deadlines_by_peer(
-                        &deadlines_store,
-                    )
-                },
-            )
-            .await;
+            let delivery_deadlines =
+                studio_runtime_services::federation_delivery::delivery_deadlines_by_peer(
+                    &federation_store,
+                )
+                .await;
             let delivery_due = match delivery_deadlines {
-                Ok(Ok(values)) => values
+                Ok(values) => values
                     .into_iter()
                     .filter_map(|(peer, at)| {
                         let retry = delivery_retries.get(&peer).map(|(retry_at, _)| *retry_at);
@@ -1210,11 +1190,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                         }
                     })
                     .min(),
-                Ok(Err(error)) => {
-                    eprintln!("federation delivery deadline read failed: {error}");
-                    read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
-                    Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY)
-                }
                 Err(error) => {
                     eprintln!("federation delivery deadline read failed: {error}");
                     read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
@@ -1345,28 +1320,21 @@ async fn continuation_scheduler(
             }
             retry_not_before = None;
         }
-        let store_for_due = Arc::clone(&store);
         let now = epoch_seconds();
-        let next_due = match studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/continuation-scheduler",
-            move || -> studio_runtime_store::StoreResult<Option<f64>> {
-                let db = store_for_due.read()?;
-                let due = continuation_next_due(&db)?;
-                let auth_proof_pending = auth_resume_proof_exists(&db)?;
-                Ok(if auth_proof_pending { Some(now) } else { due })
-            },
-        )
-        .await
+        let next_due = match store
+            .read_async(
+                "runtime-server/continuation-scheduler",
+                move |db| -> studio_runtime_store::StoreResult<Option<f64>> {
+                    let due = continuation_next_due(db)?;
+                    let auth_proof_pending = auth_resume_proof_exists(db)?;
+                    Ok(if auth_proof_pending { Some(now) } else { due })
+                },
+            )
+            .await
         {
-            Ok(Ok(value)) => value,
-            Ok(Err(error)) => {
-                eprintln!("continuation scheduler due-time read failed: {error}");
-                let retry_at = now + CONTINUATION_FAILURE_RETRY_SECONDS;
-                retry_not_before = Some(retry_at);
-                Some(retry_at)
-            }
+            Ok(value) => value,
             Err(error) => {
-                eprintln!("continuation scheduler blocking read failed: {error}");
+                eprintln!("continuation scheduler due-time read failed: {error}");
                 let retry_at = now + CONTINUATION_FAILURE_RETRY_SECONDS;
                 retry_not_before = Some(retry_at);
                 Some(retry_at)
@@ -1435,15 +1403,10 @@ async fn run_continuation_tick(
     store: Arc<RuntimeStore>,
     now: f64,
 ) -> studio_runtime_store::StoreResult<bool> {
-    let read_store = Arc::clone(&store);
-    let (agents, limits) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/continuation-inputs",
-        move || {
-            // One read checkout: a second one on this thread while `db`
-            // lives fails with NestedRead and so failed every due tick.
-            let db = read_store.read()?;
-            let agents = continuation_tick_agents(&db, now)?;
-            let limits = account_state::limits_snapshots(&db)?
+    let (agents, limits) = store
+        .read_async("runtime-server/continuation-inputs", move |db| {
+            let agents = continuation_tick_agents(db, now)?;
+            let limits = account_state::limits_snapshots(db)?
                 .snapshots
                 .into_iter()
                 .filter_map(|(account_key, value)| {
@@ -1459,14 +1422,8 @@ async fn run_continuation_tick(
                 })
                 .collect::<BTreeMap<_, _>>();
             Ok::<_, studio_runtime_store::StoreError>((agents, limits))
-        },
-    )
-    .await
-    .map_err(|_| {
-        studio_runtime_store::StoreError::RecordContract(
-            "Continuation input preparation worker failed",
-        )
-    })??;
+        })
+        .await?;
     let mut changed = false;
     for agent_id in agents {
         let observations = limits.clone();
@@ -2028,7 +1985,7 @@ mod exit_logging_tests {
             .await
             .expect("one failing agent does not fail the tick");
         assert!(changed, "the valid agent is staged");
-        let db = store.read().expect("reader");
+        let db = store.test_reader().expect("reader");
         let pending = |id: &str| -> Option<String> {
             db.query_row(
                 "SELECT json_extract(record,'$.authResumeProofPending') FROM runtime_agents WHERE id=?1",

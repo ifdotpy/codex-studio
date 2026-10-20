@@ -20,8 +20,12 @@ pub enum FederationError {
     Credentials(#[from] crate::federation_credentials::CredentialError),
 }
 
-pub fn snapshot(store: &RuntimeStore) -> Result<Value, FederationError> {
-    Ok(store.read_transaction(|transaction| FederationRepository::snapshot(transaction))?)
+pub async fn snapshot(store: &RuntimeStore) -> Result<Value, FederationError> {
+    Ok(store
+        .read_async("runtime-services/federation", |transaction| {
+            FederationRepository::snapshot(transaction)
+        })
+        .await?)
 }
 
 pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, FederationError> {
@@ -113,18 +117,12 @@ async fn create_invitation(
                 "Configure Tailscale Serve before creating a pairing invitation".to_owned(),
             )
         })?;
-    let store_for_read = Arc::clone(&store);
-    let enabled = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/federation",
-        move || {
-            store_for_read.read_transaction(|tx| {
-                let snapshot = FederationRepository::snapshot(tx)?;
-                Ok::<_, StoreError>(snapshot["enabled"].as_bool() == Some(true))
-            })
-        },
-    )
-    .await
-    .map_err(|_| FederationError::Refused("federation settings lookup failed".to_owned()))??;
+    let enabled = store
+        .read_async("runtime-services/federation", |tx| {
+            let snapshot = FederationRepository::snapshot(tx)?;
+            Ok::<_, StoreError>(snapshot["enabled"].as_bool() == Some(true))
+        })
+        .await?;
     if !enabled {
         return Err(FederationError::Refused(
             "Enable federation before creating an invitation".to_owned(),
@@ -152,24 +150,7 @@ async fn create_invitation(
         ));
     }
     let now = unix_time()?;
-    let store_for_read = Arc::clone(&store);
-    let lead_name = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/federation", move || {
-        store_for_read.read_transaction(|connection| {
-            connection
-                .query_row(
-                    "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
-                    [],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()
-                .map(|value| value.flatten())
-                .map_err(StoreError::from)
-        })
-    })
-    .await
-    .map_err(|_| FederationError::Refused("federation identity lookup failed".to_owned()))??
-    .filter(|name| !name.is_empty())
-    .unwrap_or_else(|| "Lead".to_owned());
+    let lead_name = local_lead_name(Arc::clone(&store)).await?;
     let identity = crate::federation_credentials::Credentials::ensure_federation_identity(
         Arc::clone(&store),
         label,
@@ -287,19 +268,15 @@ async fn accept_peer(
     }
     uuid::Uuid::parse_str(state_id)
         .map_err(|_| FederationError::Refused("Peer state identity is invalid".to_owned()))?;
-    let store_for_read = Arc::clone(&store);
-    let enabled = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/federation", move || {
-        store_for_read.read_transaction(|tx| {
-            tx.query_row(
-                "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(StoreError::from)
-        })
+    let enabled = store.read_async("runtime-services/federation", |tx| {
+        tx.query_row(
+            "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(StoreError::from)
     })
-    .await
-    .map_err(|_| FederationError::Refused("federation settings lookup failed".to_owned()))??;
+    .await?;
     if !enabled {
         return Err(FederationError::Refused(
             "Enable federation before pairing".to_owned(),
@@ -401,12 +378,12 @@ async fn accept_peer(
             Ok::<_, StoreError>(())
         }).await?;
     }
-    snapshot(&store)
+    snapshot(&store).await
 }
 
 async fn local_lead_name(store: Arc<RuntimeStore>) -> Result<String, FederationError> {
-    let value = studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/federation", move || {
-        store.read_transaction(|connection| {
+    let value = store
+        .read_async("runtime-services/federation", |connection| {
             connection
                 .query_row(
                     "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
@@ -417,9 +394,7 @@ async fn local_lead_name(store: Arc<RuntimeStore>) -> Result<String, FederationE
                 .map(|value| value.flatten())
                 .map_err(StoreError::from)
         })
-    })
-    .await
-    .map_err(|_| FederationError::Refused("federation identity lookup failed".to_owned()))??;
+        .await?;
     Ok(value
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Lead".to_owned()))
@@ -464,23 +439,17 @@ mod tests {
         .expect("fake whoami invitation succeeds");
         assert_eq!(result["invitation"]["tailscaleUser"], "owner@example.test");
         assert_eq!(result["invitation"]["tailscaleStatus"], "verified");
-        let store_for_read = std::sync::Arc::clone(&store);
-        let identity = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/federation",
-            move || {
-                store_for_read.read_transaction(|tx| {
-                    tx.query_row(
-                        "SELECT record FROM runtime_federation_identity WHERE id='local'",
-                        [],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .map_err(studio_runtime_store::StoreError::from)
-                })
-            },
-        )
-        .await
-        .expect("identity read worker completes")
-        .expect("identity row reads");
+        let identity = store
+            .read_async("runtime-services/federation/tests", |tx| {
+                tx.query_row(
+                    "SELECT record FROM runtime_federation_identity WHERE id='local'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .expect("identity row reads");
         let identity: serde_json::Value = serde_json::from_str(&identity).expect("identity JSON");
         assert_eq!(identity["tailscaleUser"], "owner@example.test");
         assert_eq!(identity["tailscaleStatus"], "verified");

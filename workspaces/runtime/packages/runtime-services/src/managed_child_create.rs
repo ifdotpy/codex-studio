@@ -348,11 +348,7 @@ pub(crate) async fn spawn_agents(
         ))?;
     let parent_value = actor_record.value();
     let root_id = actor_record.root_id.0.as_str();
-    let root = {
-        let read = store.read()?;
-        AgentRepository::get(&read, &AgentId::from(root_id))?
-            .ok_or(crate::managed_host_tools::Error::Stale)?
-    };
+    let root = stored_root(store, AgentId::from(root_id)).await?;
     event_write::assert_delegation(&root)
         .map_err(|_| crate::managed_host_tools::Error::Invalid("Delegation is disabled"))?;
     let root_value = root.value();
@@ -372,8 +368,11 @@ pub(crate) async fn spawn_agents(
 
     // Workers without an explicit account go to the least loaded one; the count
     // grows with each pick so a batch spreads across accounts as well.
-    let mut account_load =
-        studio_runtime_store::AgentIndexedReads::slots_by_account(&*store.read()?)?;
+    let mut account_load = store
+        .read_async("runtime-services/managed_child_create", |read| {
+            studio_runtime_store::AgentIndexedReads::slots_by_account(read)
+        })
+        .await?;
     for (index, spec) in specs.iter().enumerate() {
         if !spec.is_object() {
             return Err(crate::managed_host_tools::Error::Invalid(
@@ -390,10 +389,16 @@ pub(crate) async fn spawn_agents(
                     .ok_or(crate::managed_host_tools::Error::Invalid(
                         "Unknown worker profile",
                     ))?;
-            let read = store.read()?;
+            let profile_id = profile_id.to_owned();
             Some(
-                studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(&read)
-                    .get(&profile_id.to_owned())?
+                store
+                    .read_async("runtime-services/managed_child_create", move |read| {
+                        studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(
+                            read,
+                        )
+                        .get(&profile_id)
+                    })
+                    .await?
                     .ok_or(crate::managed_host_tools::Error::Invalid(
                         "Unknown worker profile",
                     ))?,
@@ -601,26 +606,36 @@ pub(crate) async fn spawn_agents(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let project_account_keys = root_value
+        let project_account_keys = match root_value
             .get("projectId")
             .and_then(Value::as_str)
             .zip(root_value.get("projectServerId").and_then(Value::as_str))
-            .and_then(|(project_id, home_server)| {
-                let read = store.read().ok()?;
-                let (_, record) = studio_runtime_store::ProjectsRepository::get(&read, project_id)
-                    .ok()
-                    .flatten()?;
-                (record["homeServerId"] == home_server)
-                    .then(|| {
-                        record["accountKeys"].as_array().map(|keys| {
-                            keys.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_owned)
-                                .collect::<Vec<_>>()
-                        })
+        {
+            Some((project_id, home_server)) => {
+                let project_id = project_id.to_owned();
+                store
+                    .read_async("runtime-services/managed_child_create", move |read| {
+                        studio_runtime_store::ProjectsRepository::get(read, &project_id)
                     })
+                    .await
+                    .ok()
                     .flatten()
-            });
+                    .map(|(_, record)| (record, home_server))
+            }
+            None => None,
+        }
+        .and_then(|(record, home_server)| {
+            (record["homeServerId"] == home_server)
+                .then(|| {
+                    record["accountKeys"].as_array().map(|keys| {
+                        keys.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .flatten()
+        });
         let (account_key, account) =
             environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
                 parent_account_key: parent_account,
@@ -693,19 +708,16 @@ pub(crate) async fn spawn_agents(
         let parent_project_id = parent_value
             .get("projectId")
             .filter(|_| alternate_directory.is_none());
-        let project = {
-            let read = store.read()?;
-            let project_id = parent_project_id
+        let project = stored_project(
+            store,
+            parent_project_id
                 .and_then(Value::as_str)
-                .unwrap_or(host_cwd);
-            studio_runtime_store::ProjectsRepository::get(&read, project_id)?
-                .or(studio_runtime_store::ProjectsRepository::get(
-                    &read, host_cwd,
-                )?)
-                .map(|(_, project)| project)
-        };
+                .unwrap_or(host_cwd),
+            host_cwd,
+        )
+        .await?;
         let project_worker_base = if requested_base_ref.is_none() && in_git {
-            worker_base_for_directory(store, parent_project_id, host_cwd)?
+            worker_base_for_directory(store, parent_project_id, host_cwd).await?
         } else {
             None
         };
@@ -1015,9 +1027,39 @@ pub(crate) fn child_id(request_id: &str, index: usize) -> String {
     .to_string()
 }
 
+/// The stored root agent; a missing root makes the request stale.
+async fn stored_root(store: &RuntimeStore, root_id: AgentId) -> Result<AgentRecord, Error> {
+    store
+        .read_async("runtime-services/managed_child_create", move |read| {
+            AgentRepository::get(read, &root_id)?
+                .ok_or_else(|| crate::managed_host_tools::Error::Stale.into())
+        })
+        .await
+}
+
+/// The project stored under `project_id`, else the one stored under `fallback`.
+async fn stored_project(
+    store: &RuntimeStore,
+    project_id: &str,
+    fallback: &str,
+) -> Result<Option<Value>, Error> {
+    let (project_id, fallback) = (project_id.to_owned(), fallback.to_owned());
+    store
+        .read_async("runtime-services/managed_child_create", move |read| {
+            Ok::<_, Error>(
+                studio_runtime_store::ProjectsRepository::get(read, &project_id)?
+                    .or(studio_runtime_store::ProjectsRepository::get(
+                        read, &fallback,
+                    )?)
+                    .map(|(_, project)| project),
+            )
+        })
+        .await
+}
+
 /// Match Python `Runtime.project_worker_base`: project handles are exact ids;
 /// filesystem directories inherit the setting from their deepest ancestor.
-fn worker_base_for_directory(
+async fn worker_base_for_directory(
     store: &RuntimeStore,
     project_id: Option<&Value>,
     cwd: &str,
@@ -1026,18 +1068,26 @@ fn worker_base_for_directory(
         .and_then(Value::as_str)
         .filter(|value| value.starts_with("project:"))
     {
-        let read = store.read()?;
-        let (_, project) = studio_runtime_store::ProjectsRepository::get(&read, handle)?.ok_or(
-            crate::managed_host_tools::Error::Invalid("Select an existing project"),
-        )?;
+        let handle = handle.to_owned();
+        let (_, project) = store
+            .read_async("runtime-services/managed_child_create", move |read| {
+                studio_runtime_store::ProjectsRepository::get(read, &handle)
+            })
+            .await?
+            .ok_or(crate::managed_host_tools::Error::Invalid(
+                "Select an existing project",
+            ))?;
         return Ok(project
             .get("workerBaseRef")
             .and_then(Value::as_str)
             .map(str::to_owned));
     }
+    let projects = store
+        .read_async("runtime-services/managed_child_create", |read| {
+            studio_runtime_store::ProjectsRepository::list(read)
+        })
+        .await?;
     let directory = canonical_or_expanded(cwd);
-    let read = store.read()?;
-    let projects = studio_runtime_store::ProjectsRepository::list(&read)?;
     Ok(projects
         .into_iter()
         .filter_map(|(_, project)| {
@@ -1431,11 +1481,7 @@ pub(crate) async fn request_review(
         return Err(crate::managed_host_tools::Error::Invalid("Invalid review identity").into());
     }
     let parent_value = actor_record.value();
-    let root = {
-        let read = store.read()?;
-        AgentRepository::get(&read, &actor_record.root_id)?
-            .ok_or(crate::managed_host_tools::Error::Stale)?
-    };
+    let root = stored_root(store, actor_record.root_id.clone()).await?;
     let root_value = root.value();
     let parent_cwd = parent_value.get("cwd").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Select a project directory"),
@@ -1461,10 +1507,13 @@ pub(crate) async fn request_review(
     let child_id = plan.spec().get("id").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Invalid native review request"),
     )?;
-    if let Some(saved) = {
-        let read = store.read()?;
-        studio_runtime_store::ContextRepairRepository::agent(&read, child_id)?
-    } {
+    let saved_id = child_id.to_owned();
+    if let Some(saved) = store
+        .read_async("runtime-services/managed_child_create", move |read| {
+            studio_runtime_store::ContextRepairRepository::agent(read, &saved_id)
+        })
+        .await?
+    {
         let value = plan.existing(&saved).map_err(|_| {
             crate::managed_host_tools::Error::Invalid("This request id has different content")
         })?;
@@ -1507,18 +1556,15 @@ pub(crate) async fn request_review(
     let (base_ref, base_commit, _, _) =
         crate::host_worker_create::resolve_worker_base(Path::new(&directory), None)
             .map_err(map_create_error)?;
-    let project = {
-        let read = store.read()?;
-        let project_id = parent_value
+    let project = stored_project(
+        store,
+        parent_value
             .get("projectId")
             .and_then(Value::as_str)
-            .unwrap_or(parent_cwd);
-        studio_runtime_store::ProjectsRepository::get(&read, project_id)?
-            .or(studio_runtime_store::ProjectsRepository::get(
-                &read, parent_cwd,
-            )?)
-            .map(|(_, project)| project)
-    };
+            .unwrap_or(parent_cwd),
+        parent_cwd,
+    )
+    .await?;
     let body = json!({"account_key":account_key,"name":"Review","model":model,
         "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or(""),
         "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),

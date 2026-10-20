@@ -82,7 +82,7 @@ async fn journal(
 
 fn journal_receipts(store: &RuntimeStore) -> i64 {
     store
-        .read()
+        .test_reader()
         .expect("reader")
         .query_row(
             "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'",
@@ -376,7 +376,7 @@ async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
     .await;
     let pending = |store: &RuntimeStore| -> i64 {
         store
-            .read()
+            .test_reader()
             .expect("reader")
             .query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'",
@@ -420,7 +420,7 @@ async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
 /// The durable stream metadata text of the `default` account, if any.
 fn stream_metadata(store: &RuntimeStore) -> Option<String> {
     store
-        .read()
+        .test_reader()
         .expect("reader")
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:streams:default:metadata'",

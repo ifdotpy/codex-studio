@@ -180,13 +180,9 @@ async fn audit(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccessAuditResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server",
-        move || multi_server::audit(&store),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(map_service_error)?;
+    let result = multi_server::audit(&store)
+        .await
+        .map_err(map_service_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::AccessAuditResponse,
     >(result)?))
@@ -552,26 +548,22 @@ async fn accept_invite(
         ));
     }
     let now = timestamp as f64;
-    let prior_store = Arc::clone(&store);
     let server_id_for_read = server_id.to_owned();
-    let prior = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server/accept-invite-prior",
-        move || {
-            prior_store
-                .read_transaction(|tx| {
-                    tx.query_row(
-                        "SELECT record FROM runtime_access_clients WHERE id=?1",
-                        [server_id_for_read],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(Into::into)
-                })
-                .map_err(ApiError::stored)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let prior = store
+        .read_async(
+            "runtime-http/routes/multi_server/accept-invite-prior",
+            move |tx| {
+                tx.query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id=?1",
+                    [server_id_for_read],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(Into::into)
+            },
+        )
+        .await
+        .map_err(ApiError::stored)?;
     if let Some(prior) = prior {
         let prior: Value = serde_json::from_str(&prior).map_err(|_| {
             ApiError::new(
@@ -620,24 +612,14 @@ async fn ui_invite(
         .as_str()
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The request ID is invalid"))?;
-    let peer_store = Arc::clone(&store);
     let server_id_for_read = server_id.to_owned();
-    let peer = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server/ui-invite-peer",
-        move || {
-            peer_store
-                .read_transaction(|tx| {
+    let peer = store.read_async("runtime-http/routes/multi_server/ui-invite-peer", move |tx| {
                     tx.query_row("SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'", [server_id_for_read], |row| row.get::<_, String>(0))
                         .optional()?
                         .map(|raw| serde_json::from_str(&raw).map_err(|_| studio_runtime_store::StoreError::SchemaMismatch("invalid stored object runtime_access_clients".into())))
                         .transpose()
                         .map(|value| value.unwrap_or(Value::Null))
-                })
-                .map_err(ApiError::stored)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+                }).await.map_err(ApiError::stored)?;
     if peer.is_null() {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -753,13 +735,8 @@ async fn remote_set_server_name(
             "Invalid server name request",
         ));
     }
-    let peer_store = Arc::clone(store);
     let target_for_read = target.to_owned();
-    let raw_peer = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server/remote-name-peer",
-        move || {
-            peer_store
-                .read_transaction(|tx| {
+    let raw_peer = store.read_async("runtime-http/routes/multi_server/remote-name-peer", move |tx| {
                     tx.query_row(
                         "SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'",
                         [target_for_read],
@@ -767,12 +744,7 @@ async fn remote_set_server_name(
                     )
                     .optional()
                     .map_err(Into::into)
-                })
-                .map_err(ApiError::stored)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+                }).await.map_err(ApiError::stored)?;
     let Some(raw_peer) = raw_peer else {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -1352,13 +1324,13 @@ mod tests {
             ])
         );
         let saved: Value = store
-            .read_transaction(|tx| {
-                Ok(tx.query_row(
-                    "SELECT record FROM runtime_access_clients WHERE id='lostpeer'",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )?)
-            })
+            .test_reader()
+            .expect("test reader")
+            .query_row(
+                "SELECT record FROM runtime_access_clients WHERE id='lostpeer'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
             .map(|raw| serde_json::from_str(&raw).expect("stored JSON"))
             .expect("stored record");
         assert_eq!(saved["alias"], "GON");

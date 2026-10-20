@@ -84,7 +84,7 @@ fn full() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
 }
 fn snapshot(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("read state");
+    let db = store.test_reader().expect("read state");
     let mut result = serde_json::Map::new();
     for table in [
         "runtime_projects",
@@ -232,7 +232,7 @@ async fn python_location_and_move_corpus_through_consumers() {
                     "{} receipt",
                     case["name"]
                 );
-                let db = store.read().expect("read");
+                let db = store.test_reader().expect("read");
                 assert_eq!(
                     ProjectsRepository::get(&db, "/home-project")
                         .expect("project")
@@ -299,7 +299,7 @@ async fn python_location_and_move_corpus_through_consumers() {
                     .expect("repair committed location receipt");
                 assert_eq!(actual["outcome"], case["expected"]["record"]["outcome"]);
                 assert_eq!(actual["result"], case["expected"]["record"]["result"]);
-                let db = store.read().expect("read");
+                let db = store.test_reader().expect("read");
                 let stored = ProjectLocationsRepository::tool(&db, text(&record, "id"))
                     .expect("stored request")
                     .expect("exists");
@@ -381,7 +381,7 @@ async fn python_location_and_move_corpus_through_consumers() {
             }
             _ => panic!("unknown fixture family"),
         }
-        let db = store.read().expect("read");
+        let db = store.test_reader().expect("read");
         assert_eq!(
             AgentMoveRepository::get(&db, text(&case["operation"], "id"))
                 .expect("move")
@@ -421,7 +421,7 @@ async fn location_consumer_checks_shared_outbox_storage_before_decoding() {
         .await
         .expect("invalid storage metadata fixture");
     let before = snapshot(&store);
-    assert!(ProjectLocationsRepository::outbox(&store.read().expect("read"), key).is_err());
+    assert!(ProjectLocationsRepository::outbox(&store.test_reader().expect("read"), key).is_err());
     assert!(
         complete_location(
             &store,
@@ -818,7 +818,7 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
         .await
         .expect("recover same request");
         assert_eq!(
-            ProjectsRepository::get(&store.read().expect("read"), "/home-project")
+            ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
                 .expect("read project")
                 .expect("exists")
                 .1,

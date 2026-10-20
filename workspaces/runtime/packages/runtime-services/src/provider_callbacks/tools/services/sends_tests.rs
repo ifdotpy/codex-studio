@@ -57,7 +57,7 @@ async fn send(
         thread: actor["threadId"].as_str().unwrap().into(),
         turn: actor["turnId"].as_str().unwrap().into(),
     };
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let admission =
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
@@ -72,7 +72,7 @@ async fn send(
         preparation: None,
     });
     let raw: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
@@ -117,7 +117,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         thread: actor["threadId"].as_str().unwrap().into(),
         turn: actor["turnId"].as_str().unwrap().into(),
     };
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let admission =
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
@@ -152,7 +152,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         .await
         .unwrap();
     let event_count: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='wake-after-commit'",
@@ -188,7 +188,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         thread: actor["threadId"].as_str().unwrap().into(),
         turn: actor["turnId"].as_str().unwrap().into(),
     };
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let admission =
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
@@ -277,7 +277,7 @@ async fn complaint_submit_read_and_respond_share_the_notification_service() {
         .await
         .unwrap();
     assert_eq!(responded["responses"][0]["author"], lead["id"]);
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let response_event: i64 = reader
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE agent=?1 AND kind='complaint_response'",
@@ -296,7 +296,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
 
     let (_root, store, value) = send(0, child, "send-child").await;
     assert_eq!(value["status"], "queued");
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let event: (String, String, String) = reader
         .query_row(
             "SELECT agent,kind,text FROM runtime_events WHERE id='send-child'",
@@ -317,7 +317,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
         value["room"],
         format!("private:{}:{}", member_ids[0], member_ids[1])
     );
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let event_count: i64 = reader
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='send-parent'",
@@ -337,7 +337,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
 
     let (_root, store, value) = send(1, "broadcast", "send-broadcast").await;
     assert!(value["room"].as_str().unwrap().starts_with("broadcast:"));
-    let reader = store.read().unwrap();
+    let reader = store.test_reader().unwrap();
     let chat_count: i64 = reader
         .query_row(
             "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast'",
@@ -446,7 +446,7 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
         .expect("a radio member may message privately outside its shared reply turn");
     assert_eq!(delivered["id"], "radio-guard-idle");
     let chat_count: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_chat_messages WHERE id IN ('radio-guard-live','radio-guard-idle')",

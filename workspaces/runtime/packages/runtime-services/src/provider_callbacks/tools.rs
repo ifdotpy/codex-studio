@@ -419,17 +419,22 @@ pub(super) async fn dispatch_with_ports(
     }))
 }
 
-pub(super) fn production_ports(
+pub(super) async fn production_ports(
     store: &RuntimeStore,
     context: &CallbackContext,
     input: &Input,
     config: crate::provider_callbacks::ManagedToolPortsConfig,
 ) -> Result<services::ProductionPorts, CallbackError> {
-    let reader = store.read()?;
-    let admission = crate::message_admission::PreparedAdmission::load(&reader, &context.agent)
-        .map_err(CallbackError::from)?;
-    let room_directory = if input.params["tool"] == "orchestration_search" {
-        Some(crate::sync_entity_context::RoomDirectory::prepare(&reader)?)
+    let agent = context.agent.clone();
+    let search = input.params["tool"] == "orchestration_search";
+    let admission = store
+        .read_async("runtime-services/provider_callbacks/tools", move |reader| {
+            crate::message_admission::PreparedAdmission::load(reader, &agent)
+                .map_err(CallbackError::from)
+        })
+        .await?;
+    let room_directory = if search {
+        Some(crate::sync_entity_context::RoomDirectory::read_and_prepare(store).await?)
     } else {
         None
     };

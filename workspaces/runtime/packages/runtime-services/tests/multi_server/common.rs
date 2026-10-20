@@ -112,7 +112,7 @@ pub fn owner() -> OwnerObservation {
     .expect("owner observation")
 }
 pub fn rows(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("read");
+    let db = store.test_reader().expect("read");
     let mut output = serde_json::Map::new();
     for table in [
         "runtime_access_clients",

@@ -226,7 +226,7 @@ async fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
         .await
         .expect("close cleans actor state");
 
-    let connection = store.read().expect("read transcript records");
+    let connection = store.test_reader().expect("read transcript records");
     let rows = connection
         .prepare("SELECT text FROM voice_records WHERE session='canonical-session' ORDER BY seq")
         .expect("voice record query")
@@ -265,7 +265,7 @@ async fn callback_actor_flushes_fallback_tail_when_provider_closes() {
         .await
         .expect("close flushes fallback");
 
-    let connection = store.read().expect("read flushed transcript");
+    let connection = store.test_reader().expect("read flushed transcript");
     let (text, payload): (String, String) = connection
         .query_row(
             "SELECT text,payload FROM voice_records WHERE session='fallback-session'",
@@ -315,7 +315,7 @@ async fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empt
         .handle_notification(&store, "account", "voice-connection", &closed, 4.0)
         .await
         .expect("close completes");
-    let connection = store.read().expect("read transcript records");
+    let connection = store.test_reader().expect("read transcript records");
     let count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM voice_records WHERE session='discard-session'",
@@ -375,7 +375,7 @@ async fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() 
             .expect("disconnect closes actor"),
         1
     );
-    let connection = store.read().expect("read disconnected state");
+    let connection = store.test_reader().expect("read disconnected state");
     let (state, text): (String, String) = connection
         .query_row(
             "SELECT s.state,r.text FROM voice_sessions s JOIN voice_records r ON r.session=s.id WHERE s.id='disconnect-session'",
@@ -502,7 +502,7 @@ async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
         .await
         .expect("retry reuses the committed delete intent after voice rows are gone");
     assert_eq!(replay, first);
-    let connection = store.read().expect("read staged deletion receipt");
+    let connection = store.test_reader().expect("read staged deletion receipt");
     let result: String = connection
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id='agent-delete-voice:agent:0'",
@@ -570,7 +570,7 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
         .expect("retry cap leaves the intent for a later startup/lifecycle pass");
     assert_eq!(still_pending.sessions.len(), 1);
     assert_eq!(still_pending.sessions[0].session_id, "delete-retry-session");
-    let connection = store.read().expect("read persisted retry state");
+    let connection = store.test_reader().expect("read persisted retry state");
     let raw: String = connection
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id=?1",
@@ -664,7 +664,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
         completed.iter().all(|intent| intent.id != intent_id),
         "a written stop settles the intent and removes its receipt"
     );
-    let connection = store.read().expect("read completed receipt");
+    let connection = store.test_reader().expect("read completed receipt");
     let remaining: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
@@ -688,7 +688,7 @@ async fn empty_delete_intents_write_no_receipt_and_startup_purges_only_settled_o
         .expect("an agent without voice sessions stages an empty intent");
     assert!(empty.sessions.is_empty() && empty.held_uncertain.is_empty());
     let receipts = |store: &RuntimeStore| -> Vec<String> {
-        let connection = store.read().expect("read receipts");
+        let connection = store.test_reader().expect("read receipts");
         let mut statement = connection
             .prepare("SELECT id FROM runtime_operation_receipts WHERE id LIKE 'agent-delete-voice:%' ORDER BY id")
             .expect("prepare receipt ids");
@@ -1301,6 +1301,7 @@ async fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
         .expect("seed existing Python-format receipt");
 
     let replay = voice::provider::read_speech_receipt(&store, "agent", "session:one", "record")
+        .await
         .expect("owned exact receipt is safe to replay");
     assert_eq!(replay.expect("receipt exists")["record_id"], "record");
     assert!(
@@ -1310,11 +1311,14 @@ async fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
             "owned-by-agent",
             "private-record",
         )
+        .await
         .expect("foreign session is refused without disclosure")
         .is_none()
     );
     assert!(
-        voice::provider::read_speech_receipt(&store, "agent", "session", "one:record").is_err()
+        voice::provider::read_speech_receipt(&store, "agent", "session", "one:record")
+            .await
+            .is_err()
     );
 }
 
@@ -1369,6 +1373,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
     .await
     .expect("first speech is written");
     let before = voice::provider::read_speech_receipt(&store, "agent", "session", "written-record")
+        .await
         .expect("receipt read")
         .expect("receipt exists");
     store
@@ -1396,6 +1401,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
         voice::provider::VoiceProviderError::Policy(policy::VoiceError::SessionIdentityConflict)
     ));
     let after = voice::provider::read_speech_receipt(&store, "agent", "session", "written-record")
+        .await
         .expect("receipt read")
         .expect("receipt exists");
     assert_eq!(before, after);
@@ -1442,16 +1448,20 @@ async fn python_approval_speech_rows_and_voice_views_match_rust() {
     );
     let expected: serde_json::Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
 
-    let approvals = voice::approvals(&store, "agent").expect("Rust approvals");
+    let approvals = voice::approvals(&store, "agent")
+        .await
+        .expect("Rust approvals");
     assert_eq!(approvals, expected["approvals"]);
-    let records = voice::records(&store, "agent", 0).expect("Rust records view");
+    let records = voice::records(&store, "agent", 0)
+        .await
+        .expect("Rust records view");
     assert_eq!(records, expected["records"]);
     let speech = voice::approval_speech(std::sync::Arc::clone(&store), "agent", "oracle-approval")
         .await
         .expect("Rust reads Python-written approval speech");
     assert_eq!(speech, expected["approval"]);
 
-    let connection = store.read().expect("full voice record rows");
+    let connection = store.test_reader().expect("full voice record rows");
     let rows = connection.prepare(
         "SELECT seq,id,agent,session,kind,text,item_id,previous_item_id,payload,created \
          FROM voice_records WHERE agent='agent' ORDER BY seq",
@@ -1548,7 +1558,7 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     .await
     .expect("Rust end");
 
-    let connection = store.read().expect("Rust lifecycle rows");
+    let connection = store.test_reader().expect("Rust lifecycle rows");
     for (table, order) in [
         ("voice_sessions", "id"),
         ("voice_records", "seq"),
@@ -1683,7 +1693,7 @@ async fn audio_validation_precedes_scoped_expiry_pruning() {
     .expect("first synthetic upload");
     let record_id = first["id"].as_str().expect("record id");
     let payload: String = store
-        .read()
+        .test_reader()
         .expect("audio record database")
         .query_row(
             "SELECT payload FROM voice_records WHERE id=?1",
@@ -2252,7 +2262,7 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
         voice::provider::VoiceProviderError::ContextChanged
     ));
     assert!(provider.calls.lock().expect("provider calls").is_empty());
-    let connection = store.read().expect("read refusal state");
+    let connection = store.test_reader().expect("read refusal state");
     assert_eq!(
         connection
             .query_row("SELECT COUNT(*) FROM voice_approvals", [], |row| row
@@ -2296,7 +2306,7 @@ async fn voice_start_returns_connecting_before_provider_setup_and_replays_once()
     .expect("the durable connecting session is accepted before provider setup");
     assert_eq!(accepted["state"], "connecting");
     entered.await;
-    let connection = store.read().expect("read connecting session");
+    let connection = store.test_reader().expect("read connecting session");
     let (state, connection_id): (String, Option<String>) = connection
         .query_row(
             "SELECT state,connection_id FROM voice_sessions WHERE id='delayed-prepare-success'",
@@ -2353,7 +2363,7 @@ async fn voice_start_without_provider_commits_then_records_setup_failure() {
     assert_eq!(accepted["state"], "connecting");
 
     voice::provider::wait_for_start_setup("other-agent", "missing-provider-start").await;
-    let connection = store.read().expect("read setup result");
+    let connection = store.test_reader().expect("read setup result");
     let (state, error): (String, Option<String>) = connection
         .query_row(
             "SELECT state,error FROM voice_sessions WHERE id='missing-provider-start'",
@@ -2402,7 +2412,7 @@ async fn not_sent_voice_prepare_replays_the_persisted_intent_without_repreparing
     .expect("provider setup does not delay HTTP acceptance");
     assert_eq!(first["state"], "connecting");
     entered.await;
-    let connection = store.read().expect("read persisted start intent");
+    let connection = store.test_reader().expect("read persisted start intent");
     let (state, ended, connection_id): (String, Option<f64>, Option<String>) = connection
         .query_row(
             "SELECT state,ended,connection_id FROM voice_sessions WHERE id='prepare-not-sent'",
@@ -2428,7 +2438,7 @@ async fn not_sent_voice_prepare_replays_the_persisted_intent_without_repreparing
     .await
     .expect("the durable failed session is replayed");
     assert_eq!(replay["state"], "failed");
-    let connection = store.read().expect("read committed setup failure");
+    let connection = store.test_reader().expect("read committed setup failure");
     let (state, ended): (String, Option<f64>) = connection
         .query_row(
             "SELECT state,ended FROM voice_sessions WHERE id='prepare-not-sent'",
@@ -2557,6 +2567,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
             .expect("restart after speech"),
     );
     let receipt = voice::provider::read_speech_receipt(&store, "agent", "session", "matrix-speech")
+        .await
         .expect("speech receipt read")
         .expect("saved speech receipt");
     assert_eq!(receipt["state"], "unknown");
@@ -2572,6 +2583,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         .expect("change speech content under its existing identity");
     let before_changed =
         voice::provider::read_speech_receipt(&store, "agent", "session", "matrix-speech")
+            .await
             .expect("receipt before content conflict")
             .expect("receipt exists");
     let changed_speech = voice::provider::speech(
@@ -2590,6 +2602,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
     ));
     let after_changed =
         voice::provider::read_speech_receipt(&store, "agent", "session", "matrix-speech")
+            .await
             .expect("receipt after content conflict")
             .expect("receipt exists");
     assert_eq!(before_changed, after_changed);

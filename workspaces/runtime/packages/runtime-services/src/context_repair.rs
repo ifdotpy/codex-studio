@@ -1078,16 +1078,13 @@ pub async fn repair_idle_with_broker(
     broker: &dyn AccountSessionPort,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    let read_store = std::sync::Arc::clone(&store);
     let read_id = id.to_owned();
-    let previous_operation = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/context_repair",
-        move || {
+    let previous_operation = store
+        .read_async("runtime-services/context_repair", move |db| {
             Ok::<_, RepairError>(
-                read_store
-                    .read()
+                ContextRepairRepository::agent(db, &read_id)
                     .ok()
-                    .and_then(|db| ContextRepairRepository::agent(&db, &read_id).ok().flatten())
+                    .flatten()
                     .and_then(|agent| {
                         agent
                             .pointer("/contextRepair/id")
@@ -1095,10 +1092,10 @@ pub async fn repair_idle_with_broker(
                             .map(str::to_owned)
                     }),
             )
-        },
-    )
-    .await
-    .map_err(|_| RepairError::Worker)??;
+        })
+        .await
+        .ok()
+        .flatten();
     let result = repair_idle_with_broker_inner(
         std::sync::Arc::clone(&store),
         id,
@@ -1150,17 +1147,12 @@ async fn repair_idle_with_broker_inner(
     broker: &dyn AccountSessionPort,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    let stage_store = std::sync::Arc::clone(&store);
     let stage_id = id.to_owned();
-    let initial = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/context_repair",
-        move || {
-            let initial_db = stage_store.read()?;
-            ContextRepairRepository::agent(&initial_db, &stage_id)?.ok_or(RepairError::MissingAgent)
-        },
-    )
-    .await
-    .map_err(|_| RepairError::Worker)??;
+    let initial = store
+        .read_async("runtime-services/context_repair", move |db| {
+            ContextRepairRepository::agent(db, &stage_id)?.ok_or(RepairError::MissingAgent)
+        })
+        .await?;
     let initial_account = string_default(&initial, "accountKey", "default")?.to_owned();
     let scope_before = if crate::provider_adapter::native_history(&initial)
         && initial["threadId"]
@@ -1173,25 +1165,29 @@ async fn repair_idle_with_broker_inner(
     } else {
         None
     };
-    let receipt_store = std::sync::Arc::clone(&store);
-    let receipt_id = id.to_owned();
-    let receipt_agent = initial.clone();
-    let receipt_account = initial_account.clone();
-    let tool_receipt_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/context_repair",
-        move || {
-            if crate::provider_adapter::native_history(&receipt_agent)
-                && receipt_agent["threadId"]
-                    .as_str()
-                    .is_some_and(|thread| !thread.is_empty())
-                && !(receipt_agent["environment"] == "linux"
-                    && studio_runtime_store::truthy(receipt_agent.get("imageWorkspaceReady")))
-            {
-                let initial_db = receipt_store.read()?;
+    let tool_receipt_snapshot = if crate::provider_adapter::native_history(&initial)
+        && initial["threadId"]
+            .as_str()
+            .is_some_and(|thread| !thread.is_empty())
+        && !(initial["environment"] == "linux"
+            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+    {
+        let receipt_id = id.to_owned();
+        let rows = store
+            .read_async("runtime-services/context_repair", move |db| {
+                crate::provider_callbacks::read_context_tool_receipt_rows(db, &receipt_id)
+                    .map_err(|_| RepairError::ReceiptHold)
+            })
+            .await?;
+        let receipt_store = std::sync::Arc::clone(&store);
+        let receipt_agent = initial.clone();
+        let receipt_account = initial_account.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/context_repair",
+            move || {
                 crate::provider_callbacks::prepare_unresolved_context_tool_receipts(
-                    &initial_db,
+                    rows,
                     receipt_store.state_dir(),
-                    &receipt_id,
                     &receipt_account,
                     receipt_agent["threadId"]
                         .as_str()
@@ -1202,13 +1198,13 @@ async fn repair_idle_with_broker_inner(
                         .unwrap_or_default(),
                 )
                 .map_err(|_| RepairError::ReceiptHold)
-            } else {
-                Ok(crate::provider_callbacks::ContextToolReceiptSnapshot::empty())
-            }
-        },
-    )
-    .await
-    .map_err(|_| RepairError::Worker)??;
+            },
+        )
+        .await
+        .map_err(|_| RepairError::Worker)??
+    } else {
+        crate::provider_callbacks::ContextToolReceiptSnapshot::empty()
+    };
     let transaction_agent_id = id.to_owned();
     let transaction_source_id = transaction_agent_id.clone();
     let (agent, events, tool_receipts, historical_inputs, scope, operation_id) = store.transaction_with(move |tx| {

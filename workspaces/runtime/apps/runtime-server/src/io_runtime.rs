@@ -393,10 +393,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let saved =
-            TerminalsRepository::get(&store.read().expect("store read"), "terminal-fixture")
-                .expect("terminal read")
-                .expect("terminal exists");
+        let saved = TerminalsRepository::get(
+            &store.test_reader().expect("store read"),
+            "terminal-fixture",
+        )
+        .expect("terminal read")
+        .expect("terminal exists");
         assert_eq!(
             saved.record.get("_processIdentity"),
             Some(&expected_identity)

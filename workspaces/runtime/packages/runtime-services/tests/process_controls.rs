@@ -107,7 +107,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
             .await
             .is_err()
     );
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let query = json!({"requestId":"request","agent":"owner","accountKey":"acct","epoch":3});
     assert_eq!(
         process_controls::receipt(&connection, &query).unwrap()["found"],

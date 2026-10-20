@@ -268,9 +268,18 @@ mod tests {
     impl ProviderVersionStore for FixtureStore {
         fn upstream_enabled(
             &self,
-        ) -> Result<bool, studio_runtime_services::provider_versions::ProviderVersionsError>
-        {
-            Ok(true)
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            bool,
+                            studio_runtime_services::provider_versions::ProviderVersionsError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(std::future::ready(Ok(true)))
         }
         fn persist_warnings<'a>(
             &'a self,

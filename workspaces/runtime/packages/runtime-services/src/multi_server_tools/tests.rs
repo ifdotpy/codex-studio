@@ -300,6 +300,7 @@ async fn call_named_tool(
             preparation: None,
         },
     )
+    .await
     .unwrap();
     let decision =
         dispatch_with_managed_tools(Arc::clone(store), &context, &frame, 20.0, Arc::new(ports))
@@ -745,7 +746,7 @@ async fn servers_tool_sends_envelopes_keeps_receipts_and_project_locations() {
         assert_eq!(expiry, expected_expiry, "{name}: command output expiry");
         if name == "add-location" || name == "remove-location" {
             let record = store
-                .read_transaction(|tx| Ok(ProjectsRepository::get(tx, &project)?.unwrap().1))
+                .test_read_transaction(|tx| Ok(ProjectsRepository::get(tx, &project)?.unwrap().1))
                 .unwrap();
             let (locations, revision) = if name == "add-location" {
                 (2, 1)
@@ -828,7 +829,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     // request identity can only probe for the receipt.
     let outbox = parsed(&first)["requestId"].as_str().unwrap().to_owned();
     let body: String = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row(
                 "SELECT body FROM runtime_server_outbox WHERE id=?1",
                 [&outbox],
@@ -996,7 +997,7 @@ async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
     );
     // The peer keeps no chunk data in its receipt and released the bundle.
     let chunk_result: String = peer
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row(
                 "SELECT result FROM runtime_server_inbox WHERE json_extract(result,'$.value.offset')=0 AND json_extract(result,'$.value.sha256') IS NOT NULL",
                 [],
@@ -1187,7 +1188,7 @@ async fn speak_refuses_before_saving_when_a_ready_session_has_no_provider() {
         "{result}"
     );
     let records: i64 = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row("SELECT count(*) FROM voice_records", [], |row| row.get(0))?)
         })
         .unwrap();
@@ -1234,7 +1235,7 @@ async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarde
         "{forwarded}"
     );
     let outbox: i64 = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row(
                 "SELECT count(*) FROM runtime_server_outbox WHERE json_extract(body,'$.action')='task'",
                 [],
@@ -1282,7 +1283,7 @@ async fn wait_for_status(
 
 fn exit_events(store: &RuntimeStore) -> Vec<Value> {
     store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             let mut statement = tx.prepare(
                 "SELECT text FROM runtime_events WHERE kind='monitor_exit' ORDER BY created",
             )?;
@@ -1332,7 +1333,7 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
     assert!(short["serverOutputExpiresAt"].is_number(), "{short}");
     // The command record and its audit row exist once.
     let (records, audits): (i64, i64) = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok((
                 tx.query_row("SELECT count(*) FROM runtime_server_exec", [], |row| {
                     row.get(0)
@@ -1456,7 +1457,7 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
     .await;
     assert_eq!(parsed(&replay), receipt);
     let audits: i64 = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row(
                 "SELECT count(*) FROM runtime_server_exec_audit",
                 [],
@@ -1505,7 +1506,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
         ExchangeOutcome::NotApplied("The command handle belongs to another actor or server".into())
     );
     let notice: String = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row(
                 "SELECT body FROM runtime_server_outbox WHERE server=?1 AND json_extract(body,'$.action')='exec_event'",
                 [PEER],
@@ -1567,7 +1568,7 @@ async fn a_command_without_a_final_record_after_a_restart_stays_unknown() {
         .await
         .unwrap();
     let saved: String = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok(tx.query_row(
                 "SELECT record FROM runtime_server_exec WHERE id='lost-command'",
                 [],

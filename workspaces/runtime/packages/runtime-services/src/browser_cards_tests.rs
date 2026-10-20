@@ -76,7 +76,7 @@ async fn store() -> (tempfile::TempDir, studio_runtime_store::RuntimeStore) {
 
 fn request(store: &studio_runtime_store::RuntimeStore, bridge: &str) -> Option<Value> {
     store
-        .read_transaction_with_error(|tx| {
+        .test_read_transaction(|tx| {
             studio_runtime_store::QuestionsWriteRepository::request(tx, &card_id(bridge))
         })
         .expect("request reads")
@@ -207,7 +207,7 @@ async fn a_final_guest_state_expires_the_card_and_tells_the_chat_after_an_approv
         in_flight["status"], "pending",
         "a pasted result in flight writes its own outcome"
     );
-    let connection = store.read().expect("test step");
+    let connection = store.test_reader().expect("test step");
     let events: Vec<(String, String)> = connection
         .prepare("SELECT id,text FROM runtime_events")
         .expect("test step")

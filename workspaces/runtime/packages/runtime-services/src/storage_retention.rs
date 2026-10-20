@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
-use studio_runtime_store::{RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository};
+use studio_runtime_store::{RuntimeStore, StoreResult, SyncDocumentsRepository};
 
 /// Finished task output older than this keeps only its preview. Unit: seconds.
 pub const TASK_RETENTION_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
@@ -74,7 +74,11 @@ pub async fn run(store: Arc<RuntimeStore>, mut shutdown: tokio::sync::watch::Rec
 /// One complete pass: resume task trimming from its durable cursor to the end
 /// of the table, then prune entity tombstones down to their limit.
 pub async fn run_pass(store: &Arc<RuntimeStore>, now: f64) -> StoreResult<()> {
-    let mut cursor = read(store, task_marker_cursor).await?;
+    let mut cursor = store
+        .read_async("runtime-services/storage_retention", |tx| {
+            task_marker_cursor(tx)
+        })
+        .await?;
     loop {
         let batch = trim_task_batch(store, cursor, now).await?;
         cursor = batch.cursor;
@@ -83,10 +87,11 @@ pub async fn run_pass(store: &Arc<RuntimeStore>, now: f64) -> StoreResult<()> {
         }
         tokio::time::sleep(RETENTION_BATCH_PAUSE).await;
     }
-    if !read(store, |connection| {
-        SyncDocumentsRepository::entity_tombstone_prune_due(connection)
-    })
-    .await?
+    if !store
+        .read_async("runtime-services/storage_retention", |connection| {
+            SyncDocumentsRepository::entity_tombstone_prune_due(connection)
+        })
+        .await?
     {
         return Ok(());
     }
@@ -113,11 +118,17 @@ pub async fn trim_task_batch(
     cursor: i64,
     now: f64,
 ) -> StoreResult<TaskRetentionBatch> {
-    let (candidates, next_cursor, done) = read(store, move |connection| {
-        scan_window(connection, cursor, now)
-    })
-    .await?;
-    let finish_marker = done && read(store, saved_marker_incomplete).await?;
+    let (candidates, next_cursor, done) = store
+        .read_async("runtime-services/storage_retention", move |connection| {
+            scan_window(connection, cursor, now)
+        })
+        .await?;
+    let finish_marker = done
+        && store
+            .read_async("runtime-services/storage_retention", |tx| {
+                saved_marker_incomplete(tx)
+            })
+            .await?;
     if candidates.is_empty() && !finish_marker {
         return Ok(TaskRetentionBatch {
             cursor: next_cursor,
@@ -138,22 +149,6 @@ pub async fn trim_task_batch(
             })
         })
         .await
-}
-
-async fn read<T: Send + 'static>(
-    store: &Arc<RuntimeStore>,
-    operation: impl FnOnce(&Connection) -> StoreResult<T> + Send + 'static,
-) -> StoreResult<T> {
-    let store = Arc::clone(store);
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/storage_retention/read",
-        move || {
-            let reader = store.read()?;
-            operation(&reader)
-        },
-    )
-    .await
-    .map_err(|_| StoreError::RecordContract("storage retention reader failed"))?
 }
 
 fn task_marker_cursor(connection: &Connection) -> StoreResult<i64> {
@@ -354,21 +349,22 @@ mod tests {
     }
 
     async fn task(store: &Arc<RuntimeStore>, id: &'static str) -> Value {
-        read(store, move |connection| {
-            let raw: String = connection.query_row(
-                "SELECT record FROM runtime_tasks WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )?;
-            Ok(serde_json::from_str(&raw)?)
-        })
-        .await
-        .expect("read task")
+        store
+            .read_async("runtime-services/storage_retention", move |connection| {
+                let raw: String = connection.query_row(
+                    "SELECT record FROM runtime_tasks WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(serde_json::from_str(&raw)?)
+            })
+            .await
+            .expect("read task")
     }
 
     async fn marker(store: &Arc<RuntimeStore>) -> Option<(i64, i64, String, Option<String>)> {
-        read(store, |connection| {
-            Ok(connection
+        store.read_async("runtime-services/storage_retention", |connection| {
+            Ok::<_, studio_runtime_store::StoreError>(connection
                 .query_row(
                     "SELECT cursor,complete,status,error FROM runtime_payload_migrations WHERE name=?1",
                     [TASK_MARKER],
@@ -550,7 +546,10 @@ mod tests {
             (cursor, complete, status.as_str()),
             (first.cursor, 0, "running")
         );
-        let resumed = read(&store, task_marker_cursor)
+        let resumed = store
+            .read_async("runtime-services/storage_retention", |tx| {
+                task_marker_cursor(tx)
+            })
             .await
             .expect("resume cursor");
         assert_eq!(resumed, first.cursor);
@@ -575,7 +574,10 @@ mod tests {
             );
         }
         insert_tasks(&store, tasks).await;
-        let (candidates, _, _) = read(&store, |connection| scan_window(connection, 0, NOW))
+        let (candidates, _, _) = store
+            .read_async("runtime-services/storage_retention", |connection| {
+                scan_window(connection, 0, NOW)
+            })
             .await
             .expect("scan");
         assert_eq!(candidates.len(), 1);
@@ -635,33 +637,34 @@ mod tests {
 
         run_pass(&store, NOW).await.expect("retention pass");
 
-        let (count, floor, remaining) = read(&store, |connection| {
-            let count: String = connection.query_row(
-                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
-                [],
-                |row| row.get(0),
-            )?;
-            let remaining: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM sync_entities \
+        let (count, floor, remaining) = store
+            .read_async("runtime-services/storage_retention", |connection| {
+                let count: String = connection.query_row(
+                    "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let remaining: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM sync_entities \
                  WHERE deleted=1 AND collection NOT LIKE 'transcript:%'",
-                [],
-                |row| row.get(0),
-            )?;
-            let transcript: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM sync_entities \
+                    [],
+                    |row| row.get(0),
+                )?;
+                let transcript: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM sync_entities \
                  WHERE deleted=1 AND collection LIKE 'transcript:%'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(transcript, TRANSCRIPT_TOMBSTONES);
-            Ok((
-                count,
-                SyncDocumentsRepository::entity_tombstone_floor(connection)?,
-                remaining,
-            ))
-        })
-        .await
-        .expect("read tombstones");
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(transcript, TRANSCRIPT_TOMBSTONES);
+                Ok::<_, studio_runtime_store::StoreError>((
+                    count,
+                    SyncDocumentsRepository::entity_tombstone_floor(connection)?,
+                    remaining,
+                ))
+            })
+            .await
+            .expect("read tombstones");
         assert_eq!(count, ENTITY_TOMBSTONE_LIMIT.to_string());
         assert_eq!(remaining, ENTITY_TOMBSTONE_LIMIT);
         assert_eq!(floor, 1_000 + excess - 1);

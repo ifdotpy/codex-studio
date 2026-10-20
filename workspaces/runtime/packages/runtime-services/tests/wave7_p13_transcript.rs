@@ -51,9 +51,14 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
         );
         if let Some(expected) = case["pageError"].as_str() {
             let before = sync_snapshot(&store);
-            let error =
-                transcript_runtime::page_at(&store, "agent", &PageRequest::default(), 1000.0)
-                    .expect_err("located/refusal error");
+            let error = transcript_runtime::page_at(
+                &store,
+                "agent".to_owned(),
+                PageRequest::default(),
+                1000.0,
+            )
+            .await
+            .expect_err("located/refusal error");
             assert_eq!(
                 error.to_string(),
                 expected,
@@ -70,14 +75,16 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                 ..Default::default()
             };
             assert!(matches!(
-                transcript_runtime::page_at(&store, "agent", &request, 1000.0),
+                transcript_runtime::page_at(&store, "agent".to_owned(), request, 1000.0).await,
                 Err(transcript::TranscriptError::UnknownMessage)
             ));
         }
         if let Some(entries) = case["searchItems"].as_object() {
             for (identity, expected) in entries {
                 assert_eq!(
-                    &transcript::search_item(&store, identity).expect("search item"),
+                    &transcript::search_item(&store, identity.clone())
+                        .await
+                        .expect("search item"),
                     expected,
                     "search item {identity}"
                 );
@@ -86,7 +93,8 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
         if let Some(entries) = case["unavailableItems"].as_array() {
             for identity in entries {
                 assert!(matches!(
-                    transcript::search_item(&store, identity.as_str().expect("id")),
+                    transcript::search_item(&store, identity.as_str().expect("id").to_owned())
+                        .await,
                     Err(transcript::TranscriptError::ChatUnavailable)
                 ));
             }
@@ -98,9 +106,14 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                 limit: Some(1),
                 ..Default::default()
             };
-            let before_snapshot =
-                transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
-                    .expect("page and revision before append");
+            let before_snapshot = transcript_runtime::page_at_snapshot(
+                &store,
+                "agent".to_owned(),
+                request.clone(),
+                1000.0,
+            )
+            .await
+            .expect("page and revision before append");
             assert_eq!(before_snapshot.0, append["before"]);
             let writer_store = Arc::clone(&store);
             let writer_barrier = Arc::clone(&barrier);
@@ -120,12 +133,23 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                     .expect("concurrent append");
             });
             barrier.wait().await;
-            let snapshot = transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
-                .expect("snapshot page and revision");
+            let snapshot = transcript_runtime::page_at_snapshot(
+                &store,
+                "agent".to_owned(),
+                request.clone(),
+                1000.0,
+            )
+            .await
+            .expect("snapshot page and revision");
             writer.await.expect("writer joined");
-            let after_snapshot =
-                transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
-                    .expect("page and revision after append");
+            let after_snapshot = transcript_runtime::page_at_snapshot(
+                &store,
+                "agent".to_owned(),
+                request.clone(),
+                1000.0,
+            )
+            .await
+            .expect("page and revision after append");
             assert_eq!(after_snapshot.0, append["after"]);
             assert!(
                 snapshot == before_snapshot || snapshot == after_snapshot,
@@ -144,10 +168,11 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                 native_text(
                     transcript_runtime::page_at(
                         &store,
-                        "agent",
-                        &request,
+                        "agent".to_owned(),
+                        request,
                         case["now"].as_f64().unwrap_or(1000.0)
                     )
+                    .await
                     .expect("page")
                 ),
                 native_text(page["value"].clone()),
@@ -157,20 +182,27 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
         }
         if case.get("search").is_some() {
             assert_eq!(
-                transcript::search_work(&store, "needle", None, 50).expect("global search"),
+                transcript::search_work(&store, "needle".to_owned(), None, 50)
+                    .await
+                    .expect("global search"),
                 case["search"]
             );
             assert_eq!(
-                transcript::search_work(&store, "needle", Some("agent"), 50)
+                transcript::search_work(&store, "needle".to_owned(), Some("agent".to_owned()), 50)
+                    .await
                     .expect("scoped search"),
                 case["scoped"]
             );
             assert_eq!(
-                transcript::search_item(&store, "agent:answer").expect("search item"),
+                transcript::search_item(&store, "agent:answer".to_owned())
+                    .await
+                    .expect("search item"),
                 case["item"]
             );
             assert_eq!(
-                transcript::search_item(&store, "chat").expect("room item"),
+                transcript::search_item(&store, "chat".to_owned())
+                    .await
+                    .expect("room item"),
                 case["roomItem"]
             );
         }
@@ -340,7 +372,7 @@ fn assert_pull(got: &Value, expected: &Value) {
 }
 
 fn sync_snapshot(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let mut statement=db.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities ORDER BY collection,id").expect("snapshot");
     let rows = statement
         .query_map([], |r| {

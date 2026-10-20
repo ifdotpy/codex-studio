@@ -113,7 +113,7 @@ async fn compiler_dependencies_and_late_holds_are_checked_before_commit() {
             let pending = Pending {intent:prepared.intent,method:"turn/start".into(),operation:"test".into(),thread:prepared.thread,compiled:prepared.compiled};
             let error = scheduler::lifecycle_transaction_with(store.as_ref(), move |tx| preparation::commit(tx,&pending,&prepared.guard)).await.unwrap_err();
             assert!(matches!(error, WorkerError::PreparationRefused(_)), "{mutation}: {error}");
-            let db = store.read()?;
+            let db = store.test_reader()?;
             let row=AgentRepository::get(&db,&AgentId::from(id.as_str()))?.unwrap().value();
             assert_eq!(row["startAttempt"]["submitted"],false);
             assert_ne!(row["startAttempt"]["settingsFixed"],true);
@@ -205,7 +205,7 @@ async fn native_release_phases_hold_only_unsettled_releases() {
     let base = probe
         .bridge
         .run(move |store| async move {
-            let db = store.read()?;
+            let db = store.test_reader()?;
             Ok::<_, WorkerError>(
                 AgentRepository::get(&db, &AgentId::from(probe_id.as_str()))?
                     .unwrap()
@@ -636,7 +636,7 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
             .bridge
             .run(move |store| async move {
                 let intent = {
-                    let db = store.read()?;
+                    let db = store.test_reader()?;
                     let read_tx = db.unchecked_transaction()?;
                     let event = studio_runtime_store::QueueEventRepository::get(
                         &db,

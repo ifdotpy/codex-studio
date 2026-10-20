@@ -591,7 +591,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         );
     }
     if case["pending_continuation_probe"] == true {
-        let db = store.read().map_err(|error| error.to_string())?;
+        let db = store.test_reader().map_err(|error| error.to_string())?;
         let pending = studio_runtime_store::SchedulerRepository::has_pending_continuation_event(
             &db, "agent", 1,
         )
@@ -643,7 +643,7 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
                 "provider-notification:{}",
                 studio_runtime_store::sha256_hex(&signature)
             );
-            let read = self.store.read()?;
+            let read = self.store.test_reader()?;
             assert!(read.is_autocommit());
             assert_eq!(
                 read.query_row(

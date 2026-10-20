@@ -20,53 +20,70 @@ pub struct PageRequest {
     pub limit: Option<i64>,
 }
 
-pub fn page(
+pub async fn page(
     store: &RuntimeStore,
-    agent: &str,
-    request: &PageRequest,
+    agent: String,
+    request: PageRequest,
 ) -> Result<Value, TranscriptError> {
-    page_at(store, agent, request, observed_at()?)
+    page_at(store, agent, request, observed_at()?).await
 }
 
 /// Use one server-owned observation time for all reasoning intervals in a page.
-pub fn page_at(
+pub async fn page_at(
     store: &RuntimeStore,
-    agent: &str,
-    request: &PageRequest,
+    agent: String,
+    request: PageRequest,
     now: f64,
 ) -> Result<Value, TranscriptError> {
-    page_at_snapshot(store, agent, request, now).map(|(page, _)| page)
+    page_at_snapshot(store, agent, request, now)
+        .await
+        .map(|(page, _)| page)
 }
 
 /// Project a page and its transcript revision from the same SQLite snapshot.
 /// The revision lets callers persist a derived view without pairing it with a
-/// revision observed before the projection began.
-pub fn page_at_snapshot(
+/// revision observed before the projection began. Tool results kept in
+/// payload files are resolved after the snapshot is released.
+pub async fn page_at_snapshot(
     store: &RuntimeStore,
-    agent: &str,
-    request: &PageRequest,
+    agent: String,
+    request: PageRequest,
     now: f64,
 ) -> Result<(Value, i64), TranscriptError> {
     if !now.is_finite() || now < 0.0 {
         return Err(TranscriptError::Store);
     }
-    let mut connection = store.read()?;
-    let analytics = AnalyticsRepository::new(store.root())
-        .open_read_only()
-        .map_err(|_| TranscriptError::Store)?;
-    let transaction = connection.transaction()?;
-    let mut value = project(&transaction, &analytics, agent, request, now)?;
-    let revision = transaction
-        .query_row(
-            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-            [agent],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(0);
-    drop(transaction);
-    project_tool_results(store, &mut value, now)?;
-    Ok((value, revision))
+    let state_dir = store.root().to_path_buf();
+    let analytics_root = state_dir.clone();
+    let (mut value, revision) = store
+        .read_async("runtime-services/transcript_runtime", move |transaction| {
+            let analytics = AnalyticsRepository::new(&analytics_root)
+                .open_read_only()
+                .map_err(|_| TranscriptError::Store)?;
+            let value = project(transaction, &analytics, &agent, &request, now)?;
+            let revision = transaction
+                .query_row(
+                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                    [&agent],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            Ok::<_, TranscriptError>((value, revision))
+        })
+        .await?;
+    if !has_pending_tool_results(&value) {
+        return Ok((value, revision));
+    }
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/transcript_runtime",
+        move || {
+            project_tool_results(&state_dir, &mut value, now)?;
+            Ok((value, revision))
+        },
+    )
+    .await
+    .map_err(|_| TranscriptError::Store)?
 }
 
 /// Project the complete sync payload from the writer transaction that will
@@ -86,7 +103,7 @@ pub(crate) fn page_in_transaction(
         .open_read_only()
         .map_err(|_| TranscriptError::Store)?;
     let mut value = project(transaction, &analytics, agent, request, now)?;
-    project_tool_results(store, &mut value, now)?;
+    project_tool_results(store.root(), &mut value, now)?;
     Ok(value)
 }
 
@@ -534,8 +551,18 @@ fn apply_tool_result(
     Ok(())
 }
 
+fn has_pending_tool_results(page: &Value) -> bool {
+    page.get("items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("_transcriptPendingBlobResult").is_some())
+        })
+}
+
 fn project_tool_results(
-    store: &RuntimeStore,
+    state_dir: &Path,
     page: &mut Value,
     now: f64,
 ) -> Result<(), TranscriptError> {
@@ -547,7 +574,7 @@ fn project_tool_results(
             let Some(pending) = pending else {
                 continue;
             };
-            let result = crate::payload_blobs::resolve_record(store.root(), &pending["result"])
+            let result = crate::payload_blobs::resolve_record(state_dir, &pending["result"])
                 .map_err(|_| TranscriptError::Store)?;
             apply_tool_result(
                 result,

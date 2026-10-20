@@ -2772,7 +2772,7 @@ mod account_scope_tests {
         let store = crate::RuntimeStore::open(Some(directory.path()))
             .await
             .expect("open runtime store");
-        let reader = store.read().expect("reader");
+        let reader = store.test_reader().expect("reader");
         let plan = reader
             .prepare(&format!(
                 "EXPLAIN QUERY PLAN {}",

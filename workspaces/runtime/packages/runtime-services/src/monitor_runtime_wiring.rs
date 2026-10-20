@@ -284,7 +284,7 @@ impl MonitorRuntime {
             tokio::pin!(changed);
             changed.as_mut().enable();
             let (record, current_sequence, terminal) =
-                crate::monitor_observation::read(&self.store, owner, epoch, account, id)?;
+                crate::monitor_observation::read(&self.store, owner, epoch, account, id).await?;
             let initial = *sequence.get_or_insert(current_sequence);
             if deadline.is_none() || terminal || current_sequence > initial {
                 return Ok(record);
@@ -339,46 +339,22 @@ impl MonitorRuntime {
     /// Whether the agent rows committed since the last call can matter to a monitor tick: a
     /// rule may react to any agent, a running monitor only to its own agent. With neither,
     /// an agent commit costs no tick.
-    fn agent_commit_needs_tick(&self) -> Result<bool, MonitorError> {
+    async fn agent_commit_needs_tick(&self) -> Result<bool, MonitorError> {
         let hints = std::mem::take(
             &mut *self
                 .agent_hints
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        let connection = self.store.read()?;
-        let rules: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_rules WHERE json_extract(record,'$.status')='active')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        if rules {
-            return Ok(true);
-        }
-        let running = "json_extract(m.record,'$.status')='running'";
-        let sql = if hints.full {
-            format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running})")
-        } else {
-            format!(
-                "SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running} AND \
-                 json_extract(m.record,'$.agent') IN \
-                 (SELECT id FROM runtime_agents WHERE rowid IN (SELECT value FROM json_each(?1))))"
-            )
-        };
+        let full = hints.full;
         let rows = serde_json::to_string(&hints.rows.iter().collect::<Vec<_>>())
             .map_err(|_| MonitorError::Refused("Monitor agent hints could not be encoded"))?;
-        let mut statement = connection
-            .prepare_cached(&sql)
-            .map_err(studio_runtime_store::StoreError::from)?;
-        let needed = if hints.full {
-            statement.query_row([], |row| row.get(0))
-        } else {
-            statement.query_row([rows], |row| row.get(0))
-        }
-        .map_err(studio_runtime_store::StoreError::from)?;
-        Ok(needed)
+        self.store
+            .read_async(
+                "runtime-services/monitor_runtime_wiring",
+                move |connection| agent_commit_needs_tick_in(connection, full, rows),
+            )
+            .await
     }
 
     /// Wake the monitor tick after a managed creation transaction commits.
@@ -425,20 +401,23 @@ impl MonitorRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
-    fn rule_watch_directories(&self) -> Result<BTreeSet<PathBuf>, MonitorError> {
-        let connection = self.store.read()?;
-        let mut statement = connection
-            .prepare("SELECT id,record FROM runtime_rules ORDER BY rowid")
-            .map_err(studio_runtime_store::StoreError::from)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    async fn rule_watch_directories(&self) -> Result<BTreeSet<PathBuf>, MonitorError> {
+        let rows = self
+            .store
+            .read_async("runtime-services/monitor_runtime_wiring", |connection| {
+                let mut statement =
+                    connection.prepare("SELECT id,record FROM runtime_rules ORDER BY rowid")?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, studio_runtime_store::StoreError>(rows)
             })
-            .map_err(studio_runtime_store::StoreError::from)?;
+            .await?;
         let mut directories = BTreeSet::new();
         let receipt_directory = self.store.root().join("monitor-results");
-        for row in rows {
-            let (id, encoded) = row.map_err(studio_runtime_store::StoreError::from)?;
+        for (id, encoded) in rows {
             let rule: Value = serde_json::from_str(&encoded).map_err(|_| {
                 MonitorError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
                     object: "rules",
@@ -460,120 +439,18 @@ impl MonitorRuntime {
 
     /// Read only the earliest persisted work deadline. This query runs after a
     /// real event or a completed batch, then the task sleeps until that deadline.
-    fn next_deadline(&self) -> Result<Option<f64>, MonitorError> {
+    async fn next_deadline(&self) -> Result<Option<f64>, MonitorError> {
         #[cfg(test)]
         self.loop_activity
             .deadline_reads
             .fetch_add(1, Ordering::SeqCst);
-        let connection = self.store.read()?;
-        let monitor_deadline: Option<f64> = connection
-            .query_row(
-                "SELECT MIN(deadline) FROM (
-                    SELECT CASE
-                        WHEN COALESCE(json_extract(m.record,'$.stallProbeGeneration'),-1)=json_extract(m.record,'$.activityGeneration')
-                            THEN COALESCE(json_extract(m.record,'$.stallProbeStarted'),json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+?1
-                        ELSE COALESCE(json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)
-                    END AS deadline
-                    FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                    WHERE json_extract(m.record,'$.status')='running'
-                      AND json_extract(a.record,'$.autoWake')=1
-                      AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
-                      AND json_extract(a.record,'$.epoch')=COALESCE(json_extract(m.record,'$.epoch'),json_extract(m.record,'$.operation.epoch'))
-                      AND COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)>0
-                      AND COALESCE(json_extract(m.record,'$.activityGeneration'),0)>COALESCE(json_extract(m.record,'$.stallWakeGeneration'),-1)
-                      AND (COALESCE(json_extract(m.record,'$.stallProbeGeneration'),-1)
-                           != json_extract(m.record,'$.activityGeneration')
-                           OR json_type(m.record,'$.stallProbeStarted') IN ('integer','real'))
-                    UNION ALL
-                    SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
-                    FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                    WHERE json_extract(m.record,'$.status')='running'
-                      AND json_extract(a.record,'$.autoWake')=1
-                      AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
-                      AND json_extract(a.record,'$.epoch')=json_extract(m.record,'$.epoch')
-                      AND json_extract(m.record,'$.ruleId') IS NULL
-                      AND EXISTS(SELECT 1 FROM json_each(m.record,'$.outputMatchesPending') WHERE value>0)
-                    UNION ALL
-                    SELECT COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)
-                    FROM runtime_monitors
-                    WHERE json_extract(record,'$.status')='running'
-                      AND json_extract(record,'$.cancelRequested')=1
-                      AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending'
-                )",
-                rusqlite::params![
-                    crate::monitor_policy::PROBE_LEASE_SECONDS,
-                    crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as i64,
-                    studio_runtime_schema::shared_values::MONITOR_OUTPUT_WAKE_COOLDOWN_SECONDS,
-                ],
-                |row| row.get(0),
+        let reattach_window_end = self.reattach_window_end;
+        self.store
+            .read_async(
+                "runtime-services/monitor_runtime_wiring",
+                move |connection| next_deadline_in(connection, reattach_window_end),
             )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        let rule_deadline: Option<f64> = connection
-            .query_row(
-                "SELECT MIN(deadline) FROM (
-                    SELECT CASE
-                        WHEN json_extract(r.record,'$.kind')='file'
-                             AND COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),?1)>0
-                             AND COALESCE(json_extract(r.record,'$.fileGeneration'),0)>COALESCE(json_extract(r.record,'$.stallWakeGeneration'),-1)
-                        THEN MIN(json_extract(r.record,'$.nextAt'),COALESCE(json_extract(r.record,'$.fileActivityAt'),json_extract(r.record,'$.created'))+COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),?1))
-                        WHEN json_extract(r.record,'$.kind')='file'
-                        THEN json_extract(r.record,'$.nextAt')
-                        WHEN json_extract(r.record,'$.kind')='low_workers'
-                             AND COALESCE(json_extract(r.record,'$.alerted'),0)=0
-                             AND json_type(r.record,'$.lowSince') IN ('integer','real')
-                        THEN json_extract(r.record,'$.lowSince')
-                             + json_extract(r.record,'$.durationMinutes')*60.0 + ?2
-                        WHEN json_extract(r.record,'$.kind') IN ('interval','once')
-                        THEN json_extract(r.record,'$.nextAt')
-                    END AS deadline
-                    FROM runtime_rules r JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
-                    WHERE json_extract(r.record,'$.status')='active'
-                      AND COALESCE(json_extract(r.record,'$.inFlight'),0)=0
-                      AND json_extract(a.record,'$.autoWake')=1
-                      AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
-                      AND json_extract(a.record,'$.epoch')=json_extract(r.record,'$.epoch')
-                      AND COALESCE((
-                        (json_extract(a.record,'$.restartRecovery.stage')='pending'
-                         AND json_extract(a.record,'$.restartRecovery.autoWake')=1
-                         AND json_extract(a.record,'$.restartRecovery.epoch')=json_extract(a.record,'$.epoch')
-                         AND json_extract(a.record,'$.restartRecovery.accountKey') IS json_extract(a.record,'$.accountKey')
-                         AND json_extract(a.record,'$.restartRecovery.threadId') IS json_extract(a.record,'$.threadId'))
-                        OR
-                        ((CASE json_type(a.record,'$.nativeFailureHold')
-                            WHEN 'true' THEN 1
-                            WHEN 'integer' THEN json_extract(a.record,'$.nativeFailureHold')!=0
-                            WHEN 'real' THEN json_extract(a.record,'$.nativeFailureHold')!=0
-                            WHEN 'text' THEN length(json_extract(a.record,'$.nativeFailureHold'))>0
-                            WHEN 'array' THEN json_array_length(a.record,'$.nativeFailureHold')>0
-                            WHEN 'object' THEN json_extract(a.record,'$.nativeFailureHold')<>'{}'
-                            ELSE 0 END)=1
-                         AND json_extract(a.record,'$.disconnectRecovery.autoWake')=1
-                         AND json_extract(a.record,'$.disconnectRecovery.epoch')=json_extract(a.record,'$.epoch')
-                         AND json_extract(a.record,'$.disconnectRecovery.accountKey') IS json_extract(a.record,'$.accountKey')
-                         AND json_extract(a.record,'$.disconnectRecovery.threadId') IS json_extract(a.record,'$.threadId'))
-                      ),0)=0
-                )",
-                rusqlite::params![
-                    crate::rules_engine::DEFAULT_RULE_STALL_SECONDS as i64,
-                    crate::rules_engine::LOW_WORKER_STRICT_DEADLINE_MARGIN_SECONDS,
-                ],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        // An unresolved reattach recovery settles once its window ends.
-        let reattach_deadline = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running')",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?
-            .then_some(self.reattach_window_end);
-        Ok(earliest_deadline([
-            monitor_deadline,
-            rule_deadline,
-            reattach_deadline,
-        ]))
+            .await
     }
 
     fn record_runtime_error(&self, error: &MonitorError) {
@@ -664,7 +541,7 @@ impl MonitorRuntime {
         // Cancellation receipts and rule pages progress even under sustained stream
         // output. Their exact identities and replay receipts make this safe.
         let mut start_more = false;
-        match monitor_driver::pending_start_ids(&self.store) {
+        match monitor_driver::pending_start_ids(&self.store).await {
             Ok(ids) => {
                 start_more = ids.len() == BATCH;
                 for id in ids {
@@ -676,7 +553,7 @@ impl MonitorRuntime {
             Err(error) => record_tick_failure(&mut failure, error),
         }
         let mut cancel_more = false;
-        match monitor_driver::pending_cancel_ids(&self.store, now) {
+        match monitor_driver::pending_cancel_ids(&self.store, now).await {
             Ok(ids) => {
                 cancel_more = ids.len() == BATCH;
                 for id in ids {
@@ -801,15 +678,17 @@ impl MonitorRuntime {
     }
 
     async fn attach_batch(&self, scan: &mut Scan, now: f64) -> Result<bool, MonitorError> {
-        let ids = {
-            let connection = self.store.read()?;
-            let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2").map_err(studio_runtime_store::StoreError::from)?;
-            query
-                .query_map((&scan.monitor, BATCH as i64), |row| row.get::<_, String>(0))
-                .map_err(studio_runtime_store::StoreError::from)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(studio_runtime_store::StoreError::from)?
-        };
+        let after = scan.monitor.clone();
+        let ids = self
+            .store
+            .read_async("runtime-services/monitor_reattach", move |connection| {
+                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
+                let ids = query
+                    .query_map((&after, BATCH as i64), |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, studio_runtime_store::StoreError>(ids)
+            })
+            .await?;
         let expired = now >= self.reattach_window_end;
         for id in &ids {
             if expired {
@@ -1060,39 +939,206 @@ impl MonitorRuntime {
         input: &Input,
         now: f64,
     ) -> Result<Value, MonitorError> {
-        self.store.read_transaction_with_error(|connection| {
-            let caller =
-                studio_runtime_store::system_reads::get(connection, "runtime_agents", caller_id)?
-                    .ok_or(studio_runtime_store::StoreError::RecordContract(
-                    "Monitor input caller is no longer active",
-                ))?;
-            if caller.get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
-                || caller.get("autoWake") != Some(&Value::Bool(true))
-                || studio_runtime_store::truthy(caller.get("deletedAt"))
-            {
-                return Err(studio_runtime_store::StoreError::RecordContract(
-                    "Monitor input caller is no longer active",
-                ));
-            }
-            let (snapshot, owner) =
-                monitor_runtime::snapshot(connection, id).map_err(|error| match error {
-                    MonitorError::Store(error) => error,
-                    _ => studio_runtime_store::StoreError::RecordContract(
-                        "Unknown monitor in this caller's scope",
-                    ),
-                })?;
-            if snapshot.agent() != caller_id
-                || snapshot.record().get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
-                || owner.epoch != caller_epoch
-            {
-                return Err(studio_runtime_store::StoreError::RecordContract(
-                    "You can input only to your own active monitor",
-                ));
-            }
-            Ok(())
-        })?;
+        let (read_caller, read_id) = (caller_id.to_owned(), id.to_owned());
+        self.store
+            .read_async(
+                "runtime-services/monitor_runtime_wiring",
+                move |connection| {
+                    let (caller_id, id) = (read_caller.as_str(), read_id.as_str());
+                    let caller = studio_runtime_store::system_reads::get(
+                        connection,
+                        "runtime_agents",
+                        caller_id,
+                    )?
+                    .ok_or(
+                        studio_runtime_store::StoreError::RecordContract(
+                            "Monitor input caller is no longer active",
+                        ),
+                    )?;
+                    if caller.get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
+                        || caller.get("autoWake") != Some(&Value::Bool(true))
+                        || studio_runtime_store::truthy(caller.get("deletedAt"))
+                    {
+                        return Err(studio_runtime_store::StoreError::RecordContract(
+                            "Monitor input caller is no longer active",
+                        ));
+                    }
+                    let (snapshot, owner) =
+                        monitor_runtime::snapshot(connection, id).map_err(|error| match error {
+                            MonitorError::Store(error) => error,
+                            _ => studio_runtime_store::StoreError::RecordContract(
+                                "Unknown monitor in this caller's scope",
+                            ),
+                        })?;
+                    if snapshot.agent() != caller_id
+                        || snapshot.record().get("epoch").and_then(Value::as_i64)
+                            != Some(caller_epoch)
+                        || owner.epoch != caller_epoch
+                    {
+                        return Err(studio_runtime_store::StoreError::RecordContract(
+                            "You can input only to your own active monitor",
+                        ));
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
         self.input(id, ticket, input, now).await
     }
+}
+
+/// Whether an agent commit can change a rule or running monitor; `full` means
+/// every agent may have changed, else `rows` lists the changed agent rowids.
+fn agent_commit_needs_tick_in(
+    connection: &rusqlite::Connection,
+    full: bool,
+    rows: String,
+) -> Result<bool, MonitorError> {
+    let rules: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_rules WHERE json_extract(record,'$.status')='active')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    if rules {
+        return Ok(true);
+    }
+    let running = "json_extract(m.record,'$.status')='running'";
+    let sql = if full {
+        format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running})")
+    } else {
+        format!(
+            "SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running} AND \
+             json_extract(m.record,'$.agent') IN \
+             (SELECT id FROM runtime_agents WHERE rowid IN (SELECT value FROM json_each(?1))))"
+        )
+    };
+    let mut statement = connection
+        .prepare_cached(&sql)
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let needed = if full {
+        statement.query_row([], |row| row.get(0))
+    } else {
+        statement.query_row([rows], |row| row.get(0))
+    }
+    .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(needed)
+}
+
+/// The earliest persisted work deadline, in Unix seconds.
+fn next_deadline_in(
+    connection: &rusqlite::Connection,
+    reattach_window_end: f64,
+) -> Result<Option<f64>, MonitorError> {
+    let monitor_deadline: Option<f64> = connection
+        .query_row(
+            "SELECT MIN(deadline) FROM (
+                SELECT CASE
+                    WHEN COALESCE(json_extract(m.record,'$.stallProbeGeneration'),-1)=json_extract(m.record,'$.activityGeneration')
+                        THEN COALESCE(json_extract(m.record,'$.stallProbeStarted'),json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+?1
+                    ELSE COALESCE(json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)
+                END AS deadline
+                FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                WHERE json_extract(m.record,'$.status')='running'
+                  AND json_extract(a.record,'$.autoWake')=1
+                  AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
+                  AND json_extract(a.record,'$.epoch')=COALESCE(json_extract(m.record,'$.epoch'),json_extract(m.record,'$.operation.epoch'))
+                  AND COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)>0
+                  AND COALESCE(json_extract(m.record,'$.activityGeneration'),0)>COALESCE(json_extract(m.record,'$.stallWakeGeneration'),-1)
+                  AND (COALESCE(json_extract(m.record,'$.stallProbeGeneration'),-1)
+                       != json_extract(m.record,'$.activityGeneration')
+                       OR json_type(m.record,'$.stallProbeStarted') IN ('integer','real'))
+                UNION ALL
+                SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
+                FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                WHERE json_extract(m.record,'$.status')='running'
+                  AND json_extract(a.record,'$.autoWake')=1
+                  AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
+                  AND json_extract(a.record,'$.epoch')=json_extract(m.record,'$.epoch')
+                  AND json_extract(m.record,'$.ruleId') IS NULL
+                  AND EXISTS(SELECT 1 FROM json_each(m.record,'$.outputMatchesPending') WHERE value>0)
+                UNION ALL
+                SELECT COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)
+                FROM runtime_monitors
+                WHERE json_extract(record,'$.status')='running'
+                  AND json_extract(record,'$.cancelRequested')=1
+                  AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending'
+            )",
+            rusqlite::params![
+                crate::monitor_policy::PROBE_LEASE_SECONDS,
+                crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as i64,
+                studio_runtime_schema::shared_values::MONITOR_OUTPUT_WAKE_COOLDOWN_SECONDS,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let rule_deadline: Option<f64> = connection
+        .query_row(
+            "SELECT MIN(deadline) FROM (
+                SELECT CASE
+                    WHEN json_extract(r.record,'$.kind')='file'
+                         AND COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),?1)>0
+                         AND COALESCE(json_extract(r.record,'$.fileGeneration'),0)>COALESCE(json_extract(r.record,'$.stallWakeGeneration'),-1)
+                    THEN MIN(json_extract(r.record,'$.nextAt'),COALESCE(json_extract(r.record,'$.fileActivityAt'),json_extract(r.record,'$.created'))+COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),?1))
+                    WHEN json_extract(r.record,'$.kind')='file'
+                    THEN json_extract(r.record,'$.nextAt')
+                    WHEN json_extract(r.record,'$.kind')='low_workers'
+                         AND COALESCE(json_extract(r.record,'$.alerted'),0)=0
+                         AND json_type(r.record,'$.lowSince') IN ('integer','real')
+                    THEN json_extract(r.record,'$.lowSince')
+                         + json_extract(r.record,'$.durationMinutes')*60.0 + ?2
+                    WHEN json_extract(r.record,'$.kind') IN ('interval','once')
+                    THEN json_extract(r.record,'$.nextAt')
+                END AS deadline
+                FROM runtime_rules r JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
+                WHERE json_extract(r.record,'$.status')='active'
+                  AND COALESCE(json_extract(r.record,'$.inFlight'),0)=0
+                  AND json_extract(a.record,'$.autoWake')=1
+                  AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
+                  AND json_extract(a.record,'$.epoch')=json_extract(r.record,'$.epoch')
+                  AND COALESCE((
+                    (json_extract(a.record,'$.restartRecovery.stage')='pending'
+                     AND json_extract(a.record,'$.restartRecovery.autoWake')=1
+                     AND json_extract(a.record,'$.restartRecovery.epoch')=json_extract(a.record,'$.epoch')
+                     AND json_extract(a.record,'$.restartRecovery.accountKey') IS json_extract(a.record,'$.accountKey')
+                     AND json_extract(a.record,'$.restartRecovery.threadId') IS json_extract(a.record,'$.threadId'))
+                    OR
+                    ((CASE json_type(a.record,'$.nativeFailureHold')
+                        WHEN 'true' THEN 1
+                        WHEN 'integer' THEN json_extract(a.record,'$.nativeFailureHold')!=0
+                        WHEN 'real' THEN json_extract(a.record,'$.nativeFailureHold')!=0
+                        WHEN 'text' THEN length(json_extract(a.record,'$.nativeFailureHold'))>0
+                        WHEN 'array' THEN json_array_length(a.record,'$.nativeFailureHold')>0
+                        WHEN 'object' THEN json_extract(a.record,'$.nativeFailureHold')<>'{}'
+                        ELSE 0 END)=1
+                     AND json_extract(a.record,'$.disconnectRecovery.autoWake')=1
+                     AND json_extract(a.record,'$.disconnectRecovery.epoch')=json_extract(a.record,'$.epoch')
+                     AND json_extract(a.record,'$.disconnectRecovery.accountKey') IS json_extract(a.record,'$.accountKey')
+                     AND json_extract(a.record,'$.disconnectRecovery.threadId') IS json_extract(a.record,'$.threadId'))
+                  ),0)=0
+            )",
+            rusqlite::params![
+                crate::rules_engine::DEFAULT_RULE_STALL_SECONDS as i64,
+                crate::rules_engine::LOW_WORKER_STRICT_DEADLINE_MARGIN_SECONDS,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    // An unresolved reattach recovery settles once its window ends.
+    let reattach_deadline = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?
+        .then_some(reattach_window_end);
+    Ok(earliest_deadline([
+        monitor_deadline,
+        rule_deadline,
+        reattach_deadline,
+    ]))
 }
 
 fn http_input_ticket() -> Result<String, MonitorError> {
@@ -1169,7 +1215,9 @@ pub fn start(
                     receipt_tx.clone(),
                     rule_tx.clone(),
                     watch_reset_tx.clone(),
-                ) {
+                )
+                .await
+                {
                     Ok((installed, directories)) => {
                         watcher = Some(installed);
                         watched_rule_directories = directories;
@@ -1218,13 +1266,16 @@ pub fn start(
                         retry_at = None;
                         retry_delay = ERROR_RETRY_MIN;
                         let update_result = if let Some(active_watcher) = watcher.as_mut() {
-                            runtime.rule_watch_directories().and_then(|directories| {
-                                register_rule_directories(
-                                    active_watcher,
-                                    &mut watched_rule_directories,
-                                    &directories,
-                                )
-                            })
+                            runtime
+                                .rule_watch_directories()
+                                .await
+                                .and_then(|directories| {
+                                    register_rule_directories(
+                                        active_watcher,
+                                        &mut watched_rule_directories,
+                                        &directories,
+                                    )
+                                })
                         } else {
                             Ok(())
                         };
@@ -1263,7 +1314,7 @@ pub fn start(
                 }
             }
 
-            let durable_deadline = match runtime.next_deadline() {
+            let durable_deadline = match runtime.next_deadline().await {
                 Ok(Some(deadline)) => match event_write::unix_time() {
                     Ok(now) => {
                         let seconds = (deadline - now).max(0.0);
@@ -1315,7 +1366,7 @@ pub fn start(
                     }
                     _ = runtime.agents_wake.notified() => {
                         // An unrelated agent commit keeps the deadline computed for this wait.
-                        if runtime.agent_commit_needs_tick().unwrap_or(true) {
+                        if runtime.agent_commit_needs_tick().await.unwrap_or(true) {
                             immediate = true;
                         } else {
                             continue;
@@ -1370,7 +1421,7 @@ pub fn start(
     })
 }
 
-fn install_file_watcher(
+async fn install_file_watcher(
     runtime: &MonitorRuntime,
     receipt_events: watch::Sender<bool>,
     rule_events: watch::Sender<bool>,
@@ -1391,7 +1442,7 @@ fn install_file_watcher(
         return Err(MonitorError::Refused("test watcher unavailable"));
     }
     let receipt_directory = monitor_receipts::prepare_watch_directory(runtime.store.root())?;
-    let rule_directories = runtime.rule_watch_directories()?;
+    let rule_directories = runtime.rule_watch_directories().await?;
     let receipt_directory_for_callback = receipt_directory.clone();
     #[cfg(test)]
     let callback_activity = Arc::clone(&runtime.loop_activity);
@@ -1724,7 +1775,7 @@ mod tests {
         // No rules and no monitors: neither provider's agent commit costs a tick.
         for (id, provider) in [("codex-agent", "codex"), ("claude-agent", "claude")] {
             commit_agent(&store, id, provider).await;
-            assert!(!runtime.agent_commit_needs_tick().expect("hint check"));
+            assert!(!runtime.agent_commit_needs_tick().await.expect("hint check"));
         }
         store
             .transaction_with(|tx| {
@@ -1741,18 +1792,23 @@ mod tests {
             .expect("commit monitor");
         // Another agent's commit does not reach the monitor; its own agent's commit does.
         commit_agent(&store, "codex-agent", "codex").await;
-        assert!(!runtime.agent_commit_needs_tick().expect("other agent"));
+        assert!(
+            !runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("other agent")
+        );
         commit_agent(&store, "claude-agent", "claude").await;
-        assert!(runtime.agent_commit_needs_tick().expect("own agent"));
+        assert!(runtime.agent_commit_needs_tick().await.expect("own agent"));
         // The hints are consumed by the check.
-        assert!(!runtime.agent_commit_needs_tick().expect("consumed"));
+        assert!(!runtime.agent_commit_needs_tick().await.expect("consumed"));
         // An overflowed hint set stops narrowing but still skips when nothing runs.
         runtime
             .agent_hints
             .lock()
             .expect("hints")
             .record(studio_runtime_store::TableChange::Full);
-        assert!(runtime.agent_commit_needs_tick().expect("full hint"));
+        assert!(runtime.agent_commit_needs_tick().await.expect("full hint"));
         store
             .transaction_with(|tx| {
                 tx.execute("DELETE FROM runtime_monitors", [])?;
@@ -1768,7 +1824,12 @@ mod tests {
             .await
             .expect("swap monitor for rule");
         commit_agent(&store, "codex-agent", "codex").await;
-        assert!(runtime.agent_commit_needs_tick().expect("rule present"));
+        assert!(
+            runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("rule present")
+        );
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1780,7 +1841,12 @@ mod tests {
             .await
             .expect("pause rule");
         commit_agent(&store, "codex-agent", "codex").await;
-        assert!(!runtime.agent_commit_needs_tick().expect("paused rule"));
+        assert!(
+            !runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("paused rule")
+        );
     }
 
     async fn stop_task(
@@ -1865,7 +1931,7 @@ mod tests {
                 .is_err()
         );
         let rows: i64 = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row("SELECT COUNT(*) FROM runtime_monitors", [], |r| r.get(0))
             .unwrap();
@@ -2072,6 +2138,7 @@ mod tests {
         assert_eq!(
             runtime
                 .rule_watch_directories()
+                .await
                 .expect("watch ancestors")
                 .into_iter()
                 .collect::<Vec<_>>(),
@@ -2310,7 +2377,7 @@ mod tests {
             .await
             .expect("persist deadline fixtures");
         assert_eq!(
-            runtime.next_deadline().expect("read deadlines"),
+            runtime.next_deadline().await.expect("read deadlines"),
             Some(130.0)
         );
     }
@@ -2345,7 +2412,7 @@ mod tests {
             .expect("persist recovery-pending rule fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
-            runtime.next_deadline().expect("read deadlines"),
+            runtime.next_deadline().await.expect("read deadlines"),
             None,
             "owner recovery keeps the rule ineligible until a committed wake"
         );
@@ -2381,7 +2448,7 @@ mod tests {
             .expect("persist empty-hold fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
-            runtime.next_deadline().expect("read deadlines"),
+            runtime.next_deadline().await.expect("read deadlines"),
             Some(1.0),
             "empty objects are false under the store owner contract"
         );
@@ -2408,7 +2475,7 @@ mod tests {
             .expect("persist legacy monitor fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
-            runtime.next_deadline().expect("read deadlines"),
+            runtime.next_deadline().await.expect("read deadlines"),
             Some(100.0 + crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as f64)
         );
     }
@@ -2436,7 +2503,10 @@ mod tests {
             .expect("persist legacy unstarted-probe state");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
-            runtime.next_deadline().expect("read legacy probe deadline"),
+            runtime
+                .next_deadline()
+                .await
+                .expect("read legacy probe deadline"),
             None,
             "the policy treats a missing probe start as an unknown in-flight outcome"
         );
@@ -2464,7 +2534,7 @@ mod tests {
             .expect("persist legacy file-rule fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
-            runtime.next_deadline().expect("read deadlines"),
+            runtime.next_deadline().await.expect("read deadlines"),
             Some(100.0 + crate::rules_engine::DEFAULT_RULE_STALL_SECONDS as f64)
         );
     }
@@ -2491,7 +2561,10 @@ mod tests {
             .expect("persist low-worker deadline fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
-            runtime.next_deadline().expect("read low-worker deadline"),
+            runtime
+                .next_deadline()
+                .await
+                .expect("read low-worker deadline"),
             Some(
                 100.0
                     + 30.0 * 60.0
@@ -2557,7 +2630,10 @@ mod tests {
             "monitor rule commits must not wake the account registry"
         );
         assert_eq!(
-            runtime.next_deadline().expect("no low-worker deadline"),
+            runtime
+                .next_deadline()
+                .await
+                .expect("no low-worker deadline"),
             None
         );
 
@@ -2591,7 +2667,7 @@ mod tests {
             loop {
                 let completed = runtime.loop_activity.completed_ticks.load(Ordering::SeqCst);
                 let low_since: Option<f64> = store
-                    .read()
+                    .test_reader()
                     .expect("read worker rule")
                     .query_row(
                         "SELECT json_extract(record,'$.lowSince') FROM runtime_rules WHERE id='low-rule'",
@@ -2610,6 +2686,7 @@ mod tests {
         assert_eq!(
             runtime
                 .next_deadline()
+                .await
                 .expect("read new low-worker deadline"),
             Some(low_since + 60.0 + crate::rules_engine::LOW_WORKER_STRICT_DEADLINE_MARGIN_SECONDS)
         );
@@ -2653,7 +2730,7 @@ mod tests {
         wait_for_calls(&port, 2).await;
         wait_for_cycles(&runtime, 1).await;
         let alerted: bool = store
-            .read()
+            .test_reader()
             .expect("read settled rule")
             .query_row(
                 "SELECT json_extract(record,'$.alerted') FROM runtime_rules WHERE id='low-rule'",
@@ -2663,7 +2740,10 @@ mod tests {
             .expect("alert settles once");
         assert!(alerted);
         assert_eq!(
-            runtime.next_deadline().expect("alerted rule has no timer"),
+            runtime
+                .next_deadline()
+                .await
+                .expect("alerted rule has no timer"),
             None
         );
         // A late wake signal (a commit or a filesystem event) can start another
@@ -2712,7 +2792,10 @@ mod tests {
             .await
             .expect("persist pending cancel fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
-        assert_eq!(runtime.next_deadline().expect("read deadlines"), Some(0.0));
+        assert_eq!(
+            runtime.next_deadline().await.expect("read deadlines"),
+            Some(0.0)
+        );
     }
 
     #[tokio::test]
@@ -2771,7 +2854,7 @@ mod tests {
         let mut runtime = MonitorRuntime::new(store.clone(), port.clone(), Arc::new(Notify::new()));
         runtime.scan.lock().await.recovering_rules = false;
         let status = |id: &'static str| -> String {
-            let connection = store.read().expect("reader");
+            let connection = store.test_reader().expect("reader");
             connection
                 .query_row(
                     "SELECT json_extract(record,'$.reattachRecovery.status') FROM runtime_monitors WHERE id=?1",
@@ -2795,7 +2878,7 @@ mod tests {
         assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
         assert_eq!(status("stuck"), "running");
         assert_eq!(
-            runtime.next_deadline().expect("deadline"),
+            runtime.next_deadline().await.expect("deadline"),
             Some(runtime.reattach_window_end)
         );
 
@@ -2814,6 +2897,6 @@ mod tests {
             .expect("clear diagnostics");
         assert_eq!(WRITER_TRANSACTIONS.load(Ordering::SeqCst), 0);
         assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
-        assert_eq!(runtime.next_deadline().expect("deadline"), None);
+        assert_eq!(runtime.next_deadline().await.expect("deadline"), None);
     }
 }

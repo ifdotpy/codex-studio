@@ -75,9 +75,7 @@ impl InternalErrorKind {
             | StoreError::CommitActorOutcomeUnknown(_)
             | StoreError::WriterActorInitialization(_)
             | StoreError::WriterActorControl(_) => Self::StoreDatabase,
-            StoreError::WriterPoisoned | StoreError::NestedRead | StoreError::ReadTaskFailed => {
-                Self::StoreConcurrency
-            }
+            StoreError::WriterPoisoned | StoreError::ReadTaskFailed => Self::StoreConcurrency,
         }
     }
 }
@@ -150,6 +148,13 @@ impl ApiError {
             STORED_DATA_UNAVAILABLE,
             format!("Stored data {object}/{id} is unavailable"),
         )
+    }
+}
+
+/// Lets store reads run with the route's error type (`RuntimeStore::read_async`).
+impl From<studio_runtime_store::StoreError> for ApiError {
+    fn from(error: studio_runtime_store::StoreError) -> Self {
+        Self::stored(error)
     }
 }
 

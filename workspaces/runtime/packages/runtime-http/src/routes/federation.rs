@@ -85,14 +85,9 @@ async fn signed_post(
     .await
     .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid federation request body"))?;
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let gate_store = store.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/federation-enabled",
-        move || federation_effects::ensure_enabled(&gate_store),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(map_signed_error)?;
+    federation_effects::ensure_enabled(&store)
+        .await
+        .map_err(map_signed_error)?;
 
     let peer_id = single_header(&parts.headers, "x-studio-federation-state")?;
     let timestamp = single_header(&parts.headers, "x-studio-federation-time")?
@@ -214,13 +209,9 @@ async fn manage(
         }
         "status" => {
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
-            let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/federation",
-                move || federation::snapshot(&store),
-            )
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(map_service_error)?;
+            let snapshot = federation::snapshot(&store)
+                .await
+                .map_err(map_service_error)?;
             let snapshot = super::generated_json::<crate::generated::FederationSnapshot>(snapshot)?;
             Ok(Json(
                 serde_json::to_value(snapshot).map_err(|_| ApiError::internal())?,

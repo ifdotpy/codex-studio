@@ -431,18 +431,45 @@ impl<'a> ArchiveWriter<'a> {
 /// Publish one immutable archive for a transfer, or read its retry winner.
 /// The caller supplies already captured native pages; this function verifies
 /// that their source identity still matches the stored agent before writing.
-pub fn export_history(
+/// The stored agent and its Studio items are read in one snapshot; the
+/// archive files are written on the blocking pool after it is released.
+pub async fn export_history(
     store: &RuntimeStore,
-    mut input: ExportInput,
+    input: ExportInput,
 ) -> Result<ArchiveDescriptor, PortableHistoryError> {
     identity(&input.agent_id, "chat identity")?;
     identity(&input.transfer_id, "transfer identity")?;
     identity(&input.account_key, "account identity")?;
 
-    let mut connection = store.read()?;
-    let transaction = connection.transaction()?;
-    let agent = AgentRepository::get(&transaction, &AgentId::from(input.agent_id.as_str()))?
-        .ok_or(PortableHistoryError::SourceChanged)?;
+    let agent_id = AgentId::from(input.agent_id.as_str());
+    let (agent, items) = store
+        .read_async("runtime-services/portable_history", move |transaction| {
+            let agent = AgentRepository::get(transaction, &agent_id)?
+                .ok_or(PortableHistoryError::SourceChanged)?;
+            // Item errors matter only when a new archive is written.
+            let items = stored_items(transaction, &agent_id.0);
+            Ok::<_, PortableHistoryError>((agent, items))
+        })
+        .await?;
+    let state_root = store.root().to_path_buf();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/portable_history",
+        move || export_snapshot(&state_root, input, agent, items),
+    )
+    .await
+    .map_err(|_| {
+        PortableHistoryError::Io(std::io::Error::other(
+            "portable history export worker stopped",
+        ))
+    })?
+}
+
+fn export_snapshot(
+    state_root: &Path,
+    mut input: ExportInput,
+    agent: studio_runtime_store::AgentRecord,
+    items: Result<Vec<ArchiveRecord>, PortableHistoryError>,
+) -> Result<ArchiveDescriptor, PortableHistoryError> {
     let stored_agent = agent.value();
     let mut agent_value = stored_agent.clone();
     let lazy_transfer = stored_agent
@@ -506,15 +533,14 @@ pub fn export_history(
         .cloned();
     // A retry after a lost response reads the published winner before asking
     // the caller for another native session capture.
-    let directory = archive_directory(store.root());
+    let directory = archive_directory(state_root);
     let expected_path = archive_path(&directory, &source, &input.transfer_id)?;
     if expected_path.exists() {
-        let descriptor = inspect(store.root(), &expected_path, None)?.descriptor;
+        let descriptor = inspect(state_root, &expected_path, None)?.descriptor;
         if descriptor.source != source || descriptor.transfer_id != input.transfer_id {
             return Err(PortableHistoryError::ChangedDescriptor);
         }
-        transaction.commit()?;
-        return validate_history(store.root(), &descriptor);
+        return validate_history(state_root, &descriptor);
     }
     require_native_capture(
         &source,
@@ -522,7 +548,7 @@ pub fn export_history(
         input.source_connection_generation,
     )?;
 
-    let descriptor = publish(store.root(), source.clone(), &input.transfer_id, |writer| {
+    let descriptor = publish(state_root, source.clone(), &input.transfer_id, |writer| {
         writer.write_record(&ArchiveRecord::Header {
             version: ARCHIVE_VERSION,
             source: source.clone(),
@@ -532,19 +558,18 @@ pub fn export_history(
             .map(ArchiveDescriptor::from_value)
             .transpose()?
         {
-            let validated = validate_history(store.root(), &previous)?;
+            let validated = validate_history(state_root, &previous)?;
             if previous.source.agent_id != source.agent_id {
                 return Err(PortableHistoryError::OtherChat);
             }
-            inspect_visit(
-                store.root(),
-                validated.path(),
-                Some(&validated),
-                |archive| writer.write_record(&ArchiveRecord::Ancestor { archive }),
-            )?;
+            inspect_visit(state_root, validated.path(), Some(&validated), |archive| {
+                writer.write_record(&ArchiveRecord::Ancestor { archive })
+            })?;
             writer.write_record(&ArchiveRecord::Ancestor { archive: previous })?;
         }
-        stored_items(&transaction, &agent.id.0, writer)?;
+        for item in items? {
+            writer.write_record(&item)?;
+        }
         checked_native_records(
             &source,
             input.native_history.as_mut(),
@@ -555,7 +580,6 @@ pub fn export_history(
             writer,
         )
     })?;
-    transaction.commit()?;
     Ok(descriptor)
 }
 
@@ -951,8 +975,8 @@ where
 fn stored_items(
     transaction: &rusqlite::Transaction<'_>,
     agent_id: &str,
-    writer: &mut ArchiveWriter<'_>,
-) -> Result<(), PortableHistoryError> {
+) -> Result<Vec<ArchiveRecord>, PortableHistoryError> {
+    let mut records = Vec::new();
     let mut statement = transaction.prepare(
         "SELECT id, created, record FROM runtime_items WHERE agent=?1 ORDER BY created, id",
     )?;
@@ -1021,15 +1045,15 @@ fn stored_items(
         {
             return Err(PortableHistoryError::MissingStudioItem);
         }
-        writer.write_record(&ArchiveRecord::StudioItem {
+        records.push(ArchiveRecord::StudioItem {
             id,
             created,
             item,
             full_text: full_text.filter(|text| !text.is_empty()),
             input_events,
-        })?;
+        });
     }
-    Ok(())
+    Ok(records)
 }
 
 fn checked_native_records(

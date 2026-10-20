@@ -20,7 +20,7 @@ fn operation(case: &Value) -> Operation {
     serde_json::from_value(case["before"]["operation"].clone()).expect("monitor fixture")
 }
 fn record(store: &RuntimeStore, id: &str) -> Value {
-    MonitorsRepository::get(&store.read().expect("monitor fixture"), id)
+    MonitorsRepository::get(&store.test_reader().expect("monitor fixture"), id)
         .expect("monitor fixture")
         .expect("monitor fixture")
         .value()

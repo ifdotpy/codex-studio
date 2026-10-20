@@ -28,12 +28,37 @@ impl ContextToolReceiptSnapshot {
     }
 }
 
-/// Read unknown tool executions and resolve payload blobs outside a write
-/// transaction. The returned raw records are the identities later revalidated.
-pub fn prepare_unresolved_context_tool_receipts(
+/// The unknown tool executions of one agent with their cached results, read in
+/// one snapshot. A result row is read for every execution; whether it is used
+/// is decided after the payload blobs are resolved.
+pub struct ContextToolReceiptRows(Vec<(String, Value, Result<Option<Value>, CallbackError>)>);
+
+/// Read the rows [`prepare_unresolved_context_tool_receipts`] resolves.
+pub fn read_context_tool_receipt_rows(
     connection: &Connection,
-    state_root: &Path,
     agent: &str,
+) -> Result<ContextToolReceiptRows, CallbackError> {
+    let mut rows = Vec::new();
+    for raw in records::all(connection, "runtime_tool_requests")? {
+        if raw["agent"] != agent || raw["outcome"] != "unknown" {
+            continue;
+        }
+        let id = raw["id"]
+            .as_str()
+            .ok_or_else(|| CallbackError::Stored("tool request id".into()))?
+            .to_owned();
+        let cached_raw =
+            records::get(connection, "runtime_tool_results", &id).map_err(CallbackError::from);
+        rows.push((id, raw, cached_raw));
+    }
+    Ok(ContextToolReceiptRows(rows))
+}
+
+/// Resolve payload blobs of rows read outside a write transaction. The
+/// returned raw records are the identities later revalidated.
+pub fn prepare_unresolved_context_tool_receipts(
+    rows: ContextToolReceiptRows,
+    state_root: &Path,
     account: &str,
     thread: &str,
     account_history: &[Value],
@@ -52,14 +77,7 @@ pub fn prepare_unresolved_context_tool_receipts(
         })
         .collect::<std::collections::BTreeSet<_>>();
     let mut snapshot = ContextToolReceiptSnapshot::empty();
-    for raw in records::all(connection, "runtime_tool_requests")? {
-        if raw["agent"] != agent || raw["outcome"] != "unknown" {
-            continue;
-        }
-        let id = raw["id"]
-            .as_str()
-            .ok_or_else(|| CallbackError::Stored("tool request id".into()))?
-            .to_owned();
+    for (id, raw, cached_raw) in rows.0 {
         let record = crate::payload_blobs::resolve_record(state_root, &raw)
             .map_err(|error| CallbackError::Stored(error.to_string()))?;
         snapshot.requests.insert(id.clone(), raw);
@@ -69,7 +87,7 @@ pub fn prepare_unresolved_context_tool_receipts(
         {
             continue;
         }
-        let cached_raw = records::get(connection, "runtime_tool_results", &id)?;
+        let cached_raw = cached_raw?;
         let cached = cached_raw
             .as_ref()
             .map(|cached| crate::payload_blobs::resolve_record(state_root, cached))
@@ -257,7 +275,8 @@ pub async fn recover_connection(
 #[cfg(test)]
 mod context_tool_receipt_snapshot_tests {
     use super::{
-        prepare_unresolved_context_tool_receipts, revalidate_unresolved_context_tool_receipts,
+        prepare_unresolved_context_tool_receipts, read_context_tool_receipt_rows,
+        revalidate_unresolved_context_tool_receipts,
     };
     use crate::payload_blobs::{decide_externalize, write_blobs};
     use serde_json::{Value, json};
@@ -299,17 +318,14 @@ mod context_tool_receipt_snapshot_tests {
             .await
             .expect("insert first blob-backed tool request");
 
-        let connection = store.read().expect("open read connection");
-        let prepared = prepare_unresolved_context_tool_receipts(
-            &connection,
-            store.root(),
+        let rows = read_context_tool_receipt_rows(
+            &store.test_reader().expect("open read connection"),
             "agent",
-            "default",
-            "thread",
-            &[],
         )
-        .expect("resolve payload before write transaction");
-        drop(connection);
+        .expect("read unknown tool executions");
+        let prepared =
+            prepare_unresolved_context_tool_receipts(rows, store.root(), "default", "thread", &[])
+                .expect("resolve payload before write transaction");
         assert_eq!(
             prepared.unresolved[0]["result"]["text"]
                 .as_str()
@@ -423,7 +439,7 @@ mod legacy_tool_reply_tests {
             super::recover_tool_requests_on_startup(&store, 10.0)
                 .await
                 .expect("startup recovery");
-            let connection = store.read().expect("read connection");
+            let connection = store.test_reader().expect("read connection");
             let mut statement = connection
                 .prepare("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' OR id LIKE 'account-worker:callback:%'")
                 .expect("reply query");

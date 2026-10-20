@@ -49,7 +49,7 @@ async fn reply_rows(state: &State) -> (i64, i64) {
     state
         .bridge
         .run(|store| async move {
-            let connection = store.read()?;
+            let connection = store.test_reader()?;
             let count = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0));
             Ok((
                 count(

@@ -7,6 +7,11 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
+/// The reservation snapshot through an independent test reader.
+fn snapshot(store: &RuntimeStore, id: &str) -> Result<WorkspaceSnapshot, WorkspaceError> {
+    reservation_snapshot(&store.test_reader().expect("test reader"), id)
+}
+
 fn fixture_parent() -> PathBuf {
     let path = std::env::var_os("STUDIO_WORKSPACE_TEST_ROOT")
         .map(PathBuf::from)
@@ -77,12 +82,12 @@ impl Fixture {
         }
     }
     fn context(&self) -> Context {
-        observe(
-            &self.store,
-            snapshot(&self.store, &self.id).expect("snapshot"),
-            &git(),
-        )
-        .expect("observe")
+        let snapshot = snapshot(&self.store, &self.id).expect("snapshot");
+        let id = provision_id(&actor(&snapshot).expect("actor"));
+        let journal =
+            WorkspaceReadyRepository::journal(&self.store.test_reader().expect("test reader"), &id)
+                .expect("journal");
+        observe(snapshot, journal, &git()).expect("observe")
     }
     fn plan(&self) -> crate::workspace_ready::WorktreePlan {
         match self.context().decide() {
@@ -330,7 +335,7 @@ async fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_ind
     assert!(actor.get("worktreePreparation").is_none());
     assert!(actor.get("workspaceReservationId").is_none());
     let checkpoint = CheckpointsRepository::checkpoint(
-        &fixture.store.read().expect("read"),
+        &fixture.store.test_reader().expect("read"),
         actor["checkpointHistoryHead"]
             .as_str()
             .expect("checkpoint id"),
@@ -340,7 +345,7 @@ async fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_ind
     assert_eq!(checkpoint.record["cwd"], json!(cwd));
     let event: String = fixture
         .store
-        .read()
+        .test_reader()
         .expect("read")
         .query_row(
             "SELECT status FROM runtime_events WHERE id='workspace-input'",
@@ -388,7 +393,7 @@ async fn crash_before_effect_reuses_identity_and_crash_after_effect_publishes_wi
                 .expect("recover"),
             WorkspaceDecision::Ready { .. }
         ));
-        let count: i64 = fixture.store.read().expect("read").query_row("SELECT count(*) FROM runtime_workspace_operations WHERE json_extract(record,'$.kind')='provision'", [], |r|r.get(0)).expect("count");
+        let count: i64 = fixture.store.test_reader().expect("read").query_row("SELECT count(*) FROM runtime_workspace_operations WHERE json_extract(record,'$.kind')='provision'", [], |r|r.get(0)).expect("count");
         assert_eq!(count, 1);
     }
 }
@@ -495,7 +500,7 @@ async fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch
         assert!(plan.identity.cwd.is_dir());
         assert_eq!(
             WorkspaceReadyRepository::journal(
-                &fixture.store.read().expect("read"),
+                &fixture.store.test_reader().expect("read"),
                 &plan.identity.id
             )
             .expect("journal")
@@ -522,9 +527,12 @@ async fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_fail
     assert!(matches!(outcome, WorkspaceDecision::Refuse(_)));
     assert!(!plan.identity.destination.exists());
     assert_eq!(
-        WorkspaceReadyRepository::journal(&fixture.store.read().expect("read"), &plan.identity.id)
-            .expect("journal")
-            .expect("journal row")["phase"],
+        WorkspaceReadyRepository::journal(
+            &fixture.store.test_reader().expect("read"),
+            &plan.identity.id
+        )
+        .expect("journal")
+        .expect("journal row")["phase"],
         "recovery_required"
     );
     git()
@@ -564,9 +572,12 @@ async fn common_git_directory_serialization_defers_without_starting_another_effe
     ));
     assert!(!plan.identity.destination.exists());
     assert!(
-        WorkspaceReadyRepository::journal(&fixture.store.read().expect("read"), &plan.identity.id)
-            .expect("journal")
-            .is_none()
+        WorkspaceReadyRepository::journal(
+            &fixture.store.test_reader().expect("read"),
+            &plan.identity.id
+        )
+        .expect("journal")
+        .is_none()
     );
     let other = repository_lock(&fixture.root.path().join("other-repo")).expect("independent key");
     assert!(other.try_lock().is_ok());
@@ -804,9 +815,12 @@ async fn physical_actor_deletion_and_changed_journal_payload_cannot_publish() {
     );
     assert!(plan.identity.cwd.is_dir());
     assert_eq!(
-        WorkspaceReadyRepository::journal(&fixture.store.read().expect("read"), &plan.identity.id)
-            .expect("journal")
-            .expect("row")["phase"],
+        WorkspaceReadyRepository::journal(
+            &fixture.store.test_reader().expect("read"),
+            &plan.identity.id
+        )
+        .expect("journal")
+        .expect("row")["phase"],
         "recovery_required"
     );
 }
@@ -1205,7 +1219,7 @@ async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
         std::thread::park_timeout(Duration::from_millis(1));
     }
     assert!(
-        WorkspaceReadyRepository::journal(&fixture.store.read().expect("read"), &plan.id)
+        WorkspaceReadyRepository::journal(&fixture.store.test_reader().expect("read"), &plan.id)
             .expect("journal")
             .is_some()
     );
@@ -1331,7 +1345,7 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
         assert_eq!(actor[field], python["actor"][field], "published {field}");
     }
     let checkpoint = CheckpointsRepository::checkpoint(
-        &fixture.store.read().expect("read"),
+        &fixture.store.test_reader().expect("read"),
         actor["checkpointHistoryHead"].as_str().expect("id"),
     )
     .expect("checkpoint")
@@ -1393,9 +1407,12 @@ async fn stale_reservation_precondition_never_starts_git_effect() {
     ));
     assert!(!plan.identity.destination.exists());
     assert!(
-        WorkspaceReadyRepository::journal(&fixture.store.read().expect("read"), &plan.identity.id)
-            .expect("journal")
-            .is_none()
+        WorkspaceReadyRepository::journal(
+            &fixture.store.test_reader().expect("read"),
+            &plan.identity.id
+        )
+        .expect("journal")
+        .is_none()
     );
 }
 
@@ -1831,7 +1848,7 @@ async fn ready_worktree_git_budget_excludes_waiting_for_a_store_reader() {
             let store = std::sync::Arc::clone(&fixture.store);
             let held = std::sync::Arc::clone(&held);
             std::thread::spawn(move || {
-                let reader = store.read().expect("reader");
+                let reader = store.test_reader().expect("reader");
                 held.wait();
                 std::thread::sleep(budget + Duration::from_millis(500));
                 drop(reader);
@@ -2036,7 +2053,7 @@ async fn reservation_snapshot_yields_the_reservations_of_the_full_snapshot() {
         })
         .await
         .expect("seed corpus");
-    let db = fixture.store.read().expect("reader");
+    let db = fixture.store.test_reader().expect("reader");
     for id in ids {
         let full = CheckpointsRepository::workspace_snapshot(&db, &id)
             .expect("full")

@@ -49,9 +49,9 @@ pub(crate) async fn prepare_path(
     path: Option<Value>,
     require_directory: bool,
 ) -> Result<(PreparedHost, String), ProjectsError> {
+    let prepared = PreparedHost::load(&store).await?;
     studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/projects", move || {
         let path = project_key(path.as_ref(), require_directory)?;
-        let prepared = PreparedHost::load(&store)?;
         prepared.recheck_paths()?;
         Ok::<_, ProjectsError>((prepared, path))
     })
@@ -59,9 +59,12 @@ pub(crate) async fn prepare_path(
     .map_err(|_| ProjectsError::PreparationWorker)?
 }
 
-pub fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
-    let connection = store.read()?;
-    let rows = ProjectsRepository::list(&connection)?;
+pub async fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
+    let rows = store
+        .read_async("runtime-services/projects", |connection| {
+            ProjectsRepository::list(connection)
+        })
+        .await?;
     let mut items = Vec::with_capacity(rows.len());
     for (id, record) in rows {
         check_id(&record, "runtime_projects", &id)?;
@@ -72,7 +75,7 @@ pub fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
 
 /// Read this server's project-location metadata. A request for a paired server
 /// remains owned by the cross-server transport adapter.
-pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, ProjectsError> {
+pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value, ProjectsError> {
     let project_id = query
         .get("project")
         .and_then(Value::as_str)
@@ -96,11 +99,35 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
             "cross-server-driver/project-location-read",
         ));
     }
-    let project = {
-        let db = store.read()?;
-        ProjectsRepository::get(&db, project_id)?.map(|(_, value)| value)
-    }
-    .ok_or(ProjectsError::BadRequest("Select an existing project"))?;
+    let server_id = server_id.to_owned();
+    let project_id = project_id.to_owned();
+    let matches = query.get("action").and_then(Value::as_str) == Some("matches");
+    let (project, projects) = store
+        .read_async("runtime-services/projects", move |db| {
+            let project = ProjectsRepository::get(db, &project_id)?.map(|(_, value)| value);
+            let projects = if matches {
+                ProjectsRepository::list(db)?
+            } else {
+                Vec::new()
+            };
+            Ok::<_, StoreError>((project, projects))
+        })
+        .await?;
+    let project = project.ok_or(ProjectsError::BadRequest("Select an existing project"))?;
+    studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/projects", move || {
+        location_from_rows(&query, &server_id, &project, projects)
+    })
+    .await
+    .map_err(|_| ProjectsError::PreparationWorker)?
+}
+
+/// The filesystem and Git part of [`location_query`], after its rows are read.
+fn location_from_rows(
+    query: &Value,
+    server_id: &str,
+    project: &Value,
+    projects: Vec<(String, Value)>,
+) -> Result<Value, ProjectsError> {
     if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
             .get("locations")
@@ -120,10 +147,9 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
         let Some(origin) = origin else {
             return Ok(json!({"matches":[]}));
         };
-        let db = store.read()?;
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
-        for (id, candidate) in ProjectsRepository::list(&db)? {
+        for (id, candidate) in projects {
             let Some(path) = candidate
                 .get("path")
                 .and_then(Value::as_str)
@@ -300,18 +326,35 @@ pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
     Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
 }
 
-pub fn peer_location_matches(
+pub async fn peer_location_matches(
     store: &RuntimeStore,
-    origin: &str,
-    cwd: Option<&str>,
+    origin: String,
+    cwd: Option<String>,
 ) -> Result<Value, ProjectsError> {
     if origin.is_empty() || origin.chars().count() > 4096 {
         return Err(ProjectsError::BadRequest("A Git origin is invalid"));
     }
-    let connection = store.read()?;
+    let projects = store
+        .read_async("runtime-services/projects", |connection| {
+            ProjectsRepository::list(connection)
+        })
+        .await?;
+    studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/projects", move || {
+        peer_matches_from_rows(&origin, cwd.as_deref(), projects)
+    })
+    .await
+    .map_err(|_| ProjectsError::PreparationWorker)?
+}
+
+/// The filesystem and Git part of [`peer_location_matches`].
+fn peer_matches_from_rows(
+    origin: &str,
+    cwd: Option<&str>,
+    projects: Vec<(String, Value)>,
+) -> Result<Value, ProjectsError> {
     let mut candidates = BTreeSet::new();
     let mut matches = Vec::new();
-    for (id, project) in ProjectsRepository::list(&connection)? {
+    for (id, project) in projects {
         let Some(path) = project
             .get("path")
             .and_then(Value::as_str)
@@ -325,7 +368,6 @@ pub fn peer_location_matches(
             matches.push(json!({"projectId":id,"path":path,"name":project.get("name")}));
         }
     }
-    drop(connection);
     if let Some(cwd) = cwd.filter(|path| !path.is_empty()) {
         let directory = expand_home(cwd)
             .canonicalize()
@@ -398,9 +440,10 @@ mod peer_location_tests {
         assert_eq!(info["matches"], json!([]));
         let matches = peer_location_matches(
             &store,
-            "example.invalid/team/repo",
-            Some(root.path().to_str().expect("UTF-8 temp path")),
+            "example.invalid/team/repo".to_owned(),
+            Some(root.path().to_str().expect("UTF-8 temp path").to_owned()),
         )
+        .await
         .expect("read peer matches");
         assert_eq!(matches["matches"].as_array().expect("match array").len(), 1);
         assert_eq!(

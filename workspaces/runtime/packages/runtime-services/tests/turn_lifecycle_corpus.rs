@@ -228,7 +228,7 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
             }
             let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).await.map_err(|e|e.to_string())?;
             if submitted {
-                let db=store.read().map_err(|e|e.to_string())?;
+                let db=store.test_reader().map_err(|e|e.to_string())?;
                 let receipt=studio_runtime_store::EventWriteRepository::receipt(&db,"account-worker:account:default:attempt:turn/start:submitted").map_err(|e|e.to_string())?.expect("production account-worker submission receipt");
                 let receipt:Value=serde_json::from_str(&receipt.result).expect("receipt JSON");
                 assert_eq!(receipt["request"],json!({"id":"ticket","generation":1,"method":"turn/start","operation":"account:default:attempt:turn/start","thread":"thread","lightweight":false,"deadline":60000,"unknown":false,"remoteId":null}));

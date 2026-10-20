@@ -702,8 +702,8 @@ pub async fn execute_provider_prepared(
 
 /// Return a previously settled action receipt before an HTTP caller applies
 /// readiness preflights that may no longer hold after the original action.
-pub fn replay_if_settled(store: &RuntimeStore, request: &Request) -> Result<Option<Value>> {
-    let existing = store.read_transaction_with_error(|tx| replay(tx, request))?;
+pub fn replay_if_settled(tx: &Transaction<'_>, request: &Request) -> Result<Option<Value>> {
+    let existing = replay(tx, request)?;
     Ok(existing
         .as_ref()
         .filter(|snapshot| {

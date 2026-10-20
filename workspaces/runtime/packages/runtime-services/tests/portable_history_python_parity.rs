@@ -251,7 +251,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     stale.epoch += 1;
     assert!(
         matches!(
-            export_history(&store, stale),
+            export_history(&store, stale).await,
             Err(PortableHistoryError::SourceChanged)
         ),
         "stale source refused"
@@ -260,7 +260,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     stale_settings.source_settings["role"] = json!("changed-after-capture");
     assert!(
         matches!(
-            export_history(&store, stale_settings),
+            export_history(&store, stale_settings).await,
             Err(PortableHistoryError::SourceChanged)
         ),
         "changed source settings refused"
@@ -269,7 +269,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     stale_provider_settings.source_settings["provider"] = json!("codex");
     assert!(
         matches!(
-            export_history(&store, stale_provider_settings),
+            export_history(&store, stale_provider_settings).await,
             Err(PortableHistoryError::SourceChanged)
         ),
         "changed account-transfer provider settings refused"
@@ -280,7 +280,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     );
 
     assert!(
-        export_history(&store, base_input()).is_err(),
+        export_history(&store, base_input()).await.is_err(),
         "missing native capture refused"
     );
     assert!(
@@ -327,7 +327,8 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
                 export_history(
                     &store,
                     input_with_records(&format!("invalid-native-{label}"), records)
-                ),
+                )
+                .await,
                 Err(PortableHistoryError::InvalidArchive(_))
             ),
             "native {label} is refused"
@@ -342,7 +343,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     );
     assert!(
         matches!(
-            export_history(&store, proofless),
+            export_history(&store, proofless).await,
             Err(PortableHistoryError::InvalidArchive(
                 "native unmaterialized evidence"
             ))
@@ -358,7 +359,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
         })],
     );
     assert!(matches!(
-        export_history(&store, oversized),
+        export_history(&store, oversized).await,
         Err(PortableHistoryError::LimitExceeded {
             limit: "record byte",
             record_index,
@@ -371,6 +372,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
         &store,
         input_with_records("rust-transfer-1", native_records),
     )
+    .await
     .expect("Rust publishes archive");
     let validated = validate_history(root.path(), &descriptor).expect("Rust reads its archive");
     assert_eq!(validated, descriptor);
@@ -426,7 +428,9 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
         python_result["context"], context,
         "Python reads Rust writer output"
     );
-    let retry = export_history(&store, base_input()).expect("published winner is retry safe");
+    let retry = export_history(&store, base_input())
+        .await
+        .expect("published winner is retry safe");
     assert_eq!(retry, descriptor);
 }
 

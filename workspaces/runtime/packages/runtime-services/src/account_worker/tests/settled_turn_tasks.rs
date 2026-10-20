@@ -9,7 +9,7 @@ async fn task(state: &State, item: &str) -> Value {
     state
         .bridge
         .run(move |store| async move {
-            let raw: String = store.read()?.query_row(
+            let raw: String = store.test_reader()?.query_row(
                 "SELECT record FROM runtime_tasks WHERE id=?1",
                 [id],
                 |r| r.get(0),
