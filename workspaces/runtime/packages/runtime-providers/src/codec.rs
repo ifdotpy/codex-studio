@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use thiserror::Error;
 
 /// Largest accepted UTF-8 JSON payload, excluding its LF or CRLF delimiter.
@@ -367,179 +368,114 @@ impl LineDecoder {
 }
 
 fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
-    let object: Map<String, Value> = serde_json::from_slice(line)
-        .map_err(|error| CodecError::MalformedJson(error.to_string()))?;
-    decode_object(object).map_err(|(error, _object)| error)
+    serde_json::from_slice::<WireObject<'_>>(line)
+        .map_err(|error| CodecError::MalformedJson(error.to_string()))?
+        .into_frame()
 }
 
-fn decode_object(
-    mut object: Map<String, Value>,
-) -> Result<Frame, (CodecError, Map<String, Value>)> {
-    let Some(object_method) = object.get("method") else {
-        let Some(id_value) = object.get("id") else {
-            return Err((
-                CodecError::MalformedFrame("expected a method or response id"),
-                object,
-            ));
-        };
-        let id = match serde_json::from_value(id_value.clone()) {
-            Ok(id) => id,
-            Err(_) => {
-                return Err((
-                    CodecError::MalformedFrame("response id must be a string or unsigned integer"),
-                    object,
-                ));
+/// One provider wire object. Serde splits the envelope from the extension
+/// members while it parses, so a frame is built from a single JSON tree with
+/// no member clones or removals.
+#[derive(Deserialize)]
+struct WireObject<'a> {
+    #[serde(borrow)]
+    method: Option<Cow<'a, str>>,
+    id: Option<RequestId>,
+    #[serde(default, deserialize_with = "present")]
+    params: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    result: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    error: Option<Value>,
+    #[serde(flatten)]
+    fields: Map<String, Value>,
+}
+
+/// Keep an explicit JSON `null` member as `Some(Value::Null)`; only an absent
+/// member is `None`, so a frame re-encodes to the object it was decoded from.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+impl WireObject<'_> {
+    fn into_frame(self) -> Result<Frame, CodecError> {
+        let Self {
+            method,
+            id,
+            params,
+            result,
+            error,
+            mut fields,
+        } = self;
+        let mut keep = |key: &str, value: Option<Value>| {
+            if let Some(value) = value {
+                fields.insert(key.to_owned(), value);
             }
         };
-        object.remove("id");
-        let result = object.remove("result");
-        let error = object.remove("error");
-        let body = if let Some(value) = error {
-            ResponseBody::Error(value)
-        } else {
-            ResponseBody::Result(result.unwrap_or_else(|| Value::Object(Map::new())))
-        };
-        return Ok(Frame::Response {
-            id,
-            body,
-            fields: object,
-        });
-    };
-    let Some(method_name) = object_method.as_str() else {
-        return Err((
-            CodecError::MalformedFrame("method must be a string"),
-            object,
-        ));
-    };
-    let method_name = method_name.to_owned();
-    if let Some(method) = Method::from_str(&method_name) {
-        let id = match object.get("id") {
-            Some(value) => match serde_json::from_value(value.clone()) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    return Err((
-                        CodecError::MalformedFrame(
-                            "request id must be a string or unsigned integer",
-                        ),
-                        object,
-                    ));
+        let Some(method) = method else {
+            let id = id.ok_or(CodecError::MalformedFrame(
+                "expected a method or response id",
+            ))?;
+            keep("params", params);
+            let body = match (error, result) {
+                (Some(error), _) => ResponseBody::Error(error),
+                (None, result) => {
+                    ResponseBody::Result(result.unwrap_or_else(|| Value::Object(Map::new())))
                 }
-            },
-            None => None,
-        };
-        object.remove("id");
-        let params = object.remove("params");
-        object.remove("method");
-        return if let Some(id) = id {
-            Ok(Frame::Request(RequestFrame {
-                id,
-                method,
-                params,
-                fields: object,
-            }))
-        } else {
-            Ok(Frame::Notification(NotificationFrame {
-                method,
-                params,
-                fields: object,
-            }))
-        };
-    }
-    Ok(Frame::UnknownMethod(UnknownMethodFrame {
-        method: method_name,
-        fields: object,
-    }))
-}
-
-struct JsonByteCounter(usize);
-
-impl std::io::Write for JsonByteCounter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_add(bytes.len())
-            .ok_or_else(|| std::io::Error::other("JSON frame size overflow"))?;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Decode a supervisor event payload directly from the already parsed JSON
-/// value. Only malformed or oversized payloads are serialized to retain their
-/// raw stdout bytes beside the journal cursor.
-pub fn decode_journal_value(cursor: u64, generation: u64, payload: Value) -> DecodedJournalEntry {
-    let mut byte_count = JsonByteCounter(0);
-    if serde_json::to_writer(&mut byte_count, &payload).is_err() {
-        return raw_value_entry(
-            cursor,
-            generation,
-            payload,
-            CodecError::Serialization("cannot measure JSON payload".to_owned()),
-        );
-    }
-    if byte_count.0 > MAX_FRAME_BYTES {
-        return raw_value_entry(
-            cursor,
-            generation,
-            payload,
-            CodecError::FrameTooLarge {
-                limit: MAX_FRAME_BYTES,
-            },
-        );
-    }
-    let Value::Object(object) = payload else {
-        let error = match serde_json::from_value::<Map<String, Value>>(payload.clone()) {
-            Ok(_) => CodecError::MalformedFrame("expected a protocol object"),
-            Err(error) => CodecError::MalformedJson(error.to_string()),
-        };
-        return raw_value_entry(cursor, generation, payload, error);
-    };
-    match decode_object(object) {
-        Ok(frame) => DecodedJournalEntry {
-            cursor,
-            generation,
-            payload: DecodedJournalPayload::Frame(frame),
-        },
-        Err((error, object)) => raw_object_entry(cursor, generation, object, error),
-    }
-}
-
-fn raw_value_entry(
-    cursor: u64,
-    generation: u64,
-    payload: Value,
-    error: CodecError,
-) -> DecodedJournalEntry {
-    let bytes = match serde_json::to_vec(&payload) {
-        Ok(bytes) => bytes,
-        Err(serialization) => {
-            return DecodedJournalEntry {
-                cursor,
-                generation,
-                payload: DecodedJournalPayload::RawStdout {
-                    bytes: Vec::new(),
-                    error: CodecError::Serialization(serialization.to_string()),
-                },
             };
-        }
-    };
-    DecodedJournalEntry {
-        cursor,
-        generation,
-        payload: DecodedJournalPayload::RawStdout { bytes, error },
+            return Ok(Frame::Response { id, body, fields });
+        };
+        keep("result", result);
+        keep("error", error);
+        let Some(known) = Method::from_str(&method) else {
+            keep("params", params);
+            keep("id", id.map(Value::from));
+            keep("method", Some(Value::String(method.clone().into_owned())));
+            return Ok(Frame::UnknownMethod(UnknownMethodFrame {
+                method: method.into_owned(),
+                fields,
+            }));
+        };
+        Ok(match id {
+            Some(id) => Frame::Request(RequestFrame {
+                id,
+                method: known,
+                params,
+                fields,
+            }),
+            None => Frame::Notification(NotificationFrame {
+                method: known,
+                params,
+                fields,
+            }),
+        })
     }
 }
 
-fn raw_object_entry(
-    cursor: u64,
-    generation: u64,
-    object: Map<String, Value>,
-    error: CodecError,
-) -> DecodedJournalEntry {
-    raw_value_entry(cursor, generation, Value::Object(object), error)
+impl From<RequestId> for Value {
+    fn from(id: RequestId) -> Self {
+        match id {
+            RequestId::Number(number) => Self::from(number),
+            RequestId::String(text) => Self::String(text),
+        }
+    }
+}
+
+/// Decode a supervisor event payload that arrived already parsed. It is
+/// encoded once and decoded by the same wire decoder as stdout lines, so both
+/// paths share one schema and malformed payloads keep their bytes.
+pub fn decode_journal_value(cursor: u64, generation: u64, payload: Value) -> DecodedJournalEntry {
+    match serde_json::to_vec(&payload) {
+        Ok(bytes) => decode_journal_entry(cursor, generation, bytes),
+        Err(error) => DecodedJournalEntry {
+            cursor,
+            generation,
+            payload: DecodedJournalPayload::RawStdout {
+                bytes: Vec::new(),
+                error: CodecError::Serialization(error.to_string()),
+            },
+        },
+    }
 }
 
 /// Decode a complete supervisor stdout journal record without losing its

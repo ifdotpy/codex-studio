@@ -589,3 +589,72 @@ fn check_declared_rpc_assertions(fixture: &Value, context: &str) {
         }
     }
 }
+
+#[test]
+fn wire_envelope_round_trips_valid_objects_and_refuses_malformed_ones() {
+    let valid: &[&[u8]] = &[
+        br#"{"method":"item/agentMessage/delta","params":{"threadId":"t","delta":"hi"}}"#,
+        br#"{"id":"claude:1","method":"item/tool/call","params":{"x":1},"jsonrpc":"2.0"}"#,
+        br#"{"id":7,"result":{"ok":true},"params":{"kept":1}}"#,
+        br#"{"id":8,"error":{"code":9}}"#,
+        br#"{"id":9,"result":null}"#,
+        br#"{"method":"turn/started","params":null}"#,
+        br#"{"method":"future/method","id":3,"params":[1],"result":2,"error":3}"#,
+        br#"{"method":"turn/started","result":1,"error":2,"extension":{"a":[1,2]}}"#,
+        br#"{"\u006dethod":"turn/started","p\u0061rams":{"k":"\u00e9"}}"#,
+    ];
+    for line in valid {
+        let DecodedJournalPayload::Frame(frame) = decode_journal_entry_borrowed(1, 2, line).payload
+        else {
+            panic!("refused {}", String::from_utf8_lossy(line));
+        };
+        let encoded: Value =
+            serde_json::from_slice(&encode_line(&frame).expect("frame encodes")).expect("JSON");
+        let original: Value = serde_json::from_slice(line).expect("test line is JSON");
+        assert_eq!(encoded, original, "{}", String::from_utf8_lossy(line));
+    }
+    type Expected = fn(&CodecError) -> bool;
+    let refused: &[(&[u8], Expected)] = &[
+        (br#"{"result":1}"#.as_slice(), |error| {
+            *error == CodecError::MalformedFrame("expected a method or response id")
+        }),
+        (br#"{"id":null,"result":1}"#, |error| {
+            matches!(error, CodecError::MalformedFrame(_))
+        }),
+        (br#"{"method":17,"id":1}"#, |error| {
+            matches!(error, CodecError::MalformedJson(_))
+        }),
+        (br#"{"method":"turn/start","id":-1}"#, |error| {
+            matches!(error, CodecError::MalformedJson(_))
+        }),
+        (br#"{"method":"turn/start","id":1.5}"#, |error| {
+            matches!(error, CodecError::MalformedJson(_))
+        }),
+        (
+            br#"{"method":"future/method","id":{"odd":true}}"#,
+            |error| matches!(error, CodecError::MalformedJson(_)),
+        ),
+        (
+            br#"{"method":"turn/started","method":"turn/completed"}"#,
+            |error| matches!(error, CodecError::MalformedJson(_)),
+        ),
+        (br#"[1,2]"#, |error| {
+            matches!(error, CodecError::MalformedJson(_))
+        }),
+    ];
+    for (line, expected) in refused {
+        match decode_journal_entry_borrowed(1, 2, line).payload {
+            DecodedJournalPayload::RawStdout { bytes, error } => {
+                assert_eq!(bytes, *line);
+                assert!(
+                    expected(&error),
+                    "{error:?} for {}",
+                    String::from_utf8_lossy(line)
+                );
+            }
+            DecodedJournalPayload::Frame(frame) => {
+                panic!("accepted {}: {frame:?}", String::from_utf8_lossy(line))
+            }
+        }
+    }
+}
