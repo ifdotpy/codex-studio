@@ -122,7 +122,7 @@ impl PreparedCapture {
         if !at.is_finite() || at < 0. || !recorded_at.is_finite() || recorded_at < 0. {
             return Err(CaptureError::Invalid("/at"));
         }
-        if params.to_string().len() > MAX_CAPTURE_BYTES {
+        if encoded_len(params) > MAX_CAPTURE_BYTES {
             return Err(CaptureError::Invalid("/params/size"));
         }
         if let Some((pointer, _)) = studio_runtime_schema::first_error("AnalyticsNotice", params)
@@ -533,43 +533,25 @@ pub(crate) fn capture_notification_effect_in(
     } else {
         "analyticsStream"
     };
-    tx.execute_cached(
-        "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
-        [],
-    )?;
-    tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
-         CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
-    )?;
-    let migrated: bool = tx.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
-        [],
-        |row| row.get(0),
-    )?;
-    if !migrated {
-        let legacy_exists: bool = tx.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
-            [],
-            |row| row.get(0),
-        )?;
-        if legacy_exists {
-            tx.execute_cached(
-                "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
-                [],
-            )?;
-        }
-        tx.execute_cached(
-            "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
-            [],
-        )?;
-    }
-    let legacy: Option<(i64, i64, i64)> = tx
-        .query_row_cached(
+    let watermark = || {
+        tx.query_row_cached(
             "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
             [provider_handle],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok::<(i64, i64, i64), _>((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()?;
+        .optional()
+    };
+    // The receipt tables exist after the first capture of a database; only a
+    // missing table runs their creation and legacy migration.
+    let legacy = match watermark() {
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.starts_with("no such table") =>
+        {
+            Repo::ensure_receipt_tables(tx)?;
+            watermark()?
+        }
+        result => result?,
+    };
     if legacy.is_some_and(|(saved_generation, saved_cursor, effects)| {
         generation < saved_generation
             || generation == saved_generation
@@ -799,6 +781,39 @@ fn apply_stream_metrics(
     }
 }
 
+/// The compact JSON length of `value` in bytes, counted without building the text.
+fn encoded_len(value: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).expect("JSON values serialize");
+    count.0
+}
+
+/// The identity fields of a stored agent that a capture must still match.
+/// A missing field stays `None`; a present `null` is `Some(Value::Null)`.
+#[derive(serde::Deserialize)]
+struct CaptureIdentity {
+    #[serde(rename = "threadId", default, deserialize_with = "present")]
+    thread_id: Option<Value>,
+    #[serde(rename = "accountKey", default, deserialize_with = "present")]
+    account_key: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    epoch: Option<Value>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
+    <Value as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
 pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), CaptureError> {
     let raw: Option<String> = canvas
         .query_row_cached(
@@ -807,13 +822,13 @@ pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), C
             |r| r.get(0),
         )
         .optional()?;
-    let current: Value = raw
+    let current: CaptureIdentity = raw
         .map(|r| serde_json::from_str(&r).map_err(StoreError::from))
         .transpose()?
         .ok_or(CaptureError::StaleIdentity)?;
-    if ["threadId", "accountKey", "epoch"]
-        .iter()
-        .any(|k| current.get(k) != agent.get(k))
+    if current.thread_id.as_ref() != agent.get("threadId")
+        || current.account_key.as_ref() != agent.get("accountKey")
+        || current.epoch.as_ref() != agent.get("epoch")
     {
         return Err(CaptureError::StaleIdentity);
     }
@@ -1565,11 +1580,7 @@ pub async fn capture_limit(
     value: Value,
     at: f64,
 ) -> Result<(), CaptureError> {
-    if !at.is_finite()
-        || at < 0.
-        || account.is_empty()
-        || value.to_string().len() > MAX_CAPTURE_BYTES
-    {
+    if !at.is_finite() || at < 0. || account.is_empty() || encoded_len(&value) > MAX_CAPTURE_BYTES {
         return Err(CaptureError::Invalid("/rateLimits"));
     }
     store

@@ -51,13 +51,45 @@ impl CaptureTable {
 
 pub struct AnalyticsCaptureRepository;
 impl AnalyticsCaptureRepository {
+    /// Create the per-delivery capture receipt tables and move legacy receipts
+    /// to their watermarks, inside the caller's analytics transaction. A
+    /// capture calls it only when the tables are missing (a database no
+    /// capture has written yet), not once per effect.
+    pub fn ensure_receipt_tables(db: &Connection) -> StoreResult<()> {
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect));\
+             CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
+             CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
+        )?;
+        let migrated: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if migrated {
+            return Ok(());
+        }
+        let legacy_exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
+            [],
+            |row| row.get(0),
+        )?;
+        if legacy_exists {
+            db.execute(
+                "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
+                [],
+            )?;
+        }
+        db.execute(
+            "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
+            [],
+        )?;
+        Ok(())
+    }
     pub fn read(db: &Connection, table: CaptureTable, id: &str) -> StoreResult<Option<Value>> {
         let raw: Option<String> = db
-            .query_row(
-                &format!("SELECT record FROM {} WHERE id=?", table.name()),
-                [id],
-                |r| r.get(0),
-            )
+            .prepare_cached(&format!("SELECT record FROM {} WHERE id=?", table.name()))?
+            .query_row([id], |r| r.get(0))
             .optional()?;
         raw.map(|raw| {
             let value = serde_json::from_str(&raw)?;
