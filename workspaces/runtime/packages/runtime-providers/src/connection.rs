@@ -1,13 +1,12 @@
 //! Pure, deterministic provider connection state machine.
 
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
 
 use crate::{
     BookError, CodecError, Frame, Method, PendingBook, RequestFrame, RequestId, RequestIdScheme,
-    RequestState, ResponseBody, ResponseMatch, WireProfile, encode_line,
-    validate_initialize_params,
+    ResponseBody, ResponseMatch, WireProfile, encode_line, validate_initialize_params,
 };
 
 /// Provider request or notification delivered to the account session owner.
@@ -108,6 +107,10 @@ pub struct SessionState {
     initialization_status: InitializationStatus,
     book: PendingBook,
     pending: BTreeMap<RequestId, Pending>,
+    /// `(deadline_ms, id)` of every pending request whose book state is
+    /// `Pending` and whose deadline is finite, earliest first. It lets
+    /// `expire` and `next_deadline_ms` touch only due requests.
+    deadlines: BTreeSet<(u64, RequestId)>,
     active_threads: BTreeMap<String, RequestId>,
     queued_threads: BTreeMap<String, VecDeque<RequestId>>,
 }
@@ -171,6 +174,7 @@ impl SessionState {
             initialization_status: InitializationStatus::AwaitingReply,
             book: PendingBook::new(),
             pending: BTreeMap::new(),
+            deadlines: BTreeSet::new(),
             active_threads: BTreeMap::new(),
             queued_threads: BTreeMap::new(),
         };
@@ -238,6 +242,7 @@ impl SessionState {
         }
         if unknown {
             self.book.mark_unknown(&ticket.id)?;
+            self.deadlines.remove(&(deadline_ms, ticket.id.clone()));
         }
         Ok(())
     }
@@ -262,16 +267,13 @@ impl SessionState {
             id: id.clone(),
             method,
         };
-        self.pending.insert(
-            id,
-            Pending {
-                ticket: ticket.clone(),
-                params: Value::Null,
-                deadline_ms,
-                thread_id,
-                serialized: false,
-            },
-        );
+        self.insert_pending(Pending {
+            ticket: ticket.clone(),
+            params: Value::Null,
+            deadline_ms,
+            thread_id,
+            serialized: false,
+        });
         Ok(ticket)
     }
 
@@ -309,12 +311,7 @@ impl SessionState {
     /// session's single deadline authority, including recovered requests.
     #[must_use]
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        self.pending
-            .iter()
-            .filter(|(id, _)| self.book.state(id) == Some(RequestState::Pending))
-            .map(|(_, pending)| pending.deadline_ms)
-            .filter(|deadline| *deadline != u64::MAX)
-            .min()
+        self.deadlines.first().map(|(deadline, _)| *deadline)
     }
 
     pub fn submit(
@@ -472,17 +469,32 @@ impl SessionState {
             id: id.clone(),
             method,
         };
-        self.pending.insert(
-            id,
-            Pending {
-                ticket: ticket.clone(),
-                params,
-                deadline_ms: now_ms.saturating_add(timeout_ms),
-                thread_id,
-                serialized,
-            },
-        );
+        self.insert_pending(Pending {
+            ticket: ticket.clone(),
+            params,
+            deadline_ms: now_ms.saturating_add(timeout_ms),
+            thread_id,
+            serialized,
+        });
         Ok(ticket)
+    }
+
+    fn insert_pending(&mut self, pending: Pending) {
+        let key = (pending.deadline_ms, pending.ticket.id.clone());
+        if let Some(replaced) = self.pending.insert(pending.ticket.id.clone(), pending) {
+            self.deadlines
+                .remove(&(replaced.deadline_ms, replaced.ticket.id));
+        }
+        if key.0 != u64::MAX {
+            self.deadlines.insert(key);
+        }
+    }
+
+    fn remove_pending(&mut self, id: &RequestId) -> Option<Pending> {
+        let pending = self.pending.remove(id)?;
+        self.deadlines
+            .remove(&(pending.deadline_ms, pending.ticket.id.clone()));
+        Some(pending)
     }
 
     fn write_request(&self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
@@ -530,7 +542,7 @@ impl SessionState {
                     }
                     Err(error) => return Err(error.into()),
                 };
-                let Some(pending) = self.pending.remove(&id) else {
+                let Some(pending) = self.remove_pending(&id) else {
                     return Ok(Vec::new());
                 };
                 let late = received_at_ms.map_or_else(
@@ -580,19 +592,16 @@ impl SessionState {
         if matches!(self.lifecycle, Lifecycle::Lost | Lifecycle::Closed) {
             return (Ok(()), Vec::new());
         }
-        let expired = self
-            .pending
-            .iter()
-            .filter(|(id, pending)| {
-                now_ms >= pending.deadline_ms && self.book.state(id) == Some(RequestState::Pending)
-            })
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        if expired.is_empty() {
-            return (Ok(()), Vec::new());
-        }
-        let mut actions = Vec::with_capacity(expired.len());
-        for id in expired {
+        let mut expired = false;
+        let mut actions = Vec::new();
+        while let Some((_, id)) = self
+            .deadlines
+            .first()
+            .is_some_and(|(deadline, _)| *deadline <= now_ms)
+            .then(|| self.deadlines.pop_first())
+            .flatten()
+        {
+            expired = true;
             if self.book.mark_unknown(&id).is_err() {
                 continue;
             }
@@ -606,7 +615,11 @@ impl SessionState {
                 });
             }
         }
-        (Err(SessionError::DeadlineUnknown), actions)
+        if expired {
+            (Err(SessionError::DeadlineUnknown), actions)
+        } else {
+            (Ok(()), actions)
+        }
     }
 
     pub fn transport_lost(&mut self) -> Vec<Action> {
@@ -631,6 +644,7 @@ impl SessionState {
             return Vec::new();
         }
         self.book.mark_connection_lost();
+        self.deadlines.clear();
         self.lifecycle = lifecycle;
         if self.initialization_status == InitializationStatus::AwaitingReply {
             self.initialization_status = InitializationStatus::Unknown;
@@ -675,7 +689,7 @@ impl SessionState {
     }
 
     fn remove_request(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
-        let Some(pending) = self.pending.remove(&ticket.id) else {
+        let Some(pending) = self.remove_pending(&ticket.id) else {
             return Ok(Vec::new());
         };
         if !pending.serialized {

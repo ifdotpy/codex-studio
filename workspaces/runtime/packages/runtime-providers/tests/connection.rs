@@ -1155,3 +1155,63 @@ fn restored_serialized_and_lightweight_requests_preserve_thread_ownership() {
         assert_eq!(outgoing(&actions).len(), usize::from(!lightweight));
     }
 }
+
+#[test]
+fn deadline_index_expires_only_due_unanswered_requests_for_both_providers() {
+    for claude in [false, true] {
+        let mut session = state(claude);
+        let tickets = [10, 20, 30, 30].map(|timeout| {
+            session
+                .submit(Method::ModelList, json!({}), 0, timeout, None, false)
+                .expect("submit")
+                .0
+        });
+        assert_eq!(session.next_deadline_ms(), Some(10));
+        let replied = session
+            .receive_at(
+                Frame::Response {
+                    id: tickets[0].id.clone(),
+                    body: ResponseBody::Result(json!({})),
+                    fields: Default::default(),
+                },
+                5,
+            )
+            .expect("reply");
+        assert!(matches!(
+            replied.as_slice(),
+            [Action::Resolve {
+                outcome: RequestOutcome::Reply { late: false, .. },
+                ..
+            }]
+        ));
+        assert_eq!(session.next_deadline_ms(), Some(20));
+        let (result, nothing_due) = session.expire(19);
+        assert!(result.is_ok() && nothing_due.is_empty());
+        let (result, expired) = session.expire(30);
+        assert!(result.is_err());
+        let expired = expired
+            .iter()
+            .map(|action| match action {
+                Action::Resolve {
+                    ticket,
+                    outcome: RequestOutcome::Unknown,
+                } => ticket.id.clone(),
+                other => panic!("unexpected action {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(expired.len(), 3);
+        for ticket in &tickets[1..] {
+            assert!(expired.contains(&ticket.id));
+        }
+        assert_eq!(session.next_deadline_ms(), None);
+        assert!(session.expire(u64::MAX - 1).1.is_empty());
+        let fresh = session
+            .submit(Method::ModelList, json!({}), 40, 10, None, false)
+            .expect("submit after expiry")
+            .0;
+        assert_eq!(session.next_deadline_ms(), Some(50));
+        session.transport_lost();
+        assert_eq!(session.next_deadline_ms(), None);
+        assert!(session.expire(60).1.is_empty(), "{fresh:?}");
+    }
+}
