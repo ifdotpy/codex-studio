@@ -13,7 +13,7 @@ use studio_runtime_services::costs::{self, CostsError};
 
 use super::extractors::QueryParams;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
-use crate::error::ApiError;
+use crate::error::{ApiError, InternalErrorKind};
 use crate::router::HttpState;
 
 const SESSION_COST_DEPENDENCIES: [Dependency; 2] = [
@@ -128,7 +128,7 @@ async fn session_cost(
         move || costs::session_cost_with_account_profiles(&store, &agent, &accounts),
     )
     .await
-    .map_err(|_| ApiError::internal())?
+    .map_err(|_| ApiError::internal_with_cause(InternalErrorKind::StoreConcurrency))?
     .map_err(map_costs_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SessionCostResponse,
@@ -151,12 +151,18 @@ fn map_costs_error(error: CostsError) -> ApiError {
     match error {
         CostsError::Dependency(dependency) => cost_dependency(dependency),
         CostsError::Analytics(error) => map_analytics_error(error),
-        CostsError::Store(_)
-        | CostsError::Repository(_)
-        | CostsError::Sqlite(_)
-        | CostsError::Computation
-        | CostsError::InvalidSessionState
-        | CostsError::AccountProfilesRequired => ApiError::internal(),
+        CostsError::Store(error) => {
+            ApiError::internal_with_cause(InternalErrorKind::from_store_error(&error))
+        }
+        CostsError::Repository(_) | CostsError::Sqlite(_) => {
+            ApiError::internal_with_cause(InternalErrorKind::StoreDatabase)
+        }
+        CostsError::Computation => {
+            ApiError::internal_with_cause(InternalErrorKind::CostsComputation)
+        }
+        CostsError::InvalidSessionState | CostsError::AccountProfilesRequired => {
+            ApiError::internal_with_cause(InternalErrorKind::CostsState)
+        }
         CostsError::InvalidPricing => cost_dependency("costs/pricing-refresh"),
     }
 }
@@ -175,9 +181,12 @@ fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
         analytics::AnalyticsError::InvalidStoredRow { table, id } => {
             ApiError::invalid_stored(table, &id)
         }
-        analytics::AnalyticsError::Read(_)
-        | analytics::AnalyticsError::Sqlite(_)
-        | analytics::AnalyticsError::Serialization(_) => ApiError::internal(),
+        analytics::AnalyticsError::Read(_) | analytics::AnalyticsError::Sqlite(_) => {
+            ApiError::internal_with_cause(InternalErrorKind::StoreDatabase)
+        }
+        analytics::AnalyticsError::Serialization(_) => {
+            ApiError::internal_with_cause(InternalErrorKind::StoreData)
+        }
     }
 }
 

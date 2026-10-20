@@ -30,6 +30,8 @@ pub(crate) enum InternalErrorKind {
     StoreSchema,
     StoreConcurrency,
     ResponseBodyRead,
+    CostsComputation,
+    CostsState,
     Unclassified,
 }
 
@@ -45,6 +47,8 @@ impl InternalErrorKind {
             Self::StoreSchema => "store_schema",
             Self::StoreConcurrency => "store_concurrency",
             Self::ResponseBodyRead => "response_body_read",
+            Self::CostsComputation => "costs_computation",
+            Self::CostsState => "costs_state",
             Self::Unclassified => "unclassified",
         }
     }
