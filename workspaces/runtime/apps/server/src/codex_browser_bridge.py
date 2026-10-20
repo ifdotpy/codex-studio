@@ -41,7 +41,7 @@ if str(VM_GUEST_ROOT) not in sys.path:
     # module shadows a server module.
     sys.path.append(str(VM_GUEST_ROOT))
 
-from browser_policy import PolicyError, provider  # noqa: E402
+from browser_policy import PolicyError, pasted, provider  # noqa: E402
 
 METHOD = "browser/open"
 REMOTE_MESSAGE = ("Open this chat in the window of the Mac that runs its server to sign in, "
@@ -58,6 +58,17 @@ BODY_LIMIT = 256 * 1024
 SENT_HEADERS = ("user-agent", "accept", "accept-language")
 SANDBOX = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
 FINAL_STATES = frozenset({"declined", "stale", "expired", "closed", "replaced", "opened"})
+# The waiting phase of a link that the person opened in paste mode (section 6.3).
+WAITING = "waiting"
+OUTCOME_TEXT = {
+    "signed-in": "The person signed in at {host}. Studio sent the result to the command on port {port}; "
+                 "the command answered HTTP {http}.",
+    "refused": "The person signed in at {host}, but the command refused the result (HTTP {http}).",
+    "provider-error": "The sign-in at {host} returned an error. Studio sent it to the command on port {port}.",
+    "unknown": "The result of the sign-in at {host} is unknown. Studio does not send it again. "
+               "Check the command output.",
+    "expired": "The sign-in at {host} ended without a result: the request expired or the command stopped.",
+}
 CHARSET = re.compile(r"charset=[A-Za-z0-9._-]{1,40}")
 
 Relay = Callable[[str, dict[str, str]], Any]
@@ -377,12 +388,19 @@ class Bridge:
                                 "bridgeId": bridge_id, "url": item["url"], "host": item["host"],
                                 "redirect": item.get("redirect"), "clientId": item.get("clientId"),
                                 "scope": item.get("scope"), "linuxUser": item.get("linuxUser"),
+                                "userCode": self.user_code(item),
                                 "expiresAt": item.get("expiresAt"), "source": self.source}})
             elif state in FINAL_STATES:
                 record = json.loads(row[0])
-                if record.get("status") == "pending":
+                # A pasted result in flight writes its own outcome (Bridge.paste).
+                if record.get("status") == "pending" and not (record.get("params") or {}).get("paste"):
+                    waiting = (record.get("params") or {}).get("phase") == WAITING
                     record.update(status="expired", closeReason=state)
+                    if waiting:
+                        record["params"]["outcome"] = "expired"
                     self.runtime.put(db, "requests", record)
+                    if waiting:
+                        self.outcome_event(db, record)
         if refused is not None:
             print("browser bridge refused link " + bridge_id + ": " + refused, file=sys.stderr)
             self.close_guest(bridge_id, "refused")
@@ -391,6 +409,27 @@ class Bridge:
                 forward = self.forwards.get(bridge_id)
             if forward is not None:
                 forward.close("guest " + str(state))
+
+    def user_code(self, item: dict[str, Any]) -> str | None:
+        try:
+            return provider(item.get("url"), http_providers=self.http_providers).user_code
+        except PolicyError:
+            return None
+
+    def outcome_event(self, db: Any, record: dict[str, Any]) -> None:
+        """Tell the chat how a sign-in that the person opened ended (section 6.2)."""
+        params = record["params"]
+        text = OUTCOME_TEXT.get(str(params.get("outcome")))
+        if not text or not record.get("agent"):
+            return
+        try:
+            agent = self.runtime.agent(record["agent"], db)
+        except ValueError:
+            return
+        port = (params.get("redirect") or {}).get("port")
+        self.runtime.enqueue(db, agent, "browser_outcome", text.format(
+            host=params.get("host"), port=port, http=params.get("outcomeHttp")),
+            "browser-outcome:" + str(params["bridgeId"]))
 
     def close_guest(self, bridge_id: str, reason: str) -> None:
         try:
@@ -420,7 +459,7 @@ class Bridge:
         return value
 
     def finish(self, key: str, decision: str, *, event: str | None = None,
-               forward: dict[str, Any] | None = None) -> None:
+               forward: dict[str, Any] | None = None, outcome: str | None = None) -> None:
         with self.runtime.lock, self.runtime.db() as db:
             row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
             record = json.loads(row[0])
@@ -432,6 +471,8 @@ class Bridge:
             record["status"] = "answered"
             if forward is not None:
                 record["params"]["forward"] = forward
+            if outcome is not None:
+                record["params"]["outcome"] = outcome
             record_answer(record, {"decision": decision})
             self.runtime.put(db, "requests", record)
             if event and record.get("agent"):
@@ -443,12 +484,22 @@ class Bridge:
         """Answer a card. A window on another Mac sends `forward: true`: its own server then
         holds the loopback port and relays the redirect here (open_remote_forward)."""
         decision = data.get("decision")
-        remote = decision == "accept" and not local and data.get("forward") is True
+        # Paste mode: any window. Nothing binds a port; the person pastes the redirect.
+        paste = decision == "accept" and data.get("paste") is True
+        remote = decision == "accept" and not local and not paste and data.get("forward") is True
+        if decision == "answer" and "result" in data:
+            return self.paste(key, data.get("result"))
         if decision not in {"accept", "decline"}:
             raise ValueError("Choose accept or decline")
         record = self.record(key)
         params = record["params"]
         bridge_id, url = str(params["bridgeId"]), str(params["url"])
+        if record.get("status") == "pending" and params.get("phase") == WAITING:
+            if decision == "accept":
+                if paste:
+                    return {"status": "answered", "replayed": True, "openUrl": url}
+                raise ValueError("This sign-in already waits for the address of the page that did not load.")
+            return self.cancel(key, params, bridge_id)
         if record.get("answerSignature"):
             if record["answerSignature"] != answer_signature({"decision": decision}):
                 raise ValueError("This request already has a different answer")
@@ -457,7 +508,7 @@ class Bridge:
             if decision == "accept" and local and (forwarding or not params.get("redirect")
                                                    or self.source == "host"):
                 return {"status": "answered", "replayed": True, "openUrl": url}
-            if remote and not params.get("redirect"):
+            if (remote or paste) and not params.get("redirect"):
                 return {"status": "answered", "replayed": True, "openUrl": url}
             token = self.tokens.get(bridge_id)
             if remote and token is not None:
@@ -466,7 +517,7 @@ class Bridge:
             return {"status": "answered", "replayed": True}
         if record.get("status") != "pending":
             raise ValueError("Request is no longer pending")
-        if decision == "accept" and not local and not remote:
+        if decision == "accept" and not local and not remote and not paste:
             raise ValueError(REMOTE_MESSAGE)
         with self.lock:
             if bridge_id in self.answering:
@@ -483,7 +534,7 @@ class Bridge:
                     f"The person declined to open {params['host']} in the browser. The sign-in command "
                     "keeps waiting until its own timeout. Stop it, or ask the person before you run it again."))
                 return {"status": "answered"}
-            return self.approve(key, params, bridge_id, url, remote=remote)
+            return self.approve(key, params, bridge_id, url, remote=remote, paste=paste)
         finally:
             with self.lock:
                 self.answering.discard(bridge_id)
@@ -495,12 +546,13 @@ class Bridge:
                 "token": token}
 
     def approve(self, key: str, params: dict[str, Any], bridge_id: str, url: str, *,
-                remote: bool = False) -> dict[str, Any]:
+                remote: bool = False, paste: bool = False) -> dict[str, Any]:
         redirect = params.get("redirect")
         forward = None
         # The tool of a native chat listens on this Mac, so a window here reaches it directly.
-        # A window on another Mac binds the port on that Mac (open_remote_forward).
-        if isinstance(redirect, dict) and not remote and self.source == "vm":
+        # A window on another Mac binds the port on that Mac (open_remote_forward). Paste mode
+        # binds nothing: the person pastes the redirect.
+        if isinstance(redirect, dict) and not remote and not paste and self.source == "vm":
             port = int(redirect["port"])
             with self.lock:
                 busy = any(other.port == port for other in self.forwards.values())
@@ -530,6 +582,13 @@ class Bridge:
             with self.lock:
                 self.forwards[bridge_id] = forward
             forward.start()
+        if paste and isinstance(redirect, dict):
+            lease = answered.get("lease") if isinstance(answered, dict) else None
+            expires = lease.get("expiresAt") if isinstance(lease, dict) else None
+            if not isinstance(expires, (int, float)) or isinstance(expires, bool):
+                raise ValueError("Studio could not reach the VM. Try again.")
+            self.wait_for_paste(key, float(expires))
+            return {"status": "answered", "openUrl": url}
         if remote and isinstance(redirect, dict):
             lease = (answered or {}).get("lease") if isinstance(answered, dict) else None
             expires = lease.get("expiresAt") if isinstance(lease, dict) else None
@@ -544,6 +603,75 @@ class Bridge:
                     "forward": self.forward_spec(bridge_id, redirect, remote_forward, token)}
         self.finish(key, "accept")
         return {"status": "answered", "openUrl": url}
+
+    def wait_for_paste(self, key: str, expires: float) -> None:
+        """Keep the card pending in the waiting phase until a pasted result or the deadline."""
+        with self.runtime.lock, self.runtime.db() as db:
+            row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
+            record = json.loads(row[0])
+            if record.get("status") != "pending":
+                return
+            record["params"].update(phase=WAITING, waiting={"expiresAt": expires})
+            self.runtime.put(db, "requests", record)
+
+    def cancel(self, key: str, params: dict[str, Any], bridge_id: str) -> dict[str, Any]:
+        """Decline in the waiting phase: close the guest request; no result can pass."""
+        self.close_guest(bridge_id, "cancelled")
+        self.finish(key, "decline", outcome="cancelled", event=(
+            f"The person cancelled the sign-in at {params['host']}. The sign-in command keeps waiting "
+            "until its own timeout. Stop it, or ask the person before you run it again."))
+        return {"status": "answered"}
+
+    def paste(self, key: str, text: object) -> dict[str, Any]:
+        """Relay the address that the person pasted after a sign-in in paste mode, once
+        (docs/vm-browser-bridge.md, section 6.3). Studio stores no pasted address."""
+        record = self.record(key)
+        params = record["params"]
+        if record.get("status") != "pending" or params.get("phase") != WAITING:
+            if params.get("paste") and record.get("status") in {"answered", "uncertain"}:
+                return {"status": "answered", "replayed": True}
+            raise ValueError("This sign-in does not wait for a pasted address.")
+        try:
+            state = provider(params.get("url"), http_providers=self.http_providers).state
+            callback = pasted(text, params.get("redirect") or {}, state)
+        except PolicyError as error:
+            raise ValueError(str(error)) from None
+        bridge_id = str(params["bridgeId"])
+        with self.runtime.lock, self.runtime.db() as db:
+            row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
+            record = json.loads(row[0])
+            params = record["params"]
+            if record.get("status") != "pending" or params.get("phase") != WAITING or params.get("paste"):
+                raise ValueError("Studio already sends a pasted address for this sign-in.")
+            # The mark comes before the relay: a second paste never sends a second code.
+            params["paste"] = {"at": time.time()}
+            self.runtime.put(db, "requests", record)
+        http_status: int | None = None
+        try:
+            http_status, _, _ = cleaned(self.relay(bridge_id, callback.target, {}))
+            outcome = "provider-error" if callback.error else "signed-in" if 200 <= http_status < 300 else "refused"
+        except LinuxVMError as error:
+            outcome = "expired" if error.code in DEFINITE_CODES else "unknown"
+        except Exception:  # noqa: BLE001 - the code may be used; never send it again
+            outcome = "unknown"
+        with self.runtime.lock, self.runtime.db() as db:
+            row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
+            record = json.loads(row[0])
+            record["params"].update(outcome=outcome, outcomeHttp=http_status)
+            if outcome == "expired":
+                record.update(status="expired", closeReason="stale")
+            else:
+                record["status"] = "uncertain" if outcome == "unknown" else "answered"
+                record_answer(record, {"decision": "answer"})
+            self.runtime.put(db, "requests", record)
+            self.outcome_event(db, record)
+        if outcome == "unknown":
+            self.close_guest(bridge_id, "unknown")
+            raise ValueError("The result of the sign-in is unknown. Studio does not send it again. "
+                             "Check the command output.")
+        if outcome == "expired":
+            raise ValueError("The sign-in command stopped waiting. Ask the agent to run it again.")
+        return {"status": "answered"}
 
     def remote_callback(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Relay one redirect that a window's server received for a remote approval."""

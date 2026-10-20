@@ -6355,6 +6355,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_browser import configure_browser
         if a.get("provider") != "claude" and a.get("executionMode") != "vm":
             configure_browser(self, a, params)
+            # Sign-in links of the thread's commands go to Studio (docs/vm-browser-bridge.md).
+            from codex_browser_host import thread_environment
+            params["config"].update(thread_environment(self.root, a["id"]))
         if a.get('frozenNativeParams'):
             frozen = a['frozenNativeParams']
             params.update(baseInstructions=frozen['baseInstructions'],

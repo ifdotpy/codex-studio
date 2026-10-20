@@ -115,6 +115,7 @@ async fn answer(
             validate: move |record: &serde_json::Value| {
                 validators.validate_table_record("runtime_requests", record)
             },
+            http_providers: Default::default(),
         },
     )
     .await
@@ -192,6 +193,7 @@ fn browser_answer_error(
         E::Invalid(message) | E::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
+        E::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         E::Stale => ApiError::new(
             StatusCode::BAD_REQUEST,
             "The sign-in command already stopped. Ask the agent to run it again.",

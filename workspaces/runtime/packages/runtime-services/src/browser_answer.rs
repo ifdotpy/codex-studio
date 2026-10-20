@@ -11,11 +11,21 @@ const BROWSER_ANSWER_TIMEOUT: Duration = Duration::from_secs(15);
 const BROWSER_TOKEN_BYTES: usize = 32;
 const LOCAL_FORWARD_SECONDS: u64 = 600;
 const BROWSER_DECLINED: &str = "The person declined to open the requested page in the browser. The sign-in command keeps waiting until its own timeout.";
+/// One relayed pasted redirect may take this long (`Bridge.relay` of the Python server).
+const PASTE_RELAY_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest relay body, in bytes (`BODY_LIMIT`).
+const PASTE_BODY_LIMIT: usize = 256 * 1024;
+/// Guest answers that end a relay without a code reaching the tool (`DEFINITE_CODES`).
+const DEFINITE_CODES: [&str; 4] = ["stale", "limit", "invalid_params", "not_found"];
 
 #[derive(Debug, Error)]
 pub enum BrowserAnswerError {
     #[error("{0}")]
     Invalid(&'static str),
+    /// A refusal whose text names the problem, for example a pasted address of another
+    /// sign-in.
+    #[error("{0}")]
+    Refused(String),
     #[error("{0}")]
     Conflict(&'static str),
     #[error("the sign-in command already stopped")]
@@ -43,6 +53,8 @@ pub struct BrowserAnswerContext<V> {
     pub local_forwarder: Option<Arc<crate::browser::BrowserForwarder>>,
     pub now: f64,
     pub validate: V,
+    /// Test provider origins that may use http (`browser_policy`). Production passes none.
+    pub http_providers: std::collections::BTreeSet<String>,
 }
 
 pub fn is_host_source(store: &RuntimeStore, id: &str) -> Result<bool, BrowserAnswerError> {
@@ -69,6 +81,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         local_forwarder,
         now,
         validate,
+        http_providers,
     } = context;
     let validate = Arc::new(validate);
     let validate_for_read = Arc::clone(&validate);
@@ -88,9 +101,29 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         .get("decision")
         .and_then(Value::as_str)
         .ok_or(BrowserAnswerError::Invalid("Choose accept or decline"))?;
+    if decision == "answer"
+        && let Some(result) = data.get("result").and_then(Value::as_str)
+    {
+        return paste(
+            store,
+            id,
+            result,
+            PasteContext {
+                guest,
+                now,
+                validate,
+                http_providers,
+            },
+        )
+        .await
+        .map(Some);
+    }
     if !matches!(decision, "accept" | "decline") {
         return Err(BrowserAnswerError::Invalid("Choose accept or decline"));
     }
+    // Paste mode: any window. Nothing binds a port; the person pastes the redirect.
+    let paste_mode =
+        decision == "accept" && data.get("paste").and_then(Value::as_bool) == Some(true);
     let signature = crate::provider_callbacks::answer_signature(&json!({"decision":decision}));
     let params =
         record
@@ -112,6 +145,30 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         .ok_or(BrowserAnswerError::Invalid(
             "The sign-in request is invalid",
         ))?;
+    let has_redirect = params.get("redirect").is_some_and(Value::is_object);
+    if record.get("status").and_then(Value::as_str) == Some("pending")
+        && params.get("phase").and_then(Value::as_str) == Some(crate::browser_cards::WAITING)
+    {
+        if decision == "accept" {
+            if paste_mode {
+                return Ok(Some(BrowserAnswerResult {
+                    response: json!({"status":"answered","replayed":true,"openUrl":url}),
+                    replayed: true,
+                }));
+            }
+            return Err(BrowserAnswerError::Invalid(
+                "This sign-in already waits for the address of the page that did not load.",
+            ));
+        }
+        let host = params
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        return cancel(store, id, bridge_id, &host, guest, now, validate)
+            .await
+            .map(Some);
+    }
     if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
         if previous != signature {
             return Err(BrowserAnswerError::Conflict(
@@ -120,7 +177,8 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         }
         if record.get("status").and_then(Value::as_str) == Some("answered") {
             return Ok(Some(BrowserAnswerResult {
-                response: if decision == "accept" && local_window {
+                response: if decision == "accept" && (local_window || (paste_mode && !has_redirect))
+                {
                     json!({"status":"answered","replayed":true,"openUrl":url})
                 } else {
                     json!({"status":"answered","replayed":true})
@@ -135,8 +193,9 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     }
     let remote = decision == "accept"
         && !local_window
+        && !paste_mode
         && data.get("forward").and_then(Value::as_bool) == Some(true);
-    if decision == "accept" && !local_window && !remote {
+    if decision == "accept" && !local_window && !remote && !paste_mode {
         return Err(BrowserAnswerError::Invalid(
             "Open this chat in the window of the Mac that runs its server to sign in, or use the tool's device-code mode.",
         ));
@@ -149,6 +208,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     };
     let local_forward = if decision == "accept"
         && local_window
+        && !paste_mode
         && params.get("source").and_then(Value::as_str) == Some("vm")
     {
         if let Some(redirect) = params.get("redirect").filter(|value| value.is_object()) {
@@ -227,6 +287,30 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
             return Err(BrowserAnswerError::Guest(error));
         }
     };
+    if paste_mode && has_redirect {
+        // Keep the card pending in the waiting phase until a pasted result or the deadline.
+        let expires_at = answered
+            .as_ref()
+            .and_then(|value| value.pointer("/lease/expiresAt"))
+            .and_then(Value::as_f64)
+            .ok_or(BrowserAnswerError::Unknown)?;
+        let id = id.to_owned();
+        store
+            .transaction_with_error(move |tx| {
+                let mut record = load(tx, &id, validate.as_ref())?;
+                if record.get("status").and_then(Value::as_str) == Some("pending") {
+                    record["params"]["phase"] = json!(crate::browser_cards::WAITING);
+                    record["params"]["waiting"] = json!({"expiresAt": expires_at});
+                    put(tx, &id, &record, validate.as_ref())?;
+                }
+                Ok::<_, BrowserAnswerError>(())
+            })
+            .await?;
+        return Ok(Some(BrowserAnswerResult {
+            response: json!({"status":"answered","openUrl":url}),
+            replayed: false,
+        }));
+    }
     let forward = if remote
         && let Some(redirect) = params.get("redirect").filter(|value| value.is_object())
     {
@@ -358,6 +442,260 @@ fn expire(
         put(tx, id, &record, validate)?;
     }
     Ok(())
+}
+
+fn mark_answered(record: &mut Value, decision: &str, now: f64) {
+    record["answerSignature"] = json!(crate::provider_callbacks::answer_signature(
+        &json!({"decision":decision})
+    ));
+    record["answeredBy"] = json!("user");
+    record["answeredAt"] = json!(now);
+    record["decision"] = json!(decision);
+    record["deferred"] = json!(false);
+}
+
+/// Decline in the waiting phase: close the guest request; no result can pass.
+async fn cancel<V: Fn(&Value) -> bool + Send + Sync + 'static>(
+    store: &RuntimeStore,
+    id: &str,
+    bridge_id: &str,
+    host: &str,
+    guest: Arc<dyn crate::linux_vm_guest::GuestRpc>,
+    now: f64,
+    validate: Arc<V>,
+) -> Result<BrowserAnswerResult, BrowserAnswerError> {
+    crate::browser_cards::close_guest(guest, bridge_id, "cancelled").await;
+    let id = id.to_owned();
+    let text = format!(
+        "The person cancelled the sign-in at {host}. The sign-in command keeps waiting until its own timeout. Stop it, or ask the person before you run it again."
+    );
+    store
+        .transaction_with_error(move |tx| {
+            let mut record = load(tx, &id, validate.as_ref())?;
+            if record.get("status").and_then(Value::as_str) != Some("pending") {
+                return Err(BrowserAnswerError::Invalid("Request is no longer pending"));
+            }
+            record["status"] = json!("answered");
+            record["params"]["outcome"] = json!("cancelled");
+            mark_answered(&mut record, "decline", now);
+            put(tx, &id, &record, validate.as_ref())?;
+            if let Some(agent_id) = record.get("agent").and_then(Value::as_str)
+                && let Ok(agent) = crate::event_write::checked_agent(tx, agent_id)
+            {
+                let bridge_id = record
+                    .pointer("/params/bridgeId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                crate::event_write::enqueue_event(
+                    tx,
+                    &agent,
+                    format!("browser-declined:{bridge_id}"),
+                    "browser_declined",
+                    text,
+                    now,
+                )
+                .map_err(|_| {
+                    BrowserAnswerError::Invalid("The cancelled sign-in could not be recorded")
+                })?;
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(BrowserAnswerResult {
+        response: json!({"status":"answered"}),
+        replayed: false,
+    })
+}
+
+struct PasteContext<V> {
+    guest: Arc<dyn crate::linux_vm_guest::GuestRpc>,
+    now: f64,
+    validate: Arc<V>,
+    http_providers: std::collections::BTreeSet<String>,
+}
+
+/// The status of a relay result that the browser could see (`cleaned` of the Python
+/// server): a redirect becomes Studio's own page, so it counts as 200.
+fn relay_status(result: &Value) -> Option<u16> {
+    let status = result.get("status").and_then(Value::as_u64)?;
+    if !(100..=599).contains(&status) {
+        return None;
+    }
+    if (300..400).contains(&status) {
+        return Some(200);
+    }
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(
+            result
+                .get("body")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .ok()?;
+    (body.len() <= PASTE_BODY_LIMIT).then_some(status as u16)
+}
+
+/// Relay the address that the person pasted after a sign-in in paste mode, once
+/// (docs/vm-browser-bridge.md, section 6.3). Studio stores no pasted address.
+async fn paste<V: Fn(&Value) -> bool + Send + Sync + 'static>(
+    store: &RuntimeStore,
+    id: &str,
+    text: &str,
+    context: PasteContext<V>,
+) -> Result<BrowserAnswerResult, BrowserAnswerError> {
+    let PasteContext {
+        guest,
+        now,
+        validate,
+        http_providers,
+    } = context;
+    let read_id = id.to_owned();
+    let read_validate = Arc::clone(&validate);
+    let record = store
+        .read_async("runtime-services/browser_answer_paste", move |tx| {
+            load(tx, &read_id, read_validate.as_ref())
+        })
+        .await?;
+    let params = &record["params"];
+    let waiting = record.get("status").and_then(Value::as_str) == Some("pending")
+        && params.get("phase").and_then(Value::as_str) == Some(crate::browser_cards::WAITING);
+    if !waiting {
+        if params.get("paste").is_some_and(|mark| !mark.is_null())
+            && matches!(
+                record.get("status").and_then(Value::as_str),
+                Some("answered" | "uncertain")
+            )
+        {
+            return Ok(BrowserAnswerResult {
+                response: json!({"status":"answered","replayed":true}),
+                replayed: true,
+            });
+        }
+        return Err(BrowserAnswerError::Refused(
+            "This sign-in does not wait for a pasted address.".into(),
+        ));
+    }
+    let state = crate::browser_policy::provider(
+        params
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        &http_providers,
+    )
+    .map_err(|error| BrowserAnswerError::Refused(error.0))?
+    .state;
+    let port = params
+        .pointer("/redirect/port")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .ok_or(BrowserAnswerError::Invalid(
+            "The sign-in request is invalid",
+        ))?;
+    let path = params
+        .pointer("/redirect/path")
+        .and_then(Value::as_str)
+        .ok_or(BrowserAnswerError::Invalid(
+            "The sign-in request is invalid",
+        ))?;
+    let callback = crate::browser_policy::pasted(text, port, path, state.as_deref())
+        .map_err(|error| BrowserAnswerError::Refused(error.0))?;
+    let bridge_id = params
+        .get("bridgeId")
+        .and_then(Value::as_str)
+        .ok_or(BrowserAnswerError::Invalid(
+            "The sign-in request is invalid",
+        ))?
+        .to_owned();
+    let mark_id = id.to_owned();
+    let mark_validate = Arc::clone(&validate);
+    store
+        .transaction_with_error(move |tx| {
+            let mut record = load(tx, &mark_id, mark_validate.as_ref())?;
+            let params = &record["params"];
+            if record.get("status").and_then(Value::as_str) != Some("pending")
+                || params.get("phase").and_then(Value::as_str)
+                    != Some(crate::browser_cards::WAITING)
+                || params.get("paste").is_some_and(|mark| !mark.is_null())
+            {
+                return Err(BrowserAnswerError::Refused(
+                    "Studio already sends a pasted address for this sign-in.".into(),
+                ));
+            }
+            // The mark comes before the relay: a second paste never sends a second code.
+            record["params"]["paste"] = json!({"at": now});
+            put(tx, &mark_id, &record, mark_validate.as_ref())
+        })
+        .await?;
+    let request_id = format!("browser-callback:{}", uuid::Uuid::new_v4().simple());
+    let relayed = crate::browser_cards::guest_call(
+        Arc::clone(&guest),
+        "browser.callback",
+        json!({"id": bridge_id, "target": callback.target, "headers": {}}),
+        Some(request_id),
+        PASTE_RELAY_TIMEOUT,
+    )
+    .await;
+    let (outcome, http_status) = match relayed {
+        Ok(result) => match relay_status(&result) {
+            Some(status) => (
+                if callback.error {
+                    "provider-error"
+                } else if (200..300).contains(&status) {
+                    "signed-in"
+                } else {
+                    "refused"
+                },
+                Some(status),
+            ),
+            None => ("unknown", None),
+        },
+        Err(error)
+            if error
+                .code()
+                .is_some_and(|code| DEFINITE_CODES.contains(&code)) =>
+        {
+            ("expired", None)
+        }
+        Err(_) => ("unknown", None),
+    };
+    let final_id = id.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let mut record = load(tx, &final_id, validate.as_ref())?;
+            record["params"]["outcome"] = json!(outcome);
+            record["params"]["outcomeHttp"] = json!(http_status);
+            if outcome == "expired" {
+                record["status"] = json!("expired");
+                record["closeReason"] = json!("stale");
+            } else {
+                record["status"] = json!(if outcome == "unknown" {
+                    "uncertain"
+                } else {
+                    "answered"
+                });
+                mark_answered(&mut record, "answer", now);
+            }
+            put(tx, &final_id, &record, validate.as_ref())?;
+            crate::browser_cards::outcome_event(tx, &record, now);
+            Ok::<_, BrowserAnswerError>(())
+        })
+        .await?;
+    match outcome {
+        "unknown" => {
+            crate::browser_cards::close_guest(guest, &bridge_id, "unknown").await;
+            Err(BrowserAnswerError::Refused(
+                "The result of the sign-in is unknown. Studio does not send it again. Check the command output."
+                    .into(),
+            ))
+        }
+        "expired" => Err(BrowserAnswerError::Refused(
+            "The sign-in command stopped waiting. Ask the agent to run it again.".into(),
+        )),
+        _ => Ok(BrowserAnswerResult {
+            response: json!({"status":"answered"}),
+            replayed: false,
+        }),
+    }
 }
 
 fn finish(
@@ -517,6 +855,7 @@ mod tests {
                 local_forwarder: None,
                 now: 10.0,
                 validate: |_: &serde_json::Value| true,
+                http_providers: Default::default(),
             },
         )
         .await
@@ -534,6 +873,7 @@ mod tests {
                 local_forwarder: None,
                 now: 11.0,
                 validate: |_: &serde_json::Value| true,
+                http_providers: Default::default(),
             },
         )
         .await
@@ -562,6 +902,7 @@ mod tests {
                     local_forwarder: None,
                     now: 10.0,
                     validate: |_: &serde_json::Value| true,
+                    http_providers: Default::default(),
                 },
             )
             .await
@@ -590,6 +931,7 @@ mod tests {
                 local_forwarder: None,
                 now: 11.0,
                 validate: |_: &serde_json::Value| true,
+                http_providers: Default::default(),
             },
         )
         .await
@@ -600,3 +942,7 @@ mod tests {
         assert_eq!(call_ids[0], call_ids[1]);
     }
 }
+
+#[cfg(test)]
+#[path = "browser_answer_paste_tests.rs"]
+mod paste_tests;

@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from browser_bridge import (BridgeError, BrowserBridge, Listener, connect_address,  # noqa: E402
                             parse_listeners)
-from browser_policy import PolicyError, Provider, StartPage, classify, provider  # noqa: E402
+from browser_policy import (USER_CODE_LIMIT, PolicyError, Provider, StartPage, classify, pasted,  # noqa: E402
+                            provider)
 from test_browser_fakes import SHIM, FakeProvider, FakeTool, install_shim  # noqa: E402
 
 AGENT = str(uuid.uuid4())
@@ -72,6 +73,42 @@ class Policy(unittest.TestCase):
                     classify(url)
         self.assertEqual(len("https://example.com/" + "a" * (8192 - 20)), 8192)
         classify("https://example.com/" + "a" * (8192 - 20))
+
+    def test_state_and_device_code_of_a_provider_link(self) -> None:
+        checked = provider("https://idp.example.com/a?redirect_uri=http%3A%2F%2Flocalhost%3A8000&state=s%2B1")
+        self.assertEqual((checked.state, checked.user_code), ("s+1", None))
+        # A repeated state is no state: a pasted address cannot match it.
+        self.assertIsNone(provider("https://idp.example.com/a?state=a&state=b").state)
+        device = provider("https://device.example.com/?user_code=" + "C" * 80)
+        self.assertEqual((device.user_code, device.state), ("C" * USER_CODE_LIMIT, None))
+        # A page with a loopback redirect is no device code page.
+        self.assertIsNone(provider("https://idp.example.com/a?redirect_uri=http%3A%2F%2Flocalhost%3A8000"
+                                   "&user_code=X").user_code)
+
+    def test_a_pasted_redirect_must_match_the_request(self) -> None:
+        redirect = {"host": "localhost", "port": 8000, "path": "/"}
+        self.assertEqual(pasted("http://localhost:8000/?code=c&state=s", redirect, "s").target, "/?code=c&state=s")
+        # Some browsers copy the address without the scheme, or write 127.0.0.1 for localhost.
+        self.assertEqual(pasted("127.0.0.1:8000/?state=s&code=c", redirect, "s").target, "/?state=s&code=c")
+        self.assertTrue(pasted("http://[::1]:8000/?error=access_denied&state=s", redirect, "s").error)
+        refused = {
+            "http://localhost:8000/?code=c&state=t": "another sign-in",
+            "http://localhost:8000/?code=c&state=s&state=s": "another sign-in",
+            "http://localhost:8000/?code=c": "another sign-in",
+            "http://localhost:8001/?code=c&state=s": "port 8000",
+            "http://localhost:8000/cb?code=c&state=s": "port 8000",
+            "http://localhost:8000/?state=s": "no sign-in result",
+            "https://localhost:8000/?code=c&state=s": "did not load",
+            "http://example.com:8000/?code=c&state=s": "did not load",
+            "http://u@localhost:8000/?code=c&state=s": "user name",
+            "http://localhost:8000/?code=c&state=s x": "spaces",
+            "": "one link",
+        }
+        for text, message in refused.items():
+            with self.subTest(text=text), self.assertRaisesRegex(PolicyError, message):
+                pasted(text, redirect, "s")
+        with self.assertRaisesRegex(PolicyError, "no state value"):
+            pasted("http://localhost:8000/?code=c", redirect, None)
 
 
 class AgentEnvironment(unittest.TestCase):

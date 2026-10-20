@@ -1,7 +1,8 @@
 # VM browser bridge
 
 Status: the first slice is implemented (sections 2 to 4). The measurements are from
-2026-10-11, against `origin/main` at `07ea99c7`.
+2026-10-11, against `origin/main` at `07ea99c7`. Section 6 (sign-in from a phone or any
+window) was designed and implemented on 2026-10-20.
 
 ## Goal
 
@@ -441,8 +442,7 @@ there opens on the Mac where the person works.
   Native agents of one user can act for each other, so the hint is not a security boundary;
   the approval card is the consent. Cards carry `source: "host"`.
 - A window on the same server opens the link without a forward: the tool listens on that Mac.
-- Open: Codex native chats get no `BROWSER` yet; a thread needs a per-thread
-  `shell_environment_policy` that keeps its native settings identity.
+- Codex native chats get `BROWSER` through per-thread overrides (section 6.4).
 
 ### A window on another Mac
 
@@ -459,12 +459,208 @@ there opens on the Mac where the person works.
    the lease, the path, the relay count and the deadline still apply.
 5. A lost reply stays unknown and is never sent again; the browser gets the "unknown" page.
 
+## 6. Sign-in from a phone or any window
+
+Status: design of 2026-10-20. Sections 6.1 to 6.5 are the contract for the Python and the
+Rust backend.
+
+The person must be able to sign in from the phone, for a command on any server: a native
+chat on this Mac, a VM chat, or a chat on a paired headless server. The link opens in the
+system browser of the device (Safari or Chrome on the phone, the default browser on a
+desktop), because the person's saved passwords, passkeys and single sign-on sessions are
+there. Studio does not open sign-in pages in a web view of its own.
+
+The problem: the provider sends the browser to `http://localhost:PORT/...`. On a desktop with
+the forward (sections 2 and 5), that Mac holds the port. A phone browser sends the redirect to
+the phone itself, where nothing listens, and shows an error page. The code and `state` are in
+the address of that error page.
+
+### 6.1 Options for the phone
+
+(a) A Studio app on the phone holds the port. Not available now, and not reliable on iOS:
+
+- Studio has no phone app. The mobile target is the web app; the iOS Tauri files are
+  experiments (`workspaces/client/apps/native/README.md`). A web page cannot listen on a port.
+- iOS suspends an app a few seconds after the browser comes to the front.
+  `beginBackgroundTask` gives about 30 s, and iOS has no background mode for a local HTTP
+  server. A sign-in with a password and a second factor often takes longer, so an iOS app
+  would miss the redirect.
+- Android can keep a listener on `127.0.0.1` in a foreground service (with its notification)
+  while Chrome is in front, so (a) can work there.
+- Not measured: these facts come from the platform documentation, because no phone app exists
+  to measure.
+
+(b) The person pastes the address of the page that did not load. This works with every phone
+browser and every server. The person copies one address.
+
+(c) Device code. It needs no redirect. The card shows the code and the page.
+
+Decision: (b) and (c) for every window. A desktop keeps the loopback forward (sections 2 and
+5); paste is its fallback when the port is in use. (a) is a later option for an Android app.
+
+### 6.2 The sign-in card
+
+The card replaces the generic approval line. It looks like the question card in the chat: a
+header with an icon, the chat name and a state, then the details, then the actions. It works
+at phone width (one column, buttons in a row that wraps).
+
+- Header: "Sign-in request", the chat name, and the state: "Waiting for you", "Waiting for
+  the browser", "Sending the result" or the error.
+- Provider host in large text. Rows: "Flow" ("Browser sign-in" or "Device code"), "Client"
+  (`client_id`), "Access" (`scope`), "Result goes to" (the server name, the Linux user for a VM
+  chat, and the port; or "No result to forward"), and "Time left" (a minute count down to the
+  request deadline).
+- The full link, collapsed.
+- Device code (the link has a `user_code` query value and no loopback redirect): the code in
+  large text with "Copy code", the page host and path, and "Open page".
+- Actions before the approval: "Decline" and "Open in browser". A desktop that can hold the port
+  opens with the forward. Every other window (a phone, a browser tab on another computer) opens
+  in paste mode.
+- After an approval in paste mode the card stays in the chat: "Sign in on the page that opened.
+  At the end the browser shows a page that does not load. Copy its address and paste it here."
+  It has a text field, "Paste" (it reads the clipboard when the browser allows it), "Send to
+  command" and "Cancel sign-in".
+- A refusal stays on the card as an error: port in use (with "Paste instead"), state mismatch,
+  wrong port or path, expired, the command stopped.
+- Final state: the card closes and Studio adds one event to the chat that names the outcome:
+  signed in (the command accepted the result), the command refused the result, the provider
+  returned an error, the result is unknown, or the request ended without a result. The person
+  and the agent both see it. After a paste the window says "Studio sent the sign-in result to
+  the command. The chat shows how it ended."; an unknown or expired result is an error on the
+  card. A decline or a cancel adds the decline event. A request that expires before the
+  approval only closes its card, as before.
+
+### 6.3 Protocol
+
+Request record (`runtime_requests`, method `browser/open`). New `params` fields:
+
+| Field         | Owner                             | Meaning                                                                                                     |
+| ------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `userCode`    | `browser_policy.py` (`user_code`) | The `user_code` query value of a link without a loopback redirect, at most 64 characters, or null.          |
+| `phase`       | server bridge                     | Absent before the approval. `"waiting"` after an approval in paste mode; the record status stays `pending`. |
+| `waiting`     | server bridge                     | `{"expiresAt": <lease deadline, epoch seconds>}` in the waiting phase.                                      |
+| `paste`       | server bridge                     | `{"at": <epoch seconds>}` from the moment a pasted result is sent. A second paste is refused.               |
+| `outcome`     | server bridge                     | On the final record: `signed-in`, `refused`, `provider-error`, `unknown`, `expired` or `cancelled`.         |
+| `outcomeHttp` | server bridge                     | The HTTP status of the command's answer to the relayed redirect, or null.                                   |
+
+`browser_policy.provider` also returns `state` (the `state` query value of the provider
+link). The server reads it from `params.url` when it checks a pasted address; it is not stored
+twice.
+
+`POST /api/answer` (`AnswerBody` gains `paste` and `result`):
+
+| Body                                         | When                                   | Effect                                                                                                                                                                                       |
+| -------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{"decision":"accept"}`                      | local window                           | As before (section 2): bind the forward for a VM chat, approve the guest lease, status `answered`, `openUrl`.                                                                                |
+| `{"decision":"accept","forward":true}`       | window on another Mac with the forward | As before (section 5).                                                                                                                                                                       |
+| `{"decision":"accept","paste":true}`         | any window                             | Link without a loopback redirect: approve, status `answered`, `openUrl`. Link with a redirect: approve the guest lease, bind nothing, `phase: "waiting"`, status stays `pending`, `openUrl`. |
+| `{"decision":"answer","result":"<address>"}` | any window, waiting phase only         | Check the address, mark `paste`, relay one GET with the existing `browser.callback`, write the final record and its chat event. Returns `{"status":"answered"}` or an error.                 |
+| `{"decision":"decline"}`                     | any window, before or while waiting    | Before: as before. While waiting: `browser.close` with the reason `cancelled`, outcome `cancelled`, the decline event.                                                                       |
+
+A replay of the same accept returns the same `openUrl`. A replay of a paste after its result
+is written returns `{"status":"answered","replayed":true}` without a second relay.
+
+Checks of a pasted address, in this order. Each refusal names the problem and relays nothing:
+
+1. At most 8192 characters, no spaces or control characters. A missing `http://` is added
+   (some browsers copy the address without it).
+2. `http`, a loopback host (`localhost`, `127.0.0.1`, `[::1]`), no user part, and the port
+   and path of the request's `redirect`. A different loopback host with the same port and path
+   is accepted, because the provider can write `localhost` for `127.0.0.1`.
+3. The query has `code` or `error`.
+4. The provider link has a `state`, and the pasted `state` is equal to it. A link without
+   `state` cannot take a pasted result ("This sign-in has no state value, so Studio cannot
+   check a pasted address. Use a desktop or the device code.").
+5. The record is in the waiting phase and has no `paste` mark. The mark is written in the same
+   transaction that checks it.
+
+Then the server sends `browser.callback` with `target` = path and query, no browser headers,
+and a new request ID. The guest keeps every check of section 2: the lease, the path, the relay
+count, the deadline and the listener owner UID. The result decides the outcome: `done` with a
+2xx status is `signed-in`, `done` with another status is `refused`, `error=` in the query is
+`provider-error`. A definite guest refusal (`stale`, `limit`, `invalid_params`, `not_found`)
+closes the record as `expired`. A lost reply closes it as `unknown` (status `uncertain`) and
+is never sent again. Studio stores no pasted address and logs no query value.
+
+The waiting phase ends at the lease deadline, when the guest reports a final state, or when the
+chat stops; the existing rules then expire the pending record.
+
+### 6.4 Backends and clients
+
+- Python (`codex_browser_bridge.py`): the paste mode, the paste relay and the outcome. The
+  guest (`browser_policy.py`) adds `state` and `user_code`. No guest protocol change.
+- Rust (`runtime-services`): before this change the backend answered cards but had no card
+  source, so no sign-in card appeared on a Rust server. Now:
+  - `browser_policy.rs` ports the URL rules; `tests/browser_policy_differential.rs` runs both
+    on one corpus.
+  - `browser_cards.rs` long-polls `browser.wait` of the host bridge on every server and of the
+    VM guest on a Mac, and writes and expires cards as `Bridge.apply` does.
+  - `browser_host.rs` is the in-process host bridge: `open.sock`, `control.sock` and
+    `browser/requests.json` as `codex_browser_host.py` writes them. The launcher
+    `<state>/browser-host/studio-browser` runs the server binary with `--studio-browser URL`,
+    so it needs no Python. `studio-browser.json` reaches each Claude bridge root.
+  - `browser_answer.rs` has paste mode and the paste relay of section 6.3.
+- Host agents: `BROWSER`, `STUDIO_BROWSER_SOCKET` and `STUDIO_BROWSER_SESSION` reach Claude
+  sessions through `studio-browser.json` and Codex threads through the per-thread
+  `shell_environment_policy.set` overrides. The Codex app-server launch command does not
+  change. A folder `<state>/browser-host/bin` holds `xdg-open`, `x-www-browser` and
+  `www-browser` links to the launcher for tools that search `PATH`.
+  - Owners: Python `codex_browser_host.py` (`session_environment`, `thread_environment`) and
+    Rust `browser_environment.rs`; `tests/browser_environment_differential.rs` compares them.
+  - Codex gets the three names only for a host Codex chat (not Claude, not VM), and only when
+    `<state>/browser-host/studio-browser` exists. The value is stable for each chat, so the
+    thread settings digest changes once.
+  - Measured on 2026-10-20 with codex-cli 0.160.1, a throwaway `CODEX_HOME` and a fake
+    Responses provider on the loopback: with the overrides `shell_environment_policy.set.BROWSER`
+    and `.STUDIO_BROWSER_SESSION` in `thread/start` `config`, the thread's `exec_command`
+    (`/bin/zsh -lc`) printed both values; without them, `BROWSER` was empty.
+  - `PATH` for Codex: in the same run, `shell_environment_policy.set.PATH` replaced the whole
+    `PATH` of the command (the login shell did not add the person's entries back). Studio
+    therefore does not set `PATH` for Codex threads, and their tools that search `PATH` do not
+    find the links. Claude sessions get the link folder first on `PATH`
+    (`STUDIO_BROWSER_PATH` in `studio-browser.json`).
+  - On macOS some tools run `open` and ignore `BROWSER` (kubelogin). Studio does not replace
+    `open`. The agent guidance says to pass `"$BROWSER"` to a browser command option.
+- Web: the sign-in card (`SignInCard.tsx`), paste mode for every window that cannot hold the
+  port, and the countdown.
+- Desktop (Electron and Tauri): no change. They keep `openSignIn` and the forward.
+
+### 6.5 Security
+
+All rules of section 2(d) stay. Paste adds:
+
+- The pasted code reaches only the command that asked: the guest lease of the approved request,
+  its port, path and owner UID, before the deadline, once.
+- The `state` check refuses a result of another sign-in, so a mistake cannot send one tool's
+  code to another tool.
+- Paste mode binds no port and serves no page, so nothing runs at a loopback origin.
+- Any window that can approve can paste. This is the same trust as the approval.
+- The provider codes use PKCE (kubelogin and AWS send S256), so the code is useless without the
+  verifier that only the command holds.
+
+What only a live run can prove: iOS Safari and Android Chrome copy the full address of the
+failed page; a phone browser opens the provider page from the installed web app; a real
+provider with a real account.
+
+### 6.6 Tests
+
+- `test_browser_bridge.py` (guest), `Policy`: `state` and `user_code` of provider links, and
+  the accepted and refused shapes of a pasted address.
+- `test_codex_browser_bridge.py` (Python server), `PhoneWindow`: the real guest bridge, the real
+  shim, the fake provider and fake tools. A kubelogin-style and an AWS-style redirect pasted
+  once reach the tool once (also without `http://`); state, port, path, scheme and host
+  mismatches relay nothing; a link without `state` refuses a paste; a paste after the lease
+  deadline expires the card; a lost reply is `unknown` and is never sent again; two pastes at
+  the same time send one code; cancel closes the guest request; a stopped tool ends the
+  waiting card with a chat event; a device code link opens from a phone without a forward.
+  `NativeChats`: a phone signs in to a command of a headless server by paste.
+
 ## Decisions
 
 1. One approval for each link. There is no provider allow list.
 2. Replaced on 2026-10-12 (section 5): a window on another Mac signs in through its own
-   server. A window without the desktop forward still gets "Open this chat in the window of
-   the Mac that runs its server to sign in, or use the tool's device-code mode."
+   server. Replaced again on 2026-10-20 (section 6): every other window signs in with paste
+   mode or a device code.
 3. Only this action brings the browser to the front (`openSignIn`); `openExternal` keeps its
    behaviour.
 4. A loopback start page without a redirect is refused.

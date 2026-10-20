@@ -128,7 +128,9 @@ def browser_get(port: int, target: str, headers: dict[str, str] | None = None,
         connection.close()
 
 
-class Flow(unittest.TestCase):
+class FlowBase(unittest.TestCase):
+    """The real guest bridge, the real shim, a fake provider and fake tools (see the module text)."""
+
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="sbb-", dir="/tmp"))
         self.provider = FakeProvider()
@@ -224,6 +226,8 @@ class Flow(unittest.TestCase):
         [card] = self.runtime.cards()
         self.assertEqual((card["status"], card["decision"]), ("answered", "accept"))
 
+
+class Flow(FlowBase):
     def test_kubelogin_style_xdg_open_fixed_port_and_its_own_start_page(self) -> None:
         tool = self.tool("kubelogin", port=free_port(8000))
         result = self.launch(tool)
@@ -293,6 +297,199 @@ class Flow(unittest.TestCase):
         cards = sorted(self.runtime.cards(), key=lambda card: float(card["createdAt"]))
         self.assertEqual([card["status"] for card in cards], ["expired", "pending"])
         self.assertEqual(cards[0]["closeReason"], "replaced")
+
+
+
+class PhoneWindow(FlowBase):
+    """Paste mode (docs/vm-browser-bridge.md, section 6): a phone opens the link in its own
+    browser; the redirect to the phone's loopback fails, and the person pastes its address."""
+
+    def open_on_phone(self, tool: FakeTool) -> tuple[dict[str, Any], str]:
+        """Approve in paste mode from a remote window, then act as the phone browser: the
+        provider sends it to the loopback redirect, which does not load there."""
+        card = self.card()
+        result = self.bridge.answer(card["id"], {"decision": "accept", "paste": True}, local=False)
+        self.assertEqual(result, {"status": "answered", "openUrl": card["params"]["url"]})
+        # Nothing binds a port on this Mac; the card waits for the pasted address.
+        self.assertEqual(self.bridge.forwards, {})
+        [waiting] = self.runtime.cards()
+        self.assertEqual((waiting["status"], waiting["params"]["phase"]), ("pending", "waiting"))
+        self.assertGreater(waiting["params"]["waiting"]["expiresAt"], time.time())
+        self.assertEqual(self.bridge.answer(card["id"], {"decision": "accept", "paste": True}, local=False),
+                         {"status": "answered", "replayed": True, "openUrl": card["params"]["url"]})
+        return card, provider_redirect(result["openUrl"])
+
+    def paste(self, card: dict[str, Any], address: str) -> dict[str, Any]:
+        result: dict[str, Any] = self.bridge.answer(card["id"], {"decision": "answer", "result": address},
+                                                    local=False)
+        return result
+
+    def assert_signed_in(self, tool: FakeTool, card: dict[str, Any]) -> None:
+        self.assertEqual(len(tool.codes), 1)
+        self.assertEqual(len(self.provider.tokens), 1)
+        [done] = self.runtime.cards()
+        self.assertEqual((done["status"], done["params"]["outcome"], done["params"]["outcomeHttp"]),
+                         ("answered", "signed-in", 200))
+        self.assertNotIn("code=", json.dumps(done))  # Studio stores no pasted address.
+        [event] = self.runtime.events
+        self.assertEqual((event[0], event[1], event[3]),
+                         (self.agent_id, "browser_outcome", "browser-outcome:" + card["params"]["bridgeId"]))
+        self.assertIn("The person signed in at 127.0.0.1", event[2])
+        [item] = self.guest_bridge.items.values()
+        self.assertEqual((item["state"], item["closeReason"]), ("closed", "completed"))
+
+    def test_phone_paste_relays_a_kubelogin_style_redirect_once(self) -> None:
+        tool = self.tool("kubelogin", port=free_port(8000))
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        self.assertEqual(urlsplit(address).netloc, f"localhost:{tool.port}")
+        # Some phone browsers copy the address without the scheme.
+        self.assertEqual(self.paste(card, address.removeprefix("http://")), {"status": "answered"})
+        self.assert_signed_in(tool, card)
+        # The tool's start page served the first hop; then only the one callback reached it.
+        self.assertEqual([path.split("?")[0] for path, _ in tool.received], ["/", "/"])
+        self.assertEqual(self.paste(card, address), {"status": "answered", "replayed": True})
+        self.assertEqual(len(tool.codes), 1)
+
+    def test_phone_paste_relays_an_aws_style_redirect_and_checks_the_state(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        parts = urlsplit(address)
+        refusals = {
+            address.replace("state=", "state=x"): "another sign-in",
+            address.replace(f":{tool.port}/", f":{free_port()}/"): "must use port",
+            address.replace("/oauth/callback", "/other"): "must use port",
+            f"http://127.0.0.1:{tool.port}/oauth/callback?state={tool.state}": "no sign-in result",
+            "https://" + parts.netloc + parts.path + "?" + parts.query: "page that did not load",
+            "http://evil.example:" + str(tool.port) + parts.path + "?" + parts.query: "page that did not load",
+            "": "Give one link",
+        }
+        for pasted, message in refusals.items():
+            with self.subTest(pasted=pasted), self.assertRaisesRegex(ValueError, message):
+                self.paste(card, pasted)
+        # Nothing reached the tool, and the card still waits without a paste mark.
+        self.assertEqual(tool.received, [])
+        [waiting] = self.runtime.cards()
+        self.assertNotIn("paste", waiting["params"])
+        self.assertEqual(self.paste(card, address), {"status": "answered"})
+        self.assert_signed_in(tool, card)
+
+    def test_a_link_without_state_cannot_take_a_pasted_address(self) -> None:
+        tool = self.tool("aws")
+        tool.open_url = tool.open_url.replace("&state=" + tool.state, "")
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        with self.assertRaisesRegex(ValueError, "no state value"):
+            self.paste(card, address)
+        self.assertEqual(tool.received, [])
+
+    def test_a_paste_after_the_lease_deadline_is_refused_and_expires_the_card(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        self.guest_bridge.clock = lambda: time.time() + 3600
+        with self.assertRaisesRegex(ValueError, "stopped waiting"):
+            self.paste(card, address)
+        self.assertEqual(tool.codes, [])
+        [expired] = self.runtime.cards()
+        self.assertEqual((expired["status"], expired["params"]["outcome"]), ("expired", "expired"))
+        with self.assertRaisesRegex(ValueError, "does not wait"):
+            self.paste(card, address)
+
+    def test_a_lost_paste_reply_is_unknown_and_never_sent_again(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        call = self.guest.call
+
+        def lose_callback(method: str, params: dict[str, Any] | None = None, **options: Any) -> Any:
+            result = call(method, params, **options)
+            if method == "browser.callback":
+                raise LinuxVMError("The guest reply was lost", uncertain=True, code="unavailable")
+            return result
+        with patch.object(self.guest, "call", side_effect=lose_callback):
+            with self.assertRaisesRegex(ValueError, "unknown"):
+                self.paste(card, address)
+            self.assertEqual(self.paste(card, address), {"status": "answered", "replayed": True})
+        self.assertEqual(self.guest.methods.count("browser.callback"), 1)
+        self.assertEqual(len(tool.codes), 1)
+        [card_after] = self.runtime.cards()
+        self.assertEqual((card_after["status"], card_after["params"]["outcome"]), ("uncertain", "unknown"))
+
+    def test_two_pastes_at_once_send_one_code(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        release, entered = threading.Event(), threading.Event()
+        call = self.guest.call
+
+        def slow(method: str, params: dict[str, Any] | None = None, **options: Any) -> Any:
+            if method == "browser.callback":
+                entered.set()
+                release.wait(10)
+            return call(method, params, **options)
+        results: list[object] = []
+        with patch.object(self.guest, "call", side_effect=slow):
+            first = threading.Thread(target=lambda: results.append(self.paste(card, address)))
+            first.start()
+            self.assertTrue(entered.wait(10))
+            with self.assertRaisesRegex(ValueError, "already sends"):
+                self.paste(card, address)
+            release.set()
+            first.join(10)
+        self.assertEqual(results, [{"status": "answered"}])
+        self.assertEqual(len(tool.codes), 1)
+
+    def test_cancel_while_waiting_closes_the_guest_request(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card, address = self.open_on_phone(tool)
+        self.assertEqual(self.bridge.answer(card["id"], {"decision": "decline"}, local=False), {"status": "answered"})
+        [item] = self.guest_bridge.items.values()
+        self.assertEqual((item["state"], item["closeReason"]), ("closed", "cancelled"))
+        [done] = self.runtime.cards()
+        self.assertEqual((done["status"], done["decision"], done["params"]["outcome"]),
+                         ("answered", "decline", "cancelled"))
+        [event] = self.runtime.events
+        self.assertEqual(event[1], "browser_declined")
+        with self.assertRaisesRegex(ValueError, "does not wait"):
+            self.paste(card, address)
+        self.assertEqual(tool.received, [])
+
+    def test_the_guest_ending_a_waiting_sign_in_tells_the_chat(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card, _ = self.open_on_phone(tool)
+        self.tools.remove(tool)
+        tool.close()
+        asyncio.run_coroutine_threadsafe(self.guest_bridge.check(), self.loop).result(10)
+        self.bridge.poll(0)
+        [done] = self.runtime.cards()
+        self.assertEqual((done["status"], done["closeReason"], done["params"]["outcome"]),
+                         ("expired", "stale", "expired"))
+        [event] = self.runtime.events
+        self.assertEqual(event[1], "browser_outcome")
+        self.assertIn("ended without a result", event[2])
+
+    def test_device_code_opens_from_a_phone_without_a_forward(self) -> None:
+        tool = self.tool("device")
+        self.launch(tool)
+        card = self.card()
+        self.assertEqual((card["params"]["redirect"], card["params"]["userCode"]), (None, "ABCD-EFGH"))
+        # An older window without paste mode still gets the remote refusal.
+        with self.assertRaisesRegex(ValueError, "Open this chat in the window of the Mac"):
+            self.bridge.answer(card["id"], {"decision": "accept"}, local=False)
+        result = self.bridge.answer(card["id"], {"decision": "accept", "paste": True}, local=False)
+        self.assertEqual(result, {"status": "answered", "openUrl": tool.open_url})
+        self.assertEqual(self.bridge.forwards, {})
+        [item] = self.guest_bridge.items.values()
+        self.assertEqual(item["state"], "opened")
+        with urllib.request.urlopen(result["openUrl"], timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.provider.devices, ["ABCD-EFGH"])
+        self.assertEqual(self.bridge.answer(card["id"], {"decision": "accept", "paste": True}, local=False),
+                         {"status": "answered", "replayed": True, "openUrl": tool.open_url})
 
 
 class Refusals(unittest.TestCase):
@@ -674,6 +871,21 @@ class NativeChats(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(tool.codes), 1)
 
+    def test_a_phone_signs_in_to_a_command_of_a_headless_server_by_paste(self) -> None:
+        tool, result = self.launch(self.thread)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.bridge.poll(0)
+        [card] = self.runtime.cards()
+        answer = self.bridge.answer(card["id"], {"decision": "accept", "paste": True}, local=False)
+        self.assertEqual(answer, {"status": "answered", "openUrl": card["params"]["url"]})
+        # The phone's browser lands on its own loopback; the person pastes that address.
+        address = provider_redirect(answer["openUrl"])
+        self.assertEqual(self.bridge.answer(card["id"], {"decision": "answer", "result": address}, local=False),
+                         {"status": "answered"})
+        self.assertEqual(len(tool.codes), 1)
+        [done] = self.runtime.cards()
+        self.assertEqual((done["status"], done["params"]["outcome"]), ("answered", "signed-in"))
+
     def test_private_control_socket_answers_a_host_browser_request(self) -> None:
         tool, result = self.launch(self.agent_id)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -807,19 +1019,24 @@ class NativeChats(unittest.TestCase):
         publish(account, self.root)
         value = json.loads((account / SESSION_FILE).read_text())
         self.assertEqual(value, {"BROWSER": str(self.root / "browser-host" / "studio-browser"),
-                                 "STUDIO_BROWSER_SOCKET": str(self.root / "browser-host" / "open.sock")})
+                                 "STUDIO_BROWSER_SOCKET": str(self.root / "browser-host" / "open.sock"),
+                                 "STUDIO_BROWSER_PATH": str(self.root / "browser-host" / "bin")})
         self.assertEqual((account / SESSION_FILE).stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / "browser-host").stat().st_mode & 0o777, 0o700)
         repository = Path(__file__).resolve().parents[5]
         rust_router = repository / "workspaces/runtime/packages/runtime-http/src/router.rs"
         rust_routes = repository / "workspaces/runtime/packages/runtime-http/src/routes/questions_write.rs"
+        services = repository / "workspaces/runtime/packages/runtime-services/src"
         router_source = rust_router.read_text(encoding="utf-8")
         route_source = rust_routes.read_text(encoding="utf-8")
-        self.assertIn(f'BROWSER_HOST_FOLDER_NAME: &str = "{FOLDER}"', router_source)
-        self.assertIn(
-            f'BROWSER_HOST_CONTROL_SOCKET_NAME: &str = "{HOST_BROWSER_CONTROL_SOCKET_NAME}"',
-            router_source,
-        )
+        environment_source = (services / "browser_environment.rs").read_text(encoding="utf-8")
+        host_source = (services / "browser_host.rs").read_text(encoding="utf-8")
+        # The Rust owners of the names, and the router that consumes them.
+        self.assertIn(f'pub const BROWSER_HOST_FOLDER: &str = "{FOLDER}"', environment_source)
+        self.assertIn(f'pub const CONTROL_SOCKET: &str = "{HOST_BROWSER_CONTROL_SOCKET_NAME}"', host_source)
+        self.assertIn(f'pub const SESSION_FILE: &str = "{SESSION_FILE}"', host_source)
+        self.assertIn("studio_runtime_services::browser_environment::BROWSER_HOST_FOLDER", router_source)
+        self.assertIn("studio_runtime_services::browser_host::CONTROL_SOCKET", router_source)
         self.assertIn(".join(BROWSER_HOST_FOLDER_NAME)", router_source)
         self.assertIn(".join(crate::router::BROWSER_HOST_FOLDER_NAME)", route_source)
         self.assertIn(

@@ -534,6 +534,16 @@ pub(super) fn guidance(
         }
     }
     let browser = browser_guidance(resources, record, &mut thread_config);
+    // Python `codex_browser_host.thread_environment`, at the same call site as
+    // `configure_browser`: host Codex threads send their sign-in links to Studio.
+    if ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+        && record["executionMode"] != "vm"
+        && let Some(agent_id) = record["id"].as_str()
+    {
+        thread_config.extend(crate::browser_environment::thread_environment(
+            state_root, agent_id,
+        ));
+    }
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
@@ -1398,6 +1408,46 @@ mod resource_tests {
             "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
         )));
         assert!(!bundle.progress.contains(".py"));
+    }
+
+    #[test]
+    fn only_host_codex_threads_send_sign_in_links_to_studio() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources");
+        let state = tempfile::tempdir().expect("state root");
+        let folder = state
+            .path()
+            .join(crate::browser_environment::BROWSER_HOST_FOLDER);
+        std::fs::create_dir_all(&folder).expect("host bridge folder");
+        std::fs::write(
+            folder.join(crate::browser_environment::BROWSER_LAUNCHER),
+            "#!/bin/sh\n",
+        )
+        .expect("launcher");
+        let config = |record: Value| {
+            guidance(&resources, &record, state.path())
+                .expect("guidance")
+                .thread_config
+        };
+        let host = config(json!({"id":"host", "isLead":true, "provider":"codex"}));
+        assert_eq!(
+            host["shell_environment_policy.set.STUDIO_BROWSER_SESSION"],
+            "host"
+        );
+        assert!(host.contains_key("shell_environment_policy.set.BROWSER"));
+        assert!(host.contains_key("shell_environment_policy.set.STUDIO_BROWSER_SOCKET"));
+        for record in [
+            json!({"id":"claude", "isLead":true, "provider":"claude"}),
+            json!({"id":"vm", "isLead":true, "provider":"codex", "executionMode":"vm"}),
+        ] {
+            let config = config(record);
+            assert!(
+                !config
+                    .keys()
+                    .any(|key| key.starts_with("shell_environment_policy.set.")),
+                "{config:?}"
+            );
+        }
     }
 
     #[test]

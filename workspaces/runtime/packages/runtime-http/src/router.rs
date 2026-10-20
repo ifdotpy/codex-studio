@@ -62,8 +62,10 @@ use crate::routes::{self, compose};
 use crate::schema::{matching_template, operations};
 use crate::validation::Registry;
 
-pub(crate) const BROWSER_HOST_FOLDER_NAME: &str = "browser-host";
-pub(crate) const BROWSER_HOST_CONTROL_SOCKET_NAME: &str = "control.sock";
+pub(crate) const BROWSER_HOST_FOLDER_NAME: &str =
+    studio_runtime_services::browser_environment::BROWSER_HOST_FOLDER;
+pub(crate) const BROWSER_HOST_CONTROL_SOCKET_NAME: &str =
+    studio_runtime_services::browser_host::CONTROL_SOCKET;
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -557,6 +559,32 @@ impl HttpState {
 
     pub fn continuation_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.continuation_wake)
+    }
+
+    /// The browser bridges whose sign-in links become request cards
+    /// (docs/vm-browser-bridge.md): native chats on every server, and VM chats on a Mac,
+    /// as the Python server's `codex_browser_bridge.tick`.
+    pub fn browser_card_sources(&self) -> Vec<studio_runtime_services::browser_cards::CardSource> {
+        let mut sources = Vec::new();
+        if let Some(guest) = &self.browser_answer_host_guest {
+            sources.push(studio_runtime_services::browser_cards::CardSource {
+                source: "host",
+                guest: Arc::clone(guest),
+                forwarder: self.browser_host_local_forwarder.clone(),
+                http_providers: Default::default(),
+            });
+        }
+        if cfg!(target_os = "macos")
+            && let Some(guest) = &self.browser_answer_guest
+        {
+            sources.push(studio_runtime_services::browser_cards::CardSource {
+                source: "vm",
+                guest: Arc::clone(guest),
+                forwarder: self.browser_local_forwarder.clone(),
+                http_providers: Default::default(),
+            });
+        }
+        sources
     }
 
     pub fn orchestration_driver_handle(

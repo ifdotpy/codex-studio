@@ -14613,6 +14613,31 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "paste": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paste"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result"
           }
         },
         "required": [

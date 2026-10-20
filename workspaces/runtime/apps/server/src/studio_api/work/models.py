@@ -275,6 +275,11 @@ class AnswerBody(ContractModel):
     content: dict[StrictStr, JsonValue] | None = None
     # A window on another Mac accepts a sign-in link: its own server holds the redirect port.
     forward: StrictBool | None = None
+    # Any window accepts a sign-in link in paste mode: nothing binds a port, and the person
+    # pastes the address of the page that did not load (docs/vm-browser-bridge.md, section 6).
+    paste: StrictBool | None = None
+    # The pasted address of a sign-in redirect, with decision "answer".
+    result: StrictStr | None = Field(default=None, max_length=8192)
     model_config = {"extra": "allow"}
     __pydantic_extra__: dict[str, JsonValue]
 
