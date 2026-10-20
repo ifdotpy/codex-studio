@@ -103,10 +103,12 @@ ACCOUNT_RUNNING_TURNS_MAX = 512
 # Codex (measured 2026-10-19, one account): a burst of about 10 simultaneous requests
 # is admitted, more get HTTP 429 with a 58-60 s Retry-After; the allowance refills at
 # 17 or more requests per minute; 17 running turns showed no concurrency limit.
-# 8 per burst with a 30 s pause is about 16 starts per minute.
-ACCOUNT_START_BURST_DEFAULT_CODEX = 8
+# Owner decision 2026-10-20: the 512-worker live run saw only 23 provider 429 events at
+# 48 concurrent turns over 3 accounts, so the defaults are 16 per burst, a 30 s pause,
+# and 32 running turns.
+ACCOUNT_START_BURST_DEFAULT_CODEX = 16
 ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX = 30
-ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX = 16
+ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX = 32
 # Claude (measured 2026-10-19): no throttle was observed up to about 19 sequential
 # starts per minute, a burst of 12, and 15 running turns. RUNNING mainly bounds host
 # memory: each running Claude CLI turn holds about 250-350 MiB.
