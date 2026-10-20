@@ -894,6 +894,21 @@ impl Default for CaptureErrors {
         }
     }
 }
+/// Failure count and latest failure message of the analytics `captureErrors` metadata.
+#[derive(Default, serde::Deserialize)]
+pub struct CaptureErrorSummary {
+    /// Unit: capture failures since tracking began.
+    pub count: u64,
+    pub last: Option<CaptureErrorLast>,
+}
+#[derive(serde::Deserialize)]
+pub struct CaptureErrorLast {
+    pub error: String,
+}
+/// Read the capture failure summary; an absent row means no failure was recorded.
+pub fn capture_error_summary(db: &Connection) -> Result<CaptureErrorSummary, AnalyticsError> {
+    Ok(metadata(db, "captureErrors")?.unwrap_or_default())
+}
 fn metadata<T: serde::de::DeserializeOwned>(
     db: &Connection,
     key: &str,

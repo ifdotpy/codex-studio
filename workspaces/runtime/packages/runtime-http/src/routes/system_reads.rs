@@ -219,6 +219,16 @@ async fn diagnostics(
             (supervisor, process_tree, host_resources)
         },
     );
+    let analytics_root = store.root().to_path_buf();
+    let analytics_capture = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/system_reads",
+        move || {
+            let db = studio_runtime_store::analytics::AnalyticsRepository::new(analytics_root)
+                .open_read_only()
+                .map_err(|_| ())?;
+            studio_runtime_store::analytics::capture_error_summary(&db).map_err(|_| ())
+        },
+    );
     let durable = store.read_async("runtime-http/routes/system_reads", |connection| {
         let pending = studio_runtime_services::diagnostics::durable_input_pending(connection)
             .map_err(|_| collection_failure(DiagnosticsCollectionFailure::DurableInputPending))?;
@@ -228,7 +238,9 @@ async fn diagnostics(
             .map_err(|_| collection_failure(DiagnosticsCollectionFailure::MigrationStatus))?;
         Ok::<_, DiagnosticsReadError>((pending, ledger, migrations))
     });
-    let (provider, host, durable) = tokio::join!(provider_port.snapshot(), host, durable);
+    let (provider, host, durable, analytics_capture) =
+        tokio::join!(provider_port.snapshot(), host, durable, analytics_capture);
+    let analytics_capture = AnalyticsCaptureStatus::from_read(analytics_capture);
     let (supervisor, process_tree, host_resources) = host.map_err(|_| ApiError::internal())?;
     let Some(process_tree) = process_tree else {
         return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
@@ -305,7 +317,7 @@ async fn diagnostics(
             "executions": executions,
             "sqliteContention": studio_runtime_services::diagnostics::sqlite_contention(),
             "httpRequestMetrics": studio_runtime_services::diagnostics::http_request_metrics(),
-            "analyticsCapture": {"available": false},
+            "analyticsCapture": analytics_capture,
             "migrations": migrations,
             "searchMigrationError": null,
             "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
@@ -378,6 +390,36 @@ fn strip_diagnostics_execution_extras(
 }
 
 /// Failure of the durable diagnostics reads: a collection step, or the read itself.
+/// `analyticsCapture` of the diagnostics response; the failure count is `captureErrors`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalyticsCaptureStatus {
+    available: bool,
+    failed: u64,
+    last_error: Option<String>,
+}
+impl AnalyticsCaptureStatus {
+    fn from_read(
+        read: Result<
+            Result<studio_runtime_store::analytics::CaptureErrorSummary, ()>,
+            tokio::task::JoinError,
+        >,
+    ) -> Self {
+        match read {
+            Ok(Ok(summary)) => Self {
+                available: true,
+                failed: summary.count,
+                last_error: summary.last.map(|last| last.error),
+            },
+            _ => Self {
+                available: false,
+                failed: 0,
+                last_error: None,
+            },
+        }
+    }
+}
+
 enum DiagnosticsReadError {
     Collection(ApiError),
     Store(#[allow(dead_code)] studio_runtime_store::StoreError),
@@ -860,7 +902,10 @@ mod diagnostics_http_tests {
                 "missing Python response field {field}"
             );
         }
-        assert_eq!(value["analyticsCapture"], json!({"available": false}));
+        assert_eq!(
+            value["analyticsCapture"],
+            json!({"available": true, "failed": 0})
+        );
         assert!(
             Registry::compile(&[("GET".to_owned(), "/api/diagnostics".to_owned())])
                 .expect("OpenAPI response schema")
