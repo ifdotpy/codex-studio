@@ -783,6 +783,7 @@ export default function MultiServerApp() {
           <Tabs.Panel value="accounts" pt="md">
             {discovery.error && <p role="alert">{discovery.error}</p>}
             <ServerAccountsPanel
+              servicesFor={(id) => services.get(id)}
               servers={accountsServers}
               accountsByServer={accountsByServer}
               statuses={{

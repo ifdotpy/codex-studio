@@ -136,6 +136,11 @@ test("accounts settings show per-server state and provider choices", async ({
   );
   await expect(work).toBeVisible();
   await expect(work.getByText("Default · Local")).toBeVisible();
+  await expect(
+    work.locator(".account-start-throttle > summary").first(),
+  ).toContainText(
+    /^Turn start limits: \d+ per burst · \d+ s pause · \d+ running$/,
+  );
   await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
     work.getByRole("button", { name: /sign in again/ }),

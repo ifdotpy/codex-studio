@@ -104,6 +104,10 @@ export function accountThrottle(account: Account): Throttle {
       };
 }
 
+/** The one-line summary of the limits that apply: "8 per burst · 30 s pause · 16 running". */
+export const throttleSummary = (throttle: Throttle) =>
+  `${throttle.burst} per burst · ${throttle.pauseSeconds} s pause · ${throttle.maxRunningTurns} running`;
+
 export default function AccountStartThrottle({
   account,
   onSaved,
@@ -140,7 +144,9 @@ export default function AccountStartThrottle({
   };
   return (
     <details className="account-register account-start-throttle">
-      <summary>Turn start limits</summary>
+      <summary>
+        Turn start limits: {throttleSummary(accountThrottle(account))}
+      </summary>
       <form
         onSubmit={(event) => {
           event.preventDefault();

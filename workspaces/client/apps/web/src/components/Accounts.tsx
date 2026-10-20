@@ -237,7 +237,7 @@ function AccountNameEditor({
   );
 }
 
-function AccountCapacity({
+export function AccountCapacity({
   account,
   opened,
   card = false,

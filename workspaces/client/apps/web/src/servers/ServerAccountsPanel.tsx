@@ -18,6 +18,11 @@ import { ActionButton, SettingsSection } from "../components/ui/primitives";
 import type { ServerAccount, ServerCommand } from "./navigation";
 import type { StudioServer } from "./registry";
 import { rowServers, serverAccountRows } from "./serverAccountRows";
+import ServerAccountLimits, {
+  matchServerAccount,
+  useServerFullAccounts,
+} from "./ServerAccountLimits";
+import type { ServerServices } from "./serverServices";
 
 type AccountAction = Extract<ServerCommand, { action: "account-action" }>;
 type StartAccount = (
@@ -32,6 +37,7 @@ export default function ServerAccountsPanel({
   startAccount,
   accountAction,
   onDiscover,
+  servicesFor,
 }: {
   servers: StudioServer[];
   accountsByServer: Record<string, ServerAccount[]>;
@@ -39,7 +45,13 @@ export default function ServerAccountsPanel({
   startAccount: StartAccount;
   accountAction: (serverId: string, command: AccountAction) => void;
   onDiscover?: () => void;
+  /** The API of each server; without it the default API serves every server. */
+  servicesFor?: (serverId: string) => ServerServices | undefined;
 }) {
+  const [fullAccounts, setFullAccounts] = useServerFullAccounts(
+    servers.map((server) => server.id),
+    servicesFor,
+  );
   const [adding, setAdding] = useState(false);
   const [provider, setProvider] = useState<"codex" | "claude" | "">("");
   const [serverId, setServerId] = useState(servers[0]?.id || "local");
@@ -276,6 +288,36 @@ export default function ServerAccountsPanel({
                     );
                   })}
                 </div>
+                {servers
+                  .filter((server) => row.byServer[server.id])
+                  .map((server) => {
+                    const account = matchServerAccount(
+                      fullAccounts[server.id],
+                      row.byServer[server.id],
+                    );
+                    return (
+                      account &&
+                      !account.disconnected && (
+                        <div
+                          key={server.id}
+                          className="server-account-limits"
+                          data-server-id={server.id}
+                        >
+                          {servers.length > 1 && <small>{server.label}</small>}
+                          <ServerAccountLimits
+                            account={account}
+                            services={servicesFor?.(server.id)}
+                            onSaved={(accounts) =>
+                              setFullAccounts((old) => ({
+                                ...old,
+                                [server.id]: accounts,
+                              }))
+                            }
+                          />
+                        </div>
+                      )
+                    );
+                  })}
               </article>
             ))}
           </div>
