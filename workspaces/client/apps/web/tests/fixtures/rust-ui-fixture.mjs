@@ -37,7 +37,7 @@ const CATALOG_POLL_MS = 100;
 /** Prompt of every seeded worker. */
 const WORKER_PROMPT = "Review one component";
 /** Worker agents seeded under the lead when --workers is absent. */
-const DEFAULT_WORKER_COUNT = 12;
+const DEFAULT_WORKER_COUNT = 6;
 
 export function serverBinary() {
   if (process.env.CODEX_STUDIO_RUNTIME_SERVER)
@@ -175,20 +175,23 @@ async function main() {
   const leadId = lead.id ?? lead.agent?.id;
   if (!leadId)
     throw new Error(`Lead creation returned ${JSON.stringify(lead)}`);
-  for (let index = 0; index < workers; index++)
-    await backend.post("/api/agents", {
-      name: `Worker ${String(index).padStart(2, "0")}`,
-      prompt: WORKER_PROMPT,
-      role: "reviewer",
-      parent: leadId,
+  await Promise.all([
+    ...Array.from({ length: workers }, (_, index) =>
+      backend.post("/api/agents", {
+        name: `Worker ${String(index).padStart(2, "0")}`,
+        prompt: WORKER_PROMPT,
+        role: "reviewer",
+        parent: leadId,
+        cwd,
+      }),
+    ),
+    // A second, separate root chat for specs that need an unrelated project.
+    backend.post("/api/agents", {
+      name: "Other project",
+      prompt: "Separate task",
       cwd,
-    });
-  // A second, separate root chat for specs that need an unrelated project.
-  await backend.post("/api/agents", {
-    name: "Other project",
-    prompt: "Separate task",
-    cwd,
-  });
+    }),
+  ]);
   createInterface({ input: process.stdin }).on("line", async (line) => {
     const message = JSON.parse(line);
     if (message.method === "fixture/create-worker")
