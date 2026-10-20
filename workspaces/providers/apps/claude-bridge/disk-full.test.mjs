@@ -219,16 +219,9 @@ test("a disk-full session save does not fail the running turn and loses nothing"
   );
   assert.match(held.params.item.text, /^Disk is full\./);
   assert.equal(held.params.item.studioNotice, true);
-  // Saves run beside the stream, so a later save may still be writing its
-  // temporary file; each failed rename removes its own.
-  const deadline = Date.now() + 5_000;
-  while ((await temporaryFiles(sessions)).length && Date.now() < deadline)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(
-    await temporaryFiles(sessions),
-    [],
-    "a failed rename leaves no temporary file",
-  );
+  // Saves run beside the stream and keep failing while the disk is full, so
+  // a temporary file may exist now by design. The turn's end waits for its
+  // saves; only then does a leaked temporary file show (checked below).
   await fs.writeFile(path.join(bridge.root, ".space"), "");
   const completed = await bridge.note((n) => n.method === "turn/completed");
   assert.equal(completed.params.turn.id, turn);
@@ -243,7 +236,11 @@ test("a disk-full session save does not fail the running turn and loses nothing"
     savedTurn.items.some((item) => item.text === "still working"),
     "the answer given while the disk was full is saved",
   );
-  assert.deepEqual(await temporaryFiles(sessions), []);
+  assert.deepEqual(
+    await temporaryFiles(sessions),
+    [],
+    "a failed rename leaves no temporary file",
+  );
 });
 
 test("a disk-full pre-input receipt rejects the start before Claude receives input", async () => {
