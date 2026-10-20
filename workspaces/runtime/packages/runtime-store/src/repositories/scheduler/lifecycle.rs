@@ -1706,14 +1706,20 @@ pub(super) fn unresolved_sql() -> String {
         unresolved_base_sql()
     )
 }
+/// An agent's account, written exactly as the `runtime_agent_account_scope`
+/// index expression so SQLite searches that index instead of scanning agents.
+const ACCOUNT_SCOPE_SQL: &str = "CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' ELSE json_extract(record,'$.accountKey') END";
+fn account_agents_sql(predicate: &str) -> String {
+    format!(
+        "SELECT id,record FROM runtime_agents WHERE {ACCOUNT_SCOPE_SQL}=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
+    )
+}
 pub(super) fn account_agents(
     connection: &Connection,
     account: &str,
     predicate: &str,
 ) -> StoreResult<Vec<AgentRecord>> {
-    let sql = format!(
-        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
-    );
+    let sql = account_agents_sql(predicate);
     let mut statement = connection.prepare_cached(&sql)?;
     let rows = statement
         .query_map([account], |row| {
@@ -2603,3 +2609,31 @@ pub(super) fn truthy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod account_scope_tests {
+    /// Account-scoped agent reads search the account index instead of scanning agents.
+    #[tokio::test]
+    async fn account_agents_search_the_account_scope_index() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = crate::RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let reader = store.read().expect("reader");
+        let plan = reader
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                super::account_agents_sql("1")
+            ))
+            .expect("plan")
+            .query_map(["default"], |row| row.get::<_, String>(3))
+            .expect("plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan text");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("runtime_agent_account_scope")),
+            "{plan:?}"
+        );
+    }
+}
