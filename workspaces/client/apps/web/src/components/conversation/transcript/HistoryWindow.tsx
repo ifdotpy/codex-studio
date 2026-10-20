@@ -368,7 +368,15 @@ export default function HistoryWindow({
     if (previousRows.current !== rows) {
       const previous = previousRows.current;
       previousRows.current = rows;
-      if (viewportAnchor.current && historyRowsCanRestoreAnchor(previous, rows))
+      // With the conversation scroll hook, that hook keeps the reader in
+      // place when rows change. A second anchor here pins a row that can
+      // start above the viewport and undoes the hook's compensation for
+      // content that grows inside it.
+      if (
+        viewportAnchor.current &&
+        !rememberLatest.current &&
+        historyRowsCanRestoreAnchor(previous, rows)
+      )
         restoreViewportAnchor.current(viewportAnchor.current);
     }
   }, [rows, offsets]);
