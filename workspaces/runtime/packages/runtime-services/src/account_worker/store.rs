@@ -1463,7 +1463,10 @@ pub(super) async fn journal_batch(
                 }
                 Err(fault) => {
                     // The rolled-back entry settles without its effects, so
-                    // it neither holds the journal nor applies again.
+                    // it neither holds the journal nor applies again. The
+                    // outbox only caches the receipt count and invalidation
+                    // row; earlier entries' receipts are rows of this
+                    // transaction and stay. Reload the cache from them.
                     outbox = PublicationOutbox::default();
                     park_entry(tx, identity, &entry)?;
                     faults.push(fault);

@@ -295,6 +295,107 @@ async fn journal_keeps_reading_behind_a_completion_no_request_can_bind() {
     worker.shutdown().await.unwrap();
 }
 
+/// Publication receipts of the account, by receipt id.
+async fn publications(state: &State) -> Vec<String> {
+    state
+        .bridge
+        .run(|store| async move {
+            let reader = store.read()?;
+            let mut statement = reader.prepare(
+                "SELECT id FROM runtime_operation_receipts \
+                 WHERE id LIKE 'account-worker:notification-publication:default:%' ORDER BY id",
+            )?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ids)
+        })
+        .await
+        .unwrap()
+}
+
+/// A frame that faults after another agent's frame in the same journal
+/// transaction rolls back only itself: the earlier frame's state and its
+/// publication receipts commit.
+#[tokio::test]
+async fn a_faulting_frame_keeps_the_earlier_frames_of_its_batch() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    second_agent(&state, "agent-b", "fake-thread-1", "b-input").await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let a_start = start_agent(&state, &mut peer, &worker, &a, "fake-thread-0").await;
+    peer.reply(&a_start, json!({"turn":{"id":"turn-a"}})).await;
+    let b_start = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
+    peer.reply(&b_start, json!({"turn":{"id":"turn-b"}})).await;
+    worker_barrier(&worker).await;
+    worker.shutdown().await.unwrap();
+    corrupt(
+        &state,
+        &a,
+        "UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.events',json('[]')) WHERE id=?1",
+    )
+    .await;
+    let before = publications(&state).await;
+
+    // One transaction: agent B's answer delta applies, then agent A's turn
+    // notice faults.
+    let clock = SessionClock::default();
+    let frame = |cursor: u64, value: Value| journal_frame(&clock, Generation(1), cursor, &value);
+    let batch = store::journal_batch(
+        Arc::clone(&state.bridge.store),
+        "default",
+        "default",
+        &NotificationStreamBuffer::default(),
+        vec![
+            frame(
+                10_000,
+                json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-1","turnId":"turn-b","itemId":"answer","delta":"b"}}),
+            ),
+            frame(
+                10_001,
+                json!({"method":"turn/started","params":{"threadId":"fake-thread-0","turn":{"id":"turn-a"}}}),
+            ),
+        ],
+        &Value::Null,
+        None,
+        None,
+        Vec::new(),
+        None,
+        false,
+    )
+    .await
+    .expect("the batch commits");
+    assert_eq!(
+        batch
+            .committed
+            .iter()
+            .map(|(entry, _)| entry.cursor.0)
+            .collect::<Vec<_>>(),
+        [10_000]
+    );
+    assert_eq!(
+        batch
+            .parked
+            .iter()
+            .map(|entry| entry.cursor.0)
+            .collect::<Vec<_>>(),
+        [10_001]
+    );
+    assert_eq!(batch.faults.len(), 1);
+    assert_eq!(batch.faults[0].agent_id, a);
+
+    let after = publications(&state).await;
+
+    assert!(
+        after.len() > before.len() && before.iter().all(|id| after.contains(id)),
+        "agent B's publication commits: {before:?} -> {after:?}"
+    );
+    let b = record_of(&state, "agent-b").await;
+    assert_ne!(b["status"], "failed", "{b}");
+    assert_held(&record_of(&state, &a).await, &format!("runtime_agents/{a}"));
+}
+
 /// A fault after the claim returns the unsubmitted input to the queue, so a
 /// later message starts the agent and sends that input once.
 #[tokio::test]
