@@ -106,11 +106,21 @@ pub enum WorkspaceRefusal {
 ///     if let WorkspaceDecision::Ready { cwd, .. } = decision { let _ = cwd; }
 /// }
 /// ```
+/// What defers a workspace decision, and so which change can end the deferral.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeferredBy {
+    /// The actor's own record: deleted, not auto-waking, or VM or image
+    /// readiness not recorded yet.
+    Actor,
+    /// Another workspace operation, reservation or provisioning lock.
+    Workspace,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceDecision {
     Ready { token: ReadyToken },
     Provision(WorktreePlan),
-    Defer { reservation: Option<String> },
+    Defer { by: DeferredBy },
     Refuse(WorkspaceRefusal),
 }
 
@@ -157,7 +167,9 @@ pub fn decide_workspace(
         return WorkspaceDecision::Refuse(refusal);
     }
     if actor.deleted_at.is_some() || !actor.auto_wake {
-        return WorkspaceDecision::Defer { reservation: None };
+        return WorkspaceDecision::Defer {
+            by: DeferredBy::Actor,
+        };
     }
     for reservation in reservations {
         let own_provision = journaled
@@ -182,7 +194,7 @@ pub fn decide_workspace(
                 && reservation.phase.as_deref() != Some("recovery_required")
             {
                 return WorkspaceDecision::Defer {
-                    reservation: reservation.id.clone(),
+                    by: DeferredBy::Workspace,
                 };
             }
             return recovery(

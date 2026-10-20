@@ -2815,16 +2815,23 @@ fn invalidate_auth_on_failure(agent: &Value, account_pin: &Value, turn: &Value) 
 pub(super) enum PreparationStep<T> {
     Ready(T),
     /// Durably recorded as `startAttempt.prepareError`; wake when it unblocks.
-    Pending(String),
+    Pending(PendingWait),
     /// The start outcome was settled (refused); nothing further to do.
     Settled,
 }
+
+/// A pending preparation's reason and the agent rows whose change may clear it.
+pub(super) struct PendingWait {
+    pub reason: String,
+    pub rows: super::agent_wakes::WakeRows,
+}
+
 impl<T> PreparationStep<T> {
     /// The ready value, or this non-ready step for a later stage.
     pub(super) fn into_ready<U>(self) -> Result<T, PreparationStep<U>> {
         match self {
             Self::Ready(value) => Ok(value),
-            Self::Pending(reason) => Err(PreparationStep::Pending(reason)),
+            Self::Pending(pending) => Err(PreparationStep::Pending(pending)),
             Self::Settled => Err(PreparationStep::Settled),
         }
     }
@@ -2835,71 +2842,112 @@ pub(super) async fn preparation_step<T: Send + 'static>(
     intent: &TurnIntent,
     action: impl Future<Output = Result<T, WorkerError>> + Send,
 ) -> Result<PreparationStep<T>, WorkerError> {
-    match action.await {
-        Ok(value) => Ok(PreparationStep::Ready(value)),
-        Err(WorkerError::PreparationPending(reason)) => {
-            let agent_id = intent.agent_id.clone();
-            let attempt_id = intent.attempt_id.clone();
-            let events = intent
-                .events
-                .iter()
-                .map(|event| event.id.clone())
-                .collect::<Vec<_>>();
-            let epoch = intent.epoch;
-            let blocker = reason.clone();
-            scheduler::lifecycle_transaction_with(store, move |tx| {
-                let reason = blocker;
-                let mut row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
-                    .ok_or_else(|| invalid(&agent_id))?;
-                // Write once per blocker change; a repeated attempt with the
-                // same blocker leaves the row (and its observers) untouched.
-                let unchanged = row
-                    .extra
-                    .get("startAttempt")
-                    .is_some_and(|a| a.get("prepareError") == Some(&json!(reason)))
-                    && (reason != "workspace-readiness/pending"
-                        || row
-                            .extra
-                            .get("lastWorkspaceWait")
-                            .is_some_and(|wait| wait["attemptId"] == attempt_id));
-                if !unchanged
-                    && row.epoch == epoch
-                    && row
-                        .extra
-                        .get("startAttempt")
-                        .is_some_and(|a| a["id"] == attempt_id && a["submitted"] == false)
-                    && let Some(attempt) = row
-                        .extra
-                        .get_mut("startAttempt")
-                        .and_then(Value::as_object_mut)
-                {
-                    attempt.insert("prepareError".into(), json!(reason));
-                    if reason == "workspace-readiness/pending" {
-                        // Python's WorkspaceWaitRecord uses these fields
-                        // (codex_workspace_delivery.py:43-46).
-                        row.extra.insert(
-                            "lastWorkspaceWait".into(),
-                            json!({
-                                "attemptId": attempt_id,
-                                "events": events,
-                                "blockers": [],
-                                "at": now(),
-                            }),
-                        );
-                    }
-                    AgentRepository::put(tx, &row)?;
-                }
-                Ok::<_, WorkerError>(())
-            })
-            .await?;
-            Ok(PreparationStep::Pending(reason))
-        }
+    let (reason, own_row) = match action.await {
+        Ok(value) => return Ok(PreparationStep::Ready(value)),
+        Err(WorkerError::PreparationPending(reason)) => (reason, false),
+        Err(WorkerError::PreparationAwaitsAgent(reason)) => (reason, true),
         Err(WorkerError::PreparationRefused(reason)) => {
             scheduler::settle_start_outcome(store, intent, TurnStart::Blocked { reason }).await?;
-            Ok(PreparationStep::Settled)
+            return Ok(PreparationStep::Settled);
         }
-        Err(error) => Err(error),
+        Err(error) => return Err(error),
+    };
+    // A repeated attempt with the same blocker reads only: the writer opens
+    // once per blocker change, so a woken but still blocked preparation
+    // leaves the row and its observers untouched.
+    let agent_id = intent.agent_id.clone();
+    let attempt_id = intent.attempt_id.clone();
+    let epoch = intent.epoch;
+    let blocker = reason.clone();
+    let (row_id, needs_record) = store
+        .read_async("runtime-services/account_worker_pending_read", move |db| {
+            let row_id = db
+                .query_row(
+                    "SELECT rowid FROM runtime_agents WHERE id=?1",
+                    [&agent_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            let row = AgentRepository::get(db, &AgentId::from(agent_id.as_str()))?
+                .ok_or_else(|| invalid(&agent_id))?;
+            Ok::<_, WorkerError>((
+                row_id,
+                pending_needs_record(&row, &blocker, &attempt_id, epoch),
+            ))
+        })
+        .await?;
+    if needs_record {
+        record_pending(store, intent, reason.clone()).await?;
     }
+    let rows = match row_id {
+        Some(row) if own_row => super::agent_wakes::WakeRows::Own(row),
+        _ => super::agent_wakes::WakeRows::Any,
+    };
+    Ok(PreparationStep::Pending(PendingWait { reason, rows }))
+}
+
+/// Whether the unsubmitted attempt at `epoch` does not record `reason` as its
+/// pending blocker yet.
+fn pending_needs_record(
+    row: &studio_runtime_store::AgentRecord,
+    reason: &str,
+    attempt_id: &str,
+    epoch: i64,
+) -> bool {
+    let Some(attempt) = row.extra.get("startAttempt") else {
+        return false;
+    };
+    let recorded = attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
+        && (reason != preparation::WORKSPACE_PENDING_REASON
+            || row
+                .extra
+                .get("lastWorkspaceWait")
+                .is_some_and(|wait| wait["attemptId"] == attempt_id));
+    !recorded && row.epoch == epoch && attempt["id"] == attempt_id && attempt["submitted"] == false
+}
+
+/// Record a changed pending blocker on the unsubmitted attempt.
+async fn record_pending(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    reason: String,
+) -> Result<(), WorkerError> {
+    let agent_id = intent.agent_id.clone();
+    let attempt_id = intent.attempt_id.clone();
+    let events = intent
+        .events
+        .iter()
+        .map(|event| event.id.clone())
+        .collect::<Vec<_>>();
+    let epoch = intent.epoch;
+    scheduler::lifecycle_transaction_with(store, move |tx| {
+        let mut row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+            .ok_or_else(|| invalid(&agent_id))?;
+        if pending_needs_record(&row, &reason, &attempt_id, epoch)
+            && let Some(attempt) = row
+                .extra
+                .get_mut("startAttempt")
+                .and_then(Value::as_object_mut)
+        {
+            attempt.insert("prepareError".into(), json!(reason));
+            if reason == preparation::WORKSPACE_PENDING_REASON {
+                // Python's WorkspaceWaitRecord uses these fields
+                // (codex_workspace_delivery.py:43-46).
+                row.extra.insert(
+                    "lastWorkspaceWait".into(),
+                    json!({
+                        "attemptId": attempt_id,
+                        "events": events,
+                        "blockers": [],
+                        "at": now(),
+                    }),
+                );
+            }
+            AgentRepository::put(tx, &row)?;
+        }
+        Ok::<_, WorkerError>(())
+    })
+    .await
 }
 
 fn hold_thread_receipt(

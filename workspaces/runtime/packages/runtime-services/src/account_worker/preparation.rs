@@ -2,13 +2,13 @@ mod pipeline;
 mod receipts;
 mod snapshot;
 use super::*;
-pub(crate) use pipeline::CATALOG_PENDING_REASON;
 #[cfg(test)]
 pub(super) use pipeline::prepare;
 pub(super) use pipeline::{
     Admission, CommitGuard, RequestPreparation, admit, commit, commit_claude, persist_compilation,
     prepare_ready, workspace,
 };
+pub(crate) use pipeline::{CATALOG_PENDING_REASON, WORKSPACE_PENDING_REASON};
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
 pub use snapshot::{

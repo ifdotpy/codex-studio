@@ -31,6 +31,7 @@ use tokio::{
     sync::{Notify, mpsc, watch},
     task::{JoinHandle, JoinSet},
 };
+mod agent_wakes;
 pub mod callback;
 mod connection_recovery;
 pub(crate) mod history;
@@ -103,8 +104,12 @@ pub enum WorkerError {
     PreparationRefused(String),
     #[error("VM actor identity changed while journaling")]
     StaleVmActor,
+    /// Pending on a blocker this preparation cannot name: any agent change may clear it.
     #[error("{0}")]
     PreparationPending(String),
+    /// Pending until the agent's own row changes (its workspace or VM readiness).
+    #[error("{0}")]
+    PreparationAwaitsAgent(String),
     #[error("provider cleanup is not confirmed: {0}")]
     CleanupUnconfirmed(String),
     #[error("account already has a worker")]
@@ -123,7 +128,9 @@ pub enum WorkerError {
 
 fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> {
     match error {
-        WorkerError::PreparationPending(_) => Some("pending"),
+        WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
+            Some("pending")
+        }
         WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
         _ => None,
     }
@@ -156,9 +163,11 @@ pub struct StoreBridge {
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     idle_state_generation: Arc<watch::Sender<u64>>,
     idle_setting_generation: Arc<watch::Sender<u64>>,
-    /// Advances on every committed `runtime_agents` change; pending
-    /// preparations wait on it for their workspace or VM blocker.
+    /// Advances on every committed `runtime_agents` change; the start gate
+    /// waits on it for a freed running slot.
     agent_generation: Arc<watch::Sender<u64>>,
+    /// Pending preparations wait here for the agent rows they depend on.
+    agent_wakes: Arc<agent_wakes::AgentWakes>,
     /// Turn start admission per account (see `account_start_gate`); shared by
     /// every worker of this process, so a replaced worker keeps the counts.
     start_gates: Arc<crate::account_start_gate::StartGates>,
@@ -198,6 +207,13 @@ impl StoreBridge {
                 generation.send_modify(|value| *value = value.wrapping_add(1));
             }
         });
+        let agent_wakes = Arc::new(agent_wakes::AgentWakes::default());
+        let observed_wakes = Arc::downgrade(&agent_wakes);
+        store.add_table_row_change_observer(ObservedTable::Agents, move |change| {
+            if let Some(wakes) = observed_wakes.upgrade() {
+                wakes.committed(change);
+            }
+        });
         let bridge = Self {
             store,
             accounts: Arc::default(),
@@ -208,6 +224,7 @@ impl StoreBridge {
             idle_state_generation,
             idle_setting_generation,
             agent_generation,
+            agent_wakes,
             start_gates: Arc::default(),
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
@@ -1585,19 +1602,19 @@ impl Worker {
         Ok(())
     }
     /// Wake a pending preparation when the event that can unblock it happens:
-    /// a published catalog refresh, or any committed agent change (workspace
-    /// owners, VM readiness). `agents` was subscribed before the attempt, so a
-    /// change committed while it ran is not missed.
+    /// a published catalog refresh, or a committed change of the agent rows it
+    /// waits for. `since` was read before the attempt, so a change committed
+    /// while it ran is not missed.
     fn wait_for_preparation(
         &mut self,
         intent: &TurnIntent,
-        reason: &str,
-        mut agents: watch::Receiver<u64>,
+        pending: &store::PendingWait,
+        since: u64,
     ) {
         let commands = self.commands.clone();
         let agent_id = intent.agent_id.clone();
         let epoch = intent.epoch;
-        let catalog = (reason == preparation::CATALOG_PENDING_REASON).then(|| {
+        let catalog = (pending.reason == preparation::CATALOG_PENDING_REASON).then(|| {
             (
                 self.resources.model_catalog.clone(),
                 self.account.clone(),
@@ -1605,16 +1622,20 @@ impl Worker {
                 intent.provider.key().to_owned(),
             )
         });
+        let agents = catalog
+            .is_none()
+            .then(|| self.bridge.agent_wakes.wait(since, pending.rows));
         let task = tokio::spawn(async move {
-            match catalog {
-                Some((catalog, account, home, provider)) => {
+            match (catalog, agents) {
+                (Some((catalog, account, home, provider)), _) => {
                     catalog.refreshed(&account, &home, &provider).await;
                 }
-                None => {
-                    if agents.changed().await.is_err() {
+                (None, Some(agents)) => {
+                    if agents.await.is_err() {
                         return;
                     }
                 }
+                (None, None) => return,
             }
             let _closed = commands
                 .send(AccountCommand::Wake { agent_id, epoch })
@@ -1680,12 +1701,12 @@ impl Worker {
         &mut self,
         step: store::PreparationStep<T>,
         intent: &TurnIntent,
-        agent_changes: &watch::Receiver<u64>,
+        since: u64,
     ) -> Option<T> {
         match step {
             store::PreparationStep::Ready(value) => Some(value),
-            store::PreparationStep::Pending(reason) => {
-                self.wait_for_preparation(intent, &reason, agent_changes.clone());
+            store::PreparationStep::Pending(pending) => {
+                self.wait_for_preparation(intent, &pending, since);
                 None
             }
             store::PreparationStep::Settled => None,
@@ -1785,7 +1806,7 @@ impl Worker {
         let resources = self.resources.clone();
         let generation = self.generation.0;
         let connection_id = self.connection_id.clone();
-        let agent_changes = self.bridge.agent_changes();
+        let since = self.bridge.agent_wakes.sequence();
         let loaded = (method == Method::ThreadResume)
             .then(|| self.thread_proofs.get(agent_id).cloned())
             .flatten();
@@ -1795,7 +1816,7 @@ impl Worker {
             resources,
             generation,
             connection_id,
-            agent_changes,
+            since,
             effect,
             loaded,
             carried: carried
@@ -1836,7 +1857,7 @@ impl Worker {
                 let turn_preparation::Prepared {
                     intent,
                     method: requested,
-                    agent_changes,
+                    since,
                     loaded,
                     step,
                 } = *prepared;
@@ -1844,7 +1865,7 @@ impl Worker {
                 if let Some(thread) = intent.thread_id.as_deref() {
                     self.idle_thread_touched(thread);
                 }
-                if let Some(prepared) = self.preparation_ready(step, &intent, &agent_changes) {
+                if let Some(prepared) = self.preparation_ready(step, &intent, since) {
                     let method = prepared.method;
                     // A proof forgotten while this preparation ran (an unload or
                     // thread/closed) no longer shows the thread loaded: prepare

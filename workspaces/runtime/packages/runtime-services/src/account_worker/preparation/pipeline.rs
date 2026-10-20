@@ -229,6 +229,8 @@ fn selected_inputs_current(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<
 }
 /// Refusal of a ready snapshot whose workspace token no longer validates.
 pub(crate) const WORKSPACE_TOKEN_STALE: &str = "workspace-readiness/token-stale";
+/// A workspace operation or the actor's readiness defers the turn.
+pub(crate) const WORKSPACE_PENDING_REASON: &str = "workspace-readiness/pending";
 /// Pending reason of a turn that waits for a model catalog refresh.
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
@@ -545,7 +547,7 @@ async fn workspace_with_vm_action(
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
         if ready.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
-            return Err(WorkerError::PreparationPending(
+            return Err(WorkerError::PreparationAwaitsAgent(
                 "workspace-readiness/vm-not-ready".into(),
             ));
         }
@@ -624,8 +626,13 @@ async fn workspace_with_vm_action(
             Ok(token)
         }
         crate::workspace_ready::WorkspaceDecision::Refuse(e) => Err(refusal(e.to_string())),
+        crate::workspace_ready::WorkspaceDecision::Defer {
+            by: crate::workspace_ready::DeferredBy::Actor,
+        } => Err(WorkerError::PreparationAwaitsAgent(
+            WORKSPACE_PENDING_REASON.into(),
+        )),
         _ => Err(WorkerError::PreparationPending(
-            "workspace-readiness/pending".into(),
+            WORKSPACE_PENDING_REASON.into(),
         )),
     }
 }

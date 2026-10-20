@@ -401,7 +401,9 @@ fn worker_error(error: WorkerError) -> NativeError {
         {
             NativeError::Unavailable(preparation::CATALOG_PENDING_REASON)
         }
-        WorkerError::PreparationPending(_) => NativeError::Unavailable("native-review/preparation"),
+        WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
+            NativeError::Unavailable("native-review/preparation")
+        }
         _ => NativeError::Invalid("native-review/preparation"),
     }
 }

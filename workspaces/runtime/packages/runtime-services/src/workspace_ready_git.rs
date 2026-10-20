@@ -127,7 +127,9 @@ async fn prepare_attempt(
     // ready association and is rechecked when the turn is submitted.
     if actor.execution_mode.as_deref() == Some("vm") {
         if actor.deleted_at.is_some() || !actor.auto_wake {
-            return Ok(WorkspaceDecision::Defer { reservation: None });
+            return Ok(WorkspaceDecision::Defer {
+                by: crate::workspace_ready::DeferredBy::Actor,
+            });
         }
         let value = &initial.agent.record;
         if value.get("layrReady").and_then(Value::as_bool) != Some(true)
@@ -140,7 +142,9 @@ async fn prepare_attempt(
                 .and_then(Value::as_str)
                 .is_none_or(str::is_empty)
         {
-            return Ok(WorkspaceDecision::Defer { reservation: None });
+            return Ok(WorkspaceDecision::Defer {
+                by: crate::workspace_ready::DeferredBy::Actor,
+            });
         }
         let cwd = value
             .get("cwd")
@@ -157,16 +161,22 @@ async fn prepare_attempt(
         #[cfg(target_os = "macos")]
         {
             if actor.deleted_at.is_some() || !actor.auto_wake {
-                return Ok(WorkspaceDecision::Defer { reservation: None });
+                return Ok(WorkspaceDecision::Defer {
+                    by: crate::workspace_ready::DeferredBy::Actor,
+                });
             }
             if !actor.image_workspace_ready {
                 return Ok(match actor.image_workspace_phase.as_deref() {
-                    Some("creating") => WorkspaceDecision::Defer { reservation: None },
+                    Some("creating") => WorkspaceDecision::Defer {
+                        by: crate::workspace_ready::DeferredBy::Actor,
+                    },
                     // Python `prepare_locked` starts the base build and the copy here.
                     // The turn waits for the ready copy instead of running read-only.
                     Some("read_only") => {
                         crate::image_workspace_agents::start(&store, &agent_id);
-                        WorkspaceDecision::Defer { reservation: None }
+                        WorkspaceDecision::Defer {
+                            by: crate::workspace_ready::DeferredBy::Actor,
+                        }
                     }
                     _ => WorkspaceDecision::Refuse(
                         crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
@@ -226,7 +236,9 @@ async fn prepare_attempt(
         return Ok(WorkspaceDecision::Refuse(refusal));
     }
     if actor.deleted_at.is_some() || !actor.auto_wake {
-        return Ok(WorkspaceDecision::Defer { reservation: None });
+        return Ok(WorkspaceDecision::Defer {
+            by: crate::workspace_ready::DeferredBy::Actor,
+        });
     }
     let observe_store = Arc::clone(&store);
     let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -249,7 +261,7 @@ async fn prepare_attempt(
     let lock_deadline = tokio::time::Instant::from_std(git_deadline);
     let Ok(_guard) = tokio::time::timeout_at(lock_deadline, lock.lock()).await else {
         return Ok(WorkspaceDecision::Defer {
-            reservation: Some(plan.identity.id),
+            by: crate::workspace_ready::DeferredBy::Workspace,
         });
     };
     // Another worker may have completed while this caller waited for the common repository.
@@ -304,7 +316,7 @@ async fn provision(
         .await?
     {
         return Ok(WorkspaceDecision::Defer {
-            reservation: Some(plan.identity.id),
+            by: crate::workspace_ready::DeferredBy::Workspace,
         });
     }
     let identity = &plan.identity;

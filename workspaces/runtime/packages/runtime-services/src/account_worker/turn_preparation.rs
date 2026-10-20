@@ -12,8 +12,9 @@ pub(super) struct Run {
     pub connection_id: String,
     pub intent: TurnIntent,
     pub method: Method,
-    /// Subscribed before the attempt; a pending step waits for its next change.
-    pub agent_changes: watch::Receiver<u64>,
+    /// Agent-row commit sequence read before the attempt; a pending step
+    /// waits for the rows it depends on to change after it.
+    pub since: u64,
     /// Durable effect completed only after this preparation is handled.
     pub effect: Option<String>,
     /// This connection's loaded-thread proof; with unchanged thread settings a
@@ -49,7 +50,7 @@ pub(super) struct Prepared {
     pub intent: TurnIntent,
     /// The requested method; the prepared request may carry another one.
     pub method: Method,
-    pub agent_changes: watch::Receiver<u64>,
+    pub since: u64,
     /// The loaded-thread proof this preparation planned with.
     pub loaded: Option<crate::thread_prepare::LoadedIdentity>,
     pub step: store::PreparationStep<preparation::RequestPreparation>,
@@ -90,7 +91,7 @@ pub(super) async fn run(run: Run) -> Box<Done> {
             Outcome::Prepared(Box::new(Prepared {
                 intent: run.intent,
                 method: run.method,
-                agent_changes: run.agent_changes,
+                since: run.since,
                 loaded: run.loaded,
                 step,
             }))
