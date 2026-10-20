@@ -8,7 +8,7 @@ const SCOPE: &str = "default";
 
 fn entry(cursor: u64, frame: Value) -> JournalEntry {
     let DecodedJournalPayload::Frame(frame) =
-        decode_journal_value(cursor, GENERATION, frame).payload
+        decode_journal_value(cursor, GENERATION, &frame).payload
     else {
         panic!("fixture frame decodes");
     };

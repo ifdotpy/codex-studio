@@ -7,7 +7,9 @@ use serde_json::Value;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
-use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry, decode_journal_value};
+use studio_runtime_providers::{
+    DecodedJournalPayload, Frame, RequestId, ResponseBody, decode_journal_entry_borrowed,
+};
 use studio_runtime_store::supervisor_journal::launch_signature;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::sync::Semaphore;
@@ -181,7 +183,7 @@ impl SupervisorProviderTaskFactory {
                     .launch
                     .retained_response_ids
                     .into_iter()
-                    .map(|(remote, local)| (remote, Value::from(local)))
+                    .map(|(remote, local)| (remote, RequestId::Number(local)))
                     .collect(),
                 stop: shutdown.subscribe(),
                 commands: inbox,
@@ -369,14 +371,14 @@ struct AdapterTask {
     environment_reads: Arc<Semaphore>,
     expected_generation: Option<Generation>,
     handled_cursor: u64,
-    response_ids: BTreeMap<u64, Value>,
+    response_ids: BTreeMap<u64, RequestId>,
     stop: watch::Receiver<bool>,
     commands: mpsc::Receiver<AdapterCommand>,
     events: mpsc::Sender<JournalEntry>,
     status: watch::Sender<AttachmentStatus>,
     info: Option<AttachmentInfo>,
     initialization: InitializationStatus,
-    initialize_id: Option<Value>,
+    initialize_id: Option<RequestId>,
     cached_initialize: Option<Value>,
     open_attempted: bool,
 }
@@ -517,7 +519,7 @@ impl AdapterTask {
                 .launch
                 .retained_response_ids
                 .into_iter()
-                .map(|(remote, local)| (remote, Value::from(local)))
+                .map(|(remote, local)| (remote, RequestId::Number(local)))
                 .collect();
         }
         let event_socket = interruptible(&mut self.stop, async {
@@ -830,7 +832,7 @@ impl AdapterTask {
         }
         if initialize {
             if let Some(cached) = self.cached_initialize.take() {
-                self.initialize_id = write.message.get("id").cloned();
+                self.initialize_id = local_request_id(&write.message);
                 return Ok(CommandReceipt::CachedInitialize(cached));
             }
             if self.initialize_id.is_some() {
@@ -840,7 +842,7 @@ impl AdapterTask {
         let native_id = provider_native_id(&write.message)
             .or_else(|| initialize.then_some(NativeId::Integer(1)));
         let rpc_request = native_id.is_some();
-        let local_id = method.and_then(|_| write.message.get("id")).cloned();
+        let local_id = method.and_then(|_| local_request_id(&write.message));
         if rpc_request && local_id.is_none() {
             return Ok(CommandReceipt::NotSent);
         }
@@ -888,67 +890,31 @@ impl AdapterTask {
         })
     }
 
-    fn journal_entry(
+    /// Decode one journal event. A stdout payload goes straight from its raw
+    /// bytes into the typed frame decoder; a reply then takes its local ID.
+    fn journal_entry_v2(
         &mut self,
-        mut event: SupervisorEvent,
+        event: SupervisorEventV2,
         received_at_ms: u64,
     ) -> Result<JournalEntry, AdapterError> {
+        let raw = event.payload.get();
         let payload = match event.kind {
-            EventKind::Stdout => {
-                let current = self
-                    .info
-                    .as_ref()
-                    .is_some_and(|info| info.generation == event.generation);
-                if event.payload.get("method").is_none()
-                    && let Some(remote) = event.payload.get("id").and_then(Value::as_u64)
-                {
-                    let local = if current {
-                        self.response_ids.remove(&remote)
-                    } else {
-                        None
-                    };
-                    assign_reply_id(&mut event.payload, remote, local)
-                        .map_err(SupervisorError::from)?;
-                }
-                if current
-                    && self
-                        .initialize_id
-                        .as_ref()
-                        .is_some_and(|id| event.payload.get("id") == Some(id))
-                    && event.payload.get("method").is_none()
-                {
-                    self.initialization = if event.payload.get("error").is_some() {
-                        InitializationStatus::Refused
-                    } else {
-                        InitializationStatus::InitializedWritePending
-                    };
-                    self.publish();
-                }
-                let raw = event
-                    .payload
-                    .get("supervisorRaw")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let decoded = match raw {
-                    Some(raw) => {
-                        decode_journal_entry(event.sequence.0, event.generation.0, raw.into_bytes())
+            EventKind::Stdout => match decode_stdout(raw) {
+                DecodedJournalPayload::Frame(mut frame) => {
+                    if let Frame::Response { id, body, .. } = &mut frame {
+                        self.settle_reply(id, body, event.generation);
                     }
-                    None => {
-                        decode_journal_value(event.sequence.0, event.generation.0, event.payload)
-                    }
-                };
-                match decoded.payload {
-                    DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
-                    DecodedJournalPayload::RawStdout { bytes, error } => {
-                        JournalPayload::RawStdout { bytes, error }
-                    }
+                    JournalPayload::Frame(frame)
                 }
-            }
-            EventKind::Stderr => JournalPayload::Stderr(event.payload),
-            EventKind::Exit => JournalPayload::Exit(event.payload),
+                DecodedJournalPayload::RawStdout { bytes, error } => {
+                    JournalPayload::RawStdout { bytes, error }
+                }
+            },
+            EventKind::Stderr => JournalPayload::Stderr(parse_payload(raw)?),
+            EventKind::Exit => JournalPayload::Exit(parse_payload(raw)?),
             EventKind::Unknown(kind) => JournalPayload::Other {
                 kind,
-                payload: event.payload,
+                payload: parse_payload(raw)?,
             },
         };
         Ok(JournalEntry {
@@ -959,23 +925,58 @@ impl AdapterTask {
         })
     }
 
-    fn journal_entry_v2(
-        &mut self,
-        event: SupervisorEventV2,
-        received_at_ms: u64,
-    ) -> Result<JournalEntry, AdapterError> {
-        let payload = serde_json::from_str(event.payload.get()).map_err(SupervisorError::from)?;
-        self.journal_entry(
-            SupervisorEvent {
-                sequence: event.sequence,
-                kind: event.kind,
-                payload,
-                generation: event.generation,
-                extra: BTreeMap::new(),
-            },
-            received_at_ms,
-        )
+    /// Map a supervisor-assigned integer reply ID back to the local request ID
+    /// and settle initialization when this reply answers `initialize`.
+    fn settle_reply(&mut self, id: &mut RequestId, body: &ResponseBody, generation: Generation) {
+        let current = self
+            .info
+            .as_ref()
+            .is_some_and(|info| info.generation == generation);
+        if let RequestId::Number(remote) = *id {
+            let local = if current {
+                self.response_ids.remove(&remote)
+            } else {
+                None
+            };
+            *id = local.unwrap_or_else(|| RequestId::String(format!("supervisor-orphan-{remote}")));
+        }
+        if current && self.initialize_id.as_ref() == Some(id) {
+            self.initialization = match body {
+                ResponseBody::Error(_) => InitializationStatus::Refused,
+                ResponseBody::Result(_) => InitializationStatus::InitializedWritePending,
+            };
+            self.publish();
+        }
     }
+}
+
+/// The supervisor journals a stdout line that is not JSON as this wrapper.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SupervisorRawStdout<'a> {
+    #[serde(rename = "supervisorRaw", borrow)]
+    raw: std::borrow::Cow<'a, str>,
+}
+
+fn decode_stdout(raw: &str) -> DecodedJournalPayload {
+    let decoded = decode_journal_entry_borrowed(0, 0, raw.as_bytes()).payload;
+    if let DecodedJournalPayload::RawStdout { .. } = decoded
+        && let Ok(wrapped) = serde_json::from_str::<SupervisorRawStdout<'_>>(raw)
+    {
+        return decode_journal_entry_borrowed(0, 0, wrapped.raw.as_bytes()).payload;
+    }
+    decoded
+}
+
+fn parse_payload(raw: &str) -> Result<Value, AdapterError> {
+    serde_json::from_str(raw).map_err(|error| SupervisorError::from(error).into())
+}
+
+/// The local ID of an outbound request, when it is a valid wire request ID.
+fn local_request_id(message: &Value) -> Option<RequestId> {
+    message
+        .get("id")
+        .and_then(|id| RequestId::deserialize(id).ok())
 }
 
 enum PumpMessage {

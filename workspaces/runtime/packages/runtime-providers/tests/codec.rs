@@ -329,16 +329,18 @@ fn journal_value_decoder_matches_the_wire_decoder_for_valid_and_malformed_values
     });
     let valid_bytes = serde_json::to_vec(&valid).expect("value serializes");
     assert_eq!(
-        decode_journal_value(42, 9, valid.clone()),
+        decode_journal_value(42, 9, &valid),
         decode_journal_entry(42, 9, valid_bytes),
     );
 
     let malformed = json!({"method": 17, "extension": [1, 2]});
     let malformed_bytes = serde_json::to_vec(&malformed).expect("value serializes");
-    assert_eq!(
-        decode_journal_value(43, 9, malformed),
-        decode_journal_entry(43, 9, malformed_bytes),
-    );
+    // A parsed value has no source position, so only the error text differs.
+    assert!(matches!(
+        decode_journal_value(43, 9, &malformed).payload,
+        DecodedJournalPayload::RawStdout { bytes, error: CodecError::MalformedJson(_) }
+            if bytes == malformed_bytes
+    ));
 }
 
 #[test]

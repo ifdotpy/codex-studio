@@ -4,7 +4,10 @@
 
 use serde_json::{Map, Value};
 use std::time::Instant;
-use studio_runtime_providers::{Frame, LineDecoder, decode_journal_entry_borrowed};
+use studio_runtime_providers::{
+    DecodedJournalPayload, Frame, LineDecoder, RequestId, decode_journal_entry,
+    decode_journal_entry_borrowed,
+};
 
 /// Lines decoded per profile and line shape.
 const LINES_PER_SHAPE: usize = 10_000;
@@ -38,6 +41,40 @@ fn map_decode(line: &[u8]) -> Map<String, Value> {
     object.remove("method");
     drop(method);
     object
+}
+
+/// The supervisor v2 stdout path before the single typed decode: the raw
+/// payload became a `Value`, the reply ID was rewritten on it, and the value
+/// was encoded again for the wire decoder. Kept only as this probe's baseline.
+fn value_detour_decode(payload: &str, local: &Value) -> Frame {
+    let mut value: Value = serde_json::from_str(payload).expect("probe payload");
+    if value.get("method").is_none()
+        && value.get("id").and_then(Value::as_u64).is_some()
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("id".into(), local.clone());
+    }
+    let bytes = serde_json::to_vec(&value).expect("probe value encodes");
+    match decode_journal_entry(1, 1, bytes).payload {
+        DecodedJournalPayload::Frame(frame) => frame,
+        DecodedJournalPayload::RawStdout { .. } => panic!("probe payload decodes"),
+    }
+}
+
+/// The supervisor v2 stdout path now: one typed decode of the raw payload,
+/// then the reply ID is swapped on the parsed frame.
+fn single_decode(payload: &str, local: &RequestId) -> Frame {
+    let DecodedJournalPayload::Frame(mut frame) =
+        decode_journal_entry_borrowed(1, 1, payload.as_bytes()).payload
+    else {
+        panic!("probe payload decodes");
+    };
+    if let Frame::Response { id, .. } = &mut frame
+        && matches!(id, RequestId::Number(_))
+    {
+        *id = local.clone();
+    }
+    frame
 }
 
 fn time(label: &str, mut run: impl FnMut()) -> f64 {
@@ -77,6 +114,28 @@ fn provider_line_decode_cost() {
             else {
                 panic!("probe line decodes");
             };
+            let text = std::str::from_utf8(&line).expect("probe line is UTF-8");
+            let local_value: Value = serde_json::from_str(id).expect("probe id");
+            let local_id: RequestId = serde_json::from_str(id).expect("probe id");
+            assert_eq!(
+                value_detour_decode(text, &local_value),
+                single_decode(text, &local_id)
+            );
+            time(
+                &format!("{profile} {shape} supervisor v2 value detour"),
+                || {
+                    std::hint::black_box(value_detour_decode(
+                        std::hint::black_box(text),
+                        &local_value,
+                    ));
+                },
+            );
+            time(
+                &format!("{profile} {shape} supervisor v2 single decode"),
+                || {
+                    std::hint::black_box(single_decode(std::hint::black_box(text), &local_id));
+                },
+            );
             time(&format!("{profile} {shape} frame clone"), || {
                 std::hint::black_box(Frame::clone(std::hint::black_box(&frame)));
             });

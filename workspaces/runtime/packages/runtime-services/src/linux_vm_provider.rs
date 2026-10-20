@@ -440,7 +440,7 @@ async fn run_guest_attachment(
                     }
                     unacked.insert(event.sequence, event.clone());
                     let payload = match event.kind.as_str() {
-                        "stdout" => match decode_journal_value(event.sequence, event.generation, event.payload).payload {
+                        "stdout" => match decode_journal_value(event.sequence, event.generation, &event.payload).payload {
                             DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
                             DecodedJournalPayload::RawStdout { bytes, error } => JournalPayload::RawStdout { bytes, error },
                         },
