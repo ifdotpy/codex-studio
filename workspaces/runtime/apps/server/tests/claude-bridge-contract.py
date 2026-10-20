@@ -483,8 +483,6 @@ class Bridge(unittest.TestCase):
                       {'answers':{'0':{'answers':self.question_answers}}} if row['method'].endswith('requestUserInput') else
                       {'success':True,'contentItems':[{'type':'inputText','text':'tool-ok'}]})
             self.write({'id':row['id'],'result':result})
-        if row.get('method') == 'turn/completed':
-            self.completions.append(row['params']['turn'])
         return row
 
     def call(self, method, params):
@@ -495,7 +493,7 @@ class Bridge(unittest.TestCase):
             if row.get('id') == request:
                 if 'error' in row: raise ValueError(row['error']['message'])
                 return row['result']
-            self.notifications.append(row)
+            self.notified(row)
 
     def turn(self, text, key):
         return self.call('turn/start', {'threadId':self.thread,'clientUserMessageId':key,
@@ -505,8 +503,13 @@ class Bridge(unittest.TestCase):
         # A turn can complete while call() waits for a later reply; that
         # completion still belongs to the next completed().
         while not self.completions:
-            self.notifications.append(self.read())
+            self.notified(self.read())
         return self.completions.popleft()
+
+    def notified(self, row):
+        self.notifications.append(row)
+        if row.get('method') == 'turn/completed':
+            self.completions.append(row['params']['turn'])
 
     def test_rate_uses_assistant_output_and_subtracts_persistent_query_total(self):
         for index in range(2):
