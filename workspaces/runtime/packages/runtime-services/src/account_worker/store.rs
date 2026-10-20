@@ -699,70 +699,82 @@ pub(super) async fn hold_invalid_agent_record(
     let expected_reason = expected_reason.to_owned();
     let diagnostic = diagnostic.to_owned();
     store
-        .transaction(move |tx| {
-            let raw: Option<String> = tx
-                .query_row_cached(
-                    "SELECT record FROM runtime_agents WHERE id=?1",
-                    [agent_id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(raw) = raw else {
-                return Ok(());
-            };
-            match AgentRepository::get(tx, &AgentId::from(agent_id.as_str())) {
-                Ok(_) => return Ok(()),
-                Err(StoreError::InvalidSyncObjectField {
-                    scope,
-                    id,
-                    pointer,
-                    reason,
-                }) if scope == "runtime_agents"
-                    && id == agent_id
-                    && pointer == expected_pointer
-                    && reason == expected_reason => {}
-                Err(StoreError::InvalidSyncObjectField { .. }) => return Ok(()),
-                Err(error) => return Err(error),
-            }
-            let parsed: Value =
-                serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
-                    scope: "runtime_agents".into(),
-                    id: agent_id.clone(),
-                })?;
-            tx.execute_cached(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
-             ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
-                rusqlite::params![
-                    format!(
-                        "{}{agent_id}",
-                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                    ),
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                    serde_json::to_string(
-                        &serde_json::json!({"held": true, "diagnostic": diagnostic})
-                    )
-                    .map_err(StoreError::from)?
-                ],
-            )?;
-
-            // Publish a minimal safe agent view so the renderer can show that this
-            // row is held while the malformed persisted bytes remain untouched.
-            let public = crate::sync_views::invalid_agent_view(&agent_id, &parsed, &diagnostic);
-            let context =
-                crate::sync_entity_context::agent_view_context(tx, &public, server_id.as_deref())?;
-            let projection =
-                crate::sync_views::agent_entity_view(&public, &context).ok_or_else(|| {
-                    StoreError::InvalidSyncObject {
-                        scope: "runtime_agents".into(),
-                        id: agent_id.clone(),
-                    }
-                })?;
-            studio_runtime_store::SyncDocumentsRepository::put_entity(
-                tx, "agent", &agent_id, projection, false,
-            )?;
-            Ok(())
+        .transaction_with(move |tx| {
+            hold_invalid_agent_record_in(
+                tx,
+                server_id.as_deref(),
+                &agent_id,
+                &expected_pointer,
+                &expected_reason,
+                &diagnostic,
+            )
         })
-        .await?;
+        .await
+}
+/// [`hold_invalid_agent_record`] inside the caller's transaction.
+pub(super) fn hold_invalid_agent_record_in(
+    tx: &studio_runtime_store::Transaction<'_>,
+    server_id: Option<&str>,
+    agent_id: &str,
+    expected_pointer: &str,
+    expected_reason: &str,
+    diagnostic: &str,
+) -> Result<(), WorkerError> {
+    let raw: Option<String> = tx
+        .query_row_cached(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    match AgentRepository::get(tx, &AgentId::from(agent_id)) {
+        Ok(_) => return Ok(()),
+        Err(StoreError::InvalidSyncObjectField {
+            scope,
+            id,
+            pointer,
+            reason,
+        }) if scope == "runtime_agents"
+            && id == agent_id
+            && pointer == expected_pointer
+            && reason == expected_reason => {}
+        Err(StoreError::InvalidSyncObjectField { .. }) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    let parsed: Value = serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
+        scope: "runtime_agents".into(),
+        id: agent_id.to_owned(),
+    })?;
+    tx.execute_cached(
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+             ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
+        rusqlite::params![
+            format!(
+                "{}{agent_id}",
+                studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
+            ),
+            studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+            serde_json::to_string(&serde_json::json!({"held": true, "diagnostic": diagnostic}))
+                .map_err(StoreError::from)?
+        ],
+    )?;
+
+    // Publish a minimal safe agent view so the renderer can show that this
+    // row is held while the malformed persisted bytes remain untouched.
+    let public = crate::sync_views::invalid_agent_view(agent_id, &parsed, diagnostic);
+    let context = crate::sync_entity_context::agent_view_context(tx, &public, server_id)?;
+    let projection = crate::sync_views::agent_entity_view(&public, &context).ok_or_else(|| {
+        StoreError::InvalidSyncObject {
+            scope: "runtime_agents".into(),
+            id: agent_id.to_owned(),
+        }
+    })?;
+    studio_runtime_store::SyncDocumentsRepository::put_entity(
+        tx, "agent", agent_id, projection, false,
+    )?;
     Ok(())
 }
 fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
@@ -914,7 +926,7 @@ pub(super) async fn outcome(
     pending: Option<Arc<Pending>>,
     outcome: SessionOutcome,
     session_closed: bool,
-) -> Result<SettledOutcome, WorkerError> {
+) -> Result<(SettledOutcome, Option<agent_fault::AgentFault>), WorkerError> {
     let Some(context) = pending else {
         if let SessionOutcome::GenerationClosed { generation } = outcome {
             scheduler::lifecycle_transaction(&store, move |tx| {
@@ -922,9 +934,10 @@ pub(super) async fn outcome(
             })
             .await?;
         }
-        return Ok(SettledOutcome::default());
+        return Ok((SettledOutcome::default(), None));
     };
     let state_root = store.root().to_path_buf();
+    let server_id = store.local_server_id()?;
     let step = OutcomeStep {
         account,
         resources,
@@ -932,8 +945,63 @@ pub(super) async fn outcome(
         outcome,
         session_closed,
     };
-    scheduler::lifecycle_transaction_with(&store, move |tx| settle_outcome(tx, &state_root, step))
-        .await
+    scheduler::lifecycle_transaction_with(&store, move |tx| {
+        settle_outcome_isolated(tx, &state_root, server_id.as_deref(), step)
+    })
+    .await
+}
+
+/// [`settle_outcome`] in its agent's savepoint. A reply whose stored data
+/// fails for its agent holds that agent; the request still retires when its
+/// provider outcome is final (a reply, or proven not sent), so it is never
+/// sent again and never waits forever.
+fn settle_outcome_isolated(
+    tx: &studio_runtime_store::Transaction<'_>,
+    state_root: &std::path::Path,
+    server_id: Option<&str>,
+    step: OutcomeStep,
+) -> Result<(SettledOutcome, Option<agent_fault::AgentFault>), WorkerError> {
+    let context = Arc::clone(&step.context);
+    let account = step.account.clone();
+    let final_outcome = matches!(
+        step.outcome,
+        SessionOutcome::Resolved {
+            outcome: RequestOutcome::Reply { .. },
+            ..
+        } | SessionOutcome::Write {
+            outcome: WriteOutcome::NotSent,
+            ..
+        }
+    );
+    let mut subject = Some(context.intent.agent_id.clone());
+    let fault = match agent_fault::isolate(
+        tx,
+        server_id,
+        agent_fault::FaultStage::ProviderReply,
+        &mut subject,
+        |_| settle_outcome(tx, state_root, step),
+    )? {
+        Ok(settled) => return Ok((settled, None)),
+        Err(fault) => fault,
+    };
+    // A thread/start keeps its unresolved receipt: the provider may have
+    // created the thread, and another start would create a second one. Its
+    // agent stays held by that receipt as well (see `recover`).
+    if final_outcome && context.method != Method::ThreadStart.as_str() {
+        if context.method == Method::TurnStart.as_str()
+            && let Some(key) = effect_key(&account, &Effect::Submit(context.intent.clone()))
+        {
+            delete_effect(tx, &key)?;
+        }
+        forget_request(tx, &context.operation)?;
+    }
+    Ok((
+        SettledOutcome {
+            retired: final_outcome,
+            ..SettledOutcome::default()
+        },
+        Some(fault),
+    ))
 }
 
 /// One request outcome to settle; `session_closed` is true while the worker
@@ -1260,9 +1328,13 @@ pub(super) async fn journal_batch(
     native_source: Option<crate::notification_dispatch::NativeProcessSource>,
     delivered: Vec<DeliveredPublication>,
     outcome: Option<Box<OutcomeStep>>,
-) -> Result<JournalBatchResult, WorkerError> {
+    park_unbound: bool,
+) -> Result<JournalBatch, WorkerError> {
     if entries.is_empty() && outcome.is_none() {
-        return Ok(Some((streams.clone(), Vec::new(), Vec::new(), None)));
+        return Ok(JournalBatch {
+            streams: streams.clone(),
+            ..JournalBatch::default()
+        });
     }
     let needs_limits = entries.iter().any(|entry| {
         matches!(
@@ -1311,48 +1383,82 @@ pub(super) async fn journal_batch(
     let expected_vm_actor = expected_vm_actor.map(|(actor, epoch)| (actor.to_owned(), epoch));
     let streams = streams.clone();
     let state_root = store.root().to_path_buf();
+    let server_id = store.local_server_id()?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
+        let server_id = server_id.as_deref();
+        let mut faults = Vec::new();
         // Before this batch's receipts are counted against their bound.
         delete_delivered_publications(tx, &delivered)?;
         // The outcome a reply carries settles before its own journal entry.
-        let settled = outcome
-            .map(|step| settle_outcome(tx, &state_root, *step))
-            .transpose()?;
+        let settled = match outcome {
+            Some(step) => {
+                let (settled, fault) = settle_outcome_isolated(tx, &state_root, server_id, *step)?;
+                faults.extend(fault);
+                Some(settled)
+            }
+            None => None,
+        };
         let mut next = streams.clone();
         let mut committed = Vec::with_capacity(entries.len());
+        let mut parked = Vec::new();
         let mut deferred = Vec::new();
         let mut persist_snapshot = false;
         let mut outbox = PublicationOutbox::default();
         let mut entries = entries.into_iter();
         while let Some(entry) = entries.next() {
             let stage = journal_stage(&entry);
-            match crate::diagnostics::measure_runtime_stage(stage, || {
-                journal_one(
+            let identity = JournalIdentity {
+                account: &account,
+                journal_scope: &journal_scope,
+                expected_vm_actor: expected_vm_actor
+                    .as_ref()
+                    .map(|(actor, epoch)| (actor.as_str(), *epoch)),
+            };
+            let mut subject = None;
+            let applied = crate::diagnostics::measure_runtime_stage(stage, || {
+                agent_fault::isolate(
                     tx,
-                    JournalIdentity {
-                        account: &account,
-                        journal_scope: &journal_scope,
-                        expected_vm_actor: expected_vm_actor
-                            .as_ref()
-                            .map(|(actor, epoch)| (actor.as_str(), *epoch)),
+                    server_id,
+                    agent_fault::FaultStage::JournalFrame,
+                    &mut subject,
+                    |subject| {
+                        journal_one(
+                            tx,
+                            identity,
+                            &publication,
+                            &next,
+                            &entry,
+                            &claude_account_pin,
+                            limits_observation.as_ref(),
+                            &mut outbox,
+                            JournalPolicy {
+                                server_id,
+                                park_unbound,
+                                subject,
+                                faults: &mut faults,
+                            },
+                        )
                     },
-                    &publication,
-                    &next,
-                    &entry,
-                    &claude_account_pin,
-                    limits_observation.as_ref(),
-                    &mut outbox,
                 )
-            })? {
-                Some((updated, effect, changed)) => {
+            })?;
+            match applied {
+                Ok(Some((updated, effect, changed))) => {
                     next = updated;
                     persist_snapshot |= changed;
                     committed.push((entry, effect));
                 }
-                None => {
+                Ok(None) => {
                     deferred.push(entry);
                     deferred.extend(entries);
                     break;
+                }
+                Err(fault) => {
+                    // The rolled-back entry settles without its effects, so
+                    // it neither holds the journal nor applies again.
+                    outbox = PublicationOutbox::default();
+                    park_entry(tx, identity, &entry)?;
+                    faults.push(fault);
+                    parked.push(entry);
                 }
             }
         }
@@ -1366,15 +1472,40 @@ pub(super) async fn journal_batch(
             .iter()
             .map(|(entry, _)| entry.generation.0)
             .collect::<Vec<_>>();
+        generations.extend(parked.iter().map(|entry| entry.generation.0));
+        generations.sort_unstable();
         generations.dedup();
         crate::diagnostics::measure_runtime_stage("journal.compact", || {
             generations
                 .into_iter()
                 .try_for_each(|generation| compact(tx, &journal_scope, generation))
         })?;
-        Ok(Some((next, committed, deferred, settled)))
+        Ok(JournalBatch {
+            streams: next,
+            committed,
+            parked,
+            deferred,
+            settled,
+            faults,
+        })
     })
     .await
+}
+
+/// Settle a journal entry whose application was rolled back for its agent.
+fn park_entry(
+    tx: &studio_runtime_store::Transaction<'_>,
+    identity: JournalIdentity<'_>,
+    entry: &JournalEntry,
+) -> Result<(), WorkerError> {
+    let operation = journal_operation(identity.journal_scope, entry.generation.0, entry.cursor.0);
+    let digest = journal_digest(entry, &operation)?;
+    replace(
+        tx,
+        &operation,
+        "settled",
+        json!({"cursor":entry.cursor.0,"digest":digest,"ready":true,"committed":true}),
+    )
 }
 
 /// Fixed stage label of one journal entry, by provider method class.
@@ -1403,6 +1534,7 @@ fn journal_one(
     claude_account_pin: &Value,
     limits_observation: Option<&crate::usage_resume::LimitsObservation>,
     outbox: &mut PublicationOutbox,
+    policy: JournalPolicy<'_>,
 ) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
     let JournalIdentity {
         account,
@@ -1410,25 +1542,7 @@ fn journal_one(
         expected_vm_actor,
     } = identity;
     let operation = journal_operation(journal_scope, entry.generation.0, entry.cursor.0);
-    let digest = match &entry.payload {
-        JournalPayload::Frame(frame) => {
-            studio_runtime_store::sha256_hex(&journal_frame_payload(frame, &operation)?)
-        }
-        JournalPayload::RawStdout { bytes, .. } => {
-            studio_runtime_store::sha256_hex(json!({"raw":bytes}).to_string().as_bytes())
-        }
-        JournalPayload::Stderr(value) => {
-            studio_runtime_store::sha256_hex(json!({"stderr":value}).to_string().as_bytes())
-        }
-        JournalPayload::Exit(value) => {
-            studio_runtime_store::sha256_hex(json!({"exit":value}).to_string().as_bytes())
-        }
-        JournalPayload::Other { kind, payload } => studio_runtime_store::sha256_hex(
-            json!({"kind":kind,"payload":payload})
-                .to_string()
-                .as_bytes(),
-        ),
-    };
+    let digest = journal_digest(entry, &operation)?;
     if let Some((actor_id, expected_epoch)) = expected_vm_actor
         && !crate::linux_vm_provider::vm_actor_matches(tx, actor_id, expected_epoch, account, None)?
     {
@@ -1517,7 +1631,31 @@ fn journal_one(
                 None => None,
             };
             if let Some((identity, bound)) = attempt {
+                *policy.subject = Some(identity.agent_id.clone());
                 match method {
+                    "turn/completed" if !bound && policy.park_unbound => {
+                        // No outstanding request can bind this completion any
+                        // more. Settle it and hold the agent, whose turn would
+                        // otherwise stay open forever.
+                        let detail = format!(
+                            "the completion of turn {} on thread {thread} has no bound attempt {}",
+                            turn.unwrap_or("(none)"),
+                            identity.attempt_id
+                        );
+                        let hold = agent_fault::hold_agent(
+                            tx,
+                            policy.server_id,
+                            &identity.agent_id,
+                            agent_fault::FaultStage::JournalFrame,
+                            &detail,
+                        )?;
+                        policy.faults.push(agent_fault::AgentFault {
+                            agent_id: identity.agent_id.clone(),
+                            stage: agent_fault::FaultStage::JournalFrame,
+                            detail,
+                            hold,
+                        });
+                    }
                     "turn/started" => {
                         if let Some(turn) = turn
                             && let Some(interrupt) =
@@ -2208,12 +2346,51 @@ pub(super) async fn link_callback_reply(
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
-type JournalBatchResult = Option<(
-    NotificationStreamBuffer,
-    Vec<(JournalEntry, Option<Effect>)>,
-    Vec<JournalEntry>,
-    Option<SettledOutcome>,
-)>;
+/// One committed journal transaction.
+#[derive(Default)]
+pub(super) struct JournalBatch {
+    pub streams: NotificationStreamBuffer,
+    /// Applied entries in journal order, with the effect each one owes.
+    pub committed: Vec<(JournalEntry, Option<Effect>)>,
+    /// Entries settled without their effects: their agent's data failed.
+    pub parked: Vec<JournalEntry>,
+    /// Entries that wait for a reply to bind them, in journal order.
+    pub deferred: Vec<JournalEntry>,
+    pub settled: Option<SettledOutcome>,
+    /// Agent-scoped failures this transaction rolled back.
+    pub faults: Vec<agent_fault::AgentFault>,
+}
+/// How one journal entry treats data it cannot apply.
+pub(super) struct JournalPolicy<'a> {
+    server_id: Option<&'a str>,
+    /// Settle an unbound turn completion instead of deferring it.
+    park_unbound: bool,
+    /// The agent the entry applies to, once known.
+    subject: &'a mut Option<String>,
+    faults: &'a mut Vec<agent_fault::AgentFault>,
+}
+/// Digest of one journal entry's payload; a replay must match it.
+fn journal_digest(entry: &JournalEntry, operation: &str) -> Result<String, WorkerError> {
+    Ok(match &entry.payload {
+        JournalPayload::Frame(frame) => {
+            studio_runtime_store::sha256_hex(&journal_frame_payload(frame, operation)?)
+        }
+        JournalPayload::RawStdout { bytes, .. } => {
+            studio_runtime_store::sha256_hex(json!({"raw":bytes}).to_string().as_bytes())
+        }
+        JournalPayload::Stderr(value) => {
+            studio_runtime_store::sha256_hex(json!({"stderr":value}).to_string().as_bytes())
+        }
+        JournalPayload::Exit(value) => {
+            studio_runtime_store::sha256_hex(json!({"exit":value}).to_string().as_bytes())
+        }
+        JournalPayload::Other { kind, payload } => studio_runtime_store::sha256_hex(
+            json!({"kind":kind,"payload":payload})
+                .to_string()
+                .as_bytes(),
+        ),
+    })
+}
 #[derive(Clone, Copy)]
 struct JournalIdentity<'a> {
     account: &'a str,
