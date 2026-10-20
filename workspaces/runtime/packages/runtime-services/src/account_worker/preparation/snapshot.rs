@@ -794,6 +794,34 @@ pub(super) fn context_repair_blocked(record: &Value) -> bool {
             Some("preparing" | "submitted" | "unknown" | "ready")
         )
 }
+/// Whether a saved native release keeps this agent's queued input out of
+/// thread preparation. Python `Runtime.prepare_locked` refuses a pending tool
+/// reset (`resetPending`), then `codex_native_release.reconcile_unknown` acts
+/// only on an unsettled `unknown`, `checking` or `unsubscribing` release: a
+/// captured reset waits for exact native closure, and an unsettled release on
+/// this thread and connection retries `thread/unsubscribe`. This adapter has no
+/// native release driver, so it holds in both cases. Every other release
+/// prepares normally, including `blocked`, where the inspection found native
+/// work and never unsubscribed, and an unsettled release on an earlier
+/// connection, which Python also ignores.
+pub(super) fn native_release_held(record: &Value, connection: &str) -> bool {
+    let release = &record["nativeRelease"];
+    if nonempty(&release["resetPending"]) {
+        return true;
+    }
+    let phase = release["phase"].as_str();
+    if !matches!(phase, Some("unknown" | "checking" | "unsubscribing")) {
+        return false;
+    }
+    if release.get("resetActorEpoch").is_some() {
+        return true;
+    }
+    if phase == Some("checking") && nonempty(&release["inspectionPhase"]) {
+        return false;
+    }
+    release["threadId"] == record["threadId"]
+        && release["connectionId"].as_str() == Some(connection)
+}
 pub(super) fn nonempty(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -886,9 +914,7 @@ pub(super) fn thread_snapshot(
         Some(thread::HoldReason::AccountTransfer)
     } else if context_repair_blocked(record) {
         Some(thread::HoldReason::ContextRepair)
-    } else if record.get("nativeRelease").is_some_and(|v| {
-        !v.is_null() && !matches!(v["phase"].as_str(), Some("resumed" | "released"))
-    }) {
+    } else if native_release_held(record, connection) {
         Some(thread::HoldReason::NativeRelease)
     } else {
         None
