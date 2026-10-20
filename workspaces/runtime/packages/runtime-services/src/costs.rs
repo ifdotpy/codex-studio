@@ -1,4 +1,4 @@
-//! Read-only session cost estimates over the shared analytics store.
+//! Session cost estimates over the incremental analytics cost aggregate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -9,13 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_store::cost_aggregate::{
+    CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, cost_groups,
+};
 use studio_runtime_store::{
-    AnalyticsRepository, AnalyticsStoreError, CostUsageRepositoryError, RuntimeStore, analytics,
-    read_cost_usage,
+    AnalyticsRepository, AnalyticsStoreError, RuntimeStore, StoreError, analytics,
 };
 use thiserror::Error;
 
-use crate::cost_usage::{CostUsageError, CostUsageSnapshot};
 use crate::file_derived::FileDerived;
 use crate::pricing::TokenUsage;
 
@@ -30,9 +31,7 @@ pub enum CostsError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
-    Usage(#[from] CostUsageRepositoryError),
-    #[error(transparent)]
-    Grouping(#[from] CostUsageError),
+    Store(#[from] StoreError),
     #[error("Claude session state is invalid")]
     InvalidSessionState,
     #[error("pricing artifact is invalid")]
@@ -43,21 +42,10 @@ pub enum CostsError {
     AccountProfilesRequired,
 }
 
-/// Return a current estimate, using the existing Python-published cache when valid.
+/// Return a current estimate without account snapshots; a tree with Claude
+/// history needs them ([`session_cost_with_account_profiles`]).
 pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<Value, CostsError> {
-    session_cost_with_accounts(store, agent_id, &BTreeMap::new())
-}
-
-pub fn session_cost_with_accounts(
-    store: &RuntimeStore,
-    agent_id: &str,
-    account_providers: &BTreeMap<String, String>,
-) -> Result<Value, CostsError> {
-    let accounts = account_providers
-        .iter()
-        .map(|(key, provider)| (key.clone(), json!({"provider": provider})))
-        .collect::<BTreeMap<_, _>>();
-    session_cost_inner(store, agent_id, &accounts, false)
+    session_cost_inner(store, agent_id, &BTreeMap::new(), false)
 }
 
 /// Return a session estimate with account snapshots used to locate local Claude profiles.
@@ -69,6 +57,11 @@ pub fn session_cost_with_account_profiles(
     session_cost_inner(store, agent_id, accounts, true)
 }
 
+/// A non-empty string.
+fn nonempty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().filter(|value| !value.is_empty())
+}
+
 fn session_cost_inner(
     store: &RuntimeStore,
     agent_id: &str,
@@ -77,73 +70,42 @@ fn session_cost_inner(
 ) -> Result<Value, CostsError> {
     let account_providers = accounts
         .iter()
-        .filter_map(|(key, account)| {
-            account
-                .get("provider")
-                .and_then(Value::as_str)
-                .map(|provider| (key.clone(), provider.to_owned()))
-        })
+        .filter_map(|(key, account)| Some((key.as_str(), account.get("provider")?.as_str()?)))
         .collect::<BTreeMap<_, _>>();
-    if let Some(value) =
-        crate::analytics::persisted_session_cost_with_accounts(store, agent_id, &account_providers)?
-    {
-        return Ok(value);
-    }
     let repository = AnalyticsRepository::new(store.root());
     let mut db = repository.open_read_only()?;
     let tx = db.transaction()?;
     let root = analytics::cost_root(&tx, agent_id)?;
-    let generation = analytics::usage_signature(&tx, &root)?.generation();
+    let generation = analytics::usage_generation(&tx, &root)?;
     let members = analytics::cost_agents(&tx, agent_id, &root)?;
-    let mut providers_by_account = BTreeMap::new();
+    let mut providers_by_account = BTreeMap::<&str, &'static str>::new();
     let mut has_claude_history = false;
-    for (_, record) in &members {
-        let provider = record
-            .get("provider")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty());
+    for (_, member) in &members {
+        let provider = nonempty(&member.provider);
         has_claude_history |= provider == Some("claude");
-        let account_key = record
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
-        let resolved_provider = provider.or_else(|| {
-            account_providers
-                .get(account_key)
-                .map(String::as_str)
-                .filter(|value| !value.is_empty())
-        });
-        has_claude_history |=
-            crate::analytics::current_account_is_claude(record, &account_providers);
-        if let Some(resolved) = resolved_provider.and_then(pricing_provider) {
-            providers_by_account.insert(account_key.to_owned(), resolved.to_owned());
+        let account_key = member.account_key.as_deref().unwrap_or(DEFAULT_ACCOUNT);
+        let current = account_providers
+            .get(account_key)
+            .copied()
+            .filter(|value| !value.is_empty());
+        // The current account's provider stands in for a missing embedded one.
+        has_claude_history |= provider.is_none() && current == Some("claude");
+        if let Some(resolved) = provider.or(current).and_then(pricing_provider) {
+            providers_by_account.insert(account_key, resolved);
         }
-        if let (Some(key), Some(provider)) =
-            (record.get("accountKey").and_then(Value::as_str), provider)
-            && let Some(provider) = pricing_provider(provider)
-        {
-            providers_by_account.insert(key.to_owned(), provider.to_owned());
-        }
-        if let Some(history) = record.get("accountHistory").and_then(Value::as_array) {
-            for entry in history {
-                let (Some(key), Some(provider)) = (
-                    entry.get("accountKey").and_then(Value::as_str),
-                    entry.get("provider").and_then(Value::as_str),
-                ) else {
-                    continue;
-                };
-                has_claude_history |= provider == "claude";
-                if let Some(provider) = pricing_provider(provider) {
-                    providers_by_account.insert(key.to_owned(), provider.to_owned());
-                }
+        for entry in member.account_history.iter().flatten() {
+            let (Some(key), Some(provider)) = (&entry.account_key, &entry.provider) else {
+                continue;
+            };
+            has_claude_history |= provider == "claude";
+            if let Some(provider) = pricing_provider(provider) {
+                providers_by_account.insert(key, provider);
             }
         }
     }
     if has_claude_history && !has_account_profiles {
         return Err(CostsError::AccountProfilesRequired);
     }
-    let rows = read_cost_usage(&tx, &root)?;
-    tx.commit()?;
     let local_claude = read_local_claude_usage(store.root(), &members, accounts)?;
     let receipts = local_claude
         .iter()
@@ -154,108 +116,80 @@ fn session_cost_inner(
                 row.usage.id.clone(),
             )
         })
-        .collect::<BTreeSet<_>>();
-    let snapshot = CostUsageSnapshot::from_records(rows.into_iter().filter_map(|row| {
-        if let (Some(account_key), Some(thread_id), Some(response_id)) = (
-            row.record.get("accountKey").and_then(Value::as_str),
-            row.thread.as_deref(),
-            row.record.get("responseId").and_then(Value::as_str),
-        ) && receipts.contains(&(
-            account_key.to_owned(),
-            thread_id.to_owned(),
-            response_id.to_owned(),
-        )) {
-            return None;
-        }
-        Some((
-            row.sequence,
-            row.agent,
-            row.thread,
-            row.turn,
-            row.at,
-            row.record,
-        ))
-    }))?;
+        .collect::<BTreeSet<CostReceipt>>();
+    let groups = cost_groups(&tx, &root, &receipts)?;
+    tx.commit()?;
 
     let loaded = crate::pricing::load_pricing(store.root())
         .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 
-    let mut provider_totals = BTreeMap::<String, f64>::new();
-    let mut model_totals = BTreeMap::<String, f64>::new();
-    let mut unknown = BTreeSet::new();
+    let mut provider_totals = BTreeMap::<&str, f64>::new();
+    let mut model_totals = BTreeMap::<&str, f64>::new();
+    let mut unknown = BTreeSet::<&str>::new();
     let mut priced_count = 0_u64;
     let mut total = 0.0;
     let mut tier_used = false;
-    for group in snapshot.groups() {
-        let model = group.model.as_deref().unwrap_or("Unknown model");
+    let priced = groups
+        .iter()
+        .map(|group| {
+            (
+                group.model.as_deref().unwrap_or("Unknown model"),
+                Some(group.account_key.as_str()),
+                group.tokens,
+                group.input_uncached,
+                group.count,
+            )
+        })
+        .chain(local_claude.iter().map(|row| {
+            (
+                row.usage.model.as_str(),
+                None,
+                row.usage.tokens,
+                row.usage.tokens.input_tokens.is_some(),
+                1,
+            )
+        }));
+    for (model, account_key, tokens, uncached, count) in priced {
         if model == "<synthetic>" {
             continue;
         }
-        let provider = provider_for(model).or_else(|| {
-            providers_by_account
-                .get(&group.account_key)
-                .map(String::as_str)
-        });
+        // Analytics rows fall back to their account's provider; Claude log rows are Anthropic.
+        let provider = match account_key {
+            Some(account_key) => {
+                provider_for(model).or_else(|| providers_by_account.get(account_key).copied())
+            }
+            None => Some("anthropic"),
+        };
         let Some(provider) = provider else {
-            unknown.insert(model.to_owned());
+            unknown.insert(model);
             continue;
         };
         let usage = TokenUsage {
-            input_tokens: group.input_tokens,
-            cached_input_tokens: group.cached_tokens,
-            cache_write_input_tokens: group.write_tokens,
-            output_tokens: group.output_tokens,
+            input_tokens: tokens.input_tokens,
+            cached_input_tokens: tokens.cached_input_tokens,
+            cache_write_input_tokens: tokens.cache_write_input_tokens,
+            output_tokens: tokens.output_tokens,
         };
-        let context = group.input_tokens.map(|input| {
-            if group.input_uncached {
-                input + group.cached_tokens.unwrap_or(0.0) + group.write_tokens.unwrap_or(0.0)
+        let context = tokens.input_tokens.map(|input| {
+            if uncached {
+                input
+                    + tokens.cached_input_tokens.unwrap_or(0.0)
+                    + tokens.cache_write_input_tokens.unwrap_or(0.0)
             } else {
                 input
             }
         });
-        let price = catalog.price_usage(provider, model, usage, context, group.input_uncached);
+        let price = catalog.price_usage(provider, model, usage, context, uncached);
         let Some(amount) = price.amount_usd.filter(|amount| amount.is_finite()) else {
-            unknown.insert(model.to_owned());
+            unknown.insert(model);
             continue;
         };
-        let count = group.count as f64;
-        let subtotal = amount * count;
+        let subtotal = amount * count as f64;
         total += subtotal;
-        priced_count = priced_count.saturating_add(group.count as u64);
-        *provider_totals.entry(provider.to_owned()).or_default() += subtotal;
-        *model_totals.entry(model.to_owned()).or_default() += subtotal;
-        tier_used |= price.context_tier_used;
-    }
-    for row in local_claude.iter().map(|row| &row.usage) {
-        let usage = TokenUsage {
-            input_tokens: row.input_tokens,
-            cached_input_tokens: row.cached_tokens,
-            cache_write_input_tokens: row.write_tokens,
-            output_tokens: row.output_tokens,
-        };
-        let context = row.input_tokens.map(|input| {
-            if row.input_tokens_are_uncached {
-                input + row.cached_tokens.unwrap_or(0.0) + row.write_tokens.unwrap_or(0.0)
-            } else {
-                input
-            }
-        });
-        let price = catalog.price_usage(
-            "anthropic",
-            &row.model,
-            usage,
-            context,
-            row.input_tokens_are_uncached,
-        );
-        let Some(amount) = price.amount_usd.filter(|amount| amount.is_finite()) else {
-            unknown.insert(row.model.clone());
-            continue;
-        };
-        total += amount;
-        priced_count = priced_count.saturating_add(1);
-        *provider_totals.entry("anthropic".to_owned()).or_default() += amount;
-        *model_totals.entry(row.model.clone()).or_default() += amount;
+        priced_count = priced_count.saturating_add(count);
+        *provider_totals.entry(provider).or_default() += subtotal;
+        *model_totals.entry(model).or_default() += subtotal;
         tier_used |= price.context_tier_used;
     }
     if !total.is_finite() {
@@ -289,11 +223,8 @@ const MAX_SESSION_STATE_BYTES: u64 = 16 * 1024 * 1024;
 struct LogUsage {
     id: String,
     model: String,
-    input_tokens: Option<f64>,
-    cached_tokens: Option<f64>,
-    write_tokens: Option<f64>,
-    output_tokens: Option<f64>,
-    input_tokens_are_uncached: bool,
+    /// Input counts are all known or all `None`; known input is uncached.
+    tokens: CostTokens,
 }
 
 #[derive(Clone, Debug)]
@@ -311,34 +242,27 @@ static SESSION_NATIVE_IDS: LazyLock<FileDerived<Result<Vec<String>, ()>>> =
 
 fn read_local_claude_usage(
     state_root: &Path,
-    members: &[(String, Value)],
+    members: &[(String, CostMember)],
     accounts: &BTreeMap<String, Value>,
 ) -> Result<Vec<LocalClaudeUsage>, CostsError> {
     let mut sessions = BTreeSet::new();
     for (_, member) in members {
-        let current_key = member
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let current_key = member.account_key.as_deref().unwrap_or(DEFAULT_ACCOUNT);
         if account_claude_config(current_key, accounts).is_some()
-            && let Some(thread_id) = member.get("threadId").and_then(Value::as_str)
+            && let Some(thread_id) = &member.thread_id
         {
-            sessions.insert((current_key.to_owned(), thread_id.to_owned()));
+            sessions.insert((current_key.to_owned(), thread_id.clone()));
         }
-        if let Some(history) = member.get("accountHistory").and_then(Value::as_array) {
-            for entry in history {
-                if entry.get("provider").and_then(Value::as_str) != Some("claude") {
-                    continue;
-                }
-                let (Some(account_key), Some(thread_id)) = (
-                    entry.get("accountKey").and_then(Value::as_str),
-                    entry.get("threadId").and_then(Value::as_str),
-                ) else {
-                    continue;
-                };
-                if account_claude_config(account_key, accounts).is_some() {
-                    sessions.insert((account_key.to_owned(), thread_id.to_owned()));
-                }
+        for entry in member.account_history.iter().flatten() {
+            if entry.provider.as_deref() != Some("claude") {
+                continue;
+            }
+            let (Some(account_key), Some(thread_id)) = (&entry.account_key, &entry.thread_id)
+            else {
+                continue;
+            };
+            if account_claude_config(account_key, accounts).is_some() {
+                sessions.insert((account_key.clone(), thread_id.clone()));
             }
         }
     }
@@ -600,11 +524,12 @@ fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
         rows.push(LogUsage {
             id,
             model,
-            input_tokens,
-            cached_tokens,
-            write_tokens,
-            output_tokens: usage.output_tokens,
-            input_tokens_are_uncached: input_tokens.is_some(),
+            tokens: CostTokens {
+                input_tokens,
+                cached_input_tokens: cached_tokens,
+                cache_write_input_tokens: write_tokens,
+                output_tokens: usage.output_tokens,
+            },
         });
     }
     Some(rows)
@@ -655,8 +580,13 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
+    use studio_runtime_store::cost_aggregate::{CostMember, CostTokens};
     use studio_runtime_store::{RuntimeStore, StoreError};
     use tempfile::tempdir;
+
+    fn member(record: Value) -> CostMember {
+        serde_json::from_value(record).expect("agent cost members")
+    }
 
     #[test]
     fn local_claude_session_usage_is_thread_scoped_deduplicated_and_uses_account_history() {
@@ -759,7 +689,7 @@ mod tests {
         ]);
         let members = vec![(
             "agent".to_owned(),
-            json!({
+            member(json!({
                 "accountKey":"current",
                 "threadId":"thread-current",
                 "accountHistory":[{
@@ -767,7 +697,7 @@ mod tests {
                     "threadId":"thread-previous",
                     "provider":"claude"
                 }]
-            }),
+            })),
         )];
 
         let skipped_before = super::claude_log_lines_skipped();
@@ -784,11 +714,15 @@ mod tests {
             .expect("current session row");
         assert_eq!(current.thread_id, "thread-current");
         assert_eq!(current.usage.id, "response-1");
-        assert_eq!(current.usage.input_tokens, Some(100.0));
-        assert_eq!(current.usage.cached_tokens, Some(20.0));
-        assert_eq!(current.usage.write_tokens, Some(5.0));
-        assert_eq!(current.usage.output_tokens, Some(10.0));
-        assert!(current.usage.input_tokens_are_uncached);
+        assert_eq!(
+            current.usage.tokens,
+            CostTokens {
+                input_tokens: Some(100.0),
+                cached_input_tokens: Some(20.0),
+                cache_write_input_tokens: Some(5.0),
+                output_tokens: Some(10.0),
+            }
+        );
         assert!(!rows.iter().any(|row| row.account_key == "previous"));
     }
 
@@ -820,7 +754,7 @@ mod tests {
         )]);
         let members = vec![(
             "agent".to_owned(),
-            json!({"accountKey":"acct","threadId":"thread"}),
+            member(json!({"accountKey":"acct","threadId":"thread"})),
         )];
         let before = super::claude_log_lines_skipped();
         let rows = read_local_claude_usage(&state, &members, &accounts).expect("usage");
@@ -855,9 +789,9 @@ mod tests {
             "account".to_owned(),
             json!({"provider":"openai", "claudeOptions":{"configDir":config}}),
         )]);
-        let members: Vec<(String, Value)> = vec![(
+        let members = vec![(
             "agent".to_owned(),
-            json!({"accountKey":"account", "threadId":"thread"}),
+            member(json!({"accountKey":"account", "threadId":"thread"})),
         )];
         assert!(
             read_local_claude_usage(temp.path(), &members, &accounts)

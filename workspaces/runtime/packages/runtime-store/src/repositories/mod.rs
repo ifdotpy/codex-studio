@@ -15,7 +15,7 @@ pub(crate) mod claude_retry;
 pub(crate) mod context_repair;
 pub(crate) mod continuation;
 pub(crate) mod coordination;
-pub(crate) mod cost_usage;
+pub mod cost_aggregate;
 pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod execution_history;

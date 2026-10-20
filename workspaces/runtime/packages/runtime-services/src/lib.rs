@@ -61,7 +61,6 @@ pub mod continuation_driver;
 pub mod continuation_runtime;
 pub mod coordination;
 pub mod coordination_reads;
-pub mod cost_usage;
 pub mod costs;
 pub mod diagnostics;
 pub mod disk_space;

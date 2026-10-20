@@ -907,6 +907,9 @@ fn raw_rows(
     let tables = tx.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name != 'corpus_caller' ORDER BY name").expect("tables").query_map([], |r| r.get::<_,String>(0)).expect("names").collect::<Result<Vec<_>,_>>().expect("names");
     tables
         .into_iter()
+        .filter(|table| {
+            !studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.contains(&table.as_str())
+        })
         .map(|table| {
             let mut statement = tx
                 .prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))

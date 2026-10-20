@@ -36,7 +36,7 @@ pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
 pub use repositories::claude_controls::ClaudeControlRepository;
-pub use repositories::cost_usage::{CostUsageRepositoryError, CostUsageRow, read_cost_usage};
+pub use repositories::cost_aggregate;
 pub use repositories::remote_transport::{
     AccessNonceOutcome, OutboundReservation, RemoteTransportRepository,
 };
@@ -1170,6 +1170,7 @@ impl RuntimeStore {
         schema::verify_core(&canvas_path, &analytics_path)?;
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
+        repositories::cost_aggregate::ensure_cost_aggregate(&analytics_path)?;
 
         let table_change_flags = Arc::new(AtomicU32::new(0));
         let resource_receipt_update_count = Arc::new(AtomicU64::new(0));

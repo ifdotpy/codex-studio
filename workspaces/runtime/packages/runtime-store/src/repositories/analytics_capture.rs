@@ -211,6 +211,9 @@ impl AnalyticsCaptureRepository {
             }
             CaptureTable::Usage => {
                 db.execute_cached("INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,raw])?;
+                if let Some(id) = id {
+                    crate::repositories::cost_aggregate::apply_usage_write(db, id, value)?;
+                }
             }
             CaptureTable::History => {
                 db.execute_cached("INSERT INTO analytics_history VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,record=excluded.record",params![id,value["agent"].as_str(),raw])?;

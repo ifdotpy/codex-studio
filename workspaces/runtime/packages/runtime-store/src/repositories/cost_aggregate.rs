@@ -1,0 +1,768 @@
+//! Incremental per-root session-cost aggregate in analytics.sqlite3.
+//!
+//! Every `analytics_usage` write ([`apply_usage_write`]) updates, in the same
+//! transaction, `analytics_cost_rows` (the cost facts of each usage row and the
+//! contribution it currently adds) and `analytics_cost_groups` (per root, the
+//! number of counted rows per model/account/token tuple). The aggregate is
+//! therefore crash-consistent with the usage rows and the projection cursor,
+//! and a cursor-0 rebuild of analytics rebuilds it.
+//!
+//! Counting rules, within one root:
+//! - a row without a response id is not counted when a row of the same
+//!   (agent, thread, turn) has one;
+//! - a row without a model takes the model of the latest (at, seq) eligible row
+//!   of the same (agent, turn), else of the same (agent, thread); a row is
+//!   eligible when it has a model and is not itself suppressed by the first rule.
+//!
+//! A model-bearing row depends only on its own (agent, thread, turn), so a
+//! write refreshes that turn scope; a model-less row depends on its whole
+//! agent, so an agent with model-less rows is refreshed whole.
+//!
+//! Pricing is not stored: a reader prices the few groups with the current
+//! catalog, so a catalog change needs no invalidation.
+
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
+
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
+use serde::Deserialize;
+
+use crate::{CachedSql, StoreError, StoreResult};
+
+/// Tables of the aggregate; created by [`ensure_cost_aggregate`].
+const TABLES: &str = "
+CREATE TABLE analytics_cost_rows (
+    id TEXT PRIMARY KEY, root TEXT NOT NULL, agent TEXT NOT NULL, thread TEXT, turn TEXT,
+    seq INTEGER NOT NULL, at REAL NOT NULL, model TEXT, account_key TEXT, response TEXT,
+    input REAL, cached REAL, cache_write REAL, output REAL, uncached INTEGER NOT NULL,
+    counted INTEGER NOT NULL, counted_model TEXT);
+CREATE TABLE analytics_cost_groups (
+    root TEXT NOT NULL, model TEXT, account TEXT NOT NULL, input REAL, cached REAL,
+    cache_write REAL, output REAL, uncached INTEGER NOT NULL, count INTEGER NOT NULL);
+";
+
+/// Indexes of the aggregate, built after the backfill loaded its rows.
+const INDEXES: &str = "
+CREATE INDEX analytics_cost_rows_scope ON analytics_cost_rows(root, agent, thread, turn);
+CREATE INDEX analytics_cost_rows_unmodeled ON analytics_cost_rows(root, agent) WHERE model IS NULL;
+CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, thread, response)
+    WHERE response IS NOT NULL;
+CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
+    root, model, account, input, cached, cache_write, output, uncached);
+";
+
+/// Every schema object of the aggregate in analytics.sqlite3; the Python
+/// runtime creates none of them.
+pub const SCHEMA_OBJECTS: [&str; 6] = [
+    "analytics_cost_rows",
+    "analytics_cost_groups",
+    "analytics_cost_rows_scope",
+    "analytics_cost_rows_unmodeled",
+    "analytics_cost_rows_response",
+    "analytics_cost_groups_key",
+];
+
+const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,response,\
+    input,cached,cache_write,output,uncached,counted,counted_model";
+
+/// The account key of a usage row or agent record without `accountKey`.
+pub const DEFAULT_ACCOUNT: &str = "default";
+
+/// Token counts of one usage row as priced; `None` is an unreported count.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CostTokens {
+    pub input_tokens: Option<f64>,
+    pub cached_input_tokens: Option<f64>,
+    pub cache_write_input_tokens: Option<f64>,
+    pub output_tokens: Option<f64>,
+}
+
+/// The `AnalyticsUsage` members that decide a row's cost.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageCostFields<'a> {
+    #[serde(borrow, default)]
+    model: Option<Cow<'a, str>>,
+    #[serde(borrow, default)]
+    account_key: Option<Cow<'a, str>>,
+    #[serde(borrow, default)]
+    response_id: Option<Cow<'a, str>>,
+    #[serde(default)]
+    input_tokens_are_uncached: Option<bool>,
+    last: CostTokens,
+    #[serde(default)]
+    delta: Option<CostTokens>,
+}
+
+impl UsageCostFields<'_> {
+    /// The per-request delta when it reports input and output, else `last`.
+    fn tokens(&self) -> CostTokens {
+        match self.delta {
+            Some(delta) if delta.input_tokens.is_some() && delta.output_tokens.is_some() => delta,
+            _ => self.last,
+        }
+    }
+}
+
+/// The members of an agent record that decide how its usage is priced and
+/// where its Claude session logs are.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostMember {
+    #[serde(default)]
+    pub account_key: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub account_history: Option<Vec<CostAccountHistory>>,
+}
+
+/// One earlier account of an agent.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostAccountHistory {
+    #[serde(default)]
+    pub account_key: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+}
+
+/// One model/account/token tuple of a root and the number of usage rows it counts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CostGroup {
+    pub model: Option<String>,
+    pub account_key: String,
+    pub tokens: CostTokens,
+    pub input_uncached: bool,
+    pub count: u64,
+}
+
+/// A Claude log response that replaces the analytics row of the same
+/// (account key, Studio thread, response id).
+pub type CostReceipt = (String, String, String);
+
+/// Group identity; field order is the summation order of a priced total.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct GroupKey {
+    model: Option<String>,
+    account: String,
+    input: Option<u64>,
+    cached: Option<u64>,
+    cache_write: Option<u64>,
+    output: Option<u64>,
+    uncached: bool,
+}
+
+fn amount_key(value: Option<f64>) -> Option<u64> {
+    value.map(|number| if number == 0.0 { 0.0_f64 } else { number }.to_bits())
+}
+
+fn amount(key: Option<u64>) -> Option<f64> {
+    key.map(f64::from_bits)
+}
+
+/// The stored cost facts of one usage row.
+#[derive(Clone, Debug)]
+struct CostRow {
+    id: String,
+    agent: String,
+    thread: Option<String>,
+    turn: Option<String>,
+    seq: i64,
+    at: f64,
+    model: Option<String>,
+    account_key: Option<String>,
+    response: Option<String>,
+    tokens: CostTokens,
+    uncached: bool,
+    /// The contribution currently added to `analytics_cost_groups`.
+    counted: Option<Option<String>>,
+}
+
+impl CostRow {
+    fn from_sql(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Self::from_sql_at(row, 0)
+    }
+
+    /// Decode [`ROW_COLUMNS`] starting at column `base`.
+    fn from_sql_at(row: &Row<'_>, base: usize) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(base)?,
+            agent: row.get(base + 1)?,
+            thread: row.get(base + 2)?,
+            turn: row.get(base + 3)?,
+            seq: row.get(base + 4)?,
+            at: row.get(base + 5)?,
+            model: row.get(base + 6)?,
+            account_key: row.get(base + 7)?,
+            response: row.get(base + 8)?,
+            tokens: CostTokens {
+                input_tokens: row.get(base + 9)?,
+                cached_input_tokens: row.get(base + 10)?,
+                cache_write_input_tokens: row.get(base + 11)?,
+                output_tokens: row.get(base + 12)?,
+            },
+            uncached: row.get(base + 13)?,
+            counted: row
+                .get::<_, bool>(base + 14)?
+                .then(|| row.get(base + 15))
+                .transpose()?,
+        })
+    }
+
+    fn group_key(&self, model: Option<String>) -> GroupKey {
+        GroupKey {
+            model,
+            account: self
+                .account_key
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ACCOUNT.to_owned()),
+            input: amount_key(self.tokens.input_tokens),
+            cached: amount_key(self.tokens.cached_input_tokens),
+            cache_write: amount_key(self.tokens.cache_write_input_tokens),
+            output: amount_key(self.tokens.output_tokens),
+            uncached: self.uncached,
+        }
+    }
+
+    fn turn_scope(&self) -> (&str, Option<&str>, Option<&str>) {
+        (&self.agent, self.thread.as_deref(), self.turn.as_deref())
+    }
+}
+
+/// The contribution of every row of a closed scope that `included` keeps:
+/// `None` when the row is not counted, else the model it is counted under.
+fn contributions(
+    rows: &[CostRow],
+    included: impl Fn(&CostRow) -> bool,
+) -> Vec<Option<Option<String>>> {
+    let responded = rows
+        .iter()
+        .filter(|row| included(row) && row.response.is_some())
+        .map(CostRow::turn_scope)
+        .collect::<HashSet<_>>();
+    let suppressed =
+        |row: &CostRow| row.response.is_none() && responded.contains(&row.turn_scope());
+    let mut turn_models = HashMap::<(&str, Option<&str>), (f64, i64, &str)>::new();
+    let mut thread_models = HashMap::<(&str, Option<&str>), (f64, i64, &str)>::new();
+    if rows.iter().any(|row| row.model.is_none()) {
+        for row in rows.iter().filter(|row| included(row) && !suppressed(row)) {
+            let Some(model) = row.model.as_deref() else {
+                continue;
+            };
+            for (models, key) in [
+                (&mut turn_models, (row.agent.as_str(), row.turn.as_deref())),
+                (
+                    &mut thread_models,
+                    (row.agent.as_str(), row.thread.as_deref()),
+                ),
+            ] {
+                if models
+                    .get(&key)
+                    .is_none_or(|current| (row.at, row.seq) > (current.0, current.1))
+                {
+                    models.insert(key, (row.at, row.seq, model));
+                }
+            }
+        }
+    }
+    rows.iter()
+        .map(|row| {
+            if !included(row) || suppressed(row) {
+                return None;
+            }
+            let model = row.model.clone().or_else(|| {
+                turn_models
+                    .get(&(row.agent.as_str(), row.turn.as_deref()))
+                    .or_else(|| thread_models.get(&(row.agent.as_str(), row.thread.as_deref())))
+                    .map(|(_, _, model)| (*model).to_owned())
+            });
+            Some(model)
+        })
+        .collect()
+}
+
+/// Create the aggregate on first open and fill it from the existing usage
+/// rows, in one transaction.
+pub(crate) fn ensure_cost_aggregate(path: &Path) -> StoreResult<()> {
+    let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let tx = db.transaction()?;
+    install(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Create the aggregate in `db` (an analytics database or a test copy of its
+/// schema) unless it exists, and fill it from the existing usage rows.
+pub fn install(db: &Connection) -> StoreResult<()> {
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        db.execute_batch(TABLES)?;
+        backfill(db)?;
+    }
+    Ok(())
+}
+
+/// Fill the aggregate from every usage row with a root: load the facts in
+/// storage order (a sequential read of the large usage records), index them,
+/// then count each (root, agent) scope.
+fn backfill(db: &Connection) -> StoreResult<()> {
+    let mut source = db.prepare(
+        "SELECT id,root,agent,thread,turn,seq,at,record FROM analytics_usage WHERE root IS NOT NULL",
+    )?;
+    let mut rows = source.query([])?;
+    while let Some(source_row) = rows.next()? {
+        let raw = source_row
+            .get_ref(7)?
+            .as_str()
+            .map_err(rusqlite::Error::from)?;
+        let fields = serde_json::from_str::<UsageCostFields>(raw)?;
+        let root: String = source_row.get(1)?;
+        let row = cost_row(
+            source_row.get(0)?,
+            source_row.get(2)?,
+            source_row.get(3)?,
+            source_row.get(4)?,
+            source_row.get(5)?,
+            source_row.get(6)?,
+            &fields,
+        );
+        insert_row(db, &root, &row)?;
+    }
+    db.execute_batch(INDEXES)?;
+
+    let mut groups = BTreeMap::<(String, GroupKey), i64>::new();
+    let mut count_scope = |root: &str, scope: &[CostRow]| -> rusqlite::Result<()> {
+        for (row, contribution) in scope.iter().zip(contributions(scope, |_| true)) {
+            let Some(model) = contribution else {
+                continue;
+            };
+            db.execute_cached(
+                "UPDATE analytics_cost_rows SET counted=1,counted_model=?2 WHERE id=?1",
+                params![row.id, model],
+            )?;
+            *groups
+                .entry((root.to_owned(), row.group_key(model)))
+                .or_default() += 1;
+        }
+        Ok(())
+    };
+    let mut statement = db.prepare(&format!(
+        "SELECT root,{ROW_COLUMNS} FROM analytics_cost_rows ORDER BY root,agent"
+    ))?;
+    let mut facts = statement.query([])?;
+    let mut scope_root = String::new();
+    let mut scope = Vec::<CostRow>::new();
+    while let Some(fact) = facts.next()? {
+        let root = fact.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
+        let row = CostRow::from_sql_at(fact, 1)?;
+        if root != scope_root || scope.first().is_some_and(|first| first.agent != row.agent) {
+            count_scope(&scope_root, &scope)?;
+            scope.clear();
+            root.clone_into(&mut scope_root);
+        }
+        scope.push(row);
+    }
+    count_scope(&scope_root, &scope)?;
+    for ((root, key), count) in groups {
+        db.execute_cached(
+            "INSERT INTO analytics_cost_groups VALUES (?,?,?,?,?,?,?,?,?)",
+            params![
+                root,
+                key.model,
+                key.account,
+                amount(key.input),
+                amount(key.cached),
+                amount(key.cache_write),
+                amount(key.output),
+                key.uncached,
+                count
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cost_row(
+    id: String,
+    agent: String,
+    thread: Option<String>,
+    turn: Option<String>,
+    seq: i64,
+    at: f64,
+    fields: &UsageCostFields<'_>,
+) -> CostRow {
+    CostRow {
+        id,
+        agent,
+        thread,
+        turn,
+        seq,
+        at,
+        model: fields.model.as_deref().map(str::to_owned),
+        account_key: fields.account_key.as_deref().map(str::to_owned),
+        response: fields
+            .response_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
+        tokens: fields.tokens(),
+        uncached: fields.input_tokens_are_uncached == Some(true),
+        counted: None,
+    }
+}
+
+fn insert_row(db: &Connection, root: &str, row: &CostRow) -> rusqlite::Result<usize> {
+    db.execute_cached(
+        "INSERT INTO analytics_cost_rows VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        params![
+            row.id,
+            root,
+            row.agent,
+            row.thread,
+            row.turn,
+            row.seq,
+            row.at,
+            row.model,
+            row.account_key,
+            row.response,
+            row.tokens.input_tokens,
+            row.tokens.cached_input_tokens,
+            row.tokens.cache_write_input_tokens,
+            row.tokens.output_tokens,
+            row.uncached,
+            row.counted.is_some(),
+            row.counted.clone().flatten()
+        ],
+    )
+}
+
+/// Add `delta` rows to one group of `root`, deleting a group that reaches zero.
+fn add_to_group(db: &Connection, root: &str, key: &GroupKey, delta: i64) -> rusqlite::Result<()> {
+    const MATCH: &str = "root=?2 AND model IS ?3 AND account=?4 AND input IS ?5 AND cached IS ?6 \
+        AND cache_write IS ?7 AND output IS ?8 AND uncached=?9";
+    let values = params![
+        delta,
+        root,
+        key.model,
+        key.account,
+        amount(key.input),
+        amount(key.cached),
+        amount(key.cache_write),
+        amount(key.output),
+        key.uncached
+    ];
+    let updated = db.execute_cached(
+        &format!("UPDATE analytics_cost_groups SET count=count+?1 WHERE {MATCH}"),
+        values,
+    )?;
+    if updated == 0 {
+        db.execute_cached(
+            "INSERT INTO analytics_cost_groups VALUES (?2,?3,?4,?5,?6,?7,?8,?9,?1)",
+            values,
+        )?;
+    } else if delta < 0 {
+        db.execute_cached(
+            &format!("DELETE FROM analytics_cost_groups WHERE count<=0 AND ?1<0 AND {MATCH}"),
+            values,
+        )?;
+    }
+    Ok(())
+}
+
+/// The (thread, turn) scopes of one agent that a change touches.
+type TurnScopes = BTreeSet<(Option<String>, Option<String>)>;
+
+/// The rows whose contributions a change in `turns` of `agent` in `root` can
+/// affect: those turn scopes, or the whole agent when it has model-less rows.
+fn scope_rows(
+    db: &Connection,
+    root: &str,
+    agent: &str,
+    turns: &TurnScopes,
+) -> rusqlite::Result<Vec<CostRow>> {
+    let unmodeled: bool = db.query_row_cached(
+        "SELECT EXISTS(SELECT 1 FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND model IS NULL)",
+        params![root, agent],
+        |row| row.get(0),
+    )?;
+    if unmodeled {
+        return db
+            .prepare_cached(&format!(
+                "SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2"
+            ))?
+            .query_map(params![root, agent], CostRow::from_sql)?
+            .collect();
+    }
+    let mut statement = db.prepare_cached(&format!(
+        "SELECT {ROW_COLUMNS} FROM analytics_cost_rows
+         WHERE root=?1 AND agent=?2 AND thread IS ?3 AND turn IS ?4"
+    ))?;
+    let mut rows = Vec::new();
+    for (thread, turn) in turns {
+        for row in statement.query_map(params![root, agent, thread, turn], CostRow::from_sql)? {
+            rows.push(row?);
+        }
+    }
+    Ok(rows)
+}
+
+/// Recompute the scopes of `turns` and move every changed contribution between groups.
+fn refresh_scope(
+    db: &Connection,
+    root: &str,
+    agent: &str,
+    turns: &TurnScopes,
+) -> rusqlite::Result<()> {
+    let rows = scope_rows(db, root, agent, turns)?;
+    for (row, contribution) in rows.iter().zip(contributions(&rows, |_| true)) {
+        if row.counted == contribution {
+            continue;
+        }
+        if let Some(model) = &row.counted {
+            add_to_group(db, root, &row.group_key(model.clone()), -1)?;
+        }
+        if let Some(model) = &contribution {
+            add_to_group(db, root, &row.group_key(model.clone()), 1)?;
+        }
+        db.execute_cached(
+            "UPDATE analytics_cost_rows SET counted=?2,counted_model=?3 WHERE id=?1",
+            params![
+                row.id,
+                contribution.is_some(),
+                contribution.clone().flatten()
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Bring the aggregate up to date with the `analytics_usage` row `id` that the
+/// caller just upserted from `record` in this transaction.
+pub(crate) fn apply_usage_write(
+    db: &Connection,
+    id: &str,
+    record: &serde_json::Value,
+) -> StoreResult<()> {
+    let fields = UsageCostFields::deserialize(record)?;
+    let (root, agent, thread, turn, seq, at) = db.query_row_cached(
+        "SELECT root,agent,thread,turn,seq,at FROM analytics_usage WHERE id=?1",
+        [id],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        },
+    )?;
+    let previous = db
+        .query_row_cached(
+            &format!("SELECT root,{ROW_COLUMNS} FROM analytics_cost_rows WHERE id=?1"),
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, CostRow::from_sql_at(row, 1)?)),
+        )
+        .optional()?;
+    if let Some((previous_root, previous)) = &previous {
+        if let Some(model) = &previous.counted {
+            add_to_group(db, previous_root, &previous.group_key(model.clone()), -1)?;
+        }
+        db.execute_cached("DELETE FROM analytics_cost_rows WHERE id=?1", [id])?;
+    }
+    if let Some(root) = &root {
+        let row = cost_row(id.to_owned(), agent, thread, turn, seq, at, &fields);
+        insert_row(db, root, &row)?;
+        refresh_scope(
+            db,
+            root,
+            &row.agent,
+            &TurnScopes::from([(row.thread, row.turn)]),
+        )?;
+    }
+    if let Some((previous_root, previous)) = previous {
+        let turns = TurnScopes::from([(previous.thread, previous.turn)]);
+        refresh_scope(db, &previous_root, &previous.agent, &turns)?;
+    }
+    Ok(())
+}
+
+/// The counted groups of `root` in summation order, without the analytics rows
+/// that `receipts` replace (each removal re-applies the counting rules to the
+/// rows it affects).
+pub fn cost_groups(
+    db: &Connection,
+    root: &str,
+    receipts: &BTreeSet<CostReceipt>,
+) -> Result<Vec<CostGroup>, StoreError> {
+    let mut groups = db
+        .prepare_cached(
+            "SELECT model,account,input,cached,cache_write,output,uncached,count
+             FROM analytics_cost_groups WHERE root=?1",
+        )?
+        .query_map([root], |row| {
+            Ok((
+                GroupKey {
+                    model: row.get(0)?,
+                    account: row.get(1)?,
+                    input: amount_key(row.get(2)?),
+                    cached: amount_key(row.get(3)?),
+                    cache_write: amount_key(row.get(4)?),
+                    output: amount_key(row.get(5)?),
+                    uncached: row.get(6)?,
+                },
+                row.get::<_, i64>(7)?,
+            ))
+        })?
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut replaced = HashSet::new();
+    let mut scopes = BTreeMap::<String, TurnScopes>::new();
+    for (account, thread, response) in receipts {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT {ROW_COLUMNS} FROM analytics_cost_rows
+             WHERE root=?1 AND thread=?2 AND response=?3 AND account_key=?4"
+        ))?;
+        for row in
+            statement.query_map(params![root, thread, response, account], CostRow::from_sql)?
+        {
+            let row = row?;
+            scopes
+                .entry(row.agent)
+                .or_default()
+                .insert((row.thread, row.turn));
+            replaced.insert(row.id);
+        }
+    }
+    for (agent, turns) in &scopes {
+        let rows = scope_rows(db, root, agent, turns)?;
+        let kept = contributions(&rows, |row| !replaced.contains(&row.id));
+        for (row, contribution) in rows.iter().zip(kept) {
+            if let Some(model) = &row.counted {
+                *groups.entry(row.group_key(model.clone())).or_default() -= 1;
+            }
+            if let Some(model) = contribution {
+                *groups.entry(row.group_key(model)).or_default() += 1;
+            }
+        }
+    }
+    Ok(groups
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(key, count)| CostGroup {
+            model: key.model,
+            account_key: key.account,
+            tokens: CostTokens {
+                input_tokens: amount(key.input),
+                cached_input_tokens: amount(key.cached),
+                cache_write_input_tokens: amount(key.cache_write),
+                output_tokens: amount(key.output),
+            },
+            input_uncached: key.uncached,
+            count: count as u64,
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_cost_aggregate;
+    use crate::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
+    use crate::{RuntimeStore, StoreError};
+    use rusqlite::Connection;
+    use serde_json::json;
+    use std::path::Path;
+
+    /// Every aggregate row, ordered, without SQLite row ids.
+    fn dump(path: &Path) -> (Vec<String>, Vec<String>) {
+        let db = Connection::open(path).expect("analytics database");
+        let rows = |sql: &str| -> Vec<String> {
+            db.prepare(sql)
+                .expect("dump query")
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("dump rows")
+                .collect::<Result<_, _>>()
+                .expect("dump values")
+        };
+        (
+            rows("SELECT json_array(root,model,account,input,cached,cache_write,output,uncached,count)
+                  FROM analytics_cost_groups ORDER BY 1"),
+            rows("SELECT json_array(id,root,counted,counted_model) FROM analytics_cost_rows ORDER BY 1"),
+        )
+    }
+
+    /// Incremental maintenance over upserts that move rows between turns and
+    /// roots, answer provisional turns and leave models out ends where a
+    /// rebuild from the usage rows ends.
+    #[tokio::test]
+    async fn incremental_writes_match_a_rebuild() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        let mut seed = 0x2545_f491_u64;
+        let mut next = move |bound: u64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) % bound
+        };
+        let mut writes = Vec::new();
+        for step in 0..400_u64 {
+            let agent = format!("agent-{}", next(4));
+            let model = match next(4) {
+                0 => json!(null),
+                1 => json!("gpt-5"),
+                2 => json!("gpt-5-mini"),
+                _ => json!("claude-sonnet-4-5"),
+            };
+            let response = if next(2) == 0 {
+                json!(null)
+            } else {
+                json!(format!("r{}", next(6)))
+            };
+            let tokens = json!({"inputTokens":next(3) * 10,"cachedInputTokens":next(2),
+                "outputTokens":next(3),"totalTokens":5});
+            let root = if next(5) == 0 { "root-b" } else { "root-a" };
+            writes.push(json!({
+                "id": format!("u{}", next(60)),
+                "agentId": agent,
+                "rootId": root,
+                "threadId": format!("thread-{}", next(2)),
+                "turnId": format!("turn-{}", next(5)),
+                "at": (step % 37) as f64,
+                "model": model,
+                "accountKey": if next(3) == 0 { json!(null) } else { json!("acct") },
+                "responseId": response,
+                "inputTokensAreUncached": next(2) == 0,
+                "last": tokens,
+                "total": tokens,
+            }));
+        }
+        for record in writes {
+            store
+                .analytics_transaction::<_, StoreError>(move |tx, _| {
+                    AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)
+                })
+                .await
+                .expect("usage write");
+        }
+        let path = temp.path().join("analytics.sqlite3");
+        let incremental = dump(&path);
+        assert!(!incremental.0.is_empty());
+        Connection::open(&path)
+            .expect("analytics database")
+            .execute_batch("DROP TABLE analytics_cost_rows; DROP TABLE analytics_cost_groups;")
+            .expect("drop aggregate");
+        ensure_cost_aggregate(&path).expect("rebuild");
+        assert_eq!(dump(&path), incremental);
+    }
+}

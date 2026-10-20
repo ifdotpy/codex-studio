@@ -520,7 +520,8 @@ def analytics_snapshot(path):
     import __main__ as oracle
     with sqlite3.connect(path) as db:
         db.row_factory = sqlite3.Row
-        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'analytics_%' ORDER BY name")]
+        # Rust-only derived tables (runtime-store cost_aggregate::SCHEMA_OBJECTS) have no Python rows.
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'analytics_%' AND name NOT IN ('analytics_cost_rows','analytics_cost_groups') ORDER BY name")]
         result = {}
         for table in tables:
             rows = []

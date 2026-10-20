@@ -151,17 +151,7 @@ fn map_costs_error(error: CostsError) -> ApiError {
     match error {
         CostsError::Dependency(dependency) => cost_dependency(dependency),
         CostsError::Analytics(error) => map_analytics_error(error),
-        CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::MissingFamily) => {
-            cost_dependency("store-bootstrap/analytics-usage-schema")
-        }
-        CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::InvalidStoredRow(id)) => {
-            ApiError::invalid_stored("analytics_usage", &id)
-        }
-        CostsError::Usage(
-            studio_runtime_store::CostUsageRepositoryError::Sqlite(_)
-            | studio_runtime_store::CostUsageRepositoryError::RecordLimit,
-        )
-        | CostsError::Grouping(_)
+        CostsError::Store(_)
         | CostsError::Repository(_)
         | CostsError::Sqlite(_)
         | CostsError::Computation
@@ -173,9 +163,6 @@ fn map_costs_error(error: CostsError) -> ApiError {
 
 fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
     match error {
-        analytics::AnalyticsError::RefreshRequired => {
-            cost_dependency("store-bootstrap/analytics-usage-schema")
-        }
         analytics::AnalyticsError::InvalidRequest(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }

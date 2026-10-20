@@ -10,6 +10,9 @@ use rusqlite::{
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use super::cost_aggregate::CostMember;
+use crate::CachedSql;
+
 const TOKEN_FIELDS: [&str; 6] = [
     "inputTokens",
     "cachedInputTokens",
@@ -79,8 +82,6 @@ fn read_only_uri(path: &Path) -> Result<String, AnalyticsStoreError> {
 
 #[derive(Debug, Error)]
 pub enum AnalyticsError {
-    #[error("Not implemented: requires usage-policy/session-cost-refresh")]
-    RefreshRequired,
     #[error("Invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("Invalid stored object {0}")]
@@ -1390,68 +1391,49 @@ fn raw_records<P: rusqlite::Params>(
 }
 
 pub type SessionCostError = AnalyticsError;
+/// The members of `root` (the root agent and every agent naming it), with
+/// `agent` itself read from Canvas when analytics does not hold it yet.
 pub fn cost_agents(
     db: &Connection,
     agent: &str,
     root: &str,
-) -> Result<Vec<(String, Value)>, SessionCostError> {
-    let mut out: Vec<(String,Value)> = query(db,"SELECT id,record FROM analytics_agents WHERE id=?1 OR json_extract(record,'$.rootId')=?1 ORDER BY id",[root],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
-        .into_iter().map(|(id,raw)|serde_json::from_str(&raw).map(|value|(id,value)).map_err(|_|SessionCostError::InvalidStoredObject("analytics_agents"))).collect::<Result<_,_>>()?;
+) -> Result<Vec<(String, CostMember)>, SessionCostError> {
+    let decode = |raw: &str, table| {
+        serde_json::from_str::<CostMember>(raw)
+            .map_err(|_| SessionCostError::InvalidStoredObject(table))
+    };
+    let mut statement = db.prepare_cached(
+        "SELECT id,record FROM analytics_agents WHERE id=?1
+         UNION ALL SELECT id,record FROM analytics_agents
+         WHERE json_extract(record,'$.rootId')=?1 AND id<>?1",
+    )?;
+    let mut rows = statement.query([root])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let raw = row.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?;
+        out.push((row.get::<_, String>(0)?, decode(raw, "analytics_agents")?));
+    }
     if !out.iter().any(|(id, _)| id == agent) {
-        let record = read_runtime_agent(db, agent)?
+        let raw: String = db
+            .query_row_cached(
+                "SELECT record FROM canvas.runtime_agents WHERE id=?1",
+                [agent],
+                |r| r.get(0),
+            )
+            .optional()?
             .ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
-        out.push((agent.into(), record));
+        out.push((agent.into(), decode(&raw, "runtime_agents")?));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }
-pub fn usage_signature(db: &Connection, root: &str) -> Result<UsageState, SessionCostError> {
-    let max: i64 = if table_exists(db, "analytics_usage")? {
-        db.query_row(
-            "SELECT COALESCE(MAX(seq),0) FROM analytics_usage WHERE root=?1",
-            [root],
-            |r| r.get(0),
-        )?
-    } else {
-        0
-    };
-    let generation: i64 = if table_exists(db, "analytics_usage_roots")? {
-        db.query_row(
-            "SELECT COALESCE((SELECT generation FROM analytics_usage_roots WHERE root=?1),0)",
-            [root],
-            |r| r.get(0),
-        )?
-    } else if table_exists(db, "analytics_meta")? {
-        db.query_row("SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM analytics_meta WHERE key='usageGeneration'),0)",[],|r|r.get(0))?
-    } else {
-        0
-    };
-    Ok(UsageState {
-        max_seq: max,
-        generation,
-    })
-}
-pub fn cost_projection(
-    db: &Connection,
-    root: &str,
-) -> Result<Option<(String, i64, i64)>, SessionCostError> {
-    if !table_exists(db, "analytics_cost_state_v1")?
-        || !table_exists(db, "analytics_cost_roots_v1")?
-    {
-        return Ok(None);
-    }
-    Ok(db.query_row("SELECT token,COALESCE((SELECT revision FROM analytics_cost_roots_v1 WHERE root=?1),0),COALESCE((SELECT floor FROM analytics_cost_roots_v1 WHERE root=?1),0) FROM analytics_cost_state_v1 WHERE singleton=1",[root],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?)
-}
-#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageState {
-    max_seq: i64,
-    generation: i64,
-}
-impl UsageState {
-    pub fn generation(&self) -> i64 {
-        self.generation
-    }
+/// The usage generation of `root`: bumped when its usage rows are reset.
+pub fn usage_generation(db: &Connection, root: &str) -> Result<i64, SessionCostError> {
+    Ok(db.query_row_cached(
+        "SELECT COALESCE((SELECT generation FROM analytics_usage_roots WHERE root=?1),0)",
+        [root],
+        |r| r.get(0),
+    )?)
 }
 pub fn cost_root(db: &Connection, agent: &str) -> Result<String, SessionCostError> {
     let (table,raw): (String,String) = db.query_row("SELECT 'analytics_agents',record FROM analytics_agents WHERE id=?1 UNION ALL SELECT 'runtime_agents',record FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",[agent],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;

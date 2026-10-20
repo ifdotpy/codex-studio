@@ -68,6 +68,7 @@ fn real_python_capture_rows_match_complete_rust_outputs() {
         let mut db = Connection::open_in_memory().expect("db");
         db.execute_batch(data["template"].as_str().expect("Python schema"))
             .expect("schema");
+        studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
         seed(&db, &case["before"]);
         let step = &case["step"];
         let source = if step["source"] == "rollout" {
@@ -160,6 +161,7 @@ fn malformed_stored_rows_refuse_without_writes() {
     let mut db = Connection::open_in_memory().expect("db");
     db.execute_batch(data["template"].as_str().expect("schema"))
         .expect("schema");
+    studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
     seed(&db, &case["before"]);
     for invalid in [
         json!({}),
@@ -191,6 +193,7 @@ fn capture_rows_bind_request_identity_without_writes() {
     let mut db = Connection::open_in_memory().expect("db");
     db.execute_batch(data["template"].as_str().expect("schema"))
         .expect("schema");
+    studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
     seed(&db, &case["before"]);
     let raw: String = db
         .query_row("SELECT record FROM analytics_turns LIMIT 1", [], |r| {
@@ -237,6 +240,7 @@ fn claude_python_and_canonical_rust_rows_replay_without_usage_writes() {
         let mut db = Connection::open_in_memory().expect("db");
         db.execute_batch(data["template"].as_str().expect("schema"))
             .expect("schema");
+        studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
         seed(
             &db,
             if python_written {
@@ -305,6 +309,7 @@ fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
     let mut db = Connection::open_in_memory().expect("db");
     db.execute_batch(data["template"].as_str().expect("schema"))
         .expect("schema");
+    studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
     let mut agent = data["capture"][1]["agent"].clone();
     let thread = agent["threadId"].as_str().expect("thread").to_owned();
     let mut run = |turn: &str, method: &str, params: Value, at: f64| {

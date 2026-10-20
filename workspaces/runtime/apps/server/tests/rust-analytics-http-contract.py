@@ -317,27 +317,13 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn("codex-studio-analytics.json", disposition)
         self.assertEqual(json.loads(export.body)["summary"]["usageSamples"], 1)
         cost = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
-        self.assertEqual(cost.status, 200, cost.body[:1000])
         if self.rust_backend:
-            self.assertEqual(cost.json()["pricingState"], "ready")
-        else:
-            self.assertEqual(cost.json()["pricingState"], "loading")
-        cache_file = next((self.backend.state / "session-costs").glob("cost-*.json"))
-        saved = json.loads(cache_file.read_text())
-        if self.rust_backend:
-            incomplete = json.loads(json.dumps(saved))
-            incomplete["source"].pop("pricingSignature")
-            cache_file.write_text(json.dumps(incomplete))
+            # Rust prices the analytics cost aggregate on every read and keeps no
+            # cost cache; without a pricing catalog it refuses without writing.
             before_refusal = no_write_snapshot(self.backend.state)
-            refused = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
-            self.assertEqual(refused.status, 501, refused.body[:1000])
+            self.assertEqual(cost.status, 501, cost.body[:1000])
+            self.assertIn("costs/pricing-refresh", cost.body.decode("utf-8"))
             self.assertEqual(no_write_snapshot(self.backend.state), before_refusal)
-        saved["source"]["usage"]["generation"] += 1
-        cache_file.write_text(json.dumps(saved))
-        stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
-        if self.rust_backend:
-            self.assertEqual(stale.status, 501, stale.body[:1000])
-            self.assertIn("costs/pricing-refresh", stale.body.decode("utf-8"))
             pricing = self.backend.state / "model-pricing" / "models-dev-v1.json"
             pricing.parent.mkdir(parents=True, exist_ok=True)
             pricing.write_text(json.dumps({
@@ -353,8 +339,14 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertIsNone(computed.json()["totalUSD"])
             self.assertEqual(computed.json()["unknownModels"], ["fixture-model"])
         else:
+            self.assertEqual(cost.status, 200, cost.body[:1000])
+            self.assertEqual(cost.json()["pricingState"], "loading")
+            cache_file = next((self.backend.state / "session-costs").glob("cost-*.json"))
+            saved = json.loads(cache_file.read_text())
+            saved["source"]["usage"]["generation"] += 1
+            cache_file.write_text(json.dumps(saved))
+            stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
             self.assertEqual(stale.status, 200, stale.body[:1000])
-
 
 if __name__ == "__main__":
     unittest.main()

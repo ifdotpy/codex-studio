@@ -470,6 +470,12 @@ fn catalog_without_rust_owned_objects(catalog: &Value) -> Value {
                     .any(|(owned, _, _)| owned == name)
         });
     }
+    if let Some(objects) = common["analytics.sqlite3"]["sqlite_master"].as_array_mut() {
+        objects.retain(|object| {
+            let name = object["name"].as_str().unwrap_or_default();
+            !studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.contains(&name)
+        });
+    }
     common
 }
 

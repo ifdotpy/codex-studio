@@ -253,7 +253,10 @@ committed snapshot; it includes both typed-record and specialized SQL tables):
   `analytics_cost_projection_v1`, `analytics_cost_roots_v1`,
   `analytics_cost_state_v1`, `analytics_history`, `analytics_items`,
   `analytics_limits`, `analytics_meta`, `analytics_notifications`,
-  `analytics_turns`, `analytics_usage`, `analytics_usage_roots`.
+  `analytics_turns`, `analytics_usage`, `analytics_usage_roots`. Rust adds
+  `analytics_cost_rows` and `analytics_cost_groups`, the incremental per-root
+  session-cost aggregate (`repositories/cost_aggregate.rs`) that every usage
+  write updates in its own transaction; `/api/session-cost` prices its groups.
 
 Stored record fields are currently derived by hand from `codex_records.py`.
 When a stored record is identical to an HTTP API model, generate it from the

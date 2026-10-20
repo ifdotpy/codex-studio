@@ -1,0 +1,98 @@
+{
+  "claude-worker": {
+    "breakdown": {
+      "models": {
+        "claude-sonnet-4-5": 0.009543,
+        "gpt-5": 0.00100625,
+        "gpt-5-mini": 0.00024349999999999998,
+        "gpt-long": 0.00606
+      },
+      "providers": {
+        "anthropic": 0.009543,
+        "openai": 0.00730975
+      }
+    },
+    "cacheAgeSeconds": 0,
+    "claudeHistoryIncomplete": true,
+    "estimated": true,
+    "generation": 0,
+    "method": "API prices from models.dev; cached input rates are applied when reported. Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows. Published context tier applied where request size matched its threshold.",
+    "pricedSamples": 16,
+    "pricingState": "ready",
+    "refreshing": false,
+    "rootId": "lead",
+    "totalUSD": 0.01685275,
+    "unknownModels": ["mystery-model"]
+  },
+  "codex-worker": {
+    "breakdown": {
+      "models": {
+        "claude-sonnet-4-5": 0.009543,
+        "gpt-5": 0.00100625,
+        "gpt-5-mini": 0.00024349999999999998,
+        "gpt-long": 0.00606
+      },
+      "providers": {
+        "anthropic": 0.009543,
+        "openai": 0.00730975
+      }
+    },
+    "cacheAgeSeconds": 0,
+    "claudeHistoryIncomplete": true,
+    "estimated": true,
+    "generation": 0,
+    "method": "API prices from models.dev; cached input rates are applied when reported. Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows. Published context tier applied where request size matched its threshold.",
+    "pricedSamples": 16,
+    "pricingState": "ready",
+    "refreshing": false,
+    "rootId": "lead",
+    "totalUSD": 0.01685275,
+    "unknownModels": ["mystery-model"]
+  },
+  "lead": {
+    "breakdown": {
+      "models": {
+        "claude-sonnet-4-5": 0.009543,
+        "gpt-5": 0.00100625,
+        "gpt-5-mini": 0.00024349999999999998,
+        "gpt-long": 0.00606
+      },
+      "providers": {
+        "anthropic": 0.009543,
+        "openai": 0.00730975
+      }
+    },
+    "cacheAgeSeconds": 0,
+    "claudeHistoryIncomplete": true,
+    "estimated": true,
+    "generation": 0,
+    "method": "API prices from models.dev; cached input rates are applied when reported. Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows. Published context tier applied where request size matched its threshold.",
+    "pricedSamples": 16,
+    "pricingState": "ready",
+    "refreshing": false,
+    "rootId": "lead",
+    "totalUSD": 0.01685275,
+    "unknownModels": ["mystery-model"]
+  },
+  "other-root": {
+    "breakdown": {
+      "models": {
+        "gpt-5": 1.25001
+      },
+      "providers": {
+        "openai": 1.25001
+      }
+    },
+    "cacheAgeSeconds": 0,
+    "claudeHistoryIncomplete": false,
+    "estimated": true,
+    "generation": 0,
+    "method": "API prices from models.dev; cached input rates are applied when reported. Base rates used when request size was unavailable or below the published threshold.",
+    "pricedSamples": 1,
+    "pricingState": "ready",
+    "refreshing": false,
+    "rootId": "other",
+    "totalUSD": 1.25001,
+    "unknownModels": []
+  }
+}

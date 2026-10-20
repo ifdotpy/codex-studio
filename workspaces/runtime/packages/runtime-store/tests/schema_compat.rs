@@ -112,7 +112,16 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     drop(store);
 
     assert_eq!(before, catalog(&state.join("canvas.sqlite3")));
-    assert_eq!(analytics_before, catalog(&state.join("analytics.sqlite3")));
+    // Opening adds only the Rust-owned cost aggregate to analytics.
+    let analytics_after = catalog(&state.join("analytics.sqlite3"));
+    let (added, kept): (Vec<_>, Vec<_>) = analytics_after.into_iter().partition(|(_, name, _)| {
+        studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.contains(&name.as_str())
+    });
+    assert_eq!(analytics_before, kept);
+    assert_eq!(
+        added.len(),
+        studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.len()
+    );
     let reopened = RuntimeStore::open(Some(&state))
         .await
         .expect("Python-shaped schema remains openable");
