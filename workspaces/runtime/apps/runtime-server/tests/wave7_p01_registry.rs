@@ -1091,13 +1091,27 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     assert!(event_id.starts_with("radio-turn:"));
     assert!(matches!(status.as_str(), "dispatching" | "uncertain"));
     drop(db);
+    // The unknown write closes the scripted session. Reconcile after its
+    // settlement so the radio tick prepares from the settled agent row.
+    wait_for_durable_agent_status(&fixture, "a", "interrupted").await;
 
     registry.reconcile(None).await.unwrap();
     assert!(
         writes.try_recv().is_err(),
         "radio queue event was sent twice"
     );
-    registry.shutdown().await.unwrap();
+    // The worker ends on the closed session unless shutdown reaches it first.
+    let shutdown = registry.shutdown().await;
+    assert!(
+        matches!(
+            shutdown,
+            Ok(())
+                | Err(WorkerError::Session(
+                    studio_runtime_services::provider_session_task::SessionTaskError::Closed
+                ))
+        ),
+        "{shutdown:?}"
+    );
     let status_before_restart: String = fixture
         .store
         .test_reader()
