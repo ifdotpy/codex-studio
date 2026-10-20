@@ -1505,9 +1505,12 @@ fn return_unapplied_input(
     input: Value,
 ) -> StoreResult<bool> {
     let receipt_input = json!({"agent":identity.agent_id,"epoch":identity.epoch,"input":input});
-    if let Some(result) =
-        ExecutionHistoryRepository::replay(tx, &identity.attempt_id, "startResult", &receipt_input)?
-    {
+    if let Some(result) = ExecutionHistoryRepository::replay_settled(
+        tx,
+        &identity.attempt_id,
+        "startResult",
+        &receipt_input,
+    )? {
         return result
             .as_bool()
             .ok_or_else(|| invalid_agent(&identity.agent_id));
@@ -1561,7 +1564,7 @@ pub(super) fn apply_start_error(
     let kind = if unknown { "unknown" } else { "startResult" };
     let receipt_input = json!({"agent":identity.agent_id,"epoch":identity.epoch,"input":input});
     if let Some(result) =
-        ExecutionHistoryRepository::replay(tx, &identity.attempt_id, kind, &receipt_input)?
+        ExecutionHistoryRepository::replay_settled(tx, &identity.attempt_id, kind, &receipt_input)?
     {
         return result
             .as_bool()
