@@ -206,6 +206,16 @@ pub(super) fn decode(record: &Value) -> Result<RecoveredRequest, WorkerError> {
         remote_id: record["remoteId"].as_u64(),
     })
 }
+/// The stored agent `id`; a row that vanished inside the transaction is invalid.
+fn stored_agent(
+    tx: &studio_runtime_store::Transaction<'_>,
+    id: &str,
+) -> Result<studio_runtime_store::AgentRecord, StoreError> {
+    AgentRepository::get(tx, &AgentId::from(id))?.ok_or_else(|| StoreError::InvalidSyncObject {
+        scope: "runtime_agents".into(),
+        id: id.to_owned(),
+    })
+}
 /// `restart` is true for the account's first worker in this backend process;
 /// a later worker follows a provider disconnect while the server kept running.
 pub(super) async fn recover(
@@ -218,6 +228,38 @@ pub(super) async fn recover(
     scheduler::lifecycle_transaction_with(store, move |tx| {
         SchedulerRepository::recover_unsubmitted_for_account(tx, &account)?;
         let at = now();
+        // Before generation reconciliation reads it as unresolved, a settled
+        // attempt that a stale recovery receipt restored returns its agent to
+        // the outcome of its finished turn.
+        SchedulerRepository::settle_stale_recovery(tx, &account, at)?;
+        // The repository preserves Python recovery records. Journal delivery needs
+        // the scoped attempt restored before notifications can be acknowledged.
+        // Only an open receipt of an unfinished turn is restored. A settled
+        // attempt owes no notification; restored, it would hide a
+        // receipt-pending hold and let the next generation interrupt the
+        // finished agent again. Openness is read before reconciliation, which
+        // can continue an interrupted turn and so close its receipt.
+        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
+        let ids = statement
+            .query_map(
+                params![
+                    account,
+                    i64::try_from(generation.0)
+                        .map_err(|_| StoreError::SchemaMismatch("generation overflow".into()))?,
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let mut restore = Vec::new();
+        for id in ids {
+            let agent = stored_agent(tx, &id)?;
+            if let Some(attempt) = SchedulerRepository::open_recovery_attempt(tx, &agent)? {
+                restore.push((id, attempt));
+            }
+        }
         let interrupted = SchedulerRepository::reconcile_generation(
             tx,
             &account,
@@ -234,39 +276,9 @@ pub(super) async fn recover(
         }
         retire_generations(tx, &account, generation.0)?;
         pad_legacy_receipt_keys(tx, &account)?;
-        // The repository preserves Python recovery records. Journal delivery needs
-        // the scoped attempt restored before notifications can be acknowledged.
-        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
-        let ids = statement
-            .query_map(
-                params![
-                    account,
-                    i64::try_from(generation.0)
-                        .map_err(|_| StoreError::SchemaMismatch("generation overflow".into()))?,
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                ],
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        for id in ids {
-            let mut agent =
-                AgentRepository::get(tx, &AgentId::from(id.as_str()))?.ok_or_else(|| {
-                    StoreError::InvalidSyncObject {
-                        scope: "runtime_agents".into(),
-                        id: id.clone(),
-                    }
-                })?;
-            let attempt = agent
-                .extra
-                .get("disconnectRecovery")
-                .or_else(|| agent.extra.get("restartRecovery"))
-                .and_then(|value| value.get("startAttempt"))
-                .cloned()
-                // The attempt of the agent's last completed turn owes no
-                // notification; restored, it would hide a receipt-pending hold.
-                .filter(|attempt| !completed_attempt(&agent, attempt));
-            if let Some(attempt) = attempt {
+        for (id, attempt) in restore {
+            let mut agent = stored_agent(tx, &id)?;
+            if agent.extra.get("startAttempt").is_none_or(Value::is_null) {
                 agent.extra.insert("startAttempt".into(), attempt);
                 AgentRepository::put(tx, &agent)?;
             }
