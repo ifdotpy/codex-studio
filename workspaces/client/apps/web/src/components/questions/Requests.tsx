@@ -26,7 +26,8 @@ import {
   requestApprovalDetails,
   requestQuestions,
 } from "./requestData";
-import { canForwardSignIn, openSignInPage } from "./openSignIn";
+import { openSignInPage } from "./openSignIn";
+import SignInCard from "./SignInCard";
 
 type Props = {
   mainAgentId?: string;
@@ -156,7 +157,7 @@ function AnswerForm({
   draftKey: string;
   request: RequestDto;
   sending: boolean;
-  post: (body: Json) => Promise<void>;
+  post: (body: Json) => Promise<boolean>;
   close: () => void;
   notify: Props["notify"];
 }) {
@@ -367,12 +368,13 @@ function RequestCard({
     setOpen(false);
     trigger.current?.focus();
   };
-  const post = async (body: Json) => {
+  /** Send one answer; true when the server accepted it. */
+  const post = async (body: Json): Promise<boolean> => {
     if (blocked) {
       notify("This chat stopped as a precaution. Open another chat.");
-      return;
+      return false;
     }
-    if (pending.current) return;
+    if (pending.current) return false;
     pending.current = true;
     setSending(true);
     setRequestError("");
@@ -399,14 +401,16 @@ function RequestCard({
         null,
       );
       if (storageError) notify(storageError);
-      if (!mounted.current) return;
+      if (!mounted.current) return true;
       setOpen(false);
       await refresh();
+      return true;
     } catch (e) {
       if (mounted.current) {
         setRequestError(errorText(e));
         notify(errorText(e));
       }
+      return false;
     } finally {
       pending.current = false;
       if (mounted.current) setSending(false);
@@ -460,6 +464,31 @@ function RequestCard({
   const url = stringValue(params.url);
   const questions = question ? requestQuestions(r) : [];
   const Icon = approval ? ShieldQuestion : MessageCircleQuestion;
+  if (browserOpen)
+    return (
+      <div
+        className="request request-card request-sign-in"
+        ref={card}
+        data-request={r.id}
+      >
+        {showDates && <MessageDate at={r.createdAt ?? r.created ?? r.at} />}
+        {blocked ? (
+          <p>
+            This chat stopped as a precaution. This request cannot resume it.
+          </p>
+        ) : (
+          <SignInCard
+            details={browserOpen}
+            agentName={owner?.name || "Codex"}
+            serverName={services?.owner.alias || services?.owner.label}
+            sending={sending}
+            error={requestError}
+            post={post}
+            notify={notify}
+          />
+        )}
+      </div>
+    );
   return (
     <div
       className={`request request-card${asynchronous ? " request-async" : ""}`}
@@ -535,44 +564,7 @@ function RequestCard({
               </details>
             </div>
           )}
-          {browserOpen && (
-            <div className="request-browser-open">
-              <p className="request-prompt">
-                Open a sign-in page in your browser
-              </p>
-              <p className="request-browser-host">{browserOpen.host}</p>
-              {(browserOpen.clientId || browserOpen.scope) && (
-                <dl>
-                  {browserOpen.clientId && (
-                    <div>
-                      <dt>Client</dt>
-                      <dd title={browserOpen.clientId}>
-                        {browserOpen.clientId}
-                      </dd>
-                    </div>
-                  )}
-                  {browserOpen.scope && (
-                    <div>
-                      <dt>Access</dt>
-                      <dd title={browserOpen.scope}>{browserOpen.scope}</dd>
-                    </div>
-                  )}
-                </dl>
-              )}
-              <p>
-                {!browserOpen.port
-                  ? "This page needs no forward. It shows a code or a confirmation."
-                  : browserOpen.source === "host"
-                    ? `The sign-in result goes to the command in this chat on port ${browserOpen.port}.`
-                    : `The sign-in result goes to this chat's Linux user${browserOpen.linuxUser ? ` (${browserOpen.linuxUser})` : ""} on port ${browserOpen.port} of this Mac.`}
-              </p>
-              <details>
-                <summary>Full link</summary>
-                <code className="request-browser-url">{browserOpen.url}</code>
-              </details>
-            </div>
-          )}
-          {!browserOpen && url && /^https?:\/\//.test(url) && (
+          {url && /^https?:\/\//.test(url) && (
             <a href={url} target="_blank" rel="noreferrer">
               Open request
             </a>
@@ -633,21 +625,9 @@ function RequestCard({
                 variant="filled"
                 color="indigo"
                 disabled={sending}
-                onClick={() =>
-                  void post({
-                    decision: "accept",
-                    // A window on another Mac holds the redirect port there.
-                    ...(browserOpen && canForwardSignIn()
-                      ? { forward: true }
-                      : {}),
-                  })
-                }
+                onClick={() => void post({ decision: "accept" })}
               >
-                {browserOpen
-                  ? "Open in browser"
-                  : stdinApproval
-                    ? "Allow input"
-                    : "Approve"}
+                {stdinApproval ? "Allow input" : "Approve"}
               </Button>
             </>
           ) : (

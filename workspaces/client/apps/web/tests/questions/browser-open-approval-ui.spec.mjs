@@ -1,4 +1,4 @@
-// A VM agent's sign-in link (browser/open, docs/vm-browser-bridge.md) renders as an approval
+// A VM agent's sign-in link (browser/open, docs/vm-browser-bridge.md) renders as a sign-in
 // card. Nothing opens before the approval; after it, the desktop opens only the link that the
 // server returned. A refusal from the server, such as a remote window, opens nothing.
 import { createRequire } from "node:module";
@@ -27,11 +27,11 @@ import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import Requests from '/src/components/questions/Requests.tsx';
 const agent={id:'worker',rootId:'lead',name:'Cluster worker',epoch:0,accountKey:'default'};
-const card=(id,url,host,redirect)=>({id,agent:'worker',method:'browser/open',status:'pending',params:{bridgeId:id,url,host,redirect,clientId:'kube',scope:'openid',linuxUser:'studio-a-0123'}});
+const card=(id,url,host,redirect,extra={})=>({id,agent:'worker',method:'browser/open',status:'pending',params:{bridgeId:id,url,host,redirect,clientId:'kube',scope:'openid',linuxUser:'studio-a-0123',source:'vm',...extra}});
 const requests=[
   card('approve',${JSON.stringify(SIGN_IN)},'accounts.example.com',{host:'localhost',port:8000,path:'/'}),
   card('remote','https://oidc.eu-central-1.amazonaws.com/authorize?x=1','oidc.eu-central-1.amazonaws.com',{host:'127.0.0.1',port:40645,path:'/oauth/callback'}),
-  card('device','https://device.sso.eu-central-1.amazonaws.com/?user_code=ABCD','device.sso.eu-central-1.amazonaws.com',null),
+  card('device','https://device.sso.eu-central-1.amazonaws.com/?user_code=ABCD','device.sso.eu-central-1.amazonaws.com',null,{userCode:'ABCD'}),
 ];
 window.__notes=[];
 createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,null,React.createElement(Requests,{requests,allRequests:requests,scope:'fixture',agents:[agent],refresh:async()=>{},notify:(s)=>window.__notes.push(s)})));
@@ -40,6 +40,12 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
     configFile: false,
     root: join(root, "workspaces/client/apps/web"),
     cacheDir: join(temporary, "vite"),
+    // The scanner cannot read the virtual harness. Without these entries Vite finds the
+    // card's dependencies late, bundles them again, and the first page load stalls.
+    optimizeDeps: {
+      entries: ["src/components/questions/Requests.tsx"],
+      include: ["react", "react-dom/client", "@mantine/core"],
+    },
     plugins: [
       {
         name: "browser-open-fixture",
@@ -88,29 +94,31 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
         body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:browser-open";</script>',
       }),
     );
-    await page.goto(server.resolvedUrls.local[0] + "check");
+    // The first load waits for the Vite dependency scan, which takes longer than the
+    // 5 s action limit on a busy machine.
+    await page.goto(server.resolvedUrls.local[0] + "check", {
+      timeout: 30_000,
+    });
     const approve = page.locator('[data-request="approve"]');
-    await approve.waitFor();
+    await approve.waitFor({ timeout: 30_000 });
     await expect(approve.getByText("Cluster worker")).toBeVisible();
-    await expect(
-      approve.getByText("Open a sign-in page in your browser"),
-    ).toBeVisible();
+    await expect(approve.getByText("Sign-in request")).toBeVisible();
+    await expect(approve.getByText("Browser sign-in")).toBeVisible();
     await expect(
       approve.getByText("accounts.example.com", { exact: true }),
     ).toBeVisible();
     await expect(approve.getByText("kube", { exact: true })).toBeVisible();
     await expect(
       approve.getByText(
-        "The sign-in result goes to this chat's Linux user (studio-a-0123) on port 8000 of this Mac.",
+        "The Linux VM on the chat's server, user studio-a-0123, port 8000",
       ),
     ).toBeVisible();
     // The card offers no direct link: the link opens only through the approval.
     await expect(approve.locator("a[href]")).toHaveCount(0);
-    await expect(
-      page
-        .locator('[data-request="device"]')
-        .getByText("This page needs no forward."),
-    ).toBeVisible();
+    const device = page.locator('[data-request="device"]');
+    await expect(device.getByText("No result to forward")).toBeVisible();
+    await expect(device.getByText("Device code")).toBeVisible();
+    await expect(device.getByText("ABCD", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
 
     await approve

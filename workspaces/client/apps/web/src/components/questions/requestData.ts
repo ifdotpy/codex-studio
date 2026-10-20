@@ -94,14 +94,29 @@ export type BrowserOpenDetails = {
   host: string;
   url: string;
   port?: number;
+  /** The path of the loopback redirect that receives the sign-in result. */
+  redirectPath?: string;
   clientId?: string;
   scope?: string;
   linuxUser?: string;
   /** "vm": a VM chat; "host": a native chat of the chat's server. */
   source?: string;
+  /** The `user_code` of a device code page, so the person can type it. */
+  userCode?: string;
+  /** "waiting": the person opened the link in paste mode (docs/vm-browser-bridge.md, 6.3). */
+  phase?: "waiting";
+  /** The request deadline, in epoch seconds. */
+  expiresAt?: number;
+  /** The deadline of the waiting phase, in epoch seconds. */
+  waitingExpiresAt?: number;
+  /** A pasted result is on its way to the command. */
+  pasteSent?: boolean;
 };
 
-/** The sign-in link of a VM agent (docs/vm-browser-bridge.md), or undefined. */
+const numberValue = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/** The sign-in link of an agent (docs/vm-browser-bridge.md), or undefined. */
 export function browserOpenDetails(
   request: RequestDto,
 ): BrowserOpenDetails | undefined {
@@ -111,18 +126,28 @@ export function browserOpenDetails(
   const url = stringValue(params.url);
   if (!host || !url) return undefined;
   const redirect = objectValue(params.redirect);
-  const port = typeof redirect.port === "number" ? redirect.port : undefined;
+  const port = numberValue(redirect.port);
+  const redirectPath = stringValue(redirect.path);
   const clientId = stringValue(params.clientId);
   const scope = stringValue(params.scope);
   const linuxUser = stringValue(params.linuxUser);
   const source = stringValue(params.source);
+  const userCode = stringValue(params.userCode);
+  const expiresAt = numberValue(params.expiresAt);
+  const waitingExpiresAt = numberValue(objectValue(params.waiting).expiresAt);
   return {
     host,
     url,
     ...(port !== undefined ? { port } : {}),
+    ...(port !== undefined && redirectPath ? { redirectPath } : {}),
     ...(clientId ? { clientId } : {}),
     ...(scope ? { scope } : {}),
     ...(linuxUser ? { linuxUser } : {}),
     ...(source ? { source } : {}),
+    ...(userCode ? { userCode } : {}),
+    ...(params.phase === "waiting" ? { phase: "waiting" as const } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(waitingExpiresAt !== undefined ? { waitingExpiresAt } : {}),
+    ...(isJsonObject(params.paste) ? { pasteSent: true } : {}),
   };
 }
