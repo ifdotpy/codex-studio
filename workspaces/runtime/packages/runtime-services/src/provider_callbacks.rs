@@ -27,11 +27,12 @@ pub use recovery::{
     recover_tool_requests_on_startup, revalidate_unresolved_context_tool_receipts,
 };
 use serde_json::{Value, json};
+#[cfg(test)]
+pub(crate) use storage::reply_key;
 pub use storage::{
     DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,
     submission_ready,
 };
-pub(crate) use storage::{delete_worker_written_reply, reply_key};
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
 

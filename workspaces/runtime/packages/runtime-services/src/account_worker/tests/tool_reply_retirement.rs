@@ -1,9 +1,12 @@
-//! A managed tool reply that the worker wrote leaves no outstanding provider
-//! callback row, so the account's reply limit counts only real in-flight calls.
+//! A managed tool call keeps no reply row: its durable tool result rebuilds
+//! the answer. No row can leak on any write outcome, and no count of rows can
+//! turn a committed tool call into a reported failure.
+#![cfg(unix)]
 use super::*;
 
-/// The account's reply limit (provider_callbacks/model.rs MAX_PENDING).
-const REPLY_LIMIT: usize = 128;
+/// The former per-account reply cap (deleted with B1); a call past it must
+/// still succeed.
+const FORMER_REPLY_CAP: usize = 128;
 
 struct ImmediateStatus;
 
@@ -41,17 +44,14 @@ impl crate::provider_callbacks::tools::StatusWatchPort for ImmediateStatus {
     }
 }
 
-/// (outstanding replies, all provider callback rows, reply links)
-async fn reply_rows(state: &State) -> (i64, i64, i64) {
+/// All provider callback rows and callback reply links.
+async fn reply_rows(state: &State) -> (i64, i64) {
     state
         .bridge
         .run(|store| async move {
             let connection = store.read()?;
             let count = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0));
             Ok((
-                count(
-                    "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery') IN ('prepared','submitted','unknown')",
-                )?,
                 count(
                     "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
                 )?,
@@ -61,11 +61,15 @@ async fn reply_rows(state: &State) -> (i64, i64, i64) {
             ))
         })
         .await
-        .unwrap()
+        .expect("reply row counts")
 }
 
-async fn running_tool_turn(state: &State, peer: &mut Peer) -> AccountHandle {
-    let worker = peer.worker(state.bridge.clone()).await;
+async fn running_tool_turn(
+    state: &State,
+    peer: &mut Peer,
+    provider: studio_runtime_providers::ProviderKind,
+) -> AccountHandle {
+    let worker = provider_worker(state, peer, provider).await;
     let start = state.start(peer, &worker).await;
     peer.accepted(&start).await;
     let agent = state.agent.clone();
@@ -82,7 +86,7 @@ async fn running_tool_turn(state: &State, peer: &mut Peer) -> AccountHandle {
             Ok(())
         })
         .await
-        .unwrap();
+        .expect("bind the live connection");
     state.bridge.set_managed_tool_runtime(
         crate::provider_callbacks::ManagedToolRuntime::from_ports_for_test(
             crate::provider_callbacks::ManagedToolRuntimePorts {
@@ -100,7 +104,9 @@ async fn running_tool_turn(state: &State, peer: &mut Peer) -> AccountHandle {
     worker
 }
 
-async fn answered_tool_call(peer: &mut Peer, index: usize) {
+/// Sends one tool call and returns its callback write; it must carry the
+/// tool's real result.
+async fn tool_call(peer: &mut Peer, index: usize) -> (u64, Wire) {
     let id = format!("tool-call-{index}");
     let cursor = peer
         .frame(json!({
@@ -122,6 +128,16 @@ async fn answered_tool_call(peer: &mut Peer, index: usize) {
         "tool call {index} must succeed: {}",
         callback.value
     );
+    assert!(
+        callback.value["result"].to_string().contains("answered"),
+        "tool call {index} carries its real result: {}",
+        callback.value
+    );
+    (cursor, callback)
+}
+
+async fn answered_tool_call(peer: &mut Peer, index: usize) {
+    let (cursor, callback) = tool_call(peer, index).await;
     callback
         .receipt
         .send(CommandReceipt::Written {
@@ -133,35 +149,21 @@ async fn answered_tool_call(peer: &mut Peer, index: usize) {
     peer.acknowledged(cursor).await;
 }
 
-#[tokio::test]
-async fn written_tool_replies_leave_no_outstanding_reply_past_the_account_limit() {
+/// Former leak: 128 unwritten replies of the live turn made the next call
+/// report "Too many unresolved provider replies" after its effect committed.
+async fn scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
+    provider: studio_runtime_providers::ProviderKind,
+) {
     let state = State::new().await;
     let mut peer = Peer::new();
-    let mut worker = running_tool_turn(&state, &mut peer).await;
-    // The call after the limit must succeed: no written reply stays outstanding.
-    for index in 0..=REPLY_LIMIT {
-        answered_tool_call(&mut peer, index).await;
-    }
-    assert_eq!(
-        reply_rows(&state).await,
-        (0, 0, 0),
-        "written tool calls leave no reply row or link"
-    );
-    worker.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn leaked_replies_of_a_settled_turn_do_not_block_a_new_tool_call() {
-    let state = State::new().await;
-    let mut peer = Peer::new();
-    let mut worker = running_tool_turn(&state, &mut peer).await;
+    let mut worker = running_tool_turn(&state, &mut peer, provider).await;
     let agent = state.agent.clone();
     state
         .bridge
         .run(move |store| async move {
             store
                 .transaction_with::<_, StoreError>(move |tx| {
-                    for index in 0..REPLY_LIMIT {
+                    for index in 0..FORMER_REPLY_CAP {
                         let identity = crate::provider_callbacks::ReplyIdentity {
                             context: crate::provider_callbacks::CallbackContext {
                                 agent: agent.clone(),
@@ -170,7 +172,7 @@ async fn leaked_replies_of_a_settled_turn_do_not_block_a_new_tool_call() {
                                 generation: 1,
                                 epoch: 0,
                                 thread: "fake-thread-0".into(),
-                                turn: "earlier-turn".into(),
+                                turn: "turn".into(),
                             },
                             rpc_id: studio_runtime_providers::RequestId::Number(index as u64),
                             attempt: format!("attempt-{index}"),
@@ -191,13 +193,79 @@ async fn leaked_replies_of_a_settled_turn_do_not_block_a_new_tool_call() {
             Ok(())
         })
         .await
-        .unwrap();
+        .expect("seed prepared replies of the live turn");
+    for index in 0..=FORMER_REPLY_CAP {
+        answered_tool_call(&mut peer, index).await;
+    }
     assert_eq!(
-        reply_rows(&state).await.0,
-        REPLY_LIMIT as i64,
-        "the account starts at its reply limit"
+        reply_rows(&state).await,
+        (FORMER_REPLY_CAP as i64, 0),
+        "tool calls add no reply row or link"
     );
-    answered_tool_call(&mut peer, 0).await;
-    assert_eq!(reply_rows(&state).await, (0, 0, 0));
-    worker.shutdown().await.unwrap();
+    worker.shutdown().await.expect("worker shutdown");
+}
+
+/// No write outcome (written, unknown, not sent, closed connection) leaves a
+/// reply row behind: none is ever created.
+async fn scenario_no_write_outcome_leaves_a_reply_row(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    for outcome in ["written", "unknown", "not-sent", "closed"] {
+        let state = State::new().await;
+        let mut peer = Peer::new();
+        let mut worker = running_tool_turn(&state, &mut peer, provider).await;
+        let (_cursor, callback) = tool_call(&mut peer, 0).await;
+        assert_eq!(
+            reply_rows(&state).await,
+            (0, 0),
+            "{outcome}: before the receipt"
+        );
+        match outcome {
+            "written" => drop(callback.receipt.send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })),
+            "unknown" => drop(callback.receipt.send(CommandReceipt::Unknown)),
+            "not-sent" => drop(callback.receipt.send(CommandReceipt::NotSent)),
+            _ => drop(callback.receipt),
+        }
+        // An uncertain callback write ends the worker with that error.
+        let shutdown = worker.shutdown().await;
+        if outcome == "written" {
+            shutdown.expect("worker shutdown");
+        }
+        assert_eq!(
+            reply_rows(&state).await,
+            (0, 0),
+            "{outcome}: after the receipt"
+        );
+    }
+}
+
+#[tokio::test]
+async fn codex_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call() {
+    scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn claude_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call() {
+    scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn codex_no_write_outcome_leaves_a_reply_row() {
+    scenario_no_write_outcome_leaves_a_reply_row(studio_runtime_providers::ProviderKind::Codex)
+        .await;
+}
+
+#[tokio::test]
+async fn claude_no_write_outcome_leaves_a_reply_row() {
+    scenario_no_write_outcome_leaves_a_reply_row(studio_runtime_providers::ProviderKind::Claude)
+        .await;
 }

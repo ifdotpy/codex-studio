@@ -357,7 +357,7 @@ impl PostCommitPort for PortBundle {
 }
 
 #[tokio::test]
-async fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dispatch_again() {
+async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {
     let (_root, store, context) = fixture().await;
     let ports = Arc::new(PortBundle::default());
     ports.dispatch_status.store(true, Ordering::SeqCst);
@@ -368,11 +368,15 @@ async fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dis
         "orchestration_status",
         json!({}),
     );
-    assert!(
+    // The effect committed, so the model must not be told it failed.
+    let first =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
             .await
-            .is_err()
-    );
+            .expect("a lost wake does not fail a committed tool call");
+    let CallbackDecision::Answer(first) = first else {
+        panic!("a committed tool call answers");
+    };
+    assert!(matches!(&first.body, ResponseBody::Result(value) if value["success"] == true));
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
     let connection = store.read().unwrap();
     let receipt = studio_runtime_store::system_reads::all(&connection, "runtime_tool_requests")
@@ -387,7 +391,13 @@ async fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dis
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
             .await
             .unwrap();
-    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    let CallbackDecision::Answer(replay) = replay else {
+        panic!("a replay answers from the durable result");
+    };
+    assert_eq!(
+        replay.body, first.body,
+        "the replay rebuilds the same answer"
+    );
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
 }
 
@@ -1867,7 +1877,7 @@ async fn every_managed_tool_runs_through_provider_callback_dispatch() {
 }
 
 #[tokio::test]
-async fn post_commit_failure_replays_saved_result_before_callback_reply() {
+async fn post_commit_wake_failure_answers_and_replays_without_staging_again() {
     let (_root, store, context) = fixture().await;
     let ports = Arc::new(PortBundle::default());
     ports.fail_release.store(true, Ordering::SeqCst);
@@ -1877,11 +1887,10 @@ async fn post_commit_failure_replays_saved_result_before_callback_reply() {
         "orchestration_status",
         json!({}),
     );
-    assert!(
+    let first =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
             .await
-            .is_err()
-    );
+            .expect("the staged effect committed, so the call answers");
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(ports.released.load(Ordering::SeqCst), 0);
     assert_eq!(intent_count(&store, "status"), 1);
@@ -1891,7 +1900,7 @@ async fn post_commit_failure_replays_saved_result_before_callback_reply() {
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
             .await
             .unwrap();
-    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    assert_eq!(replay, first, "the replay rebuilds the same answer");
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(intent_count(&store, "status"), 1);
 }

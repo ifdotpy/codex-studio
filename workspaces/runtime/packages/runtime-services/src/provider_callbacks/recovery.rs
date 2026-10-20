@@ -198,9 +198,9 @@ pub async fn recover_tool_requests_on_startup(
                     .ok_or(CallbackError::Stored("tool request id".into()))?;
                 settle_abandoned(tx, &mut record, now)?;
             }
-            let retired = storage::retire_settled_tool_replies(tx, None)?;
-            if retired > 0 {
-                eprintln!("Deleted {retired} prepared tool replies of settled turns");
+            let deleted = storage::delete_legacy_tool_replies(tx)?;
+            if deleted > 0 {
+                eprintln!("Deleted {deleted} legacy managed tool reply rows");
             }
             Ok(ids.len())
         })
@@ -346,7 +346,7 @@ mod context_tool_receipt_snapshot_tests {
 }
 
 #[cfg(test)]
-mod settled_tool_reply_tests {
+mod legacy_tool_reply_tests {
     use super::super::model::{CallbackContext, ReplyIdentity};
     use serde_json::{Value, json};
     use studio_runtime_providers::RequestId;
@@ -381,7 +381,7 @@ mod settled_tool_reply_tests {
     }
 
     #[tokio::test]
-    async fn startup_deletes_prepared_tool_replies_of_settled_turns_only() {
+    async fn startup_deletes_every_legacy_tool_reply_row_and_link() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = RuntimeStore::open(Some(directory.path()))
             .await
@@ -410,6 +410,10 @@ mod settled_tool_reply_tests {
                         [key, value],
                     )?;
                 }
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES('account-worker:callback:default:5:7:reply','receipt','\"key\"')",
+                    [],
+                )?;
                 Ok(())
             })
             .await
@@ -421,19 +425,19 @@ mod settled_tool_reply_tests {
                 .expect("startup recovery");
             let connection = store.read().expect("read connection");
             let mut statement = connection
-                .prepare("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' ORDER BY id")
+                .prepare("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' OR id LIKE 'account-worker:callback:%'")
                 .expect("reply query");
             let mut kept = statement
                 .query_map([], |row| row.get::<_, String>(0))
                 .expect("reply rows")
                 .collect::<Result<Vec<_>, _>>()
                 .expect("reply ids");
-            let mut expected = vec![live.0.clone(), card.0.clone(), unknown.0.clone()];
+            let mut expected = vec![card.0.clone(), unknown.0.clone()];
             kept.sort();
             expected.sort();
             assert_eq!(
                 kept, expected,
-                "only the live turn, card and unknown replies stay"
+                "prepared tool replies of any turn and their links go; card and unknown replies stay"
             );
         }
     }

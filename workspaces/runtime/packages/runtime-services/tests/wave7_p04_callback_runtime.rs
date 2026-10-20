@@ -224,7 +224,7 @@ async fn binding_after_http_commit_still_retires_payload_and_preserves_attempt()
 }
 
 #[tokio::test]
-async fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect() {
+async fn tool_replay_rebuilds_the_same_reply_without_reexecuting_effect() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let (_root, store, context) = fixture().await;
     let frame = Frame::Request(RequestFrame {
@@ -241,24 +241,24 @@ async fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect()
     else {
         panic!("answer")
     };
-    delivery(&store, &first.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    delivery(&store, &first.identity, DeliveryOutcome::NotSent)
-        .await
-        .unwrap();
     let CallbackDecision::Answer(second) = dispatch(Arc::clone(&store), &context, &frame, 11.0)
         .await
         .unwrap()
     else {
         panic!("answer")
     };
-    assert_eq!(first.body, second.body);
-    assert_ne!(first.identity.attempt, second.identity.attempt);
-    assert!(matches!(
-        delivery(&store, &first.identity, DeliveryOutcome::Written).await,
-        Err(CallbackError::Stale)
-    ));
+    // The durable tool result is the only copy of the answer.
+    assert_eq!(first, second, "a replay rebuilds the identical reply");
+    let replies: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(replies, 0, "a tool call keeps no reply row");
     let count: i64 = store
         .read()
         .unwrap()

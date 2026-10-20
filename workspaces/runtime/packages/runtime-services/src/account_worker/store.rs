@@ -2304,59 +2304,7 @@ fn settle_callback_in_transaction(
         row["ready"] = json!(true);
         replace(tx, &operation, "settled", row)?;
     }
-    // Every caller holds this cursor's written callback proof.
-    let callback = callback_operation(journal_scope, generation, cursor);
-    if let Some(reply) = receipt(tx, &callback, CALLBACK_REPLY_PHASE)? {
-        let key = reply.as_str().ok_or_else(|| invalid(&callback))?;
-        crate::provider_callbacks::delete_worker_written_reply(tx, key)
-            .map_err(|error| callback_store_error(error, &callback))?;
-        delete_receipt(tx, &callback, CALLBACK_REPLY_PHASE)?;
-    }
     compact(tx, journal_scope, generation)
-}
-
-/// The receipt phase that names the provider callback reply answering a
-/// callback cursor (value: that reply's receipt key).
-const CALLBACK_REPLY_PHASE: &str = "reply";
-
-fn callback_operation(journal_scope: &str, generation: u64, cursor: u64) -> String {
-    format!("callback:{journal_scope}:{generation}:{cursor}")
-}
-
-fn callback_store_error(
-    error: crate::provider_callbacks::CallbackError,
-    operation: &str,
-) -> WorkerError {
-    match error {
-        crate::provider_callbacks::CallbackError::Store(error) => error.into(),
-        _ => invalid(operation),
-    }
-}
-
-/// Link a managed tool reply to the callback cursor that writes it, so the
-/// written proof of that cursor deletes the reply. A cursor that already has
-/// its proof deletes the reply at once; the worker then only acknowledges it.
-pub(super) async fn link_callback_reply(
-    store: &RuntimeStore,
-    journal_scope: &str,
-    generation: u64,
-    cursor: u64,
-    reply_key: String,
-) -> Result<(), WorkerError> {
-    let journal_scope = journal_scope.to_owned();
-    store
-        .transaction_with(move |tx| {
-            let callback = callback_operation(&journal_scope, generation, cursor);
-            if cursor <= checkpoint(tx, &journal_scope, generation)?
-                || receipt(tx, &callback, "written")? == Some(json!(true))
-            {
-                crate::provider_callbacks::delete_worker_written_reply(tx, &reply_key)
-                    .map_err(|error| callback_store_error(error, &callback))?;
-                return Ok(());
-            }
-            replace(tx, &callback, CALLBACK_REPLY_PHASE, json!(reply_key))
-        })
-        .await
 }
 
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
