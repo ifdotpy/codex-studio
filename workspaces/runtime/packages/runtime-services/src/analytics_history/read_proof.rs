@@ -51,18 +51,49 @@ impl ReadProof {
             digest.update(&bytes[..count]);
             remaining -= count as u64;
         }
-        let after = self.file.metadata().map_err(|_| changed())?;
         let named = fs::metadata(&self.path).map_err(|_| changed())?;
         let actual: [u8; 32] = digest.finalize().into();
-        // Appends before verification are fine; changes during verification retry.
-        if actual != self.digest
-            || before.len() != after.len()
-            || before.modified().map_err(|_| changed())?
-                != after.modified().map_err(|_| changed())?
-            || filesystem_identity(&after) != filesystem_identity(&named)
-        {
+        // The digest proves the consumed prefix; appends beyond it are not a change.
+        if actual != self.digest || filesystem_identity(&before) != filesystem_identity(&named) {
             return Err(changed());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn proof(dir: &std::path::Path) -> (ReadProof, PathBuf) {
+        let path = dir.join("rollout.jsonl");
+        fs::write(&path, b"0123456789").expect("write");
+        let digest = Sha256::digest(b"0123456789").into();
+        let file = File::open(&path).expect("open");
+        (ReadProof::new(file, path.clone(), 0, 10, digest), path)
+    }
+
+    #[test]
+    fn append_after_the_read_range_is_not_a_change() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut proof, path) = proof(dir.path());
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("append");
+        file.write_all(b"more").expect("write");
+        proof.validate().expect("append is not a change");
+    }
+
+    #[test]
+    fn rewritten_prefix_is_a_change() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut proof, path) = proof(dir.path());
+        fs::write(&path, b"0123456780").expect("rewrite");
+        assert!(matches!(
+            proof.validate(),
+            Err(HistoryError::ChangedDuringRead)
+        ));
     }
 }
