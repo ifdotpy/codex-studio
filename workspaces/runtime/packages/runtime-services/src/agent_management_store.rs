@@ -309,10 +309,11 @@ fn execute_decision(
     let changes = crate::sync_policy::EntityChanges {
         agents: crate::sync_policy::agents_changed_since(transaction, generation)?
             .into_iter()
-            .map(|(id, _)| id)
+            .map(|(_, id, _)| id)
             .collect(),
         requests: written_ids(&decision.writes, "runtime_requests"),
         work: changed_work,
+        checked_agents: Vec::new(),
     };
     let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
     crate::sync_policy::publish_entity_changes(

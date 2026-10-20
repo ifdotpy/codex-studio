@@ -236,17 +236,14 @@ fn project_changed_agents(
     server_id: Option<&str>,
 ) -> Result<(), StoreError> {
     let mut changes = crate::sync_policy::EntityChanges::default();
-    for (row_id, raw) in crate::sync_policy::agents_changed_since(tx, generation)? {
-        let error = match AgentRepository::get(tx, &AgentId::from(row_id.as_str())) {
-            Ok(Some(_)) => {
-                changes.agents.insert(row_id);
+    for (rowid, row_id, raw) in crate::sync_policy::agents_changed_since(tx, generation)? {
+        // The row just read is checked as AgentRepository reads it, and
+        // publication reuses it instead of reading it again.
+        let error = match studio_runtime_store::decode_agent_value(&row_id, &raw) {
+            Ok(_) => {
+                changes.agents.insert(row_id.clone());
+                changes.checked_agents.push((rowid, row_id, raw));
                 continue;
-            }
-            Ok(None) => {
-                return Err(StoreError::InvalidSyncObject {
-                    scope: "runtime_agents".into(),
-                    id: row_id,
-                });
             }
             Err(error) => error,
         };

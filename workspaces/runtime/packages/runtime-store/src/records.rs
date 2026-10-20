@@ -960,7 +960,7 @@ pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> Store
 
 /// An agent row as checked JSON: the schema, the [`AgentRecord`] typed fields
 /// and the row key, without building the typed record.
-pub(crate) fn decode_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
+pub fn decode_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
     /// The fields [`AgentRecord`] types; every other field is free JSON.
     #[derive(Deserialize)]
     struct TypedFields<'a> {

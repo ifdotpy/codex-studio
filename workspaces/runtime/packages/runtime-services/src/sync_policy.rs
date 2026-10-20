@@ -449,6 +449,9 @@ pub struct EntityChanges {
     pub agents: BTreeSet<String>,
     pub requests: BTreeSet<String>,
     pub work: BTreeSet<String>,
+    /// Rows of `agents` this transaction already read and checked, as
+    /// (rowid, id, record); publication reads only the other agents.
+    pub checked_agents: Vec<(i64, String, String)>,
 }
 
 /// Publish the renderer views that depend on `changes`, using the same view
@@ -470,7 +473,18 @@ pub fn publish_entity_changes(
             agent_ids.insert(owner.to_owned());
         }
     }
-    let agents = records_by_id(transaction, "runtime_agents", &agent_ids)?;
+    let agents = {
+        let mut unread = agent_ids.clone();
+        for (_, id, _) in &changes.checked_agents {
+            unread.remove(id);
+        }
+        let mut rows = rows_by_id(transaction, "runtime_agents", &unread)?;
+        rows.extend(changes.checked_agents.iter().cloned());
+        rows.sort_unstable_by_key(|(rowid, _, _)| *rowid);
+        rows.into_iter()
+            .map(|(_, id, raw)| (id, raw))
+            .collect::<Vec<_>>()
+    };
     let mut liveness_changed = BTreeSet::new();
     let mut changed_roots = BTreeSet::new();
     for (id, raw) in &agents {
@@ -545,17 +559,22 @@ pub(crate) fn agent_record_generation(transaction: &Transaction<'_>) -> StoreRes
     )?)
 }
 
-/// Existing agent rows the trigger journal records as changed after `generation`.
+/// Existing agent rows the trigger journal records as changed after
+/// `generation`, as (rowid, id, record).
 pub(crate) fn agents_changed_since(
     transaction: &Transaction<'_>,
     generation: i64,
-) -> StoreResult<Vec<(String, String)>> {
+) -> StoreResult<Vec<(i64, String, String)>> {
     let mut statement = transaction.prepare_cached(
-        "SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c \
+        "SELECT a.rowid,a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c \
          ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id",
     )?;
     let rows = statement.query_map([generation], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
@@ -566,6 +585,18 @@ fn records_by_id(
     table: &str,
     ids: &BTreeSet<String>,
 ) -> StoreResult<Vec<(String, String)>> {
+    Ok(rows_by_id(transaction, table, ids)?
+        .into_iter()
+        .map(|(_, id, raw)| (id, raw))
+        .collect())
+}
+
+/// [`records_by_id`] with each row's rowid.
+fn rows_by_id(
+    transaction: &Transaction<'_>,
+    table: &str,
+    ids: &BTreeSet<String>,
+) -> StoreResult<Vec<(i64, String, String)>> {
     if ids.is_empty() || !table_exists(transaction, table)? {
         return Ok(Vec::new());
     }
@@ -584,7 +615,7 @@ fn records_by_id(
         }
     }
     rows.sort_unstable_by_key(|(rowid, _, _)| *rowid);
-    Ok(rows.into_iter().map(|(_, id, raw)| (id, raw)).collect())
+    Ok(rows)
 }
 
 /// Publish agent views; `work` must hold every work item the agents own.
