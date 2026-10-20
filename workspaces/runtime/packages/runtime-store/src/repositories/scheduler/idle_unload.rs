@@ -83,9 +83,29 @@ fn transfer_pending_predicate(connection: &Connection) -> StoreResult<String> {
         .to_owned())
 }
 
-/// SQL predicate over the `runtime_agents` row: a managed worker, an agent that
-/// is not a lead. Leads and ordinary chats are leads.
-const WORKER_AGENT_SQL: &str = "COALESCE(json_extract(record,'$.isLead'),0)=0";
+/// Work item statuses that are done: the owner expects no further turn for them.
+/// Any other status (`ready`, `running`, `blocked`, `review`) means a
+/// continuation, a rejection, or a follow-up may still reach the owner.
+const SETTLED_WORK_STATUSES: &str = "'accepted','cancelled'";
+
+/// SQL predicate over the `runtime_agents` row: a finished managed worker. It
+/// is not a lead (leads and ordinary chats are leads), it is not in the
+/// `waiting` state (pending children, watches, or a hold), and it owns no open
+/// work item. A waiting worker will likely get another turn soon, so it keeps
+/// the ordinary idle timer.
+fn finished_worker_sql(connection: &Connection) -> StoreResult<String> {
+    let mut predicate = "COALESCE(json_extract(record,'$.isLead'),0)=0 \
+         AND COALESCE(json_extract(record,'$.status'),'')!='waiting'"
+        .to_owned();
+    if table_exists(connection, "runtime_work")? {
+        predicate.push_str(&format!(
+            " AND NOT EXISTS(SELECT 1 FROM runtime_work w \
+             WHERE json_extract(w.record,'$.owner')=runtime_agents.id \
+             AND json_extract(w.record,'$.status') NOT IN ({SETTLED_WORK_STATUSES}))"
+        ));
+    }
+    Ok(predicate)
+}
 
 const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
      COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
@@ -94,7 +114,7 @@ const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
 impl SchedulerRepository {
     /// Read the durable status of known loaded threads and the account in one
     /// bounded query. The candidate list comes from one provider snapshot.
-    /// Returns the busy threads, the threads of managed workers, and whether
+    /// Returns the busy threads, the threads of finished managed workers, and whether
     /// the account is in use.
     pub fn idle_unload_usage_snapshot(
         connection: &Connection,
@@ -159,7 +179,7 @@ impl SchedulerRepository {
         ))
     }
 
-    /// The members of `threads` owned by a live managed worker of `account`.
+    /// The members of `threads` owned by a live, finished managed worker of `account`.
     pub fn idle_unload_worker_threads(
         connection: &Connection,
         account: &str,
@@ -173,10 +193,11 @@ impl SchedulerRepository {
                 .collect(),
         )
         .to_string();
+        let finished = finished_worker_sql(connection)?;
         let mut statement = connection.prepare_cached(&format!(
             "SELECT DISTINCT json_extract(record,'$.threadId') FROM runtime_agents WHERE \
              COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
-             AND json_extract(record,'$.deletedAt') IS NULL AND {WORKER_AGENT_SQL} \
+             AND json_extract(record,'$.deletedAt') IS NULL AND {finished} \
              AND json_extract(record,'$.threadId') IN (SELECT value FROM json_each(?2))"
         ))?;
         let rows = statement.query_map([account, &encoded_threads], |row| row.get(0))?;
@@ -242,6 +263,7 @@ mod tests {
                    status TEXT, created REAL, epoch INTEGER, turn_id TEXT, error TEXT);
                  CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
             )
             .expect("schema creates");
@@ -472,6 +494,32 @@ mod tests {
             SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &threads)
                 .expect("usage snapshot reads");
         assert_eq!(snapshot_workers, workers());
+        agent(
+            &connection,
+            "chat",
+            json!({"isLead":false,"status":"waiting"}),
+        );
+        assert!(
+            workers().is_empty(),
+            "a waiting worker keeps the idle timer"
+        );
+        agent(&connection, "chat", json!({"isLead":false}));
+        for status in ["review", "ready", "running", "blocked"] {
+            connection
+                .execute(
+                    "INSERT OR REPLACE INTO runtime_work(id,record) VALUES('w',?1)",
+                    [json!({"id":"w","owner":"chat","status":status}).to_string()],
+                )
+                .expect("work writes");
+            assert!(workers().is_empty(), "{status} work keeps the idle timer");
+        }
+        connection
+            .execute(
+                "UPDATE runtime_work SET record=json_set(record,'$.status','accepted')",
+                [],
+            )
+            .expect("work settles");
+        assert_eq!(workers().len(), 1, "accepted work finishes the worker");
         agent(&connection, "chat", json!({"isLead":false,"deletedAt":1.0}));
         assert!(workers().is_empty(), "a deleted worker holds nothing");
         agent(

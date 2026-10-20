@@ -6,7 +6,7 @@
 //! and that this worker has no request for starts its idle clock; a thread
 //! idle for the `idleSessionUnloadMinutes` setting is unsubscribed after the
 //! provider confirms it is idle with no background terminal or queued input;
-//! a managed worker (an agent that is not a lead) is due as soon as its turn
+//! a finished managed worker (not a lead, not waiting, no open work) is due as soon as its turn
 //! settles, [`WORKER_UNLOAD_DELAY`]. The next turn's `thread/resume` reloads
 //! the thread with its history.
 //! When every loaded thread is unsubscribed and the worker holds no request,
@@ -29,7 +29,7 @@ pub(super) fn session_status_invalidates_snapshot(
     status.generation != generation || status.initialization != InitializationStatus::Ready
 }
 
-/// How long a managed worker's loaded provider thread with a settled turn and no
+/// How long a finished managed worker's loaded provider thread with a settled turn and no
 /// pending input, request, or background work stays loaded; unit: wall time.
 /// Zero unloads it as soon as its turn settles, so provider memory follows
 /// running workers, not loaded agents (leads and ordinary chats keep the
@@ -68,7 +68,7 @@ pub(super) type IdleSnapshotResult =
 #[derive(Default)]
 pub(super) struct IdleUsageSnapshot {
     busy_threads: BTreeSet<String>,
-    /// Candidates owned by managed workers, which unload at once.
+    /// Candidates owned by finished managed workers, which unload at once.
     worker_threads: BTreeSet<String>,
     account_in_use: bool,
     /// Watch generation before the authoritative database read.
@@ -89,7 +89,7 @@ pub(super) struct IdleClocks {
     loaded: BTreeSet<String>,
     /// When each loaded thread was first seen unused, since its last use.
     threads: BTreeMap<String, Instant>,
-    /// Loaded managed workers; they unload at [`WORKER_UNLOAD_DELAY`].
+    /// Loaded finished managed workers; they unload at [`WORKER_UNLOAD_DELAY`].
     workers: BTreeSet<String>,
     /// One cause per thread determines which event source may retry it.
     blocked: BTreeMap<String, IdleBlocker>,

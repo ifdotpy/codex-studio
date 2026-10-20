@@ -555,11 +555,35 @@ async fn claude_input_at_turn_completion_is_not_raced_by_unload() {
     .await;
 }
 
-/// A managed worker's thread unloads as soon as its turn settles; a lead's or
-/// ordinary chat's thread stays loaded until the idle setting elapses.
+/// Give the test agent a submitted result that awaits its lead's review: the
+/// lead may reject it, which sends the worker another turn.
+async fn set_waiting_for_review(state: &State) {
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    studio_runtime_store::WorkItemsRepository::put_work(
+                        tx,
+                        "task",
+                        &json!({"id":"task","rootId":"lead","owner":agent_id,"status":"review"}),
+                    )
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+/// A finished managed worker's thread unloads as soon as its turn settles; a
+/// lead's or ordinary chat's thread, and a waiting worker's thread, stay loaded
+/// until the idle setting elapses.
 async fn scenario_unload_timing_follows_the_agent_role(
     provider: studio_runtime_providers::ProviderKind,
     lead: bool,
+    waiting: bool,
 ) {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -568,13 +592,16 @@ async fn scenario_unload_timing_follows_the_agent_role(
     peer.accepted(&start).await;
     enable_unload(&state, &mut peer).await;
     set_lead(&state, lead).await;
+    if waiting {
+        set_waiting_for_review(&state).await;
+    }
 
     progress(peer.completed()).await;
-    if lead {
+    if lead || waiting {
         progress(worker_barrier(&worker)).await;
         assert!(
             peer.writes.try_recv().is_err(),
-            "a settled lead stays loaded before the idle setting elapses"
+            "a settled lead or waiting worker stays loaded before the idle setting elapses"
         );
         sweep(&worker).await;
     }
@@ -587,11 +614,12 @@ async fn scenario_unload_timing_follows_the_agent_role(
 }
 
 #[tokio::test]
-async fn codex_worker_unloads_at_settle_and_lead_waits_for_the_setting() {
-    for lead in [false, true] {
+async fn codex_finished_worker_unloads_at_settle_and_lead_or_waiting_worker_waits() {
+    for (lead, waiting) in [(false, false), (true, false), (false, true)] {
         scenario_unload_timing_follows_the_agent_role(
             studio_runtime_providers::ProviderKind::Codex,
             lead,
+            waiting,
         )
         .await;
     }
@@ -599,11 +627,12 @@ async fn codex_worker_unloads_at_settle_and_lead_waits_for_the_setting() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn claude_worker_unloads_at_settle_and_lead_waits_for_the_setting() {
-    for lead in [false, true] {
+async fn claude_finished_worker_unloads_at_settle_and_lead_or_waiting_worker_waits() {
+    for (lead, waiting) in [(false, false), (true, false), (false, true)] {
         scenario_unload_timing_follows_the_agent_role(
             studio_runtime_providers::ProviderKind::Claude,
             lead,
+            waiting,
         )
         .await;
     }
