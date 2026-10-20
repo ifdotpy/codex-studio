@@ -1990,11 +1990,27 @@ impl Worker {
     /// Finish a commit on the worker: a VM actor first opens its own session
     /// and commits on it here; every committed request is then written.
     async fn committed(&mut self, committed: submission::Committed) -> Result<(), WorkerError> {
-        let (commit, launch) = match committed {
+        let ready = match committed {
             submission::Committed::Nothing => return Ok(()),
-            submission::Committed::Ready(ready) => return self.write(*ready).await,
-            submission::Committed::Vm(commit, launch) => (*commit, launch),
+            submission::Committed::Ready(ready) => Some(ready),
+            // Boxed: the VM path stays out of this future, which every
+            // submission polls on the worker's stack.
+            submission::Committed::Vm(commit, launch) => {
+                Box::pin(self.committed_vm(*commit, launch)).await?
+            }
         };
+        match ready {
+            Some(ready) => self.write(*ready).await,
+            None => Ok(()),
+        }
+    }
+    /// Open the VM actor's session and finish its commit; the request to
+    /// write, if any.
+    async fn committed_vm(
+        &mut self,
+        commit: submission::Commit,
+        launch: Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
+    ) -> Result<Option<Box<submission::Ready>>, WorkerError> {
         let method = commit.method;
         let actor_session = match self.ensure_vm_session(launch).await {
             Ok(session) => session,
@@ -2008,14 +2024,14 @@ impl Worker {
                         .await
                     })
                     .await?;
-                return Ok(());
+                return Ok(None);
             }
             // Stop already committed the actor's new epoch and disabled
             // wake. A stale provider session must not receive an interrupt
             // under the replacement identity; retain the existing receipt
             // state for recovery instead of failing the account worker.
-            Err(WorkerError::PreparationRefused(_)) => return Ok(()),
-            Err(WorkerError::StaleVmActor) => return Ok(()),
+            Err(WorkerError::PreparationRefused(_)) => return Ok(None),
+            Err(WorkerError::StaleVmActor) => return Ok(None),
             Err(error) => return Err(error),
         };
         let control = actor_session
@@ -2027,10 +2043,10 @@ impl Worker {
             })
             .unwrap_or_else(|| self.control.clone());
         let vm = actor_session.is_some();
-        match self.drive(commit.finish(control, vm)).await? {
-            submission::Committed::Ready(ready) => self.write(*ready).await,
-            _ => Ok(()),
-        }
+        Ok(match self.drive(commit.finish(control, vm)).await? {
+            submission::Committed::Ready(ready) => Some(ready),
+            _ => None,
+        })
     }
     /// The only serialized step of a submission: the provider write of a
     /// request whose FULL submitted commit has already returned.
@@ -2044,7 +2060,8 @@ impl Worker {
             vm,
         } = ready;
         if self.closing {
-            return self.settle_unwritten(id, context, method).await;
+            // Boxed: keeps the rare closing path out of the hot `write` future.
+            return Box::pin(self.settle_unwritten(id, context, method)).await;
         }
         self.pending.insert(id.clone(), context);
         let admission = control.submit(prepared);
