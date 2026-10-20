@@ -26,7 +26,13 @@ test("Scroll restart", async () => {
     cacheDir: cache,
     optimizeDeps: {
       noDiscovery: true,
-      include: ["react", "react-dom/client"],
+      include: [
+        "react",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+        "react-dom/client",
+        "dexie",
+      ],
     },
     server: { host: "127.0.0.1", port: 0, hmr: false },
     plugins: [
