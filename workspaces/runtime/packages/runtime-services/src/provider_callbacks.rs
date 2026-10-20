@@ -31,6 +31,7 @@ pub use storage::{
     DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,
     submission_ready,
 };
+pub(crate) use storage::{delete_worker_written_reply, reply_key};
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
 

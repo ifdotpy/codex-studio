@@ -1,7 +1,7 @@
 //! Existing operation receipts hold protected response payloads. They are not
 //! request-card history and are never copied to sync projections.
 use super::model::*;
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_providers::ResponseBody;
 use studio_runtime_store::{EventWriteRepository, RuntimeStore, system_reads as records};
@@ -73,8 +73,14 @@ pub(super) fn save_reply(
     reply: &Reply,
 ) -> Result<(), CallbackError> {
     input.check_context(&reply.identity.context)?;
-    let outstanding: i64 = tx.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.delivery') IN ('prepared','submitted','unknown')", [&reply.identity.context.account], |r| r.get(0))?;
-    if outstanding >= MAX_PENDING as i64 {
+    let account = &reply.identity.context.account;
+    let mut outstanding = outstanding_replies(tx, account)?;
+    if outstanding >= MAX_PENDING {
+        // Count only replies that a live provider request can still receive.
+        retire_settled_tool_replies(tx, Some(account))?;
+        outstanding = outstanding_replies(tx, account)?;
+    }
+    if outstanding >= MAX_PENDING {
         return Err(CallbackError::Invalid(
             "Too many unresolved provider replies",
         ));
@@ -89,6 +95,90 @@ pub(super) fn save_reply(
         &json!({"identity":reply.identity,"signature":input.signature(),"body":body,"delivery":"prepared"}),
     )
 }
+fn outstanding_replies(tx: &Transaction<'_>, account: &str) -> Result<usize, CallbackError> {
+    let count: i64 = tx.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.delivery') IN ('prepared','submitted','unknown')", [account], |r| r.get(0))?;
+    usize::try_from(count).map_err(|_| CallbackError::Stored("provider callback count".into()))
+}
+
+/// The receipt key of a reply, for the account worker's written-proof link.
+pub(crate) fn reply_key(identity: &ReplyIdentity) -> String {
+    identity.key()
+}
+
+/// Only the account worker sends a managed tool reply, and it keeps its own
+/// submitted and written receipts for the journal cursor. This row only caches
+/// the answer for a replay of that cursor. The durable tool result rebuilds the
+/// same answer, and the worker's written receipt and checkpoint stop a second
+/// send. So after the worker proves the write, the row and its body go, as
+/// Python keeps no reply payload after its write.
+pub(crate) fn delete_worker_written_reply(
+    tx: &Transaction<'_>,
+    key: &str,
+) -> Result<bool, CallbackError> {
+    let Some(saved) = read(tx, key)? else {
+        return Ok(false);
+    };
+    if saved.get("toolRequest").is_none() || saved["delivery"] != "prepared" {
+        return Ok(false);
+    }
+    let changed = tx.execute(
+        "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature='provider-callback'",
+        [key],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Delete prepared managed tool replies whose exact callback context is no
+/// longer the agent's live turn: the agent is gone or deleted, or its epoch,
+/// account, thread, turn, connection or generation changed. No provider
+/// request can still receive such a reply: a reply never goes to a replacement
+/// connection, and a replay fails the same context check before it reads this
+/// row. Deleting it sends nothing. A row whose agent record cannot be decoded
+/// stays, because nothing proves that its turn settled.
+pub(crate) fn retire_settled_tool_replies(
+    tx: &Transaction<'_>,
+    account: Option<&str>,
+) -> Result<usize, CallbackError> {
+    let rows = {
+        let mut stmt = tx.prepare_cached("SELECT id,result FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery')='prepared' AND json_extract(result,'$.toolRequest') IS NOT NULL AND (?1 IS NULL OR json_extract(result,'$.identity.context.account')=?1)")?;
+        stmt.query_map([account], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut retired = 0;
+    for (id, raw) in rows {
+        let Some(identity) = serde_json::from_str::<Value>(&raw)
+            .ok()
+            .and_then(|saved| {
+                serde_json::from_value::<ReplyIdentity>(saved["identity"].clone()).ok()
+            })
+            .filter(|identity| identity.key() == id)
+        else {
+            continue;
+        };
+        let actor: Option<String> = tx
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [&identity.context.agent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let settled = match actor {
+            None => true,
+            Some(raw) => match CallbackSnapshot::from_record(&raw, &identity.context) {
+                Ok(snapshot) => studio_runtime_store::truthy(snapshot.actor().get("deletedAt")),
+                Err(CallbackError::Stale) => true,
+                Err(_) => false,
+            },
+        };
+        if settled && delete_worker_written_reply(tx, &id)? {
+            retired += 1;
+        }
+    }
+    Ok(retired)
+}
+
 pub(super) fn saved_reply(
     tx: &Transaction<'_>,
     identity: &ReplyIdentity,
