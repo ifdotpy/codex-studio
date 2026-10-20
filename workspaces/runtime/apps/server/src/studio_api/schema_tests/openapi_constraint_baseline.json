@@ -377,6 +377,30 @@
       "candidate": "None"
     },
     {
+      "pointer": "/components/schemas/AnswerBody/properties/paste",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AnswerBody/properties/paste",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AnswerBody/properties/result",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AnswerBody/properties/result",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP95Ms",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -2061,6 +2085,30 @@
       "constraint": "enum",
       "baseline": "['image', 'layr', 'worktree']",
       "candidate": "['image', 'layr', 'shared', 'worktree']"
+    },
+    {
+      "pointer": "/paths/~1api~1answer/post/requestBody/content/application~1json/schema/properties/paste",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/paths/~1api~1answer/post/requestBody/content/application~1json/schema/properties/paste",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/paths/~1api~1answer/post/requestBody/content/application~1json/schema/properties/result",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/paths/~1api~1answer/post/requestBody/content/application~1json/schema/properties/result",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/paths/~1api~1multi-server/post/requestBody/content/application~1json/schema",

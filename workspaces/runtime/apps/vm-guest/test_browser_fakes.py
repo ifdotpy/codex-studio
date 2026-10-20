@@ -1,11 +1,13 @@
-"""Fakes for the browser bridge tests: a sign-in provider and two sign-in tools.
+"""Fakes for the browser bridge tests: a sign-in provider and three sign-in tools.
 
 They copy what docs/vm-browser-bridge.md measured. A kubelogin-style tool listens on a fixed
 port, opens its own page `http://localhost:PORT/` with `xdg-open`, and that page redirects to
 the provider with `redirect_uri=http://localhost:PORT`. An AWS-style tool listens on a random
 port, opens the provider page directly with `$BROWSER`, and uses
-`redirect_uri=http://127.0.0.1:PORT/oauth/callback`. Each tool posts the code to the provider
-after its callback, as a real tool does. No real provider and no real browser take part.
+`redirect_uri=http://127.0.0.1:PORT/oauth/callback`. A device-style tool opens the provider's
+verification page with a `user_code` and needs no forward. Each tool posts the code to the
+provider after its callback, as a real tool does. No real provider and no real browser take
+part.
 """
 from __future__ import annotations
 
@@ -61,6 +63,7 @@ class FakeProvider:
         self.origin = f"127.0.0.1:{self.port}"
         self.tokens: list[dict[str, list[str]]] = []
         self.codes: list[str] = []
+        self.devices: list[str] = []
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def authorize_url(self, redirect_uri: str, state: str) -> str:
@@ -71,13 +74,19 @@ class FakeProvider:
     def get(self, handler: _Handler) -> None:
         parts = urlsplit(handler.path)
         query = parse_qs(parts.query)
+        if parts.path == "/device":
+            # The verification page of a device code flow: the person confirms the code here.
+            self.devices.extend(query.get("user_code", []))
+            handler.send(200, b"<html>Device confirmed</html>", (("Content-Type", "text/html"),))
+            return
         if parts.path != "/authorize":
             handler.send(404)
             return
         code = "code-" + secrets.token_hex(4)
         self.codes.append(code)
         target = query["redirect_uri"][0]
-        handler.send(302, headers=(("Location", target + "?" + urlencode({"code": code, "state": query["state"][0]})),))
+        result = {"code": code, **({"state": query["state"][0]} if "state" in query else {})}
+        handler.send(302, headers=(("Location", target + "?" + urlencode(result)),))
 
     def post(self, handler: _Handler) -> None:
         body = handler.rfile.read(int(handler.headers.get("Content-Length") or 0)).decode()
@@ -115,6 +124,11 @@ class FakeTool:
             self.redirect_uri = f"http://localhost:{self.port}"
             self.callback_path = "/"
             self.open_url = f"http://localhost:{self.port}/"
+        elif style == "device":
+            # AWS-style device code: the verification page with the code; no redirect.
+            self.redirect_uri = ""
+            self.callback_path = ""
+            self.open_url = f"http://{provider.origin}/device?user_code=ABCD-EFGH"
         else:
             self.redirect_uri = f"http://127.0.0.1:{self.port}/oauth/callback"
             self.callback_path = "/oauth/callback"

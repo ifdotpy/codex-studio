@@ -702,6 +702,15 @@ class SchemaContractTests(unittest.TestCase):
         ):
             add(pointer, "property")
 
+        # Sign-in from any window: the paste mode flag and the pasted redirect address
+        # (docs/vm-browser-bridge.md, section 6.3).
+        for field in ("paste", "result"):
+            for prefix in (
+                "/components/schemas/AnswerBody/properties",
+                "/paths/~1api~1answer/post/requestBody/content/application~1json/schema/properties",
+            ):
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
         # Shared-workspace children: CreateAgentRequest.workspaceMode gains "shared".
         for pointer in (
             "/components/schemas/CreateAgentRequest/properties/workspaceMode",

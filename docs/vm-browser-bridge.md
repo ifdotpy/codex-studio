@@ -1,7 +1,8 @@
 # VM browser bridge
 
 Status: the first slice is implemented (sections 2 to 4). The measurements are from
-2026-10-11, against `origin/main` at `07ea99c7`.
+2026-10-11, against `origin/main` at `07ea99c7`. Section 6 (sign-in from a phone or any
+window) was designed and implemented on 2026-10-20.
 
 ## Goal
 
@@ -460,7 +461,7 @@ there opens on the Mac where the person works.
 
 ## 6. Sign-in from a phone or any window
 
-Status: design of 2026-10-20. Sections 6.1 to 6.4 are the contract for the Python and the
+Status: design of 2026-10-20. Sections 6.1 to 6.5 are the contract for the Python and the
 Rust backend.
 
 The person must be able to sign in from the phone, for a command on any server: a native
@@ -521,11 +522,13 @@ at phone width (one column, buttons in a row that wraps).
   command" and "Cancel sign-in".
 - A refusal stays on the card as an error: port in use (with "Paste instead"), state mismatch,
   wrong port or path, expired, the command stopped.
-- Final state: the card closes, the window shows "Signed in", "The command refused the result",
-  "The provider returned an error", or "The result is unknown", and Studio adds one event with
-  the same text to the chat, so the person and the agent see it later. A decline adds the
-  existing decline event. A request that expires before the approval only closes its card, as
-  before.
+- Final state: the card closes and Studio adds one event to the chat that names the outcome:
+  signed in (the command accepted the result), the command refused the result, the provider
+  returned an error, the result is unknown, or the request ended without a result. The person
+  and the agent both see it. After a paste the window says "Studio sent the sign-in result to
+  the command. The chat shows how it ended."; an unknown or expired result is an error on the
+  card. A decline or a cancel adds the decline event. A request that expires before the
+  approval only closes its card, as before.
 
 ### 6.3 Protocol
 
@@ -632,6 +635,19 @@ All rules of section 2(d) stay. Paste adds:
 What only a live run can prove: iOS Safari and Android Chrome copy the full address of the
 failed page; a phone browser opens the provider page from the installed web app; a real
 provider with a real account.
+
+### 6.6 Tests
+
+- `test_browser_bridge.py` (guest), `Policy`: `state` and `user_code` of provider links, and
+  the accepted and refused shapes of a pasted address.
+- `test_codex_browser_bridge.py` (Python server), `PhoneWindow`: the real guest bridge, the real
+  shim, the fake provider and fake tools. A kubelogin-style and an AWS-style redirect pasted
+  once reach the tool once (also without `http://`); state, port, path, scheme and host
+  mismatches relay nothing; a link without `state` refuses a paste; a paste after the lease
+  deadline expires the card; a lost reply is `unknown` and is never sent again; two pastes at
+  the same time send one code; cancel closes the guest request; a stopped tool ends the
+  waiting card with a chat event; a device code link opens from a phone without a forward.
+  `NativeChats`: a phone signs in to a command of a headless server by paste.
 
 ## Decisions
 

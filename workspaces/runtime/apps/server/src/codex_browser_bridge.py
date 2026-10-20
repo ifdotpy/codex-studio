@@ -585,7 +585,7 @@ class Bridge:
         if paste and isinstance(redirect, dict):
             lease = answered.get("lease") if isinstance(answered, dict) else None
             expires = lease.get("expiresAt") if isinstance(lease, dict) else None
-            if type(expires) not in {int, float}:
+            if not isinstance(expires, (int, float)) or isinstance(expires, bool):
                 raise ValueError("Studio could not reach the VM. Try again.")
             self.wait_for_paste(key, float(expires))
             return {"status": "answered", "openUrl": url}
