@@ -101,6 +101,11 @@ fn async_executor_worker_threads(
 }
 
 fn main() {
+    // The launcher of agent sign-in links runs this binary (`browser_host::write_launcher`).
+    #[cfg(unix)]
+    if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
+        std::process::exit(code);
+    }
     std::panic::set_hook(Box::new(|panic| {
         eprintln!("{}", panic_observed_log(panic.location()));
     }));
@@ -914,6 +919,35 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         monitor_runtime,
         monitor_shutdown.subscribe(),
     );
+    // Sign-in links of agents (docs/vm-browser-bridge.md): the host bridge of native chats
+    // serves the launcher and control sockets; one poll for each source writes the cards.
+    #[cfg(unix)]
+    let browser_host = match studio_runtime_services::browser_host::HostBridgeService::start(
+        &state_root,
+        Arc::new(studio_runtime_services::browser_host::StoreChats {
+            store: Arc::clone(&store),
+        }),
+        Default::default(),
+        env::current_exe().ok().as_deref(),
+    ) {
+        Ok(service) => Some(service),
+        Err(error) => {
+            eprintln!("browser bridge for native chats: {error}");
+            None
+        }
+    };
+    let browser_card_tasks: Vec<_> = state
+        .browser_card_sources()
+        .into_iter()
+        .map(|source| {
+            tokio::spawn(studio_runtime_services::browser_cards::run(
+                Arc::clone(&store),
+                source,
+                Some(state.event_wake_handle()),
+                monitor_shutdown.subscribe(),
+            ))
+        })
+        .collect();
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
@@ -1240,6 +1274,13 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     shutdown_join("federation delivery task", federation_task).await??;
     shutdown_join("continuation scheduler task", continuation_task).await??;
     shutdown_join("held turn release task", auth_release_task).await??;
+    for task in browser_card_tasks {
+        shutdown_join("browser card poll", task).await??;
+    }
+    #[cfg(unix)]
+    if let Some(service) = browser_host {
+        shutdown_join("browser host bridge", service.stop()).await?;
+    }
     shutdown_join("storage retention task", retention_task).await??;
     shutdown_join("analytics projection task", analytics_projection_task).await??;
     if let Some(task) = orchestration_task {

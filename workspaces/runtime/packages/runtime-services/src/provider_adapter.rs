@@ -386,12 +386,19 @@ impl ProviderAdapter for ClaudeAdapter {
     fn host_launch(&self, input: HostLaunch<'_>) -> Result<ProviderLaunch, WorkerError> {
         // The bridge runs in the account's server directory, as in Python, because
         // its session snapshots there let an agent that Python started resume.
+        let bridge_root = account_server_root(&input.root, input.account);
         let (spec, executable) = claude_launch(
             input.profile,
             input.claude_bridge_dir,
-            account_server_root(&input.root, input.account),
+            bridge_root.clone(),
             input.environment,
         )?;
+        // The bridge gives each Claude session the browser link launcher of this server
+        // (docs/vm-browser-bridge.md, "Native chats").
+        #[cfg(unix)]
+        if let Err(error) = crate::browser_host::publish(&bridge_root, &input.root) {
+            eprintln!("browser launcher for Claude sessions: {error}");
+        }
         Ok(ProviderLaunch {
             spec,
             executable: Some(executable.to_string_lossy().into_owned()),

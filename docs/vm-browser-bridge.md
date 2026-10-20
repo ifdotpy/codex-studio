@@ -589,11 +589,17 @@ chat stops; the existing rules then expire the pending record.
 
 - Python (`codex_browser_bridge.py`): the paste mode, the paste relay and the outcome. The
   guest (`browser_policy.py`) adds `state` and `user_code`. No guest protocol change.
-- Rust: the backend answers cards (`browser_answer.rs`) but has no card source yet: it does not
-  poll `browser.wait` and it serves no host bridge socket, so no sign-in card appears on a
-  Rust server. The Rust work adds the poll of the VM guest, an in-process host bridge with the
-  same sockets and file format as `codex_browser_host.py`, the URL rules with a parity test
-  against `browser_policy.py`, and the paste relay of section 6.3.
+- Rust (`runtime-services`): before this change the backend answered cards but had no card
+  source, so no sign-in card appeared on a Rust server. Now:
+  - `browser_policy.rs` ports the URL rules; `tests/browser_policy_differential.rs` runs both
+    on one corpus.
+  - `browser_cards.rs` long-polls `browser.wait` of the host bridge on every server and of the
+    VM guest on a Mac, and writes and expires cards as `Bridge.apply` does.
+  - `browser_host.rs` is the in-process host bridge: `open.sock`, `control.sock` and
+    `browser/requests.json` as `codex_browser_host.py` writes them. The launcher
+    `<state>/browser-host/studio-browser` runs the server binary with `--studio-browser URL`,
+    so it needs no Python. `studio-browser.json` reaches each Claude bridge root.
+  - `browser_answer.rs` has paste mode and the paste relay of section 6.3.
 - Host agents: `BROWSER`, `STUDIO_BROWSER_SOCKET` and `STUDIO_BROWSER_SESSION` reach Claude
   sessions through `studio-browser.json` and Codex threads through the per-thread
   `shell_environment_policy.set` overrides. The Codex app-server launch command does not
