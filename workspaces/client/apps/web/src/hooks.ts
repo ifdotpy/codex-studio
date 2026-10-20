@@ -15,7 +15,6 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
 } from "react";
@@ -34,7 +33,9 @@ import {
   initialSnapshotProjectionStatus,
   snapshotProjectionError,
   snapshotProjectionStatusReducer,
+  type SnapshotProjectionStatusAction,
 } from "./hooks/snapshotProjectionStatus";
+import type { UsageAccount } from "./components/Usage";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
 import type {
   Agent,
@@ -47,6 +48,7 @@ import type {
 import {
   createChatSnapshotSelector,
   retainArray,
+  retainUsageAccounts,
 } from "./hooks/snapshotSelection";
 // Event callbacks see the latest committed selection without invalidating
 // consumers when another chat changes. Never call these during render.
@@ -63,6 +65,16 @@ export function useCommittedCallback<Args extends unknown[], Result>(
 export function useRetainedArray<T>(values: T[]): T[] {
   const previous = useRef(values);
   const selected = retainArray(previous.current, values);
+  useLayoutEffect(() => {
+    previous.current = selected;
+  }, [selected]);
+  return selected;
+}
+
+// A team change that leaves every account unchanged keeps the array identity.
+export function useRetainedUsageAccounts(values: UsageAccount[]) {
+  const previous = useRef(values);
+  const selected = retainUsageAccounts(previous.current, values);
   useLayoutEffect(() => {
     previous.current = selected;
   }, [selected]);
@@ -93,9 +105,23 @@ export function useSnapshot(
     acceptUiPreferences ?? (() => {}),
   );
   const [data, setData] = useState<Snapshot | null>(null);
-  const [projectionStatus, dispatchProjectionStatus] = useReducer(
-    snapshotProjectionStatusReducer,
+  // A repeated report must not even call the owner's render: a reducer
+  // dispatch runs the component body before it can bail out.
+  const projectionStatusRef = useRef(initialSnapshotProjectionStatus);
+  const [projectionStatus, setProjectionStatus] = useState(
     initialSnapshotProjectionStatus,
+  );
+  const dispatchProjectionStatus = useCallback(
+    (action: SnapshotProjectionStatusAction) => {
+      const next = snapshotProjectionStatusReducer(
+        projectionStatusRef.current,
+        action,
+      );
+      if (next === projectionStatusRef.current) return;
+      projectionStatusRef.current = next;
+      setProjectionStatus(next);
+    },
+    [],
   );
   const [workspaceId, setWorkspaceId] = useState("");
   const [created, setCreated] = useState<{ scope: string; agents: Agent[] }>(

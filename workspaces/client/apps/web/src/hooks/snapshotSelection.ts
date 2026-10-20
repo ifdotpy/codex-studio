@@ -1,9 +1,33 @@
 import { roomLeadIds } from "../chatScope";
+import type { UsageAccount } from "../components/Usage";
 import type { Snapshot } from "../types";
 
 export function retainArray<T>(previous: T[], next: T[]): T[] {
   return previous.length === next.length &&
     previous.every((value, index) => value === next[index])
+    ? previous
+    : next;
+}
+
+/** Accounts equal in every shown field keep the previous array and its loaders. */
+export function retainUsageAccounts(
+  previous: UsageAccount[],
+  next: UsageAccount[],
+): UsageAccount[] {
+  return previous.length === next.length &&
+    previous.every((old, index) => {
+      const value = next[index];
+      return (
+        old.key === value.key &&
+        old.label === value.label &&
+        old.email === value.email &&
+        old.provider === value.provider &&
+        old.accountId === value.accountId &&
+        old.signedOut === value.signedOut &&
+        old.limits === value.limits &&
+        old.loading === value.loading
+      );
+    })
     ? previous
     : next;
 }

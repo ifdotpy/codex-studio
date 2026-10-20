@@ -97,6 +97,7 @@ import {
   useCallback,
   useMemo,
   useEffect,
+  useLayoutEffect,
   lazy,
   useRef,
   useState,
@@ -109,6 +110,7 @@ import { ApiError, errorText, type PostBody, untilAnswered } from "./api";
 import {
   useSnapshot,
   useChatSnapshot,
+  useRetainedUsageAccounts,
   useCommittedCallback,
   useRetainedArray,
 } from "./hooks";
@@ -128,6 +130,10 @@ import {
 } from "./studioPreferences";
 import { type OutgoingMessage } from "./sync/send";
 import { useServerDrafts as useSyncedDrafts } from "./servers/ServerServicesContext";
+import {
+  ChatWaitSource,
+  createConversationDataSelector,
+} from "./hooks/conversationData";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
 import {
   busy,
@@ -941,6 +947,15 @@ export default function App({ active = true }: { active?: boolean }) {
       : cachedLimits || null;
   const chatData = useChatSnapshot(data, lead?.id);
   const scopedConversationData = useChatSnapshot(data, lead?.id, true);
+  // The conversation reads a narrow projection, so a worker's progress does not
+  // render it; its wait state arrives through a source that filters unchanged waits.
+  const conversationSnapshot =
+    agent?.source === "managed" && !room ? scopedConversationData : data;
+  const conversationSelector = useMemo(createConversationDataSelector, []);
+  const conversationData = conversationSelector(conversationSnapshot);
+  const chatWaitSource = useMemo(() => new ChatWaitSource(), []);
+  chatWaitSource.set(conversationSnapshot);
+  useLayoutEffect(() => chatWaitSource.publish(), [conversationSnapshot]);
   const attentionCount = messageAttentionCount(chatData);
   const taskCount = backgroundTasks(chatData).filter(activeTask).length;
   const setDraft = useCallback(
@@ -1181,7 +1196,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const usageTeamIndicators = team
     .map((item) => indicators.get(item.id)?.kind || "")
     .join(",");
-  const usageAccounts = useMemo<UsageAccount[]>(() => {
+  const nextUsageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
     // The lead's current account and the accounts of working subagents take
@@ -1241,8 +1256,9 @@ export default function App({ active = true }: { active?: boolean }) {
           signedOut: !!account?.disconnected,
           limits,
           loading: !!limitsLoading[key],
+          // Reads the latest loader, so an equal account keeps its old closure.
           reload: async (force = false) => {
-            await reloadLimitsFor(key, force);
+            await reloadLimitsForRef.current(key, force);
           },
         };
       });
@@ -1257,6 +1273,7 @@ export default function App({ active = true }: { active?: boolean }) {
     limitsLoading,
     reloadLimitsFor,
   ]);
+  const usageAccounts = useRetainedUsageAccounts(nextUsageAccounts);
   // Only accounts that take part in this chat team get a dot and a cache read.
   const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
   const usageAccountConnectionKey = usageConnectionKey(
@@ -2599,7 +2616,9 @@ export default function App({ active = true }: { active?: boolean }) {
               }}
             >
               <summary>Finished</summary>
-              {completed.map(worker)}
+              {/* A collapsed group keeps its rows out of the DOM; the summary
+                  and the team overview still count them. */}
+              {(!!query || completedOpen) && completed.map(worker)}
             </details>
           )}
           {!shown.length && (
@@ -3156,11 +3175,8 @@ export default function App({ active = true }: { active?: boolean }) {
               agent={agent}
               room={room}
               legacy={legacy}
-              data={
-                agent?.source === "managed" && !room
-                  ? scopedConversationData!
-                  : data
-              }
+              data={conversationData!}
+              waitSource={chatWaitSource}
               getDraft={getDraft}
               subscribeDraft={subscribeDraft}
               setDraft={setDraft}
