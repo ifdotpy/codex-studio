@@ -232,20 +232,56 @@ const queryBusy = (id, active) =>
     active.input.values.length ||
     operations.get(id),
   );
-// Lines written in one event-loop turn leave in one stdout write at the end of
-// that turn, so a burst of events costs one syscall instead of one per event.
+// The one stdout writer. Lines of one event-loop turn leave in one write at
+// the end of that turn, so a burst of events costs one syscall. When stdout
+// reports a full buffer, later lines wait in order for "drain", and the SDK
+// stream pauses (`stdoutRoom`) while more than the budget waits, so a slow
+// reader bounds the bridge's memory instead of growing it.
+// UTF-16 code units of queued lines plus bytes buffered by the stream.
+const STDOUT_PENDING_BUDGET = 8 * 1024 * 1024;
 let stdoutLines = [];
+let stdoutQueued = 0;
+let stdoutScheduled = false;
+let stdoutDraining = false;
+let stdoutRoomWaiters = [];
+const stdoutPending = () => stdoutQueued + process.stdout.writableLength;
 function flushStdout() {
-  if (!stdoutLines.length) return;
-  const lines = stdoutLines;
-  stdoutLines = [];
-  process.stdout.write(lines.join(""));
+  stdoutScheduled = false;
+  if (!stdoutDraining && stdoutLines.length) {
+    const data = stdoutLines.join("");
+    stdoutLines = [];
+    stdoutQueued = 0;
+    if (!process.stdout.write(data)) {
+      stdoutDraining = true;
+      process.stdout.once("drain", () => {
+        stdoutDraining = false;
+        flushStdout();
+      });
+    }
+  }
+  if (stdoutRoomWaiters.length && stdoutPending() <= STDOUT_PENDING_BUDGET) {
+    const waiters = stdoutRoomWaiters;
+    stdoutRoomWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
 }
-// Linux pipes write synchronously, so this also delivers lines on exit.
-process.on("exit", flushStdout);
+// Resolves once the queued output is within the budget.
+function stdoutRoom() {
+  if (stdoutPending() <= STDOUT_PENDING_BUDGET) return null;
+  return new Promise((resolve) => stdoutRoomWaiters.push(resolve));
+}
+// Linux pipes write synchronously, so queued lines still leave on exit.
+process.on("exit", () => {
+  if (stdoutLines.length) process.stdout.write(stdoutLines.join(""));
+});
 const send = (value) => {
-  if (stdoutLines.push(JSON.stringify(value) + "\n") === 1)
+  const line = JSON.stringify(value) + "\n";
+  stdoutLines.push(line);
+  stdoutQueued += line.length;
+  if (!stdoutScheduled && !stdoutDraining) {
+    stdoutScheduled = true;
     setImmediate(flushStdout);
+  }
 };
 const emit = (method, params) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
@@ -1547,6 +1583,8 @@ async function startSession(s, active, p) {
     active.readyResolve();
     for await (const m of q) {
       if (active.persistFailure) throw active.persistFailure;
+      const room = stdoutRoom();
+      if (room) await room;
       active.lastEventAt = Date.now();
       if (m.type === "system" && m.subtype === "init") {
         s.started = true;
