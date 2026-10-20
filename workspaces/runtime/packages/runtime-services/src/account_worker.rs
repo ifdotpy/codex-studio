@@ -345,6 +345,8 @@ impl StoreBridge {
         drop(self.faults.operation_gate.read().await);
         let result = self.run(operation).await;
         #[cfg(test)]
+        self.faults.pause_after(index).await;
+        #[cfg(test)]
         self.faults.after(index, result.is_ok())?;
         result
     }
@@ -682,6 +684,7 @@ pub async fn start_account_worker_with_publication_sink(
         resume_preparations: true,
         preparation_waits: BTreeMap::new(),
         preparations: JoinSet::new(),
+        preparation_aborts: Vec::new(),
         preparing: BTreeMap::new(),
         thread_proofs: BTreeMap::new(),
         thread_tokens: BTreeMap::new(),
@@ -851,6 +854,9 @@ struct Worker {
     preparation_waits: BTreeMap<String, tokio::task::AbortHandle>,
     /// Concurrent per-agent turn preparations (see `turn_preparation`).
     preparations: JoinSet<Box<turn_preparation::Done>>,
+    /// The preparations in `preparations` that shutdown aborts: claims and
+    /// preparations, never a commit.
+    preparation_aborts: Vec<tokio::task::AbortHandle>,
     /// Agents with a preparation in flight, and the epoch of a wake that
     /// arrived meanwhile (re-run when that preparation is handled).
     preparing: BTreeMap<String, Option<i64>>,
@@ -1076,8 +1082,32 @@ impl Worker {
         if let Some(snapshot) = self.idle_snapshot.take() {
             snapshot.abort();
         }
-        self.preparations.abort_all();
-        while self.preparations.join_next().await.is_some() {}
+        for preparation in std::mem::take(&mut self.preparation_aborts) {
+            preparation.abort();
+        }
+        // A commit is not aborted: its FULL `submitted` commit may already
+        // have returned, or still run in the writer after its caller is gone.
+        // Each finished commit settles the request it never wrote.
+        let closing = std::mem::replace(&mut self.closing, true);
+        let mut commit_result = Ok(());
+        while let Some(done) = self.preparations.join_next().await {
+            if let Ok(done) = done
+                && let Ok(turn_preparation::Outcome::Committed(submission::Committed::Ready(ready))) =
+                    done.outcome
+            {
+                let submission::Ready {
+                    id,
+                    context,
+                    method,
+                    ..
+                } = *ready;
+                if let Err(error) = self.settle_unwritten(id, context, method).await {
+                    commit_result = commit_result.and(Err(error));
+                }
+            }
+        }
+        self.closing = closing;
+        let result = result.and(commit_result);
         #[cfg(test)]
         self.bridge
             .faults
@@ -1684,7 +1714,8 @@ impl Worker {
             effect: self.effect_in_hand.take(),
             resources: self.resources.clone(),
         };
-        self.preparations.spawn(turn_preparation::wake(wake, start));
+        let preparation = self.preparations.spawn(turn_preparation::wake(wake, start));
+        self.track_preparation(preparation);
         Ok(())
     }
     fn submit<'a>(
@@ -1734,8 +1765,14 @@ impl Worker {
         self.preparing.insert(intent.agent_id.clone(), None);
         let start = self.preparation(&intent.agent_id, method);
         let run = start(intent, self.effect_in_hand.take());
-        self.preparations.spawn(turn_preparation::run(run));
+        let preparation = self.preparations.spawn(turn_preparation::run(run));
+        self.track_preparation(preparation);
         Ok(())
+    }
+    fn track_preparation(&mut self, preparation: tokio::task::AbortHandle) {
+        self.preparation_aborts
+            .retain(|preparation| !preparation.is_finished());
+        self.preparation_aborts.push(preparation);
     }
     /// The preparation of `method` for one agent. The worker state it needs is
     /// taken now; the intent may come later, from a wake's claim.
@@ -2007,7 +2044,7 @@ impl Worker {
             vm,
         } = ready;
         if self.closing {
-            return Ok(());
+            return self.settle_unwritten(id, context, method).await;
         }
         self.pending.insert(id.clone(), context);
         let admission = control.submit(prepared);
@@ -2059,6 +2096,32 @@ impl Worker {
             }
         }
         Ok(())
+    }
+
+    /// Settle a request whose `submitted` commit returned but which this
+    /// worker never handed to its session: that proves it not sent. Without
+    /// this outcome its receipt stays unresolved and holds the agent forever.
+    async fn settle_unwritten(
+        &mut self,
+        id: RequestId,
+        context: Pending,
+        method: Method,
+    ) -> Result<(), WorkerError> {
+        self.pending.insert(id.clone(), context);
+        self.event(SessionEvent {
+            journal: None,
+            outcomes: vec![SessionOutcome::Write {
+                operation_id: OperationId(String::new()),
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    id,
+                    generation: self.generation.0,
+                    method,
+                }),
+                outcome: WriteOutcome::NotSent,
+                recovery: None,
+            }],
+        })
+        .await
     }
 
     /// Write one claimed busy-turn input batch to the running turn. The
