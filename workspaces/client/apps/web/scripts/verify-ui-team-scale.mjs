@@ -850,19 +850,26 @@ async function main() {
       completedAfterPromptMs: rel(row.completedAtMs),
     }));
     const waitsBefore = diagnosticsBefore.writeWaits;
+    // Before the prompt the page may still show the previously open chat's
+    // team, so visibility counts only samples taken after the prompt.
+    const afterPrompt = good.filter(
+      (sample) => promptSentAtMs !== null && sample.atMs >= promptSentAtMs,
+    );
     journal.metrics = {
-      uiFirstVisibleMs: rel(firstReachedMs(good, (s) => s.ui.teamCount, 1)),
+      uiFirstVisibleMs: rel(
+        firstReachedMs(afterPrompt, (s) => s.ui.teamCount, 1),
+      ),
       uiAllVisibleMs: rel(
-        firstReachedMs(good, (s) => s.ui.teamCount, options.workers),
+        firstReachedMs(afterPrompt, (s) => s.ui.teamCount, options.workers),
       ),
       uiAllCardsMs: rel(
-        firstReachedMs(good, (s) => s.ui.workerCards, options.workers),
+        firstReachedMs(afterPrompt, (s) => s.ui.workerCards, options.workers),
       ),
       backendFirstVisibleMs: rel(
-        firstReachedMs(good, (s) => s.backendAgents, 1),
+        firstReachedMs(afterPrompt, (s) => s.backendAgents, 1),
       ),
       backendAllVisibleMs: rel(
-        firstReachedMs(good, (s) => s.backendAgents, options.workers),
+        firstReachedMs(afterPrompt, (s) => s.backendAgents, options.workers),
       ),
       started: summary.started,
       replied: summary.replied,

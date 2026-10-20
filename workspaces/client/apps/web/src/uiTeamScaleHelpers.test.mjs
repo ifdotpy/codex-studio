@@ -61,7 +61,18 @@ describe("ui team scale helpers", () => {
     ]);
     const rows = [
       { name: "1", firstSeenAtMs: 5, startedAtMs: 6, completedAtMs: 9 },
-      { name: "64", firstSeenAtMs: 7, startedAtMs: null, completedAtMs: null },
+      {
+        name: "acceptance-0064",
+        firstSeenAtMs: 7,
+        startedAtMs: null,
+        completedAtMs: null,
+      },
+      {
+        name: "lead",
+        firstSeenAtMs: 8,
+        startedAtMs: null,
+        completedAtMs: null,
+      },
       { name: "65", firstSeenAtMs: 50, startedAtMs: 51, completedAtMs: 60 },
     ];
     expect(spawnBatchTimings(rows, 128)).toEqual([

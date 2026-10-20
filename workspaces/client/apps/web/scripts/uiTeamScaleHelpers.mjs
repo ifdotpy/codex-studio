@@ -100,7 +100,14 @@ export function buildLeadPrompt({ workers, runTag, workspace }) {
   ].join(" ");
 }
 
-// Per spawn call (agents named by their number): how many workers exist and
+// The agent number at the end of a worker name: the lead chooses names such
+// as "7" or "acceptance-0007"; null when the name ends in no number.
+function workerNumber(name) {
+  const digits = /(\d+)\s*$/.exec(name ?? "");
+  return digits ? Number(digits[1]) : null;
+}
+
+// Per spawn call (agents numbered by their names): how many workers exist and
 // when the first and last appeared, started and replied (milliseconds since the
 // prompt, null when not observed).
 export function spawnBatchTimings(rows, workers) {
@@ -108,8 +115,8 @@ export function spawnBatchTimings(rows, workers) {
   const latest = (values) => (values.length ? Math.max(...values) : null);
   return spawnCalls(workers).map(({ call, from, to }) => {
     const members = rows.filter((row) => {
-      const number = Number(row.name);
-      return number >= from && number <= to;
+      const number = workerNumber(row.name);
+      return number !== null && number >= from && number <= to;
     });
     const seen = (key) =>
       members.map((row) => row[key]).filter((value) => value !== null);
