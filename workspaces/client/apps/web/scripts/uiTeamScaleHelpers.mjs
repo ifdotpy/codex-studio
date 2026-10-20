@@ -167,7 +167,9 @@ export function createTeamTracker(leadId, runTag, workers) {
       if (value.id === leadId) {
         if (
           leadReportedAtMs === null &&
-          text(value).includes(leadDoneToken(runTag))
+          // The final answer only: the overview result carries interim
+          // text and placeholders while the lead still waits for workers.
+          (value.lastAnswer ?? "").includes(leadDoneToken(runTag))
         )
           leadReportedAtMs = atMs;
         return;

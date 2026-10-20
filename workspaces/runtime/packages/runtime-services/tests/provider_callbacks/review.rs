@@ -25,7 +25,15 @@ fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
             |r| r.get(0),
         )
         .unwrap();
-    serde_json::from_str(&raw).unwrap()
+    let mut record = serde_json::from_str(&raw).unwrap();
+    studio_runtime_store::agent_volatile::merge_if_agent(
+        &store.read().unwrap(),
+        table,
+        id,
+        &mut record,
+    )
+    .unwrap();
+    record
 }
 pub(super) fn canonical_response(value: &Value) -> Value {
     let mut result = value.clone();

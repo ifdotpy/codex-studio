@@ -389,3 +389,10 @@
 #team .worker-state.worker-state-running {
   color: var(--mantine-primary-color-filled);
 }
+
+/* A large team keeps hundreds of rows in the panel; rows outside the scroll
+   viewport skip style, layout and paint until they approach it. */
+#team .worker-entry {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}

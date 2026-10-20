@@ -38,6 +38,13 @@ pub fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
     validate(table, id, value)
 }
 
+/// [`decode`] for a row read here: an agent gets its volatile fields first.
+fn decode_row(connection: &Connection, table: &str, id: &str, raw: &str) -> StoreResult<Value> {
+    let mut value = serde_json::from_str(raw).map_err(|_| invalid(table, id))?;
+    crate::agent_volatile::merge_if_agent(connection, table, id, &mut value)?;
+    validate(table, id, value)
+}
+
 pub use crate::schema::table_exists as exists;
 
 pub fn get(connection: &Connection, table: &'static str, id: &str) -> StoreResult<Option<Value>> {
@@ -56,7 +63,8 @@ pub fn get(connection: &Connection, table: &'static str, id: &str) -> StoreResul
             |row| row.get(0),
         )
         .optional()?;
-    raw.map(|raw| decode(table, id, &raw)).transpose()
+    raw.map(|raw| decode_row(connection, table, id, &raw))
+        .transpose()
 }
 
 pub fn all(connection: &Connection, table: &'static str) -> StoreResult<Vec<Value>> {
@@ -71,7 +79,7 @@ pub fn all(connection: &Connection, table: &'static str) -> StoreResult<Vec<Valu
         })?
         .map(|row| {
             let (id, raw) = row?;
-            decode(table, &id, &raw)
+            decode_row(connection, table, &id, &raw)
         })
         .collect()
 }
@@ -93,7 +101,7 @@ pub fn live_agents(connection: &Connection) -> StoreResult<Vec<Value>> {
         })?
         .map(|row| {
             let (id, raw) = row?;
-            decode("runtime_agents", &id, &raw)
+            decode_row(connection, "runtime_agents", &id, &raw)
         })
         .collect()
 }

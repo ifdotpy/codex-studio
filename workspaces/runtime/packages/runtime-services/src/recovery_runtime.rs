@@ -253,8 +253,9 @@ pub fn load_recovery_jobs(
             cursor.tasks = id.clone();
             let task: Value =
                 serde_json::from_str(&task).map_err(|_| invalid_record("runtime_tasks", &id))?;
-            let agent: Value = serde_json::from_str(&agent)
+            let mut agent: Value = serde_json::from_str(&agent)
                 .map_err(|_| invalid_record("runtime_agents", &agent_id))?;
+            studio_runtime_store::agent_volatile::merge(&db, &agent_id, &mut agent)?;
             let (aliases, receipts) =
                 crate::task_recovery_store::receipt_state(&db, &agent, &task)?;
             let snapshot = TaskRecoverySnapshot::from_stored_records(
@@ -280,10 +281,11 @@ pub fn load_recovery_jobs(
         let full = rows.len() == MAX_SCAN_JOBS;
         for (id, raw) in rows {
             cursor.agents = id.clone();
-            let snapshot = RecoverySnapshot::from_record(
-                serde_json::from_str(&raw).map_err(|_| invalid_record("runtime_agents", &id))?,
-            )
-            .map_err(|_| invalid_record("runtime_agents", &id))?;
+            let mut record: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_record("runtime_agents", &id))?;
+            studio_runtime_store::agent_volatile::merge(&db, &id, &mut record)?;
+            let snapshot = RecoverySnapshot::from_record(record)
+                .map_err(|_| invalid_record("runtime_agents", &id))?;
             let e = snapshot.eligibility();
             if e.connection {
                 jobs.push(RecoveryJob::Connection {

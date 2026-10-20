@@ -77,6 +77,8 @@ fn rust_state(store: &RuntimeStore) -> Value {
             json!({"id":id,"record":serde_json::from_str::<Value>(&record).expect("agent JSON")}),
         );
     }
+    studio_runtime_store::agent_volatile::merge_dumped_rows(&db, &mut agents)
+        .expect("volatile agent fields");
     let mut events = Vec::new();
     let mut statement = db
         .prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id")

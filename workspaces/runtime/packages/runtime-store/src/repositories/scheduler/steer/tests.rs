@@ -48,6 +48,9 @@ fn database() -> Connection {
              CREATE TABLE sync_versions(seq INTEGER);",
         )
         .expect("steer tables create");
+    connection
+        .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+        .expect("volatile agent table creates");
     let transaction = connection.transaction().expect("index transaction begins");
     SchedulerRepository::prepare_account_wake_index(&transaction).expect("wake index prepares");
     transaction.commit().expect("index commits");

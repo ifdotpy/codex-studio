@@ -139,11 +139,12 @@ impl ProjectsRepository {
             })?
             .map(|row| {
                 let (id, raw) = row?;
-                let value =
+                let mut value =
                     serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
                         object: "runtime_agents",
                         id: id.clone(),
                     })?;
+                crate::agent_volatile::merge(connection, &id, &mut value)?;
                 Ok((id, value))
             })
             .collect()
@@ -289,12 +290,13 @@ impl ProjectsRepository {
             )
             .optional()?;
         raw.map(|raw| {
-            serde_json::from_str(&raw)
-                .map(|record| (id.to_owned(), record))
-                .map_err(|_| StoreError::InvalidStoredRecord {
+            let mut record =
+                serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
                     object: "runtime_agents",
                     id: id.to_owned(),
-                })
+                })?;
+            crate::agent_volatile::merge(connection, id, &mut record)?;
+            Ok((id.to_owned(), record))
         })
         .transpose()
     }

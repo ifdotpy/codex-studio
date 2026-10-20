@@ -411,24 +411,6 @@ pub(crate) fn serialize_frame(value: &impl Serialize) -> Result<Vec<u8>, Supervi
     Ok(frame)
 }
 
-pub(crate) fn assign_reply_id(
-    payload: &mut Value,
-    remote_id: u64,
-    local_id: Option<Value>,
-) -> io::Result<()> {
-    let Some(payload) = payload.as_object_mut() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "provider response is not an object",
-        ));
-    };
-    payload.insert(
-        "id".into(),
-        local_id.unwrap_or_else(|| Value::String(format!("supervisor-orphan-{remote_id}"))),
-    );
-    Ok(())
-}
-
 #[cfg(all(test, target_os = "macos"))]
 mod macos_environment_tests {
     #![allow(clippy::unwrap_used)]

@@ -31,6 +31,7 @@ use tokio::{
     sync::{Notify, mpsc, watch},
     task::{JoinHandle, JoinSet},
 };
+mod agent_fault;
 mod agent_wakes;
 pub mod callback;
 mod connection_recovery;
@@ -717,6 +718,7 @@ pub async fn start_account_worker_with_publication_sink(
             .then(|| tokio::time::Instant::now() + STREAM_CADENCE),
         streams,
         deferred: VecDeque::new(),
+        reported_faults: BTreeSet::new(),
         vm_notification_waiters: BTreeMap::new(),
         callbacks: BTreeMap::new(),
         managed_callback_cursors: BTreeSet::new(),
@@ -895,7 +897,11 @@ struct Worker {
     pending: BTreeMap<RequestId, Arc<Pending>>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
-    deferred: VecDeque<(JournalEntry, Option<VmActorIdentity>)>,
+    /// Journal entries that wait for a reply to bind them, with their VM
+    /// source and the agent an unbound completion belongs to.
+    deferred: VecDeque<(JournalEntry, Option<VmActorIdentity>, Option<String>)>,
+    /// Agents whose isolated data fault this worker already logged.
+    reported_faults: BTreeSet<String>,
     vm_notification_waiters:
         BTreeMap<(String, u64), tokio::sync::oneshot::Sender<Result<(), retained::PortError>>>,
     effects: VecDeque<Effect>,
@@ -1853,8 +1859,37 @@ impl Worker {
             effect,
             outcome,
         } = done;
-        let rewake = self.preparing.remove(&agent_id).flatten();
-        match outcome? {
+        let mut rewake = self.preparing.remove(&agent_id).flatten();
+        let outcome = match outcome {
+            // The agent's own data failed its preparation or commit, whose
+            // transaction rolled back: nothing was submitted. Hold the agent,
+            // and settle its effect so a restart does not run it again.
+            Err(error) if let Some(record) = agent_fault::data_fault(&error) => {
+                let detail = error.to_string();
+                let Some(fault) = self
+                    .db("hold_after_fault", move |store| async move {
+                        agent_fault::hold_after(
+                            &store,
+                            agent_id,
+                            agent_fault::FaultStage::TurnPreparation,
+                            record,
+                            detail,
+                        )
+                        .await
+                    })
+                    .await?
+                else {
+                    return Err(error);
+                };
+                fault.report(&self.account, &mut self.reported_faults);
+                if let Some(key) = effect {
+                    self.complete_effect(key).await?;
+                }
+                return Ok(());
+            }
+            outcome => outcome?,
+        };
+        match outcome {
             turn_preparation::Outcome::Prepared(prepared) => {
                 let turn_preparation::Prepared {
                     intent,
@@ -1938,7 +1973,12 @@ impl Worker {
                 turn_preparation::Unclaimed::Nothing | turn_preparation::Unclaimed::NativeReview,
             ) => {}
             turn_preparation::Outcome::Committed(committed) => {
-                Box::pin(self.committed(committed)).await?;
+                // Its submitted commit may already bind a turn completion
+                // that arrives before `write` records the request as pending.
+                self.preparing.insert(agent_id.clone(), None);
+                let written = Box::pin(self.committed(committed)).await;
+                rewake = rewake.or(self.preparing.remove(&agent_id).flatten());
+                written?;
             }
         }
         if let Some(key) = effect {
@@ -2761,6 +2801,7 @@ impl Worker {
                     }
                 }
                 self.journal_batch(entries, None, true).await?;
+                self.retry_deferred(true, false).await?;
                 self.complete_retained().await?;
             } else {
                 self.event_one(event, None, true).await?;
@@ -2988,20 +3029,44 @@ impl Worker {
                 )));
                 continue;
             }
-            let settled = self
+            let (settled, fault) = self
                 .db_identified("outcome", identity, move |store| async move {
                     store::outcome(store, account, resources, pending, outcome, closing).await
                 })
                 .await?;
+            if let Some(fault) = fault {
+                fault.report(&self.account, &mut self.reported_faults);
+            }
             self.settled_outcome(settled, id, actor_id);
         }
         if let Some(entry) = event.journal {
-            self.journal_batch_with(vec![entry], source, settle, merged)
+            self.journal_batch_with(vec![entry], source, settle, merged, false)
                 .await?;
         }
-        if reclassify {
+        self.retry_deferred(settle, reclassify).await?;
+        self.complete_retained().await?;
+        Ok(())
+    }
+    /// Journal the deferred entries again. A settled outcome may bind them
+    /// (`reclassify`); an unbound completion that no outstanding request can
+    /// bind any more is settled at once, so it never holds the journal.
+    async fn retry_deferred(&mut self, settle: bool, reclassify: bool) -> Result<(), WorkerError> {
+        let mut reclassify = reclassify;
+        // Each pass after the first settles at least one completion that no
+        // request can bind; an entry journaled again comes back deferred with
+        // its own agent, so the next pass can decide it.
+        loop {
+            if !reclassify
+                && self
+                    .deferred
+                    .iter()
+                    .all(|(entry, _, agent)| !self.unbindable(entry, agent.as_deref()))
+            {
+                return Ok(());
+            }
+            reclassify = false;
             for _ in 0..self.deferred.len() {
-                let Some((entry, deferred_source)) = self.deferred.pop_front() else {
+                let Some((entry, deferred_source, agent)) = self.deferred.pop_front() else {
                     continue;
                 };
                 if let Some(source) = deferred_source.as_ref() {
@@ -3012,18 +3077,46 @@ impl Worker {
                         continue;
                     }
                 }
-                match self.journal(entry, deferred_source.as_ref(), settle).await {
+                let park = self.unbindable(&entry, agent.as_deref());
+                match self
+                    .journal_batch_with(vec![entry], deferred_source.as_ref(), settle, None, park)
+                    .await
+                {
                     Err(WorkerError::StaleVmActor) => {
                         if let Some(source) = deferred_source.as_ref() {
                             self.retire_vm_actor_if_current(source);
                         }
                     }
-                    result => result?,
+                    result => {
+                        result?;
+                    }
                 }
             }
         }
-        self.complete_retained().await?;
-        Ok(())
+    }
+    /// A deferred turn completion of a known agent that no outstanding
+    /// request can bind any more. An entry without its agent (one deferred
+    /// behind another) is journaled again first.
+    fn unbindable(&self, entry: &JournalEntry, agent: Option<&str>) -> bool {
+        agent.is_some() && !self.completion_may_bind(entry, agent)
+    }
+    /// Whether a request that may still bind this deferred turn completion
+    /// is outstanding: a written request of this worker or a retained session
+    /// request (a native review start) on its thread, or a preparation or
+    /// commit of its agent.
+    fn completion_may_bind(&self, entry: &JournalEntry, agent: Option<&str>) -> bool {
+        let Some(thread) = agent_fault::completion_thread(entry) else {
+            return true;
+        };
+        agent.is_some_and(|agent| self.preparing.contains_key(agent))
+            || self
+                .pending
+                .values()
+                .any(|pending| pending.intent.thread_id.as_deref() == Some(thread))
+            || self
+                .retained_requests
+                .values()
+                .any(|request| request.thread_id() == Some(thread))
     }
     /// Apply a committed outcome to the worker's in-memory request state.
     fn settled_outcome(
@@ -3075,7 +3168,7 @@ impl Worker {
                 let _sent = waiter.send(Err(retained::PortError::Unknown));
             }
         }
-        self.deferred.retain(|(_, source)| {
+        self.deferred.retain(|(_, source, _)| {
             source
                 .as_ref()
                 .is_none_or(|source| source.actor_id != actor_id)
@@ -3168,32 +3261,25 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         self.journal_batch(vec![entry], Some(source), settle).await
     }
-    async fn journal(
-        &mut self,
-        entry: JournalEntry,
-        source: Option<&VmActorIdentity>,
-        settle: bool,
-    ) -> Result<(), WorkerError> {
-        self.journal_batch(vec![entry], source, settle)
-            .await
-            .map(|_| ())
-    }
     async fn journal_batch(
         &mut self,
         entries: Vec<JournalEntry>,
         source: Option<&VmActorIdentity>,
         settle: bool,
     ) -> Result<bool, WorkerError> {
-        self.journal_batch_with(entries, source, settle, None).await
+        self.journal_batch_with(entries, source, settle, None, false)
+            .await
     }
     /// Journal `entries` in one transaction that first settles `outcome`, the
     /// request outcome their reply carries, with its pending request id.
+    /// `park_unbound` settles an unbound turn completion instead of deferring it.
     async fn journal_batch_with(
         &mut self,
         entries: Vec<JournalEntry>,
         source: Option<&VmActorIdentity>,
         settle: bool,
         outcome: Option<Box<(store::OutcomeStep, Option<RequestId>)>>,
+        park_unbound: bool,
     ) -> Result<bool, WorkerError> {
         let (outcome, outcome_id) = outcome.map(|merged| *merged).unzip();
         let outcome = outcome.map(Box::new);
@@ -3244,21 +3330,35 @@ impl Worker {
                     native_source,
                     delivered,
                     outcome,
+                    park_unbound,
                 )
                 .await;
                 Ok((streams, result))
             })
             .await?;
         self.streams = previous;
-        let Some((streams, committed, deferred, settled)) = committed? else {
-            return Err(WorkerError::TaskFailed);
-        };
+        let store::JournalBatch {
+            streams,
+            committed,
+            parked,
+            deferred,
+            deferred_agent,
+            settled,
+            faults,
+        } = committed?;
+        for fault in &faults {
+            fault.report(&self.account, &mut self.reported_faults);
+        }
         if let Some(settled) = settled {
             self.settled_outcome(settled, outcome_id.flatten(), actor_id);
         }
         let had_deferred = !deferred.is_empty();
-        self.deferred
-            .extend(deferred.into_iter().map(|entry| (entry, source.cloned())));
+        let mut deferred_agent = deferred_agent;
+        self.deferred.extend(
+            deferred
+                .into_iter()
+                .map(|entry| (entry, source.cloned(), deferred_agent.take())),
+        );
         #[cfg(test)]
         self.bridge
             .faults
@@ -3267,7 +3367,7 @@ impl Worker {
         self.streams = streams; // commit precedes buffer replacement and ACK
         self.arm_flush();
         self.schedule_publication_drain()?;
-        let committed_any = !committed.is_empty();
+        let committed_any = !committed.is_empty() || !parked.is_empty();
         let mut cursors = Vec::with_capacity(committed.len());
         let mut settle_cursors = Vec::with_capacity(committed.len());
         for (index, (entry, effect)) in committed.into_iter().enumerate() {
@@ -3290,6 +3390,12 @@ impl Worker {
             if self.journal_committed(entry, effect, source).await? {
                 settle_cursors.push(cursor);
             }
+        }
+        // A parked entry has no in-memory effects; it settles with the batch.
+        if !parked.is_empty() {
+            cursors.extend(parked.iter().map(|entry| entry.cursor));
+            settle_cursors.extend(parked.iter().map(|entry| entry.cursor));
+            settle_cursors.sort_unstable();
         }
         if settle && !self.closing && !settle_cursors.is_empty() {
             self.settle_journal(settle_cursors, source).await?;
@@ -3406,6 +3512,7 @@ impl Worker {
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
             let store = Arc::clone(&self.bridge.store);
             let managed_tool_runtime = self.bridge.managed_tool_runtime();
+            let journal_scope = self.journal_scope(actor_id);
             self.managed_callback_cursors
                 .insert((actor.clone(), actor_epoch, cursor.0));
             self.managed_callbacks.spawn(async move {
@@ -3440,6 +3547,10 @@ impl Worker {
                         wake,
                         monitor_dispatch_wake,
                         managed_runtime: managed_tool_runtime,
+                        journal: callback::CallbackJournal {
+                            scope: journal_scope,
+                            cursor: cursor.0,
+                        },
                     },
                 )
                 .await;

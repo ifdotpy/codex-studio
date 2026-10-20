@@ -105,7 +105,8 @@ fn team(
         .collect::<Result<Vec<_>, _>>()?;
     let mut agents = Vec::with_capacity(rows.len());
     for (id, raw) in rows {
-        let agent = records::decode("runtime_agents", &id, &raw)?;
+        let mut agent = records::decode("runtime_agents", &id, &raw)?;
+        studio_runtime_store::agent_volatile::merge(tx, &id, &mut agent)?;
         if include_deleted || !studio_runtime_store::truthy(agent.get("deletedAt")) {
             agents.push(agent);
         }

@@ -1640,7 +1640,9 @@ async fn recovery_selection_matches_python_scheduler_roster_without_changing_sto
         .unwrap()
         .map(|row| {
             let (id, raw) = row.unwrap();
-            (id, serde_json::from_str::<Value>(&raw).unwrap())
+            let mut record = serde_json::from_str::<Value>(&raw).unwrap();
+            studio_runtime_store::agent_volatile::merge(&db, &id, &mut record).unwrap();
+            (id, record)
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(json!(stored), fixture.agents["stored"]);
@@ -1732,17 +1734,23 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
             ), source(record) AS (
                 SELECT record FROM runtime_agents WHERE id = ?2
             )";
+        // Clones copy the whole agent, volatile fields included, and then move
+        // those fields like an older state's (format 2026-10-20).
+        let whole = studio_runtime_store::agent_volatile::merged_record(tx, &source)?
+            .expect("source agent")
+            .to_string();
         tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_agents(id, record)
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
-                       json_set(source.record, '$.id', printf('00000000-0000-4000-8000-%012d', seq.i),
+                       json_set(?4, '$.id', printf('00000000-0000-4000-8000-%012d', seq.i),
                                 '$.accountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.executionSettingsAccountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.contextRepairWait', 'blocked')
                 FROM seq CROSS JOIN source"),
-            (count as i64, source.as_str(), each_account),
+            (count as i64, source.as_str(), each_account, whole),
         )?;
+        studio_runtime_store::agent_volatile::migrate_2026_10_20(tx)?;
         tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
@@ -1830,7 +1838,9 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     seed_backlog(&fixture, 48, false).await;
     fixture.enqueue(0, "eligible-after-blocked-prefix").await;
     fixture.enqueue(1, "eligible-other-account").await;
-    let (launcher, mut writes) = scripted();
+    // Written receipts: a lost turn/start receipt closes the session by design,
+    // and that worker exit would race this test's registry shutdown.
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     // An uninitialized default worker cannot drain its lane, so the registry
     // sees it full for the whole first pass and must still reach the second
     // account. Without the hold, the order of the two starts is a race.
@@ -1894,7 +1904,9 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         .await
         .unwrap();
 
-    let (launcher, mut writes) = scripted();
+    // Written receipts: a lost turn/start receipt closes the session by design,
+    // and that worker exit would race this test's registry shutdown.
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     // Every paged account except the last two fails to start on every attempt, so
     // the registry's retry timer cannot open another launch; the strict
     // continuation then reaches the eligible tail without a timer or another

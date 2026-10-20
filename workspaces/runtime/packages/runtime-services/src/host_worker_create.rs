@@ -725,6 +725,9 @@ mod tests {
                  CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
             )
             .expect("worker tables");
+        database
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let mut parent = build_agent_record(
             parent_id.as_ref(),
             "Parent",

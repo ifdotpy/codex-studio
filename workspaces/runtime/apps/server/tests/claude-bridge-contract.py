@@ -14,6 +14,7 @@ import json
 import os
 import uuid
 from pathlib import Path
+import collections
 import queue
 import shutil
 import subprocess
@@ -292,6 +293,8 @@ class Bridge(unittest.TestCase):
                  'CLAUDE_CONFIG_DIR': str(root / 'native-config')})
         self.addCleanup(self.close)
         self.rows = queue.Queue()
+        # Turn completions not yet returned by completed(), whoever read them.
+        self.completions = collections.deque()
         threading.Thread(target=lambda: [self.rows.put(json.loads(line)) for line in self.proc.stdout], daemon=True).start()
         self.sequence = 0
         self.notifications = []
@@ -490,16 +493,23 @@ class Bridge(unittest.TestCase):
             if row.get('id') == request:
                 if 'error' in row: raise ValueError(row['error']['message'])
                 return row['result']
-            self.notifications.append(row)
+            self.notified(row)
 
     def turn(self, text, key):
         return self.call('turn/start', {'threadId':self.thread,'clientUserMessageId':key,
             'input':[{'type':'text','text':text}]})
 
     def completed(self):
-        while True:
-            row = self.read(); self.notifications.append(row)
-            if row.get('method') == 'turn/completed': return row['params']['turn']
+        # A turn can complete while call() waits for a later reply; that
+        # completion still belongs to the next completed().
+        while not self.completions:
+            self.notified(self.read())
+        return self.completions.popleft()
+
+    def notified(self, row):
+        self.notifications.append(row)
+        if row.get('method') == 'turn/completed':
+            self.completions.append(row['params']['turn'])
 
     def test_rate_uses_assistant_output_and_subtracts_persistent_query_total(self):
         for index in range(2):
@@ -1270,6 +1280,8 @@ class Bridge(unittest.TestCase):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT': 'test@example.test'})
         self.rows = queue.Queue()
+        # Turn completions not yet returned by completed(), whoever read them.
+        self.completions = collections.deque()
         threading.Thread(target=lambda: [self.rows.put(json.loads(line)) for line in self.proc.stdout], daemon=True).start()
 
     def test_crash_before_input_keeps_durable_receipt_unknown(self):

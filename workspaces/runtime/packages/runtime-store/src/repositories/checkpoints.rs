@@ -868,7 +868,7 @@ fn read_all(connection: &Connection, table: &str) -> StoreResult<Vec<StoredCheck
     let mut statement =
         connection.prepare_cached(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
     let rows = statement.query_map([], read_stored_row)?;
-    collect_records(rows, table)
+    collect_records(connection, rows, table)
 }
 
 /// Tombstones matter only while they still hold a workspace reservation.
@@ -883,7 +883,7 @@ fn read_live_or_reserved_agents(
          OR json_extract(record,'$.workspaceOperation') IS NOT NULL ORDER BY rowid",
     )?;
     let rows = statement.query_map([], read_stored_row)?;
-    collect_records(rows, "runtime_agents")
+    collect_records(connection, rows, "runtime_agents")
 }
 
 fn read_reserving_agents(connection: &Connection) -> StoreResult<Vec<StoredCheckpointObject>> {
@@ -893,7 +893,7 @@ fn read_reserving_agents(connection: &Connection) -> StoreResult<Vec<StoredCheck
     let mut statement =
         connection.prepare_cached(crate::AgentIndexedReads::WORKSPACE_OPERATION_RECORDS_SQL)?;
     let rows = statement.query_map([], read_stored_row)?;
-    collect_records(rows, "runtime_agents")
+    collect_records(connection, rows, "runtime_agents")
 }
 
 fn read_active(
@@ -912,7 +912,7 @@ fn read_active(
         "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
     ))?;
     let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), read_stored_row)?;
-    let records = collect_records(rows, table)?;
+    let records = collect_records(connection, rows, table)?;
     for record in &records {
         match table {
             "runtime_workspace_operations" => {
@@ -933,7 +933,10 @@ fn read_object(
 ) -> StoreResult<Option<StoredCheckpointObject>> {
     let record: Option<Value> = get_json_record(connection, table, id)?;
     record
-        .map(|record| stored_object(table, id.to_owned(), record))
+        .map(|mut record| {
+            crate::agent_volatile::merge_if_agent(connection, table, id, &mut record)?;
+            stored_object(table, id.to_owned(), record)
+        })
         .transpose()
 }
 
@@ -945,11 +948,13 @@ fn read_stored_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCheckpoint
 }
 
 fn collect_records(
+    connection: &Connection,
     rows: impl Iterator<Item = rusqlite::Result<StoredCheckpointObject>>,
     table: &str,
 ) -> StoreResult<Vec<StoredCheckpointObject>> {
     rows.map(|row| {
-        let record = row?;
+        let mut record = row?;
+        crate::agent_volatile::merge_if_agent(connection, table, &record.id, &mut record.record)?;
         stored_object(table, record.id, record.record)
     })
     .collect()
@@ -992,6 +997,10 @@ fn update_object(
     if record.get("id").and_then(Value::as_str) != Some(id) {
         return Err(invalid_record(table, id));
     }
+    if table == crate::agent_volatile::AGENT_TABLE {
+        crate::agent_volatile::update(transaction, id, record)?;
+        return Ok(());
+    }
     transaction.execute(
         &format!("UPDATE {table} SET record=?1 WHERE id=?2"),
         params![serde_json::to_string(record)?, id],
@@ -1007,6 +1016,10 @@ fn insert_object(
 ) -> StoreResult<()> {
     if record.get("id").and_then(Value::as_str) != Some(id) {
         return Err(invalid_record(table, id));
+    }
+    if table == crate::agent_volatile::AGENT_TABLE {
+        crate::agent_volatile::put(transaction, id, record, true)?;
+        return Ok(());
     }
     transaction.execute(
         &format!("INSERT INTO {table}(id,record) VALUES(?1,?2)"),

@@ -63,8 +63,8 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         triggers: TRANSCRIPT_TRIGGERS,
     }],
     connection_functions: &[],
-    bootstrap_tables: &[],
-    bootstrap_triggers: &[],
+    bootstrap_tables: &[crate::agent_volatile::TABLE_REQUIREMENT],
+    bootstrap_triggers: &crate::agent_volatile::TRIGGER_REQUIREMENTS,
     bootstrap_connection_functions: &[],
 };
 

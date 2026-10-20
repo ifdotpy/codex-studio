@@ -413,6 +413,9 @@ mod tests {
             )
             .expect("core tables precede feature schema bootstrap");
         transaction
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
+        transaction
             .execute_batch(FEATURE_SCHEMA)
             .expect("voice schema bootstraps");
 

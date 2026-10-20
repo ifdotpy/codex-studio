@@ -344,11 +344,14 @@ fn recheck_history_bindings(
             )
             .optional()
             .map_err(StoreError::from)?;
-        let current_agent = current_agent_raw
+        let mut current_agent = current_agent_raw
             .as_deref()
             .map(serde_json::from_str::<Value>)
             .transpose()
             .map_err(StoreError::from)?;
+        if let Some(agent) = current_agent.as_mut() {
+            studio_runtime_store::agent_volatile::merge(tx, id, agent)?;
+        }
         let current_budget_raw: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_budget WHERE id=?1",
@@ -535,6 +538,8 @@ mod tests {
         let db = Connection::open_in_memory().expect("canvas db");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL);")
             .expect("canvas schema");
+        db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         db.execute(
             "INSERT INTO runtime_agents VALUES ('a',?1)",
             [agent.to_string()],

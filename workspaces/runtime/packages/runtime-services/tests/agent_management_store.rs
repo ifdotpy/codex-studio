@@ -364,6 +364,9 @@ fn input_states(deleted_worker: bool) -> Connection {
           ('stale','other','pending',0,NULL),('foreign-uncertain','other','uncertain',1,NULL);",
         )
         .expect("delivery states");
+    connection
+        .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+        .expect("volatile agent table creates");
     let worker = if deleted_worker {
         r#"{"epoch":1,"deletedAt":5.0}"#
     } else {

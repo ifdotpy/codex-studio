@@ -67,7 +67,15 @@ import json, pathlib, sqlite3, sys
 db = sqlite3.connect(pathlib.Path(sys.argv[1]) / 'canvas.sqlite3')
 def record(table, key):
     encoded = db.execute(f'SELECT record FROM {table} WHERE id=?', (key,)).fetchone()[0]
-    return json.loads(encoded)
+    value = json.loads(encoded)
+    if table == 'runtime_agents':
+        # Storage format 2026-10-20: volatile agent fields, one JSON column each.
+        cursor = db.execute('SELECT * FROM runtime_agent_volatile WHERE id=?', (key,))
+        row = cursor.fetchone()
+        for (name, *_), column in zip(cursor.description, row or ()):
+            if name != 'id' and column is not None:
+                value[name] = json.loads(column)
+    return value
 agent_id = db.execute("SELECT id FROM runtime_agents WHERE record LIKE '%rustAgentFlag%'").fetchone()[0]
 records = {
     'agent': record('runtime_agents', agent_id),

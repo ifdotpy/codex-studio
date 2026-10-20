@@ -181,6 +181,7 @@ fn settle_abandoned(
 
 /// Startup owns every request: no dispatcher from an earlier process survives,
 /// so each queued or running request becomes terminal before workers start.
+/// Prepared tool replies of settled turns go too; they never leave the host.
 /// Safe to repeat; a second pass finds nothing.
 pub async fn recover_tool_requests_on_startup(
     store: &RuntimeStore,
@@ -196,6 +197,10 @@ pub async fn recover_tool_requests_on_startup(
                 let mut record = records::get(tx, "runtime_tool_requests", id)?
                     .ok_or(CallbackError::Stored("tool request id".into()))?;
                 settle_abandoned(tx, &mut record, now)?;
+            }
+            let retired = storage::retire_settled_tool_replies(tx, None)?;
+            if retired > 0 {
+                eprintln!("Deleted {retired} prepared tool replies of settled turns");
             }
             Ok(ids.len())
         })
@@ -337,5 +342,99 @@ mod context_tool_receipt_snapshot_tests {
             validation,
             Err(crate::provider_callbacks::CallbackError::Stale)
         ));
+    }
+}
+
+#[cfg(test)]
+mod settled_tool_reply_tests {
+    use super::super::model::{CallbackContext, ReplyIdentity};
+    use serde_json::{Value, json};
+    use studio_runtime_providers::RequestId;
+    use studio_runtime_store::RuntimeStore;
+
+    fn context(agent: &str, turn: &str) -> CallbackContext {
+        CallbackContext {
+            agent: agent.into(),
+            account: "default".into(),
+            connection: "connection".into(),
+            generation: 5,
+            epoch: 2,
+            thread: "thread".into(),
+            turn: turn.into(),
+        }
+    }
+
+    fn reply(context: CallbackContext, rpc: &str, delivery: &str, tool: bool) -> (String, Value) {
+        let identity = ReplyIdentity {
+            context,
+            rpc_id: RequestId::String(rpc.into()),
+            attempt: "attempt".into(),
+        };
+        let mut value = json!({
+            "identity":identity, "signature":"signature",
+            "body":{"result":{"success":true,"contentItems":[]}}, "delivery":delivery,
+        });
+        if tool {
+            value["toolRequest"] = json!(format!("request-{rpc}"));
+        }
+        (identity.key(), value)
+    }
+
+    #[tokio::test]
+    async fn startup_deletes_prepared_tool_replies_of_settled_turns_only() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let agent = json!({
+            "id":"agent", "rootId":"agent", "epoch":2, "status":"running", "autoWake":true,
+            "accountKey":"default", "threadId":"thread", "turnId":"live-turn",
+            "startAttempt":{"connectionGeneration":5,"connectionId":"connection"},
+        });
+        let settled = reply(context("agent", "old-turn"), "settled", "prepared", true);
+        let missing_agent = reply(context("gone", "turn"), "missing", "prepared", true);
+        let live = reply(context("agent", "live-turn"), "live", "prepared", true);
+        let card = reply(context("agent", "old-turn"), "card", "prepared", false);
+        let unknown = reply(context("agent", "old-turn"), "unknown", "unknown", true);
+        let rows = [&settled, &missing_agent, &live, &card, &unknown]
+            .map(|(key, value)| (key.clone(), value.to_string()));
+        store
+            .transaction_with::<_, crate::provider_callbacks::CallbackError>(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
+                    [agent.to_string()],
+                )?;
+                for (key, value) in &rows {
+                    tx.execute(
+                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)",
+                        [key, value],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("seed leaked replies");
+
+        for _ in 0..2 {
+            super::recover_tool_requests_on_startup(&store, 10.0)
+                .await
+                .expect("startup recovery");
+            let connection = store.read().expect("read connection");
+            let mut statement = connection
+                .prepare("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' ORDER BY id")
+                .expect("reply query");
+            let mut kept = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("reply rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("reply ids");
+            let mut expected = vec![live.0.clone(), card.0.clone(), unknown.0.clone()];
+            kept.sort();
+            expected.sort();
+            assert_eq!(
+                kept, expected,
+                "only the live turn, card and unknown replies stay"
+            );
+        }
     }
 }

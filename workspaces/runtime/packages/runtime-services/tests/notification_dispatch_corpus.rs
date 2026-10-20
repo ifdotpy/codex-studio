@@ -664,14 +664,11 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
                     .as_str()
                     .expect("agent");
                 assert_eq!(
-                read.query_row(
-                    "SELECT json_extract(record,'$.tokensUsed') FROM runtime_agents WHERE id=?1",
-                    [agent],
-                    |r| r.get::<_, i64>(0)
-                )
-                .expect("committed budget"),
-                i64::try_from(*tokens).expect("bounded token count")
-            );
+                    studio_runtime_store::agent_volatile::merged_record(&read, agent)
+                        .expect("committed budget")
+                        .expect("budget owner row")["tokensUsed"],
+                    json!(*tokens)
+                );
             }
             Ok(())
         })

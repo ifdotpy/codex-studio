@@ -13,6 +13,15 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, Transaction};
 
+/// Tokens used by a team root and its members.
+static TEAM_TOKENS_USED_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "SELECT COALESCE(SUM(CAST(COALESCE({},0) AS INTEGER)),0) \
+         FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 OR id=?1",
+        studio_runtime_store::agent_volatile::field_sql("runtime_agents", "tokensUsed")
+    )
+});
+
 /// The exact settings copied by Python's `preparation_settings` helper.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparationSettings {
@@ -174,12 +183,7 @@ impl continuation_driver::CapacityAdmission for RuntimeCapacityAdmission {
         let token_budget = root.get("tokenBudget").and_then(Value::as_u64);
         if let Some(token_budget) = token_budget {
             let used: i64 = tx
-                .query_row(
-                    "SELECT COALESCE(SUM(CAST(COALESCE(json_extract(record,'$.tokensUsed'),0) AS INTEGER)),0) \
-                     FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 OR id=?1",
-                    [root_id],
-                    |row| row.get(0),
-                )
+                .query_row(&TEAM_TOKENS_USED_SQL, [root_id], |row| row.get(0))
                 .map_err(studio_runtime_store::StoreError::from)?;
             if used >= token_budget.min(i64::MAX as u64) as i64 {
                 return Err(ContinuationError::Unavailable(

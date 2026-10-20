@@ -239,7 +239,7 @@ fn project_changed_agents(
     for (rowid, row_id, raw) in crate::sync_policy::agents_changed_since(tx, generation)? {
         // The row just read is checked as AgentRepository reads it, and
         // publication reuses it instead of reading it again.
-        let error = match studio_runtime_store::decode_agent_value(&row_id, &raw) {
+        let error = match studio_runtime_store::decode_agent_value(tx, &row_id, &raw) {
             Ok(_) => {
                 changes.agents.insert(row_id.clone());
                 changes.checked_agents.push((rowid, row_id, raw));
@@ -401,6 +401,7 @@ fn clear_startup_agent_state(transaction: &rusqlite::Transaction<'_>) -> Result<
                 scope: "runtime_agents".into(),
                 id: id.clone(),
             })?;
+        studio_runtime_store::agent_volatile::merge(transaction, &id, &mut agent)?;
         let in_flight_changed = agent.get("inFlight") != Some(&Value::Bool(false));
         agent["inFlight"] = json!(false);
         let keep_attempt = preparation_eligible(&agent);

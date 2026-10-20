@@ -361,7 +361,9 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
         acknowledged: EventCursor(0),
         resumed: false,
     });
-    actor.initialize_id = Some(Value::String("initialized".into()));
+    actor.initialize_id = Some(studio_runtime_providers::RequestId::String(
+        "initialized".into(),
+    ));
     let mut status = actor.status.subscribe();
 
     for sequence in 1..=LANE_CAPACITY as u64 {
@@ -680,14 +682,16 @@ async fn response_mapping_prunes_all_settled_entries() {
         }
         assert_eq!(actor.response_ids.len(), OWED as usize);
         for id in 1..=OWED {
-            let event = SupervisorEvent {
+            let event = SupervisorEventV2 {
                 sequence: EventCursor(id),
                 generation: Generation(1),
                 kind: EventKind::Stdout,
-                payload: serde_json::json!({"id":id,"result":{}}),
-                extra: Default::default(),
+                payload: serde_json::value::RawValue::from_string(format!(
+                    r#"{{"id":{id},"result":{{}}}}"#
+                ))
+                .unwrap(),
             };
-            let frame = actor.journal_entry(event, 0).unwrap();
+            let frame = actor.journal_entry_v2(event, 0).unwrap();
             assert!(
                 matches!(frame.payload, JournalPayload::Frame(studio_runtime_providers::Frame::Response { id: studio_runtime_providers::RequestId::Number(local), .. }) if local == id)
             );
@@ -779,4 +783,95 @@ fn closed_pump_classification_preserves_sticky_shutdown_and_terminal_state() {
         Some(AdapterError::Cancelled)
     ));
     assert!(pump_channel_closed(true, true).is_none());
+}
+
+/// The deleted supervisor v2 stdout path, kept as this parity test's oracle:
+/// raw payload to `Value`, reply ID rewritten on the value, value encoded
+/// again and decoded by the wire decoder.
+fn value_detour_oracle(
+    payload: &str,
+    response_ids: &mut BTreeMap<u64, Value>,
+) -> DecodedJournalPayload {
+    let mut value: Value = serde_json::from_str(payload).unwrap();
+    if value.get("method").is_none()
+        && let Some(remote) = value.get("id").and_then(Value::as_u64)
+    {
+        let local = response_ids
+            .remove(&remote)
+            .unwrap_or_else(|| Value::String(format!("supervisor-orphan-{remote}")));
+        value.as_object_mut().unwrap().insert("id".into(), local);
+    }
+    let bytes = match value.get("supervisorRaw").and_then(Value::as_str) {
+        Some(raw) => raw.as_bytes().to_vec(),
+        None => serde_json::to_vec(&value).unwrap(),
+    };
+    studio_runtime_providers::decode_journal_entry(0, 0, bytes).payload
+}
+
+#[tokio::test]
+async fn single_typed_decode_matches_the_value_detour_for_codex_and_claude_lines() {
+    let corpus = [
+        // Codex notifications, one with the supervisor's receipt extension.
+        r#"{"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"i","delta":"x"},"_studioSupervisorReceivedAt":1760000000123}"#,
+        r#"{"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"id":"call_1","type":"commandExecution","exitCode":0}}}"#,
+        // Codex replies: mapped, unmapped (orphan), error, null result, extension.
+        r#"{"id":42,"result":{"turn":{"id":"u","status":"inProgress","items":[]}}}"#,
+        r#"{"id":43,"result":{}}"#,
+        r#"{"id":44,"error":{"code":-32600,"message":"bad"},"result":{"ignored":true}}"#,
+        r#"{"id":45,"result":null,"future":{"opaque":[1,"two",null]}}"#,
+        // Codex server request keeps the provider's own integer ID.
+        r#"{"id":5,"method":"item/commandExecution/requestApproval","params":{"threadId":"t"}}"#,
+        r#"{"id":6,"method":"future/serverRequest","params":{"a":1},"extension":true}"#,
+        // Claude bridge lines carry string IDs and need no mapping.
+        r#"{"id":"claude:0000000000000000000000000000002a","result":{"ok":true}}"#,
+        r#"{"method":"claude/state","params":{"sessionId":"s","state":"idle"},"_studioSupervisorReceivedAt":1760000000456}"#,
+        r#"{"id":"claude:1","method":"item/tool/requestUserInput","params":{"questions":[]}}"#,
+        // A non-JSON stdout line and a malformed frame stay raw stdout. The
+        // malformed one is key-sorted: the oracle re-encoded it sorted, while
+        // the single decode keeps the journal's original bytes.
+        r#"{"supervisorRaw":"provider diagnostic, not JSON\n"}"#,
+        r#"{"extension":[1,2],"method":17}"#,
+    ];
+    let shutdown = Shutdown::default();
+    let (mut actor, _commands, _journal) = actor(&shutdown);
+    actor.info = Some(AttachmentInfo {
+        handle: actor.handle.clone(),
+        generation: Generation(1),
+        pid: 1,
+        acknowledged: EventCursor(0),
+        resumed: false,
+    });
+    actor.response_ids = BTreeMap::from([
+        (42, RequestId::Number(7)),
+        (44, RequestId::String("local:44".into())),
+        (45, RequestId::Number(9)),
+    ]);
+    let mut oracle_ids = BTreeMap::from([
+        (42, Value::from(7)),
+        (44, Value::String("local:44".into())),
+        (45, Value::from(9)),
+    ]);
+    for (sequence, line) in (1..).zip(corpus) {
+        let expected = value_detour_oracle(line, &mut oracle_ids);
+        let entry = actor
+            .journal_entry_v2(
+                SupervisorEventV2 {
+                    sequence: EventCursor(sequence),
+                    generation: Generation(1),
+                    kind: EventKind::Stdout,
+                    payload: serde_json::value::RawValue::from_string(line.into()).unwrap(),
+                },
+                0,
+            )
+            .unwrap();
+        let actual = match entry.payload {
+            JournalPayload::Frame(frame) => DecodedJournalPayload::Frame(frame),
+            JournalPayload::RawStdout { bytes, error } => {
+                DecodedJournalPayload::RawStdout { bytes, error }
+            }
+            _ => panic!("stdout decodes to a frame or raw stdout"),
+        };
+        assert_eq!(actual, expected, "{line}");
+    }
+    assert!(actor.response_ids.is_empty());
 }

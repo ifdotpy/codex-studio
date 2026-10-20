@@ -51,15 +51,17 @@ impl AgentIndexedReads {
     pub const TEAM_RECORDS_SQL: &'static str = "SELECT id,record FROM runtime_agents \
          WHERE json_extract(record,'$.rootId')=?1 ORDER BY rowid";
 
-    /// Raw `(id, record)` of every agent whose `rootId` is `root_id`.
+    /// `(id, record)` of every agent whose `rootId` is `root_id`, each record
+    /// with its volatile fields.
     pub fn team_records(
         connection: &Connection,
         root_id: &str,
     ) -> StoreResult<Vec<(String, String)>> {
         let mut statement = connection.prepare_cached(Self::TEAM_RECORDS_SQL)?;
-        Ok(statement
+        let rows = statement
             .query_map([root_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<_, _>>()?)
+            .collect::<Result<Vec<(String, String)>, _>>()?;
+        crate::agent_volatile::merged_rows(connection, rows)
     }
 
     /// SQL counting the live (not deleted) team members that are not finished.
@@ -183,6 +185,9 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .expect("agents table creates");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         for object in fixture["canvas.sqlite3"]["sqlite_master"]
             .as_array()
             .expect("fixture lists schema objects")

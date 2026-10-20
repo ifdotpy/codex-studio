@@ -37,7 +37,9 @@ type Props = {
   requests: components["schemas"]["RequestEntityDto"][];
   allRequests: components["schemas"]["RequestEntityDto"][];
   scope: string;
-  agents: Agent[];
+  agents: Array<
+    Pick<Agent, "id" | "name" | "threadId" | "nativeThreadBlock" | "error">
+  >;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 };

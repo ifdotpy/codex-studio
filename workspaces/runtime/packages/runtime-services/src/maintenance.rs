@@ -217,6 +217,9 @@ mod tests {
             )
             .expect("fixture schema creates");
         connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
+        connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES (?1,?2), (?3,?4)",
                 (
@@ -526,6 +529,9 @@ mod tests {
                  CREATE TABLE runtime_events(id TEXT,kind TEXT,status TEXT,error TEXT);",
             )
             .expect("minimal fixture schema creates");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let transaction = connection.transaction().expect("transaction begins");
         assert_eq!(
             remove_review_assignments_in_transaction(&transaction)

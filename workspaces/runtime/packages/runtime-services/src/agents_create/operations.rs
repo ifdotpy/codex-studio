@@ -2239,6 +2239,7 @@ fn update_team_yolo(
     let mut team = Vec::new();
     for (id, raw) in rows {
         let record = decode_record(
+            tx,
             "runtime_agents",
             "PersistedAgentRecord",
             &id,

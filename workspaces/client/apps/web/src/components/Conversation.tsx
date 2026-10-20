@@ -4,7 +4,11 @@ import {
   useServerOutbox,
 } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
-import { chatWaitState } from "./chat-status/chatStatusModel";
+import {
+  useChatWait,
+  type ChatWaitSource,
+  type ConversationData,
+} from "../hooks/conversationData";
 import { serviceTimeText } from "../local-time";
 import { nativeStatusMessage } from "./conversation/nativeStatus";
 import AgentAvatar from "./agents/AgentAvatar";
@@ -83,7 +87,6 @@ import {
   type KnownApiFields,
   type Message,
   type Room,
-  type Snapshot,
 } from "../types";
 import Usage from "./Usage";
 import ConversationWarnings from "./ConversationWarnings";
@@ -112,7 +115,7 @@ import SelectionQuote, {
   selectedExcerpt,
 } from "./conversation/transcript/SelectionQuote";
 import MessageActions from "./conversation/transcript/MessageActions";
-import AgentPhase from "./agents/AgentPhase";
+import { LiveAgentPhase } from "./agents/AgentPhase";
 import AgentPanel from "./agents/AgentPanel";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import type { useAccounts } from "./Accounts";
@@ -219,13 +222,48 @@ function useCompactHeaderTools() {
   return compact;
 }
 
+// The wait label reaches the shell from here, so a changed wait renders this
+// leaf and never the transcript or the composer.
+function PhaseReport(p: {
+  source: ChatWaitSource;
+  id: string | null;
+  agent?: Agent;
+  connection: string;
+  threadBlock: boolean;
+  capacityRetry: ReturnType<typeof currentCapacityRetry> | null;
+  onPhase: (id: string | null, label: string) => void;
+}) {
+  const wait = useChatWait(p.source, p.agent);
+  const { agent, capacityRetry } = p;
+  const label =
+    p.connection === "reconnecting"
+      ? "Reconnecting"
+      : p.threadBlock
+        ? "Chat stopped as a precaution"
+        : capacityRetry?.status === "scheduled"
+          ? capacityRetry.cause === DISK_FULL_CAUSE
+            ? DISK_FULL_WAIT_LABEL
+            : "Waiting to retry model"
+          : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
+            (["starting", "running"].includes(agent?.status || "")
+              ? "Working"
+              : ["waiting", "parked"].includes(agent?.status || "")
+                ? wait?.label || "Turn ended"
+                : statusLabel(agent?.status || "idle"));
+  useEffect(() => {
+    p.onPhase(p.id, label);
+  }, [p.id, label, p.onPhase]);
+  return null;
+}
+
 export default function Conversation(p: {
   id: string | null;
   syncWorkspaceId?: string;
   agent?: Agent;
   room?: Room;
   legacy?: Json;
-  data: Snapshot;
+  data: ConversationData;
+  waitSource: ChatWaitSource;
   getDraft: DraftReader;
   subscribeDraft: DraftSubscription;
   setDraft: (v: string | ((current: string) => string), id?: string) => void;
@@ -614,10 +652,6 @@ export default function Conversation(p: {
         : p.agent,
     [p.agent, liveAgent, p.id],
   );
-  const wait = useMemo(
-    () => (agent ? chatWaitState(p.data, agent) : undefined),
-    [p.data, agent],
-  );
   useVisibleChatResult(
     scroll,
     p.agent,
@@ -676,35 +710,6 @@ export default function Conversation(p: {
     items.at(-1)?.turnId === agent?.turnId &&
     items.at(-1)?.role === "reasoning" &&
     typeof items.at(-1)?.reasoningSince === "number";
-  useEffect(() => {
-    p.onPhase(
-      p.id,
-      connection === "reconnecting"
-        ? "Reconnecting"
-        : threadBlock
-          ? "Chat stopped as a precaution"
-          : capacityRetry?.status === "scheduled"
-            ? capacityRetry.cause === DISK_FULL_CAUSE
-              ? DISK_FULL_WAIT_LABEL
-              : "Waiting to retry model"
-            : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
-              (["starting", "running"].includes(agent?.status || "")
-                ? "Working"
-                : ["waiting", "parked"].includes(agent?.status || "")
-                  ? wait?.label || "Turn ended"
-                  : statusLabel(agent?.status || "idle")),
-    );
-  }, [
-    p.id,
-    agent?.status,
-    wait?.label,
-    agent?.activity?.phase,
-    agent?.nativeStatus,
-    threadBlock,
-    capacityRetry?.status,
-    connection,
-    p.onPhase,
-  ]);
   useEffect(() => {
     setBranchDraft(null);
     editAttempt.current++;
@@ -1646,12 +1651,22 @@ export default function Conversation(p: {
           {!p.room && agent && (
             <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />
           )}
+          <PhaseReport
+            source={p.waitSource}
+            id={p.id}
+            agent={agent}
+            connection={connection}
+            threadBlock={!!threadBlock}
+            capacityRetry={capacityRetry}
+            onPhase={p.onPhase}
+          />
           <div className="chat-activity">
             {!detailedActivity &&
               !reasoningVisible &&
               agent &&
               !(agent.status === "queued" && queue.length > 0) && (
-                <AgentPhase
+                <LiveAgentPhase
+                  source={p.waitSource}
                   agent={{
                     ...agent,
                     activity: {
@@ -1660,12 +1675,15 @@ export default function Conversation(p: {
                     },
                   }}
                   connection={connection}
-                  wait={wait}
                 />
               )}
           </div>
           {!p.room && detailedActivity && (
-            <AgentPhase agent={agent} connection={connection} wait={wait} />
+            <LiveAgentPhase
+              source={p.waitSource}
+              agent={agent}
+              connection={connection}
+            />
           )}
           <Requests
             onAnswerOpen={() => setFollow(false)}
