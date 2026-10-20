@@ -125,6 +125,16 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
         run(time);
         callback(time);
       });
+    // Stream updates count only after the renderer subscribes to them.
+    window.syncStreams = [];
+    const NativeEventSource = window.EventSource;
+    window.EventSource = new Proxy(NativeEventSource, {
+      construct(target, args) {
+        const source = Reflect.construct(target, args);
+        window.syncStreams.push(source);
+        return source;
+      },
+    });
   });
   await stubEntityState(
     page,
@@ -223,6 +233,39 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       await root.evaluate((e) => !!e.querySelector("[data-history-window]")),
       `${width}px: the long transcript uses the windowed history`,
     );
+    await page.waitForFunction(
+      (id) =>
+        window.syncStreams.some((source) => {
+          const url = new URL(source.url, location.href);
+          if (url.pathname !== "/api/sync/stream" || source.readyState !== 1)
+            return false;
+          return JSON.parse(url.searchParams.get("resources") || "[]").some(
+            (resource) =>
+              resource.kind === "transcript" && resource.agentId === id,
+          );
+        }),
+      chat.id,
+    );
+    // Loading can take longer than a few stable frames on a busy machine.
+    await root.evaluate(
+      (element) =>
+        new Promise((resolve, reject) => {
+          const deadline = performance.now() + 15000;
+          const sample = () => {
+            if (
+              element.scrollHeight - element.scrollTop - element.clientHeight <
+              2
+            )
+              resolve(undefined);
+            else if (performance.now() > deadline)
+              reject(
+                new Error("The opened chat did not reach the latest message."),
+              );
+            else requestAnimationFrame(sample);
+          };
+          sample();
+        }),
+    );
     await settle(true);
     assert.ok(
       (await geometry()).gap < 2,
@@ -268,18 +311,20 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
           ].some((reply) => reply.textContent?.includes(sentence)),
         `Streamed ${width} sentence ${streamed} `,
       );
-    // The first paragraph whose top is inside the transcript viewport.
+    // The first paragraph whose top is inside the transcript viewport, else
+    // the first such message.
     const readingPoint = () =>
       root.evaluate((element) => {
         const bounds = element.getBoundingClientRect();
-        const paragraph = [
-          ...element.querySelectorAll("[data-message] p"),
-        ].find((p) => {
-          const box = p.getBoundingClientRect();
+        const inside = (node) => {
+          const box = node.getBoundingClientRect();
           return (
             box.height > 0 && box.top >= bounds.top && box.top < bounds.bottom
           );
-        });
+        };
+        const paragraph =
+          [...element.querySelectorAll("[data-message] p")].find(inside) ||
+          [...element.querySelectorAll("[data-message]")].find(inside);
         const message = paragraph?.closest("[data-message]");
         return {
           scrollTop: element.scrollTop,
@@ -299,7 +344,10 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
         const message = [...element.querySelectorAll("[data-message]")].find(
           (node) => node.dataset.message === target.message,
         );
-        const paragraph = message?.querySelectorAll("p")[target.index];
+        const paragraph =
+          target.index < 0
+            ? message
+            : message?.querySelectorAll("p")[target.index];
         return {
           scrollTop: element.scrollTop,
           top: paragraph
@@ -319,9 +367,11 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     // mounts above the reader may correct scrollTop by their measured
     // height, so the check is the visible paragraph and the distance from
     // the latest message.
-    const wheelStepInGap = async (deltaY, label) => {
+    // With growAbove, a message above the reader also grows in the gap, as
+    // rows that the window mounts above do in the same commit.
+    const wheelStepInGap = async (deltaY, label, growAbove = 0) => {
       const step = await root.evaluate(
-        (element, deltaY) =>
+        (element, { deltaY, growAbove }) =>
           new Promise((resolve, reject) => {
             const offset = (node) =>
               node.getBoundingClientRect().top -
@@ -350,15 +400,28 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
               window.addEventListener("scroll", hold, true);
               element.dispatchEvent(new WheelEvent("wheel", { deltaY }));
               element.scrollTop = before + deltaY;
-              const paragraph = [
-                ...element.querySelectorAll("[data-message] p"),
-              ].find(
-                (p) => p.getBoundingClientRect().height > 0 && offset(p) >= 0,
-              );
+              const inside = (node) =>
+                node.getBoundingClientRect().height > 0 &&
+                offset(node) >= 0 &&
+                offset(node) < element.clientHeight;
+              const paragraph =
+                [...element.querySelectorAll("[data-message] p")].find(
+                  inside,
+                ) ||
+                [...element.querySelectorAll("[data-message]")].find(inside);
+              const grown = growAbove
+                ? [...element.querySelectorAll("[data-message]")].findLast(
+                    (node) =>
+                      node.getBoundingClientRect().bottom <
+                      element.getBoundingClientRect().top,
+                  )
+                : null;
               const moved = {
                 top: element.scrollTop,
                 paragraph: paragraph ? offset(paragraph) : null,
               };
+              const padding = grown?.style.paddingBottom ?? "";
+              if (grown) grown.style.paddingBottom = `${growAbove}px`;
               let during = null;
               const committed = new MutationObserver(() => {
                 if (during || (reply.isConnected && reply.textContent === text))
@@ -382,22 +445,28 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 window.removeEventListener("scroll", hold, true);
                 scrolled();
                 if (during) {
-                  resolve({ attempts, before, moved, during });
+                  resolve({ attempts, before, moved, during, grown: !!grown });
                   return;
                 }
                 // No commit in this gap: return to the start and retry.
+                if (grown) grown.style.paddingBottom = padding;
                 element.scrollTop = atBottom ? element.scrollHeight : before;
                 scrolled();
-                requestAnimationFrame(() => requestAnimationFrame(attempt));
+                next();
               });
             };
-            attempt();
+            // A WebKit scroll update arrives as a task between frames, not
+            // inside the animation frame callbacks.
+            const next = () =>
+              requestAnimationFrame(() => setTimeout(attempt, 0));
+            next();
           }),
-        deltaY,
+        { deltaY, growAbove },
       );
       assert.ok(
         step.before - step.moved.top > Math.abs(deltaY) * 0.75 &&
-          step.moved.paragraph !== null,
+          step.moved.paragraph !== null &&
+          (!growAbove || step.grown),
         `${width}px: the wheel step moves the reader up (${JSON.stringify(step)})`,
       );
       assert.ok(
@@ -430,7 +499,11 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       await latest.waitFor();
 
       // A further wheel step while scrolled up is kept the same way.
-      await wheelStepInGap(-300, "a stream render does not undo a scroll step");
+      await wheelStepInGap(
+        -300,
+        "a stream render does not undo a scroll step or growth above",
+        240,
+      );
       const further = await readingPoint();
       await nextRender();
       await settle(false);
@@ -459,13 +532,64 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       );
 
       // Content above the reader grows, as a late image or an expanded row.
-      await root.evaluate((element, target) => {
-        const bounds = element.getBoundingClientRect();
-        const above = [...element.querySelectorAll("[data-message]")]
-          .filter((node) => node.dataset.message !== target.message)
-          .findLast((node) => node.getBoundingClientRect().bottom < bounds.top);
-        above.style.paddingTop = "240px";
-      }, reading);
+      // It grows at the start of the window row that crosses the viewport
+      // top, which is also the window's own anchor, and a stream commit
+      // lands before the next frame.
+      await root.evaluate(
+        (element) =>
+          new Promise((resolve, reject) => {
+            let attempts = 0;
+            const attempt = () => {
+              if (++attempts > 300) {
+                reject(new Error("No stream commit landed in a frame gap."));
+                return;
+              }
+              const reply = element.querySelector(
+                '[data-message="reply-live"]',
+              );
+              if (!reply) {
+                reject(new Error("The streamed reply is not mounted."));
+                return;
+              }
+              const text = reply.textContent;
+              const top = element.getBoundingClientRect().top;
+              const above =
+                [...element.querySelectorAll("[data-history-row]")].find(
+                  (row) => {
+                    const box = row.getBoundingClientRect();
+                    return box.top < top && box.bottom > top;
+                  },
+                ) ||
+                [...element.querySelectorAll("[data-message]")].findLast(
+                  (node) => node.getBoundingClientRect().bottom < top,
+                );
+              const padding = above.style.paddingTop;
+              above.style.paddingTop = "240px";
+              let committed = false;
+              const observer = new MutationObserver(() => {
+                if (!reply.isConnected || reply.textContent !== text)
+                  committed = true;
+              });
+              observer.observe(element, {
+                childList: true,
+                subtree: true,
+                characterData: true,
+              });
+              window.beforeNextFrame(() => {
+                observer.disconnect();
+                if (committed) {
+                  resolve(attempts);
+                  return;
+                }
+                above.style.paddingTop = padding;
+                next();
+              });
+            };
+            const next = () =>
+              requestAnimationFrame(() => setTimeout(attempt, 0));
+            next();
+          }),
+      );
       await nextRender();
       await settle(false);
       await anchored(

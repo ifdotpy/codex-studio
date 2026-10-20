@@ -144,19 +144,28 @@ export function useConversationScroll(id: string, ready: boolean) {
       root.scrollTop === lastTop.current ||
       !hasRecentScrollInput()
     )
-      return;
+      return false;
     const moved = root.scrollTop - lastTop.current;
     const reach = moved < 0 ? inputReach.current.up : inputReach.current.down;
-    if (Math.abs(moved) > reach + INPUT_SLACK_PX) return;
+    if (Math.abs(moved) > reach + INPUT_SLACK_PX) return false;
+    const previous = following.current ? null : anchor.current;
     track();
-    // The scroll event that follows sees no change and does not persist.
-    persist();
+    // Rows above the reader can change height in the same commit as the
+    // move, for example rows that the history window mounts. An anchor
+    // measured now already includes that change. Keep the previous anchor,
+    // shifted by the reader's move, so the restore still compensates it.
+    if (!following.current && previous?.element.isConnected)
+      anchor.current = {
+        element: previous.element,
+        offset: previous.offset - moved,
+      };
+    return true;
   };
   // An explicit follow request wins over an unseen reader move.
   const restore = (explicit = false) => {
     const root = scroll.current;
     if (!root || !available.current) return;
-    if (!explicit) trackUnseenScroll();
+    const unseen = !explicit && trackUnseenScroll();
     restored.current = true;
     const hadAnchor = !!anchor.current;
     if (following.current)
@@ -174,6 +183,8 @@ export function useConversationScroll(id: string, ready: boolean) {
     remember();
     // A first restore uses the saved offset. Do not replace it with a layout anchor.
     if (!hadAnchor && !following.current) anchor.current = null;
+    // The scroll event of an unseen move sees no change and does not persist.
+    if (unseen) persist();
   };
   const setFollow = (value: boolean) => {
     updateFollow(value);
