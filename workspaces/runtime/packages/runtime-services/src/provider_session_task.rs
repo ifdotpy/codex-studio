@@ -22,6 +22,10 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// Journal entries of the current provider generation that the session holds
+/// before their settlement; unit: entries. Entries of an exited generation do
+/// not count: that journal is finite, and counting it could hold back the
+/// frames the current generation needs to become ready.
 pub const MAX_UNSETTLED: usize = 64;
 const MAX_TIMEOUT_MS: u64 = u32::MAX as u64;
 
@@ -496,6 +500,8 @@ impl Drop for AdmissionGuard {
 struct SettlementState {
     delivered: bool,
     settled: bool,
+    /// Whether the entry belongs to the session's own provider generation.
+    current: bool,
 }
 struct Settlement {
     cursors: Vec<EventCursor>,
@@ -698,6 +704,11 @@ impl SessionTask {
         outcomes
     }
 
+    /// Entries of the current generation held against [`MAX_UNSETTLED`].
+    fn held_current(&self) -> usize {
+        self.seen.values().filter(|state| state.current).count()
+    }
+
     fn pending_ack(&self) -> Option<EventCursor> {
         self.seen
             .iter()
@@ -849,7 +860,7 @@ impl SessionTask {
                     *flight = None;
                     self.process_receipt()?;
                 }
-                entry = adapter.journal.recv(), if self.retained.pending.is_none() && self.retained.control.is_none() && self.seen.len() < MAX_UNSETTLED => {
+                entry = adapter.journal.recv(), if self.retained.pending.is_none() && self.retained.control.is_none() && self.held_current() < MAX_UNSETTLED => {
                     let Some(entry) = entry else { return Err(SessionTaskError::Closed); };
                     self.retained.pending = Some(SessionEvent { journal: Some(entry), outcomes: vec![] });
                     #[cfg(test)] if flight.is_some() { tests::panic_at(3); }
@@ -893,6 +904,7 @@ impl SessionTask {
             SettlementState {
                 delivered: false,
                 settled: false,
+                current: generation.0 == self.state.generation(),
             },
         );
         self.retained.actions = self.state.expire(at).1;
