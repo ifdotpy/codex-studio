@@ -269,7 +269,7 @@ class EfficiencyMixin:
             defaults = self.worker_defaults(self.agent(actor['rootId'], db))
             from codex_native_errors import native_thread_block
             from codex_safety_buffering import active as safety_retry_active
-            from codex_agent_modes import global_concurrency_limit
+            from codex_agent_modes import MAX_SUBAGENT_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY, global_concurrency_limit
             global_limit = global_concurrency_limit()
             active_statuses = ('running', 'starting', 'approval')
             live_agents = "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,''))"
@@ -315,7 +315,8 @@ class EfficiencyMixin:
                         'occupied': team_active, 'queuedCount': len(queued),
                         'teamActive': team_active_all, 'globalActive': global_active,
                         'maxAgents': root['maxAgents'], 'queued': queued,
-                        'configure': {'userOnly': True, 'minimum': 0, 'maximum': 512}}
+                        'configure': {'userOnly': True, 'minimum': MIN_SUBAGENT_CONCURRENCY,
+                                      'maximum': MAX_SUBAGENT_CONCURRENCY}}
             counts = {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})}
             revision = digest([records, finished_counts, counts, defaults, capacity])
             db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')

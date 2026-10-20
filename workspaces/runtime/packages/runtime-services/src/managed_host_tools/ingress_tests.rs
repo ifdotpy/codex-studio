@@ -3268,6 +3268,139 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
     }
 }
 
+/// A team spawns past its running limit: the extra workers wait queued under
+/// `team_concurrency`. A batch past the stored team size is refused with a
+/// typed error and creates nothing. Both providers' leads.
+#[tokio::test]
+async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
+    for (provider, model) in [("codex", "gpt-6-luna"), ("claude", "claude-haiku-4-5")] {
+        let (_root, store, context) = fixture().await;
+        let mut lead = {
+            let read = store.read().unwrap();
+            studio_runtime_store::AgentRepository::get(
+                &read,
+                &studio_runtime_store::AgentId::from(context.agent.as_str()),
+            )
+            .unwrap()
+            .unwrap()
+            .value()
+        };
+        lead["provider"] = json!(provider);
+        lead["model"] = json!(model);
+        lead["workerDefaults"] = json!({"model": model});
+        let active = studio_runtime_store::AgentIndexedReads::active_team_members(
+            &store.read().unwrap(),
+            lead["rootId"].as_str().unwrap(),
+        )
+        .unwrap();
+        let running = {
+            let read = store.read().unwrap();
+            read.query_row(
+                "SELECT count(*) FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 \
+                 AND id!=?1 AND json_extract(record,'$.status') IN ('running','starting','approval')",
+                [lead["rootId"].as_str().unwrap()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        lead["concurrency"] = json!(running + 1);
+        lead["maxAgents"] = json!(active + 2);
+        let stored = lead.clone();
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                let record = studio_runtime_store::AgentRecord::from_value(stored)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                studio_runtime_store::AgentRepository::put(tx, &record)
+            })
+            .await
+            .unwrap();
+        let actor = Actor::from_record(&lead, &context.agent, context.epoch).unwrap();
+        let batch = |names: &[&str]| {
+            json!({"agents": names.iter().map(|name| json!({
+                "name": name, "prompt": "Do the task", "workspace": "shared"
+            })).collect::<Vec<_>>()})
+        };
+        let spawned = crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &batch(&["One", "Two"]),
+            &format!("{provider}-within-team-size"),
+            20.0,
+            &CreationEnvironment,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{provider} spawn within the team size: {error:?}"));
+        let children = spawned.value["agents"].as_array().unwrap();
+        assert_eq!(children.len(), 2, "{provider}");
+        let first = children[0]["id"].as_str().unwrap().to_owned();
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                let id = studio_runtime_store::AgentId::from(first.as_str());
+                let mut child = studio_runtime_store::AgentRepository::get(tx, &id)?
+                    .expect("spawned child")
+                    .value();
+                assert_eq!(child["status"], "queued");
+                child["status"] = json!("running");
+                let record = studio_runtime_store::AgentRecord::from_value(child)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                studio_runtime_store::AgentRepository::put(tx, &record)
+            })
+            .await
+            .unwrap();
+        let snapshot = crate::managed_status_watch::model_directory(
+            &store,
+            &context.agent,
+            context.epoch,
+            &json!({}),
+            21.0,
+        )
+        .await
+        .unwrap();
+        let capacity = &snapshot["capacity"];
+        assert_eq!(capacity["teamLimit"], running + 1, "{provider}");
+        assert_eq!(capacity["queuedCount"], 1, "{provider}");
+        assert_eq!(
+            capacity["queued"][0]["id"], children[1]["id"],
+            "{provider}: the second worker waits for a running slot"
+        );
+        assert!(
+            capacity["queued"][0]["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("team_concurrency")),
+            "{provider}: {capacity}"
+        );
+
+        let count = |store: &RuntimeStore| -> i64 {
+            store
+                .read()
+                .unwrap()
+                .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+                .unwrap()
+        };
+        let before = count(&store);
+        let refused = crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &batch(&["Three"]),
+            &format!("{provider}-past-team-size"),
+            22.0,
+            &CreationEnvironment,
+        )
+        .await
+        .expect_err("the batch exceeds the stored team size");
+        assert!(
+            matches!(
+                refused,
+                crate::managed_child_create::Error::Managed(Error::Invalid(message))
+                    if message.contains("active agent limit")
+            ),
+            "{provider}: {refused:?}"
+        );
+        assert_eq!(count(&store), before, "{provider}: nothing was created");
+    }
+}
+
 #[path = "ingress_tests/claim_settlement.rs"]
 mod claim_settlement;
 

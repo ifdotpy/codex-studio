@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
-const MAX_CHILDREN: usize = 64;
+use crate::managed_host_tools::MAX_SPAWN_BATCH_AGENTS;
+use studio_runtime_schema::agent_limits_generated::DEFAULT_MAX_TEAM_AGENTS;
 const MAX_NAME_CHARS: usize = 100;
 const MAX_PROMPT_CHARS: usize = 32_000;
 /// Python's Linux VM review state save timeout, in seconds.
@@ -341,9 +342,9 @@ pub(crate) async fn spawn_agents(
     let specs = args
         .get("agents")
         .and_then(Value::as_array)
-        .filter(|items| (1..=MAX_CHILDREN).contains(&items.len()))
+        .filter(|items| (1..=MAX_SPAWN_BATCH_AGENTS).contains(&items.len()))
         .ok_or(crate::managed_host_tools::Error::Invalid(
-            "Supply 1 to 64 agents",
+            crate::managed_host_tools::SPAWN_BATCH_SIZE_REFUSAL,
         ))?;
     let parent_value = actor_record.value();
     let root_id = actor_record.root_id.0.as_str();
@@ -802,7 +803,10 @@ pub(crate) async fn spawn_agents(
         }
         record["name"] = json!(name.trim());
         record["yoloMode"] = root_value.get("yoloMode").cloned().unwrap_or(json!(true));
-        record["maxAgents"] = root_value.get("maxAgents").cloned().unwrap_or(json!(64));
+        record["maxAgents"] = root_value
+            .get("maxAgents")
+            .cloned()
+            .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
         record["tokenBudget"] = root_value
             .get("tokenBudget")
             .cloned()
@@ -848,7 +852,7 @@ pub(crate) async fn spawn_agents(
             .ok_or(crate::managed_host_tools::Error::Stale)?;
         event_write::assert_delegation(&current_root)
             .map_err(|_| crate::managed_host_tools::Error::Invalid("Delegation is disabled"))?;
-        let max = current_root.extra.get("maxAgents").and_then(Value::as_i64).unwrap_or(64);
+        let max = current_root.extra.get("maxAgents").and_then(Value::as_i64).unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
         let existing = drafts.iter().map(|draft| AgentRepository::get(tx, &AgentId::from(draft.id.as_str())))
             .collect::<Result<Vec<_>, _>>()?;
         let new_count = existing.iter().filter(|item| item.is_none()).count() as i64;
@@ -860,7 +864,7 @@ pub(crate) async fn spawn_agents(
         }
         for draft in &drafts {
             draft.workspace_admission.check(tx, &actor_record)
-                .map_err(|_| crate::managed_host_tools::Error::Unavailable("workspace-state/child-admission"))?;
+                .map_err(|_| crate::managed_host_tools::Error::Stale)?;
             crate::host_worker_create::recheck_worker(tx, &draft.typed, draft.epoch, &draft.account)
                 .map_err(map_recheck_error)?;
         }
@@ -1554,7 +1558,10 @@ pub(crate) async fn request_review(
     record["imageWorkspaceHasGit"] = json!(false);
     record["workerBaseRef"] = Value::Null;
     record["workerBaseCommit"] = Value::Null;
-    record["maxAgents"] = root_value.get("maxAgents").cloned().unwrap_or(json!(64));
+    record["maxAgents"] = root_value
+        .get("maxAgents")
+        .cloned()
+        .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
     record["tokenBudget"] = root_value
         .get("tokenBudget")
         .cloned()
@@ -1630,9 +1637,7 @@ impl crate::native_review::ReviewCreator for ReviewCreator<'_> {
         self.draft
             .workspace_admission
             .check(tx, self.actor)
-            .map_err(|_| {
-                crate::native_actions::NativeError::Unavailable("workspace-state/child-admission")
-            })?;
+            .map_err(|_| crate::native_actions::NativeError::Changed)?;
         crate::host_worker_create::recheck_worker(
             tx,
             &self.draft.typed,

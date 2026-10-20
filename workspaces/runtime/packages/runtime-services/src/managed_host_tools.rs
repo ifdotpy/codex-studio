@@ -49,7 +49,11 @@ use thiserror::Error;
 
 const MAX_CALL_BYTES: usize = 1_000_000;
 const MAX_REQUEST_ID_CHARS: usize = 1500;
-const MAX_CHILDREN: usize = 64;
+/// Most agents one `orchestration_spawn` call may create, in agents. The
+/// provider-facing tool schema (`preparation-resources.json`, `maxItems`)
+/// publishes this bound; a parity test checks it.
+pub(crate) const MAX_SPAWN_BATCH_AGENTS: usize = 64;
+pub(crate) const SPAWN_BATCH_SIZE_REFUSAL: &str = "Supply 1 to 64 agents";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 pub(crate) enum ManagedHostTool {
@@ -748,8 +752,8 @@ fn spawn(
         .args
         .get("agents")
         .and_then(Value::as_array)
-        .filter(|agents| !agents.is_empty() && agents.len() <= MAX_CHILDREN)
-        .ok_or(Error::Invalid("Supply 1 to 64 agents"))?;
+        .filter(|agents| !agents.is_empty() && agents.len() <= MAX_SPAWN_BATCH_AGENTS)
+        .ok_or(Error::Invalid(SPAWN_BATCH_SIZE_REFUSAL))?;
     let mut children = Vec::with_capacity(specs.len());
     let mut signals = Vec::new();
     let mut assigned = std::collections::BTreeSet::new();
@@ -1072,6 +1076,36 @@ mod tests {
             remote_status,
             Err(Error::Unavailable("multi-server-runtime/directory"))
         ));
+    }
+
+    #[test]
+    fn spawn_batch_bound_matches_the_published_tool_schema() {
+        let resources: Value =
+            serde_json::from_str(include_str!("account_worker/preparation-resources.json"))
+                .unwrap();
+        let mut published = Vec::new();
+        let mut stack = vec![&resources];
+        while let Some(value) = stack.pop() {
+            if value.get("name") == Some(&json!("orchestration_spawn")) {
+                published.push(value["inputSchema"]["properties"]["agents"]["maxItems"].clone());
+            }
+            match value {
+                Value::Array(items) => stack.extend(items),
+                Value::Object(map) => stack.extend(map.values()),
+                _ => {}
+            }
+        }
+        assert!(
+            !published.is_empty(),
+            "orchestration_spawn schema is published"
+        );
+        for bound in published {
+            assert_eq!(bound, json!(MAX_SPAWN_BATCH_AGENTS));
+        }
+        assert_eq!(
+            SPAWN_BATCH_SIZE_REFUSAL,
+            format!("Supply 1 to {MAX_SPAWN_BATCH_AGENTS} agents")
+        );
     }
 }
 

@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_schema::agent_limits_generated::{
     DEFAULT_GLOBAL_CONCURRENCY, DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
-    MIN_GLOBAL_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY,
+    MAX_SUBAGENT_CONCURRENCY, MIN_GLOBAL_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY,
 };
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, MonitorRecord, RuleRecord, RulesRepository,
@@ -555,7 +555,7 @@ fn capacity_snapshot(
         "globalActive": global_active,
         "maxAgents": root_max_agents,
         "queued": queued,
-        "configure": {"userOnly":true,"minimum":0,"maximum":512},
+        "configure": {"userOnly":true,"minimum":MIN_SUBAGENT_CONCURRENCY,"maximum":MAX_SUBAGENT_CONCURRENCY},
     }))
 }
 

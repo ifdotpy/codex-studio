@@ -179,7 +179,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
 
     fn prepare_workspace(
         &self,
-        store: &studio_runtime_store::RuntimeStore,
+        _store: &studio_runtime_store::RuntimeStore,
         actor: &studio_runtime_store::AgentRecord,
         _args: &Value,
         _request_id: &str,
@@ -187,18 +187,30 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
         studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
     > {
-        let id = actor.id.0.clone();
-        let epoch = actor.epoch;
-        let cwd = actor.extra.get("cwd").and_then(Value::as_str).ok_or(
-            studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                "Select a project directory",
-            ),
-        )?;
-        // Admission validates the parent's existing workspace. The requested
-        // child mode is independently validated and provisioned by creation.
-        let mode = parent_workspace_mode(actor);
-        if matches!(mode, "layr" | "linux") {
-            let project_id = actor
+        prepare_parent_workspace(actor)
+    }
+}
+
+/// Admission fence for a child or monitor of `actor`: only the parent's own
+/// workspace identity, never other agents' rows.
+fn prepare_parent_workspace(
+    actor: &studio_runtime_store::AgentRecord,
+) -> Result<
+    Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+    studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+> {
+    let id = actor.id.0.clone();
+    let epoch = actor.epoch;
+    let cwd = actor.extra.get("cwd").and_then(Value::as_str).ok_or(
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+            "Select a project directory",
+        ),
+    )?;
+    // Admission validates the parent's existing workspace. The requested
+    // child mode is independently validated and provisioned by creation.
+    let mode = parent_workspace_mode(actor);
+    if matches!(mode, "layr" | "linux") {
+        let project_id = actor
                 .extra
                 .get("layrProjectId")
                 .and_then(Value::as_str)
@@ -206,7 +218,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 .ok_or(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                     "The parent layr line is not ready",
                 ))?;
-            let line = actor
+        let line = actor
                 .extra
                 .get("layrLine")
                 .and_then(Value::as_str)
@@ -214,21 +226,21 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 .ok_or(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                     "The parent layr line is not ready",
                 ))?;
-            if actor.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
-                return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+        if actor.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
+            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                     "The parent layr line is not ready",
                 ));
-            }
-            return Ok(Box::new(VmManagedWorkspace {
-                id,
-                epoch,
-                cwd: cwd.to_owned(),
-                project_id: project_id.to_owned(),
-                line: line.to_owned(),
-            }));
         }
-        if mode == "image" {
-            let repo = actor
+        return Ok(Box::new(VmManagedWorkspace {
+            id,
+            epoch,
+            cwd: cwd.to_owned(),
+            project_id: project_id.to_owned(),
+            line: line.to_owned(),
+        }));
+    }
+    if mode == "image" {
+        let repo = actor
                 .extra
                 .get("imageWorkspaceRepo")
                 .and_then(Value::as_str)
@@ -236,41 +248,39 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 .ok_or(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                     "The image workspace is not ready",
                 ))?;
-            if actor.extra.get("imageWorkspace").and_then(Value::as_bool) != Some(true)
-                || actor
-                    .extra
-                    .get("imageWorkspaceReady")
-                    .and_then(Value::as_bool)
-                    != Some(true)
-            {
-                return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+        if actor.extra.get("imageWorkspace").and_then(Value::as_bool) != Some(true)
+            || actor
+                .extra
+                .get("imageWorkspaceReady")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                     "The image workspace is not ready",
                 ));
-            }
-            return Ok(Box::new(ImageManagedWorkspace {
-                id,
-                epoch,
-                cwd: cwd.to_owned(),
-                repo: repo.to_owned(),
-            }));
         }
-        if !matches!(mode, "shared" | "worktree") {
-            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                "Unknown workspace mode",
-            ));
-        }
-        let prepared = studio_runtime_services::host_project_runtime::PreparedHost::load(store)
-            .map_err(|_| studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("workspace-state/host-preparation"))?;
-        prepared
-            .recheck_paths()
-            .map_err(|_| studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("workspace-state/host-preparation"))?;
-        Ok(Box::new(PreparedManagedWorkspace {
+        return Ok(Box::new(ImageManagedWorkspace {
             id,
             epoch,
             cwd: cwd.to_owned(),
-            prepared,
-        }))
+            repo: repo.to_owned(),
+        }));
     }
+    if !matches!(mode, "shared" | "worktree") {
+        return Err(
+            studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+                "Unknown workspace mode",
+            ),
+        );
+    }
+    // Python `spawn_agents` fenced only the parent: a shared or worktree
+    // child inherits the parent's folder, so unrelated agents' rows are
+    // not part of this admission.
+    Ok(Box::new(HostManagedWorkspace {
+        id,
+        epoch,
+        cwd: cwd.to_owned(),
+    }))
 }
 
 fn parent_workspace_mode(actor: &studio_runtime_store::AgentRecord) -> &str {
@@ -302,6 +312,43 @@ mod workspace_admission_tests {
         }))
         .expect("image lead");
         assert_eq!(parent_workspace_mode(&image_lead), "image");
+    }
+
+    /// Live 128-worker run: a second spawn batch was refused while the first
+    /// batch's workers changed status, because admission fenced every agent row.
+    #[tokio::test]
+    async fn shared_child_admission_fences_only_the_parent() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let record = |id: &str, epoch: i64, status: &str| {
+            studio_runtime_store::AgentRecord::from_value(serde_json::json!({
+                "id":id,"rootId":"lead","epoch":epoch,"status":status,
+                "workspaceMode":"shared","cwd":"/fake/project"
+            }))
+            .expect("agent record")
+        };
+        let lead = record("lead", 3, "running");
+        let admission = prepare_parent_workspace(&lead).expect("shared parent admits");
+        let worker = record("worker", 1, "starting");
+        store
+            .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &worker))
+            .await
+            .expect("first batch worker");
+        let restarted = record("lead", 4, "running");
+        let (sibling_changed, parent_changed) = store
+            .transaction(move |tx| {
+                studio_runtime_store::AgentRepository::put(tx, &record("worker", 1, "idle"))?;
+                Ok((
+                    admission.check(tx, &lead).is_ok(),
+                    admission.check(tx, &restarted).is_ok(),
+                ))
+            })
+            .await
+            .expect("admission transaction");
+        assert!(sibling_changed, "another agent's status is not a fence");
+        assert!(!parent_changed, "a new parent epoch is refused");
     }
 }
 
@@ -420,11 +467,10 @@ fn host_account_identity(
     }
 }
 
-struct PreparedManagedWorkspace {
+struct HostManagedWorkspace {
     id: String,
     epoch: i64,
     cwd: String,
-    prepared: studio_runtime_services::host_project_runtime::PreparedHost,
 }
 
 struct VmManagedWorkspace {
@@ -491,10 +537,10 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for VmManagedW
     }
 }
 
-impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedManagedWorkspace {
+impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for HostManagedWorkspace {
     fn check(
         &self,
-        tx: &studio_runtime_store::Transaction<'_>,
+        _tx: &studio_runtime_store::Transaction<'_>,
         actor: &studio_runtime_store::AgentRecord,
     ) -> Result<(), studio_runtime_services::monitor_policy::MonitorError> {
         if actor.id.0 != self.id
@@ -507,11 +553,7 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedMa
                 ),
             );
         }
-        self.prepared.recheck(tx).map_err(|_| {
-            studio_runtime_services::monitor_policy::MonitorError::Refused(
-                "Workspace changed during preparation",
-            )
-        })
+        Ok(())
     }
 }
 

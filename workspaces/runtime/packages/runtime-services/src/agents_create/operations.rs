@@ -8,9 +8,21 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::agent_limits_generated::{
-    DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, TEAM_AGENT_HEADROOM,
+    DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY,
+    MAX_TEAM_AGENTS, MIN_SUBAGENT_CONCURRENCY, MIN_TEAM_AGENTS, TEAM_AGENT_HEADROOM,
 };
 use studio_runtime_store::RuntimeStore;
+
+/// Accepted subagent concurrency, in running workers; owner `codex_agent_modes.py`.
+const SUBAGENT_CONCURRENCY: std::ops::RangeInclusive<i64> =
+    MIN_SUBAGENT_CONCURRENCY..=MAX_SUBAGENT_CONCURRENCY;
+/// Accepted stored team size, in agent records; owner `codex_agent_modes.py`.
+const TEAM_AGENTS: std::ops::RangeInclusive<i64> = MIN_TEAM_AGENTS..=MAX_TEAM_AGENTS as i64;
+/// Refusals that name the bounds above; `limit_refusals_name_the_owned_bounds` checks them.
+const CREATE_LIMITS_REFUSAL: &str = "Concurrency must be 0 to 2048 and team size must be 1 to 2050";
+const TEAM_SIZE_REFUSAL: &str =
+    "Team size must be 1 to 2050 and token budget must be positive or null";
+const CONCURRENCY_REFUSAL: &str = "Subagent concurrency must be an integer from 0 to 2048";
 
 pub type PersistedRecordValidator = std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>;
 
@@ -763,10 +775,9 @@ async fn create(
     });
     let concurrency = request.concurrency.unwrap_or(DEFAULT_SUBAGENT_CONCURRENCY);
     let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
-    if !(0..=512).contains(&concurrency) || !(1..=1024).contains(&requested_max_agents) {
-        return Err(OperationError::Invalid(
-            "Concurrency must be 0 to 512 and team size must be 1 to 1024",
-        ));
+    if !SUBAGENT_CONCURRENCY.contains(&concurrency) || !TEAM_AGENTS.contains(&requested_max_agents)
+    {
+        return Err(OperationError::Invalid(CREATE_LIMITS_REFUSAL));
     }
     if request.token_budget.is_some_and(|budget| budget <= 0) {
         return Err(OperationError::Invalid(
@@ -1564,14 +1575,12 @@ pub async fn configure(
     let validate = std::sync::Arc::clone(&context.validate);
     if request
         .max_agents
-        .is_some_and(|max_agents| !(1..=1024).contains(&max_agents))
+        .is_some_and(|max_agents| !TEAM_AGENTS.contains(&max_agents))
         || request
             .token_budget
             .is_some_and(|budget| budget.is_some_and(|budget| budget <= 0))
     {
-        return Err(OperationError::Invalid(
-            "Team size must be 1 to 1024 and token budget must be positive or null",
-        ));
+        return Err(OperationError::Invalid(TEAM_SIZE_REFUSAL));
     }
     if request.concurrency.is_some() {
         if request.max_agents.is_some() || request.token_budget.is_some() {
@@ -1594,10 +1603,8 @@ pub async fn configure(
                 "A subagent concurrency request id is required",
             ))?
             .to_owned();
-        if !(0..=512).contains(&limit) {
-            return Err(OperationError::Invalid(
-                "Subagent concurrency must be an integer from 0 to 512",
-            ));
+        if !SUBAGENT_CONCURRENCY.contains(&limit) {
+            return Err(OperationError::Invalid(CONCURRENCY_REFUSAL));
         }
         let signature = crate::event_write::request_signature(&json!({
             "operation":"subagent_concurrency","agent":request.id,
@@ -1633,7 +1640,10 @@ pub async fn configure(
             if current_revision != revision {
                 return Err(MutationError::Stale.into());
             }
-            let prior_max = root.get("maxAgents").and_then(Value::as_i64).unwrap_or(64);
+            let prior_max = root
+                .get("maxAgents")
+                .and_then(Value::as_i64)
+                .unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
             if current != limit {
                 root["concurrency"] = json!(limit);
                 root["agentModeRevision"] = json!(revision + 1);
@@ -1642,7 +1652,7 @@ pub async fn configure(
                 root["agentModeChangedBy"] = json!("user");
             }
             if root.get("maxAgentsExplicit").and_then(Value::as_bool) != Some(true) {
-                root["maxAgents"] = json!(prior_max.max(limit + 2));
+                root["maxAgents"] = json!(prior_max.max(limit + TEAM_AGENT_HEADROOM));
             }
             mode_fields(&mut root);
             let changed = current != limit || root["maxAgents"].as_i64() != Some(prior_max);
@@ -2993,6 +3003,19 @@ async fn mutate(
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
+
+    #[test]
+    fn limit_refusals_name_the_owned_bounds() {
+        let (concurrency, team) = (SUBAGENT_CONCURRENCY, TEAM_AGENTS);
+        let concurrency = format!("{} to {}", concurrency.start(), concurrency.end());
+        let team = format!("{} to {}", team.start(), team.end());
+        assert_eq!(
+            CREATE_LIMITS_REFUSAL,
+            format!("Concurrency must be {concurrency} and team size must be {team}")
+        );
+        assert!(TEAM_SIZE_REFUSAL.starts_with(&format!("Team size must be {team} ")));
+        assert!(CONCURRENCY_REFUSAL.ends_with(&format!("from {concurrency}")));
+    }
 
     struct CatalogFixture {
         models: std::collections::BTreeMap<String, Vec<String>>,
