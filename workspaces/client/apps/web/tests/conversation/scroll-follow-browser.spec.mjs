@@ -324,7 +324,14 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
         };
         const paragraph =
           [...element.querySelectorAll("[data-message] p")].find(inside) ||
-          [...element.querySelectorAll("[data-message]")].find(inside);
+          [...element.querySelectorAll("[data-message]")].find(inside) ||
+          // One tall message can cover the whole phone viewport.
+          [...element.querySelectorAll("[data-message]")].find((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.height > 0 && box.top < bounds.top && box.bottom > bounds.top
+            );
+          });
         const message = paragraph?.closest("[data-message]");
         return {
           scrollTop: element.scrollTop,
@@ -408,7 +415,14 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 [...element.querySelectorAll("[data-message] p")].find(
                   inside,
                 ) ||
-                [...element.querySelectorAll("[data-message]")].find(inside);
+                [...element.querySelectorAll("[data-message]")].find(inside) ||
+                // One tall message can cover the whole phone viewport.
+                [...element.querySelectorAll("[data-message]")].find(
+                  (node) =>
+                    offset(node) < 0 &&
+                    node.getBoundingClientRect().bottom >
+                      element.getBoundingClientRect().top,
+                );
               const grown = growAbove
                 ? [...element.querySelectorAll("[data-message]")].findLast(
                     (node) =>
