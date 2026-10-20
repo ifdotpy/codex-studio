@@ -460,6 +460,21 @@ pub fn dispatch_notification_with_effects(
                     agent_changed = true;
                 }
             }
+            if let Some(key) = reasoning_stream_key(&agent, agent_id, identity, kind, params) {
+                // Counted like a text delta: the agent is written at the next
+                // flush, not once per delta. Its effects are the unbuffered ones.
+                let outcome = match next_streams.enqueue_delta(key, "", params) {
+                    EnqueueResult::Buffered => DispatchOutcome::Written,
+                    EnqueueResult::Closed => DispatchOutcome::Ignored {
+                        reason: "closed-stream".into(),
+                    },
+                    EnqueueResult::FlushRequired => {
+                        unreachable!("reasoning deltas retain no text")
+                    }
+                };
+                after_known = AfterAgent::Unchanged;
+                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+            }
             if kind == "item/commandExecution/outputDelta" {
                 let key = command_key(agent_id, identity, params)?;
                 let delta = params["delta"]
@@ -1424,6 +1439,8 @@ fn flush_one_stream(
             close,
             observed_at,
         )?;
+    } else if REASONING_DELTA_METHODS.contains(&key.method.as_str()) {
+        flush_reasoning_stream(agent, streams, key, observed_at)?;
     } else {
         flush_text_stream(
             transaction,
@@ -1438,6 +1455,67 @@ fn flush_one_stream(
     if close {
         NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
         streams.close(key);
+    }
+    Ok(())
+}
+
+/// Codex reasoning deltas carry no stored text; each one only counts as an
+/// agent event. Like a Claude thinking delta (an agentMessage delta), a delta
+/// of the current turn is buffered and counted at the next flush.
+const REASONING_DELTA_METHODS: [&str; 2] = [
+    "item/reasoning/textDelta",
+    "item/reasoning/summaryTextDelta",
+];
+
+/// The stream of a reasoning delta that can be buffered: current turn, an
+/// item id, and no retry status that the delta clears.
+fn reasoning_stream_key(
+    agent: &Value,
+    agent_id: &str,
+    identity: &ProviderDeliveryIdentity,
+    kind: &str,
+    params: &Value,
+) -> Option<StreamKey> {
+    #[derive(serde::Deserialize)]
+    struct Delta<'a> {
+        #[serde(rename = "turnId", borrow, default)]
+        turn_id: Option<&'a str>,
+        #[serde(rename = "itemId", borrow)]
+        item_id: &'a str,
+    }
+    if !REASONING_DELTA_METHODS.contains(&kind) {
+        return None;
+    }
+    let delta = Delta::deserialize(params).ok()?;
+    let current_turn = agent.get("turnId").and_then(Value::as_str);
+    if delta.item_id.is_empty()
+        || delta
+            .turn_id
+            .is_some_and(|turn| !turn.is_empty() && current_turn != Some(turn))
+        || agent["nativeStatus"]["phase"] == "retrying"
+    {
+        return None;
+    }
+    let mut key = command_key(agent_id, identity, params).ok()?;
+    key.method = kind.to_owned();
+    Some(key)
+}
+
+/// Count the buffered reasoning deltas of `key` as agent events.
+fn flush_reasoning_stream(
+    agent: &mut Value,
+    streams: &mut NotificationStreamBuffer,
+    key: &StreamKey,
+    observed_at: f64,
+) -> Result<(), NotificationDispatchError> {
+    if let Some((_, count, params)) = streams.flush(key, "") {
+        update_common_agent_fields(agent, &key.method, &params, observed_at)?;
+        agent["events"] = Value::from(
+            agent["events"]
+                .as_u64()
+                .unwrap_or_default()
+                .saturating_add(count.saturating_sub(1)),
+        );
     }
     Ok(())
 }
@@ -1544,6 +1622,13 @@ fn flush_keys(
                 close,
                 observed_at,
             )?;
+            continue;
+        }
+        if REASONING_DELTA_METHODS.contains(&key.method.as_str()) {
+            flush_reasoning_stream(agent, streams, &key, observed_at)?;
+            if close {
+                streams.close(&key);
+            }
             continue;
         }
         flush_text_stream(
@@ -3032,6 +3117,47 @@ mod tests {
         transaction
             .commit()
             .expect("invalid item refusal leaves transaction usable");
+    }
+
+    /// Codex reasoning deltas are counted at the next flush instead of
+    /// rewriting the agent per delta; the count matches one event per delta.
+    #[test]
+    fn reasoning_deltas_count_at_flush_without_agent_writes() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction begins");
+        let publication = PublicationContext::default();
+        let stored = |tx: &rusqlite::Transaction<'_>| {
+            TranscriptRepository::agent(tx, "agent")
+                .expect("agent reads")
+                .expect("agent exists")
+        };
+        let initial = stored(&transaction);
+        let mut streams = NotificationStreamBuffer::default();
+        for cursor in 1..=5 {
+            let method = if cursor % 2 == 0 {
+                "item/reasoning/summaryTextDelta"
+            } else {
+                "item/reasoning/textDelta"
+            };
+            let result = super::dispatch_notification(&transaction, "agent", &publication, &streams, &identity(cursor),
+                &frame(&json!({"method":method,"params":{"threadId":"thread","turnId":"turn","itemId":"think","delta":"x"}})), 10.0)
+                .expect("reasoning delta");
+            assert_eq!(result.outcome, DispatchOutcome::Written);
+            streams = result.stream_update.expect("buffered delta");
+            assert_eq!(
+                stored(&transaction),
+                initial,
+                "a buffered delta writes no agent"
+            );
+        }
+        streams =
+            super::flush_notification_streams(&transaction, "agent", &publication, &streams, 11.0)
+                .expect("flush")
+                .expect("flush changes the buffer");
+        let agent = stored(&transaction);
+        assert_eq!(agent["events"], 5);
+        assert!(agent["lastEvent"].is_string());
+        assert_eq!(streams.pending_bytes(), 0);
     }
 
     /// Stream flushes write the text once, to the item: no durable base copy
