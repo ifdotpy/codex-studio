@@ -911,6 +911,19 @@ async function main() {
       apiP95Ms: percentile(allApiMs, 0.95),
       apiMaxMs: allApiMs.length ? Math.max(...allApiMs) : null,
       apiRequestCount: allApiMs.length,
+      // Request count per path, most frequent first, so a request-volume
+      // regression can be attributed to the endpoint that causes it.
+      apiRequestsByPath: Object.fromEntries(
+        [
+          ...apiRows
+            .reduce(
+              (counts, row) =>
+                counts.set(row.path, (counts.get(row.path) ?? 0) + 1),
+              new Map(),
+            )
+            .entries(),
+        ].sort((left, right) => right[1] - left[1]),
+      ),
       diagnosticsP95Ms: percentile(diagnosticsApiMs, 0.95),
       sqliteLockErrorDelta:
         diagnosticsAfter.lockErrors !== null &&
