@@ -866,9 +866,11 @@ parallelism; the queue reports their blockers.
 Providers limit requests per account, so each account has three turn start
 settings, the same for Codex and Claude: turn starts per burst, the pause after
 a burst (seconds), and running turns at once. While fewer turns run than the
-limit and no pause is active, turns start at once, up to one burst. The start
-that ends a burst (the last start of the burst, or the start that takes the last
-free running slot) begins the pause; the next start waits until the pause ends.
+limit and no pause is active, turns start at once, up to one burst. The last
+start of a burst begins the pause; the next start waits until the pause ends.
+A full set of running turns only makes a start wait for a slot. Root agents
+(leads and user-facing chats) are queued ahead of workers, and still count
+against the burst and running limits; a direct user message does not bypass them.
 A burst is starts close together: a start at least one pause after the previous
 start begins a new burst, so occasional starts never wait.
 A turn over a limit is not failed: its message stays queued, the agent shows

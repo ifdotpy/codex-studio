@@ -64,7 +64,7 @@ class AccountStartThrottle(ContractModel):
     """Turn start throttle of one account, the same for every provider.
 
     Studio starts at most `burst` turns at once, then waits `pauseSeconds` after the
-    start that ends a burst (`burst` starts made, or the last free running slot taken),
+    `burst`-th start,
     and keeps at most `maxRunningTurns` turns running. A turn over a limit waits and
     starts later. Studio limits turn starts only, not the provider's own requests
     inside a turn. Bounds: codex_shared_values.ACCOUNT_START_* and ACCOUNT_RUNNING_TURNS_*.

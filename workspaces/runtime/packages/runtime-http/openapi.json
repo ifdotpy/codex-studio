@@ -2402,7 +2402,7 @@
       },
       "AccountStartThrottle": {
         "additionalProperties": false,
-        "description": "Turn start throttle of one account, the same for every provider.\n\nStudio starts at most `burst` turns at once, then waits `pauseSeconds` after the\nstart that ends a burst (`burst` starts made, or the last free running slot taken),\nand keeps at most `maxRunningTurns` turns running. A turn over a limit waits and\nstarts later. Studio limits turn starts only, not the provider's own requests\ninside a turn. Bounds: codex_shared_values.ACCOUNT_START_* and ACCOUNT_RUNNING_TURNS_*.",
+        "description": "Turn start throttle of one account, the same for every provider.\n\nStudio starts at most `burst` turns at once, then waits `pauseSeconds` after the\n`burst`-th start,\nand keeps at most `maxRunningTurns` turns running. A turn over a limit waits and\nstarts later. Studio limits turn starts only, not the provider's own requests\ninside a turn. Bounds: codex_shared_values.ACCOUNT_START_* and ACCOUNT_RUNNING_TURNS_*.",
         "properties": {
           "burst": {
             "description": "Turn starts per burst.",

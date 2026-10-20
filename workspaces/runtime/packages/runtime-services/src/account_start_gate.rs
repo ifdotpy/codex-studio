@@ -2,14 +2,17 @@
 //!
 //! Providers limit requests per account, so each account has three settings
 //! ([`StartThrottle`], persisted on its registry row): at most `burst` turn
-//! starts at once, a `pause` after the start that ends a burst (`burst` starts
-//! made, or the last free running slot taken), and at most `max_running`
-//! running turns. A burst is starts close together: a start at least `pause`
+//! starts at once, a `pause` after the `burst`-th start, and at most
+//! `max_running` running turns. A full set of running turns only makes the
+//! next start wait for a slot; it starts no pause of its own. A burst is starts close together: a start at least `pause`
 //! after the previous one begins a new burst, so a trickle of starts never
 //! pauses. A wake that would start a turn over a limit waits here
 //! before its claim, so its input stays queued with its identity and starts
-//! later exactly once; nothing fails. The agent shows the wait (`startWait`)
-//! until its claim clears it.
+//! later exactly once; nothing fails. A root agent (a lead or user-facing
+//! chat, no `parentId`) enters at the front of the queue, so its turn is not
+//! stuck behind its own workers; it still counts against burst and running
+//! limits, and a direct user message does not bypass them. The agent shows the
+//! wait (`startWait`) until its claim clears it.
 //!
 //! The state is in memory, one [`StartGate`] per account in this process.
 //! Nothing polls: the first waiter sleeps until the pause ends, or, when every
@@ -21,6 +24,7 @@
 //! turn.
 use crate::account_driver::AccountDriver;
 use crate::continuation::ContinuationError;
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -158,11 +162,16 @@ enum Decision {
 }
 
 impl GateState {
-    fn enter(&mut self) -> (u64, Arc<Notify>) {
+    /// Queue a start: a `root` agent's at the front, others' at the back.
+    fn enter(&mut self, root: bool) -> (u64, Arc<Notify>) {
         let ticket = self.next_ticket;
         self.next_ticket += 1;
         let notify = Arc::new(Notify::new());
-        self.waiters.push_back((ticket, Arc::clone(&notify)));
+        if root {
+            self.waiters.push_front((ticket, Arc::clone(&notify)));
+        } else {
+            self.waiters.push_back((ticket, Arc::clone(&notify)));
+        }
         (ticket, notify)
     }
 
@@ -223,13 +232,20 @@ impl GateState {
         }
         self.last_start_at = Some(now);
         self.burst_starts += 1;
-        if self.burst_starts >= throttle.burst || self.running.len() as u64 >= throttle.max_running
-        {
+        if self.burst_starts >= throttle.burst {
             self.burst_starts = 0;
             self.burst_ended_at = Some(now);
         }
         self.wake_first();
         Decision::Admit
+    }
+
+    /// Free the claimed slot of `agent` when its turn has settled, so its
+    /// next wake is a new start and not a pass.
+    fn release_settled(&mut self, agent: &str) {
+        if self.running.get(agent) == Some(&true) {
+            self.release(agent);
+        }
     }
 
     /// Free the slot of `agent` if it still has one.
@@ -311,7 +327,14 @@ impl StartGate {
         mut sources: StartSources,
     ) -> Result<StartSlot, ContinuationError> {
         self.seed(&sources).await?;
-        let (id, notify) = self.lock().enter();
+        let (root, in_flight) = agent_standing(&sources.store, agent).await?;
+        let (id, notify) = {
+            let mut state = self.lock();
+            if !in_flight {
+                state.release_settled(agent);
+            }
+            state.enter(root)
+        };
         let mut ticket = Ticket {
             gate: self,
             id: Some(id),
@@ -439,6 +462,27 @@ impl StartGate {
     }
 }
 
+/// Whether `agent` is a root agent (no `parentId`) and its turn is in flight.
+async fn agent_standing(
+    store: &RuntimeStore,
+    agent: &str,
+) -> Result<(bool, bool), ContinuationError> {
+    let agent = agent.to_owned();
+    Ok(store
+        .read_async("runtime-services/account_start_gate", move |db| {
+            let mut statement = db.prepare_cached(
+                "SELECT json_extract(record,'$.parentId') IS NULL, \
+                        COALESCE(json_extract(record,'$.inFlight'),0)=1 \
+                 FROM runtime_agents WHERE id=?1",
+            )?;
+            let standing = statement
+                .query_row([agent], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?;
+            Ok::<_, StoreError>(standing.unwrap_or((false, false)))
+        })
+        .await?)
+}
+
 async fn sleep_until(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -516,7 +560,7 @@ mod tests {
 
     /// Admit `agent` now, or return why it waits.
     fn try_start(state: &mut GateState, agent: &str, limits: StartThrottle) -> Decision {
-        let (ticket, _) = state.enter();
+        let (ticket, _) = state.enter(false);
         let decision = state.decide(ticket, agent, limits, Instant::now());
         if decision != Decision::Admit {
             state.leave(ticket);
@@ -611,7 +655,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn taking_the_last_slot_ends_the_burst_and_a_settled_turn_frees_it() {
+    async fn a_full_set_of_running_turns_waits_for_a_slot_and_a_settled_turn_frees_it() {
         let limits = throttle(8, 1, 2);
         let mut state = GateState::default();
         assert_eq!(try_start(&mut state, "a", limits), Decision::Admit);
@@ -642,6 +686,112 @@ mod tests {
         );
     }
 
+    /// Starts admitted in `minutes` simulated minutes for a backlog of
+    /// workers whose turns last `turn` seconds. Settled slots are freed only
+    /// when a start meets a full set of running turns, as the pruning does.
+    async fn starts_per_minute(limits: StartThrottle, turn: u64, minutes: u64) -> u64 {
+        let mut state = GateState::default();
+        let mut finishing: Vec<(Instant, String)> = Vec::new();
+        let mut starts = 0;
+        for second in 0..minutes * 60 {
+            loop {
+                let agent = format!("worker-{starts}");
+                let (ticket, _) = state.enter(false);
+                let mut decision = state.decide(ticket, &agent, limits, Instant::now());
+                if matches!(
+                    decision,
+                    Decision::Wait {
+                        wait: Wait::Slot { .. },
+                        ..
+                    }
+                ) {
+                    let now = Instant::now();
+                    finishing.retain(|(end, settled)| {
+                        let done = *end <= now;
+                        if done {
+                            state.release(settled);
+                        }
+                        !done
+                    });
+                    decision = state.decide(ticket, &agent, limits, now);
+                }
+                if decision != Decision::Admit {
+                    state.leave(ticket);
+                    break;
+                }
+                state.running.insert(agent.clone(), true);
+                finishing.push((Instant::now() + Duration::from_secs(turn), agent));
+                starts += 1;
+            }
+            let _ = second;
+            tokio::time::advance(Duration::from_secs(1)).await;
+        }
+        starts / minutes
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throughput_is_one_burst_per_pause_and_never_pauses_for_a_full_set_of_slots() {
+        // Burst 8 per 30 s is 16 starts a minute; 8 s turns never fill 16 slots.
+        assert_eq!(starts_per_minute(throttle(8, 30, 16), 8, 5).await, 16);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn taking_the_last_slot_starts_no_pause_of_its_own() {
+        // 12 slots of 40 s turns, burst 8 per 30 s: the burst that fills the
+        // slots used to start an extra pause (12 starts a minute, not 14).
+        assert_eq!(starts_per_minute(throttle(8, 30, 12), 40, 5).await, 14);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throughput_with_the_defaults_matches_burst_and_running_limits() {
+        // Codex 16 / 30 s / 32: 32 starts a minute while turns settle in time.
+        assert_eq!(starts_per_minute(throttle(16, 30, 32), 20, 5).await, 32);
+        // Claude 32 / 5 s / 64: 6 bursts of 32 a minute are capped by 64 slots
+        // of 30 s turns: 64 starts per 30 s, 128 a minute.
+        assert_eq!(starts_per_minute(throttle(32, 5, 64), 30, 5).await, 128);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_root_agent_starts_before_the_worker_backlog() {
+        let limits = throttle(1, 1, 8);
+        let mut state = GateState::default();
+        assert_eq!(try_start(&mut state, "w0", limits), Decision::Admit);
+        let workers: Vec<_> = (1..=20).map(|_| state.enter(false)).collect();
+        let (lead, _) = state.enter(true);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let now = Instant::now();
+        assert!(matches!(
+            state.decide(workers[0].0, "w1", limits, now),
+            Decision::Wait { first: false, .. }
+        ));
+        assert_eq!(state.decide(lead, "lead", limits, now), Decision::Admit);
+        // The lead still used its burst: the next worker waits for the pause.
+        assert!(matches!(
+            state.decide(workers[0].0, "w1", limits, now),
+            Decision::Wait {
+                wait: Wait::Pause { .. },
+                first: true
+            }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_settled_turns_slot_cannot_pass_the_throttle() {
+        let limits = throttle(1, 60, 8);
+        let mut state = GateState::default();
+        assert_eq!(try_start(&mut state, "a", limits), Decision::Admit);
+        state.running.insert("a".into(), true);
+        // Its turn settled; the next wake releases the slot and is a new start.
+        state.release_settled("a");
+        assert!(matches!(
+            try_start(&mut state, "a", limits),
+            Decision::Wait {
+                wait: Wait::Pause { .. },
+                ..
+            }
+        ));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_agent_holding_a_slot_passes_without_a_new_start() {
         let limits = throttle(1, 60, 1);
@@ -656,8 +806,8 @@ mod tests {
         let limits = throttle(1, 1, 8);
         let mut state = GateState::default();
         assert_eq!(try_start(&mut state, "a", limits), Decision::Admit);
-        let (first, _) = state.enter();
-        let (second, _) = state.enter();
+        let (first, _) = state.enter(false);
+        let (second, _) = state.enter(false);
         tokio::time::advance(Duration::from_secs(1)).await;
         let now = Instant::now();
         assert!(matches!(
