@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
+use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -56,8 +57,8 @@ pub struct LoadedPricing {
 /// of its canonical JSON text.
 #[derive(serde::Deserialize)]
 struct PricingArtifact {
-    version: Option<u64>,
-    catalog: Option<Value>,
+    version: u64,
+    catalog: Value,
 }
 
 static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
@@ -70,12 +71,13 @@ pub fn load_pricing(state_root: &Path) -> Option<Arc<LoadedPricing>> {
         let artifact = serde_json::from_slice::<PricingArtifact>(&std::fs::read(path).ok()?).ok();
         let catalog_value = artifact
             .as_ref()
-            .filter(|artifact| artifact.version == Some(1))
-            .and_then(|artifact| artifact.catalog.as_ref());
-        Some(LoadedPricing {
-            catalog: catalog_value.and_then(|value| PricingCatalog::from_value(value).ok()),
-            signature: catalog_value.and_then(crate::analytics::catalog_signature),
-        })
+            .filter(|artifact| artifact.version == 1)
+            .map(|artifact| &artifact.catalog);
+        let catalog = catalog_value.and_then(|value| PricingCatalog::from_value(value).ok());
+        let signature = catalog_value
+            .filter(|_| catalog.is_some())
+            .and_then(crate::analytics::catalog_signature);
+        Some(LoadedPricing { catalog, signature })
     })
 }
 
@@ -95,24 +97,22 @@ pub struct Price {
 
 impl PricingCatalog {
     pub fn from_value(value: &Value) -> Result<Self, PricingError> {
-        let providers = value
-            .get("providers")
-            .and_then(Value::as_object)
-            .ok_or(PricingError::InvalidCatalog)?;
+        let catalog = RawCatalog::deserialize(value).map_err(|_| PricingError::InvalidCatalog)?;
         let mut models = BTreeMap::new();
-        for provider in ["openai", "anthropic"] {
-            let source = providers
-                .get(provider)
-                .and_then(|entry| entry.get("models"))
-                .and_then(Value::as_object)
-                .ok_or(PricingError::InvalidCatalog)?;
-            if source.values().all(|entry| parse_rates(entry).is_none()) {
+        for (provider, source) in [
+            ("openai", catalog.providers.openai),
+            ("anthropic", catalog.providers.anthropic),
+        ] {
+            let source = source.ok_or(PricingError::InvalidCatalog)?.models;
+            let parsed = source
+                .into_iter()
+                .filter_map(|(name, record)| Some((name, record.rates()?)))
+                .collect::<Vec<_>>();
+            if parsed.is_empty() {
                 return Err(PricingError::InvalidCatalog);
             }
-            for (name, record) in source {
-                if let Some(rates) = parse_rates(record) {
-                    models.insert((provider.to_owned(), name.clone()), rates);
-                }
+            for (name, rates) in parsed {
+                models.insert((provider.to_owned(), name), rates);
             }
         }
         Ok(Self { models })
@@ -173,7 +173,7 @@ impl PricingCatalog {
         &self,
         provider: &str,
         model: &str,
-        usage: &Value,
+        usage: TokenUsage,
         context_tokens: Option<f64>,
         input_tokens_are_uncached: bool,
     ) -> Price {
@@ -202,67 +202,134 @@ impl Price {
     }
 }
 
-fn parse_rates(record: &Value) -> Option<Rates> {
-    let cost = record.get("cost")?;
-    let input = amount(cost.get("input")?)?;
-    let output = amount(cost.get("output")?)?;
-    let mut tiers = cost
-        .get("tiers")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(parse_tier)
-        .collect::<Vec<_>>();
-    tiers.sort_by(|left, right| left.size.total_cmp(&right.size));
-    let legacy_over = cost
-        .get("context_over_200k")
-        .and_then(|over| parse_optional_tier(over, 200_000.0));
-    Some(Rates {
-        release_date: record
-            .get("release_date")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        input,
-        output,
-        cache_read: cost.get("cache_read").and_then(amount),
-        cache_write: cost.get("cache_write").and_then(amount),
-        tiers,
-        legacy_over,
-    })
+/// The models.dev catalog members this module reads. The artifact is Studio's own
+/// download of a published schema, so a catalog of another shape is invalid.
+#[derive(Deserialize)]
+struct RawCatalog {
+    providers: RawProviders,
 }
 
-fn parse_tier(value: &Value) -> Option<PriceTier> {
-    let size = value
-        .get("tier")
-        .filter(|tier| tier.get("type").and_then(Value::as_str) == Some("context"))
-        .and_then(|tier| tier.get("size"))
-        .and_then(amount)?;
-    parse_optional_tier(value, size)
+#[derive(Deserialize)]
+struct RawProviders {
+    openai: Option<RawProvider>,
+    anthropic: Option<RawProvider>,
 }
 
-fn parse_optional_tier(value: &Value, size: f64) -> Option<PriceTier> {
-    Some(PriceTier {
-        size,
-        input: value.get("input").and_then(amount),
-        output: value.get("output").and_then(amount),
-        cache_read: value.get("cache_read").and_then(amount),
-        cache_write: value.get("cache_write").and_then(amount),
-    })
+#[derive(Deserialize)]
+struct RawProvider {
+    models: BTreeMap<String, RawModel>,
+}
+
+#[derive(Deserialize)]
+struct RawModel {
+    release_date: Option<String>,
+    cost: Option<RawCost>,
+}
+
+#[derive(Deserialize)]
+struct RawCost {
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    #[serde(default)]
+    tiers: Vec<RawTier>,
+    context_over_200k: Option<RawRates>,
+}
+
+/// The rates one tier (or the legacy over-200k block) overrides.
+#[derive(Deserialize)]
+struct RawRates {
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct RawTier {
+    tier: Option<RawTierKey>,
+    #[serde(flatten)]
+    rates: RawRates,
+}
+
+#[derive(Deserialize)]
+struct RawTierKey {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    size: Option<f64>,
+}
+
+impl RawModel {
+    fn rates(self) -> Option<Rates> {
+        let cost = self.cost?;
+        let input = valid_amount(cost.input)?;
+        let output = valid_amount(cost.output)?;
+        let mut tiers = cost
+            .tiers
+            .into_iter()
+            .filter_map(RawTier::price_tier)
+            .collect::<Vec<_>>();
+        tiers.sort_by(|left, right| left.size.total_cmp(&right.size));
+        let legacy_over = cost
+            .context_over_200k
+            .map(|over| over.price_tier(200_000.0));
+        Some(Rates {
+            release_date: self.release_date,
+            input,
+            output,
+            cache_read: valid_amount(cost.cache_read),
+            cache_write: valid_amount(cost.cache_write),
+            tiers,
+            legacy_over,
+        })
+    }
+}
+
+impl RawTier {
+    fn price_tier(self) -> Option<PriceTier> {
+        let key = self.tier?;
+        (key.kind.as_deref() == Some("context")).then_some(())?;
+        let size = valid_amount(key.size)?;
+        Some(self.rates.price_tier(size))
+    }
+}
+
+impl RawRates {
+    fn price_tier(self, size: f64) -> PriceTier {
+        PriceTier {
+            size,
+            input: valid_amount(self.input),
+            output: valid_amount(self.output),
+            cache_read: valid_amount(self.cache_read),
+            cache_write: valid_amount(self.cache_write),
+        }
+    }
+}
+
+/// Token counts of one priced sample; a missing count is `None`.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: Option<f64>,
+    pub cached_input_tokens: Option<f64>,
+    pub cache_write_input_tokens: Option<f64>,
+    pub output_tokens: Option<f64>,
 }
 
 fn price_with_rates(
     rates: &Rates,
-    usage: &Value,
+    usage: TokenUsage,
     context_tokens: Option<f64>,
     input_tokens_are_uncached: bool,
 ) -> Price {
-    let input = usage.get("inputTokens").and_then(amount);
-    let output = usage.get("outputTokens").and_then(amount);
+    let input = valid_amount(usage.input_tokens);
+    let output = valid_amount(usage.output_tokens);
     let Some((input, output)) = input.zip(output) else {
         return Price::incomplete(false);
     };
-    let cached = usage.get("cachedInputTokens").and_then(amount);
-    let mut cache_write = usage.get("cacheWriteInputTokens").and_then(amount);
+    let cached = valid_amount(usage.cached_input_tokens);
+    let mut cache_write = valid_amount(usage.cache_write_input_tokens);
     if rates.cache_read.is_some() && cached.is_none() {
         return Price::incomplete(false);
     }
@@ -324,16 +391,19 @@ fn price_with_rates(
     }
 }
 
-fn amount(value: &Value) -> Option<f64> {
-    value
-        .as_f64()
-        .filter(|number| number.is_finite() && *number >= 0.0)
+/// A finite, nonnegative price or count.
+fn valid_amount(value: Option<f64>) -> Option<f64> {
+    value.filter(|number| number.is_finite() && *number >= 0.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{PriceStatus, PricingCatalog};
     use serde_json::json;
+
+    fn usage(value: serde_json::Value) -> super::TokenUsage {
+        serde_json::from_value(value).expect("token usage")
+    }
 
     fn catalog() -> PricingCatalog {
         PricingCatalog::from_value(&json!({"providers": {
@@ -353,8 +423,8 @@ mod tests {
         let value = catalog().price_usage(
             "openai",
             "gpt-test",
-            &json!({"inputTokens":100,"cachedInputTokens":20,
-                "cacheWriteInputTokens":10,"outputTokens":5}),
+            usage(json!({"inputTokens":100,"cachedInputTokens":20,
+                "cacheWriteInputTokens":10,"outputTokens":5})),
             Some(100.0),
             false,
         );
@@ -377,11 +447,11 @@ mod tests {
             }
         }))
         .expect("legacy catalog");
-        let usage = json!({"inputTokens":100,"outputTokens":10});
+        let tokens = usage(json!({"inputTokens":100,"outputTokens":10}));
         let at_boundary =
-            catalog.price_usage("openai", "gpt-legacy", &usage, Some(200_000.0), false);
+            catalog.price_usage("openai", "gpt-legacy", tokens, Some(200_000.0), false);
         let above_boundary =
-            catalog.price_usage("openai", "gpt-legacy", &usage, Some(200_001.0), false);
+            catalog.price_usage("openai", "gpt-legacy", tokens, Some(200_001.0), false);
         assert!(!at_boundary.context_tier_used);
         assert_eq!(at_boundary.amount_usd, Some(120.0 / 1_000_000.0));
         assert!(above_boundary.context_tier_used);
@@ -396,9 +466,9 @@ mod tests {
                 .price_usage(
                     "anthropic",
                     "sonnet",
-                    &json!({
+                    usage(json!({
                         "inputTokens":2,"outputTokens":3
-                    }),
+                    })),
                     None,
                     false
                 )
@@ -410,9 +480,9 @@ mod tests {
                 .price_usage(
                     "openai",
                     "gpt-test-20261001",
-                    &json!({
+                    usage(json!({
                         "inputTokens":2,"cachedInputTokens":0,"outputTokens":3
-                    }),
+                    })),
                     None,
                     false
                 )
@@ -426,13 +496,13 @@ mod tests {
         let catalog = catalog();
         assert_eq!(
             catalog
-                .price_usage("openai", "gpt-test", &json!({}), None, false)
+                .price_usage("openai", "gpt-test", usage(json!({})), None, false)
                 .status,
             PriceStatus::Incomplete
         );
         assert_eq!(
             catalog
-                .price_usage("openai", "unknown", &json!({}), None, false)
+                .price_usage("openai", "unknown", usage(json!({})), None, false)
                 .status,
             PriceStatus::Unpriced
         );

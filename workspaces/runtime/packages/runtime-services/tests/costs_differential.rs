@@ -156,7 +156,7 @@ print(json.dumps({'prices':prices,'groups':groups,'cache':cache,'rates':rates.wo
             let priced = catalog.price_usage(
                 case["provider"].as_str().expect("corpus provider"),
                 case["model"].as_str().expect("corpus model"),
-                &case["usage"],
+                serde_json::from_value(case["usage"].clone()).expect("corpus usage"),
                 case["context"].as_f64(),
                 case["uncached"].as_bool().expect("uncached flag"),
             );

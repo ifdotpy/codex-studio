@@ -247,6 +247,10 @@ async fn diagnostics(
             "durableInputPending".to_owned(),
             serde_json::json!(durable_input_pending),
         );
+        queues.insert(
+            "claudeLogLinesSkipped".to_owned(),
+            serde_json::json!(studio_runtime_services::costs::claude_log_lines_skipped()),
+        );
         let mut attribution = vec![serde_json::json!({
             "component": "process",
             "operation": "ps",

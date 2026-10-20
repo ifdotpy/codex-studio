@@ -165,6 +165,7 @@ fn map_costs_error(error: CostsError) -> ApiError {
         | CostsError::Repository(_)
         | CostsError::Sqlite(_)
         | CostsError::Computation
+        | CostsError::InvalidSessionState
         | CostsError::AccountProfilesRequired => ApiError::internal(),
         CostsError::InvalidPricing => cost_dependency("costs/pricing-refresh"),
     }

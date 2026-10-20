@@ -5,9 +5,9 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Deserialize;
-use serde::de::IgnoredAny;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AnalyticsRepository, AnalyticsStoreError, CostUsageRepositoryError, RuntimeStore, analytics,
@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::cost_usage::{CostUsageError, CostUsageSnapshot};
 use crate::file_derived::FileDerived;
+use crate::pricing::TokenUsage;
 
 #[derive(Debug, Error)]
 pub enum CostsError {
@@ -32,6 +33,8 @@ pub enum CostsError {
     Usage(#[from] CostUsageRepositoryError),
     #[error(transparent)]
     Grouping(#[from] CostUsageError),
+    #[error("Claude session state is invalid")]
+    InvalidSessionState,
     #[error("pricing artifact is invalid")]
     InvalidPricing,
     #[error("cost computation failed")]
@@ -141,7 +144,7 @@ fn session_cost_inner(
     }
     let rows = read_cost_usage(&tx, &root)?;
     tx.commit()?;
-    let local_claude = read_local_claude_usage(store.root(), &members, accounts);
+    let local_claude = read_local_claude_usage(store.root(), &members, accounts)?;
     let receipts = local_claude
         .iter()
         .map(|row| {
@@ -198,12 +201,12 @@ fn session_cost_inner(
             unknown.insert(model.to_owned());
             continue;
         };
-        let usage = json!({
-            "inputTokens": group.input_tokens,
-            "cachedInputTokens": group.cached_tokens,
-            "cacheWriteInputTokens": group.write_tokens,
-            "outputTokens": group.output_tokens,
-        });
+        let usage = TokenUsage {
+            input_tokens: group.input_tokens,
+            cached_input_tokens: group.cached_tokens,
+            cache_write_input_tokens: group.write_tokens,
+            output_tokens: group.output_tokens,
+        };
         let context = group.input_tokens.map(|input| {
             if group.input_uncached {
                 input + group.cached_tokens.unwrap_or(0.0) + group.write_tokens.unwrap_or(0.0)
@@ -211,7 +214,7 @@ fn session_cost_inner(
                 input
             }
         });
-        let price = catalog.price_usage(provider, model, &usage, context, group.input_uncached);
+        let price = catalog.price_usage(provider, model, usage, context, group.input_uncached);
         let Some(amount) = price.amount_usd.filter(|amount| amount.is_finite()) else {
             unknown.insert(model.to_owned());
             continue;
@@ -225,12 +228,12 @@ fn session_cost_inner(
         tier_used |= price.context_tier_used;
     }
     for row in local_claude.iter().map(|row| &row.usage) {
-        let usage = json!({
-            "inputTokens": row.input_tokens,
-            "cachedInputTokens": row.cached_tokens,
-            "cacheWriteInputTokens": row.write_tokens,
-            "outputTokens": row.output_tokens,
-        });
+        let usage = TokenUsage {
+            input_tokens: row.input_tokens,
+            cached_input_tokens: row.cached_tokens,
+            cache_write_input_tokens: row.write_tokens,
+            output_tokens: row.output_tokens,
+        };
         let context = row.input_tokens.map(|input| {
             if row.input_tokens_are_uncached {
                 input + row.cached_tokens.unwrap_or(0.0) + row.write_tokens.unwrap_or(0.0)
@@ -241,7 +244,7 @@ fn session_cost_inner(
         let price = catalog.price_usage(
             "anthropic",
             &row.model,
-            &usage,
+            usage,
             context,
             row.input_tokens_are_uncached,
         );
@@ -303,13 +306,14 @@ struct LocalClaudeUsage {
 /// Usage rows per session log, parsed again only after the log changed.
 static CLAUDE_LOGS: LazyLock<FileDerived<Vec<LogUsage>>> = LazyLock::new(FileDerived::default);
 /// Native session ids per Studio session state file, read again only after it changed.
-static SESSION_NATIVE_IDS: LazyLock<FileDerived<Vec<String>>> = LazyLock::new(FileDerived::default);
+static SESSION_NATIVE_IDS: LazyLock<FileDerived<Result<Vec<String>, ()>>> =
+    LazyLock::new(FileDerived::default);
 
 fn read_local_claude_usage(
     state_root: &Path,
     members: &[(String, Value)],
     accounts: &BTreeMap<String, Value>,
-) -> Vec<LocalClaudeUsage> {
+) -> Result<Vec<LocalClaudeUsage>, CostsError> {
     let mut sessions = BTreeSet::new();
     for (_, member) in members {
         let current_key = member
@@ -353,6 +357,10 @@ fn read_local_claude_usage(
             .join("sessions")
             .join(format!("{thread_id}.json"));
         if let Some(native) = SESSION_NATIVE_IDS.get_or_load(&state_path, read_session_native_ids) {
+            let native = native
+                .as_ref()
+                .as_ref()
+                .map_err(|()| CostsError::InvalidSessionState)?;
             ids.extend(native.iter().cloned());
         }
         let projects = config.join("projects");
@@ -380,7 +388,7 @@ fn read_local_claude_usage(
             }
         }
     }
-    rows.into_values().collect()
+    Ok(rows.into_values().collect())
 }
 
 fn account_claude_config(account_key: &str, accounts: &BTreeMap<String, Value>) -> Option<PathBuf> {
@@ -425,122 +433,97 @@ fn valid_session_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-/// A field of the type the contract names; any other JSON type reads as absent.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Typed<T> {
-    Is(T),
-    Other(IgnoredAny),
-}
-
-impl<T> Typed<T> {
-    fn get(self) -> Option<T> {
-        match self {
-            Self::Is(value) => Some(value),
-            Self::Other(_) => None,
-        }
-    }
-}
-
-/// The native ids a Studio session state file names.
+/// The native ids a Studio session state file names. Studio writes this file, so a
+/// file of another shape is an error, not something to skip.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionState {
-    native_id: Option<Typed<String>>,
-    history_branches: Option<Typed<Vec<Typed<NativeIdOf>>>>,
-    control_requests: Option<Typed<BTreeMap<String, Typed<ControlRequest>>>>,
+    native_id: Option<String>,
+    #[serde(default)]
+    history_branches: Vec<NativeIdOf>,
+    #[serde(default)]
+    control_requests: BTreeMap<String, ControlRequest>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeIdOf {
-    native_id: Option<Typed<String>>,
+    native_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ControlRequest {
-    source_native_id: Option<Typed<String>>,
-    target_native_id: Option<Typed<String>>,
+    source_native_id: Option<String>,
+    target_native_id: Option<String>,
 }
 
-fn read_session_native_ids(path: &Path) -> Option<Vec<String>> {
+/// The valid native ids of one session state file; `Err` when the file does not decode.
+fn read_session_native_ids(path: &Path) -> Option<Result<Vec<String>, ()>> {
     if fs::metadata(path).ok()?.len() > MAX_SESSION_STATE_BYTES {
-        return None;
+        return Some(Err(()));
     }
-    let state = serde_json::from_slice::<SessionState>(&fs::read(path).ok()?).ok()?;
-    let branches = state
-        .history_branches
-        .and_then(Typed::get)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(Typed::get)
-        .map(|branch| branch.native_id);
-    let controls = state
-        .control_requests
-        .and_then(Typed::get)
-        .unwrap_or_default()
-        .into_values()
-        .filter_map(Typed::get)
-        .flat_map(|control| [control.source_native_id, control.target_native_id]);
+    let Ok(state) = serde_json::from_slice::<SessionState>(&fs::read(path).ok()?) else {
+        return Some(Err(()));
+    };
     let ids = std::iter::once(state.native_id)
-        .chain(branches)
-        .chain(controls)
-        .filter_map(|id| id.and_then(Typed::get))
+        .chain(
+            state
+                .history_branches
+                .into_iter()
+                .map(|branch| branch.native_id),
+        )
+        .chain(
+            state
+                .control_requests
+                .into_values()
+                .flat_map(|control| [control.source_native_id, control.target_native_id]),
+        )
+        .flatten()
         .filter(|id| valid_session_id(id))
         .collect::<BTreeSet<_>>();
-    Some(ids.into_iter().collect())
+    Some(Ok(ids.into_iter().collect()))
 }
 
-/// One line of a Claude session log; only assistant responses with usage matter.
+/// Just the line kind: Claude writes many kinds of line and only assistant responses matter.
+#[derive(Deserialize)]
+struct LogLineKind<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: Option<&'a str>,
+}
+
+/// An assistant line of a Claude session log (a format Claude owns, not Studio).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LogLine {
-    #[serde(rename = "type")]
-    kind: Option<Typed<String>>,
-    timestamp: Option<Typed<String>>,
-    request_id: Option<LogIdentity>,
-    uuid: Option<LogIdentity>,
-    message: Option<Typed<LogMessage>>,
+struct AssistantLine {
+    timestamp: Option<String>,
+    request_id: Option<String>,
+    uuid: Option<String>,
+    message: Option<LogMessage>,
 }
 
 #[derive(Deserialize)]
 struct LogMessage {
-    id: Option<LogIdentity>,
-    model: Option<Typed<String>>,
-    usage: Option<Typed<LogTokens>>,
+    id: Option<String>,
+    model: Option<String>,
+    usage: Option<LogTokens>,
 }
 
 #[derive(Deserialize)]
 struct LogTokens {
-    input_tokens: Option<Typed<f64>>,
-    cache_read_input_tokens: Option<Typed<f64>>,
-    cache_creation_input_tokens: Option<Typed<f64>>,
-    output_tokens: Option<Typed<f64>>,
+    input_tokens: Option<f64>,
+    cache_read_input_tokens: Option<f64>,
+    cache_creation_input_tokens: Option<f64>,
+    output_tokens: Option<f64>,
 }
 
-/// A response identity field of any JSON type: the first truthy one names the response,
-/// and only a string can be an id.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum LogIdentity {
-    Text(String),
-    Number(f64),
-    Flag(bool),
-    List(Vec<IgnoredAny>),
-    Map(BTreeMap<String, IgnoredAny>),
-}
+/// Session log lines that did not decode and were skipped, since process start. A line
+/// is skipped whole; surfaced in diagnostics as `claudeLogLinesSkipped`.
+static CLAUDE_LOG_LINES_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
-impl LogIdentity {
-    fn truthy(&self) -> bool {
-        match self {
-            Self::Text(value) => !value.is_empty(),
-            Self::Number(value) => *value != 0.0,
-            Self::Flag(value) => *value,
-            Self::List(value) => !value.is_empty(),
-            Self::Map(value) => !value.is_empty(),
-        }
-    }
+/// Count of Claude session log lines skipped because they did not decode.
+pub fn claude_log_lines_skipped() -> u64 {
+    CLAUDE_LOG_LINES_SKIPPED.load(Ordering::Relaxed)
 }
 
 /// The first usage row of every response id in one session log, in file order.
@@ -556,40 +539,49 @@ fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        let line = String::from_utf8_lossy(&line);
-        let Ok(row) = serde_json::from_str::<LogLine>(&line) else {
+        let skipped = || {
+            CLAUDE_LOG_LINES_SKIPPED.fetch_add(1, Ordering::Relaxed);
+        };
+        match serde_json::from_slice::<LogLineKind>(&line) {
+            Ok(LogLineKind {
+                kind: Some("assistant"),
+            }) => {}
+            Ok(_) => continue,
+            Err(_) => {
+                skipped();
+                continue;
+            }
+        }
+        let Ok(row) = serde_json::from_slice::<AssistantLine>(&line) else {
+            skipped();
             continue;
         };
-        if row.kind.and_then(Typed::get).as_deref() != Some("assistant") {
-            continue;
-        }
-        let Some(message) = row.message.and_then(Typed::get) else {
+        let Some(message) = row.message else {
             continue;
         };
         let Some(model) = message
             .model
-            .and_then(Typed::get)
             .filter(|model| !model.is_empty() && model != "<synthetic>")
         else {
             continue;
         };
-        if !valid_claude_timestamp(row.timestamp.and_then(Typed::get).as_deref()) {
+        if !valid_claude_timestamp(row.timestamp.as_deref()) {
             continue;
         }
-        let Some(usage) = message.usage.and_then(Typed::get) else {
+        let Some(usage) = message.usage else {
             continue;
         };
-        let identity = [message.id, row.request_id, row.uuid]
+        let Some(id) = [message.id, row.request_id, row.uuid]
             .into_iter()
             .flatten()
-            .find(LogIdentity::truthy);
-        let Some(LogIdentity::Text(id)) = identity else {
+            .find(|id| !id.is_empty())
+        else {
             continue;
         };
-        // An absent count is zero; a count of another type voids all three input counts.
-        let count = |value: Option<Typed<f64>>| match value {
+        // An absent count is zero; a negative count voids all three input counts.
+        let count = |value: Option<f64>| match value {
             None => Some(0.0),
-            Some(value) => value.get().filter(|number| *number >= 0.0),
+            Some(number) => (number >= 0.0).then_some(number),
         };
         let input_values = [
             count(usage.input_tokens),
@@ -611,7 +603,7 @@ fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
             input_tokens,
             cached_tokens,
             write_tokens,
-            output_tokens: usage.output_tokens.and_then(Typed::get),
+            output_tokens: usage.output_tokens,
             input_tokens_are_uncached: input_tokens.is_some(),
         });
     }
@@ -778,8 +770,12 @@ mod tests {
             }),
         )];
 
-        let rows = read_local_claude_usage(&state, &members, &accounts);
-        assert_eq!(rows.len(), 3);
+        let skipped_before = super::claude_log_lines_skipped();
+        let rows = read_local_claude_usage(&state, &members, &accounts).expect("local usage");
+        // The previous account's row has a boolean token count: that line is skipped whole
+        // and counted, as is the line whose response id is a number.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(super::claude_log_lines_skipped() - skipped_before, 2);
         assert!(!rows.iter().any(|row| row.usage.id == "must-not-be-used"));
         assert!(rows.iter().any(|row| row.usage.id == "response-naive-time"));
         let current = rows
@@ -793,15 +789,56 @@ mod tests {
         assert_eq!(current.usage.write_tokens, Some(5.0));
         assert_eq!(current.usage.output_tokens, Some(10.0));
         assert!(current.usage.input_tokens_are_uncached);
-        let previous = rows
-            .iter()
-            .find(|row| row.account_key == "previous")
-            .expect("historical session row");
-        assert_eq!(previous.thread_id, "thread-previous");
-        assert_eq!(previous.usage.input_tokens, None);
-        assert_eq!(previous.usage.cached_tokens, None);
-        assert_eq!(previous.usage.write_tokens, None);
-        assert!(!previous.usage.input_tokens_are_uncached);
+        assert!(!rows.iter().any(|row| row.account_key == "previous"));
+    }
+
+    /// A Claude log line that does not decode is skipped whole and counted; one that merely is
+    /// not an assistant response is not an error. A Studio state file of another shape fails.
+    #[test]
+    fn malformed_log_lines_are_skipped_and_counted_and_bad_state_files_fail() {
+        let temp = tempdir().expect("temporary fixture directory");
+        let state = temp.path().join("state");
+        let profile = temp.path().join("claude");
+        let project = profile.join("projects/project");
+        fs::create_dir_all(&project).expect("create project");
+        fs::create_dir_all(state.join("account-servers/acct/sessions")).expect("sessions");
+        let good = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
+            "message":{"id":"r1","model":"claude-sonnet-4-5","usage":{"input_tokens":1,"output_tokens":2}}});
+        let wrong_type = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
+            "message":{"id":7,"model":"claude-sonnet-4-5","usage":{}}});
+        fs::write(
+            project.join("thread.jsonl"),
+            format!(
+                "{good}\nnot json\n{wrong_type}\n{}\n",
+                json!({"type":"summary","message":"free text"})
+            ),
+        )
+        .expect("write log");
+        let accounts = BTreeMap::from([(
+            "acct".to_owned(),
+            json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+        )]);
+        let members = vec![(
+            "agent".to_owned(),
+            json!({"accountKey":"acct","threadId":"thread"}),
+        )];
+        let before = super::claude_log_lines_skipped();
+        let rows = read_local_claude_usage(&state, &members, &accounts).expect("usage");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(super::claude_log_lines_skipped() - before, 2);
+        // Parsed once per file version: a second read does not count them again.
+        read_local_claude_usage(&state, &members, &accounts).expect("usage again");
+        assert_eq!(super::claude_log_lines_skipped() - before, 2);
+
+        fs::write(
+            state.join("account-servers/acct/sessions/thread.json"),
+            r#"{"nativeId": 5}"#,
+        )
+        .expect("write bad state");
+        assert!(matches!(
+            read_local_claude_usage(&state, &members, &accounts),
+            Err(CostsError::InvalidSessionState)
+        ));
     }
 
     #[test]
@@ -822,7 +859,11 @@ mod tests {
             "agent".to_owned(),
             json!({"accountKey":"account", "threadId":"thread"}),
         )];
-        assert!(read_local_claude_usage(temp.path(), &members, &accounts).is_empty());
+        assert!(
+            read_local_claude_usage(temp.path(), &members, &accounts)
+                .expect("local usage")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

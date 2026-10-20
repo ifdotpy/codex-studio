@@ -171,32 +171,9 @@ pub(crate) fn current_account_is_claude(
 fn pricing_signature(root: &Path) -> Option<String> {
     crate::pricing::load_pricing(root)?.signature.clone()
 }
-/// Cache signature of a valid models.dev catalog.
+/// Cache signature of a models.dev catalog document.
 pub(crate) fn catalog_signature(catalog: &Value) -> Option<String> {
-    valid_catalog(catalog).then(|| signature(catalog).ok())?
-}
-fn valid_catalog(value: &Value) -> bool {
-    let Some(providers) = value.get("providers").and_then(Value::as_object) else {
-        return false;
-    };
-    ["openai", "anthropic"].into_iter().all(|provider| {
-        providers
-            .get(provider)
-            .and_then(|value| value.get("models"))
-            .and_then(Value::as_object)
-            .is_some_and(|models| {
-                models.values().any(|model| {
-                    let Some(cost) = model.get("cost") else {
-                        return false;
-                    };
-                    ["input", "output"].into_iter().all(|field| {
-                        cost.get(field)
-                            .and_then(Value::as_f64)
-                            .is_some_and(|amount| amount.is_finite() && amount >= 0.0)
-                    })
-                })
-            })
-    })
+    signature(catalog).ok()
 }
 
 #[derive(Default, serde::Serialize)]

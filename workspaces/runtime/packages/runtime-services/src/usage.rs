@@ -562,8 +562,12 @@ where
         if !is_today && !is_month {
             continue;
         }
-        let usage = json!({"inputTokens":row.input,"cachedInputTokens":row.cached,
-            "cacheWriteInputTokens":row.write,"outputTokens":row.output});
+        let usage = crate::pricing::TokenUsage {
+            input_tokens: row.input.map(|tokens| tokens as f64),
+            cached_input_tokens: row.cached.map(|tokens| tokens as f64),
+            cache_write_input_tokens: row.write.map(|tokens| tokens as f64),
+            output_tokens: row.output.map(|tokens| tokens as f64),
+        };
         let context = row
             .input
             .zip(row.cached)
@@ -571,7 +575,7 @@ where
             .map(|((a, b), c)| a.saturating_add(b).saturating_add(c) as f64);
         let price = catalog
             .as_ref()
-            .map(|catalog| catalog.price_usage("anthropic", &row.model, &usage, context, true));
+            .map(|catalog| catalog.price_usage("anthropic", &row.model, usage, context, true));
         let Some(cost) = price.and_then(|price| price.amount_usd) else {
             unknown.insert(row.model.clone());
             continue;
@@ -781,15 +785,19 @@ where
                     }
                     let name = codex_model_name(model.as_deref().unwrap_or("gpt-5"));
                     let cached = delta.cached.min(delta.input);
-                    let usage = json!({"inputTokens":delta.input,"cachedInputTokens":cached,
-                        "outputTokens":delta.output});
+                    let usage = crate::pricing::TokenUsage {
+                        input_tokens: Some(delta.input as f64),
+                        cached_input_tokens: Some(cached as f64),
+                        cache_write_input_tokens: None,
+                        output_tokens: Some(delta.output as f64),
+                    };
                     let cost = catalog
                         .as_ref()
                         .map(|catalog| {
                             catalog.price_usage(
                                 "openai",
                                 &name,
-                                &usage,
+                                usage,
                                 Some(delta.input as f64),
                                 false,
                             )
