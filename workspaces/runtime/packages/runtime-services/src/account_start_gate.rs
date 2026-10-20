@@ -4,7 +4,9 @@
 //! ([`StartThrottle`], persisted on its registry row): at most `burst` turn
 //! starts at once, a `pause` after the start that ends a burst (`burst` starts
 //! made, or the last free running slot taken), and at most `max_running`
-//! running turns. A wake that would start a turn over a limit waits here
+//! running turns. A burst is starts close together: a start at least `pause`
+//! after the previous one begins a new burst, so a trickle of starts never
+//! pauses. A wake that would start a turn over a limit waits here
 //! before its claim, so its input stays queued with its identity and starts
 //! later exactly once; nothing fails. The agent shows the wait (`startWait`)
 //! until its claim clears it.
@@ -133,6 +135,9 @@ struct GateState {
     seeded: bool,
     /// Starts in the current burst.
     burst_starts: u64,
+    /// The latest admitted start; a start at least a pause after it begins a
+    /// new burst.
+    last_start_at: Option<Instant>,
     /// The start that ended the last burst; the pause runs from it, so a
     /// changed pause applies at once.
     burst_ended_at: Option<Instant>,
@@ -210,6 +215,13 @@ impl GateState {
         }
         self.waiters.pop_front();
         self.running.insert(agent.to_owned(), false);
+        if self
+            .last_start_at
+            .is_none_or(|last| now >= last + throttle.pause)
+        {
+            self.burst_starts = 0;
+        }
+        self.last_start_at = Some(now);
         self.burst_starts += 1;
         if self.burst_starts >= throttle.burst || self.running.len() as u64 >= throttle.max_running
         {
@@ -540,6 +552,57 @@ mod tests {
         }
         assert!(matches!(
             try_start(&mut state, "g", limits),
+            Decision::Wait {
+                wait: Wait::Pause { .. },
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_trickle_of_starts_never_waits() {
+        let limits = throttle(2, 10, 64);
+        let mut state = GateState::default();
+        for index in 0..10 {
+            assert_eq!(
+                try_start(&mut state, &format!("agent-{index}"), limits),
+                Decision::Admit,
+                "start {index}"
+            );
+            tokio::time::advance(Duration::from_secs(10)).await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn starts_closer_than_the_pause_form_one_burst_and_idle_resets_it() {
+        let limits = throttle(3, 10, 64);
+        let mut state = GateState::default();
+        assert_eq!(try_start(&mut state, "a", limits), Decision::Admit);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert_eq!(try_start(&mut state, "b", limits), Decision::Admit);
+        // Idle for less than the pause: still the same burst.
+        tokio::time::advance(Duration::from_secs(9)).await;
+        let third = Instant::now();
+        assert_eq!(try_start(&mut state, "c", limits), Decision::Admit);
+        assert_eq!(
+            try_start(&mut state, "d", limits),
+            Decision::Wait {
+                wait: Wait::Pause {
+                    until: third + Duration::from_secs(10)
+                },
+                first: true
+            },
+            "the third start ends the burst"
+        );
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert_eq!(try_start(&mut state, "d", limits), Decision::Admit);
+        // Idle for a whole pause after one start: the next starts a new burst.
+        tokio::time::advance(Duration::from_secs(10)).await;
+        for agent in ["e", "f", "g"] {
+            assert_eq!(try_start(&mut state, agent, limits), Decision::Admit);
+        }
+        assert!(matches!(
+            try_start(&mut state, "h", limits),
             Decision::Wait {
                 wait: Wait::Pause { .. },
                 ..

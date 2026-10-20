@@ -860,6 +860,8 @@ a burst (seconds), and running turns at once. While fewer turns run than the
 limit and no pause is active, turns start at once, up to one burst. The start
 that ends a burst (the last start of the burst, or the start that takes the last
 free running slot) begins the pause; the next start waits until the pause ends.
+A burst is starts close together: a start at least one pause after the previous
+start begins a new burst, so occasional starts never wait.
 A turn over a limit is not failed: its message stays queued, the agent shows
 "Waiting for an account slot (8/8)" or "Waiting for the account pause", and it
 starts later exactly once. This applies to first and follow-up turns of leads

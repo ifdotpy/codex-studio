@@ -52,7 +52,8 @@ export const THROTTLE_FIELDS: ThrottleFieldSpec[] = [
     label: "Turn starts per burst",
     tooltip:
       "How many turns this account may start at once. After a burst, the next " +
-      "start waits for the pause. Lower it when the provider answers with rate " +
+      "start waits for the pause. Starts at least one pause apart count as " +
+      "separate bursts, so occasional starts never wait. Lower it when the provider answers with rate " +
       "limit errors (HTTP 429) right after many agents start." +
       SCOPE +
       DEFAULTS,
