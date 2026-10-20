@@ -2,6 +2,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
   installApiSchemaFixtureHeaders,
   entityPullFixtureForRequest,
   apiSchemaHeaders,
@@ -15,7 +16,6 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // More rows than HISTORY_WINDOW_THRESHOLD, so the transcript is windowed.
 const TURNS = 100;
@@ -55,17 +55,10 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
 }) => {
   test.setTimeout(150_000);
   page.setDefaultTimeout(15000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), "studio-scroll-follow-"));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      dir,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const proc = spawn(process.execPath, [rustUiFixture, dir], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   proc.stderr.on("data", (d) => (log += d));
   const port = await new Promise((resolve, reject) => {
