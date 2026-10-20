@@ -746,6 +746,15 @@ pub fn dispatch_notification_with_effects(
     })
 }
 
+/// Store one task record through the canonical task writer, which also keeps
+/// the task's sync window. Its caller owns the decision and the transaction.
+pub(crate) fn put_task_record(
+    tx: &Transaction<'_>,
+    task: &Value,
+) -> Result<(), NotificationDispatchError> {
+    kinds::put_task(tx, task)
+}
+
 /// Shared completion formatter for recovery; its caller owns the recovery receipt.
 /// No provider cursor is fabricated and no commit/publication happens here.
 pub fn recover_task_in_transaction(

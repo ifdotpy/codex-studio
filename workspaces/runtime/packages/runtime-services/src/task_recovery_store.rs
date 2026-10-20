@@ -117,7 +117,7 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
             let mut updated = t.clone();
             match decision {
                 TaskAbsenceDecision::Lost => {
-                    updated["status"] = json!("lost");
+                    updated["status"] = json!(crate::task_settlement::LOST_TASK_STATUS);
                     updated["finished"] = json!(current.at);
                     updated["error"] = json!(LOST_COMMAND);
                     updated
@@ -138,7 +138,7 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 &TaskRecord::from_value(updated.clone())
                     .map_err(|_| RecoveryError::CommitFailed)?,
             )?;
-            if updated["status"] == "lost" {
+            if updated["status"] == crate::task_settlement::LOST_TASK_STATUS {
                 tx.execute("UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') WHERE id=?1 AND agent=?2 AND json_extract(record,'$.turnId')=?3",
                     rusqlite::params![id, agent, t["turnId"].as_str()])?;
             }
