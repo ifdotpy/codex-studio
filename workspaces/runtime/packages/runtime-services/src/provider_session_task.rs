@@ -894,13 +894,16 @@ impl SessionTask {
         tests::panic_at(4);
         self.apply_actions(false)?;
         if generation.0 == self.state.generation() {
+            // Only a response changes session state; every other frame would
+            // come back as a `Dispatch` action that this task ignores, so it is
+            // neither cloned nor offered to the state machine.
             let frame = self
                 .retained
                 .pending
                 .as_ref()
                 .and_then(|event| event.journal.as_ref())
                 .and_then(|entry| match &entry.payload {
-                    JournalPayload::Frame(frame) => Some(frame.clone()),
+                    JournalPayload::Frame(frame @ Frame::Response { .. }) => Some(frame.clone()),
                     _ => None,
                 });
             if let Some(frame) = frame {
