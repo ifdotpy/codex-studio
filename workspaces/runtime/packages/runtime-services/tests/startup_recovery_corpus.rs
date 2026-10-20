@@ -98,7 +98,12 @@ fn rust_snapshot(store: &RuntimeStore) -> Value {
             .query_map([], |row| row.get::<_, String>(0))
             .expect("query startup records")
             .map(|row| {
-                serde_json::from_str(&row.expect("startup row")).expect("startup record JSON")
+                let mut record: Value =
+                    serde_json::from_str(&row.expect("startup row")).expect("startup record JSON");
+                let id = record["id"].as_str().unwrap_or_default().to_owned();
+                studio_runtime_store::agent_volatile::merge_if_agent(&db, table, &id, &mut record)
+                    .expect("volatile agent fields");
+                record
             })
             .collect()
     };

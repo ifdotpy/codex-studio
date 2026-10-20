@@ -703,6 +703,9 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\"}}',0);",
             )
             .expect("write schema creates");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let agent = AgentRecord {
             id: AgentId::from("a"),
             root_id: AgentId::from("a"),

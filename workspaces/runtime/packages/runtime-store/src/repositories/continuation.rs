@@ -28,10 +28,12 @@ fn raw(db: &Connection, table: &'static str, id: &str) -> StoreResult<Option<Val
         )
         .optional()?;
     text.map(|s| {
-        serde_json::from_str(&s).map_err(|_| StoreError::InvalidStoredObject {
+        let mut value = serde_json::from_str(&s).map_err(|_| StoreError::InvalidStoredObject {
             table,
             id: id.into(),
-        })
+        })?;
+        crate::agent_volatile::merge_if_agent(db, table, id, &mut value)?;
+        Ok(value)
     })
     .transpose()
 }

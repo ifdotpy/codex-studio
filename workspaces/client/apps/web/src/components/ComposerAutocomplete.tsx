@@ -1,7 +1,9 @@
 import { Combobox, useCombobox } from "@mantine/core";
 import {
   cloneElement,
+  useCallback,
   useEffect,
+  useRef,
   useState,
   type KeyboardEvent,
   type ReactElement,
@@ -62,7 +64,17 @@ export default function ComposerAutocomplete({
     selectFirstOption,
   ]);
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  // The handler reads the latest render, so the cloned input keeps one handler
+  // identity and a memoized input does not render for every autocomplete render.
+  const keyDownHandler = useRef<
+    (event: KeyboardEvent<HTMLTextAreaElement>) => void
+  >(() => {});
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) =>
+      keyDownHandler.current(event),
+    [],
+  );
+  keyDownHandler.current = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (
       opened &&
       !event.nativeEvent.isComposing &&

@@ -13,6 +13,12 @@ pub(super) struct ManagedResponseDependencies {
     pub wake: Arc<Notify>,
     pub monitor_dispatch_wake: Arc<Notify>,
     pub managed_runtime: Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>,
+    /// The journal position whose callback write answers this tool call.
+    pub journal: CallbackJournal,
+}
+pub(super) struct CallbackJournal {
+    pub scope: String,
+    pub cursor: u64,
 }
 pub fn dispatch(_request: &Frame) -> CallbackDecision {
     CallbackDecision::Unsupported
@@ -185,7 +191,27 @@ pub(super) async fn managed_response(
             )
             .await
             {
-                Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => reply.body,
+                Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => {
+                    let key = crate::provider_callbacks::reply_key(&reply.identity);
+                    let journal = &dependencies.journal;
+                    // The answer still goes out without the link. Its prepared
+                    // row then waits for the settled-turn sweep.
+                    if let Err(error) = super::store::link_callback_reply(
+                        store,
+                        &journal.scope,
+                        generation,
+                        journal.cursor,
+                        key,
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "managed tool reply was not linked to its callback; account={account} generation={generation} cursor={}: {error}",
+                            journal.cursor
+                        );
+                    }
+                    reply.body
+                }
                 Ok(
                     crate::provider_callbacks::CallbackDecision::Pending(_)
                     | crate::provider_callbacks::CallbackDecision::Settled(_),

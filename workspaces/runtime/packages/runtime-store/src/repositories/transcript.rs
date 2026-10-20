@@ -268,7 +268,7 @@ impl TranscriptRepository {
             .prepare_cached("SELECT record FROM runtime_agents WHERE id=?1")?
             .query_row([agent], |row| row.get::<_, String>(0))
             .optional()?
-            .map(|encoded| crate::records::decode_agent_value(agent, &encoded))
+            .map(|encoded| crate::records::decode_agent_value(connection, agent, &encoded))
             .transpose()
             .map_err(map_store_error)
     }

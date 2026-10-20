@@ -13,6 +13,16 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::sha256_hex;
 
+/// Open a Python-created state as Rust does: with the volatile agent storage
+/// of 2026-10-20 installed.
+fn open_state(path: impl AsRef<std::path::Path>) -> rusqlite::Connection {
+    let mut db = rusqlite::Connection::open(path).expect("state opens");
+    let tx = db.transaction().expect("transaction");
+    studio_runtime_store::agent_volatile::prepare(&tx).expect("volatile agent storage");
+    tx.commit().expect("commit");
+    db
+}
+
 fn corpus(root: &std::path::Path) -> Vec<Value> {
     static TEMPLATE: OnceLock<(tempfile::TempDir, Vec<Value>)> = OnceLock::new();
     let (_template_root, cases) = TEMPLATE.get_or_init(|| {
@@ -101,6 +111,11 @@ fn state(db: &rusqlite::Connection) -> Value {
             .expect("rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("rows");
+        let mut rows = rows;
+        if table == "runtime_agents" {
+            studio_runtime_store::agent_volatile::merge_dumped_rows(db, &mut rows)
+                .expect("volatile agent fields");
+        }
         result.insert(table.into(), json!(rows));
     }
     Value::Object(result)
@@ -193,7 +208,7 @@ fn real_submission_transaction_matches_python_complete_rows_and_crash_boundaries
     let root = tempfile::tempdir().expect("tmpfs");
     for case in corpus(root.path()) {
         let path = case["path"].as_str().expect("path");
-        let mut db = rusqlite::Connection::open(path).expect("db");
+        let mut db = open_state(path);
         compare(&db, &case["before"], "Python prestate");
         let retry = case["retry"] == true;
         let before = case["before"].clone();
@@ -248,7 +263,7 @@ fn real_submission_transaction_matches_python_complete_rows_and_crash_boundaries
             db.execute_batch("DROP TRIGGER cut").expect("clear fault");
         }
         drop(db);
-        let db = rusqlite::Connection::open(path).expect("restart");
+        let db = open_state(path);
         let mut expected = case["after"].clone();
         let submitted_attempt = i.attempt_id.as_str();
         add_receipts(
@@ -268,7 +283,7 @@ fn initial_binding_refuses_wrong_or_missing_prepared_generation_and_foreign_tran
     let root = tempfile::tempdir().expect("tmpfs");
     let cases = corpus(root.path());
     let fresh = &cases[0];
-    let mut db = rusqlite::Connection::open(fresh["path"].as_str().expect("path")).expect("db");
+    let mut db = open_state(fresh["path"].as_str().expect("path"));
     let before = state(&db);
     for fault in [
         "generation",
@@ -379,7 +394,7 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
         for when in ["BEFORE", "AFTER"] {
             let path = root.path().join(format!("{stage}-{when}.sqlite3"));
             std::fs::copy(fresh["path"].as_str().expect("path"), &path).expect("copy");
-            let mut db = rusqlite::Connection::open(&path).expect("db");
+            let mut db = open_state(&path);
             let before = state(&db);
             db.execute_batch(&format!("CREATE TRIGGER cut {when} {action} ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT,'cut'); END")).expect("fault");
             let tx = db.transaction().expect("tx");
@@ -398,7 +413,7 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
             drop(tx);
             db.execute_batch("DROP TRIGGER cut").expect("clear fault");
             drop(db);
-            let mut db = rusqlite::Connection::open(&path).expect("restart");
+            let mut db = open_state(&path);
             compare(
                 &db,
                 &before,
@@ -420,7 +435,7 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
             compare(&db, &expected, &format!("{stage} {when} recovered"));
         }
     }
-    let mut db = rusqlite::Connection::open(fresh["path"].as_str().expect("path")).expect("db");
+    let mut db = open_state(fresh["path"].as_str().expect("path"));
     let before = state(&db);
     let mut stale = intent(&before);
     stale.epoch += 1;

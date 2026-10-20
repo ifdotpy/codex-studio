@@ -51,7 +51,7 @@ export interface ChatWaitState {
   inputs: number;
 }
 
-function chatChildren(data: Snapshot): Map<string, Agent[]> {
+export function chatChildren(data: Snapshot): Map<string, Agent[]> {
   const children = new Map<string, Agent[]>();
   for (const child of data.threads) {
     if (child.source !== "managed" || !child.parentId) continue;

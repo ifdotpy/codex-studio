@@ -2051,6 +2051,9 @@ mod exit_logging_tests {
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
             )
             .expect("agents table");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         for index in 0..40 {
             connection
                 .execute(
@@ -2089,6 +2092,9 @@ mod exit_logging_tests {
                  CREATE TABLE runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);",
             )
             .expect("continuation tables");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         for index in 0..32 {
             let agent = format!("agent-{index:02}");
             connection

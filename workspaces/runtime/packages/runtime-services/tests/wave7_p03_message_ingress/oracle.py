@@ -50,6 +50,20 @@ class QuietRuntime(codex_runtime.Runtime):
     connect_agent = connect
 
 
+def merge_volatile_agent_fields(db, agent_id, record):
+    """Rust storage format 2026-10-20 keeps volatile agent fields in
+    runtime_agent_volatile, one JSON column each; a Python state has no table."""
+    try:
+        cursor = db.execute("SELECT * FROM runtime_agent_volatile WHERE id=?", (agent_id,))
+    except sqlite3.OperationalError:
+        return record
+    row = cursor.fetchone()
+    for (name, *_), column in zip(cursor.description, tuple(row) if row else ()):
+        if name != "id" and column is not None:
+            record[name] = json.loads(column)
+    return record
+
+
 def state(root):
     with sqlite3.connect(Path(root) / "canvas.sqlite3") as db:
         db.row_factory = sqlite3.Row
@@ -64,7 +78,7 @@ def state(root):
             record.pop("timing", None)
             metadata[key] = record
         result = {"events": events, "metadata": metadata,
-                  "agents": {key: json.loads(raw) for key, raw in db.execute("SELECT id,record FROM runtime_agents ORDER BY id")}}
+                  "agents": {key: merge_volatile_agent_fields(db, key, json.loads(raw)) for key, raw in db.execute("SELECT id,record FROM runtime_agents ORDER BY id").fetchall()}}
         for table in ("messages", "runtime_operation_receipts", "sync_entities", "sync_documents", "sync_versions", "runtime_capacity_retries"):
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
                 result[table] = []
@@ -96,7 +110,7 @@ def state(root):
 
 
 def configure(runtime, db, case):
-    base = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id='agent'").fetchone()[0])
+    base = merge_volatile_agent_fields(db, "agent", json.loads(db.execute("SELECT record FROM runtime_agents WHERE id='agent'").fetchone()[0]))
     for fields in case.get("others", []):
         runtime.put(db, "agents", mode_fields({**base, **fields}))
     agent = {**base, **case.get("agent", {})}

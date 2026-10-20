@@ -4,6 +4,7 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "../../../../../client/apps/web/src/style.css";
 import Conversation from "../../../../../client/apps/web/src/components/Conversation";
+import { ChatWaitSource } from "../../../../../client/apps/web/src/hooks/conversationData";
 
 function Fixture() {
   const [id, setId] = useState("lead");
@@ -54,6 +55,8 @@ function Fixture() {
       nativeNotices: [],
     },
   };
+  const [waitSource] = useState(() => new ChatWaitSource());
+  waitSource.set(data);
   const getDraft = useCallback(
     (session: string) => currentDrafts.current[session] || "",
     [],
@@ -106,6 +109,7 @@ function Fixture() {
           syncWorkspaceId={(window as any).__uxChatSyncIdentity?.workspaceId}
           agent={agent}
           data={data}
+          waitSource={waitSource}
           accountsState={accountsState}
           getDraft={getDraft}
           subscribeDraft={subscribeDraft}

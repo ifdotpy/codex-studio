@@ -164,6 +164,8 @@ mod tests {
              INSERT INTO runtime_checkpoints VALUES('p','{\"id\":\"p\",\"agent\":\"a\",\"created\":1,\"items\":[\"hidden\"]}');",
         )
         .expect("families create");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
 
         assert_eq!(
             QuestionsReadsRepository::agents(&db).expect("agents read")[0]

@@ -887,7 +887,7 @@ impl SchedulerRepository {
 
         let mut recovered = 0;
         for (id, raw) in rows {
-            let mut agent = match decode_agent(&id, &raw) {
+            let mut agent = match decode_agent(transaction, &id, &raw) {
                 Ok(agent) => agent,
                 Err(StoreError::InvalidSyncObject { scope, .. }) if scope == "runtime_agents" => {
                     eprintln!("scheduler startup skipped malformed submitted row id={id}");
@@ -1877,7 +1877,7 @@ pub(super) fn account_agents(
 
     let mut agents = Vec::with_capacity(rows.len());
     for (id, raw) in rows {
-        match decode_agent(&id, &raw) {
+        match decode_agent(connection, &id, &raw) {
             Ok(agent) => agents.push(agent),
             Err(error) => {
                 let receipt_id = format!("{}{id}", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX);
@@ -1903,7 +1903,7 @@ pub(super) fn select_agents(
     })?;
     rows.map(|row| {
         let (id, raw) = row?;
-        decode_agent(&id, &raw)
+        decode_agent(db, &id, &raw)
     })
     .collect()
 }
@@ -2396,42 +2396,18 @@ pub(super) fn load_agent(db: &Connection, id: &str) -> StoreResult<Option<AgentR
         r.get::<_, String>(0)
     })
     .optional()?
-    .map(|raw| decode_agent(id, &raw))
+    .map(|raw| decode_agent(db, id, &raw))
     .transpose()
 }
-pub(super) fn decode_agent(id: &str, raw: &str) -> StoreResult<AgentRecord> {
-    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
-        crate::records::invalid_agent_field(
-            id,
-            "",
-            &format!("invalid_json; record length {} bytes", raw.len()),
-            None,
-        )
-    })?;
-    if !studio_runtime_schema::validate("PersistedAgentRecord", &value)
-        .map_err(StoreError::SchemaValidation)?
-    {
-        let (pointer, reason) = studio_runtime_schema::first_error("PersistedAgentRecord", &value)
-            .map_err(StoreError::SchemaValidation)?
-            .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
-        return Err(crate::records::invalid_agent_field(
-            id,
-            &pointer,
-            &reason,
-            Some(&value),
-        ));
-    }
-    let record: AgentRecord = serde_json::from_value(value.clone())
-        .map_err(|_| crate::records::invalid_agent_field(id, "", "record_decode", Some(&value)))?;
-    if record.id.0 != id {
-        return Err(crate::records::invalid_agent_field(
-            id,
-            "/id",
-            "row_id_mismatch",
-            Some(&value),
-        ));
-    }
-    Ok(record)
+/// The checked agent row `id` with its volatile fields, typed.
+pub(super) fn decode_agent(
+    connection: &Connection,
+    id: &str,
+    raw: &str,
+) -> StoreResult<AgentRecord> {
+    let value = crate::records::decode_agent_value(connection, id, raw)?;
+    serde_json::from_value(value)
+        .map_err(|_| crate::records::invalid_agent_field(id, "", "record_decode", None))
 }
 pub(super) fn current_attempt(agent: &AgentRecord, epoch: i64) -> bool {
     agent.epoch == epoch

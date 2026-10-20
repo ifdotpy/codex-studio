@@ -1417,7 +1417,13 @@ fn stream_owner(
             )
             .optional()
     };
-    owner.map_err(|error| StoreError::from(error).into())
+    let owner = owner.map_err(StoreError::from)?;
+    Ok(owner
+        .map(|(id, raw)| {
+            let raw = studio_runtime_store::agent_volatile::merged_text(transaction, &id, raw)?;
+            Ok::<_, StoreError>((id, raw))
+        })
+        .transpose()?)
 }
 
 fn flush_one_stream(
@@ -2111,6 +2117,9 @@ mod tests {
             )
             .expect("notification dispatch tables create");
         connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
+        connection
     }
 
     pub(super) fn frame(value: &Value) -> Frame {
@@ -2148,6 +2157,95 @@ mod tests {
             &frame(value),
             observed_at,
         )
+    }
+
+    /// Hot notifications that change only volatile agent fields (storage
+    /// format 2026-10-20) never write `runtime_agents`, for either provider.
+    #[tokio::test]
+    async fn hot_notifications_write_only_the_volatile_agent_row() {
+        for provider in ["codex", "claude"] {
+            let root = tempfile::tempdir().unwrap();
+            let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+            store
+                .transaction_with(move |tx| {
+                    AgentRepository::put(
+                        tx,
+                        &AgentRecord::from_value(json!({
+                            "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                            "threadId":"thread","accountKey":"default","provider":provider,
+                            "turnId":"turn","inFlight":true,"autoWake":false,
+                            "activeTools":[],"events":0
+                        }))
+                        .unwrap(),
+                    )?;
+                    tx.execute_batch(
+                        "CREATE TEMP TABLE probe(n INTEGER); INSERT INTO probe VALUES(0);
+                         CREATE TEMP TRIGGER probe_agents AFTER UPDATE ON main.runtime_agents
+                         BEGIN UPDATE probe SET n=n+1; END;",
+                    )?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .unwrap();
+            let notifications = [
+                json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"one "}}),
+                json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"two "}}),
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":9},"last":{"totalTokens":9},"modelContextWindow":1000}}}),
+                json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"cmd","type":"commandExecution","command":"ls","status":"inProgress"}}}),
+                json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"cmd","type":"commandExecution","command":"ls","status":"completed","aggregatedOutput":"a","exitCode":0}}}),
+            ];
+            let mut streams = NotificationStreamBuffer::default();
+            for (index, notification) in notifications.into_iter().enumerate() {
+                let current = streams.clone();
+                let (next, agent_updates) = store
+                    .transaction_with(move |tx| {
+                        let publication = PublicationContext::default();
+                        let before: i64 = tx
+                            .query_row("SELECT n FROM probe", [], |r| r.get(0))
+                            .map_err(studio_runtime_store::StoreError::from)?;
+                        let result = super::dispatch_notification_with_effects(
+                            tx,
+                            "agent",
+                            &publication,
+                            &current,
+                            &identity(index as u64 + 1),
+                            &frame(&notification),
+                            100.0 + index as f64,
+                            &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                        )?;
+                        let mut next = result.stream_update.unwrap_or(current);
+                        if let Some(update) = super::flush_notification_streams(
+                            tx,
+                            "agent",
+                            &publication,
+                            &next,
+                            100.5 + index as f64,
+                        )? {
+                            next = update;
+                        }
+                        let after: i64 = tx
+                            .query_row("SELECT n FROM probe", [], |r| r.get(0))
+                            .map_err(studio_runtime_store::StoreError::from)?;
+                        Ok::<_, super::NotificationDispatchError>((next, after - before))
+                    })
+                    .await
+                    .unwrap();
+                streams = next;
+                // The first delta records the response turn in the record.
+                if index > 0 {
+                    assert_eq!(agent_updates, 0, "{provider} notification {index}");
+                }
+            }
+            let connection = store.read().unwrap();
+            let agent = AgentRepository::get(&connection, &"agent".into())
+                .unwrap()
+                .unwrap()
+                .value();
+            assert_eq!(agent["tail"], "one two ");
+            assert_eq!(agent["contextUsage"]["tokens"], 9);
+            assert_eq!(agent["activeTools"], json!([]));
+            assert!(agent["events"].as_u64().unwrap() >= 4);
+        }
     }
 
     #[tokio::test]

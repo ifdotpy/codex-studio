@@ -75,6 +75,9 @@ impl Drop for Oracle {
 fn db(records: &Value, case: &Value) -> Connection {
     let connection = Connection::open_in_memory().expect("SQLite");
     connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT);").expect("schema");
+    connection
+        .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+        .expect("volatile agent table creates");
     for (name, table) in [("agents", "runtime_agents"), ("states", "runtime_budget")] {
         for (id, row) in records[name].as_object().expect("records") {
             connection
@@ -145,7 +148,15 @@ fn stored(connection: &Connection) -> Value {
             .expect("rows");
         for row in rows {
             let (id, raw) = row.expect("row");
-            result.insert(id, serde_json::from_str(&raw).expect("record"));
+            let mut record = serde_json::from_str(&raw).expect("record");
+            studio_runtime_store::agent_volatile::merge_if_agent(
+                connection,
+                table,
+                &id,
+                &mut record,
+            )
+            .expect("volatile agent fields");
+            result.insert(id, record);
         }
         state[name] = json!(result);
     }

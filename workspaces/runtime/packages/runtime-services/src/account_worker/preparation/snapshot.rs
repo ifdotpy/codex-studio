@@ -286,6 +286,11 @@ pub(super) fn records_by_ids(
             .query_row([id], |r| r.get::<_, String>(0))
             .optional()?
         {
+            let raw = if table == studio_runtime_store::agent_volatile::AGENT_TABLE {
+                studio_runtime_store::agent_volatile::merged_text(db, id, raw)?
+            } else {
+                raw
+            };
             rows.insert(id.clone(), raw);
         }
     }

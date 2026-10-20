@@ -60,10 +60,10 @@ impl ReviewerArchiveRepository {
              INDEXED BY runtime_agent_reviewer_archive_pending \
              WHERE {eligibility} ORDER BY a.id"
         ))?;
-        statement
+        let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::agent_volatile::merged_rows(connection, rows)
     }
 
     /// Earliest delivered child-result identity for the given parent and child.
@@ -100,10 +100,10 @@ impl ReviewerArchiveRepository {
              WHERE {eligibility} AND {scheduled} \
                AND {deadline}<=?1 ORDER BY id"
         ))?;
-        statement
+        let rows = statement
             .query_map([now], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::agent_volatile::merged_rows(connection, rows)
     }
 
     /// Earliest persisted retry deadline using the same eligibility predicate
@@ -198,6 +198,9 @@ mod tests {
                  ",
             )
             .expect("archive tables create");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let transaction = connection.transaction().expect("index transaction starts");
         Repository::prepare_indexes(&transaction).expect("archive indexes create");
         transaction.commit().expect("index transaction commits");

@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+mod agent_isolation;
 #[cfg(unix)]
 mod auth_hold;
 mod browser_skill;
@@ -17,6 +18,7 @@ mod stale_disconnect_recovery;
 mod start_throttle;
 mod steer;
 mod submission;
+mod tool_reply_retirement;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{
@@ -857,12 +859,10 @@ impl State {
         let agent = self.agent.clone();
         self.bridge
             .run(move |store| async move {
-                let raw: String = store.read()?.query_row(
-                    "SELECT record FROM runtime_agents WHERE id=?1",
-                    [agent],
-                    |r| r.get(0),
-                )?;
-                Ok(serde_json::from_str(&raw).unwrap())
+                Ok(
+                    studio_runtime_store::agent_volatile::merged_record(&*store.read()?, &agent)?
+                        .expect("agent row"),
+                )
             })
             .await
             .unwrap()
@@ -4845,9 +4845,9 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         None,
         Vec::new(),
         None,
+        false,
     )
     .await
-    .unwrap()
     .expect("VM actor journal entry is durable");
     let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from("sibling"))
         .unwrap()
@@ -4879,9 +4879,9 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         None,
         Vec::new(),
         None,
+        false,
     )
     .await
-    .unwrap()
     .expect("sibling VM actor journal entry is durable");
     store
         .transaction_with(move |tx| -> Result<(), WorkerError> {

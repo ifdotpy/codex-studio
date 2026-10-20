@@ -24,7 +24,10 @@ fn agent_in_use(connection: &Connection) -> StoreResult<String> {
         format!("COALESCE(json_extract(record,'$.status'),'') IN ({ACTIVE_AGENT_STATUSES})"),
         "COALESCE(json_extract(record,'$.inFlight'),0)!=0".to_owned(),
         "COALESCE(json_extract(record,'$.turnId'),'')!=''".to_owned(),
-        "COALESCE(json_array_length(record,'$.activeTools'),0)>0".to_owned(),
+        format!(
+            "COALESCE(json_array_length({}),0)>0",
+            crate::agent_volatile::field_sql("runtime_agents", "activeTools")
+        ),
         "json_extract(record,'$.workspaceOperation') IS NOT NULL".to_owned(),
         "COALESCE(json_extract(record,'$.accountTransferId'),'')!=''".to_owned(),
         "COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!=''".to_owned(),
@@ -273,6 +276,9 @@ mod tests {
                  CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
             )
             .expect("schema creates");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         connection
     }
 

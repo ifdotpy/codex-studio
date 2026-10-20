@@ -303,7 +303,14 @@ const UI_COUNTS_SOURCE = () => ({
     (sum, node) => sum + Number(node.textContent),
     0,
   ),
-  workerCards: document.querySelectorAll("[data-worker]").length,
+  // The collapsed Finished group renders no cards, so its overview count stands
+  // in for them: this still reaches the team size once every card is reachable.
+  workerCards:
+    document.querySelectorAll("[data-worker]").length +
+    Number(
+      document.querySelector('[data-team-count="completed"] dd')?.textContent ||
+        0,
+    ),
   sidebarChats: document.querySelectorAll("#sidebar [data-chat]").length,
   teamPanelClosed:
     document.querySelector("#team-toggle")?.getAttribute("aria-expanded") ===
@@ -911,6 +918,19 @@ async function main() {
       apiP95Ms: percentile(allApiMs, 0.95),
       apiMaxMs: allApiMs.length ? Math.max(...allApiMs) : null,
       apiRequestCount: allApiMs.length,
+      // Request count per path, most frequent first, so a request-volume
+      // regression can be attributed to the endpoint that causes it.
+      apiRequestsByPath: Object.fromEntries(
+        [
+          ...apiRows
+            .reduce(
+              (counts, row) =>
+                counts.set(row.path, (counts.get(row.path) ?? 0) + 1),
+              new Map(),
+            )
+            .entries(),
+        ].sort((left, right) => right[1] - left[1]),
+      ),
       diagnosticsP95Ms: percentile(diagnosticsApiMs, 0.95),
       sqliteLockErrorDelta:
         diagnosticsAfter.lockErrors !== null &&

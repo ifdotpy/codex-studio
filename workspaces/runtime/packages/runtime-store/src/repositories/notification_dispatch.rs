@@ -114,14 +114,7 @@ impl NotificationDispatchRepository {
         agent: &str,
         record: &Value,
     ) -> StoreResult<()> {
-        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(agent) {
-            return Err(invalid_record("runtime_agents", agent));
-        }
-        let changed = transaction.execute_cached(
-            "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-            params![agent, serde_json::to_string(record)?],
-        )?;
-        if changed != 1 {
+        if !crate::agent_volatile::update(transaction, agent, record)? {
             return Err(invalid_record("runtime_agents", agent));
         }
         Ok(())

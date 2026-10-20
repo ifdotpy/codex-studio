@@ -128,19 +128,7 @@ async fn python_resolution_rows_match_after_completed_or_cleared_turn() {
         .await
         .unwrap();
         assert_eq!(stored(&store, "resolve-card"), case["expected"]);
-        let raw: String = store
-            .read()
-            .unwrap()
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id=?1",
-                [&context.agent],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
-            case["expectedActor"]
-        );
+        assert_eq!(actor(&store, &context), case["expectedActor"]);
         assert_writes(&before, &store, &case["writes"]);
     }
 }
