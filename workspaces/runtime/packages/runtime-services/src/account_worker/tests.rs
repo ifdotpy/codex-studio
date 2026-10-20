@@ -17,6 +17,7 @@ mod stale_disconnect_recovery;
 mod start_throttle;
 mod steer;
 mod submission;
+mod tool_reply_retirement;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{

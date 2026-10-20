@@ -3406,6 +3406,7 @@ impl Worker {
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
             let store = Arc::clone(&self.bridge.store);
             let managed_tool_runtime = self.bridge.managed_tool_runtime();
+            let journal_scope = self.journal_scope(actor_id);
             self.managed_callback_cursors
                 .insert((actor.clone(), actor_epoch, cursor.0));
             self.managed_callbacks.spawn(async move {
@@ -3440,6 +3441,10 @@ impl Worker {
                         wake,
                         monitor_dispatch_wake,
                         managed_runtime: managed_tool_runtime,
+                        journal: callback::CallbackJournal {
+                            scope: journal_scope,
+                            cursor: cursor.0,
+                        },
                     },
                 )
                 .await;
