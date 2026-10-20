@@ -1470,8 +1470,9 @@ async fn run_continuation_tick(
     let mut changed = false;
     for agent_id in agents {
         let observations = limits.clone();
-        let agent_id = agent_id.clone();
+        let agent = agent_id.clone();
         let staged = store.transaction_with(move |tx| {
+            let agent_id = agent;
             let account: Option<String> = tx
                 .query_row(
                     "SELECT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents WHERE id=?1",
@@ -1489,8 +1490,12 @@ async fn run_continuation_tick(
             )
             .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
             Ok::<_, studio_runtime_store::StoreError>(stage.changed())
-        }).await?;
-        changed |= staged;
+        }).await;
+        // One agent's bad data must not hold back the other due agents.
+        match staged {
+            Ok(staged) => changed |= staged,
+            Err(error) => eprintln!("continuation tick skipped agent {agent_id}: {error}"),
+        }
     }
     Ok(changed)
 }
@@ -1989,6 +1994,54 @@ mod exit_logging_tests {
             .await
             .expect("a tick with nothing due succeeds");
         assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn continuation_tick_skips_a_failing_agent_and_stages_the_others() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store
+            .transaction_with(|tx| {
+                // The first agent's proof cursor has no proofAt, so its stage fails.
+                for (id, pending) in [
+                    ("a-broken", serde_json::json!({"afterId":""})),
+                    ("b-valid", serde_json::json!({"afterId":"","proofAt":1.0})),
+                ] {
+                    let record = serde_json::json!({
+                        "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
+                        "authResumeProofPending":{"default":pending},
+                    });
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                        [id, &record.to_string()],
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed agents");
+        let changed = run_continuation_tick(Arc::clone(&store), 2.0)
+            .await
+            .expect("one failing agent does not fail the tick");
+        assert!(changed, "the valid agent is staged");
+        let db = store.read().expect("reader");
+        let pending = |id: &str| -> Option<String> {
+            db.query_row(
+                "SELECT json_extract(record,'$.authResumeProofPending') FROM runtime_agents WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("agent row")
+        };
+        assert_eq!(pending("b-valid"), None, "the valid agent's cursor is done");
+        assert!(
+            pending("a-broken").is_some(),
+            "the failing agent keeps its cursor"
+        );
     }
 
     #[tokio::test(start_paused = true)]
