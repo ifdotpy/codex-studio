@@ -685,6 +685,34 @@ async fn unsettled_journal_horizon_is_bounded_until_durable_prefix_advances() {
     session.checked_shutdown().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn exited_generation_entries_do_not_hold_back_the_initialize_reply() {
+    let (mut session, mut peer) = open().await;
+    written(write(&mut peer).await);
+    // A full unsettled bound of an exited generation's entries, none settled.
+    for cursor in 1..=MAX_UNSETTLED as u64 {
+        let mut exited = entry(cursor, 0, JournalPayload::Stderr(json!({})));
+        exited.generation = Generation(0);
+        peer.events.send(exited).await.unwrap();
+        session.events.recv().await.unwrap();
+    }
+    peer.events
+        .send(entry(
+            MAX_UNSETTLED as u64 + 1,
+            0,
+            JournalPayload::Frame(reply(RequestId::String("attachment-1:1".into()))),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        written(write(&mut peer).await);
+        status(&mut session, InitializationStatus::Ready).await;
+    })
+    .await
+    .expect("the initialize reply is read behind the exited generation's entries");
+    session.checked_shutdown().await;
+}
+
 #[cfg(unix)]
 #[path = "../../runtime-process/tests/support/mod.rs"]
 mod support;

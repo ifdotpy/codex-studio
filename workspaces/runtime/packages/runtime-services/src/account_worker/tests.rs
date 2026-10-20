@@ -4,6 +4,7 @@ mod agent_isolation;
 mod auth_hold;
 mod browser_skill;
 mod claude_preparation;
+mod exited_generation_callback;
 mod idle_unload;
 mod journal_cost;
 mod late_thread_reply;
@@ -91,6 +92,9 @@ pub(super) struct Faults {
     pub(super) journal_batch_ready: tokio::sync::Notify,
     pub(super) release_journal_batch: tokio::sync::Notify,
     pub(super) fail_journal_ack_at: std::sync::Mutex<Option<usize>>,
+    /// Journal an exited generation's provider request like a current one, so
+    /// a test reaches the reply fence behind the journal-time settlement.
+    pub(super) journal_exited_requests_as_current: std::sync::atomic::AtomicBool,
     cycles: std::sync::atomic::AtomicUsize,
     cycled: tokio::sync::Notify,
     pause_at: std::sync::Mutex<Option<usize>>,
@@ -418,8 +422,22 @@ impl Peer {
     fn identity_with_cleanup(
         account: &str,
         generation: u64,
+        gate: Option<oneshot::Receiver<()>>,
+        cleanup_error: Option<String>,
+    ) -> Self {
+        Self::identity_with_options(account, generation, gate, cleanup_error, false)
+    }
+    /// A peer whose `initialize` reaches the test as an ordinary write, so its
+    /// reply arrives as a journal frame behind any earlier provider frames.
+    fn initialized_by_journal(account: &str, generation: u64) -> Self {
+        Self::identity_with_options(account, generation, None, None, true)
+    }
+    fn identity_with_options(
+        account: &str,
+        generation: u64,
         mut gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
+        journal_initialize: bool,
     ) -> Self {
         let generation = Generation(generation);
         MATRIX
@@ -461,7 +479,7 @@ impl Peer {
                     } => {
                         let initialized = write.message()["method"] == "initialized";
                         let result = match write.message()["method"].as_str() {
-                            Some("initialize") => {
+                            Some("initialize") if !journal_initialize => {
                                 if let Some(gate) = gate.take() {
                                     gate.await.unwrap();
                                 }

@@ -804,9 +804,11 @@ impl Pending {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 enum Effect {
+    /// The cursor and provider generation of the request this frame answers.
     #[serde(skip)]
     Callback(
         studio_runtime_process::EventCursor,
+        Generation,
         Frame,
         Option<String>,
         Option<i64>,
@@ -821,6 +823,7 @@ enum Effect {
 }
 type ManagedCallbackResult = (
     studio_runtime_process::EventCursor,
+    Generation,
     Option<String>,
     Option<i64>,
     Option<Frame>,
@@ -1291,8 +1294,11 @@ impl Worker {
     async fn run_effect(&mut self, effect: Effect) -> Result<(), WorkerError> {
         self.effect_in_hand = store::effect_key(&self.account, &effect);
         match effect {
-            Effect::Callback(cursor, frame, actor, epoch) => {
-                match self.answer_callback(cursor, frame, actor, epoch).await {
+            Effect::Callback(cursor, generation, frame, actor, epoch) => {
+                match self
+                    .answer_callback(cursor, generation, frame, actor, epoch)
+                    .await
+                {
                     Err(WorkerError::StaleVmActor) => return Ok(()),
                     result => result?,
                 }
@@ -1360,11 +1366,11 @@ impl Worker {
             ServeSignal::VmEvent(None) => return Ok(false),
             ServeSignal::ConnectionRecovery => self.connection_recovery_active = false,
             ServeSignal::ManagedCallback(callback) => {
-                let (cursor, actor, epoch, response) = callback
+                let (cursor, generation, actor, epoch, response) = callback
                     .ok_or(WorkerError::TaskFailed)?
                     .map_err(|_| WorkerError::TaskFailed)?;
                 if let Some(response) = response {
-                    self.push(Effect::Callback(cursor, response, actor, epoch));
+                    self.push(Effect::Callback(cursor, generation, response, actor, epoch));
                 }
             }
             ServeSignal::Prepared(done) => {
@@ -3498,6 +3504,26 @@ impl Worker {
         {
             self.bridge.monitor_dispatch_wake().notify_one();
         }
+        let origin = entry.generation;
+        #[cfg(test)]
+        let exited = origin != self.generation
+            && !self
+                .bridge
+                .faults
+                .journal_exited_requests_as_current
+                .load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let exited = origin != self.generation;
+        if let JournalPayload::Frame(frame) = &entry.payload
+            && exited
+            && callback::response(frame).is_some()
+        {
+            // The provider process that sent this request has exited, so no
+            // answer can reach it. Settle it now: a held cursor stops the
+            // journal intake before the new process can become ready.
+            self.abandon_callback(cursor, origin, actor_id).await?;
+            return Ok(true);
+        }
         if let JournalPayload::Frame(frame) = &entry.payload
             && let Frame::Request(request) = frame
             && request.method.as_str() == "item/tool/call"
@@ -3528,10 +3554,11 @@ impl Worker {
                 .await
                 {
                     let Frame::Request(request) = &frame else {
-                        return (cursor, actor, actor_epoch, None);
+                        return (cursor, origin, actor, actor_epoch, None);
                     };
                     return (
                         cursor,
+                        origin,
                         actor,
                         actor_epoch,
                         Some(callback::tool_call_failure(request, dependency)),
@@ -3555,7 +3582,7 @@ impl Worker {
                     },
                 )
                 .await;
-                (cursor, actor, actor_epoch, response)
+                (cursor, origin, actor, actor_epoch, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload
             && callback::is_vm_codex_refresh_request(frame)
@@ -3584,13 +3611,14 @@ impl Worker {
                     resolver,
                 )
                 .await;
-                (cursor, actor, actor_epoch, response)
+                (cursor, origin, actor, actor_epoch, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload
             && let Some(response) = callback::response(frame)
         {
             self.push(Effect::Callback(
                 cursor,
+                origin,
                 response,
                 actor_id.map(str::to_owned),
                 actor_epoch,
@@ -3665,13 +3693,52 @@ impl Worker {
         }
         Ok(())
     }
+    /// Settle a provider request of an exited generation without an answer.
+    /// The answer has no recipient, and a reply written now would reach the
+    /// generation's successor under a request id that process never issued.
+    async fn abandon_callback(
+        &mut self,
+        cursor: studio_runtime_process::EventCursor,
+        origin: Generation,
+        actor_id: Option<&str>,
+    ) -> Result<(), WorkerError> {
+        let journal_scope = self.journal_scope(actor_id);
+        self.db("callback_abandoned", move |store| async move {
+            store::callback_settled(&store, &journal_scope, origin.0, cursor.0).await
+        })
+        .await?;
+        eprintln!(
+            "provider request settled without an answer; account={} generation={} cursor={} current-generation={} outcome=provider-generation-ended",
+            self.account, origin.0, cursor.0, self.generation.0
+        );
+        Ok(())
+    }
     async fn answer_callback(
         &mut self,
         cursor: studio_runtime_process::EventCursor,
+        origin: Generation,
         frame: Frame,
         actor_id: Option<String>,
         actor_epoch: Option<i64>,
     ) -> Result<(), WorkerError> {
+        if origin != self.generation {
+            // The reply is named and fenced by the current generation below;
+            // it must never answer another generation's request.
+            self.abandon_callback(cursor, origin, actor_id.as_deref())
+                .await?;
+            self.managed_callback_cursors
+                .remove(&(actor_id.clone(), actor_epoch, cursor.0));
+            if !self.closing {
+                match self.control_for_actor(actor_id.as_deref()) {
+                    Ok(control) => control.settled(cursor).await?,
+                    Err(WorkerError::Closed) if actor_id.is_some() => {
+                        return Err(self.stale_vm_actor(actor_id.as_deref()));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            return Ok(());
+        }
         if let Some(actor) = actor_id.as_deref() {
             #[cfg(test)]
             self.bridge
@@ -4000,10 +4067,10 @@ impl Worker {
         let completed = tokio::time::timeout_at(deadline, async {
             while let Some(callback) = self.managed_callbacks.join_next().await {
                 match callback {
-                    Ok((cursor, actor, epoch, Some(response))) => {
-                        self.push(Effect::Callback(cursor, response, actor, epoch));
+                    Ok((cursor, generation, actor, epoch, Some(response))) => {
+                        self.push(Effect::Callback(cursor, generation, response, actor, epoch));
                     }
-                    Ok((_, _, _, None)) => {}
+                    Ok((_, _, _, _, None)) => {}
                     Err(error) => {
                         eprintln!(
                             "managed account callback task failed during shutdown; account={} generation={} cursors={:?}: {error}",
@@ -4029,8 +4096,11 @@ impl Worker {
         let mut remaining = VecDeque::new();
         while let Some(effect) = self.effects.pop_front() {
             match effect {
-                Effect::Callback(cursor, response, actor, epoch) => {
-                    match self.answer_callback(cursor, response, actor, epoch).await {
+                Effect::Callback(cursor, generation, response, actor, epoch) => {
+                    match self
+                        .answer_callback(cursor, generation, response, actor, epoch)
+                        .await
+                    {
                         Err(WorkerError::StaleVmActor) => {}
                         result => result?,
                     }
