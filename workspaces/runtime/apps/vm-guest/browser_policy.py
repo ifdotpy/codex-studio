@@ -12,6 +12,8 @@ import ipaddress
 from urllib.parse import SplitResult, parse_qs, urlsplit
 
 MAX_URL = 8192
+# The longest device code that the card shows, in characters.
+USER_CODE_LIMIT = 64
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -51,6 +53,10 @@ class Provider:
     redirect: Redirect | None
     client_id: str | None
     scope: str | None
+    # The OAuth `state` of the link. A pasted redirect must carry the same value.
+    state: str | None = None
+    # The `user_code` of a device code page (RFC 8628 verification_uri_complete).
+    user_code: str | None = None
 
 
 def _text(value: object) -> str:
@@ -90,6 +96,12 @@ def _local_host(host: str) -> bool:
         return False
     return (address.is_private or address.is_loopback or address.is_link_local
             or address.is_unspecified or address.is_multicast or address.is_reserved)
+
+
+def _exact(query: dict[str, list[str]], name: str) -> str | None:
+    """The one value of `name`, untruncated, or None when it is missing or repeated."""
+    values = query.get(name)
+    return values[0] if values and len(values) == 1 and values[0] else None
 
 
 def _first(query: dict[str, list[str]], *names: str) -> str | None:
@@ -143,4 +155,41 @@ def provider(url: object, *, http_providers: frozenset[str] = frozenset()) -> Pr
             if target_port is None or not 1024 <= target_port <= 65535:
                 raise PolicyError("A loopback redirect needs a port from 1024 to 65535")
             redirect = Redirect(target_host, target_port, target.path or "/")
-    return Provider(text, host, redirect, _first(query, "client_id"), _first(query, "scope", "scopes"))
+    user_code = _first(query, "user_code") if redirect is None else None
+    return Provider(text, host, redirect, _first(query, "client_id"), _first(query, "scope", "scopes"),
+                    state=_exact(query, "state"), user_code=user_code[:USER_CODE_LIMIT] if user_code else None)
+
+
+@dataclass(frozen=True)
+class Callback:
+    """A sign-in redirect that the person pasted: the path and query for the tool's listener."""
+
+    target: str
+    state: str | None
+    error: bool
+
+
+def pasted(text: object, redirect: dict[str, object], state: str | None) -> Callback:
+    """Check the address of the page that did not load after a sign-in (docs/vm-browser-bridge.md,
+    section 6.3). It must be the request's loopback redirect with a code or an error and the
+    `state` of the provider link."""
+    value = _text(text)
+    if "://" not in value:
+        # Some phone browsers copy the address without the scheme.
+        value = "http://" + value
+    parts, host, port = _parts(value)
+    if parts.scheme.lower() != "http" or host not in LOOPBACK_HOSTS:
+        raise PolicyError("Paste the address of the page that did not load. It starts with "
+                          "http://localhost or http://127.0.0.1")
+    if port != redirect.get("port") or (parts.path or "/") != redirect.get("path"):
+        raise PolicyError(f"The address is not for this sign-in: it must use port {redirect.get('port')} "
+                          f"and the path {redirect.get('path')}")
+    query = parse_qs(parts.query, keep_blank_values=True)
+    if not _first(query, "code") and not _first(query, "error"):
+        raise PolicyError("The address has no sign-in result. Paste it after the sign-in ends")
+    if not state:
+        raise PolicyError("This sign-in has no state value, so Studio cannot check a pasted address. "
+                          "Use a desktop or the device code")
+    if _exact(query, "state") != state:
+        raise PolicyError("The address belongs to another sign-in: its state value is different")
+    return Callback((parts.path or "/") + "?" + parts.query, state, bool(_first(query, "error")))

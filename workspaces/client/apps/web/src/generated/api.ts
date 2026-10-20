@@ -7679,6 +7679,16 @@ export interface components {
       forward?: boolean | null;
       /** Id */
       id: string;
+      /**
+       * Paste
+       * @default null
+       */
+      paste?: boolean | null;
+      /**
+       * Result
+       * @default null
+       */
+      result?: string | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
