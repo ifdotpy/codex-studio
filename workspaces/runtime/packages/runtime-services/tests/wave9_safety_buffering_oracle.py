@@ -3,6 +3,7 @@ import ast
 import json
 import sqlite3
 import sys
+import tempfile
 import threading
 from concurrent.futures import Future
 from pathlib import Path
@@ -133,6 +134,8 @@ class RuntimePort:
             "INSERT INTO runtime_agents VALUES (?,?)", (AGENT["id"], json.dumps(AGENT))
         )
         self.lock = threading.RLock()
+        # The state folder of production Runtime.new_thread_params (the browser launcher check).
+        self.root = Path(tempfile.mkdtemp(prefix="state-"))
         self.servers = {"acct": Server()}
         self.calls = []
         self.loaded = set()

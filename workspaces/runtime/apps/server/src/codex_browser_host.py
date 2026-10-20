@@ -139,7 +139,7 @@ def _link(path: Path, target: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def thread_environment(state: Path, agent_id: str) -> dict[str, str]:
+def thread_environment(state: Path | str, agent_id: str) -> dict[str, str]:
     """Per-thread Codex config overrides that send a host Codex chat's browser links to this
     server (docs/vm-browser-bridge.md, section 6.4). Codex applies `shell_environment_policy.set`
     to the commands of the thread; its app-server launch stays unchanged. PATH is not set: a

@@ -6357,7 +6357,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             configure_browser(self, a, params)
             # Sign-in links of the thread's commands go to Studio (docs/vm-browser-bridge.md).
             from codex_browser_host import thread_environment
-            params["config"].update(thread_environment(Path(self.root), a["id"]))
+            params["config"].update(thread_environment(self.root, a["id"]))
         if a.get('frozenNativeParams'):
             frozen = a['frozenNativeParams']
             params.update(baseInstructions=frozen['baseInstructions'],
