@@ -1964,8 +1964,10 @@ mod retained_executor_tests {
         store
             .transaction_with_error(|tx| {
                 let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra
-                    .insert("nativeRelease".into(), json!({"phase":"pending"}));
+                row.extra.insert(
+                    "nativeRelease".into(),
+                    json!({"phase":"unknown","resetPending":true}),
+                );
                 AgentRepository::put(tx, &row)
             })
             .await
