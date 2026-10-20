@@ -1,4 +1,5 @@
 //! Existing budget tables: typed JSON ledger plus uniquely keyed usage rows.
+use crate::CachedSql;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{
     AgentId, AgentRecord, EventWriteRepository, JsonRecord, RecordKeyMode, RecordQueryShape,
@@ -46,7 +47,7 @@ impl BudgetRepository {
         ids.iter().map(|id| Self::agent(db, id)).collect()
     }
     pub fn usage(db: &Connection, id: &str) -> StoreResult<Option<BudgetUsageRow>> {
-        let row=db.query_row("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage WHERE id=?1",[id],|row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"tokens":row.get::<_,i64>(3)?,"at":row.get::<_,f64>(4)?}))).optional()?;
+        let row=db.query_row_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage WHERE id=?1",[id],|row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"tokens":row.get::<_,i64>(3)?,"at":row.get::<_,f64>(4)?}))).optional()?;
         row.map(|row| {
             validate_usage(&row)?;
             Ok(serde_json::from_value(row)?)
@@ -55,7 +56,7 @@ impl BudgetRepository {
     }
     pub fn insert_usage(tx: &Transaction<'_>, row: &BudgetUsageRow) -> StoreResult<()> {
         validate_usage(&serde_json::to_value(row)?)?;
-        tx.execute(
+        tx.execute_cached(
             "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES (?1,?2,?3,?4,?5)",
             params![
                 row.id,
@@ -97,8 +98,8 @@ impl BudgetRepository {
         id: &str,
         fields: &[(&str, Value)],
     ) -> StoreResult<()> {
-        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities')",[],|r|r.get(0))?;
-        if exists && tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?1 AND deleted=0)",[id],|r|r.get::<_,bool>(0))? {
+        let exists:bool=tx.query_row_cached("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities')",[],|r|r.get(0))?;
+        if exists && tx.query_row_cached("SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?1 AND deleted=0)",[id],|r|r.get::<_,bool>(0))? {
             EventWriteRepository::set_agent_sync_values(tx,id,fields)?;
         }
         Ok(())
@@ -117,11 +118,11 @@ impl BudgetRepository {
         status: &str,
         clear_error: bool,
     ) -> StoreResult<()> {
-        tx.execute("UPDATE runtime_events SET status=?1,error=CASE WHEN ?2 THEN NULL ELSE error END WHERE id=?3",params![status,clear_error,id])?;
+        tx.execute_cached("UPDATE runtime_events SET status=?1,error=CASE WHEN ?2 THEN NULL ELSE error END WHERE id=?3",params![status,clear_error,id])?;
         Ok(())
     }
     pub fn retire_action(tx: &Transaction<'_>, request: &str, attempt: &Value) -> StoreResult<()> {
-        tx.execute("UPDATE runtime_native_action_receipts SET outcome=?1 WHERE id=?2 AND json_extract(receipt,'$.attemptId')=?3 AND json_extract(outcome,'$.status')='pending'",
+        tx.execute_cached("UPDATE runtime_native_action_receipts SET outcome=?1 WHERE id=?2 AND json_extract(receipt,'$.attemptId')=?3 AND json_extract(outcome,'$.status')='pending'",
             params![json!({"status":"failed","notSubmitted":true,"error":"The budget wait belongs to an earlier agent state"}).to_string(),request,attempt.as_str()])?;
         Ok(())
     }
@@ -169,7 +170,7 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
         rejected_count: 0,
         failures: vec![],
     };
-    if !db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_budget_usage')",[],|r|r.get::<_,bool>(0))? {return Ok(report);}
+    if !db.query_row_cached("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_budget_usage')",[],|r|r.get::<_,bool>(0))? {return Ok(report);}
     let mut statement =
         db.prepare_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage")?;
     let mut rows = statement.query([])?;

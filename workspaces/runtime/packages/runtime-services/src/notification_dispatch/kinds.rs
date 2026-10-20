@@ -8,6 +8,7 @@ use super::{
 use super::{items, notices, questions};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::{
     AgentId, NotificationDispatchRepository, PlanRecord, StoreError, Table, TaskId, TaskRecord,
     Transaction,
@@ -215,7 +216,7 @@ pub(super) fn apply(
                 }));
             }
             let already_compacted = tx
-                .query_row(
+                .query_row_cached(
                     "SELECT EXISTS(SELECT 1 FROM runtime_compactions WHERE id=?1)",
                     [&task_key],
                     |r| r.get(0),
@@ -246,7 +247,7 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
-                tx.execute(
+                tx.execute_cached(
                     "INSERT OR IGNORE INTO runtime_compactions VALUES (?1,?2)",
                     params![task_key, id],
                 )
@@ -354,7 +355,7 @@ pub(super) fn put_task(
     checked("runtime_tasks", task)?;
     let task_record = TaskRecord::from_value(task.clone())?;
     let migrated: bool = tx
-        .query_row(
+        .query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated')",
             [],
             |r| r.get(0),
@@ -367,7 +368,7 @@ pub(super) fn put_task(
             .and_then(Value::as_str)
             .ok_or(NotificationDispatchError::InvalidNotification)?;
         let previous_raw: Option<String> = tx
-            .query_row(
+            .query_row_cached(
                 "SELECT record FROM runtime_tasks WHERE id=?1",
                 [task_id],
                 |row| row.get(0),

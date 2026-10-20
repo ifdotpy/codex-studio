@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::{StoreResult, system_reads as records};
 
 use crate::event_write::truthy;
@@ -73,7 +74,7 @@ pub(crate) fn agent_view_contexts(
     // each unrelated lifecycle write.
     let mut monitor_agents = std::collections::HashSet::new();
     if !lead_ids.is_empty() && table_exists(transaction, "runtime_monitors")? {
-        let has_owner_index = transaction.query_row(
+        let has_owner_index = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='runtime_monitor_agent_status')",
             [],
             |row| row.get::<_, bool>(0),
@@ -230,7 +231,7 @@ pub(crate) fn agent_view_context(
         && !truthy(record.get("prompt"))
         && !exists_for_agent(transaction, "runtime_events", "agent", id)?
         && !exists_for_agent(transaction, "runtime_items", "agent", id)?
-        && !transaction.query_row(
+        && !transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=?1)",
             [id],
             |row| row.get::<_, bool>(0),
@@ -436,7 +437,7 @@ impl RoomDirectory {
     ) -> Result<RoomViewContext, studio_runtime_store::StoreError> {
         let id = room["id"].as_str().unwrap_or_default();
         let last_message = if last && records::exists(tx, "runtime_chat_messages")? {
-            let row=tx.query_row("SELECT id,seq,text,created,sender,deliveries FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))).optional()?;
+            let row=tx.query_row_cached("SELECT id,seq,text,created,sender,deliveries FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))).optional()?;
             row.map(|(key,seq,text,created,sender,deliveries)|{
                 let deliveries:Value=serde_json::from_str(&deliveries).map_err(|_|records::invalid("runtime_chat_messages",&key))?;
                 records::validate("runtime_chat_messages",&key,json!({"id":key,"seq":seq,"room":id,"text":text,"created":created,"sender":sender,"deliveries":deliveries}))?;

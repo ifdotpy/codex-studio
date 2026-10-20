@@ -19,6 +19,7 @@
 //! it. Nothing in this module ever resubmits an input whose outcome is unknown.
 
 use super::*;
+use crate::CachedSql;
 
 /// Prefix of the durable per-steer receipt: `claude-steer:{agent}:{steer}`.
 /// The name predates Codex steering; it is kept so stored receipts stay readable.
@@ -54,7 +55,7 @@ fn invalid_receipt(id: &str) -> StoreError {
 }
 
 fn load(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
-    tx.query_row(
+    tx.query_row_cached(
         "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
         params![id, STEER_RECEIPT_SIGNATURE],
         |row| row.get::<_, String>(0),
@@ -65,7 +66,7 @@ fn load(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
 }
 
 fn store(tx: &Transaction<'_>, id: &str, value: &Value) -> StoreResult<()> {
-    tx.execute(
+    tx.execute_cached(
         "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) \
          ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
         params![id, STEER_RECEIPT_SIGNATURE, value.to_string()],
@@ -74,7 +75,7 @@ fn store(tx: &Transaction<'_>, id: &str, value: &Value) -> StoreResult<()> {
 }
 
 fn delete(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
-    tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
+    tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
     Ok(())
 }
 
@@ -159,7 +160,7 @@ fn release(tx: &Transaction<'_>, id: &str, receipt: &Value) -> StoreResult<bool>
         .ok_or_else(|| invalid_receipt(id))?;
     let agent = load_agent(tx, agent_id)?
         .filter(|agent| agent.epoch == epoch && !agent.extra.get("deletedAt").is_some_and(truthy));
-    let returned = tx.execute(
+    let returned = tx.execute_cached(
         "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL \
          WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
          AND (status IN ('reserved','dispatching') OR (status='failed' AND error=?5))",
@@ -204,7 +205,7 @@ fn unconfirm(tx: &Transaction<'_>, id: &str, mut receipt: Value) -> StoreResult<
     let epoch = receipt["epoch"]
         .as_i64()
         .ok_or_else(|| invalid_receipt(id))?;
-    tx.execute(
+    tx.execute_cached(
         "UPDATE runtime_events SET status='failed',error=?1 \
          WHERE agent=?2 AND epoch=?3 AND status='dispatching' \
          AND id IN (SELECT value FROM json_each(?4))",
@@ -232,7 +233,7 @@ fn steer_target(
     let Some(target) = steer_turn(agent) else {
         return Ok(None);
     };
-    let ready: bool = connection.query_row(
+    let ready: bool = connection.query_row_cached(
         "SELECT NOT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 \
          AND status IN ('reserved','dispatching','uncertain')) \
          AND EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
@@ -306,7 +307,7 @@ impl SchedulerRepository {
             return Ok(None);
         }
         for event in &mut events {
-            let changed = tx.execute(
+            let changed = tx.execute_cached(
                 "UPDATE runtime_events SET status='reserved' WHERE id=?1 AND agent=?2 \
                  AND epoch=?3 AND status='pending'",
                 params![event.id.0, agent_id, epoch],
@@ -375,7 +376,7 @@ impl SchedulerRepository {
             return Ok(false);
         }
         let events = receipt_events(&id, &receipt)?;
-        let changed = tx.execute(
+        let changed = tx.execute_cached(
             "UPDATE runtime_events SET status='dispatching' WHERE agent=?1 AND epoch=?2 \
              AND status='reserved' AND id IN (SELECT value FROM json_each(?3))",
             params![agent_id, receipt["epoch"].as_i64(), events],
@@ -475,7 +476,7 @@ impl SchedulerRepository {
             .as_i64()
             .ok_or_else(|| invalid_receipt(&id))?;
         let events = receipt_events(&id, &receipt)?;
-        let changed = tx.execute(
+        let changed = tx.execute_cached(
             "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
              WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
              AND (status='dispatching' OR (status='failed' AND error=?5))",

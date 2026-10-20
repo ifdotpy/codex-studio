@@ -4,6 +4,7 @@ use super::snapshot::checked;
 use super::{NotificationDispatchError, stored};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::system_reads as records;
 use studio_runtime_store::{
     AgentId, AgentRepository, ComplaintRecord, RequestRecord, SyncDocumentsRepository, Table,
@@ -115,7 +116,7 @@ pub(crate) fn submit_agent_complaint(
         )
         .map_err(|_| stored("runtime_events", &complaint_id))?;
         if inserted && lead.extra.get("autoWake") == Some(&json!(false)) {
-            tx.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.timing.fastSkipReason','autoWake') WHERE id=?1", [format!("complaint:{complaint_id}")]).map_err(studio_runtime_store::StoreError::from)?;
+            tx.execute_cached("UPDATE runtime_event_meta SET record=json_set(record,'$.timing.fastSkipReason','autoWake') WHERE id=?1", [format!("complaint:{complaint_id}")]).map_err(studio_runtime_store::StoreError::from)?;
         }
     }
     Ok(record)
@@ -347,7 +348,7 @@ fn reconcile_complaint_notifications(
             }
         }
         if all_answered {
-            tx.execute(
+            tx.execute_cached(
                 "UPDATE runtime_events SET status='stored_only',error=?1 WHERE id=?2 AND status='pending'",
                 rusqlite::params!["Every referenced complaint already has a response", event_id],
             ).map_err(studio_runtime_store::StoreError::from)?;

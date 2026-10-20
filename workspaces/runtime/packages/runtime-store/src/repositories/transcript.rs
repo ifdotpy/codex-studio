@@ -1,5 +1,6 @@
 //! Read-only access to Python-written transcript rows.
 
+use crate::CachedSql;
 use crate::records::{RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
@@ -145,7 +146,7 @@ impl TranscriptRepository {
         let revision = if table_exists(transaction, "runtime_transcript_revisions")? {
             Some(
                 transaction
-                    .query_row(
+                    .query_row_cached(
                         "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
                         [agent],
                         |row| row.get::<_, i64>(0),
@@ -219,7 +220,7 @@ impl TranscriptRepository {
         match_query: &str,
     ) -> TranscriptStoreResult<Vec<(String, String, String)>> {
         let next_phase = connection
-            .query_row(
+            .query_row_cached(
                 "SELECT phase FROM runtime_search_rollout WHERE id=1",
                 [],
                 |row| row.get::<_, String>(0),
@@ -300,7 +301,7 @@ impl TranscriptRepository {
         id: &str,
     ) -> TranscriptStoreResult<Option<TranscriptItem>> {
         let agent = connection
-            .query_row("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
+            .query_row_cached("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
                 row.get::<_, String>(0)
             })
             .optional()?;
@@ -369,7 +370,7 @@ impl TranscriptRepository {
         event: &str,
     ) -> TranscriptStoreResult<Option<String>> {
         let text = connection
-            .query_row(
+            .query_row_cached(
                 "SELECT text FROM runtime_events WHERE id=?1 AND agent=?2",
                 params![event, agent],
                 |row| row.get::<_, Option<String>>(0),
@@ -384,7 +385,7 @@ impl TranscriptRepository {
         item: &TranscriptItem,
     ) -> TranscriptStoreResult<Option<String>> {
         let full = connection
-            .query_row(
+            .query_row_cached(
                 "SELECT body FROM runtime_item_fulltext WHERE id=?1",
                 [&item.id],
                 |row| row.get::<_, Option<String>>(0),
@@ -399,7 +400,7 @@ impl TranscriptRepository {
         {
             let full = if table_exists(connection, "runtime_search_rows")? {
                 connection
-                    .query_row(
+                    .query_row_cached(
                         "SELECT s.body FROM runtime_search_rows r \
                          JOIN runtime_search s ON s.rowid=r.search_rowid WHERE r.id=?1",
                         [&item.id],
@@ -410,7 +411,7 @@ impl TranscriptRepository {
                     .flatten()
             } else {
                 connection
-                    .query_row(
+                    .query_row_cached(
                         "SELECT body FROM runtime_search WHERE id=?1",
                         [&item.id],
                         |row| row.get::<_, Option<String>>(0),
@@ -542,14 +543,14 @@ impl TranscriptRepository {
             return Err(invalid_record("runtime_item_fulltext", id));
         }
         let owner = transaction
-            .query_row("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
+            .query_row_cached("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
                 row.get::<_, String>(0)
             })
             .optional()?;
         if owner.as_deref().is_some_and(|owner| owner != agent) {
             return Err(invalid_record("runtime_items", id));
         }
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4) \
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![
@@ -560,13 +561,13 @@ impl TranscriptRepository {
             ],
         )?;
         if text.chars().count() > 20_000 {
-            transaction.execute(
+            transaction.execute_cached(
                 "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET body=excluded.body",
                 params![id, text],
             )?;
         } else if has_fulltext {
-            transaction.execute("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
+            transaction.execute_cached("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
         }
         if search.indexed {
             index_search_item(
@@ -630,7 +631,7 @@ impl TranscriptRepository {
 }
 
 fn table_exists(connection: &Connection, table: &str) -> TranscriptStoreResult<bool> {
-    Ok(connection.query_row(
+    Ok(connection.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [table],
         |row| row.get(0),
@@ -896,7 +897,7 @@ fn index_search_item(
         let search_rows_exists = table_exists(transaction, "runtime_search_rows")?;
         let previous = if search_rows_exists {
             transaction
-                .query_row(
+                .query_row_cached(
                     "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
                     [id],
                     |row| row.get::<_, i64>(0),
@@ -906,24 +907,24 @@ fn index_search_item(
             None
         };
         if let Some(rowid) = previous {
-            transaction.execute("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
+            transaction.execute_cached("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
         } else if !search_rows_exists {
-            transaction.execute("DELETE FROM runtime_search WHERE id=?1", [id])?;
+            transaction.execute_cached("DELETE FROM runtime_search WHERE id=?1", [id])?;
         }
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO runtime_search(id,agent,kind,body) VALUES(?1,?2,?3,?4)",
             params![id, agent, kind, body],
         )?;
         let rowid = transaction.last_insert_rowid();
         if search_rows_exists {
-            transaction.execute(
+            transaction.execute_cached(
                 "INSERT INTO runtime_search_rows(id,search_rowid) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
                 params![id, rowid],
             )?;
         }
         if table_exists(transaction, "runtime_search_indexed")? {
-            transaction.execute(
+            transaction.execute_cached(
                 "INSERT OR IGNORE INTO runtime_search_indexed(id) VALUES(?1)",
                 [id],
             )?;
@@ -936,32 +937,33 @@ fn index_search_item(
         && table_exists(transaction, "runtime_search_next_meta")?
     {
         let previous = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT search_rowid FROM runtime_search_next_meta WHERE id=?1",
                 [id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
         let rowid = if let Some(rowid) = previous {
-            transaction.execute("DELETE FROM runtime_search_next WHERE rowid=?1", [rowid])?;
-            transaction.execute(
+            transaction
+                .execute_cached("DELETE FROM runtime_search_next WHERE rowid=?1", [rowid])?;
+            transaction.execute_cached(
                 "UPDATE runtime_search_next_meta SET agent=?1,kind=?2 WHERE id=?3",
                 params![agent, kind, id],
             )?;
             rowid
         } else {
-            let rowid: i64 = transaction.query_row(
+            let rowid: i64 = transaction.query_row_cached(
                 "SELECT coalesce(max(search_rowid),0)+1 FROM runtime_search_next_meta",
                 [],
                 |row| row.get(0),
             )?;
-            transaction.execute(
+            transaction.execute_cached(
                 "INSERT INTO runtime_search_next_meta(id,agent,kind,search_rowid) VALUES(?1,?2,?3,?4)",
                 params![id, agent, kind, rowid],
             )?;
             rowid
         };
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO runtime_search_next(rowid,body) VALUES(?1,?2)",
             params![rowid, body],
         )?;
@@ -975,7 +977,7 @@ fn delete_search_item(transaction: &Transaction<'_>, id: &str) -> TranscriptStor
         && table_exists(transaction, "runtime_search_rows")?
     {
         let rowid = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
                 [id],
                 |row| row.get::<_, i64>(0),
@@ -983,11 +985,12 @@ fn delete_search_item(transaction: &Transaction<'_>, id: &str) -> TranscriptStor
             .optional()?;
         if let Some(rowid) = rowid {
             if table_exists(transaction, "runtime_search")? {
-                transaction.execute("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
+                transaction.execute_cached("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
             }
-            transaction.execute("DELETE FROM runtime_search_rows WHERE id=?1", [id])?;
+            transaction.execute_cached("DELETE FROM runtime_search_rows WHERE id=?1", [id])?;
             if table_exists(transaction, "runtime_search_indexed")? {
-                transaction.execute("DELETE FROM runtime_search_indexed WHERE id=?1", [id])?;
+                transaction
+                    .execute_cached("DELETE FROM runtime_search_indexed WHERE id=?1", [id])?;
             }
         }
     }
@@ -998,15 +1001,16 @@ fn delete_search_item(transaction: &Transaction<'_>, id: &str) -> TranscriptStor
         && table_exists(transaction, "runtime_search_next_meta")?
     {
         let rowid = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT search_rowid FROM runtime_search_next_meta WHERE id=?1",
                 [id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
         if let Some(rowid) = rowid {
-            transaction.execute("DELETE FROM runtime_search_next WHERE rowid=?1", [rowid])?;
-            transaction.execute("DELETE FROM runtime_search_next_meta WHERE id=?1", [id])?;
+            transaction
+                .execute_cached("DELETE FROM runtime_search_next WHERE rowid=?1", [rowid])?;
+            transaction.execute_cached("DELETE FROM runtime_search_next_meta WHERE id=?1", [id])?;
         }
     }
     Ok(())
@@ -1117,13 +1121,13 @@ fn transcript_pull_write(
         .collect::<Result<Vec<_>, _>>()?;
     if !pruned.is_empty() {
         for (id, _) in &pruned {
-            transaction.execute(
+            transaction.execute_cached(
                 "DELETE FROM sync_entities WHERE collection=?1 AND id=?2",
                 params![scope, id],
             )?;
         }
         let previous_floor = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT seq FROM sync_entities WHERE collection=?1 AND id='@floor'",
                 [scope],
                 |row| row.get::<_, i64>(0),
@@ -1168,7 +1172,7 @@ fn transcript_pull_write(
             high,
         )?;
     }
-    let high = transaction.query_row(
+    let high = transaction.query_row_cached(
         "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection=?1",
         [scope],
         |row| row.get::<_, i64>(0),
@@ -1294,7 +1298,7 @@ fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
         return Ok("legacy".to_owned());
     }
     Ok(connection
-        .query_row(
+        .query_row_cached(
             "SELECT phase FROM runtime_search_rollout WHERE id=1",
             [],
             |row| row.get(0),

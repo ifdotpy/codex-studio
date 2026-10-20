@@ -1,5 +1,6 @@
 //! Synchronous access to the durable sync document and entity tables.
 
+use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
@@ -114,7 +115,7 @@ impl SyncDocumentsRepository {
         patch: Value,
     ) -> StoreResult<()> {
         let raw = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT payload FROM sync_entities WHERE collection=?1 AND id=?2 AND deleted=0",
                 params![collection, id],
                 |row| row.get::<_, String>(0),
@@ -169,7 +170,7 @@ impl SyncDocumentsRepository {
         priority_id: Option<&str>,
     ) -> StoreResult<EntityPage> {
         let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
-        let stored_max = transaction.query_row(
+        let stored_max = transaction.query_row_cached(
             "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'",
             [],
             |row| row.get::<_, i64>(0),
@@ -225,7 +226,7 @@ impl SyncDocumentsRepository {
 
     pub fn draft(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<SyncDocument>> {
         transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT seq,id,payload,deleted FROM sync_documents WHERE scope='drafts' AND id=?1",
                 [id],
                 |row| {
@@ -252,7 +253,7 @@ impl SyncDocumentsRepository {
         {
             return Ok(false);
         }
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO sync_documents(seq,scope,id,payload,deleted) VALUES(?1,'drafts',?2,?3,?4) \
              ON CONFLICT(scope,id) DO UPDATE SET seq=excluded.seq,payload=excluded.payload,deleted=excluded.deleted",
             params![next_sequence(transaction)?, id, payload, i64::from(deleted)],
@@ -279,7 +280,7 @@ impl SyncDocumentsRepository {
 
     pub fn entity_sequence(connection: &Connection) -> StoreResult<i64> {
         connection
-            .query_row(
+            .query_row_cached(
                 "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'",
                 [], |row| row.get(0),
             )
@@ -318,7 +319,7 @@ impl SyncDocumentsRepository {
     /// so a pruning run removes a full batch instead of one row per delete.
     pub fn entity_tombstone_prune_due(connection: &Connection) -> StoreResult<bool> {
         let count = connection
-            .query_row(
+            .query_row_cached(
                 "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
                 [],
                 |row| row.get::<_, String>(0),
@@ -341,14 +342,14 @@ impl SyncDocumentsRepository {
     /// removed sequence, so clients behind the floor reset instead of missing a
     /// deletion. Returns the number of removed rows; zero means nothing is due.
     pub fn prune_entity_tombstones(transaction: &Transaction<'_>) -> StoreResult<usize> {
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT OR IGNORE INTO sync_entity_meta(key,value) \
              SELECT 'entity_tombstone_count',CAST(COUNT(*) AS TEXT) FROM sync_entities \
              WHERE deleted=1 AND collection NOT LIKE 'transcript:%'",
             [],
         )?;
         let count = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
                 [],
                 |row| row.get::<_, String>(0),
@@ -385,7 +386,7 @@ impl SyncDocumentsRepository {
         for (collection, id, _) in &rows {
             delete.execute(params![collection, id])?;
         }
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor',?1) \
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [floor.to_string()],
@@ -395,7 +396,7 @@ impl SyncDocumentsRepository {
 
     pub fn entity_tombstone_floor(connection: &Connection) -> StoreResult<i64> {
         let value = connection
-            .query_row(
+            .query_row_cached(
                 "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'",
                 [],
                 |row| row.get::<_, String>(0),
@@ -409,7 +410,7 @@ impl SyncDocumentsRepository {
 
     pub fn workspace_id(connection: &Connection) -> StoreResult<String> {
         connection
-            .query_row("SELECT id FROM sync_identity LIMIT 1", [], |row| row.get(0))
+            .query_row_cached("SELECT id FROM sync_identity LIMIT 1", [], |row| row.get(0))
             .map_err(StoreError::from)
     }
 
@@ -439,7 +440,7 @@ impl SyncDocumentsRepository {
 
     pub fn preference_payload(connection: &Connection, scope: &str) -> StoreResult<Option<String>> {
         connection
-            .query_row(
+            .query_row_cached(
                 "SELECT payload FROM sync_entities \
                  WHERE collection='uiPreferences' AND id=?1 AND deleted=0",
                 [scope],
@@ -516,7 +517,7 @@ impl SyncDocumentsRepository {
         sequence: Option<i64>,
     ) -> StoreResult<bool> {
         let current = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",
                 params![collection, id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
@@ -528,7 +529,7 @@ impl SyncDocumentsRepository {
         {
             return Ok(false);
         }
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
              VALUES (?1,?2,?3,?4,?5,?6) \
              ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash, \
@@ -600,7 +601,7 @@ pub(crate) fn hash_payload(payload: &str) -> String {
 
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
-        .query_row(
+        .query_row_cached(
             "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \

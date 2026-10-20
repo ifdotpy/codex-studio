@@ -15,6 +15,7 @@
 use super::*;
 use crate::notification_dispatch::{PreparedSubmission, SubmittedInput, record_user_submission};
 use rusqlite::OptionalExtension;
+use studio_runtime_store::CachedSql;
 
 /// The steer request owns the same account-worker request identity format as
 /// a turn start, with the steer id in the attempt position.
@@ -228,7 +229,7 @@ pub(super) fn acknowledge(
         },
     )?;
     let epoch = tx
-        .query_row(
+        .query_row_cached(
             "SELECT json_extract(record,'$.epoch') FROM runtime_agents WHERE id=?1",
             [agent_id],
             |row| row.get::<_, i64>(0),

@@ -1,5 +1,6 @@
 //! Atomic persistence primitives for plan and annotation requests.
 
+use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
@@ -73,7 +74,7 @@ impl EventWriteRepository {
         agent_id: &str,
         retry_id: &str,
     ) -> StoreResult<Option<bool>> {
-        let exists: bool = transaction.query_row(
+        let exists: bool = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_capacity_retries')",
             [],
             |row| row.get(0),
@@ -82,7 +83,7 @@ impl EventWriteRepository {
             return Ok(None);
         }
         let raw = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT record FROM runtime_capacity_retries WHERE id=?1 AND agent=?2",
                 params![retry_id, agent_id],
                 |row| row.get::<_, String>(0),
@@ -108,7 +109,7 @@ impl EventWriteRepository {
         record["status"] = Value::String("finished".to_owned());
         record["dueAt"] = Value::Null;
         record["reason"] = Value::String("A new instruction replaces this retry.".to_owned());
-        transaction.execute(
+        transaction.execute_cached(
             "UPDATE runtime_capacity_retries SET record=?1 WHERE id=?2 AND agent=?3",
             params![record.to_string(), retry_id, agent_id],
         )?;
@@ -176,7 +177,7 @@ impl EventWriteRepository {
 
     pub fn receipt(connection: &Connection, id: &str) -> StoreResult<Option<EventWriteReceipt>> {
         Ok(connection
-            .query_row(
+            .query_row_cached(
                 "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
                 [id],
                 |row| {
@@ -195,7 +196,7 @@ impl EventWriteRepository {
         signature: &str,
         result: &str,
     ) -> StoreResult<()> {
-        connection.execute(
+        connection.execute_cached(
             "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
             params![id, signature, result],
         )?;
@@ -203,7 +204,7 @@ impl EventWriteRepository {
     }
 
     pub fn event_exists(connection: &Connection, id: &str) -> StoreResult<bool> {
-        Ok(connection.query_row(
+        Ok(connection.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1)",
             [id],
             |row| row.get(0),
@@ -211,7 +212,7 @@ impl EventWriteRepository {
     }
 
     pub fn insert_event(connection: &Connection, event: &QueueEvent) -> StoreResult<bool> {
-        let inserted = connection.execute(
+        let inserted = connection.execute_cached(
             "INSERT OR IGNORE INTO runtime_events \
              (id,agent,kind,text,status,created,epoch,turn_id,error) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,NULL)",
@@ -295,7 +296,7 @@ impl EventWriteRepository {
         lifecycle: Option<(bool, Option<&str>)>,
         name: Option<&str>,
     ) -> StoreResult<()> {
-        let has_agents = transaction.query_row(
+        let has_agents = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents')", [], |row| row.get::<_, bool>(0))?;
         let agent = if has_agents {
             AgentRepository::get(transaction, &AgentId::from(agent_id))?
@@ -388,7 +389,7 @@ impl EventWriteRepository {
         update: impl FnOnce(&mut serde_json::Map<String, Value>) -> bool,
     ) -> StoreResult<()> {
         let old = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT payload,deleted FROM sync_entities WHERE collection='agent' AND id=?1",
                 [agent_id],
                 |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
@@ -422,7 +423,7 @@ impl EventWriteRepository {
         let payload = serde_json::to_string(&payload)?;
         let hash = hash_payload(&payload);
         let sequence = next_sequence(transaction)?;
-        transaction.execute(
+        transaction.execute_cached(
             "UPDATE sync_entities SET seq=?1,hash=?2,payload=?3 \
              WHERE collection='agent' AND id=?4 AND deleted=0",
             params![sequence, hash, payload, agent_id],

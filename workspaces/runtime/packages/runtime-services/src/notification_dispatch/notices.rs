@@ -1,5 +1,6 @@
 //! Pure native notice decisions. The adapter supplies checked stored records and time.
 use serde_json::{Value, json};
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::sha256_hex;
 
 use super::{NotificationDispatchError, format_utc};
@@ -573,17 +574,17 @@ pub(crate) fn account_notice(
         .as_bytes(),
     );
     if text.is_empty() {
-        tx.execute("DELETE FROM runtime_native_notices WHERE id=?1", [&key])
+        tx.execute_cached("DELETE FROM runtime_native_notices WHERE id=?1", [&key])
             .map_err(StoreError::from)?;
     } else {
         let record = json!({"id":key,"accountKey":account,"connectionId":connection,"message":text,"details":params["details"],"at":at});
-        tx.execute("INSERT INTO runtime_native_notices(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+        tx.execute_cached("INSERT INTO runtime_native_notices(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![key,serde_json::to_string(&record)?]).map_err(StoreError::from)?;
-        tx.execute("DELETE FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND id NOT IN (SELECT id FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 ORDER BY json_extract(record,'$.at') DESC LIMIT ?2)", params![account, ACCOUNT_NOTICE_LIMIT]).map_err(StoreError::from)?;
+        tx.execute_cached("DELETE FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND id NOT IN (SELECT id FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 ORDER BY json_extract(record,'$.at') DESC LIMIT ?2)", params![account, ACCOUNT_NOTICE_LIMIT]).map_err(StoreError::from)?;
     }
     // Preserve unrelated volatile sources and other accounts' notices. Replace
     // only this connection owner's portion of the existing renderer projection.
-    let workspace: Option<String> = tx.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [], |row| row.get(0)).optional().map_err(StoreError::from)?;
+    let workspace: Option<String> = tx.query_row_cached("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [], |row| row.get(0)).optional().map_err(StoreError::from)?;
     if let Some(raw) = workspace {
         let workspace: Value = serde_json::from_str(&raw)
             .map_err(|_| super::stored("sync_entities", "workspace:current"))?;

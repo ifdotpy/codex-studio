@@ -5,6 +5,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Value, json};
 use studio_runtime_providers::Frame;
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::{
     MonitorRecord, NotificationDispatchRepository, RuntimeStore, StoreError,
     SyncDocumentsRepository, Table, Transaction, sha256_hex,
@@ -1317,7 +1318,7 @@ pub(crate) fn prune_inactive_streams(
     recovering: bool,
 ) -> Result<(), NotificationDispatchError> {
     for key in streams.selected(None) {
-        let active: bool = transaction.query_row(
+        let active: bool = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2 AND (?3 IS NULL OR json_extract(record,'$.turnId')=?3) AND json_extract(record,'$.deletedAt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))",
             rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
         ).map_err(StoreError::from)?;
@@ -1373,14 +1374,14 @@ fn stream_owner(
     key: &StreamKey,
 ) -> Result<Option<(String, String)>, NotificationDispatchError> {
     let owner = if key.agent_id.is_empty() {
-        transaction.query_row(
+        transaction.query_row_cached(
             "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
             rusqlite::params![key.account, key.thread],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         ).optional()
     } else {
         transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT id,record FROM runtime_agents WHERE id=?1 AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2",
                 rusqlite::params![key.agent_id, key.account],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),

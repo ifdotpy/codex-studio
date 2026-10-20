@@ -1,5 +1,6 @@
 //! Persistence for provider notification dispatch.
 
+use crate::CachedSql;
 use crate::schema::SchemaRequirements;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
@@ -66,9 +67,9 @@ impl NotificationDispatchRepository {
     }
     pub fn put_stream_base(tx: &Transaction<'_>, id: &str, text: Option<&str>) -> StoreResult<()> {
         if let Some(text) = text {
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'stream-base',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![id, serde_json::to_string(text).map_err(|_| invalid_record("runtime_operation_receipts", id))?])?;
+            tx.execute_cached("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'stream-base',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![id, serde_json::to_string(text).map_err(|_| invalid_record("runtime_operation_receipts", id))?])?;
         } else {
-            tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
+            tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
         }
         Ok(())
     }
@@ -83,7 +84,7 @@ impl NotificationDispatchRepository {
         table: &'static str,
         id: &str,
     ) -> StoreResult<Option<Value>> {
-        let exists: bool = transaction.query_row(
+        let exists: bool = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
             [table],
             |row| row.get(0),
@@ -116,7 +117,7 @@ impl NotificationDispatchRepository {
         if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(agent) {
             return Err(invalid_record("runtime_agents", agent));
         }
-        let changed = transaction.execute(
+        let changed = transaction.execute_cached(
             "UPDATE runtime_agents SET record=?2 WHERE id=?1",
             params![agent, serde_json::to_string(record)?],
         )?;
@@ -154,7 +155,7 @@ impl NotificationDispatchRepository {
         item.map(|item| {
             validate_item(&item, agent, include_notices)?;
             let created = transaction
-                .query_row(
+                .query_row_cached(
                     "SELECT created FROM runtime_items WHERE id=?1 AND agent=?2",
                     params![id, agent],
                     |row| row.get::<_, f64>(0),
@@ -177,7 +178,7 @@ impl NotificationDispatchRepository {
             transaction,
             &TranscriptItem {
                 id: id.to_owned(),
-                agent: transaction.query_row(
+                agent: transaction.query_row_cached(
                     "SELECT agent FROM runtime_items WHERE id=?1",
                     [id],
                     |row| row.get(0),
@@ -229,7 +230,7 @@ impl NotificationDispatchRepository {
         event_id: &str,
         item_id: &str,
     ) -> StoreResult<()> {
-        let event_exists: bool = transaction.query_row(
+        let event_exists: bool = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2)",
             params![event_id, agent],
             |row| row.get(0),
@@ -238,7 +239,7 @@ impl NotificationDispatchRepository {
             return Err(invalid_record("runtime_events", event_id));
         }
         let meta: Option<String> = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT record FROM runtime_event_meta WHERE id=?1",
                 [event_id],
                 |row| row.get(0),
@@ -250,13 +251,13 @@ impl NotificationDispatchRepository {
             if !parsed.is_object() {
                 return Err(invalid_record("runtime_event_meta", event_id));
             }
-            transaction.execute(
+            transaction.execute_cached(
                 "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?1,'$.modelEventProjection',1) WHERE id=?2",
                 params![item_id, event_id],
             )?;
         } else {
             let record = serde_json::json!({"transcriptItemId":item_id,"modelEventProjection":1});
-            transaction.execute(
+            transaction.execute_cached(
                 "INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",
                 params![event_id, record.to_string()],
             )?;
@@ -270,7 +271,7 @@ impl NotificationDispatchRepository {
         event_id: &str,
     ) -> StoreResult<Option<(String, String, f64)>> {
         let event = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT kind,text,created FROM runtime_events WHERE id=?1 AND agent=?2",
                 params![event_id, agent],
                 |row| {
@@ -302,7 +303,7 @@ impl NotificationDispatchRepository {
         transaction: &Transaction<'_>,
         event_id: &str,
     ) -> StoreResult<Option<Value>> {
-        let has_table: bool = transaction.query_row(
+        let has_table: bool = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
             [],
             |row| row.get(0),
@@ -311,7 +312,7 @@ impl NotificationDispatchRepository {
             return Err(invalid_record("runtime_event_meta", event_id));
         }
         let raw: Option<String> = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT record FROM runtime_event_meta WHERE id=?1",
                 [event_id],
                 |row| row.get(0),

@@ -1,4 +1,5 @@
 //! Serialized analytics writes. Rollout files must be read before entering this adapter.
+use crate::CachedSql;
 use crate::{RuntimeStore, StoreError, StoreResult};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -103,7 +104,7 @@ impl AnalyticsCaptureRepository {
         thread: &Value,
         response: &Value,
     ) -> StoreResult<Option<Value>> {
-        let raw: Option<String> = db.query_row("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1",params![agent,thread.as_str(),response.as_str()],|r|r.get(0)).optional()?;
+        let raw: Option<String> = db.query_row_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1",params![agent,thread.as_str(),response.as_str()],|r|r.get(0)).optional()?;
         Self::usage_raw(raw)
     }
     pub fn usage_prior(
@@ -113,7 +114,7 @@ impl AnalyticsCaptureRepository {
         at: f64,
         domain: &str,
     ) -> StoreResult<Option<Value>> {
-        let raw: Option<String> = db.query_row("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND at<=? AND json_extract(record,'$.counterDomain')=? ORDER BY at DESC,seq DESC LIMIT 1",params![agent,thread.as_str(),at,domain],|r|r.get(0)).optional()?;
+        let raw: Option<String> = db.query_row_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND at<=? AND json_extract(record,'$.counterDomain')=? ORDER BY at DESC,seq DESC LIMIT 1",params![agent,thread.as_str(),at,domain],|r|r.get(0)).optional()?;
         Self::usage_raw(raw)
     }
     fn usage_raw(raw: Option<String>) -> StoreResult<Option<Value>> {
@@ -126,7 +127,7 @@ impl AnalyticsCaptureRepository {
     }
     pub fn last_limit(db: &Connection, account: &Value) -> StoreResult<Option<Value>> {
         let raw: Option<String> = db
-            .query_row(
+            .query_row_cached(
                 "SELECT record FROM analytics_limits WHERE account=? ORDER BY at DESC LIMIT 1",
                 [account.as_str()],
                 |r| r.get(0),
@@ -144,27 +145,27 @@ impl AnalyticsCaptureRepository {
         let raw = value.to_string();
         match table {
             CaptureTable::Agents => {
-                db.execute("INSERT INTO analytics_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record WHERE record IS NOT excluded.record",params![id,raw])?;
+                db.execute_cached("INSERT INTO analytics_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record WHERE record IS NOT excluded.record",params![id,raw])?;
             }
             CaptureTable::Turns => {
-                db.execute("INSERT INTO analytics_turns VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,agent,root,at,raw])?;
+                db.execute_cached("INSERT INTO analytics_turns VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,agent,root,at,raw])?;
             }
             CaptureTable::Items => {
-                db.execute("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,value["type"].as_str(),value["name"].as_str(),value["isTool"].as_bool(),raw])?;
+                db.execute_cached("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,value["type"].as_str(),value["name"].as_str(),value["isTool"].as_bool(),raw])?;
             }
             CaptureTable::Usage => {
-                db.execute("INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,raw])?;
+                db.execute_cached("INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,raw])?;
             }
             CaptureTable::History => {
-                db.execute("INSERT INTO analytics_history VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,record=excluded.record",params![id,value["agent"].as_str(),raw])?;
+                db.execute_cached("INSERT INTO analytics_history VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,record=excluded.record",params![id,value["agent"].as_str(),raw])?;
             }
         }
         Ok(())
     }
     pub fn generation(db: &Transaction<'_>, roots: &[String]) -> StoreResult<()> {
-        db.execute("INSERT INTO analytics_meta VALUES ('usageGeneration','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[])?;
+        db.execute_cached("INSERT INTO analytics_meta VALUES ('usageGeneration','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[])?;
         for root in roots {
-            db.execute("INSERT INTO analytics_usage_roots VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",[root])?;
+            db.execute_cached("INSERT INTO analytics_usage_roots VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",[root])?;
         }
         Ok(())
     }
@@ -308,7 +309,7 @@ fn check_analytics_table(
     table: CaptureTable,
 ) -> StoreResult<crate::StateCheckTable> {
     let mut report = empty_report(table.name());
-    let exists: bool = db.query_row(
+    let exists: bool = db.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
         [table.name()],
         |r| r.get(0),
@@ -346,7 +347,7 @@ fn check_history_rows(
     const IMPORTER_ROW_ID: &str = "importer";
     let mut history = empty_report("analytics_history");
     let mut importer = empty_report("analytics_history_importer");
-    let exists: bool = db.query_row(
+    let exists: bool = db.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_history')",
         [],
         |r| r.get(0),

@@ -8,6 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{RuntimeStore, StoreError, python_json_compact, sha256_hex};
 use thiserror::Error;
@@ -440,10 +441,10 @@ impl CaptureDecision {
             Repo::write(tx, *table, row)?;
         }
         for n in &self.notifications {
-            tx.execute("INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET count=count+excluded.count,bytes=bytes+excluded.bytes",params![n["id"].as_str(),n["agent"].as_str(),n["root"].as_str(),n["method"].as_str(),n["hour"].as_i64(),n["count"].as_i64().unwrap_or(1),n["bytes"].as_i64()])?;
+            tx.execute_cached("INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET count=count+excluded.count,bytes=bytes+excluded.bytes",params![n["id"].as_str(),n["agent"].as_str(),n["root"].as_str(),n["method"].as_str(),n["hour"].as_i64(),n["count"].as_i64().unwrap_or(1),n["bytes"].as_i64()])?;
         }
         if let Some(n) = &self.limit {
-            tx.execute(
+            tx.execute_cached(
                 "INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)",
                 params![
                     n["account"].as_str(),
@@ -532,7 +533,7 @@ pub(crate) fn capture_notification_effect_in(
     } else {
         "analyticsStream"
     };
-    tx.execute(
+    tx.execute_cached(
         "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
         [],
     )?;
@@ -540,30 +541,30 @@ pub(crate) fn capture_notification_effect_in(
         "CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
          CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
     )?;
-    let migrated: bool = tx.query_row(
+    let migrated: bool = tx.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
         [],
         |row| row.get(0),
     )?;
     if !migrated {
-        let legacy_exists: bool = tx.query_row(
+        let legacy_exists: bool = tx.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
             [],
             |row| row.get(0),
         )?;
         if legacy_exists {
-            tx.execute(
+            tx.execute_cached(
                 "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
                 [],
             )?;
         }
-        tx.execute(
+        tx.execute_cached(
             "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
             [],
         )?;
     }
     let legacy: Option<(i64, i64, i64)> = tx
-        .query_row(
+        .query_row_cached(
             "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
             [provider_handle],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -576,7 +577,7 @@ pub(crate) fn capture_notification_effect_in(
     }) {
         return Ok(false);
     }
-    let inserted = tx.execute(
+    let inserted = tx.execute_cached(
         "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
         params![provider_handle, generation, cursor, capture_kind],
     )?;
@@ -674,15 +675,15 @@ pub async fn start_token_rate_process(
              CREATE TABLE IF NOT EXISTS token_rate_publication_receipts (process_id TEXT NOT NULL,provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL,PRIMARY KEY(process_id,provider));",
         )?;
         let current: Option<String> = tx
-            .query_row(
+            .query_row_cached(
                 "SELECT process_id FROM token_rate_receipt_process WHERE id=1",
                 [],
                 |row| row.get(0),
             )
             .optional()?;
         if current.as_deref() != Some(process_id.as_str()) {
-            tx.execute("DELETE FROM token_rate_publication_receipts", [])?;
-            tx.execute(
+            tx.execute_cached("DELETE FROM token_rate_publication_receipts", [])?;
+            tx.execute_cached(
                 "INSERT INTO token_rate_receipt_process(id,process_id) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET process_id=excluded.process_id",
                 [process_id.as_str()],
             )?;
@@ -709,12 +710,12 @@ pub async fn record_publication_overflow(
         return Err(CaptureError::Invalid("/receiptId"));
     }
     store.analytics_transaction(move |tx, _| {
-        tx.execute(
+        tx.execute_cached(
             "CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)",
             [],
         )?;
         let prior: Option<(i64, i64)> = tx
-            .query_row(
+            .query_row_cached(
                 "SELECT analytics_overflow,publication_overflow FROM analytics_publication_overflow_receipts WHERE receipt_id=?1",
                 [receipt_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -729,15 +730,15 @@ pub async fn record_publication_overflow(
         if additional == 0 {
             return Ok(());
         }
-        tx.execute(
+        tx.execute_cached(
             "INSERT INTO analytics_publication_overflow_receipts(receipt_id,analytics_overflow,publication_overflow) VALUES (?1,?2,?3) ON CONFLICT(receipt_id) DO UPDATE SET analytics_overflow=MAX(analytics_publication_overflow_receipts.analytics_overflow,excluded.analytics_overflow),publication_overflow=MAX(analytics_publication_overflow_receipts.publication_overflow,excluded.publication_overflow)",
             params![receipt_id.as_str(), analytics_overflow, publication_overflow],
         )?;
-        tx.execute(
+        tx.execute_cached(
             "CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
             [],
         )?;
-        tx.execute(
+        tx.execute_cached(
             "INSERT INTO analytics_meta(key,value) VALUES ('captureErrors',json_object('count',?1,'last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))) ON CONFLICT(key) DO UPDATE SET value=json_set(analytics_meta.value,'$.count',COALESCE(json_extract(analytics_meta.value,'$.count'),0)+?1,'$.last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))",
             [additional],
         )?;
@@ -800,7 +801,7 @@ fn apply_stream_metrics(
 
 pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), CaptureError> {
     let raw: Option<String> = canvas
-        .query_row(
+        .query_row_cached(
             "SELECT record FROM runtime_agents WHERE id=?",
             [agent["id"].as_str()],
             |r| r.get(0),
@@ -1575,7 +1576,7 @@ pub async fn capture_limit(
         .analytics_transaction(move |tx, _| {
             let previous = Repo::last_limit(tx, &json!(account))?;
             if previous.as_ref().map(limit_content) != Some(limit_content(&value)) {
-                tx.execute(
+                tx.execute_cached(
                     "INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)",
                     params![account, at, value.to_string()],
                 )?;

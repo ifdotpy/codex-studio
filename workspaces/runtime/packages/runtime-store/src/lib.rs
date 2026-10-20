@@ -1,5 +1,7 @@
 pub mod blocking_pool;
 mod bootstrap;
+mod cached_sql;
+pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 mod feature_schema;
 mod fresh_state;
 mod multi_server_state_check;
@@ -1187,6 +1189,7 @@ impl RuntimeStore {
                     .busy_timeout(Duration::from_millis(u64::from(DATABASE_BUSY_TIMEOUT_MS)))
                     .map_err(StoreError::from)?;
                 install_profile(connection, StoreDatabaseKind::Canvas);
+                connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
                 connection
                     .pragma_update(None, "synchronous", CANVAS_SYNCHRONOUS)
                     .map_err(StoreError::from)?;
@@ -2132,6 +2135,7 @@ fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
         _ => StoreDatabaseKind::Other,
     };
     install_profile(&mut connection, database);
+    connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
     connection.busy_timeout(std::time::Duration::from_millis(u64::from(
         DATABASE_BUSY_TIMEOUT_MS,
     )))?;

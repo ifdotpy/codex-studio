@@ -1,3 +1,4 @@
+use crate::CachedSql;
 use rusqlite::Connection;
 
 use crate::StoreResult;
@@ -96,13 +97,13 @@ impl AgentRepository {
 
     pub fn put(connection: &Connection, record: &AgentRecord) -> StoreResult<()> {
         Table::<AgentRecord>::new(connection).put(record)?;
-        let has_receipts: bool = connection.query_row(
+        let has_receipts: bool = connection.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_operation_receipts')",
             [],
             |row| row.get(0),
         )?;
         if has_receipts {
-            connection.execute(
+            connection.execute_cached(
                 "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
                 rusqlite::params![
                     format!(

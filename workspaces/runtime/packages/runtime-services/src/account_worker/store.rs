@@ -7,6 +7,7 @@ use crate::notification_dispatch::{
     ProviderDeliveryIdentity, dispatch_notification_with_effects, flush_notification_streams,
 };
 use rusqlite::{OptionalExtension, params};
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
@@ -131,7 +132,7 @@ pub(super) fn delete_receipt(
     operation: &str,
     phase: &str,
 ) -> Result<(), WorkerError> {
-    tx.execute(
+    tx.execute_cached(
         "DELETE FROM runtime_operation_receipts WHERE id=?1",
         [receipt_id(operation, phase)],
     )?;
@@ -288,7 +289,7 @@ pub(super) async fn recover(
             if Method::from_wire(&context.method).is_none() {
                 return Err(invalid(&account));
             }
-            let held: bool = tx.query_row(
+            let held: bool = tx.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts \
                  WHERE id=?1 AND signature=?2)",
                 params![
@@ -411,7 +412,7 @@ pub(super) fn recover_vm_actor_requests(
             .ok_or_else(|| invalid(&receipt))?;
         let written_id = receipt_id(operation, "written");
         let written = connection
-            .query_row(
+            .query_row_cached(
                 "SELECT result FROM runtime_operation_receipts WHERE id=?1",
                 [written_id],
                 |row| row.get::<_, String>(0),
@@ -471,7 +472,7 @@ fn retire_generations(
                 let generation_number = generation
                     .and_then(|generation| i64::try_from(generation).ok())
                     .ok_or_else(|| invalid(&id))?;
-                let has_retained_submission: bool = tx.query_row(
+                let has_retained_submission: bool = tx.query_row_cached(
                     "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND substr(id,-10)=':submitted' AND json_extract(result,'$.call.scope.generation')=?3)",
                     params![
                         retained_prefix,
@@ -511,7 +512,7 @@ fn retire_generations(
                 && let (Some(generation), Some(cursor)) = (generation, value["cursor"].as_u64())
             {
                 let identity = json!({"providerHandle":ProviderHandle::for_account(account).as_str(),"generation":generation,"cursor":cursor});
-                tx.execute(
+                tx.execute_cached(
                     "DELETE FROM runtime_operation_receipts WHERE id=?1",
                     [format!(
                         "provider-notification:{}",
@@ -519,7 +520,7 @@ fn retire_generations(
                     )],
                 )?;
             }
-            tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
+            tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
         }
     }
     Ok(())
@@ -540,7 +541,7 @@ pub(super) async fn claim(
         move || {
             let snapshot =
                 AgentRepository::get(&*read_store.read()?, &AgentId::from(read_agent.as_str()))?;
-            let has_radio_turn = read_store.read()?.query_row(
+            let has_radio_turn = read_store.read()?.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
                  AND status='pending' AND kind='radio_turn')",
                 rusqlite::params![read_agent.as_str(), epoch],
@@ -691,7 +692,7 @@ pub(super) async fn hold_invalid_agent_record(
     store
         .transaction(move |tx| {
             let raw: Option<String> = tx
-                .query_row(
+                .query_row_cached(
                     "SELECT record FROM runtime_agents WHERE id=?1",
                     [agent_id.as_str()],
                     |row| row.get(0),
@@ -719,7 +720,7 @@ pub(super) async fn hold_invalid_agent_record(
                     scope: "runtime_agents".into(),
                     id: agent_id.clone(),
                 })?;
-            tx.execute(
+            tx.execute_cached(
                 "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
              ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
                 rusqlite::params![
@@ -1898,7 +1899,7 @@ pub(super) async fn callback_written(
     store
         .transaction_with(move |tx| {
             if outcome == WriteOutcome::NotSent {
-                tx.execute(
+                tx.execute_cached(
                     "DELETE FROM runtime_operation_receipts WHERE id=?1",
                     [receipt_id(&operation, "submitted")],
                 )?;
@@ -1940,7 +1941,7 @@ pub(super) fn persist_effect(
             return Ok(());
         }
         let prefix = format!("account-worker:effect:{account}:");
-        let order: i64 = tx.query_row("SELECT COALESCE(MAX(json_extract(result,'$.order')),0)+1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2", params![prefix,format!("{prefix}~")], |row| row.get(0))?;
+        let order: i64 = tx.query_row_cached("SELECT COALESCE(MAX(json_extract(result,'$.order')),0)+1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2", params![prefix,format!("{prefix}~")], |row| row.get(0))?;
         save(
             tx,
             &key,
@@ -1951,7 +1952,7 @@ pub(super) fn persist_effect(
     Ok(())
 }
 fn delete_effect(tx: &studio_runtime_store::Transaction<'_>, key: &str) -> Result<(), WorkerError> {
-    tx.execute(
+    tx.execute_cached(
         "DELETE FROM runtime_operation_receipts WHERE id=?1",
         [receipt_id(key, "pending")],
     )?;
@@ -1990,7 +1991,7 @@ fn forget_request(
     operation: &str,
 ) -> Result<(), WorkerError> {
     for phase in ["submitted", "written", "resolved", RESTARTED_PHASE] {
-        tx.execute(
+        tx.execute_cached(
             "DELETE FROM runtime_operation_receipts WHERE id=?1",
             [receipt_id(operation, phase)],
         )?;
@@ -2004,7 +2005,7 @@ pub(super) fn replace(
     phase: &str,
     value: Value,
 ) -> Result<(), WorkerError> {
-    tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,value.to_string()])?;
+    tx.execute_cached("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,value.to_string()])?;
     Ok(())
 }
 pub(super) fn checkpoint(
@@ -2232,7 +2233,7 @@ fn persist_publication_batch_in(
     let pending = match outbox.pending {
         Some(pending) => pending,
         None => {
-            let pending: i64 = tx.query_row(
+            let pending: i64 = tx.query_row_cached(
                 "SELECT count(*) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
                 params![prefix, format!("{prefix}~")],
                 |row| row.get(0),
@@ -2265,7 +2266,7 @@ fn persist_publication_batch_in(
                 // Python drops captures at its analytics queue bound, but its
                 // token-rate observer continues to receive committed events.
                 // Reclaim only a best-effort stream receipt to keep that behavior.
-                tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [&id])?;
+                tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [&id])?;
                 overflow = overflow.saturating_add(1);
                 available += 1;
                 evicted += 1;
@@ -2314,7 +2315,7 @@ fn persist_publication_batch_in(
                 Some(known) => known,
                 None => pending_publication(tx, &prefix, PUBLICATION_INVALIDATION, false)?,
             };
-            tx.execute(
+            tx.execute_cached(
                 "UPDATE runtime_operation_receipts SET result=json_set(json_set(result,'$.analyticsOverflow',COALESCE(json_extract(result,'$.analyticsOverflow'),0)+?2),'$.publicationOverflow',COALESCE(json_extract(result,'$.publicationOverflow'),0)+?3) WHERE id=?1",
                 params![
                     id,
@@ -2325,13 +2326,13 @@ fn persist_publication_batch_in(
             if let Some(existing) = &pending_invalidation {
                 // Changing the receipt result makes an in-flight drain retry
                 // this same coalesced invalidation after the commit.
-                tx.execute(
+                tx.execute_cached(
                     "UPDATE runtime_operation_receipts SET result=json_set(result,'$.stateInvalidationGeneration',COALESCE(json_extract(result,'$.stateInvalidationGeneration'),0)+1) WHERE id=?1",
                     [existing],
                 )?;
             } else {
                 // The class keeps this receipt out of capture reclamation.
-                tx.execute(
+                tx.execute_cached(
                     "UPDATE runtime_operation_receipts SET signature=?2,result=json_set(result,'$.stateInvalidation',json('true')) WHERE id=?1",
                     params![id, PUBLICATION_INVALIDATION],
                 )?;
@@ -2405,7 +2406,7 @@ fn coalesce_token_rate_receipt(
     };
     let row = target
         .map(|id| {
-            tx.query_row(
+            tx.query_row_cached(
                 "SELECT result FROM runtime_operation_receipts WHERE id=?1",
                 [&id],
                 |row| row.get::<_, String>(0),
@@ -2452,7 +2453,7 @@ fn coalesce_token_rate_receipt(
         if serialized.len() > MAX_COALESCED_TOKEN_RATE_BYTES {
             return Ok(false);
         }
-        tx.execute(
+        tx.execute_cached(
             "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
             params![id, serialized],
         )?;
@@ -2662,7 +2663,7 @@ pub(crate) fn persist_streams(
     let key = format!("streams:{account}");
     replace(tx, &key, "metadata", metadata)?;
     if pending.is_empty() {
-        tx.execute(
+        tx.execute_cached(
             "DELETE FROM runtime_operation_receipts WHERE id=?1",
             [receipt_id(&key, "pending")],
         )?;
@@ -2940,7 +2941,7 @@ fn continued_after(
     else {
         return Ok(false);
     };
-    Ok(tx.query_row(
+    Ok(tx.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
          AND status='pending' AND kind IN (SELECT value FROM json_each(?3)) AND created>?4)",
         params![

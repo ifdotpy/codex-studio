@@ -1,4 +1,5 @@
 use super::*;
+use crate::CachedSql;
 
 impl SchedulerRepository {
     /// Unknown delivery is never replayed; a proven unsent request restores only its own batch.
@@ -368,7 +369,7 @@ impl SchedulerRepository {
         for field in ["parkedEvent", "parkAfterTurn"] {
             agent.extra.remove(field);
         }
-        tx.execute(
+        tx.execute_cached(
             "UPDATE runtime_events SET status='cancelled' WHERE agent=?1 AND status='pending'",
             [id],
         )?;
@@ -547,7 +548,7 @@ impl SchedulerRepository {
             .ok_or_else(|| invalid_agent(agent_id))?
         {
             let id = event_id.as_str().ok_or_else(|| invalid_agent(agent_id))?;
-            count += transaction.execute(
+            count += transaction.execute_cached(
                 "UPDATE runtime_events SET status='dispatching' WHERE id=?1 AND agent=?2 \
                  AND epoch=?3 AND status='reserved'",
                 params![id, agent_id, epoch],
@@ -634,7 +635,7 @@ impl SchedulerRepository {
             replay_claim(transaction, agent.clone(), epoch, &saved)?;
         }
         let events = validated_events(transaction, &agent, attempt)?;
-        let changed = transaction.execute(
+        let changed = transaction.execute_cached(
             "UPDATE runtime_events SET status='dispatching' WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id IN (SELECT value FROM json_each(?3))",
             params![agent_id, epoch, events])?;
         require_membership(
@@ -1103,7 +1104,7 @@ impl SchedulerRepository {
         }
         let event_ids = validated_events(transaction, &agent, expected_attempt)?;
         let expected_count = expected_attempt["events"].as_array().map_or(0, Vec::len);
-        let uncertain_count: i64 = transaction.query_row(
+        let uncertain_count: i64 = transaction.query_row_cached(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status='uncertain' AND turn_id IS NULL",
             params![agent_id, epoch, event_ids],
             |row| row.get(0),
@@ -1305,7 +1306,7 @@ impl SchedulerRepository {
         if clears_unknown {
             agent.extra.remove("startOutcomeHold");
         }
-        transaction.execute(
+        transaction.execute_cached(
             "INSERT INTO runtime_completed_turns(id) VALUES (?1)",
             [format!("{agent_id}:{turn_id}")],
         )?;
@@ -1405,7 +1406,7 @@ impl SchedulerRepository {
         agent_id: &str,
         epoch: i64,
     ) -> StoreResult<bool> {
-        Ok(connection.query_row(
+        Ok(connection.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND (status IN ('pending','reserved') OR (id<>?3 AND status IN ('dispatching','uncertain'))))",
             params![agent_id, epoch, format!("{agent_id}:initial")],
             |row| row.get::<_, bool>(0),
@@ -1419,7 +1420,7 @@ impl SchedulerRepository {
         agent_id: &str,
         epoch: i64,
     ) -> StoreResult<bool> {
-        Ok(connection.query_row(
+        Ok(connection.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved'))",
             params![agent_id, epoch],
             |row| row.get::<_, bool>(0),
@@ -1532,7 +1533,7 @@ fn return_unapplied_input(
     }
     let events = validated_events(tx, &agent, attempt)?;
     ExecutionHistoryRepository::reject_attempt(tx, &identity.attempt_id, message)?;
-    tx.execute(
+    tx.execute_cached(
         "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE agent=?1 AND epoch=?2 AND id IN(SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')",
         params![identity.agent_id, identity.epoch, events],
     )?;
@@ -1592,7 +1593,7 @@ pub(super) fn apply_start_error(
     let decision = start_error_decision(&agent, identity.epoch, unknown, preparation);
     if decision.return_busy_input {
         ExecutionHistoryRepository::reject_attempt(tx, &identity.attempt_id, message)?;
-        tx.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=CASE WHEN EXISTS(SELECT 1 FROM runtime_event_meta m WHERE m.id=runtime_events.id AND json_extract(m.record,'$.sendNow')=1) THEN ?1 ELSE NULL END WHERE agent=?2 AND epoch=?3 AND id IN(SELECT value FROM json_each(?4)) AND status IN ('reserved','dispatching','uncertain')",
+        tx.execute_cached("UPDATE runtime_events SET status='pending',turn_id=NULL,error=CASE WHEN EXISTS(SELECT 1 FROM runtime_event_meta m WHERE m.id=runtime_events.id AND json_extract(m.record,'$.sendNow')=1) THEN ?1 ELSE NULL END WHERE agent=?2 AND epoch=?3 AND id IN(SELECT value FROM json_each(?4)) AND status IN ('reserved','dispatching','uncertain')",
             params![message, identity.agent_id, identity.epoch, events])?;
         agent.extra.insert(
             "steerRejectedTurnId".into(),
@@ -1620,7 +1621,7 @@ pub(super) fn apply_start_error(
         )?;
         return Ok(true);
     }
-    let changed = tx.execute("UPDATE runtime_events SET status=?1,error=?2 WHERE agent=?3 AND epoch=?4 AND id IN(SELECT value FROM json_each(?5)) AND status IN ('pending','reserved','dispatching','uncertain')",
+    let changed = tx.execute_cached("UPDATE runtime_events SET status=?1,error=?2 WHERE agent=?3 AND epoch=?4 AND id IN(SELECT value FROM json_each(?5)) AND status IN ('pending','reserved','dispatching','uncertain')",
         params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;
     require_membership(changed, count, &identity.agent_id)?;
     if let Some(status) = decision.visible {
@@ -1770,7 +1771,7 @@ pub(super) fn record_notification(
         ),
     );
     let at: String =
-        transaction.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')", [], |r| {
+        transaction.query_row_cached("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')", [], |r| {
             r.get(0)
         })?;
     agent.extra.insert("lastEvent".into(), json!(at));
@@ -1828,7 +1829,7 @@ fn requeue_unsubmitted(
     let epoch = attempt["epoch"]
         .as_i64()
         .ok_or_else(|| invalid_agent(&agent.id.0))?;
-    let exact: bool = transaction.query_row(
+    let exact: bool = transaction.query_row_cached(
         "SELECT NOT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id NOT IN(SELECT value FROM json_each(?3))) AND (SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='reserved' AND id IN(SELECT value FROM json_each(?3)))=json_array_length(?3)",
         params![agent.id.0,epoch,events], |r|r.get(0))?;
     if !exact {
@@ -1845,7 +1846,7 @@ fn requeue_unsubmitted(
     {
         return Ok(None);
     }
-    let count = transaction.execute(
+    let count = transaction.execute_cached(
         "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL WHERE agent=?2 AND epoch=?3 AND status='reserved' AND id IN(SELECT value FROM json_each(?4))",
         params![if current {"pending"} else {"cancelled"},agent.id.0,epoch,events])?;
     if !current {
@@ -2021,9 +2022,9 @@ pub(super) fn disconnect_agent(
         );
     }
     agent.extra.insert("inFlight".into(), json!(false));
-    transaction.execute("UPDATE runtime_events SET status='uncertain',error=?3 WHERE agent=?1 AND epoch=?2 AND status='dispatching'", params![agent.id.0,epoch,if restart {"Server restarted before delivery acknowledgement"} else {"Codex disconnected"}])?;
+    transaction.execute_cached("UPDATE runtime_events SET status='uncertain',error=?3 WHERE agent=?1 AND epoch=?2 AND status='dispatching'", params![agent.id.0,epoch,if restart {"Server restarted before delivery acknowledgement"} else {"Codex disconnected"}])?;
     if restart_input_wait {
-        transaction.execute("UPDATE runtime_events SET status='uncertain' WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')", params![agent.id.0,epoch,attempt["events"].to_string()])?;
+        transaction.execute_cached("UPDATE runtime_events SET status='uncertain' WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')", params![agent.id.0,epoch,attempt["events"].to_string()])?;
     }
     if !restart && !legacy {
         agent.extra.remove("startAttempt");
@@ -2049,7 +2050,7 @@ fn restart_input_events_valid(
         if !seen.insert(id) {
             return Ok(false);
         }
-        let exists = transaction.query_row(
+        let exists = transaction.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2 AND epoch=?3 AND status IN ('reserved','dispatching','uncertain'))",
             params![id, agent_id, epoch],
             |row| row.get::<_, bool>(0),
@@ -2203,7 +2204,7 @@ pub(super) fn continuation_allowed(agent: &AgentRecord) -> bool {
             .is_some_and(|error| error["codexErrorInfo"] == "misalignmentPolicyViolation")
 }
 pub(super) fn load_agent(db: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {
-    db.query_row("SELECT record FROM runtime_agents WHERE id=?1", [id], |r| {
+    db.query_row_cached("SELECT record FROM runtime_agents WHERE id=?1", [id], |r| {
         r.get::<_, String>(0)
     })
     .optional()?
@@ -2270,14 +2271,14 @@ pub(super) fn recovering(agent: &AgentRecord, epoch: i64) -> bool {
 }
 
 pub(super) fn mark_timing(tx: &Transaction<'_>, ids: &str, field: &str) -> StoreResult<()> {
-    let exists: bool = tx.query_row(
+    let exists: bool = tx.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_event_meta')",
         [],
         |r| r.get(0),
     )?;
     if exists {
         let path = format!("$.timing.{field}");
-        tx.execute("INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)",params![path,timestamp(),ids])?;
+        tx.execute_cached("INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)",params![path,timestamp(),ids])?;
     }
     Ok(())
 }
@@ -2410,7 +2411,7 @@ pub(super) fn deliver_attempt_events(
     event_ids: &(String, usize),
     turn_id: &str,
 ) -> StoreResult<()> {
-    let changed = transaction.execute(
+    let changed = transaction.execute_cached(
         "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) AND (status IN ('reserved','dispatching','uncertain') OR (status='delivered' AND turn_id=?1))",
         params![turn_id, agent_id, epoch, event_ids.0])?;
     require_membership(changed, event_ids.1, agent_id)?;
@@ -2436,7 +2437,7 @@ impl SchedulerRepository {
         turn_id: &str,
         event_ids: &[String],
     ) -> StoreResult<()> {
-        let messages_table_exists: bool = transaction.query_row(
+        let messages_table_exists: bool = transaction.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_chat_messages')",
         [],
         |row| row.get(0),
@@ -2522,7 +2523,7 @@ pub(super) fn validated_events(
     // A native action submits no queued input; every other attempt submits at
     // least one event.
     let empty_allowed = native_action_attempt(attempt);
-    let valid: bool = transaction.query_row(
+    let valid: bool = transaction.query_row_cached(
         "SELECT (COUNT(*) > 0 OR ?2) AND COUNT(*)=COUNT(DISTINCT value) AND COUNT(*)=COALESCE(SUM(type='text'),0) FROM json_each(?1)",
         params![events, empty_allowed], |r|r.get(0))?;
     if !valid {
@@ -2567,7 +2568,7 @@ pub(super) fn completed_turn(
     agent: &str,
     turn: &str,
 ) -> StoreResult<bool> {
-    Ok(connection.query_row(
+    Ok(connection.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
         [format!("{agent}:{turn}")],
         |row| row.get(0),

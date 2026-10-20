@@ -7,6 +7,7 @@
 use base64::Engine;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use studio_runtime_store::CachedSql;
 use studio_runtime_store::{
     MonitorRecord, MonitorsRepository, RuntimeStore, StoreError, Table, Transaction,
 };
@@ -150,7 +151,7 @@ pub fn enqueue_output_with_scope_in_transaction(
 pub fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
     let connection = store.read()?;
     let row = connection
-        .query_row(
+        .query_row_cached(
             "SELECT id,record FROM runtime_monitors WHERE json_array_length(record,'$.streamQueue')>0 ORDER BY id LIMIT 1",
             [],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),

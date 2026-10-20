@@ -1,4 +1,5 @@
 use super::*;
+use crate::CachedSql;
 
 const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v3";
 /// Earlier index names: the first lacked busy steer candidates, and `_v2`
@@ -663,7 +664,7 @@ impl SchedulerRepository {
         // does not stop new input: one old unknown delivery must not block
         // the worker for good (agent 841ebc0e, 18 October 2026).
         let unresolved = transaction
-            .query_row(
+            .query_row_cached(
                 "SELECT 1 FROM runtime_events WHERE agent=?1 \
                  AND status IN ('reserved','dispatching') LIMIT 1",
                 [agent_id],
@@ -695,7 +696,7 @@ impl SchedulerRepository {
 
         // Python gives radio turns priority over the ordinary queue prefix.
         if radio_event.is_none()
-            && transaction.query_row(
+            && transaction.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
              AND status='pending' AND kind IN ('radio','radio_turn'))",
                 params![agent_id, epoch],
@@ -712,7 +713,7 @@ impl SchedulerRepository {
         let has_metadata = table_exists(transaction, "runtime_event_meta")?;
         if has_metadata {
             let radio = transaction
-                .query_row(
+                .query_row_cached(
                     "SELECT e.id,m.record FROM runtime_events e \
                      JOIN runtime_event_meta m ON m.id=e.id \
                      WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
@@ -888,7 +889,7 @@ impl SchedulerRepository {
         let metadata = prepared.metadata;
 
         for event in &mut events {
-            let changed = transaction.execute(
+            let changed = transaction.execute_cached(
                 "UPDATE runtime_events SET status='reserved' WHERE id=?1 AND agent=?2 \
                  AND epoch=?3 AND status='pending'",
                 params![event.id.0, agent_id, epoch],
@@ -1067,7 +1068,7 @@ impl SchedulerRepository {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if !active {
-            let pending = transaction.query_row(
+            let pending = transaction.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
                 params![agent_id, epoch], |row| row.get::<_, bool>(0),
             )?;
@@ -1136,7 +1137,7 @@ pub(super) fn replay_claim(
     let identity = saved["inputIdentity"]
         .as_array()
         .ok_or_else(receipt_error)?;
-    let has_metadata: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')", [], |r| r.get(0))?;
+    let has_metadata: bool = tx.query_row_cached("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')", [], |r| r.get(0))?;
     let metadata_column = if has_metadata { "m.record" } else { "NULL" };
     let metadata_join = if has_metadata {
         "LEFT JOIN runtime_event_meta m ON m.id=e.id"
@@ -1207,7 +1208,7 @@ pub(super) fn invalid_object(table: &str, id: &str) -> StoreError {
 }
 
 pub(super) fn table_exists(transaction: &Transaction<'_>, table: &str) -> StoreResult<bool> {
-    Ok(transaction.query_row(
+    Ok(transaction.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [table],
         |row| row.get(0),
@@ -1544,7 +1545,7 @@ pub(super) fn apply_preparation(
             ));
         }
         for (id, value) in &prepared.metadata_updates {
-            transaction.execute(
+            transaction.execute_cached(
                 "INSERT OR REPLACE INTO runtime_event_meta(id,record) VALUES(?1,?2)",
                 params![id, value.to_string()],
             )?;
