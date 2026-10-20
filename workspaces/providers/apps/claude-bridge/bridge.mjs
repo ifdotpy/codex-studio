@@ -308,6 +308,14 @@ async function persistLive(s, turn) {
     "Claude session save deferred: disk is full " + s.id + "\n",
   );
 }
+// Save while the SDK stream continues. The store keeps one session's saves in
+// order and joins saves that have not started, and a turn's end waits for them
+// through its own save. A failed save ends the stream at its next message.
+function persistLater(s, active) {
+  persistLive(s, active.turn).catch((error) => {
+    active.persistFailure ??= error;
+  });
+}
 // The durable pre-input receipt could not be written, so no input reached Claude.
 function diskFullInputError(error) {
   return Object.assign(new Error(DISK_FULL_INPUT_ERROR, { cause: error }), {
@@ -1174,6 +1182,9 @@ async function finishTurn(s, active, result, error) {
   s.updatedAt = Math.floor(Date.now() / 1000);
   try {
     await persistLive(s, turn);
+    // This save diffed from the last saved state, so it also covers an
+    // earlier background save of this turn that failed.
+    active.persistFailure = null;
   } finally {
     finished();
   }
@@ -1521,12 +1532,13 @@ async function startSession(s, active, p) {
     admit();
     active.readyResolve();
     for await (const m of q) {
+      if (active.persistFailure) throw active.persistFailure;
       active.lastEventAt = Date.now();
       if (m.type === "system" && m.subtype === "init") {
         s.started = true;
         s.claudeVersion = m.claude_code_version;
         active.commands = m.slash_commands || [];
-        await persistLive(s, active.turn);
+        persistLater(s, active);
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
@@ -1559,7 +1571,7 @@ async function startSession(s, active, p) {
             ...steer.item,
             clientId: steer.item.id,
           });
-          await persistLive(s, active.turn);
+          persistLater(s, active);
         }
         continue;
       }
@@ -1631,7 +1643,7 @@ async function startSession(s, active, p) {
           };
           finishItem(s, turn, item);
           active.lastUsage = null;
-          await persistLive(s, active.turn);
+          persistLater(s, active);
         } else if (
           m.subtype === "status" &&
           m.status === "compacting" &&
@@ -1689,7 +1701,7 @@ async function startSession(s, active, p) {
                 ],
               },
             });
-          await persistLive(s, active.turn);
+          persistLater(s, active);
         } else if (
           turn &&
           ((m.subtype === "notification" &&
@@ -1730,7 +1742,7 @@ async function startSession(s, active, p) {
                 text: "Subagent: " + text,
               });
           }
-        await persistLive(s, active.turn);
+        persistLater(s, active);
         continue;
       }
       if (m.type === "tool_progress") {
@@ -1921,7 +1933,7 @@ async function startSession(s, active, p) {
                 })) || [],
             });
         }
-        await persistLive(s, active.turn);
+        persistLater(s, active);
       } else if (m.type === "user" && Array.isArray(m.message?.content)) {
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_result",
@@ -1956,7 +1968,7 @@ async function startSession(s, active, p) {
           active.tools.set(b.tool_use_id, finished);
           finishItem(s, turn, finished);
         }
-        await persistLive(s, active.turn);
+        persistLater(s, active);
       } else if (m.type === "result") {
         if (
           (active.pendingSteers.size || active.reservingInput) &&

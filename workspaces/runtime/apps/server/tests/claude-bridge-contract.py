@@ -907,7 +907,8 @@ class Bridge(unittest.TestCase):
         turn_id = None
         tool_request = None
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and tool_request is None:
+        # The start reply and the tool request are independent lines; either may come first.
+        while time.monotonic() < deadline and (turn_id is None or tool_request is None):
             row = self.rows.get(timeout=max(.01, deadline - time.monotonic()))
             if row.get('id') == start_id:
                 turn_id = row['result']['turn']['id']

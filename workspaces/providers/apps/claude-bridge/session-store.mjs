@@ -196,6 +196,8 @@ export function createSessionStore(root, options = {}) {
   const sessions = new Map();
   const entries = new Map();
   const writes = new Map();
+  // Per session, the save that waits behind the running one and has not started.
+  const queued = new Map();
   const loads = new Map();
   const evicted = new Map();
   const metadataCache = new Map();
@@ -586,8 +588,19 @@ export function createSessionStore(root, options = {}) {
     // never create transcript, journal, or metadata files for them.
     if (session.ephemeral === true) return Promise.resolve();
     const id = session.id;
+    // A save that has not started yet diffs the live session when it starts,
+    // so it already covers this caller's changes: join it instead of adding
+    // another whole-session diff behind it.
+    const waiting = queued.get(id);
+    if (waiting?.session === session) return waiting.promise;
     const previous = writes.get(id) || Promise.resolve();
-    const next = previous.catch(() => {}).then(() => persistNow(session));
+    const next = previous
+      .catch(() => {})
+      .then(() => {
+        if (queued.get(id)?.promise === next) queued.delete(id);
+        return persistNow(session);
+      });
+    queued.set(id, { session, promise: next });
     writes.set(id, next);
     const clear = () => {
       if (writes.get(id) === next) {

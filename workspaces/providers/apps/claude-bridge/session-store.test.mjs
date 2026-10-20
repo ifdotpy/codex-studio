@@ -668,3 +668,49 @@ test("reported journal clear error refreshes length before later append retry", 
       session,
     );
   }));
+
+test("saves queued behind a running save join into one later save", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1000 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const originalAppend = fs.appendFile;
+    let appends = 0;
+    let enterAppend, releaseAppend;
+    const appendEntered = new Promise((resolve) => {
+      enterAppend = resolve;
+    });
+    const appendGate = new Promise((resolve) => {
+      releaseAppend = resolve;
+    });
+    fs.appendFile = async (file, data, ...options) => {
+      if (file === journal && appends++ === 0) {
+        enterAppend();
+        await appendGate;
+      }
+      return originalAppend(file, data, ...options);
+    };
+    try {
+      session.turns[0].items.push({ id: "running", text: "first" });
+      const running = store.persist(session);
+      await appendEntered;
+      const waiting = [];
+      for (const index of [1, 2, 3]) {
+        session.turns[0].items.push({ id: "queued-" + index, text: "later" });
+        waiting.push(store.persist(session));
+      }
+      assert.equal(waiting[0], waiting[1]);
+      assert.equal(waiting[1], waiting[2]);
+      releaseAppend();
+      await running;
+      await Promise.all(waiting);
+    } finally {
+      fs.appendFile = originalAppend;
+    }
+    assert.equal(appends, 2, "three waiting saves make one journal record");
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      session,
+    );
+  }));
