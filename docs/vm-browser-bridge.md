@@ -523,11 +523,13 @@ at phone width (one column, buttons in a row that wraps).
   command" and "Cancel sign-in".
 - A refusal stays on the card as an error: port in use (with "Paste instead"), state mismatch,
   wrong port or path, expired, the command stopped.
-- Final state: the card closes, the window shows "Signed in", "The command refused the result",
-  "The provider returned an error", or "The result is unknown", and Studio adds one event with
-  the same text to the chat, so the person and the agent see it later. A decline adds the
-  existing decline event. A request that expires before the approval only closes its card, as
-  before.
+- Final state: the card closes and Studio adds one event to the chat that names the outcome:
+  signed in (the command accepted the result), the command refused the result, the provider
+  returned an error, the result is unknown, or the request ended without a result. The person
+  and the agent both see it. After a paste the window says "Studio sent the sign-in result to
+  the command. The chat shows how it ended."; an unknown or expired result is an error on the
+  card. A decline or a cancel adds the decline event. A request that expires before the
+  approval only closes its card, as before.
 
 ### 6.3 Protocol
 
