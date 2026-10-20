@@ -58,13 +58,18 @@ fn snapshot(
         }
     }
 }
+/// Store the budget state; with `patch_agent`, also the agent row's budget
+/// fields and their sync view.
 fn save_state(
     tx: &Transaction<'_>,
     id: &str,
     state: &budget::BudgetState,
+    patch_agent: bool,
 ) -> Result<(), BudgetError> {
     Table::<BudgetRecord>::new(tx).put_at(&id.into(), &BudgetRecord(state.record()?))?;
-    BudgetRepository::patch_budget(tx, id, &state.patch())?;
+    if patch_agent {
+        BudgetRepository::patch_budget(tx, id, &state.patch())?;
+    }
     Ok(())
 }
 /// Live notification and historical capture share the same durable response key.
@@ -82,6 +87,32 @@ pub fn capture(
     source: CaptureSource,
     now: f64,
 ) -> Result<u64, BudgetError> {
+    capture_into(tx, agent, params, at, source, now, true)
+}
+
+/// [`capture`] for a caller that persists the supplied agent copy in the same
+/// transaction (the notification dispatcher): the agent row is written once,
+/// by that caller, instead of here and again there.
+pub fn capture_for_persisting_caller(
+    tx: &Transaction<'_>,
+    agent: &mut Value,
+    params: &Value,
+    at: f64,
+    source: CaptureSource,
+    now: f64,
+) -> Result<u64, BudgetError> {
+    capture_into(tx, agent, params, at, source, now, false)
+}
+
+fn capture_into(
+    tx: &Transaction<'_>,
+    agent: &mut Value,
+    params: &Value,
+    at: f64,
+    source: CaptureSource,
+    now: f64,
+    patch_agent: bool,
+) -> Result<u64, BudgetError> {
     let (state, changed) = atomic(tx, || {
         let identity = match source {
             CaptureSource::Live => SnapshotIdentity::Live,
@@ -95,7 +126,7 @@ pub fn capture(
             BudgetRepository::insert_usage(tx, row)?;
         }
         if decision.changed {
-            save_state(tx, snapshot.agent_id(), &decision.state)?;
+            save_state(tx, snapshot.agent_id(), &decision.state, patch_agent)?;
         }
         Ok((decision.state, decision.changed))
     })?;
@@ -231,7 +262,7 @@ fn team_snapshots(
     for member in BudgetRepository::team(tx, root_id)? {
         let snapshot = snapshot(tx, &member, SnapshotIdentity::Live, now)?;
         if snapshot.initialized() {
-            save_state(tx, snapshot.agent_id(), snapshot.state())?;
+            save_state(tx, snapshot.agent_id(), snapshot.state(), true)?;
         }
         members.push(snapshot);
     }

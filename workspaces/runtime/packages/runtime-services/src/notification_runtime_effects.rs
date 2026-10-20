@@ -22,7 +22,15 @@ impl NotificationEffects for RuntimeNotificationEffects {
         params: &Value,
         at: f64,
     ) -> Result<(), NotificationDispatchError> {
-        crate::budget_service::capture(tx, agent, params, at, CaptureSource::Live, at)?;
+        // The dispatcher persists `agent` after this capture.
+        crate::budget_service::capture_for_persisting_caller(
+            tx,
+            agent,
+            params,
+            at,
+            CaptureSource::Live,
+            at,
+        )?;
         Ok(())
     }
 
