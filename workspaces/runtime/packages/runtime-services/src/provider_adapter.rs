@@ -168,6 +168,16 @@ pub fn adapter(kind: ProviderKind) -> &'static dyn ProviderAdapter {
 const CODEX_EXECUTABLE: &str = "codex";
 /// Codex app-server peer over stdio.
 const CODEX_APP_SERVER_ARGS: [&str; 3] = ["app-server", "--listen", "stdio://"];
+/// Codex config override: seconds an unsubscribed thread stays loaded in the
+/// host app-server. Zero frees it as soon as Studio unsubscribes it (see
+/// `account_worker::idle_unload`); Codex's default (30 minutes on 0.163.0)
+/// keeps every finished worker's and deleted agent's thread loaded. Resuming an
+/// unloaded thread costs about as much CPU as a warm turn. A running
+/// app-server started without it is reattached with its own command
+/// (`ProviderLaunchSpec::reattach_commands`) and keeps Codex's default until
+/// it exits. The VM guest launch keeps Codex's default: its guest validates
+/// the exact command, and a guest serves one agent.
+const CODEX_THREAD_UNLOAD_DELAY: [&str; 2] = ["-c", "thread_unload_delay_secs=0"];
 /// Names of the MCP servers that the Codex home's `config.toml` defines. The
 /// app-server merges per-thread `config` into that file, so a server can only
 /// be switched off by name (`enabled = false`), never by an empty table.
@@ -240,16 +250,29 @@ impl ProviderAdapter for CodexAdapter {
             mut environment,
             ..
         } = input;
-        let mut command = vec![codex_executable.unwrap_or(CODEX_EXECUTABLE).to_owned()];
-        command.extend(CODEX_APP_SERVER_ARGS.map(str::to_owned));
         environment.insert("CODEX_HOME".into(), home);
-        if isolated {
-            command.extend(CODEX_FILE_CREDENTIALS.map(str::to_owned));
+        let credentials: &[&str] = if isolated {
             environment.remove("OPENAI_API_KEY");
             environment.remove("CODEX_API_KEY");
-        }
+            &CODEX_FILE_CREDENTIALS
+        } else {
+            &[]
+        };
+        let launch = |overrides: &[&str]| {
+            std::iter::once(codex_executable.unwrap_or(CODEX_EXECUTABLE))
+                .chain(CODEX_APP_SERVER_ARGS)
+                .chain(overrides.iter().copied())
+                .chain(credentials.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let mut spec =
+            ProviderLaunchSpec::new(launch(&CODEX_THREAD_UNLOAD_DELAY), environment, root)
+                .with_inherited_cwd();
+        // The command before the unload override, which running app-servers keep.
+        spec.reattach_commands.push(launch(&[]));
         Ok(ProviderLaunch {
-            spec: ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd(),
+            spec,
             executable: codex_executable.map(str::to_owned),
         })
     }

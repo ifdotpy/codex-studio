@@ -1960,6 +1960,16 @@ fn python_launch(
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
+fn oracle_command(oracle: &Value) -> Vec<String> {
+    serde_json::from_value(oracle["command"].clone()).unwrap()
+}
+/// The Rust launch is the Python launch plus Codex's thread unload override
+/// after the app-server arguments; the Python launch stays its reattach command.
+fn with_unload_override(oracle: &Value) -> Vec<String> {
+    let mut command = oracle_command(oracle);
+    command.splice(4..4, ["-c".into(), "thread_unload_delay_secs=0".into()]);
+    command
+}
 async fn wire_read(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>) -> Value {
     use tokio::io::AsyncBufReadExt;
     let mut line = String::new();
@@ -2067,6 +2077,7 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
             isolated,
             root.path().into(),
         );
+        let reattach_commands = launch.reattach_commands.clone();
         let listener = tokio::net::UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
         let factory = studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
             studio_runtime_process::BackendIdentity {
@@ -2102,15 +2113,17 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
         )
         .await;
         let open = wire_read(&mut peer).await;
-        for field in ["command", "env", "cwd"] {
+        for field in ["env", "cwd"] {
             assert_eq!(open[field], oracle[field], "{field}");
         }
-        let command: Vec<String> = serde_json::from_value(open["command"].clone()).unwrap();
+        assert_eq!(open["command"], json!(with_unload_override(&oracle)));
         let environment: BTreeMap<String, String> =
             serde_json::from_value(open["env"].clone()).unwrap();
+        // The Python launch is the reattach command, so its app-servers reattach.
+        assert_eq!(reattach_commands, [oracle_command(&oracle)]);
         assert_eq!(
             studio_runtime_store::supervisor_journal::launch_signature(
-                &command,
+                &reattach_commands[0],
                 &environment,
                 open["cwd"].as_str()
             ),
@@ -2151,10 +2164,8 @@ fn direct_launch_command_and_environment_match_python() {
             isolated,
             root.path().into(),
         );
-        assert_eq!(
-            serde_json::to_value(launch.command).unwrap(),
-            oracle["command"]
-        );
+        assert_eq!(launch.command, with_unload_override(&oracle));
+        assert_eq!(launch.reattach_commands, [oracle_command(&oracle)]);
         assert_eq!(
             serde_json::to_value(launch.environment).unwrap(),
             oracle["env"]
