@@ -1661,11 +1661,15 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.send(child['id'], 'Check one more file')
         eventually(lambda: child_results() == 2)
         # The follow-up input is delivered by the turn that already completed.
-        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'completed')
-        with self.runtime.read_db() as db:
-            self.assertEqual([tuple(row) for row in db.execute(
-                "SELECT kind,status FROM runtime_events WHERE agent=? ORDER BY created,rowid",
-                (child['id'],))], [('user', 'delivered'), ('user', 'delivered')])
+        def user_events():
+            with self.runtime.read_db() as db:
+                return [tuple(row) for row in db.execute(
+                    "SELECT kind,status FROM runtime_events WHERE agent=? ORDER BY created,rowid",
+                    (child['id'],))]
+
+        # The child result can be reported before the input receipt is marked delivered.
+        eventually(lambda: user_events() == [('user', 'delivered'), ('user', 'delivered')])
+        self.assertEqual(self.runtime.agent(child['id'])['status'], 'completed')
 
     def test_child_result_waits_for_inflight_input_receipt(self):
         lead = self.lead()
