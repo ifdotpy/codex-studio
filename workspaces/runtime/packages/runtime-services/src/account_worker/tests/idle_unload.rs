@@ -637,3 +637,68 @@ async fn claude_finished_worker_unloads_at_settle_and_lead_or_waiting_worker_wai
         .await;
     }
 }
+
+/// Mark the test agent deleted, as a team delete does for every member.
+async fn delete_agent(state: &State) {
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("test agent exists");
+                    agent.extra.insert("deletedAt".into(), json!(1.0));
+                    AgentRepository::put(tx, &agent)
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+/// Deleting a team unloads its threads at once: a settled lead's thread,
+/// which otherwise waits for the idle setting, starts its unload checks as
+/// soon as the deletion commits, and is unsubscribed without a clock advance.
+async fn scenario_deleting_a_team_unloads_its_threads(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    enable_unload(&state, &mut peer).await;
+    set_lead(&state, true).await;
+
+    progress(peer.completed()).await;
+    progress(worker_barrier(&worker)).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "a settled lead stays loaded before the idle setting elapses"
+    );
+    delete_agent(&state).await;
+    idle_checks(&mut peer).await;
+    answer(
+        &mut peer,
+        "thread/unsubscribe",
+        json!({"threadId": THREAD}),
+        json!({"status": "unsubscribed"}),
+    )
+    .await;
+    progress(worker.shutdown()).await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_deleting_a_team_unloads_its_threads() {
+    scenario_deleting_a_team_unloads_its_threads(studio_runtime_providers::ProviderKind::Codex)
+        .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_deleting_a_team_unloads_its_threads() {
+    scenario_deleting_a_team_unloads_its_threads(studio_runtime_providers::ProviderKind::Claude)
+        .await;
+}

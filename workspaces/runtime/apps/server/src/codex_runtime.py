@@ -542,7 +542,8 @@ class AppServer:
         self.stderr_done = threading.Event()
         from codex_log_rotation import RotatingLog
         self.log = RotatingLog(root / "app-server.log", max_bytes=50 * 1024 * 1024, backups=4)
-        command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
+        # Parity with CODEX_THREAD_UNLOAD_DELAY in runtime-services provider_adapter.rs.
+        command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://", "-c", "thread_unload_delay_secs=0"]
         env = app_server_launch_environment(home=home, isolated=isolated)
         if isolated:
             command.extend(["-c", 'cli_auth_credentials_store="file"'])

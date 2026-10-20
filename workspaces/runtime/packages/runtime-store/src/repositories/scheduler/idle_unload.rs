@@ -114,7 +114,8 @@ const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
 impl SchedulerRepository {
     /// Read the durable status of known loaded threads and the account in one
     /// bounded query. The candidate list comes from one provider snapshot.
-    /// Returns the busy threads, the threads of finished managed workers, and whether
+    /// Returns the busy threads, the threads that unload at once (see
+    /// [`Self::idle_unload_immediate_threads`]), and whether
     /// the account is in use.
     pub fn idle_unload_usage_snapshot(
         connection: &Connection,
@@ -174,13 +175,18 @@ impl SchedulerRepository {
         }
         Ok((
             busy_threads,
-            Self::idle_unload_worker_threads(connection, account, threads)?,
+            Self::idle_unload_immediate_threads(connection, account, threads)?,
             account_in_use,
         ))
     }
 
-    /// The members of `threads` owned by a live, finished managed worker of `account`.
-    pub fn idle_unload_worker_threads(
+    /// The members of `threads` that unload as soon as they are unused: every
+    /// thread that no live lead and no live unfinished worker of `account`
+    /// owns. These are the threads of finished managed workers (see
+    /// `finished_worker_sql`) and of deleted agents, which nobody resumes
+    /// soon; a lead or an unfinished worker keeps its thread for the idle
+    /// setting.
+    pub fn idle_unload_immediate_threads(
         connection: &Connection,
         account: &str,
         threads: &std::collections::BTreeSet<String>,
@@ -195,10 +201,10 @@ impl SchedulerRepository {
         .to_string();
         let finished = finished_worker_sql(connection)?;
         let mut statement = connection.prepare_cached(&format!(
-            "SELECT DISTINCT json_extract(record,'$.threadId') FROM runtime_agents WHERE \
-             COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
-             AND json_extract(record,'$.deletedAt') IS NULL AND {finished} \
-             AND json_extract(record,'$.threadId') IN (SELECT value FROM json_each(?2))"
+            "SELECT c.value FROM json_each(?2) c WHERE NOT EXISTS(SELECT 1 FROM runtime_agents \
+             WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
+             AND json_extract(record,'$.deletedAt') IS NULL AND NOT ({finished}) \
+             AND json_extract(record,'$.threadId')=c.value)"
         ))?;
         let rows = statement.query_map([account, &encoded_threads], |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -476,33 +482,33 @@ mod tests {
     }
 
     #[test]
-    fn only_live_non_lead_agents_are_managed_workers() {
+    fn only_a_live_lead_or_unfinished_worker_keeps_its_thread_for_the_idle_setting() {
         let connection = database();
         let threads = std::collections::BTreeSet::from(["thread".to_owned(), "cold".to_owned()]);
-        let workers = || {
-            SchedulerRepository::idle_unload_worker_threads(&connection, "acct", &threads)
-                .expect("workers read")
+        let immediate = || {
+            SchedulerRepository::idle_unload_immediate_threads(&connection, "acct", &threads)
+                .expect("immediate threads read")
         };
+        let all = threads.clone();
+        let cold = std::collections::BTreeSet::from(["cold".to_owned()]);
         agent(&connection, "chat", json!({"isLead":true}));
-        assert!(workers().is_empty(), "a lead or ordinary chat is no worker");
-        agent(&connection, "chat", json!({"isLead":false}));
-        assert_eq!(
-            workers(),
-            std::collections::BTreeSet::from(["thread".to_owned()])
-        );
-        let (_, snapshot_workers, _) =
+        assert_eq!(immediate(), cold, "a lead or ordinary chat waits");
+        let (_, snapshot_immediate, _) =
             SchedulerRepository::idle_unload_usage_snapshot(&connection, "acct", &threads)
                 .expect("usage snapshot reads");
-        assert_eq!(snapshot_workers, workers());
+        assert_eq!(snapshot_immediate, immediate());
+        agent(&connection, "chat", json!({"isLead":false}));
+        assert_eq!(
+            immediate(),
+            all,
+            "a finished managed worker unloads at once"
+        );
         agent(
             &connection,
             "chat",
             json!({"isLead":false,"status":"waiting"}),
         );
-        assert!(
-            workers().is_empty(),
-            "a waiting worker keeps the idle timer"
-        );
+        assert_eq!(immediate(), cold, "a waiting worker keeps the idle timer");
         agent(&connection, "chat", json!({"isLead":false}));
         for status in ["review", "ready", "running", "blocked"] {
             connection
@@ -511,7 +517,7 @@ mod tests {
                     [json!({"id":"w","owner":"chat","status":status}).to_string()],
                 )
                 .expect("work writes");
-            assert!(workers().is_empty(), "{status} work keeps the idle timer");
+            assert_eq!(immediate(), cold, "{status} work keeps the idle timer");
         }
         connection
             .execute(
@@ -519,14 +525,28 @@ mod tests {
                 [],
             )
             .expect("work settles");
-        assert_eq!(workers().len(), 1, "accepted work finishes the worker");
-        agent(&connection, "chat", json!({"isLead":false,"deletedAt":1.0}));
-        assert!(workers().is_empty(), "a deleted worker holds nothing");
+        assert_eq!(immediate(), all, "accepted work finishes the worker");
         agent(
             &connection,
             "chat",
-            json!({"isLead":false,"accountKey":"other"}),
+            json!({"isLead":false,"status":"waiting","deletedAt":1.0}),
         );
-        assert!(workers().is_empty(), "another account's worker is not ours");
+        assert_eq!(
+            immediate(),
+            all,
+            "a deleted worker's thread unloads at once"
+        );
+        agent(&connection, "chat", json!({"isLead":true,"deletedAt":1.0}));
+        assert_eq!(immediate(), all, "a deleted lead's thread unloads at once");
+        agent(
+            &connection,
+            "chat",
+            json!({"isLead":true,"accountKey":"other"}),
+        );
+        assert_eq!(
+            immediate(),
+            all,
+            "another account's lead holds nothing here"
+        );
     }
 }

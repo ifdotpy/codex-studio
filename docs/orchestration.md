@@ -353,8 +353,13 @@ unloads at once
 (`WORKER_UNLOAD_DELAY` in
 [idle_unload.rs](../workspaces/runtime/packages/runtime-services/src/account_worker/idle_unload.rs)),
 so provider memory follows running workers: a Claude thread's CLI exits, and the
-Codex app-server frees the thread after its own unload delay. The next turn
-resumes the thread. A lead's, an ordinary chat's, or a waiting worker's thread
+Codex app-server frees the thread at once, because Studio launches it with
+`thread_unload_delay_secs=0` (`CODEX_THREAD_UNLOAD_DELAY` in
+[provider_adapter.rs](../workspaces/runtime/packages/runtime-services/src/provider_adapter.rs);
+Codex's own default keeps it loaded for 30 minutes). The next turn resumes the
+thread. A deleted agent's thread unloads at once in the same way; deleting a
+team re-evaluates its members' idle clocks as soon as the deletion commits. A
+live lead's, ordinary chat's, or waiting worker's thread
 unloads after `idleSessionUnloadMinutes` of the same idleness, because each resume costs a
 cold CLI start. The same setting stops the provider process after its minutes
 with no loaded thread; zero keeps threads and processes loaded.

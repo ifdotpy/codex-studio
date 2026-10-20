@@ -1332,7 +1332,7 @@ impl Worker {
             callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
             changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
             _ = tokio::time::sleep_until(self.idle_deadline.unwrap_or_else(tokio::time::Instant::now)), if self.idle_deadline.is_some() => ServeSignal::IdleSweep,
-            changed = self.idle_state_changes.changed(), if self.idle_snapshot.is_none() && self.idle_clocks.has_blocked_candidates() => ServeSignal::IdleStateChanged(changed),
+            changed = self.idle_state_changes.changed(), if self.idle_snapshot.is_none() && self.idle_clocks.has_recheck_candidates() => ServeSignal::IdleStateChanged(changed),
             snapshot = async { match self.idle_snapshot.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.idle_snapshot.is_some() => ServeSignal::IdleSnapshot(snapshot),
             changed = self.idle_setting_changes.changed() => ServeSignal::IdleSettingChanged(changed),
         }
