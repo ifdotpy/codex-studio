@@ -441,7 +441,12 @@ impl CompletionWriter for RestartInputCompletion {
             if !settled {
                 return Err(RecoveryError::CommitFailed);
             }
-            crate::lifecycle_effects::notify_parent_of_turn(tx, agent_id, turn_id, unix_seconds())?;
+            // A restart reconciliation stages no retry, so a failed turn reports now.
+            let settled_at = unix_seconds();
+            crate::lifecycle_effects::notify_parent_of_turn(tx, agent_id, turn_id, settled_at)?;
+            crate::lifecycle_effects::notify_parent_of_failed_turn(
+                tx, agent_id, turn_id, settled_at,
+            )?;
             let Some(settled_agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
                 return Err(RecoveryError::CommitFailed);
             };

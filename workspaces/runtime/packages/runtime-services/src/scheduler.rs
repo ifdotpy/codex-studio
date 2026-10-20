@@ -1066,7 +1066,8 @@ mod child_turn_parent_tests {
             .transaction(move |tx| {
                 for record in [
                     json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed",
-                        "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}),
+                        "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
+                        "concurrency":4}),
                     json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","autoWake":true,"name":"Worker","cwd":"/work",
                         "branch":"work","provider":provider,"accountKey":"default",
@@ -1277,6 +1278,184 @@ mod child_turn_parent_tests {
             stopped["disconnectRecovery"]["autoWake"] = json!(false);
             recover(&store, &stopped, "completed").await;
             assert!(parent_events(&store).is_empty(), "{provider}");
+        }
+    }
+
+    /// Settle a terminal turn and stage its continuation in one transaction,
+    /// as the account worker does for a provider `turn/completed`.
+    async fn settle_staged(
+        store: &RuntimeStore,
+        attempt_id: &str,
+        turn: Value,
+    ) -> Result<bool, StoreError> {
+        let identity = TurnAttemptIdentity {
+            agent_id: "child".into(),
+            epoch: 1,
+            attempt_id: attempt_id.into(),
+        };
+        store
+            .transaction(move |tx| {
+                let params = json!({"threadId":"thread","turn":turn});
+                let settled = settle_terminal_in_transaction(tx, &identity, &params)?;
+                if settled {
+                    crate::continuation_runtime::stage(
+                        tx,
+                        crate::continuation_runtime::Completion::TerminalTurn {
+                            agent_id: "child",
+                            turn: &params["turn"],
+                            known: true,
+                            now: 10.0,
+                            limits: None,
+                        },
+                    )
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                }
+                Ok(settled)
+            })
+            .await
+    }
+
+    fn child(store: &RuntimeStore) -> Value {
+        AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+            .expect("child reads")
+            .expect("child exists")
+            .value()
+    }
+
+    const TOO_MANY_ATTEMPTS: &str = "responseTooManyFailedAttempts";
+
+    #[tokio::test]
+    async fn failed_child_turn_reports_one_failed_result() {
+        for provider in ["codex", "claude"] {
+            let (_directory, store, intent) = seeded(provider).await;
+            let turn = json!({"id":TURN,"status":"failed","error":{"message":"Model refused"}});
+            assert!(
+                settle_staged(&store, &intent.attempt_id, turn.clone())
+                    .await
+                    .expect("terminal settles")
+            );
+            let events = parent_events(&store);
+            assert_eq!(events.len(), 1, "{provider}");
+            let (id, state, payload) = &events[0];
+            assert_eq!(id, "child:child:turn-1", "{provider}");
+            assert_eq!(state, "pending", "{provider}");
+            assert_eq!(payload["status"], "failed", "{provider}");
+            assert_eq!(payload["result"], "Model refused", "{provider}");
+            assert_eq!(status(&store, "lead"), AgentStatus::Queued, "{provider}");
+
+            // A replayed terminal and a repeated notification write nothing new.
+            settle_staged(&store, &intent.attempt_id, turn)
+                .await
+                .expect("replay settles");
+            store
+                .transaction(|tx| {
+                    crate::lifecycle_effects::notify_parent_of_failed_turn(tx, "child", TURN, 11.0)
+                })
+                .await
+                .expect("repeat notification runs");
+            assert_eq!(parent_events(&store).len(), 1, "{provider}");
+        }
+    }
+
+    #[tokio::test]
+    async fn exhausted_capacity_retry_reports_the_failure_once() {
+        for provider in ["codex", "claude"] {
+            let (_directory, store, intent) = seeded(provider).await;
+            store
+                .transaction(|tx| {
+                    let mut agent = child_record(tx)?;
+                    agent.extra.insert("capacityRetryCount".into(), json!(99));
+                    AgentRepository::put(tx, &agent)
+                })
+                .await
+                .expect("retry count writes");
+            let turn = json!({"id":TURN,"status":"failed",
+                "error":{"message":"429 Too Many Requests","codexErrorInfo":TOO_MANY_ATTEMPTS}});
+            assert!(
+                settle_staged(&store, &intent.attempt_id, turn)
+                    .await
+                    .expect("terminal settles")
+            );
+            assert_eq!(child(&store)["capacityRetry"]["status"], "exhausted");
+            let events = parent_events(&store);
+            assert_eq!(events.len(), 1, "{provider}");
+            assert_eq!(events[0].0, "child:child:turn-1", "{provider}");
+            assert_eq!(events[0].2["status"], "failed", "{provider}");
+            assert_eq!(events[0].2["result"], "429 Too Many Requests", "{provider}");
+        }
+    }
+
+    fn child_record(
+        tx: &rusqlite::Transaction<'_>,
+    ) -> Result<studio_runtime_store::AgentRecord, StoreError> {
+        AgentRepository::get(tx, &AgentId::from("child"))?
+            .ok_or_else(|| StoreError::SchemaMismatch("child is missing".into()))
+    }
+
+    #[tokio::test]
+    async fn retried_capacity_failure_reports_only_the_retried_outcome() {
+        const RETRY_TURN: &str = "turn-2";
+        for provider in ["codex", "claude"] {
+            let (_directory, store, intent) = seeded(provider).await;
+            let turn = json!({"id":TURN,"status":"failed",
+                "error":{"message":"429 Too Many Requests","codexErrorInfo":TOO_MANY_ATTEMPTS}});
+            assert!(
+                settle_staged(&store, &intent.attempt_id, turn)
+                    .await
+                    .expect("terminal settles")
+            );
+            let retry = child(&store)["capacityRetry"].clone();
+            assert_eq!(retry["status"], "scheduled", "{provider}");
+            assert!(
+                parent_events(&store).is_empty(),
+                "{provider}: a scheduled retry answers for the failed turn"
+            );
+
+            // The retry claims its attempt, submits a new turn, and completes.
+            let retry_id = retry["id"].as_str().expect("retry id").to_owned();
+            let attempt_id = store
+                .transaction(move |tx| {
+                    let staged = crate::continuation_runtime::stage_capacity_retry_observed(
+                        tx, "child", &retry_id, 20.0, false, None,
+                    )
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                    assert!(staged.changed(), "the retry claims");
+                    tx.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                         VALUES('capacity-input','child','user','continue','reserved',20,1,NULL,NULL)",
+                        [],
+                    )?;
+                    let mut agent = child_record(tx)?;
+                    let attempt = agent
+                        .extra
+                        .get_mut("startAttempt")
+                        .ok_or_else(|| StoreError::SchemaMismatch("no capacity attempt".into()))?;
+                    attempt["events"] = json!(["capacity-input"]);
+                    attempt["submitted"] = json!(true);
+                    attempt["threadId"] = json!("thread");
+                    attempt["turnId"] = json!(RETRY_TURN);
+                    let attempt_id = attempt["id"].as_str().unwrap_or_default().to_owned();
+                    agent.status = AgentStatus::Running;
+                    agent.extra.insert("turnId".into(), json!(RETRY_TURN));
+                    AgentRepository::put(tx, &agent)?;
+                    Ok(attempt_id)
+                })
+                .await
+                .expect("retry claims and submits");
+            assert!(
+                settle_staged(
+                    &store,
+                    &attempt_id,
+                    json!({"id":RETRY_TURN,"status":"completed"})
+                )
+                .await
+                .expect("retried turn settles")
+            );
+            let events = parent_events(&store);
+            assert_eq!(events.len(), 1, "{provider}: {events:?}");
+            assert_eq!(events[0].0, "child:child:turn-2", "{provider}");
+            assert_eq!(events[0].2["status"], "completed", "{provider}");
+            assert_eq!(events[0].2["result"], "done", "{provider}");
         }
     }
 

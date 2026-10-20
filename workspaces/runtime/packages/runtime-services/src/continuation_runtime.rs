@@ -654,6 +654,16 @@ fn stage_terminal(
             now,
         )?;
     }
+    // The retry decision is staged: a failed turn now reports to the parent
+    // unless a hold notice already did or a scheduled retry answers for it. A
+    // replay returns above once its retry record exists.
+    if !staged
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::WorkerHold { .. }))
+    {
+        crate::lifecycle_effects::notify_parent_of_failed_turn(tx, agent_id, turn_id, now)?;
+    }
     Ok(staged)
 }
 
