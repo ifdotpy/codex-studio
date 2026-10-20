@@ -258,11 +258,12 @@ fn load_record(
         )
         .optional()
         .map_err(StoreError::from)?;
-    raw.map(|raw| decode_record(table, schema, id, &raw, validate))
+    raw.map(|raw| decode_record(connection, table, schema, id, &raw, validate))
         .transpose()
 }
 
 fn decode_record(
+    connection: &Connection,
     table: &'static str,
     schema: &str,
     id: &str,
@@ -273,7 +274,8 @@ fn decode_record(
         table,
         id: id.to_owned(),
     };
-    let value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+    let mut value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+    studio_runtime_store::agent_volatile::merge_if_agent(connection, table, id, &mut value)?;
     if value.get("id").and_then(Value::as_str) != Some(id) || !validate(schema, &value) {
         return Err(invalid());
     }
@@ -364,10 +366,11 @@ fn load_open_record(
             table,
             id: id.to_owned(),
         };
-        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let mut record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
         if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id) {
             return Err(invalid());
         }
+        studio_runtime_store::agent_volatile::merge_if_agent(connection, table, id, &mut record)?;
         Ok(record)
     })
     .transpose()
@@ -539,6 +542,7 @@ fn configure_limits(
     drop(statement);
     for (agent_id, raw) in records {
         let mut record = decode_record(
+            transaction,
             "runtime_agents",
             "PersistedAgentRecord",
             &agent_id,
@@ -685,6 +689,9 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
             )
             .expect("agent-create tables exist");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
     }
 
     #[test]
@@ -908,7 +915,9 @@ mod tests {
             ("sync entity and sequence", "sync_entities", "INSERT"),
             ("initial event", "runtime_events", "INSERT"),
             ("event queue metadata", "runtime_event_meta", "INSERT"),
-            ("agent queue", "runtime_agents", "UPDATE"),
+            // Queueing a created agent leaves its stored record unchanged, and
+            // an unchanged agent record is not rewritten: no "agent queue"
+            // write remains to fail.
         ];
         for (index, (boundary, table, operation)) in failure_points.into_iter().enumerate() {
             let state = tempfile::tempdir().expect("isolated state directory");

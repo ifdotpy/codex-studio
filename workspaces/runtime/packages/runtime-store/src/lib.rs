@@ -1,3 +1,4 @@
+pub mod agent_volatile;
 pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
@@ -1259,6 +1260,7 @@ impl RuntimeStore {
                 bootstrap::prepare_sync_schema(transaction)?;
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
                 AgentRepository::prepare_change_journal(transaction)?;
+                agent_volatile::prepare(transaction)?;
                 feature_schema::prepare(transaction)?;
                 StartupRecoveryRepository::prepare_indexes(transaction)?;
                 AgentIndexedReads::prepare_index(transaction)?;

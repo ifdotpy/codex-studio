@@ -1167,6 +1167,11 @@ fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
                     // context fields while resolving calls. The event timing
                     // and agent serverId are fixture-specific. Preserve every
                     // other row and projection field.
+                    if name == "runtime_agents" && column_name == "record" {
+                        let id = row.get::<_, String>(0)?;
+                        studio_runtime_store::agent_volatile::merge(&connection, &id, &mut value)
+                            .unwrap();
+                    }
                     if name == "runtime_agents"
                         && column_name == "record"
                         && let Some(record) = value.as_object_mut()

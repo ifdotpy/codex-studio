@@ -109,7 +109,7 @@ type SettingsProps = {
   agent: Agent;
   catalog: Catalog;
   accounts?: Account[];
-  team?: Agent[];
+  team?: Array<Pick<Agent, "id" | "rootId" | "deletedAt" | "accountKey">>;
   refresh: () => Promise<void>;
   teamDefaults?: boolean;
   initialRole?: SetupRole;

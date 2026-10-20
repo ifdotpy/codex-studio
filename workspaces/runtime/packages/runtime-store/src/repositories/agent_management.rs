@@ -57,7 +57,10 @@ pub fn read_agents(connection: &Connection, ids: &BTreeSet<String>) -> StoreResu
                 error => Err(error),
             })?;
         if let Some((rowid, raw)) = found {
-            rows.push((rowid, parse_record("runtime_agents", id.clone(), raw)?));
+            rows.push((
+                rowid,
+                parse_record(connection, "runtime_agents", id.clone(), raw)?,
+            ));
         }
     }
     rows.sort_by_key(|(rowid, _)| *rowid);
@@ -108,7 +111,7 @@ pub fn read_for_agents(
             ordered.sort_by_key(|(rowid, _, _)| *rowid);
             records.reserve(ordered.len());
             for (_, id, raw) in ordered {
-                records.push(parse_record(table, id, raw)?);
+                records.push(parse_record(connection, table, id, raw)?);
             }
         } else {
             let mut statement = connection
@@ -117,7 +120,7 @@ pub fn read_for_agents(
                 statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             {
                 let (id, raw) = row?;
-                records.push(parse_record(table, id, raw)?);
+                records.push(parse_record(connection, table, id, raw)?);
             }
         }
         tables.insert((*table).to_owned(), records);
@@ -197,8 +200,13 @@ pub fn read_for_agents(
     Ok(tables)
 }
 
-fn parse_record(table: &'static str, id: String, raw: String) -> StoreResult<Value> {
-    let record: Value =
+fn parse_record(
+    connection: &Connection,
+    table: &'static str,
+    id: String,
+    raw: String,
+) -> StoreResult<Value> {
+    let mut record: Value =
         serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredObject {
             table,
             id: id.clone(),
@@ -206,6 +214,7 @@ fn parse_record(table: &'static str, id: String, raw: String) -> StoreResult<Val
     if record.get("id").and_then(Value::as_str) != Some(&id) {
         return Err(StoreError::InvalidStoredObject { table, id });
     }
+    crate::agent_volatile::merge_if_agent(connection, table, &id, &mut record)?;
     Ok(record)
 }
 
@@ -365,6 +374,9 @@ mod tests {
                     ('child-event','child','pending',1),('other-event','unrelated','pending',1);",
             )
             .expect("fixture schema and records");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
 
         let all = read(&connection).expect("complete snapshot");
         let owners = BTreeSet::from(["root".to_owned(), "child".to_owned()]);

@@ -18,23 +18,36 @@ export type SnapshotProjectionStatusAction =
   | { type: "data-received" }
   | { type: "transport-changed"; error: string };
 
+// A repeated report must keep the state identity so it schedules no render.
+function withStatus(
+  status: SnapshotProjectionStatus,
+  change: Partial<SnapshotProjectionStatus>,
+): SnapshotProjectionStatus {
+  const next = { ...status, ...change };
+  return next.startupError === status.startupError &&
+    next.projectionError === status.projectionError &&
+    next.transportError === status.transportError
+    ? status
+    : next;
+}
+
 export function snapshotProjectionStatusReducer(
   status: SnapshotProjectionStatus,
   action: SnapshotProjectionStatusAction,
 ): SnapshotProjectionStatus {
   switch (action.type) {
     case "startup-failed":
-      return { ...status, startupError: action.error };
+      return withStatus(status, { startupError: action.error });
     case "startup-recovered":
-      return { ...status, startupError: "" };
+      return withStatus(status, { startupError: "" });
     case "projection-failed":
-      return { ...status, projectionError: action.error };
+      return withStatus(status, { projectionError: action.error });
     case "projection-recovered":
-      return { ...status, projectionError: "" };
+      return withStatus(status, { projectionError: "" });
     case "data-received":
-      return { ...status, startupError: "", projectionError: "" };
+      return withStatus(status, { startupError: "", projectionError: "" });
     case "transport-changed":
-      return { ...status, transportError: action.error };
+      return withStatus(status, { transportError: action.error });
   }
 }
 

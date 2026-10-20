@@ -128,6 +128,8 @@ mod tests {
              INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');",
         )
         .expect("declared tables create");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
 
         let (rules, agents) = RulesRepository::list(&db).expect("records read");
         assert_eq!(

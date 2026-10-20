@@ -26,11 +26,40 @@ pub fn frame_prefix_payload_bytes(prefix: &[u8]) -> usize {
 }
 
 /// Numeric Codex IDs and string Claude bridge IDs are distinct on the wire.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
 pub enum RequestId {
     Number(u64),
     String(String),
+}
+
+/// Decode an ID straight from the token, without the buffered `untagged`
+/// detour; any other JSON type, including negative numbers, is invalid.
+impl<'de> Deserialize<'de> for RequestId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct IdVisitor;
+        impl serde::de::Visitor<'_> for IdVisitor {
+            type Value = RequestId;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a non-negative integer or string request id")
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<RequestId, E> {
+                Ok(RequestId::Number(value))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<RequestId, E> {
+                u64::try_from(value)
+                    .map(RequestId::Number)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(value), &self))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<RequestId, E> {
+                Ok(RequestId::String(value.to_owned()))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<RequestId, E> {
+                Ok(RequestId::String(value))
+            }
+        }
+        deserializer.deserialize_any(IdVisitor)
+    }
 }
 
 /// Define the single closed set of method names understood by this crate.
@@ -461,20 +490,24 @@ impl From<RequestId> for Value {
     }
 }
 
-/// Decode a supervisor event payload that arrived already parsed. It is
-/// encoded once and decoded by the same wire decoder as stdout lines, so both
-/// paths share one schema and malformed payloads keep their bytes.
-pub fn decode_journal_value(cursor: u64, generation: u64, payload: Value) -> DecodedJournalEntry {
-    match serde_json::to_vec(&payload) {
-        Ok(bytes) => decode_journal_entry(cursor, generation, bytes),
-        Err(error) => DecodedJournalEntry {
-            cursor,
-            generation,
-            payload: DecodedJournalPayload::RawStdout {
-                bytes: Vec::new(),
-                error: CodecError::Serialization(error.to_string()),
-            },
+/// Decode a supervisor event payload that arrived already parsed with the
+/// same wire schema as stdout lines, without re-encoding it. Only a malformed
+/// payload is encoded, to keep its bytes for the journal.
+pub fn decode_journal_value(cursor: u64, generation: u64, payload: &Value) -> DecodedJournalEntry {
+    let decoded = WireObject::deserialize(payload)
+        .map_err(|error| CodecError::MalformedJson(error.to_string()))
+        .and_then(WireObject::into_frame);
+    let payload = match decoded {
+        Ok(frame) => DecodedJournalPayload::Frame(frame),
+        Err(error) => DecodedJournalPayload::RawStdout {
+            bytes: serde_json::to_vec(payload).unwrap_or_default(),
+            error,
         },
+    };
+    DecodedJournalEntry {
+        cursor,
+        generation,
+        payload,
     }
 }
 

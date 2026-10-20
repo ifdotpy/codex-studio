@@ -3,6 +3,16 @@ mod python_test_support;
 use serde_json::{Value, json};
 use studio_runtime_services::claude_input_recovery::runtime::freeze_start;
 
+/// Open a Python-created state as Rust does: with the volatile agent storage
+/// of 2026-10-20 installed.
+fn open_state(path: impl AsRef<std::path::Path>) -> rusqlite::Connection {
+    let mut db = rusqlite::Connection::open(path).expect("state opens");
+    let tx = db.transaction().expect("transaction");
+    studio_runtime_store::agent_volatile::prepare(&tx).expect("volatile agent storage");
+    tx.commit().expect("commit");
+    db
+}
+
 fn fixtures(root: &std::path::Path) -> Vec<Value> {
     let python = python_test_support::prepared_python(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
@@ -31,14 +41,16 @@ fn row(db: &rusqlite::Connection, table: &str, id: &str) -> Value {
             |row| row.get(0),
         )
         .expect("record");
-    serde_json::from_str(&text).expect("json")
+    let mut record = serde_json::from_str(&text).expect("json");
+    studio_runtime_store::agent_volatile::merge_if_agent(db, table, id, &mut record)
+        .expect("volatile agent fields");
+    record
 }
 #[test]
 fn fresh_freeze_matches_python_capture_and_legacy_retry_stays_held() {
     let root = tempfile::tempdir().expect("scratch");
     for case in fixtures(root.path()) {
-        let mut db =
-            rusqlite::Connection::open(case["path"].as_str().expect("path")).expect("open");
+        let mut db = open_state(case["path"].as_str().expect("path"));
         let attempt = case["attempt"]["id"].as_str().expect("attempt");
         let tx = db.transaction().expect("transaction");
         if case["retry"] == true {
@@ -77,7 +89,7 @@ fn fresh_freeze_matches_python_capture_and_legacy_retry_stays_held() {
         );
         tx.commit().expect("commit");
         drop(db);
-        let db = rusqlite::Connection::open(case["path"].as_str().expect("path")).expect("restart");
+        let db = open_state(case["path"].as_str().expect("path"));
         assert_eq!(
             row(&db, "runtime_execution_attempts", attempt)["claudeInputRequest"],
             case["frozen"]
@@ -96,7 +108,7 @@ fn freeze_failpoints_roll_back_and_restart_without_losing_the_original_input() {
                 .path()
                 .join(format!("cut-{}-{boundary}.sqlite3", case["retry"]));
             std::fs::copy(case["path"].as_str().expect("path"), &path).expect("clone");
-            let mut db = rusqlite::Connection::open(&path).expect("open");
+            let mut db = open_state(&path);
             let attempt = case["attempt"]["id"].as_str().expect("attempt");
             let before_agent = row(&db, "runtime_agents", "agent");
             let before_attempt = row(&db, "runtime_execution_attempts", attempt);
@@ -127,7 +139,7 @@ fn freeze_failpoints_roll_back_and_restart_without_losing_the_original_input() {
                 db.execute_batch("DROP TRIGGER cut").expect("remove fault");
             }
             drop(db);
-            let mut db = rusqlite::Connection::open(&path).expect("restart");
+            let mut db = open_state(&path);
             if boundary != "after_commit" {
                 assert_eq!(row(&db, "runtime_agents", "agent"), before_agent);
                 assert_eq!(
@@ -172,7 +184,7 @@ fn changed_configuration_submitted_attempt_and_unbound_events_are_never_frozen()
                 .path()
                 .join(format!("fault-{}-{fault}.sqlite3", case["retry"]));
             std::fs::copy(case["path"].as_str().expect("path"), &path).expect("clone");
-            let mut db = rusqlite::Connection::open(path).expect("open");
+            let mut db = open_state(path);
             let attempt = case["attempt"]["id"].as_str().expect("attempt");
             let mut params = case["params"].clone();
             let mut transport = case["transport"].clone();

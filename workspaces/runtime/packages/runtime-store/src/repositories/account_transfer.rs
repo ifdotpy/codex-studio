@@ -69,8 +69,11 @@ impl AccountTransferRepository {
         db.execute("INSERT INTO runtime_account_transfers(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", (id, raw))?;
         Ok(())
     }
+    /// The bounded stored agent record with its volatile fields.
     pub fn agent(db: &Connection, id: &str) -> StoreResult<Option<String>> {
-        bounded_record(db, "runtime_agents", id)
+        bounded_record(db, "runtime_agents", id)?
+            .map(|raw| crate::agent_volatile::merged_text(db, id, raw))
+            .transpose()
     }
 }
 const TABLES: &[TableRequirement] = &[TableRequirement {

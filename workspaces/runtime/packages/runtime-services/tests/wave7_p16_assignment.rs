@@ -14,6 +14,9 @@ fn database() -> Connection {
              CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
         )
         .expect("work tables create");
+    connection
+        .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+        .expect("volatile agent table creates");
     for agent in [
         json!({"id":"lead","rootId":"lead","epoch":1,"status":"running","isLead":true,"autoWake":true}),
         json!({"id":"child","rootId":"lead","parentId":"lead","epoch":2,"status":"starting","autoWake":true}),
@@ -183,6 +186,9 @@ fn real_python_spawn_assignment_corpus_matches_complete_work_rows() {
         let root = before["rootId"].as_str().expect("root id");
         let connection = Connection::open_in_memory().expect("database opens");
         connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);").expect("tables create");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let lead = json!({"id":root,"rootId":root,"epoch":1,"status":"running","isLead":true,"autoWake":true});
         connection
             .execute(

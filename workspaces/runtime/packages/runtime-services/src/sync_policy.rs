@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_schema::SYNC_ENTITY_SCOPE;
 pub use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 use studio_runtime_store::{
-    RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository, sha256_hex,
+    RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository, agent_volatile, sha256_hex,
 };
 use thiserror::Error;
 
@@ -569,14 +569,21 @@ pub(crate) fn agents_changed_since(
         "SELECT a.rowid,a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c \
          ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id",
     )?;
-    let rows = statement.query_map([generation], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    let rows = statement
+        .query_map([generation], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(rowid, id, raw)| {
+            let raw = agent_volatile::merged_text(transaction, &id, raw)?;
+            Ok((rowid, id, raw))
+        })
+        .collect()
 }
 
 /// Valid stored rows for `ids`, in rowid order like the full rebuild.
@@ -611,6 +618,11 @@ fn rows_by_id(
             .optional()?
             && valid_stored_record(table, id, &raw)
         {
+            let raw = if table == agent_volatile::AGENT_TABLE {
+                agent_volatile::merged_text(transaction, id, raw)?
+            } else {
+                raw
+            };
             rows.push((rowid, id.clone(), raw));
         }
     }
@@ -824,10 +836,12 @@ pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(St
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows
-        .into_iter()
-        .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
-        .collect())
+    agent_volatile::merged_rows(
+        connection,
+        rows.into_iter()
+            .filter(|(id, raw)| valid_stored_record("runtime_agents", id, raw))
+            .collect(),
+    )
 }
 
 /// Every stored row of `table`, refusing the first invalid one.
@@ -854,10 +868,15 @@ fn stored_record_rows(connection: &Connection, table: &str) -> StoreResult<Vec<(
     }
     let mut statement =
         connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if table == agent_volatile::AGENT_TABLE {
+        return agent_volatile::merged_rows(connection, rows);
+    }
+    Ok(rows)
 }
 
 fn valid_stored_record(table: &str, id: &str, raw: &str) -> bool {
@@ -2070,6 +2089,9 @@ mod tests {
                      ('broken','{');",
             )
             .expect("projection fixture");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let insert_monitor =
             |connection: &Connection, id: &str, agent: &str, status: &str, created: i64| {
                 connection
@@ -2247,6 +2269,9 @@ mod tests {
                      ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}');",
             )
             .expect("indexed projection fixture");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         for index in 0..104 {
             let id = format!("terminal-{index}");
             let agent = if index == 50 { "deleted" } else { "active" };
@@ -2300,6 +2325,9 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_agents (id TEXT, record TEXT);")
             .expect("create source table");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         connection
             .execute(
                 "INSERT INTO runtime_agents (id, record) VALUES ('broken-agent', '{')",

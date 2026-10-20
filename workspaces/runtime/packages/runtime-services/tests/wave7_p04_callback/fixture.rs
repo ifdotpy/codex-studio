@@ -170,26 +170,17 @@ pub async fn checkpoint(store: &RuntimeStore, context: &CallbackContext, cursor:
 }
 
 pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
-    let raw: String = store
-        .read()
+    studio_runtime_store::agent_volatile::merged_record(&store.read().unwrap(), &context.agent)
         .unwrap()
-        .query_row(
-            "SELECT record FROM runtime_agents WHERE id=?1",
-            [&context.agent],
-            |r| r.get(0),
-        )
-        .unwrap();
-    serde_json::from_str(&raw).unwrap()
+        .unwrap()
 }
 pub async fn put_actor(store: &RuntimeStore, value: &Value) {
     let id = value["id"].as_str().unwrap().to_owned();
     let record = value.to_string();
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-                rusqlite::params![id, record],
-            )?;
+            let record: Value = serde_json::from_str(&record).expect("actor JSON");
+            studio_runtime_store::agent_volatile::update(tx, &id, &record)?;
             Ok(())
         })
         .await
@@ -226,8 +217,11 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
         .unwrap();
     let mut result = serde_json::Map::new();
     for name in tables {
+        // Logical rows show each agent with its volatile fields (format
+        // 2026-10-20), as a Python state stores it.
         if logical
             && (name == "runtime_operation_receipts"
+                || name == studio_runtime_store::agent_volatile::AGENT_VOLATILE_TABLE
                 || (name.starts_with("sync_") && name != "sync_entities"))
         {
             continue;
@@ -255,6 +249,13 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
             }
             Ok(json!(values))
         }).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+        let mut rows = rows;
+        if logical && name == "runtime_agents" {
+            for row in &mut rows {
+                let id = row[0].as_str().unwrap().to_owned();
+                studio_runtime_store::agent_volatile::merge(&connection, &id, &mut row[1]).unwrap();
+            }
+        }
         result.insert(name, json!(rows));
     }
     Value::Object(result)

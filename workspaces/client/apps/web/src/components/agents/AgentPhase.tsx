@@ -24,6 +24,7 @@ import {
   type ChatWaitState,
 } from "../chat-status/chatStatusModel";
 import "./provider-activity.css";
+import { useChatWait, type ChatWaitSource } from "../../hooks/conversationData";
 import { useVisualActivityRef } from "../../hooks/useVisualActivity";
 
 export default function AgentPhase({
@@ -216,4 +217,17 @@ export default function AgentPhase({
       )}
     </div>
   );
+}
+
+/** Subscribes to the wait itself so the conversation never renders for it. */
+export function LiveAgentPhase({
+  source,
+  ...props
+}: {
+  source: ChatWaitSource;
+  agent?: Agent;
+  connection: string;
+}) {
+  const wait = useChatWait(source, props.agent);
+  return <AgentPhase {...props} wait={wait} />;
 }

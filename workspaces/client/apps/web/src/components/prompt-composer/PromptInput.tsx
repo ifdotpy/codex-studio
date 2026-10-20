@@ -1,6 +1,8 @@
-import { Textarea } from "@mantine/core";
+import { Textarea, type TextareaProps } from "@mantine/core";
 import {
+  memo,
   useCallback,
+  useRef,
   useState,
   type KeyboardEvent,
   type RefObject,
@@ -10,6 +12,43 @@ import { useSkillAutocomplete } from "../useSkillAutocomplete";
 import type { DraftReader, DraftWriter } from "./PromptComposer";
 
 const INPUT_ROWS = 2;
+
+type InputHandlers = Pick<
+  TextareaProps,
+  | "onPaste"
+  | "onChange"
+  | "onClick"
+  | "onBlur"
+  | "onKeyUp"
+  | "onSelect"
+  | "onKeyDown"
+>;
+
+// Autosize measures layout on every render of the textarea, which is expensive
+// beside hundreds of team rows. Rendering it only for its own visible inputs
+// keeps unrelated snapshot renders out of the layout engine; handlers always
+// run the latest closure through one stable proxy.
+const AutosizeInput = memo(function AutosizeInput({
+  handlers,
+  ...props
+}: Omit<TextareaProps, Exclude<keyof InputHandlers, "onKeyDown">> & {
+  handlers: { current: InputHandlers };
+}) {
+  return (
+    <Textarea
+      {...props}
+      variant="unstyled"
+      autosize
+      minRows={INPUT_ROWS}
+      onPaste={(event) => handlers.current.onPaste?.(event)}
+      onChange={(event) => handlers.current.onChange?.(event)}
+      onClick={(event) => handlers.current.onClick?.(event)}
+      onBlur={(event) => handlers.current.onBlur?.(event)}
+      onKeyUp={(event) => handlers.current.onKeyUp?.(event)}
+      onSelect={(event) => handlers.current.onSelect?.(event)}
+    />
+  );
+});
 
 export default function PromptInput(p: {
   value: string;
@@ -70,6 +109,57 @@ export default function PromptInput(p: {
   const [dismissedCommand, setDismissedCommand] = useState<string | null>(null);
   const commandMatches =
     commandQuery !== null && "rename".includes(commandQuery);
+  const handlers = useRef<InputHandlers>({});
+  const keyDown = useCallback<NonNullable<InputHandlers["onKeyDown"]>>(
+    (event) => handlers.current.onKeyDown?.(event),
+    [],
+  );
+  handlers.current = {
+    onPaste: (event) => {
+      const files = Array.from(event.clipboardData.files);
+      if (p.managed && files.length) {
+        event.preventDefault();
+        p.onPasteFiles(files);
+      }
+    },
+    onChange: (event) => p.onChange(event.currentTarget.value),
+    onClick: skills.updateRange,
+    onBlur: skills.blur,
+    onKeyUp: skills.updateRange,
+    onSelect: skills.updateRange,
+    onKeyDown: (event) => {
+      if (
+        event.key === "Tab" &&
+        p.managed &&
+        p.canSend &&
+        !p.modelCommand &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.repeat &&
+        !event.nativeEvent.isComposing &&
+        !p.sending &&
+        !p.uploading &&
+        !p.draftTooLong &&
+        (p.value.trim() || p.hasAttachments)
+      ) {
+        event.preventDefault();
+        p.onQueue();
+        return;
+      }
+      if (p.onRecallKeyDown(event)) return;
+      if (
+        !p.mobile &&
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.nativeEvent.isComposing
+      ) {
+        event.preventDefault();
+        p.onSend();
+      }
+    },
+  };
   return (
     <ComposerAutocomplete
       id={commandQuery !== null ? "command-suggestions" : "skill-suggestions"}
@@ -127,15 +217,10 @@ export default function PromptInput(p: {
         if (skill) skills.choose(skill);
       }}
     >
-      <Textarea
-        onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files);
-          if (p.managed && files.length) {
-            event.preventDefault();
-            p.onPasteFiles(files);
-          }
-        }}
-        variant="unstyled"
+      <AutosizeInput
+        handlers={handlers}
+        // The autocomplete wraps this handler in its own stable one.
+        onKeyDown={keyDown}
         id="message"
         ref={p.input}
         aria-label="Message"
@@ -155,47 +240,8 @@ export default function PromptInput(p: {
         }
         disabled={!p.canSend}
         value={p.value}
-        autosize
-        minRows={INPUT_ROWS}
-        onChange={(event) => p.onChange(event.currentTarget.value)}
         error={p.draftTooLong}
         aria-describedby={p.draftTooLong ? "draft-length-error" : undefined}
-        onClick={skills.updateRange}
-        onBlur={skills.blur}
-        onKeyUp={skills.updateRange}
-        onSelect={skills.updateRange}
-        onKeyDown={(event) => {
-          if (
-            event.key === "Tab" &&
-            p.managed &&
-            p.canSend &&
-            !p.modelCommand &&
-            !event.shiftKey &&
-            !event.altKey &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            !event.repeat &&
-            !event.nativeEvent.isComposing &&
-            !p.sending &&
-            !p.uploading &&
-            !p.draftTooLong &&
-            (p.value.trim() || p.hasAttachments)
-          ) {
-            event.preventDefault();
-            p.onQueue();
-            return;
-          }
-          if (p.onRecallKeyDown(event)) return;
-          if (
-            !p.mobile &&
-            event.key === "Enter" &&
-            !event.shiftKey &&
-            !event.nativeEvent.isComposing
-          ) {
-            event.preventDefault();
-            p.onSend();
-          }
-        }}
       />
     </ComposerAutocomplete>
   );

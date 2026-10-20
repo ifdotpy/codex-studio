@@ -2,14 +2,28 @@ import type { Agent, Room, Snapshot } from "./types";
 
 // Private rooms predate rootId metadata. Their participants define the scope.
 // Historical cross-team rooms remain visible to the user in the participant chats.
+// Agent position by ID, built once per agents array: a snapshot asks this for
+// every room, so a per-room scan of all agents would scale with rooms x agents.
+const agentPositions = new WeakMap<Agent[], Map<string, number>>();
+
 export function roomLeadIds(room: Room, agents: Agent[]): string[] {
   if (room.kind === "broadcast")
     return room.rootId && room.rootId !== "all" ? [room.rootId] : [];
-  const participants = new Set(room.members);
+  let positions = agentPositions.get(agents);
+  if (!positions) {
+    positions = new Map();
+    agents.forEach((agent, index) => positions!.set(agent.id, index));
+    agentPositions.set(agents, positions);
+  }
+  // Agent order decides which lead is the room's default.
+  const participants = [...new Set(room.members)]
+    .map((id) => positions.get(id))
+    .filter((index): index is number => index !== undefined)
+    .sort((a, b) => a - b);
   return [
     ...new Set(
-      agents
-        .filter((agent) => participants.has(agent.id))
+      participants
+        .map((index) => agents[index]!)
         .map((agent) => (agent.isLead ? agent.id : agent.rootId))
         .filter((id): id is string => !!id),
     ),
