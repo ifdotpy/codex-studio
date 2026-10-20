@@ -1427,10 +1427,11 @@ async fn run_continuation_tick(
     let (agents, limits) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/continuation-inputs",
         move || {
+            // One read checkout: a second one on this thread while `db`
+            // lives fails with NestedRead and so failed every due tick.
             let db = read_store.read()?;
             let agents = continuation_tick_agents(&db, now)?;
-            let limits_reader = read_store.read()?;
-            let limits = account_state::limits_snapshots(&limits_reader)?
+            let limits = account_state::limits_snapshots(&db)?
                 .snapshots
                 .into_iter()
                 .filter_map(|(account_key, value)| {
@@ -1913,9 +1914,9 @@ mod exit_logging_tests {
         ContinuationWait, ShutdownReason, auth_resume_proof_agents, auth_resume_proof_exists,
         continuation_next_due, continuation_tick_agents, error_exit_log,
         next_federation_retry_delay, pairing_retry_is_pending, panic_observed_log,
-        runtime_initialization_exit_log, scheduler_delay_seconds, shutdown_exit_log, shutdown_join,
-        successful_pair_retry_delay, wait_for_continuation, wait_for_retry_or_shutdown,
-        wait_for_scheduler_wake,
+        run_continuation_tick, runtime_initialization_exit_log, scheduler_delay_seconds,
+        shutdown_exit_log, shutdown_join, successful_pair_retry_delay, wait_for_continuation,
+        wait_for_retry_or_shutdown, wait_for_scheduler_wake,
     };
 
     #[test]
@@ -1962,6 +1963,20 @@ mod exit_logging_tests {
             .await
             .expect_err("shutdown joins must have a finite bound");
         assert!(error.to_string().contains("active account worker"));
+    }
+
+    #[tokio::test]
+    async fn continuation_tick_reads_its_inputs_in_one_checkout() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
+        let changed = run_continuation_tick(store, 0.0)
+            .await
+            .expect("a tick with nothing due succeeds");
+        assert!(!changed);
     }
 
     #[tokio::test(start_paused = true)]
