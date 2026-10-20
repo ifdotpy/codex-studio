@@ -174,7 +174,7 @@ const PENDING_THREAD_START_SQL: &str = concat!(
 /// The submitted receipts that [`PENDING_THREAD_START_SQL`] finds.
 const PENDING_THREAD_REQUESTS_SQL: &str =
     concat!("SELECT r.result ", pending_thread_requests_from!());
-fn has_pending_thread_start(
+pub(super) fn has_pending_thread_start(
     connection: &rusqlite::Connection,
     agent: &str,
 ) -> rusqlite::Result<bool> {
@@ -974,27 +974,32 @@ fn settle_outcome_isolated(
         }
     );
     let mut subject = Some(context.intent.agent_id.clone());
+    // A final outcome retires its request before the hold, which then sees
+    // no request in flight. A thread/start keeps its unresolved receipt: the
+    // provider may have created the thread, and another start would create a
+    // second one. Its agent stays held by that receipt as well (see `recover`).
+    let retire = || {
+        if final_outcome && context.method != Method::ThreadStart.as_str() {
+            if context.method == Method::TurnStart.as_str()
+                && let Some(key) = effect_key(&account, &Effect::Submit(context.intent.clone()))
+            {
+                delete_effect(tx, &key)?;
+            }
+            forget_request(tx, &context.operation)?;
+        }
+        Ok(())
+    };
     let fault = match agent_fault::isolate(
         tx,
         server_id,
         agent_fault::FaultStage::ProviderReply,
         &mut subject,
         |_| settle_outcome(tx, state_root, step),
+        retire,
     )? {
         Ok(settled) => return Ok((settled, None)),
         Err(fault) => fault,
     };
-    // A thread/start keeps its unresolved receipt: the provider may have
-    // created the thread, and another start would create a second one. Its
-    // agent stays held by that receipt as well (see `recover`).
-    if final_outcome && context.method != Method::ThreadStart.as_str() {
-        if context.method == Method::TurnStart.as_str()
-            && let Some(key) = effect_key(&account, &Effect::Submit(context.intent.clone()))
-        {
-            delete_effect(tx, &key)?;
-        }
-        forget_request(tx, &context.operation)?;
-    }
     Ok((
         SettledOutcome {
             retired: final_outcome,
@@ -1440,6 +1445,8 @@ pub(super) async fn journal_batch(
                             },
                         )
                     },
+                    // The worker settles the parked entry below.
+                    || Ok(()),
                 )
             })?;
             match applied {

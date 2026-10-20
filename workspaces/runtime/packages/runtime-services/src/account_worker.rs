@@ -1864,18 +1864,23 @@ impl Worker {
             // The agent's own data failed its preparation or commit, whose
             // transaction rolled back: nothing was submitted. Hold the agent,
             // and settle its effect so a restart does not run it again.
-            Err(error) if agent_fault::data_fault(&error).is_some() => {
-                let fault = self
+            Err(error) if let Some(record) = agent_fault::data_fault(&error) => {
+                let detail = error.to_string();
+                let Some(fault) = self
                     .db("hold_after_fault", move |store| async move {
                         agent_fault::hold_after(
                             &store,
                             agent_id,
                             agent_fault::FaultStage::TurnPreparation,
-                            &error,
+                            record,
+                            detail,
                         )
                         .await
                     })
-                    .await?;
+                    .await?
+                else {
+                    return Err(error);
+                };
                 fault.report(&self.account, &mut self.reported_faults);
                 if let Some(key) = effect {
                     self.complete_effect(key).await?;
@@ -3046,42 +3051,54 @@ impl Worker {
     /// (`reclassify`); an unbound completion that no outstanding request can
     /// bind any more is settled at once, so it never holds the journal.
     async fn retry_deferred(&mut self, settle: bool, reclassify: bool) -> Result<(), WorkerError> {
-        if !reclassify
-            && self
-                .deferred
-                .iter()
-                .all(|(entry, _, agent)| self.completion_may_bind(entry, agent.as_deref()))
-        {
-            return Ok(());
-        }
-        for _ in 0..self.deferred.len() {
-            let Some((entry, deferred_source, agent)) = self.deferred.pop_front() else {
-                continue;
-            };
-            if let Some(source) = deferred_source.as_ref() {
-                let Some(session) = self.vm_sessions.get(&source.actor_id) else {
+        let mut reclassify = reclassify;
+        // Each pass after the first settles at least one completion that no
+        // request can bind; an entry journaled again comes back deferred with
+        // its own agent, so the next pass can decide it.
+        loop {
+            if !reclassify
+                && self
+                    .deferred
+                    .iter()
+                    .all(|(entry, _, agent)| !self.unbindable(entry, agent.as_deref()))
+            {
+                return Ok(());
+            }
+            reclassify = false;
+            for _ in 0..self.deferred.len() {
+                let Some((entry, deferred_source, agent)) = self.deferred.pop_front() else {
                     continue;
                 };
-                if session.epoch != source.epoch || session.incarnation != source.incarnation {
-                    continue;
-                }
-            }
-            let park = !self.completion_may_bind(&entry, agent.as_deref());
-            match self
-                .journal_batch_with(vec![entry], deferred_source.as_ref(), settle, None, park)
-                .await
-            {
-                Err(WorkerError::StaleVmActor) => {
-                    if let Some(source) = deferred_source.as_ref() {
-                        self.retire_vm_actor_if_current(source);
+                if let Some(source) = deferred_source.as_ref() {
+                    let Some(session) = self.vm_sessions.get(&source.actor_id) else {
+                        continue;
+                    };
+                    if session.epoch != source.epoch || session.incarnation != source.incarnation {
+                        continue;
                     }
                 }
-                result => {
-                    result?;
+                let park = self.unbindable(&entry, agent.as_deref());
+                match self
+                    .journal_batch_with(vec![entry], deferred_source.as_ref(), settle, None, park)
+                    .await
+                {
+                    Err(WorkerError::StaleVmActor) => {
+                        if let Some(source) = deferred_source.as_ref() {
+                            self.retire_vm_actor_if_current(source);
+                        }
+                    }
+                    result => {
+                        result?;
+                    }
                 }
             }
         }
-        Ok(())
+    }
+    /// A deferred turn completion of a known agent that no outstanding
+    /// request can bind any more. An entry without its agent (one deferred
+    /// behind another) is journaled again first.
+    fn unbindable(&self, entry: &JournalEntry, agent: Option<&str>) -> bool {
+        agent.is_some() && !self.completion_may_bind(entry, agent)
     }
     /// Whether a request that may still bind this deferred turn completion
     /// is outstanding: a written request of this worker or a retained session

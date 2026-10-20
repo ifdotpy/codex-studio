@@ -132,15 +132,17 @@ fn in_savepoint<T>(
 }
 
 /// Apply one agent's part of an account transaction. `subject` is the agent
-/// that `apply` works for once it knows it. A data error rolls back `apply`
-/// and holds the agent the failing record belongs to, else `subject`; every
-/// other error, and one that names no agent, is returned unchanged.
+/// that `apply` works for once it knows it. A data error rolls back `apply`,
+/// runs `settle_failed` (the step's own settlement without its effects), and
+/// holds the agent of the failing record (see [`fault_agent`]). Every other
+/// error, and one that names no agent, is returned unchanged.
 pub(super) fn isolate<T>(
     tx: &studio_runtime_store::Transaction<'_>,
     server_id: Option<&str>,
     stage: FaultStage,
     subject: &mut Option<String>,
     apply: impl FnOnce(&mut Option<String>) -> Result<T, WorkerError>,
+    settle_failed: impl FnOnce() -> Result<(), WorkerError>,
 ) -> Result<Result<T, AgentFault>, WorkerError> {
     let error = match in_savepoint(tx, AGENT_SCOPE_SAVEPOINT, || apply(subject))? {
         Ok(value) => return Ok(Ok(value)),
@@ -149,10 +151,11 @@ pub(super) fn isolate<T>(
     let Some((scope, id)) = data_fault(&error) else {
         return Err(error);
     };
-    let Some(agent_id) = record_agent(tx, &scope, &id)?.or_else(|| subject.clone()) else {
+    let Some(agent_id) = fault_agent(tx, &scope, &id, subject.as_deref())? else {
         // Data that names no agent is account-scoped: keep it fatal.
         return Err(error);
     };
+    settle_failed()?;
     let detail = error.to_string();
     let hold = hold_agent(tx, server_id, &agent_id, stage, &detail)?;
     Ok(Err(AgentFault {
@@ -161,6 +164,26 @@ pub(super) fn isolate<T>(
         detail,
         hold,
     }))
+}
+
+/// The agent to hold for a failing record: the agent the record belongs to,
+/// else `subject` when the record is one of its own (its row, an attempt,
+/// its turn preparation or one of its request receipts). A record of the
+/// account (a journal or publication receipt, the workspace) names no agent.
+fn fault_agent(
+    tx: &studio_runtime_store::Transaction<'_>,
+    scope: &str,
+    id: &str,
+    subject: Option<&str>,
+) -> Result<Option<String>, WorkerError> {
+    if let Some(agent) = record_agent(tx, scope, id)? {
+        return Ok(Some(agent));
+    }
+    let own = matches!(
+        scope,
+        "runtime_agents" | "runtime_execution_attempts" | "turn_preparation"
+    ) || (scope == "account_worker" && id.starts_with("account:"));
+    Ok(subject.filter(|_| own).map(str::to_owned))
 }
 
 /// The agent a failing record belongs to, if the record names one.
@@ -230,7 +253,11 @@ pub(super) fn hold_agent(
                 {
                     return Ok(HoldResult::AlreadyHeld);
                 }
-                if let Some(identity) = unsubmitted_attempt(&agent) {
+                // A thread request still in flight releases the input itself,
+                // with its reply or its unknown outcome.
+                if let Some(identity) = unsubmitted_attempt(&agent)
+                    && !store::has_pending_thread_start(tx, agent_id)?
+                {
                     match in_savepoint(tx, AGENT_REQUEUE_SAVEPOINT, || {
                         Ok(SchedulerRepository::requeue_unsubmitted_attempt(
                             tx, &identity,
@@ -310,31 +337,33 @@ fn unsubmitted_attempt(
     })
 }
 
-/// Hold the agent of a failed turn preparation in its own transaction: the
-/// agent the failing record belongs to, else `subject`. `error` must be a
-/// [`data_fault`].
+/// Hold the agent of a failed turn preparation in its own transaction (see
+/// [`fault_agent`]); `None` when the failing record names no agent.
+/// `record` is the [`data_fault`] of the error that `detail` describes.
 pub(super) async fn hold_after(
     store: &RuntimeStore,
     subject: String,
     stage: FaultStage,
-    error: &WorkerError,
-) -> Result<AgentFault, WorkerError> {
-    let detail = error.to_string();
-    let (scope, id) = data_fault(error).unwrap_or_default();
+    record: (String, String),
+    detail: String,
+) -> Result<Option<AgentFault>, WorkerError> {
     let server_id = store.local_server_id()?;
     let hold_detail = detail.clone();
-    let (agent_id, hold) = scheduler::lifecycle_transaction_with(store, move |tx| {
-        let agent_id = record_agent(tx, &scope, &id)?.unwrap_or(subject);
+    let held = scheduler::lifecycle_transaction_with(store, move |tx| {
+        let (scope, id) = record;
+        let Some(agent_id) = fault_agent(tx, &scope, &id, Some(&subject))? else {
+            return Ok(None);
+        };
         let hold = hold_agent(tx, server_id.as_deref(), &agent_id, stage, &hold_detail)?;
-        Ok::<_, WorkerError>((agent_id, hold))
+        Ok::<_, WorkerError>(Some((agent_id, hold)))
     })
     .await?;
-    Ok(AgentFault {
+    Ok(held.map(|(agent_id, hold)| AgentFault {
         agent_id,
         stage,
         detail,
         hold,
-    })
+    }))
 }
 
 /// The thread of a provider `turn/completed` journal entry.
