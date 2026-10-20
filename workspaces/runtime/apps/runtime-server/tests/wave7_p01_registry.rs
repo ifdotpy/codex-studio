@@ -411,6 +411,9 @@ struct Scripted {
     unknown_first_launch_only: bool,
     launches: AtomicUsize,
     failures: AtomicUsize,
+    /// Accounts for which this predicate holds fail every launch, however often
+    /// the registry retries, so a retry timer cannot change the outcome.
+    unavailable: std::sync::OnceLock<fn(&str) -> bool>,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
@@ -433,6 +436,13 @@ impl Scripted {
 impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
         Box::pin(async move {
+            if self
+                .unavailable
+                .get()
+                .is_some_and(|unavailable| unavailable(&account))
+            {
+                return Err(WorkerError::TaskFailed);
+            }
             if self
                 .failures
                 .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1))
@@ -737,6 +747,7 @@ fn scripted_with_policy(
             unknown_first_launch_only,
             launches: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
+            unavailable: std::sync::OnceLock::new(),
             stops: Arc::default(),
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
@@ -1884,10 +1895,16 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         .unwrap();
 
     let (launcher, mut writes) = scripted();
-    // The first account page is consumed by predictable provider-start failures;
-    // its final strict continuation then reaches an eligible account without a
-    // timer or another store commit.
-    launcher.failures.store(128, Ordering::SeqCst);
+    // Every paged account except the last two fails to start on every attempt, so
+    // the registry's retry timer cannot open another launch; the strict
+    // continuation then reaches the eligible tail without a timer or another
+    // store commit.
+    launcher
+        .unavailable
+        .set(|account| {
+            account.starts_with("page-") && !matches!(account, "page-000128" | "page-000129")
+        })
+        .expect("unavailable predicate is set once");
     let registry = AccountRegistry::new(
         fixture.store.clone(),
         launcher.clone(),
