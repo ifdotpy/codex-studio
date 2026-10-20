@@ -918,6 +918,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
+    let analytics_projection_task =
+        tokio::spawn(studio_runtime_services::analytics_projection::run(
+            Arc::clone(&store),
+            monitor_shutdown.subscribe(),
+        ));
     let auth_release_task = tokio::spawn(studio_runtime_services::account_auth_gate::run_release(
         Arc::clone(&store),
         Arc::clone(&account_driver),
@@ -1236,6 +1241,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     shutdown_join("continuation scheduler task", continuation_task).await??;
     shutdown_join("held turn release task", auth_release_task).await??;
     shutdown_join("storage retention task", retention_task).await??;
+    shutdown_join("analytics projection task", analytics_projection_task).await??;
     if let Some(task) = orchestration_task {
         shutdown_join("orchestration driver task", task).await??;
     }

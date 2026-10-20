@@ -473,173 +473,55 @@ pub async fn capture(
         .await
 }
 
-/// Apply an analytics publication exactly once, even if the account worker
-/// crashes after this transaction commits but before deleting its receipt.
-/// The receipt marker and all analytics rows commit together in analytics.sqlite3.
-pub async fn capture_notification_effect(
-    store: &RuntimeStore,
-    provider_handle: String,
-    generation: u64,
-    cursor: u64,
-    capture_kind: String,
-    prepared: PreparedCapture,
-    stream: Option<NotificationStreamMetrics>,
-) -> Result<bool, CaptureError> {
-    if provider_handle.is_empty()
-        || provider_handle.len() > 256
-        || !matches!(capture_kind.as_str(), "analytics" | "analyticsStream")
-    {
-        return Err(CaptureError::Invalid("/captureIdentity"));
-    }
-    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
-    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
-    let effect_bit = if capture_kind == "analytics" {
-        1_i64
-    } else {
-        2_i64
-    };
-    store
-        .analytics_transaction(move |tx, canvas| {
-            capture_notification_effect_in(
-                tx,
-                canvas,
-                &provider_handle,
-                generation,
-                cursor,
-                effect_bit,
-                prepared,
-                stream.as_ref(),
-            )
-        })
-        .await
-}
-
-/// The capture of one notification effect inside an already open analytics
-/// transaction, deduplicated by its delivery identity. `true` captured now;
-/// `false` is an exact or legacy replay whose rows already exist.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn capture_notification_effect_in(
+/// Apply one logged `Analytics` or `AnalyticsStream` effect inside the
+/// projector's analytics transaction. The journal commit checked its agent
+/// identity when it logged the effect, so no Canvas read happens here.
+pub(crate) fn capture_logged_effect(
     tx: &Transaction<'_>,
-    canvas: &Connection,
-    provider_handle: &str,
-    generation: i64,
-    cursor: i64,
-    effect_bit: i64,
-    prepared: PreparedCapture,
-    stream: Option<&NotificationStreamMetrics>,
-) -> Result<bool, CaptureError> {
-    let capture_kind = if effect_bit == 1 {
-        "analytics"
-    } else {
-        "analyticsStream"
-    };
-    let watermark = || {
-        tx.query_row_cached(
-            "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
-            [provider_handle],
-            |row| Ok::<(i64, i64, i64), _>((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()
-    };
-    // The receipt tables exist after the first capture of a database; only a
-    // missing table runs their creation and legacy migration.
-    let legacy = match watermark() {
-        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-            if message.starts_with("no such table") =>
-        {
-            Repo::ensure_receipt_tables(tx)?;
-            watermark()?
-        }
-        result => result?,
-    };
-    if legacy.is_some_and(|(saved_generation, saved_cursor, effects)| {
-        generation < saved_generation
-            || generation == saved_generation
-                && (cursor < saved_cursor || cursor == saved_cursor && effects & effect_bit != 0)
-    }) {
-        return Ok(false);
-    }
-    let inserted = tx.execute_cached(
-        "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
-        params![provider_handle, generation, cursor, capture_kind],
-    )?;
-    if inserted == 0 {
-        return Ok(false);
-    }
-    check_identity(canvas, prepared.agent())?;
-    let prepared = std::sync::Arc::new(prepared);
-    let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
-    if let Some(metrics) = stream {
-        apply_stream_metrics(&mut decision, &prepared, metrics);
-    }
-    decision.apply(tx)?;
-    Ok(true)
-}
-
-/// Capture an `Analytics` or `AnalyticsStream` effect inside the journal commit
-/// and return the effect that remains to be published (`None`: the agent identity
-/// is stale, so nothing is captured or published). Any other effect passes
-/// through. A failed capture rolls back only that effect and is returned, so the
-/// journal commit fails with it.
-pub(crate) fn capture_effect_in(
-    analytics: &Transaction<'_>,
-    canvas: &Connection,
-    effect: crate::notification_dispatch::NotificationPostCommit,
-) -> Result<Option<crate::notification_dispatch::NotificationPostCommit>, CaptureError> {
+    effect: &crate::notification_dispatch::NotificationPostCommit,
+) -> Result<(), CaptureError> {
     use crate::notification_dispatch::NotificationPostCommit as Effect;
-    let (observation, metrics, effect_bit) = match &effect {
-        Effect::Analytics { observation, .. } => (observation, None, 1_i64),
+    let (observation, metrics) = match effect {
+        Effect::Analytics { observation, .. } => (observation, None),
         Effect::AnalyticsStream {
             observation,
             metrics,
-        } => (observation, Some(metrics), 2_i64),
-        _ => return Ok(Some(effect)),
+        } => (observation, Some(metrics)),
+        _ => return Err(CaptureError::Invalid("/effect")),
     };
     let agent = observation
         .agent
         .as_ref()
         .ok_or(CaptureError::Invalid("/agent"))?;
-    let prepared = PreparedCapture::notification_event(
+    let prepared = std::sync::Arc::new(PreparedCapture::notification_event(
         agent,
         &observation.method,
         &observation.params,
         observation.observed_at,
         observation.observed_at,
-    );
-    // A deterministic input refusal would wedge every later journal commit.
-    let Ok(prepared) = prepared else {
-        return Ok(None);
-    };
-    let delivery = &observation.delivery;
-    let generation =
-        i64::try_from(delivery.generation).map_err(|_| CaptureError::Invalid("/generation"))?;
-    let cursor = i64::try_from(delivery.cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
-    analytics.execute_batch("SAVEPOINT capture_effect")?;
-    let captured = capture_notification_effect_in(
-        analytics,
-        canvas,
-        &delivery.provider_handle,
-        generation,
-        cursor,
-        effect_bit,
-        prepared,
-        metrics,
-    );
-    match captured {
-        Ok(_) => analytics.execute_batch("RELEASE capture_effect")?,
-        Err(error) => {
-            analytics.execute_batch("ROLLBACK TO capture_effect; RELEASE capture_effect")?;
-            return match error {
-                CaptureError::StaleIdentity => Ok(None),
-                error => Err(error),
-            };
-        }
+    )?);
+    let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
+    if let Some(metrics) = metrics {
+        apply_stream_metrics(&mut decision, &prepared, metrics);
     }
-    Ok(Some(match effect {
-        Effect::Analytics { observation, .. } => Effect::AnalyticsCaptured(observation),
-        Effect::AnalyticsStream { observation, .. } => Effect::AnalyticsStreamCaptured(observation),
-        other => other,
-    }))
+    decision.apply(tx)?;
+    Ok(())
+}
+
+/// Add `count` failures to the `captureErrors` coverage metadata that the
+/// insights API reports, with the latest failure's operation, code and message.
+pub(crate) fn record_capture_errors(
+    tx: &Transaction<'_>,
+    count: i64,
+    operation: &str,
+    code: &str,
+    error: &str,
+) -> Result<(), CaptureError> {
+    tx.execute_cached(
+        "INSERT INTO analytics_meta(key,value) VALUES ('captureErrors',json_object('count',?1,'last',json_object('at',CAST(strftime('%s','now') AS INTEGER),'operation',?2,'code',?3,'error',?4))) ON CONFLICT(key) DO UPDATE SET value=json_set(analytics_meta.value,'$.count',COALESCE(json_extract(analytics_meta.value,'$.count'),0)+?1,'$.last',json_object('at',CAST(strftime('%s','now') AS INTEGER),'operation',?2,'code',?3,'error',?4))",
+        params![count, operation, code, error],
+    )?;
+    Ok(())
 }
 
 /// Retain the legacy process-scoped receipt tables while volatile token-rate
@@ -716,13 +598,12 @@ pub async fn record_publication_overflow(
             "INSERT INTO analytics_publication_overflow_receipts(receipt_id,analytics_overflow,publication_overflow) VALUES (?1,?2,?3) ON CONFLICT(receipt_id) DO UPDATE SET analytics_overflow=MAX(analytics_publication_overflow_receipts.analytics_overflow,excluded.analytics_overflow),publication_overflow=MAX(analytics_publication_overflow_receipts.publication_overflow,excluded.publication_overflow)",
             params![receipt_id.as_str(), analytics_overflow, publication_overflow],
         )?;
-        tx.execute_cached(
-            "CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
-            [],
-        )?;
-        tx.execute_cached(
-            "INSERT INTO analytics_meta(key,value) VALUES ('captureErrors',json_object('count',?1,'last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))) ON CONFLICT(key) DO UPDATE SET value=json_set(analytics_meta.value,'$.count',COALESCE(json_extract(analytics_meta.value,'$.count'),0)+?1,'$.last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))",
-            [additional],
+        record_capture_errors(
+            tx,
+            additional,
+            "analytics_capture_queue",
+            "queueOverflow",
+            "Publication queue limit reached",
         )?;
         Ok(())
     })

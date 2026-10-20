@@ -1,7 +1,7 @@
 use super::*;
 use crate::notification_dispatch::{
     NotificationObservation, NotificationPostCommit, NotificationPublicationBatch,
-    NotificationStreamMetrics, ProviderDeliveryIdentity, SharedJson,
+    ProviderDeliveryIdentity, SharedJson,
 };
 use crate::notification_runtime_effects::{
     NotificationPostCommitSink, RuntimeNotificationPostCommitSink,
@@ -65,26 +65,6 @@ fn analytics_effect_for(
             provider_at: 10.0 + cursor as f64,
         },
         budget_capture_value: None,
-    }
-}
-
-fn analytics_stream_effect(cursor: u64) -> NotificationPostCommit {
-    NotificationPostCommit::AnalyticsStream {
-        observation: NotificationObservation {
-            agent: None,
-            method: "item/agentMessage/delta".into(),
-            params: SharedJson::new(
-                json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"sample"}),
-            ),
-            delivery: ProviderDeliveryIdentity {
-                provider_handle: "account:default".into(),
-                generation: 7,
-                cursor,
-            },
-            observed_at: 10.0 + cursor as f64,
-            provider_at: 10.0 + cursor as f64,
-        },
-        metrics: NotificationStreamMetrics::default(),
     }
 }
 
@@ -166,9 +146,7 @@ async fn advance_agent_epoch(store: &RuntimeStore, epoch: u64) {
         .expect("advance authoritative agent epoch");
 }
 
-fn production_sink(
-    store: &Arc<RuntimeStore>,
-) -> (
+fn production_sink() -> (
     Arc<crate::change_notifications::ChangeNotificationHub>,
     RuntimeNotificationPostCommitSink,
 ) {
@@ -180,7 +158,6 @@ fn production_sink(
         resources: Arc::new(crate::resource_notify::ResourceNotifications::new(
             Arc::clone(&changes),
         )),
-        analytics_store: Arc::clone(store),
     };
     (changes, sink)
 }
@@ -430,122 +407,20 @@ async fn long_stream_keeps_the_publication_table_bounded() {
 }
 
 #[tokio::test]
-async fn analytics_stream_backlog_at_receipt_bound_drops_capture_without_failing_write() {
+async fn complete_analytics_usage_persists_beyond_the_publication_bound() {
     let (root, store) = test_store().await;
-    let first = NotificationPublicationBatch {
-        sequence: 1,
-        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
-            .map(analytics_stream_effect)
-            .collect(),
-        analytics_overflow: 0,
-    };
-    store
-        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &first))
-        .await
-        .expect("fill bounded pending table");
-    assert_eq!(
-        pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
-    );
-    let extra = NotificationPublicationBatch {
-        sequence: 2,
-        effects: vec![analytics_stream_effect(300)],
-        analytics_overflow: 0,
-    };
-    store
-        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &extra))
-        .await
-        .expect("publication pressure must not fail the provider write");
-    assert_eq!(
-        pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
-    );
-    let overflow: i64 = store
-        .read()
-        .expect("read overflow").query_row(
-            "SELECT json_extract(result,'$.analyticsOverflow') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:00000000000000000001:%' ORDER BY rowid DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .expect("record dropped analytics capture");
-    assert_eq!(overflow, 1);
-    let sink = Arc::new(RecordingSink::default());
-    let mut before_delete_calls = 0;
-    for _ in 0..(store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS / store::PUBLICATION_DRAIN_LIMIT) - 1 {
-        assert_eq!(
-            store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
-                .await
-                .expect("drain bounded batch"),
-            store::PUBLICATION_DRAIN_LIMIT
-        );
-        before_delete_calls += store::PUBLICATION_DRAIN_LIMIT;
-    }
-    assert!(
-        store::drain_publications_with_hook(
-            Arc::clone(&store),
-            "default".into(),
-            sink.clone(),
-            || {
-                before_delete_calls += 1;
-                if before_delete_calls == store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS {
-                    Err(WorkerError::TaskFailed)
-                } else {
-                    Ok(())
-                }
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(pending_count(&store), 1);
-    let analytics =
-        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics store");
-    let errors: String = analytics
-        .query_row(
-            "SELECT value FROM analytics_meta WHERE key='captureErrors'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("record overflow in analytics coverage");
-    assert_eq!(
-        serde_json::from_str::<Value>(&errors).expect("decode errors")["count"],
-        1
-    );
-    assert_eq!(
-        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
-            .await
-            .expect("retry overflow receipt"),
-        1
-    );
-    let repeated: String = analytics
-        .query_row(
-            "SELECT value FROM analytics_meta WHERE key='captureErrors'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("overflow metadata remains available");
-    assert_eq!(
-        serde_json::from_str::<Value>(&repeated).expect("decode repeated errors")["count"],
-        1
-    );
-    drop(store);
-    std::fs::remove_dir_all(root).expect("remove test state");
-}
-
-#[tokio::test]
-async fn complete_analytics_usage_persists_beyond_the_best_effort_bound() {
-    let (root, store) = test_store().await;
+    seed_analytics_agent(&store).await;
     let backlog = NotificationPublicationBatch {
         sequence: 1,
-        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
-            .map(analytics_stream_effect)
+        effects: (1..=store::MAX_PUBLICATION_RECEIPTS as u64)
+            .map(publication_effect)
             .collect(),
         analytics_overflow: 0,
     };
     store
         .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &backlog))
         .await
-        .expect("fill best-effort receipts to the bound");
+        .expect("fill token-rate receipts to the bound");
     let usage = NotificationPublicationBatch {
         sequence: 2,
         effects: vec![analytics_effect(
@@ -561,17 +436,17 @@ async fn complete_analytics_usage_persists_beyond_the_best_effort_bound() {
     store
         .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &usage))
         .await
-        .expect("complete usage persists under best-effort pressure");
+        .expect("complete usage persists under token-rate pressure");
     assert_eq!(
         pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64 + 1
+        store::MAX_PUBLICATION_RECEIPTS as i64 + 1
     );
     let (durable_usage, shed): (i64, i64) = store
         .read()
         .expect("read durable usage")
         .query_row(
             "SELECT \
-             count(CASE WHEN json_extract(result,'$.effect.Analytics.observation.delivery.cursor')=300 THEN 1 END), \
+             count(CASE WHEN json_extract(result,'$.effect.AnalyticsCaptured.delivery.cursor')=300 THEN 1 END), \
              count(CASE WHEN json_extract(result,'$.analyticsOverflow')>0 THEN 1 END) \
              FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
             [],
@@ -593,7 +468,7 @@ async fn complete_analytics_usage_persists_beyond_the_best_effort_bound() {
             .iter()
             .any(|effect| matches!(
                 effect,
-                NotificationPostCommit::Analytics { observation, .. }
+                NotificationPostCommit::AnalyticsCaptured(observation)
                     if observation.delivery.cursor == 300
             ))
     );
@@ -601,118 +476,9 @@ async fn complete_analytics_usage_persists_beyond_the_best_effort_bound() {
 }
 
 #[tokio::test]
-async fn durable_usage_fills_the_bound_and_best_effort_stream_is_shed() {
-    let (root, store) = test_store().await;
-    let usage = NotificationPublicationBatch {
-        sequence: 1,
-        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
-            .map(|cursor| analytics_effect(cursor, "turn/started", json!({"turnId":"turn"})))
-            .collect(),
-        analytics_overflow: 0,
-    };
-    store
-        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &usage))
-        .await
-        .expect("fill the bound with durable usage");
-    assert_eq!(
-        pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
-    );
-    let stream = NotificationPublicationBatch {
-        sequence: 2,
-        effects: vec![analytics_stream_effect(300)],
-        analytics_overflow: 0,
-    };
-    store
-        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &stream))
-        .await
-        .expect("best-effort pressure must not fail the provider write");
-    assert_eq!(
-        pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
-    );
-    let overflow: i64 = store
-        .read()
-        .expect("read overflow")
-        .query_row(
-            "SELECT json_extract(result,'$.analyticsOverflow') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:00000000000000000001:%' ORDER BY rowid DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .expect("record the shed stream capture");
-    assert_eq!(overflow, 1);
-    let durable: i64 = store
-        .read()
-        .expect("read durable usage")
-        .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_type(result,'$.effect.Analytics') IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count durable usage");
-    assert_eq!(durable, store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64);
-    std::fs::remove_dir_all(root).expect("remove test state");
-}
-
-#[tokio::test]
-async fn best_effort_reclamation_never_evicts_durable_usage() {
-    let (root, store) = test_store().await;
-    let backlog = NotificationPublicationBatch {
-        sequence: 1,
-        effects: std::iter::once(analytics_effect(
-            1,
-            "turn/started",
-            json!({"turnId":"turn"}),
-        ))
-        .chain(
-            (2..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64).map(analytics_stream_effect),
-        )
-        .collect(),
-        analytics_overflow: 0,
-    };
-    store
-        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &backlog))
-        .await
-        .expect("fill the bound with one durable usage and stream captures");
-    let token_rate = NotificationPublicationBatch {
-        sequence: 2,
-        effects: vec![publication_effect(1_000)],
-        analytics_overflow: 0,
-    };
-    store
-        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &token_rate))
-        .await
-        .expect("token-rate effect reclaims a best-effort stream capture");
-    assert_eq!(
-        pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
-    );
-    let (durable_usage, reclaimed, token_rate_saved): (i64, i64, i64) = store
-        .read()
-        .expect("read reclamation")
-        .query_row(
-            "SELECT \
-             count(CASE WHEN json_type(result,'$.effect.Analytics') IS NOT NULL THEN 1 END), \
-             count(CASE WHEN json_extract(result,'$.effect.AnalyticsStream.observation.delivery.cursor')=2 THEN 1 END), \
-             count(CASE WHEN id LIKE 'account-worker:notification-publication:default:00000000000000000002:%' AND json_type(result,'$.effect.TokenRateStream') IS NOT NULL THEN 1 END) \
-             FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .expect("count reclaimed receipts");
-    assert_eq!((durable_usage, reclaimed, token_rate_saved), (1, 0, 1));
-    std::fs::remove_dir_all(root).expect("remove test state");
-}
-
-#[tokio::test]
 async fn durable_usage_survives_a_failed_drain_and_replays_once() {
     let (root, store) = test_store().await;
+    seed_analytics_agent(&store).await;
     let usage = NotificationPublicationBatch {
         sequence: 1,
         effects: vec![analytics_effect(
@@ -753,7 +519,7 @@ async fn durable_usage_survives_a_failed_drain_and_replays_once() {
         .filter(|effect| {
             matches!(
                 effect,
-                NotificationPostCommit::Analytics { observation, .. }
+                NotificationPostCommit::AnalyticsCaptured(observation)
                     if observation.delivery.cursor == 7
             )
         })
@@ -800,7 +566,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
 
     let backlog = NotificationPublicationBatch {
         sequence: 10_000,
-        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
+        effects: (1..=store::MAX_PUBLICATION_RECEIPTS as u64)
             .map(publication_effect)
             .collect(),
         analytics_overflow: 0,
@@ -846,7 +612,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
         .expect("count bounded receipts");
     // Complete usage persists beyond the best-effort bound (at most the three
     // effects of this one frame) until the off-path drain removes receipts.
-    assert!(pending <= store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64 + 3);
+    assert!(pending <= store::MAX_PUBLICATION_RECEIPTS as i64 + 3);
     // The drain task delivers one bounded batch per pass and re-arms itself while
     // a full batch remains; later journal commits delete what it delivered.
     let backlog_prefix = format!(
@@ -906,13 +672,12 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     let sink = Arc::new(RuntimeNotificationPostCommitSink {
         token_rates: Arc::clone(&token_rates),
         resources: Arc::clone(&resources),
-        analytics_store: Arc::clone(&store),
     });
     seed_analytics_agent(&store).await;
     let backlog = NotificationPublicationBatch {
         sequence: 1,
         effects: std::iter::once(token_rate_started_effect(1))
-            .chain((2..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64).map(publication_effect))
+            .chain((2..=store::MAX_PUBLICATION_RECEIPTS as u64).map(publication_effect))
             .collect(),
         analytics_overflow: 0,
     };
@@ -923,12 +688,11 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     let pressured = NotificationPublicationBatch {
         sequence: 2,
         effects: vec![
-            // A shed stream capture is what raises the state invalidation below.
-            analytics_stream_effect(300),
             token_rate_usage_effect(300),
             token_rate_association_effect(300),
         ],
-        analytics_overflow: 0,
+        // A stream capture the buffer shed raises the state invalidation below.
+        analytics_overflow: 1,
     };
     store
         .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &pressured))
@@ -936,7 +700,7 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         .expect("preserve token-rate observation under analytics pressure");
     assert_eq!(
         pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
+        store::MAX_PUBLICATION_RECEIPTS as i64
     );
     let coalesced_effects: String = store
         .read()
@@ -1008,7 +772,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound_and_never_stop
     let backlog = NotificationPublicationBatch {
         sequence: 1,
         effects: std::iter::once(token_rate_started_effect(1))
-            .chain((2..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64).map(publication_effect))
+            .chain((2..=store::MAX_PUBLICATION_RECEIPTS as u64).map(publication_effect))
             .collect(),
         analytics_overflow: 0,
     };
@@ -1033,7 +797,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound_and_never_stop
         .expect("a saturated token-rate receipt counts overflow instead of failing");
     assert_eq!(
         pending_count(&store),
-        store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as i64
+        store::MAX_PUBLICATION_RECEIPTS as i64
     );
     let (coalesced, overflow): (i64, i64) = store
         .read()
@@ -1069,7 +833,6 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
     let sink = Arc::new(RuntimeNotificationPostCommitSink {
         token_rates,
         resources: Arc::clone(&resources),
-        analytics_store: Arc::clone(&store),
     });
     seed_analytics_agent(&store).await;
     let started = analytics_effect(8, "turn/started", json!({"turnId":"turn"}));
@@ -1118,210 +881,75 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[tokio::test]
-async fn production_sink_replay_keeps_analytics_rows_unchanged() {
-    let (root, store) = test_store().await;
-    seed_analytics_agent(&store).await;
-    let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
-    let token_rates = Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
-        Arc::clone(&changes),
-    ));
-    let resources = Arc::new(crate::resource_notify::ResourceNotifications::new(
-        Arc::clone(&changes),
-    ));
-    let sink = Arc::new(RuntimeNotificationPostCommitSink {
-        token_rates,
-        resources,
-        analytics_store: Arc::clone(&store),
-    });
-    let effect = analytics_effect(50, "turn/started", json!({"turnId":"turn"}));
-    stage(&store, 1, 0, value(1, 0, effect)).await;
-
-    assert!(
-        store::drain_publications_with_hook(
-            Arc::clone(&store),
-            "default".into(),
-            sink.clone(),
-            || { Err(WorkerError::TaskFailed) }
-        )
-        .await
-        .is_err()
-    );
-    let before = analytics_counts(&root);
-    sink.token_rates.settled().await;
-    let revision = changes.snapshot().revision;
-    let snapshot = sink.token_rates.snapshot();
-    assert_eq!(pending_count(&store), 1);
-
-    assert_eq!(
-        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
-            .await
-            .expect("replay same receipt"),
-        1
-    );
-    assert_eq!(analytics_counts(&root), before);
-    sink.token_rates.settled().await;
-    assert_eq!(changes.snapshot().revision, revision);
-    assert_eq!(sink.token_rates.snapshot(), snapshot);
-    assert_eq!(pending_count(&store), 0);
-    std::fs::remove_dir_all(root).expect("remove test state");
-}
-
-#[tokio::test]
-async fn analytics_receipt_upgrade_preserves_legacy_delivery_watermark() {
-    let (root, store) = test_store().await;
-    seed_analytics_agent(&store).await;
-    let agent = rate_agent();
-    let prepared = crate::analytics_capture::PreparedCapture::event(
-        &agent,
-        "turn/started",
-        &json!({"turnId":"turn"}),
-        10.0,
-        10.0,
-        crate::analytics_capture::CaptureSource::Live,
-    )
-    .expect("prepare legacy capture replay");
-    let analytics =
-        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
-    analytics
-        .execute_batch(
-            "CREATE TABLE analytics_capture_receipts (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);\
-             INSERT INTO analytics_capture_receipts VALUES ('account:default',7,50,1);",
-        )
-        .expect("seed the prior receipt schema");
-
-    assert!(
-        !crate::analytics_capture::capture_notification_effect(
-            &store,
-            "account:default".into(),
-            7,
-            50,
-            "analytics".into(),
-            prepared.clone(),
-            None,
-        )
-        .await
-        .expect("deduplicate a legacy receipt")
-    );
-    assert!(
-        crate::analytics_capture::capture_notification_effect(
-            &store,
-            "account:default".into(),
-            7,
-            51,
-            "analytics".into(),
-            prepared,
-            None,
-        )
-        .await
-        .expect("capture after the legacy watermark")
-    );
-
-    let analytics =
-        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("reopen analytics DB");
-    let migrated: (i64, i64, i64) = analytics
-        .query_row(
-            "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider='account:default'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("read migrated watermark");
-    assert_eq!(migrated, (7, 50, 1));
-    std::fs::remove_dir_all(root).expect("remove test state");
-}
-
-#[tokio::test]
-async fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
-    let (root, store) = test_store().await;
-    let agent = rate_agent();
-    seed_analytics_agent(&store).await;
-    let prepared = crate::analytics_capture::PreparedCapture::event(
-        &agent,
-        "turn/started",
-        &json!({"turnId":"turn"}),
-        10.0,
-        10.0,
-        crate::analytics_capture::CaptureSource::Live,
-    )
-    .expect("prepare turn capture");
-    let deliver = |cursor, prepared: crate::analytics_capture::PreparedCapture| {
-        let store = Arc::clone(&store);
-        async move {
-            crate::analytics_capture::capture_notification_effect(
-                &store,
-                "account:default".into(),
-                7,
-                cursor,
-                "analytics".into(),
-                prepared,
-                None,
-            )
-            .await
-            .expect("capture analytics effect")
-        }
+/// Persist one analytics effect through the journal's publication path.
+async fn persist_one(store: &RuntimeStore, sequence: u64, effect: NotificationPostCommit) {
+    let batch = NotificationPublicationBatch {
+        sequence,
+        effects: vec![effect],
+        analytics_overflow: 0,
     };
+    store
+        .transaction_with(move |tx| store::persist_publication_batch(tx, "default", &batch))
+        .await
+        .expect("persist analytics effect");
+}
 
-    assert!(deliver(4, prepared.clone()).await);
-    assert!(
-        deliver(3, prepared.clone()).await,
-        "delayed first delivery remains capturable"
-    );
-    assert!(
-        !deliver(3, prepared).await,
-        "only an exact replay is deduplicated"
-    );
-    let analytics =
-        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
-    let receipts: i64 = analytics
+fn projection_log_count(store: &RuntimeStore) -> i64 {
+    store
+        .read()
+        .expect("read store")
         .query_row(
-            "SELECT count(*) FROM analytics_capture_effect_receipts WHERE provider='account:default' AND generation=7 AND effect='analytics'",
+            "SELECT count(*) FROM runtime_analytics_projection",
             [],
             |row| row.get(0),
         )
-        .expect("count exact delivery receipts");
-    assert_eq!(receipts, 2);
-    std::fs::remove_dir_all(root).expect("remove test state");
+        .expect("count projection log rows")
 }
 
 #[tokio::test]
-async fn stale_analytics_observation_settles_without_publication() {
+async fn stale_analytics_observation_is_neither_logged_nor_published() {
     let (root, store) = test_store().await;
     seed_analytics_agent(&store).await;
-    let (changes, sink) = production_sink(&store);
-    let stale = analytics_effect_for(
-        agent_at_epoch(0),
-        50,
-        "thread/tokenUsage/updated",
-        json!({"turnId":"turn","tokenUsage":{
-            "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-            "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
-        }}),
-    );
     advance_agent_epoch(&store, 1).await;
-    let before = analytics_counts(&root);
-    sink.token_rates.settled().await;
-    let revision = changes.snapshot().revision;
-    let snapshot = sink.token_rates.snapshot();
-
-    sink.publish(&stale)
-        .await
-        .expect("superseded observation settles");
-    assert_eq!(analytics_counts(&root), before);
-    sink.token_rates.settled().await;
-    assert_eq!(changes.snapshot().revision, revision);
-    assert_eq!(sink.token_rates.snapshot(), snapshot);
-
-    let current = analytics_effect_for(
-        agent_at_epoch(1),
-        51,
-        "turn/started",
-        json!({"turnId":"turn"}),
+    persist_one(
+        &store,
+        1,
+        analytics_effect_for(
+            agent_at_epoch(0),
+            50,
+            "thread/tokenUsage/updated",
+            json!({"turnId":"turn","tokenUsage":{
+                "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+                "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+            }}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (projection_log_count(&store), pending_count(&store)),
+        (0, 0)
     );
-    sink.publish(&current)
+
+    persist_one(
+        &store,
+        2,
+        analytics_effect_for(
+            agent_at_epoch(1),
+            51,
+            "turn/started",
+            json!({"turnId":"turn"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (projection_log_count(&store), pending_count(&store)),
+        (1, 1)
+    );
+    let before = analytics_counts(&root);
+    crate::analytics_projection::project_pending(&store)
         .await
-        .expect("current observation captures");
-    assert_eq!(analytics_counts(&root).2, before.2 + 1);
-    assert!(changes.snapshot().revision > revision);
+        .expect("project the current observation");
+    assert_eq!(analytics_counts(&root).1, before.1 + 1);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
@@ -1329,7 +957,6 @@ async fn stale_analytics_observation_settles_without_publication() {
 async fn deleted_agent_observation_does_not_recreate_identity() {
     let (root, store) = test_store().await;
     seed_analytics_agent(&store).await;
-    let (changes, sink) = production_sink(&store);
     store
         .transaction_with(move |tx| {
             tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
@@ -1337,18 +964,16 @@ async fn deleted_agent_observation_does_not_recreate_identity() {
         })
         .await
         .expect("delete authoritative agent");
-    let before = analytics_counts(&root);
-    let revision = changes.snapshot().revision;
-
-    sink.publish(&analytics_effect(
-        50,
-        "turn/started",
-        json!({"turnId":"turn"}),
-    ))
-    .await
-    .expect("deleted agent observation settles");
-    assert_eq!(analytics_counts(&root), before);
-    assert_eq!(changes.snapshot().revision, revision);
+    persist_one(
+        &store,
+        1,
+        analytics_effect(50, "turn/started", json!({"turnId":"turn"})),
+    )
+    .await;
+    assert_eq!(
+        (projection_log_count(&store), pending_count(&store)),
+        (0, 0)
+    );
     let agents: i64 = store
         .read()
         .expect("read store")
@@ -1363,27 +988,25 @@ async fn deleted_agent_observation_does_not_recreate_identity() {
 }
 
 #[tokio::test]
-async fn stale_analytics_receipt_does_not_block_later_observations() {
-    assert_drains_before_current_receipt(analytics_effect_for(
-        agent_at_epoch(0),
-        50,
-        "turn/started",
-        json!({"turnId":"turn"}),
-    ))
-    .await;
-}
-
-#[tokio::test]
-async fn invalid_analytics_input_does_not_block_later_observations() {
-    // Live cutover 4: one capture that failed the same way on every retry held
-    // the account's publication head until the queue reached its bound.
-    assert_drains_before_current_receipt(analytics_effect_for(
-        agent_at_epoch(1),
-        50,
-        "item/started",
-        json!(["not an object"]),
-    ))
-    .await;
+async fn legacy_uncaptured_analytics_receipts_drain_without_capture() {
+    // Receipts written before the projection log still drain in order; the sink
+    // publishes their token rate and state, never analytics rows.
+    for first in [
+        analytics_effect_for(
+            agent_at_epoch(0),
+            50,
+            "turn/started",
+            json!({"turnId":"turn"}),
+        ),
+        analytics_effect_for(
+            agent_at_epoch(1),
+            50,
+            "item/started",
+            json!(["not an object"]),
+        ),
+    ] {
+        assert_drains_before_current_receipt(first).await;
+    }
 }
 
 #[tokio::test]
@@ -1407,7 +1030,7 @@ async fn assert_drains_before_current_receipt(first: NotificationPostCommit) {
     let (root, store) = test_store().await;
     seed_analytics_agent(&store).await;
     advance_agent_epoch(&store, 1).await;
-    let (_changes, sink) = production_sink(&store);
+    let (_changes, sink) = production_sink();
     stage(&store, 1, 0, value(1, 0, first)).await;
     stage(
         &store,
@@ -1434,12 +1057,12 @@ async fn assert_drains_before_current_receipt(first: NotificationPostCommit) {
         2
     );
     assert_eq!(pending_count(&store), 0);
-    assert_eq!(analytics_counts(&root).2, before.2 + 1);
+    assert_eq!(analytics_counts(&root), before);
     drop(store);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-fn analytics_counts(root: &std::path::Path) -> (i64, i64, i64) {
+fn analytics_counts(root: &std::path::Path) -> (i64, i64) {
     let db = rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("analytics DB");
     let notifications = db
         .query_row("SELECT count(*) FROM analytics_notifications", [], |row| {
@@ -1449,25 +1072,7 @@ fn analytics_counts(root: &std::path::Path) -> (i64, i64, i64) {
     let turns = db
         .query_row("SELECT count(*) FROM analytics_turns", [], |row| row.get(0))
         .expect("turn rows");
-    // The capture service creates its receipt table with the first capture.
-    let receipts_exist: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_effect_receipts')",
-            [],
-            |row| row.get(0),
-        )
-        .expect("capture receipt table lookup");
-    let captures = if receipts_exist {
-        db.query_row(
-            "SELECT count(*) FROM analytics_capture_effect_receipts",
-            [],
-            |row| row.get(0),
-        )
-        .expect("capture idempotency rows")
-    } else {
-        0
-    };
-    (notifications, turns, captures)
+    (notifications, turns)
 }
 
 #[tokio::test]
@@ -1543,17 +1148,10 @@ async fn streamed_turn_analytics_rows_match_python_capture_oracle() {
         },
         metrics: stream,
     };
-    let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
-    let sink = RuntimeNotificationPostCommitSink {
-        token_rates: Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
-            Arc::clone(&changes),
-        )),
-        resources: Arc::new(crate::resource_notify::ResourceNotifications::new(changes)),
-        analytics_store: Arc::clone(&store),
-    };
-    sink.publish(&effect)
+    persist_one(&store, 1, effect).await;
+    crate::analytics_projection::project_pending(&store)
         .await
-        .expect("publish streamed analytics");
+        .expect("project streamed analytics");
 
     let actual_db =
         rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics output");
@@ -1603,7 +1201,10 @@ async fn streamed_turn_analytics_rows_match_python_capture_oracle() {
     let values = actual["analytics_meta"]
         .as_array_mut()
         .expect("metadata rows");
-    values.retain(|row| row["key"] != "trackingSince");
+    values.retain(|row| {
+        row["key"] != "trackingSince"
+            && row["key"] != studio_runtime_store::analytics_capture::PROJECTION_CURSOR_KEY
+    });
     let mut expected = expected;
     let values = expected["analytics_meta"]
         .as_array_mut()

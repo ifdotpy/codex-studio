@@ -294,7 +294,6 @@ impl HostRuntime {
                 studio_runtime_services::notification_runtime_effects::RuntimeNotificationPostCommitSink {
                     token_rates: state.token_rate_handle(),
                     resources: state.resource_notifications_handle(),
-                    analytics_store: Arc::clone(&store),
                 },
             ),
             environment: std::env::vars().collect(),

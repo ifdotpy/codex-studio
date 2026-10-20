@@ -160,16 +160,17 @@ const VERSION_READER_CONNECTION_RESERVATION: usize = 1;
 pub const READ_CONNECTION_POOL_CAPACITY: usize =
     CANVAS_READER_CONNECTION_CAPACITY - VERSION_READER_CONNECTION_RESERVATION;
 
-/// `PRAGMA synchronous` of the Canvas database: every commit is fsynced, because the
-/// Canvas journal is the durable record that analytics capture replays from.
+/// `PRAGMA synchronous` of the Canvas database: every commit is fsynced, because
+/// Canvas holds the analytics projection log that analytics.sqlite3 is rebuilt from.
 const CANVAS_SYNCHRONOUS: &str = "FULL";
-/// `PRAGMA synchronous` of the analytics database (WAL). A commit is durable against
-/// an application crash but is not fsynced, saving one fsync per journal batch. After
-/// an OS or power crash the last moments of analytics rows can be lost: analytics
-/// commits before Canvas, so Canvas may be durable past a lost analytics commit and
-/// that journal entry is not replayed. Canvas and the integrity of both files are
-/// unaffected (WAL with NORMAL never corrupts).
+/// `PRAGMA synchronous` of the analytics database (WAL) for ordinary writes. A commit is
+/// durable against an application crash but is not fsynced. After an OS or power crash
+/// the last analytics commits can be lost; the projection cursor is lost with them, so
+/// the projector replays those Canvas log rows (WAL with NORMAL never corrupts).
 const ANALYTICS_SYNCHRONOUS: &str = "NORMAL";
+/// `PRAGMA synchronous` of one analytics projection commit: it fsyncs the WAL, so every
+/// analytics commit up to it is durable before Canvas may prune the projected log rows.
+const ANALYTICS_PROJECTION_SYNCHRONOUS: &str = "FULL";
 
 /// Canvas tables with process-local observers for committed row changes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -200,6 +201,7 @@ pub enum ObservedTable {
     OrchestrationSettings,
     RuntimeRequests,
     RuntimeToolRequests,
+    AnalyticsProjection,
 }
 
 /// Maximum rowid occurrences recorded per observed table for one writer transaction.
@@ -274,6 +276,7 @@ impl ObservedTable {
             Self::OrchestrationSettings => "runtime_orchestration_settings",
             Self::RuntimeRequests => "runtime_requests",
             Self::RuntimeToolRequests => "runtime_tool_requests",
+            Self::AnalyticsProjection => "runtime_analytics_projection",
         }
     }
 
@@ -305,6 +308,7 @@ impl ObservedTable {
             Self::OrchestrationSettings => 1 << 23,
             Self::RuntimeRequests => 1 << 24,
             Self::RuntimeToolRequests => 1 << 25,
+            Self::AnalyticsProjection => 1 << 26,
         }
     }
 
@@ -316,7 +320,7 @@ impl ObservedTable {
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 26] = [
+const OBSERVED_TABLES: [ObservedTable; 27] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
@@ -343,6 +347,7 @@ const OBSERVED_TABLES: [ObservedTable; 26] = [
     ObservedTable::OrchestrationSettings,
     ObservedTable::RuntimeRequests,
     ObservedTable::RuntimeToolRequests,
+    ObservedTable::AnalyticsProjection,
 ];
 
 /// Value-free observations emitted by the optional diagnostics callback.
@@ -1555,13 +1560,6 @@ impl RuntimeStore {
         fire_commit_observers(&self.commit_notifiers);
     }
 
-    /// The analytics connection. Lock it only inside a canvas writer callback,
-    /// the way `analytics_transaction` does, so analytics writes stay serialized
-    /// with canvas writes.
-    pub fn analytics_connection(&self) -> Arc<Mutex<Connection>> {
-        Arc::clone(&self.analytics)
-    }
-
     /// Run one durable transaction while holding the sole serialized writer.
     /// Admission waits cancellably when the named actor capacity is exhausted. A
     /// canceled wait submits no SQL; cancellation after submission cannot retract
@@ -2191,7 +2189,7 @@ mod read_pool_tests {
             .expect("canvas pragma");
         assert_eq!(canvas, 2, "{CANVAS_SYNCHRONOUS}");
         let analytics: i64 = store
-            .analytics_connection()
+            .analytics
             .lock()
             .expect("analytics connection")
             .query_row("PRAGMA synchronous", [], |row| row.get(0))

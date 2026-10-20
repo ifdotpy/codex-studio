@@ -49,40 +49,64 @@ impl CaptureTable {
     }
 }
 
+/// `analytics_meta` key of the last Canvas `runtime_analytics_projection` sequence
+/// applied to analytics. Unit: Canvas log sequence number.
+pub const PROJECTION_CURSOR_KEY: &str = "canvasProjectionSeq";
+
 pub struct AnalyticsCaptureRepository;
 impl AnalyticsCaptureRepository {
-    /// Create the per-delivery capture receipt tables and move legacy receipts
-    /// to their watermarks, inside the caller's analytics transaction. A
-    /// capture calls it only when the tables are missing (a database no
-    /// capture has written yet), not once per effect.
-    pub fn ensure_receipt_tables(db: &Connection) -> StoreResult<()> {
-        db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect));\
-             CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
-             CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
+    /// Append one analytics projection record (`NotificationPostCommit` JSON) in
+    /// the caller's Canvas transaction, so it commits with the provider event.
+    pub fn append_projection(canvas: &Connection, record: &str) -> StoreResult<()> {
+        canvas.execute_cached(
+            "INSERT INTO runtime_analytics_projection(record) VALUES (?1)",
+            [record],
         )?;
-        let migrated: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
-            [],
-            |row| row.get(0),
-        )?;
-        if migrated {
-            return Ok(());
-        }
-        let legacy_exists: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
-            [],
-            |row| row.get(0),
-        )?;
-        if legacy_exists {
-            db.execute(
-                "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
-                [],
-            )?;
-        }
-        db.execute(
-            "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
-            [],
+        Ok(())
+    }
+    /// Canvas log rows after `after`, in commit order, at most `limit` rows.
+    pub fn projection_page(
+        canvas: &Connection,
+        after: i64,
+        limit: usize,
+    ) -> StoreResult<Vec<(i64, String)>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = canvas
+            .prepare_cached(
+                "SELECT seq,record FROM runtime_analytics_projection WHERE seq>?1 ORDER BY seq LIMIT ?2",
+            )?
+            .query_map(params![after, limit], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+    /// Delete Canvas log rows up to `through`, which analytics holds durably.
+    pub fn prune_projection(canvas: &Connection, through: i64) -> StoreResult<usize> {
+        Ok(canvas.execute_cached(
+            "DELETE FROM runtime_analytics_projection WHERE seq<=?1",
+            [through],
+        )?)
+    }
+    /// The last Canvas log sequence applied to analytics; 0 for a fresh analytics database.
+    pub fn projection_cursor(analytics: &Connection) -> StoreResult<i64> {
+        let raw: Option<String> = analytics
+            .query_row_cached(
+                "SELECT value FROM analytics_meta WHERE key=?1",
+                [PROJECTION_CURSOR_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map_or(Ok(0), |raw| {
+            raw.parse().map_err(|_| StoreError::InvalidStoredRecord {
+                object: "analytics_meta",
+                id: PROJECTION_CURSOR_KEY.to_owned(),
+            })
+        })
+    }
+    /// Save the projection cursor in the analytics transaction that applied its rows.
+    pub fn set_projection_cursor(analytics: &Connection, seq: i64) -> StoreResult<()> {
+        analytics.execute_cached(
+            "INSERT INTO analytics_meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![PROJECTION_CURSOR_KEY, seq.to_string()],
         )?;
         Ok(())
     }
@@ -203,6 +227,45 @@ impl AnalyticsCaptureRepository {
     }
 }
 impl RuntimeStore {
+    /// Run one analytics projection transaction on the blocking pool without
+    /// Canvas writer admission: it locks only the analytics connection, and the
+    /// projector reads Canvas through a reader before it. The commit uses
+    /// [`crate::ANALYTICS_PROJECTION_SYNCHRONOUS`], so on success every analytics
+    /// commit up to this one is durable and the projected Canvas rows may be pruned.
+    pub async fn analytics_projection_transaction<T, E>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        let analytics = std::sync::Arc::clone(&self.analytics);
+        let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
+        crate::blocking_pool::spawn_blocking("analytics/projection", move || {
+            let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            // SQLite refuses a synchronous change inside a transaction.
+            db.pragma_update(None, "synchronous", crate::ANALYTICS_PROJECTION_SYNCHRONOUS)
+                .map_err(StoreError::from)?;
+            let outcome: Result<T, E> = (|| {
+                let tx = db
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(StoreError::from)?;
+                let value = operation(&tx)?;
+                tx.commit().map_err(StoreError::commit_outcome_unknown)?;
+                Ok(value)
+            })();
+            db.pragma_update(None, "synchronous", crate::ANALYTICS_SYNCHRONOUS)
+                .map_err(StoreError::from)?;
+            if outcome.is_ok() {
+                checkpoint_requested.store(true, std::sync::atomic::Ordering::Release);
+            }
+            outcome
+        })
+        .await
+        .map_err(|_| E::from(StoreError::ReadTaskFailed))?
+    }
+
     /// Keep the Canvas actor callback occupied for stable main-store reads through commit:
     /// analytics_capture::{capture,capture_batch}, analytics_history::HistoryBatch::commit,
     /// and analytics_history_repair::{migrate_budget,repair_terminal_errors} rely on it.

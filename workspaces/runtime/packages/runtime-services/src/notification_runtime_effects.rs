@@ -8,8 +8,6 @@ use crate::notification_dispatch::{
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::Transaction;
 
 pub struct RuntimeNotificationEffects;
@@ -166,8 +164,8 @@ impl NotificationEffects for RuntimeNotificationEffects {
 /// The worker never calls it for an uncommitted result or a receipt replay.
 /// Implementations deduplicate by the effect's `observation.delivery`; a
 /// process may crash after publication and before the durable row is deleted.
-/// An analytics effect whose agent identity was superseded returns `Ok` and
-/// writes nothing; every other error keeps the receipt for retry.
+/// An error keeps the receipt for retry. Analytics rows are not written here:
+/// the analytics projector applies them from the Canvas log.
 pub trait NotificationPostCommitSink: Send + Sync {
     fn publish<'a>(
         &'a self,
@@ -200,7 +198,6 @@ impl NotificationPostCommitSink for UnavailablePostCommitSink {
 pub struct RuntimeNotificationPostCommitSink {
     pub token_rates: std::sync::Arc<crate::token_rate::TokenRateHub>,
     pub resources: std::sync::Arc<crate::resource_notify::ResourceNotifications>,
-    pub analytics_store: Arc<RuntimeStore>,
 }
 
 impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
@@ -227,17 +224,6 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
     }
 }
 
-/// Whether an analytics effect still belongs to the authoritative agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AnalyticsDisposition {
-    /// Captured now, or an exact replay. Replays still project volatile token
-    /// rates and state, because that projection is not durable across restart.
-    Current,
-    /// The agent identity was replaced or deleted. The effect settles without
-    /// analytics, token-rate, or state publication.
-    Stale,
-}
-
 impl RuntimeNotificationPostCommitSink {
     async fn publish_effect(
         &self,
@@ -255,13 +241,19 @@ impl RuntimeNotificationPostCommitSink {
                     })?;
                 return Ok(());
             }
-            NotificationPostCommit::AnalyticsCaptured(observation) => {
+            // Analytics rows are projected from the Canvas log; the receipt
+            // publishes the token rate and the state invalidation. A legacy
+            // uncaptured receipt (written before the projection log) publishes
+            // the same, without analytics rows.
+            NotificationPostCommit::AnalyticsCaptured(observation)
+            | NotificationPostCommit::Analytics { observation, .. } => {
                 if observation.agent.is_some() {
                     self.project_token_rate(effect)?;
                 }
                 (observation, "analytics")
             }
-            NotificationPostCommit::AnalyticsStreamCaptured(observation) => {
+            NotificationPostCommit::AnalyticsStreamCaptured(observation)
+            | NotificationPostCommit::AnalyticsStream { observation, .. } => {
                 (observation, "analyticsStream")
             }
             NotificationPostCommit::TokenRateStream(observation)
@@ -277,29 +269,6 @@ impl RuntimeNotificationPostCommitSink {
                 // No durable state changed here, so a state reset would only
                 // make clients reread the same entity sequence.
                 return Ok(());
-            }
-            NotificationPostCommit::Analytics {
-                observation,
-                budget_capture_value: _,
-            } => {
-                let disposition = self.capture_analytics(effect, observation, None).await?;
-                if disposition == AnalyticsDisposition::Stale {
-                    return Ok(());
-                }
-                self.project_token_rate(effect)?;
-                (observation, "analytics")
-            }
-            NotificationPostCommit::AnalyticsStream {
-                observation,
-                metrics,
-            } => {
-                let disposition = self
-                    .capture_analytics(effect, observation, Some(metrics.clone()))
-                    .await?;
-                if disposition == AnalyticsDisposition::Stale {
-                    return Ok(());
-                }
-                (observation, "analyticsStream")
             }
         };
         let delivery = &observation.delivery;
@@ -333,78 +302,6 @@ impl RuntimeNotificationPostCommitSink {
             .publish_observation(effect.clone())
             .map_err(|_| NotificationDispatchError::Dependency("sync/token-rates/publication"))?;
         Ok(())
-    }
-
-    async fn capture_analytics(
-        &self,
-        effect: &NotificationPostCommit,
-        observation: &NotificationObservation,
-        stream: Option<crate::notification_dispatch::NotificationStreamMetrics>,
-    ) -> Result<AnalyticsDisposition, NotificationDispatchError> {
-        let agent = observation
-            .agent
-            .as_ref()
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
-        // Input validation is deterministic: a retry fails the same way, so a
-        // refused input settles like a stale one (see below).
-        let prepared = match crate::analytics_capture::PreparedCapture::notification_event(
-            agent,
-            &observation.method,
-            &observation.params,
-            observation.observed_at,
-            observation.observed_at,
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                eprintln!(
-                    "analytics capture dropped {} {}:{}:{}: {error}",
-                    observation.method,
-                    observation.delivery.provider_handle,
-                    observation.delivery.generation,
-                    observation.delivery.cursor
-                );
-                return Ok(AnalyticsDisposition::Stale);
-            }
-        };
-        let kind = match effect {
-            NotificationPostCommit::Analytics { .. } => "analytics".to_owned(),
-            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream".to_owned(),
-            _ => return Err(NotificationDispatchError::InvalidNotification),
-        };
-        match crate::analytics_capture::capture_notification_effect(
-            &self.analytics_store,
-            observation.delivery.provider_handle.clone(),
-            observation.delivery.generation,
-            observation.delivery.cursor,
-            kind,
-            prepared,
-            stream,
-        )
-        .await
-        {
-            // `true` captured now; `false` is an exact or legacy replay whose
-            // rows already exist.
-            Ok(_) => Ok(AnalyticsDisposition::Current),
-            // The identity check rolls back the effect receipt, so a retry
-            // would fail the same way and block every later publication.
-            Err(crate::analytics_capture::CaptureError::StaleIdentity) => {
-                Ok(AnalyticsDisposition::Stale)
-            }
-            // An invalid input fails the same way on every retry. Python's
-            // lossy capture worker records the failure and continues; holding
-            // the receipt would block every later publication of the account.
-            Err(crate::analytics_capture::CaptureError::Invalid(location)) => {
-                eprintln!(
-                    "analytics capture dropped {} {}:{}:{}: invalid input at {location}",
-                    observation.method,
-                    observation.delivery.provider_handle,
-                    observation.delivery.generation,
-                    observation.delivery.cursor
-                );
-                Ok(AnalyticsDisposition::Stale)
-            }
-            Err(_) => Err(NotificationDispatchError::Dependency("analytics/capture")),
-        }
     }
 }
 
@@ -510,61 +407,5 @@ mod tests {
                 .pointer("/Analytics/observation/params/threadId")
                 .is_some()
         );
-    }
-}
-
-#[cfg(test)]
-mod capture_refusal_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn an_invalid_analytics_input_settles_instead_of_holding_the_queue() {
-        // Live cutover 4: one capture that failed the same way on every retry
-        // held the account's publication head until the queue reached its
-        // bound and the account worker stopped.
-        let directory = tempfile::tempdir().expect("state directory");
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("store opens"),
-        );
-        let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
-        let sink = RuntimeNotificationPostCommitSink {
-            token_rates: Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
-                Arc::clone(&changes),
-            )),
-            resources: Arc::new(crate::resource_notify::ResourceNotifications::new(
-                Arc::clone(&changes),
-            )),
-            analytics_store: Arc::clone(&store),
-        };
-        let effect = NotificationPostCommit::Analytics {
-            observation: NotificationObservation {
-                agent: Some(crate::notification_dispatch::SharedJson::new(
-                    serde_json::json!({
-                        "id":"agent","name":"Agent","rootId":"root","accountKey":"default",
-                        "accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn",
-                        "model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,
-                        "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,
-                        "epoch":0,"status":"running"
-                    }),
-                )),
-                method: "item/started".into(),
-                params: crate::notification_dispatch::SharedJson::new(serde_json::json!([
-                    "not an object"
-                ])),
-                delivery: ProviderDeliveryIdentity {
-                    provider_handle: "account:default".into(),
-                    generation: 7,
-                    cursor: 50,
-                },
-                observed_at: 60.0,
-                provider_at: 60.0,
-            },
-            budget_capture_value: None,
-        };
-        sink.publish(&effect)
-            .await
-            .expect("a deterministic capture refusal settles the publication");
     }
 }

@@ -14,10 +14,18 @@ use studio_runtime_store::{
     StartupRecoveryRepository, StoreError, TaskRepository, check_state_readonly,
 };
 
-// Rust-owned feature indexes stay outside Python lazy DDL. The runtime-owned
-// indexes below have repository DDL metadata checked against Rust sqlite_master
-// before this exact named exception is applied to Python catalog parity.
-const RUST_OWNED_FEATURE_SCHEMA_INDEXES: &[&str] = &["runtime_agent_callback_context"];
+// Rust-owned feature schema objects stay outside Python lazy DDL, as
+// (name, SQLite type, table). The runtime-owned indexes below have repository
+// DDL metadata checked against Rust sqlite_master before this exact named
+// exception is applied to Python catalog parity.
+const RUST_OWNED_FEATURE_SCHEMA_OBJECTS: &[(&str, &str, &str)] = &[
+    ("runtime_agent_callback_context", "index", "runtime_agents"),
+    (
+        "runtime_analytics_projection",
+        "table",
+        "runtime_analytics_projection",
+    ),
+];
 const RUST_OWNED_RUNTIME_INDEX_NAMES: &[&str] = &[
     "runtime_agent_account_wake_candidates_v3",
     "runtime_agent_capacity_slots_v2",
@@ -55,11 +63,11 @@ async fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migr
     assert_shared_task_indexes_match_python(&expected["databases"]);
     assert_valid_markers(&expected["markers"]);
     assert_eq!(
-        catalog_without_rust_owned_indexes(&rust_catalog),
+        catalog_without_rust_owned_objects(&rust_catalog),
         expected["databases"],
         "{}",
         catalog_diff(
-            &catalog_without_rust_owned_indexes(&rust_catalog),
+            &catalog_without_rust_owned_objects(&rust_catalog),
             &expected["databases"]
         )
     );
@@ -91,7 +99,7 @@ async fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migr
     assert_rust_owned_feature_schema_objects(&opened["before"], &feature_schema);
     assert_rust_owned_runtime_indexes(&opened["before"]);
     assert_eq!(
-        catalog_without_rust_owned_indexes(&opened["before"]),
+        catalog_without_rust_owned_objects(&opened["before"]),
         expected["databases"]
     );
     assert_eq!(opened["sync_seeds"], expected["sync_seeds"]);
@@ -414,8 +422,13 @@ fn python(root: &Path, feature_schema: &Path, script: &str) -> Value {
         .arg(&source)
         .arg(feature_schema)
         .arg(
-            serde_json::to_string(RUST_OWNED_FEATURE_SCHEMA_INDEXES)
-                .expect("Rust-owned schema objects serialize"),
+            serde_json::to_string(
+                &RUST_OWNED_FEATURE_SCHEMA_OBJECTS
+                    .iter()
+                    .map(|(name, _, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .expect("Rust-owned schema objects serialize"),
         )
         .arg(
             serde_json::to_string(
@@ -443,12 +456,14 @@ fn python(root: &Path, feature_schema: &Path, script: &str) -> Value {
     serde_json::from_slice(&output.stdout).expect("Python schema oracle returns JSON")
 }
 
-fn catalog_without_rust_owned_indexes(catalog: &Value) -> Value {
+fn catalog_without_rust_owned_objects(catalog: &Value) -> Value {
     let mut common = catalog.clone();
     if let Some(objects) = common["canvas.sqlite3"]["sqlite_master"].as_array_mut() {
         objects.retain(|object| {
             let name = object["name"].as_str().unwrap_or_default();
-            !RUST_OWNED_FEATURE_SCHEMA_INDEXES.contains(&name)
+            !RUST_OWNED_FEATURE_SCHEMA_OBJECTS
+                .iter()
+                .any(|(owned, _, _)| *owned == name)
                 && !RUST_OWNED_RUNTIME_INDEX_NAMES.contains(&name)
         });
     }
@@ -526,8 +541,8 @@ fn assert_rust_owned_runtime_indexes(catalog: &Value) {
 
 fn assert_rust_owned_feature_schema_objects(catalog: &Value, feature_schema: &Path) {
     let source = fs::read_to_string(feature_schema).expect("canonical feature schema reads");
-    for name in RUST_OWNED_FEATURE_SCHEMA_INDEXES {
-        let declaration = format!("CREATE INDEX IF NOT EXISTS {name}");
+    for (name, kind, table) in RUST_OWNED_FEATURE_SCHEMA_OBJECTS {
+        let declaration = format!("CREATE {} IF NOT EXISTS {name}", kind.to_ascii_uppercase());
         let start = source
             .find(&declaration)
             .unwrap_or_else(|| panic!("canonical feature schema owns {name}"));
@@ -539,14 +554,11 @@ fn assert_rust_owned_feature_schema_objects(catalog: &Value, feature_schema: &Pa
         let actual = catalog["canvas.sqlite3"]["sqlite_master"]
             .as_array()
             .and_then(|objects| objects.iter().find(|object| object["name"] == *name))
-            .unwrap_or_else(|| panic!("Rust startup creates its owned feature index {name}"));
-        assert_eq!(actual["type"], "index", "{name} remains an index");
+            .unwrap_or_else(|| panic!("Rust startup creates its owned feature object {name}"));
+        assert_eq!(actual["type"], *kind, "{name} type");
+        assert_eq!(actual["table"], *table, "{name} table");
         assert_eq!(
-            actual["table"], "runtime_agents",
-            "{name} indexes runtime_agents"
-        );
-        assert_eq!(
-            normalize_schema_sql(actual["sql"].as_str().expect("index SQL is present")),
+            normalize_schema_sql(actual["sql"].as_str().expect("object SQL is present")),
             expected_sql,
             "{name} matches its canonical Rust feature-schema declaration"
         );

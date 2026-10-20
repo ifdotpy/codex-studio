@@ -309,7 +309,7 @@ async fn journal_batch_work_at_the_publication_bound_reads_by_key() {
     clear_publications(&store).await;
     let captures = NotificationPublicationBatch {
         sequence: u64::MAX / 2,
-        effects: (1..=store::MAX_BEST_EFFORT_PUBLICATION_RECEIPTS as u64)
+        effects: (1..=store::MAX_PUBLICATION_RECEIPTS as u64)
             .map(capture)
             .collect(),
         analytics_overflow: 0,

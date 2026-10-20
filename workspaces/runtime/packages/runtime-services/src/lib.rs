@@ -28,6 +28,7 @@ pub mod analytics_history;
 pub mod analytics_history_repair;
 pub mod analytics_history_schedule;
 pub mod analytics_measurements;
+pub mod analytics_projection;
 pub mod analytics_rollout;
 pub mod atomic_file;
 pub mod bounded_child;

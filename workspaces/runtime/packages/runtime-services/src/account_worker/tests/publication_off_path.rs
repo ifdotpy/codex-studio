@@ -189,12 +189,26 @@ fn analytics_rows(state: &State) -> i64 {
         .expect("notification rows")
 }
 
-/// Notification analytics are captured inside the journal commit: the rows exist
-/// when the frame is acknowledged, with the sink still shut, and each frame costs
-/// one writer transaction (the journal batch) instead of one for the journal, one
-/// for its capture and one for its receipt cleanup.
+fn projection_log_rows(state: &State) -> i64 {
+    state
+        .bridge
+        .store
+        .read()
+        .expect("reader")
+        .query_row(
+            "SELECT count(*) FROM runtime_analytics_projection",
+            [],
+            |row| row.get(0),
+        )
+        .expect("projection log rows")
+}
+
+/// Notification analytics are logged inside the journal commit: the Canvas log
+/// row exists when the frame is acknowledged, with the sink still shut, and each
+/// frame costs one writer transaction. The projector then applies the row to
+/// analytics without a Canvas writer transaction.
 #[tokio::test]
-async fn analytics_are_captured_in_the_journal_commit_with_one_writer_job() {
+async fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let sink = GatedSink::new(false);
@@ -211,7 +225,11 @@ async fn analytics_are_captured_in_the_journal_commit_with_one_writer_job() {
     }
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
+    crate::analytics_projection::project_pending(&state.bridge.store)
+        .await
+        .expect("project the start");
     let before = analytics_rows(&state);
+    let logged_before = projection_log_rows(&state);
     state
         .bridge
         .store
@@ -225,11 +243,18 @@ async fn analytics_are_captured_in_the_journal_commit_with_one_writer_job() {
     peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
     let jobs = WRITER_JOBS.load(std::sync::atomic::Ordering::Relaxed) - jobs_before;
     assert!(
-        analytics_rows(&state) > before,
-        "captured at acknowledgement"
+        projection_log_rows(&state) > logged_before,
+        "logged at acknowledgement"
     );
+    assert_eq!(analytics_rows(&state), before, "not yet projected");
     assert!(sink.delivered().is_empty(), "the sink is still shut");
     assert_eq!(jobs, 1, "one writer job per journaled frame");
+    crate::analytics_projection::project_pending(&state.bridge.store)
+        .await
+        .expect("project the frame");
+    let jobs = WRITER_JOBS.load(std::sync::atomic::Ordering::Relaxed) - jobs_before;
+    assert_eq!(jobs, 1, "the projection takes no Canvas writer job");
+    assert!(analytics_rows(&state) > before, "projected");
     worker.shutdown().await.expect("stop worker");
 }
 
