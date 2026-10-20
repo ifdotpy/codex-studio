@@ -13,6 +13,8 @@ const CONNECTION_DELAYS: [f64; 7] = [10.0, 30.0, 120.0, 300.0, 600.0, 1200.0, 18
 /// A disk-full retry is due at once; the tick waits while the disk is still full.
 const DISK_FULL_DELAYS: [f64; DISK_FULL_MAX_RESUMES as usize] =
     [0.0; DISK_FULL_MAX_RESUMES as usize];
+/// Prefix of a capacity retry's start-attempt id; the rest is the retry record id.
+pub const CAPACITY_ATTEMPT_PREFIX: &str = "capacity:";
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
     ServerOverloaded,
@@ -51,7 +53,6 @@ pub enum Action<'a> {
         turn_id: &'a str,
         completed: bool,
     },
-    Reset(&'a str),
     Cancel,
     Wait(&'a str),
     /// The disk is full: check free space again after a fixed interval.
@@ -152,18 +153,6 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             }
         }
 
-        Action::Reset(reason) => {
-            if attempt.get("capacityRetryId") == r.get("id") && !flag(&attempt, "submitted") {
-                remove(&mut agent, "startAttempt");
-                patch(&mut agent, json!({"inFlight":false,"status":"failed"}));
-            }
-            patch(
-                &mut r,
-                json!({"status":"finished","dueAt":null,"reason":reason}),
-            );
-            remove(&mut agent, "capacityRetry");
-            remove(&mut agent, "capacityRetryCount");
-        }
         Action::Restart => {
             if matches!(text(&r, "status"), "starting" | "unknown") {
                 if attempt.get("capacityRetryId") == r.get("id")
@@ -334,7 +323,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                     &mut r,
                     json!({"status":"starting","dueAt":null,"claimedAt":now,"reason":null}),
                 );
-                let attempt = json!({"id":format!("capacity:{}",text(&r,"id")),"epoch":agent["epoch"],"events":[],"action":"capacity","submitted":false,"capacityRetryId":r["id"],"accountKey":r["accountKey"]});
+                let attempt = json!({"id":format!("{CAPACITY_ATTEMPT_PREFIX}{}",text(&r,"id")),"epoch":agent["epoch"],"events":[],"action":"capacity","submitted":false,"capacityRetryId":r["id"],"accountKey":r["accountKey"]});
                 let epoch = agent["epoch"].clone();
                 patch(
                     &mut agent,
@@ -352,9 +341,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
         }
     }
     r["updatedAt"] = json!(now);
-    if !matches!(action, Action::Reset(_)) {
-        agent["capacityRetry"] = r.clone();
-    }
+    agent["capacityRetry"] = r.clone();
     let mut d = Decision {
         agent: Some(agent),
         record: Some(r),

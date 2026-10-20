@@ -22,7 +22,7 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-pub const MAX_INPUTS: usize = 32;
+use studio_runtime_store::MAX_EVENTS_PER_TURN as MAX_INPUTS;
 pub const MAX_TURNS: usize = 1600;
 pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 const WAIT_PREFIX: &str = "Context repair waits for a confirmed input receipt: ";

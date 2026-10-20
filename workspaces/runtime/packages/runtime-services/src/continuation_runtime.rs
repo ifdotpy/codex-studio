@@ -2,7 +2,9 @@
 //! Decisions are staged under the caller's writer; wake ports only signal after commit.
 
 use crate::{
-    capacity_retry::{self, Action as CapacityAction, Failure as CapacityFailure},
+    capacity_retry::{
+        self, Action as CapacityAction, CAPACITY_ATTEMPT_PREFIX, Failure as CapacityFailure,
+    },
     continuation::{
         ContinuationError, Decision, Effect, Result, Snapshot, account, flag, present, text,
     },
@@ -423,23 +425,47 @@ fn capacity_exclusion_reason(snapshot: &Snapshot) -> Option<String> {
         .map(|_| format!("Account {account_key} is disabled for this chat"))
 }
 
-/// Persist acceptance of the exact capacity attempt in the same transaction as
-/// the provider's positive turn/start receipt.
-pub fn stage_capacity_accepted(
+/// The provider's outcome of a capacity retry's `turn/start`.
+#[derive(Clone, Copy, Debug)]
+pub enum CapacityStartOutcome<'a> {
+    /// Positive receipt: the retry owns this turn until it settles.
+    Accepted { turn_id: &'a str },
+    /// The start was rejected, or its outcome is unknown.
+    Failed { reason: &'a str, unknown: bool },
+}
+
+/// Persist the outcome of the capacity attempt in the same transaction as the
+/// provider's `turn/start` settlement. `attempt_id` is the settled attempt;
+/// any attempt that is not a capacity retry stages nothing.
+pub fn stage_capacity_start(
     tx: &Transaction<'_>,
     agent_id: &str,
-    retry_id: &str,
-    attempt: &Value,
-    turn_id: &str,
+    attempt_id: &str,
+    outcome: CapacityStartOutcome<'_>,
     now: f64,
 ) -> Result<Staged> {
-    let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
-    let decision = capacity_retry::transition(
-        &snapshot,
-        CapacityAction::Accepted { attempt, turn_id },
-        now,
-    )?;
     let mut staged = empty_stage(tx, agent_id)?;
+    let Some(retry_id) = attempt_id.strip_prefix(CAPACITY_ATTEMPT_PREFIX) else {
+        return Ok(staged);
+    };
+    let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
+    let attempt = snapshot
+        .agent
+        .get("startAttempt")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let action = match outcome {
+        CapacityStartOutcome::Accepted { turn_id } => CapacityAction::Accepted {
+            attempt: &attempt,
+            turn_id,
+        },
+        CapacityStartOutcome::Failed { reason, unknown } => CapacityAction::Error {
+            attempt: &attempt,
+            reason,
+            unknown,
+        },
+    };
+    let decision = capacity_retry::transition(&snapshot, action, now)?;
     collect_apply(
         tx,
         &mut staged,

@@ -1,6 +1,7 @@
 //! Account database operations. Transaction callbacks stay synchronous and are
 //! submitted to RuntimeStore's bounded writer actor.
 use super::*;
+use crate::continuation_runtime::CapacityStartOutcome;
 use crate::diagnostics::measure_runtime_stage as stage;
 use crate::notification_dispatch::{
     NotificationEffects, NotificationPublicationBatch, PreparedSubmission,
@@ -1144,6 +1145,11 @@ fn settle_outcome(
                 Method::TurnStart => match body {
                     ResponseBody::Result(value) => {
                         if let Some(turn) = value["turn"]["id"].as_str().filter(|s| !s.is_empty()) {
+                            stage_capacity_start(
+                                tx,
+                                i,
+                                CapacityStartOutcome::Accepted { turn_id: turn },
+                            )?;
                             if SchedulerRepository::settle_started_provider(
                                 tx,
                                 &i.agent_id,
@@ -1164,6 +1170,14 @@ fn settle_outcome(
                             }
                             preparation::accept_turn(tx, &context, &ticket, turn)?;
                         } else {
+                            stage_capacity_start(
+                                tx,
+                                i,
+                                CapacityStartOutcome::Failed {
+                                    reason: "The provider reply named no turn. The turn outcome is unknown.",
+                                    unknown: true,
+                                },
+                            )?;
                             SchedulerRepository::settle_start_outcome(
                                 tx,
                                 &i.identity(),
@@ -1178,6 +1192,14 @@ fn settle_outcome(
                             // Hold new starts for the recheck interval.
                             crate::disk_space::observe_full();
                         }
+                        stage_capacity_start(
+                            tx,
+                            i,
+                            CapacityStartOutcome::Failed {
+                                reason: "The provider rejected the turn start.",
+                                unknown: false,
+                            },
+                        )?;
                         SchedulerRepository::settle_start_rejected_provider(
                             tx,
                             &i.agent_id,
@@ -2706,6 +2728,23 @@ pub(super) fn delete_delivered_publications(
 }
 
 /// One pass that deletes its delivered prefix in its own transaction.
+/// Settle a capacity retry's record with its `turn/start` outcome; other attempts stage nothing.
+fn stage_capacity_start(
+    tx: &studio_runtime_store::Transaction<'_>,
+    intent: &crate::scheduler::TurnIntent,
+    outcome: CapacityStartOutcome<'_>,
+) -> Result<(), StoreError> {
+    crate::continuation_runtime::stage_capacity_start(
+        tx,
+        &intent.agent_id,
+        &intent.attempt_id,
+        outcome,
+        now(),
+    )
+    .map(drop)
+    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+}
+
 #[cfg(test)]
 pub(super) async fn drain_publications(
     store: Arc<RuntimeStore>,

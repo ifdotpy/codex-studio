@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAX_EVENTS: usize = 32;
+use studio_runtime_store::MAX_EVENTS_PER_TURN as MAX_EVENTS;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct WaitEvent {
     pub id: String,

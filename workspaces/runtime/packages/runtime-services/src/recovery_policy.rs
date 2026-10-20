@@ -10,7 +10,7 @@ use studio_runtime_store::{
 
 static NULL_VALUE: Value = Value::Null;
 
-pub const MAX_EVENTS: usize = 32;
+use studio_runtime_store::MAX_EVENTS_PER_TURN as MAX_EVENTS;
 pub const UNKNOWN_START_HOLD_SECONDS: f64 = 600.0;
 const SUPERVISOR_UNKNOWN: &str =
     "Cannot verify the existing supervisor child; native outcome remains unknown";

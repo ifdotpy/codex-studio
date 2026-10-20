@@ -171,7 +171,9 @@ fn preconditions_for_purpose(
     let record = agent(tx, &intent.agent_id)?.value();
     let capacity_retry = record["startAttempt"]["action"] == "capacity"
         && record["startAttempt"]["capacityRetryId"] == record["capacityRetry"]["id"]
-        && intent.attempt_id.starts_with("capacity:");
+        && intent
+            .attempt_id
+            .starts_with(crate::capacity_retry::CAPACITY_ATTEMPT_PREFIX);
     if record["epoch"] != intent.epoch
         || (!allow_paused_start
             && (record["startAttempt"]["id"] != intent.attempt_id

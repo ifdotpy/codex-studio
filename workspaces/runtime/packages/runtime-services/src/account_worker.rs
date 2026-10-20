@@ -63,7 +63,8 @@ const IDLE_STATE_OBSERVED_TABLES: [ObservedTable; 6] = [
     ObservedTable::RuntimeRequests,
     ObservedTable::RuntimeToolRequests,
 ];
-// Maximum provider events per journal transaction; bounds transaction work and ACK delay.
+// Maximum provider events per journal transaction (count); bounds transaction work and ACK delay.
+// Not the per-turn input cap: numerically equal to `MAX_EVENTS_PER_TURN`, but a distinct purpose.
 const JOURNAL_BATCH_MAX_EVENTS: usize = 32;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);

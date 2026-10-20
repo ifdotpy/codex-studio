@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use studio_runtime_store::sha256_hex;
 
-/// Most user events one frozen Claude start may carry.
-const MAX_BATCH: usize = 32;
+use studio_runtime_store::MAX_EVENTS_PER_TURN as MAX_BATCH;
 const RECEIPT_FIELDS: &[&str] = &[
     "id",
     "epoch",

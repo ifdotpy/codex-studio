@@ -27,7 +27,9 @@ pub use studio_runtime_schema::shared_values::{
 /// `native_actions::Action` in runtime-services serializes to these names.
 pub const NATIVE_ACTION_ATTEMPT_KINDS: [&str; 2] = ["compact", "review"];
 
-const MAX_EVENTS_PER_TURN: usize = 32;
+/// Most queued user events one turn start may carry (count of events). The single owner of this
+/// cap: claim, steer, recovery, repair and budget-wait validators all reference it.
+pub const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",
