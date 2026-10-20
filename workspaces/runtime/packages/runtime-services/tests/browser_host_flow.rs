@@ -32,11 +32,11 @@ fn read_request(stream: &mut TcpStream) -> String {
 }
 
 fn reply(stream: &mut TcpStream, status: &str, headers: &str, body: &str) {
-    let _ = write!(
+    drop(write!(
         stream,
         "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
-    );
+    ));
 }
 
 fn query_value(target: &str, name: &str) -> Option<String> {
@@ -120,7 +120,7 @@ fn kubelogin(provider_port: u16, state: &'static str) -> Tool {
                 )
                 .expect("test step");
                 let mut answer = String::new();
-                let _ = token.read_to_string(&mut answer);
+                drop(token.read_to_string(&mut answer));
                 reply(
                     &mut stream,
                     "200 OK",
