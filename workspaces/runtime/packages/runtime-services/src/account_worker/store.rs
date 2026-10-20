@@ -1780,6 +1780,9 @@ fn journal_one(
                                 now(),
                                 false,
                             )?;
+                            if let Some(turn) = turn {
+                                next.settle_turn(journal_scope, thread, turn);
+                            }
                             effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
                         }
                     }

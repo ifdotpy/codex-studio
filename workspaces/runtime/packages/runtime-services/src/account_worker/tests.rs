@@ -15,6 +15,7 @@ mod orphan_thread_receipt;
 mod publication_drain;
 mod publication_off_path;
 mod retained;
+mod settled_streams;
 mod settled_turn_tasks;
 mod stale_disconnect_recovery;
 mod start_throttle;

@@ -463,13 +463,19 @@ pub fn dispatch_notification_with_effects(
             if let Some(key) = reasoning_stream_key(&agent, agent_id, identity, kind, params) {
                 // Counted like a text delta: the agent is written at the next
                 // flush, not once per delta. Its effects are the unbuffered ones.
-                let outcome = match next_streams.enqueue_delta(key, "", params) {
-                    EnqueueResult::Buffered => DispatchOutcome::Written,
-                    EnqueueResult::Closed => DispatchOutcome::Ignored {
-                        reason: "closed-stream".into(),
-                    },
-                    EnqueueResult::FlushRequired => {
-                        unreachable!("reasoning deltas retain no text")
+                let outcome = if turn_settled(&agent, key.turn.as_deref()) {
+                    DispatchOutcome::Ignored {
+                        reason: TURN_ENDED_REASON.into(),
+                    }
+                } else {
+                    match next_streams.enqueue_delta(key, "", params) {
+                        EnqueueResult::Buffered => DispatchOutcome::Written,
+                        EnqueueResult::Closed => DispatchOutcome::Ignored {
+                            reason: "closed-stream".into(),
+                        },
+                        EnqueueResult::FlushRequired => {
+                            unreachable!("reasoning deltas retain no text")
+                        }
                     }
                 };
                 after_known = AfterAgent::Unchanged;
@@ -480,13 +486,19 @@ pub fn dispatch_notification_with_effects(
                 let delta = params["delta"]
                     .as_str()
                     .ok_or(NotificationDispatchError::InvalidNotification)?;
-                let outcome = match next_streams.enqueue_delta(key, delta, params) {
-                    EnqueueResult::Buffered => DispatchOutcome::Written,
-                    EnqueueResult::Closed => DispatchOutcome::Ignored {
-                        reason: "closed-stream".into(),
-                    },
-                    EnqueueResult::FlushRequired => {
-                        unreachable!("command output retains a bounded tail")
+                let outcome = if turn_settled(&agent, key.turn.as_deref()) {
+                    DispatchOutcome::Ignored {
+                        reason: TURN_ENDED_REASON.into(),
+                    }
+                } else {
+                    match next_streams.enqueue_delta(key, delta, params) {
+                        EnqueueResult::Buffered => DispatchOutcome::Written,
+                        EnqueueResult::Closed => DispatchOutcome::Ignored {
+                            reason: "closed-stream".into(),
+                        },
+                        EnqueueResult::FlushRequired => {
+                            unreachable!("command output retains a bounded tail")
+                        }
                     }
                 };
                 return save_outcome(transaction, &receipt_id, &content_signature, outcome);
@@ -540,6 +552,10 @@ pub fn dispatch_notification_with_effects(
                     if stale_item {
                         DispatchOutcome::Ignored {
                             reason: "stale-turn-item".to_owned(),
+                        }
+                    } else if turn_settled(&agent, turn_id) {
+                        DispatchOutcome::Ignored {
+                            reason: TURN_ENDED_REASON.to_owned(),
                         }
                     } else {
                         match (
@@ -1349,17 +1365,51 @@ pub fn flush_notification_streams(
     })
 }
 
+/// Whether `turn` already settled (`turn/completed`). It owns the drop of a late
+/// delta, so a finished stream needs no closed key once its turn has settled.
+/// A turn without an id never settles; its keys go with any turn of the thread.
+fn turn_settled(agent: &Value, turn: Option<&str>) -> bool {
+    turn.is_some_and(|turn| agent.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn))
+}
+
+/// Why a delta of a settled turn is dropped.
+const TURN_ENDED_REASON: &str = "turn-ended";
+
+/// Whether the stored agent of `key` is running the stream's turn (a turn that has not settled).
+fn stream_turn_active(
+    transaction: &Transaction<'_>,
+    key: &StreamKey,
+) -> Result<bool, NotificationDispatchError> {
+    Ok(transaction.query_row_cached(
+        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
+        rusqlite::params![key.account, key.thread, key.turn],
+        |row| row.get(0),
+    ).map_err(StoreError::from)?)
+}
+
 pub(crate) fn prune_inactive_streams(
     transaction: &Transaction<'_>,
     streams: &mut NotificationStreamBuffer,
     observed_at: f64,
     recovering: bool,
 ) -> Result<(), NotificationDispatchError> {
+    if recovering {
+        // A persisted buffer from before finished streams settled with their
+        // turn may hold thousands of closed keys; keep those of running turns.
+        let mut failure = None;
+        streams.retain_closed(|key| match stream_turn_active(transaction, key) {
+            Ok(active) => active,
+            Err(error) => {
+                failure.get_or_insert(error);
+                true
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+    }
     for key in streams.selected(None) {
-        let active: bool = transaction.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
-            rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
-        ).map_err(StoreError::from)?;
+        let active = stream_turn_active(transaction, &key)?;
         if active && recovering && !streams.has_pending(&key) && streams.has_base(&key) {
             let owner = stream_owner(transaction, &key)?;
             if let Some((id, raw)) = owner {
@@ -2168,6 +2218,95 @@ mod tests {
             &frame(value),
             observed_at,
         )
+    }
+
+    /// A delta of a settled turn is dropped by the turn,
+    /// whatever the stream kind and provider; no stream opens for it.
+    #[test]
+    fn a_delta_of_a_settled_turn_is_dropped_for_every_stream_and_provider() {
+        for provider in ["codex", "claude"] {
+            for (method, params) in [
+                (
+                    "item/agentMessage/delta",
+                    json!({"itemId":"item","delta":"x"}),
+                ),
+                (
+                    "item/commandExecution/outputDelta",
+                    json!({"itemId":"item","delta":"x"}),
+                ),
+                (
+                    "item/reasoning/textDelta",
+                    json!({"itemId":"item","delta":"x"}),
+                ),
+            ] {
+                let mut connection = database();
+                connection
+                    .execute(
+                        "UPDATE runtime_agents SET record=json_set(record,'$.inFlight',json('false'),'$.lastCompletedTurn','turn','$.provider',?1)",
+                        [provider],
+                    )
+                    .expect("agent settles its turn");
+                let transaction = connection.transaction().expect("transaction begins");
+                let mut streams = NotificationStreamBuffer::default();
+                let mut params = params;
+                params["threadId"] = json!("thread");
+                params["turnId"] = json!("turn");
+                let outcome = dispatch(
+                    &transaction,
+                    &mut streams,
+                    1,
+                    &json!({"method":method,"params":params}),
+                    1.0,
+                )
+                .expect("late delta dispatches");
+                assert_eq!(
+                    outcome,
+                    DispatchOutcome::Ignored {
+                        reason: "turn-ended".into()
+                    },
+                    "{provider} {method}"
+                );
+                assert_eq!(streams.pending_bytes(), 0);
+                assert!(streams.selected(None).is_empty(), "{provider} {method}");
+                assert_eq!(streams.closed_len(), 0);
+            }
+        }
+    }
+
+    /// A buffer persisted before finished streams settled with their turn can
+    /// hold the old cap of closed keys. Recovery loads it and keeps only the
+    /// keys of the turn still running.
+    #[test]
+    fn recovery_prunes_an_old_buffer_of_closed_keys_to_the_running_turn() {
+        let key = |turn: &str, item: usize| {
+            json!({"agent_id":"agent","account":"default","generation":7,"thread":"thread",
+                "turn":turn,"item":format!("item-{item}"),"method":"item/agentMessage/delta"})
+        };
+        let mut closed: Vec<Value> = (0..8_192).map(|item| key("old-turn", item)).collect();
+        closed.push(key("turn", 0));
+        let mut streams: NotificationStreamBuffer =
+            serde_json::from_value(json!({"entries":[],"closed":closed}))
+                .expect("old buffer loads");
+        assert_eq!(streams.closed_len(), 8_193);
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction begins");
+        super::prune_inactive_streams(&transaction, &mut streams, 1.0, true)
+            .expect("recovery prunes");
+        assert_eq!(streams.closed_len(), 1);
+        let late = dispatch(
+            &transaction,
+            &mut streams,
+            1,
+            &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"item-0","delta":"x"}}),
+            1.0,
+        )
+        .expect("late delta dispatches");
+        assert_eq!(
+            late,
+            DispatchOutcome::Ignored {
+                reason: "closed-stream".into()
+            }
+        );
     }
 
     /// Hot notifications that change only volatile agent fields (storage
