@@ -1026,13 +1026,17 @@ class NativeChats(unittest.TestCase):
         repository = Path(__file__).resolve().parents[5]
         rust_router = repository / "workspaces/runtime/packages/runtime-http/src/router.rs"
         rust_routes = repository / "workspaces/runtime/packages/runtime-http/src/routes/questions_write.rs"
+        services = repository / "workspaces/runtime/packages/runtime-services/src"
         router_source = rust_router.read_text(encoding="utf-8")
         route_source = rust_routes.read_text(encoding="utf-8")
-        self.assertIn(f'BROWSER_HOST_FOLDER_NAME: &str = "{FOLDER}"', router_source)
-        self.assertIn(
-            f'BROWSER_HOST_CONTROL_SOCKET_NAME: &str = "{HOST_BROWSER_CONTROL_SOCKET_NAME}"',
-            router_source,
-        )
+        environment_source = (services / "browser_environment.rs").read_text(encoding="utf-8")
+        host_source = (services / "browser_host.rs").read_text(encoding="utf-8")
+        # The Rust owners of the names, and the router that consumes them.
+        self.assertIn(f'pub const BROWSER_HOST_FOLDER: &str = "{FOLDER}"', environment_source)
+        self.assertIn(f'pub const CONTROL_SOCKET: &str = "{HOST_BROWSER_CONTROL_SOCKET_NAME}"', host_source)
+        self.assertIn(f'pub const SESSION_FILE: &str = "{SESSION_FILE}"', host_source)
+        self.assertIn("studio_runtime_services::browser_environment::BROWSER_HOST_FOLDER", router_source)
+        self.assertIn("studio_runtime_services::browser_host::CONTROL_SOCKET", router_source)
         self.assertIn(".join(BROWSER_HOST_FOLDER_NAME)", router_source)
         self.assertIn(".join(crate::router::BROWSER_HOST_FOLDER_NAME)", route_source)
         self.assertIn(
