@@ -9,6 +9,7 @@ mod late_thread_reply;
 #[cfg(unix)]
 mod many_agents;
 mod native_review;
+mod orphan_thread_receipt;
 mod publication_drain;
 mod publication_off_path;
 mod retained;
@@ -92,6 +93,11 @@ pub(super) struct Faults {
     pause_operation: std::sync::Mutex<Option<String>>,
     paused: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    /// The named store operation that pauses after it returns, so its
+    /// transaction is committed while its caller has not used the result.
+    pub(super) pause_after_operation: std::sync::Mutex<Option<String>>,
+    pub(super) paused_after: tokio::sync::Notify,
+    pub(super) release_after: tokio::sync::Notify,
     fired: std::sync::atomic::AtomicBool,
     target: std::sync::Mutex<Option<(usize, bool)>>,
     named_target: std::sync::Mutex<Option<NamedBoundary>>,
@@ -166,6 +172,20 @@ impl Faults {
         if pause {
             self.paused.notify_one();
             self.release.notified().await;
+        }
+    }
+    pub(super) async fn pause_after(&self, index: usize) {
+        let pause = self
+            .operations
+            .lock()
+            .unwrap()
+            .get(index)
+            .is_some_and(|(name, _, _)| {
+                self.pause_after_operation.lock().unwrap().as_ref() == Some(name)
+            });
+        if pause {
+            self.paused_after.notify_one();
+            self.release_after.notified().await;
         }
     }
     pub(super) fn cycle(&self) {

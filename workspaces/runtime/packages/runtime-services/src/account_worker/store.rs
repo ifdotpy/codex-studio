@@ -141,9 +141,41 @@ pub(super) fn delete_receipt(
 fn submitted_account_receipt_pattern() -> String {
     receipt_id("account:*", "submitted")
 }
+/// Whether `attempt` is the attempt of the agent's last completed turn. Such
+/// an attempt is history, not a live start: an earlier build restored it from
+/// a stale disconnect record.
+fn completed_attempt(agent: &studio_runtime_store::AgentRecord, attempt: &Value) -> bool {
+    attempt["turnId"].as_str().is_some_and(|turn| {
+        !turn.is_empty()
+            && agent.extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn)
+    })
+}
+/// Hold reason of an agent whose thread request outcome is unknown after a
+/// restart. The request is never sent again; a later message continues.
+pub(super) const RECEIPT_PENDING_HOLD: &str = "thread-preparation/receipt-pending";
+/// Queue event kinds that are a message to the agent. One sent after a thread
+/// request whose outcome a restart left unknown is the decision to continue
+/// without that outcome.
+const CONTINUE_MESSAGE_KINDS: [&str; 2] = ["user", "followup"];
+/// Receipt phase that marks a thread request whose outcome stayed unknown
+/// across a backend restart. Only such a request can be abandoned; one in
+/// flight on the current connection waits for its reply.
+const RESTARTED_PHASE: &str = "restarted";
 /// Unresolved thread start or resume submissions for `agent`, in any account.
 /// GLOB lets SQLite derive an indexed prefix range without manual bound arithmetic.
-const PENDING_THREAD_START_SQL: &str = "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id GLOB ?2 AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved'))";
+macro_rules! pending_thread_requests_from {
+    () => {
+        "FROM runtime_operation_receipts r WHERE r.id GLOB ?2 AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved')"
+    };
+}
+const PENDING_THREAD_START_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 ",
+    pending_thread_requests_from!(),
+    ")"
+);
+/// The submitted receipts that [`PENDING_THREAD_START_SQL`] finds.
+const PENDING_THREAD_REQUESTS_SQL: &str =
+    concat!("SELECT r.result ", pending_thread_requests_from!());
 fn has_pending_thread_start(
     connection: &rusqlite::Connection,
     agent: &str,
@@ -232,7 +264,10 @@ pub(super) async fn recover(
                 .get("disconnectRecovery")
                 .or_else(|| agent.extra.get("restartRecovery"))
                 .and_then(|value| value.get("startAttempt"))
-                .cloned();
+                .cloned()
+                // The attempt of the agent's last completed turn owes no
+                // notification; restored, it would hide a receipt-pending hold.
+                .filter(|attempt| !completed_attempt(&agent, attempt));
             if let Some(attempt) = attempt {
                 agent.extra.insert("startAttempt".into(), attempt);
                 AgentRepository::put(tx, &agent)?;
@@ -293,12 +328,21 @@ pub(super) async fn recover(
                 context.method()?,
                 Method::ThreadStart | Method::ThreadResume
             ) {
+                if continued_after(tx, &context)? {
+                    abandon_thread_request(tx, &context)?;
+                    continue;
+                }
+                if receipt(tx, &context.operation, RESTARTED_PHASE)?.is_none() {
+                    save(tx, &context.operation, RESTARTED_PHASE, json!(true))?;
+                }
                 let current =
                     AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?;
                 if current.as_ref().is_some_and(|a| {
                     a.epoch == context.intent.epoch
                         && account_key(a) == account
-                        && a.extra.get("startAttempt").is_none_or(Value::is_null)
+                        && a.extra.get("startAttempt").is_none_or(|attempt| {
+                            attempt.is_null() || completed_attempt(a, attempt)
+                        })
                         && (a.extra.get("autoWake") == Some(&json!(true))
                             || a.extra
                                 .get("startOutcomeHold")
@@ -308,7 +352,7 @@ pub(super) async fn recover(
                         tx,
                         &context,
                         request.ticket.generation,
-                        "thread-preparation/receipt-pending",
+                        RECEIPT_PENDING_HOLD,
                     )?;
                 }
             }
@@ -555,8 +599,10 @@ pub(super) async fn claim(
                 )?;
                 return Ok(None);
             }
-            let preparing = has_pending_thread_start(tx, agent.as_str())?;
-            if preparing {
+            if has_pending_thread_start(tx, agent.as_str())?
+                && (!abandon_continued_thread_requests(tx, &agent)?
+                    || has_pending_thread_start(tx, agent.as_str())?)
+            {
                 return Ok(None);
             }
             let pending = record
@@ -1943,7 +1989,7 @@ fn forget_request(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
 ) -> Result<(), WorkerError> {
-    for phase in ["submitted", "written", "resolved"] {
+    for phase in ["submitted", "written", "resolved", RESTARTED_PHASE] {
         tx.execute(
             "DELETE FROM runtime_operation_receipts WHERE id=?1",
             [receipt_id(operation, phase)],
@@ -2871,6 +2917,95 @@ fn hold_thread_receipt(
     }));
     AgentRepository::put(tx, &agent)?;
     Ok(())
+}
+
+/// Whether the agent got a message after the thread/resume of `context` began:
+/// the decision to continue without that request's unknown outcome. A later
+/// attempt resumes the same thread again and carries no input. A thread/start
+/// is never continued this way, since another one would create a second thread.
+fn continued_after(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+) -> Result<bool, WorkerError> {
+    if context.method()? != Method::ThreadResume {
+        return Ok(false);
+    }
+    let agent_id = context.intent.agent_id.as_str();
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
+        return Ok(false);
+    };
+    let Some(begun) =
+        studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &context.intent.attempt_id)?
+            .and_then(|attempt| attempt["created"].as_f64())
+    else {
+        return Ok(false);
+    };
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+         AND status='pending' AND kind IN (SELECT value FROM json_each(?3)) AND created>?4)",
+        params![
+            agent_id,
+            agent.epoch,
+            json!(CONTINUE_MESSAGE_KINDS).to_string(),
+            begun
+        ],
+        |row| row.get(0),
+    )?)
+}
+/// Resolve a thread request whose outcome is unknown as abandoned, and clear
+/// its receipt-pending hold. The request is never sent again, and it no longer
+/// holds a claim; a late reply settles as stale.
+fn abandon_thread_request(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+) -> Result<(), WorkerError> {
+    if receipt(tx, &context.operation, "resolved")?.is_none() {
+        save(
+            tx,
+            &context.operation,
+            "resolved",
+            json!({"abandoned":"continued-by-message"}),
+        )?;
+    }
+    let agent_id = AgentId::from(context.intent.agent_id.as_str());
+    if let Some(mut agent) = AgentRepository::get(tx, &agent_id)?
+        && agent
+            .extra
+            .get("startOutcomeHold")
+            .is_some_and(|hold| hold["operationId"] == context.operation)
+    {
+        agent.extra.remove("startOutcomeHold");
+        AgentRepository::put(tx, &agent)?;
+    }
+    Ok(())
+}
+/// Abandon each of the agent's restarted thread requests that a later message
+/// continued. Returns whether one was abandoned.
+fn abandon_continued_thread_requests(
+    tx: &studio_runtime_store::Transaction<'_>,
+    agent_id: &str,
+) -> Result<bool, WorkerError> {
+    let mut statement = tx.prepare(PENDING_THREAD_REQUESTS_SQL)?;
+    let rows = statement
+        .query_map(
+            params![agent_id, submitted_account_receipt_pattern()],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut abandoned = false;
+    for raw in rows {
+        let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(agent_id))?;
+        let context: Pending =
+            serde_json::from_value(value["context"].clone()).map_err(|_| invalid(agent_id))?;
+        if receipt(tx, &context.operation, RESTARTED_PHASE)?.is_some()
+            && continued_after(tx, &context)?
+        {
+            abandon_thread_request(tx, &context)?;
+            abandoned = true;
+        }
+    }
+    Ok(abandoned)
 }
 
 fn hold_before_claim(

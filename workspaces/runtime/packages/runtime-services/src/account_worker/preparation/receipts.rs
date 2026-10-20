@@ -73,7 +73,7 @@ pub(crate) fn accept_thread(
             json!(true),
         )?;
         let recovered = record.get("startAttempt").is_none_or(Value::is_null)
-            && record["startOutcomeHold"]["reason"] == "thread-preparation/receipt-pending"
+            && record["startOutcomeHold"]["reason"] == super::super::store::RECEIPT_PENDING_HOLD
             && record["startOutcomeHold"]["operationId"] == context.operation;
         if recovered {
             record["autoWake"] = json!(true);
