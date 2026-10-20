@@ -2731,6 +2731,10 @@ async function handle(method, p) {
       userMessage(s, turn, blocks, p.clientUserMessageId || turn.id),
     );
     turn.startOutcome = "accepted";
+    // The reply reports the turn as Claude accepted it. The SDK stream runs
+    // while the receipt saves, so a fast turn may already have ended; its
+    // end arrives as turn/completed, as with Codex.
+    const acceptedStatus = turn.status;
     try {
       // Claude has this input. A full disk only delays its saved receipt.
       await persistLive(s, turn);
@@ -2745,7 +2749,7 @@ async function handle(method, p) {
     } finally {
       pendingTurnReceipts.delete(turn.id);
     }
-    return { turn: { id: turn.id, status: turn.status } };
+    return { turn: { id: turn.id, status: acceptedStatus } };
   }
   if (method === "turn/steer") {
     const s = await session(p.threadId),
