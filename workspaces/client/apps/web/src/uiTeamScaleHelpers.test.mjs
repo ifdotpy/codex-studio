@@ -110,6 +110,15 @@ describe("ui team scale helpers", () => {
       { id: "other", rootId: "elsewhere", lastAnswer: "TAG_W0002" },
       31,
     );
+    tracker.observe(
+      {
+        id: "lead",
+        lastAnswer: "...",
+        overview: { result: "TAG_ALL_REPLIED" },
+      },
+      35,
+    );
+    expect(tracker.leadReportedAtMs()).toBeNull();
     tracker.observe({ id: "lead", lastAnswer: "TAG_ALL_REPLIED" }, 40);
     const summary = tracker.summary();
     expect(summary).toMatchObject({
