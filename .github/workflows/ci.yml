@@ -309,10 +309,10 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
       - uses: ./.github/actions/client-build-setup
-      - name: Select the isolated Python environment and browser cache
-        run: |
-          echo "CODEX_AGENTS_PYTHON=$(python3 workspaces/runtime/apps/server/src/codex_python.py)" >> "$GITHUB_ENV"
-          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
+      - name: Select the browser cache
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
+      - name: Build the server the browser fixtures run
+        run: cargo build --locked -p studio-runtime-server
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ms-playwright

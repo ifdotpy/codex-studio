@@ -22,6 +22,9 @@ const STATIC_ALLOWLIST: &[&str] = &[
 const BUILD_INSTRUCTIONS: &str =
     "Build the interface from the repository root with `pnpm --filter codex-agents-web run build`.";
 
+/// Environment variable naming the built renderer directory (a path containing `index.html`).
+const WEB_DIST_ENV: &str = "CODEX_STUDIO_WEB_DIST";
+
 #[derive(Clone, Debug)]
 pub(super) struct WebAssets {
     root: Option<PathBuf>,
@@ -29,6 +32,13 @@ pub(super) struct WebAssets {
 
 impl WebAssets {
     pub(super) fn discover() -> Self {
+        // An explicit build directory wins; fixtures use it when the binary is built outside the checkout.
+        if let Some(directory) = env::var_os(WEB_DIST_ENV).map(PathBuf::from)
+            && directory.join("index.html").is_file()
+            && let Ok(root) = directory.canonicalize()
+        {
+            return Self { root: Some(root) };
+        }
         let root = env::current_exe()
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf))

@@ -2010,3 +2010,8 @@ export async function stubEntityState(page, snapshot, contract) {
   };
   return { update };
 }
+
+/** Browser fixture: the real Rust server with a scripted provider; spawn it with `process.execPath`. */
+export const rustUiFixture = fileURLToPath(
+  new URL("./fixtures/rust-ui-fixture.mjs", import.meta.url),
+);

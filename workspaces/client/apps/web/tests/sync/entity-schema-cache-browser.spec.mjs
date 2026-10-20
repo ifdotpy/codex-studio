@@ -12,6 +12,7 @@ import {
   protocol3SseEvent,
   readApiSchemaHash,
   spawnFixture,
+  rustUiFixture,
   test,
   expect,
 } from "../playwright.mjs";
@@ -60,15 +61,10 @@ test.describe("legacy schema mismatch", () => {
     const pageSession = await context.newCDPSession(page);
     await pageSession.send("Network.enable");
     await pageSession.send("Network.setCacheDisabled", { cacheDisabled: true });
-    const fixture = spawnFixture(
-      process.env.PYTHON_BIN || "python3",
-      [
-        "-B",
-        join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-        state,
-      ],
-      { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
-    );
+    const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env },
+    });
     let fixtureLog = "";
     fixture.stderr.on("data", (chunk) => {
       fixtureLog += chunk;
@@ -698,17 +694,11 @@ test.describe("legacy schema mismatch", () => {
 test("different build collection sets share only drafts and outbox", async ({
   browser,
 }) => {
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-legacy-projection-size-"));
-  const fixture = spawnFixture(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env },
+  });
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;

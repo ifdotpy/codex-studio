@@ -1,6 +1,7 @@
 import {
   readTestState,
   spawnFixture as spawn,
+  rustUiFixture,
   test,
   expect,
 } from "../playwright.mjs";
@@ -14,7 +15,6 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   modelValue,
   openModelList,
@@ -37,7 +37,6 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("execution settings ui", async ({ browser: _browser }) => {
   test.setTimeout(60_000);
-  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-execution-settings-ui-"));
   const models = [
     {
@@ -83,21 +82,14 @@ test("execution settings ui", async ({ browser: _browser }) => {
             },
           ],
   }));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
-      },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
+      FIXTURE_HOLD_WORKERS: "1",
     },
-  );
+  });
   let browser,
     log = "";
   proc.stderr.on("data", (d) => (log += d));
@@ -306,7 +298,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .click();
     await page
       .locator("#chat-settings-permissions .execution-error[role=alert]")
-      .filter({ hasText: "Wait for every team turn" })
+      .filter({ hasText: "Wait for this turn to end" })
       .waitFor();
     assert.equal((await yoloSaved).status(), 400);
     assert.equal((await state()).find((a) => a.id === lead.id).yoloMode, true);

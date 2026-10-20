@@ -5,10 +5,11 @@ import {
   readTestState,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Built App and a private runtime fixture. No model calls or user state.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +24,6 @@ async function runMessageReceiptScenario(
 
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
-  const python = process.env.PYTHON || process.env.PYTHON_BIN || "python3";
   const dist =
     process.env.RECEIPTS_DIST || join(repo, "workspaces/client/apps/web/dist");
   const index = await readFile(join(dist, "index.html"));
@@ -36,18 +36,12 @@ async function runMessageReceiptScenario(
   const missingText = "An absent receipt does not confirm delivery";
   const latestPageText = "Latest transcript fixture marker";
   const fixture = spawn(
-    python,
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      temporary,
-    ],
+    process.execPath,
+    [rustUiFixture, temporary, "--workers", "1"],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
-        CODEX_BOARD_STATE_DIR: join(temporary, "board"),
-        TOKEN_RATE_WORKER_COUNT: "1",
       },
     },
   );
@@ -68,90 +62,134 @@ async function runMessageReceiptScenario(
   });
 
   const changeFixture = async (agent, phase, target, token) => {
-    execFileSync(
-      python,
-      [
-        "-B",
-        "-c",
-        `import json, pathlib, sys, time
-  sys.path.insert(0, sys.argv[1])
-  from codex_sqlite import connect
-  from codex_sync_entities import register_functions
-  root, agent, phase = pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
-  value = json.loads(sys.argv[5])
-  db = connect(root / 'canvas.sqlite3', timeout=1, site='Receipt pagination fixture')
-  register_functions(db)
-  for trigger in ('studio_resource_event_insert', 'studio_resource_event_update',
-                  'studio_resource_event_delete', 'studio_resource_item_insert',
-                  'studio_resource_item_update', 'studio_resource_item_delete'):
-      db.execute('DROP TRIGGER IF EXISTS temp.' + trigger)
-  try:
-      with db:
-          if phase == 'initial':
-              db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=? AND kind='user'", (agent,))
-              now = time.time()
-              for key, status, text in ((value['id'], 'pending', value['text']),
-                                        (value['uncertainId'], 'uncertain', value['uncertainText'])):
-                  db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'user',?,?,?,0)",
-                             (key, agent, text, status, now - 1))
-                  db.execute("INSERT INTO runtime_event_meta(id,record) VALUES (?,?)",
-                             (key, json.dumps({'requestedDelivery': 'after_tool', 'transcriptItemId': agent + ':' + key})))
-                  if not value['observedFirst'] or key == value['uncertainId']:
-                      record = {'id': agent + ':' + key, 'role': 'user', 'title': 'You',
-                                'clientMessageId': key, 'text': text, 'at': now - 1,
-                                'deliveryStatus': status, 'requestedDelivery': 'after_tool',
-                                'pending': status == 'pending', 'materialized': False}
-                      db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
-                                 (record['id'], agent, json.dumps(record), record['at']))
-          else:
-              if value['observedFirst'] and phase in ('observed', 'delivered'):
-                  # Match runtime.start input projection, then native userMessage delivery.
-                  event_status = 'dispatching' if phase == 'observed' else 'delivered'
-                  db.execute("UPDATE runtime_events SET status=? WHERE id=? AND agent=?",
-                             (event_status, value['id'], agent))
-                  record = {'id': agent + ':' + value['id'], 'role': 'user', 'title': 'You',
-                            'clientMessageId': value['id'], 'text': value['text'], 'at': time.time(),
-                            'deliveryStatus': event_status, 'requestedDelivery': 'after_tool',
-                            'pending': False, 'materialized': True}
-                  db.execute('INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
-                             (record['id'], agent, json.dumps(record), record['at']))
-              if value['observedFirst']:
-                  db.execute("UPDATE runtime_items SET record=json_set(record,'$.materialized',json('true'),"
-                             "'$.pending',json('false'),'$.deliveryStatus',?) WHERE id=? AND agent=?",
-                             ('dispatching' if phase == 'observed' else 'delivered', agent + ':' + value['id'], agent))
-              else:
-                  db.execute("UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?",
-                             (value['id'], agent))
-                  db.execute("UPDATE runtime_items SET record=json_set(record,'$.materialized',json('true'),"
-                             "'$.pending',json('false'),'$.deliveryStatus','delivered') WHERE id=? AND agent=?",
-                             (agent + ':' + value['id'], agent))
-              if phase == 'paginate' or (phase == 'delivered' and not value['observedFirst']):
-                  now = time.time()
-                  # Both aggregate event and transcript windows now omit the original.
-                  # The exact durable receipt remains available by its primary key.
-                  for number in range(225):
-                      item = {'id': agent + ':later-' + str(number),
-                              'role': 'assistant' if number == 224 else 'tool',
-                              'title': 'Assistant' if number == 224 else 'Tool',
-                              'text': 'Latest transcript fixture marker' if number == 224 else 'Later tool result ' + str(number),
-                              'at': now + number / 100,
-                              'toolStatus': 'completed'}
-                      db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
-                                 (item['id'], agent, json.dumps(item), item['at']))
-                      db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'agent_message',?,'delivered',?,0)",
-                                 ('later-event-' + str(number), agent, 'Later fixture event', item['at']))
-          db.commit()
-  finally:
-      db.close()
-  `.replace(/^ {2}/gm, ""),
-        join(repo, "workspaces/runtime/apps/server/src"),
-        temporary,
-        agent,
-        phase,
-        JSON.stringify({ id, uncertainId, text, uncertainText, observedFirst }),
-      ],
-      { timeout: 5000, stdio: "pipe" },
+    const value = { id, uncertainId, text, uncertainText, observedFirst };
+    const db = new DatabaseSync(join(temporary, "canvas.sqlite3"));
+    db.exec("PRAGMA busy_timeout=5000");
+    // The store's entity triggers call functions the server registers. This
+    // connection supplies stand-ins; the server rebuilds the entities it serves.
+    db.function(
+      "sync_entity_payload",
+      { deterministic: true, varargs: true },
+      (_c, _id, json) => String(json),
     );
+    db.function("sync_entity_hash", { deterministic: true }, (payload) =>
+      createHash("sha256").update(String(payload)).digest("hex"),
+    );
+    const insertItem = db.prepare(
+      "INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)",
+    );
+    const userItem = (key, itemText, at, status, pending, materialized) => ({
+      id: agent + ":" + key,
+      role: "user",
+      title: "You",
+      clientMessageId: key,
+      text: itemText,
+      at,
+      deliveryStatus: status,
+      requestedDelivery: "after_tool",
+      pending,
+      materialized,
+    });
+    const putItem = (item) =>
+      insertItem.run(item.id, agent, JSON.stringify(item), item.at);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      if (phase === "initial") {
+        db.prepare(
+          "UPDATE runtime_events SET status='delivered' WHERE agent=? AND kind='user'",
+        ).run(agent);
+        const now = Date.now() / 1000;
+        for (const [key, status, itemText] of [
+          [value.id, "pending", value.text],
+          [value.uncertainId, "uncertain", value.uncertainText],
+        ]) {
+          db.prepare(
+            "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'user',?,?,?,0)",
+          ).run(key, agent, itemText, status, now - 1);
+          db.prepare(
+            "INSERT INTO runtime_event_meta(id,record) VALUES (?,?)",
+          ).run(
+            key,
+            JSON.stringify({
+              requestedDelivery: "after_tool",
+              transcriptItemId: agent + ":" + key,
+            }),
+          );
+          if (!value.observedFirst || key === value.uncertainId)
+            putItem(
+              userItem(
+                key,
+                itemText,
+                now - 1,
+                status,
+                status === "pending",
+                false,
+              ),
+            );
+        }
+      } else {
+        const status = phase === "observed" ? "dispatching" : "delivered";
+        const markItem = db.prepare(
+          "UPDATE runtime_items SET record=json_set(record,'$.materialized',json('true'),'$.pending',json('false'),'$.deliveryStatus',?) WHERE id=? AND agent=?",
+        );
+        if (value.observedFirst && ["observed", "delivered"].includes(phase)) {
+          // Match runtime.start input projection, then native userMessage delivery.
+          db.prepare(
+            "UPDATE runtime_events SET status=? WHERE id=? AND agent=?",
+          ).run(status, value.id, agent);
+          putItem(
+            userItem(
+              value.id,
+              value.text,
+              Date.now() / 1000,
+              status,
+              false,
+              true,
+            ),
+          );
+        }
+        if (value.observedFirst)
+          markItem.run(status, agent + ":" + value.id, agent);
+        else {
+          db.prepare(
+            "UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?",
+          ).run(value.id, agent);
+          markItem.run("delivered", agent + ":" + value.id, agent);
+        }
+        if (
+          phase === "paginate" ||
+          (phase === "delivered" && !value.observedFirst)
+        ) {
+          const now = Date.now() / 1000;
+          // Both aggregate event and transcript windows now omit the original.
+          // The exact durable receipt remains available by its primary key.
+          for (let number = 0; number < 225; number++) {
+            const last = number === 224;
+            putItem({
+              id: agent + ":later-" + number,
+              role: last ? "assistant" : "tool",
+              title: last ? "Assistant" : "Tool",
+              text: last
+                ? "Latest transcript fixture marker"
+                : "Later tool result " + number,
+              at: now + number / 100,
+              toolStatus: "completed",
+            });
+            db.prepare(
+              "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'agent_message',?,'delivered',?,0)",
+            ).run(
+              "later-event-" + number,
+              agent,
+              "Later fixture event",
+              now + number / 100,
+            );
+          }
+        }
+      }
+      db.exec("COMMIT");
+    } finally {
+      db.close();
+    }
     if (
       phase === "delivered" ||
       ["observed", "paginate", "receipt-refresh"].includes(phase)

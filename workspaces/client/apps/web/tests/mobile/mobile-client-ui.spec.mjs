@@ -4,29 +4,22 @@ import {
   expect,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Isolated server and headless browser. No model requests or user state.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test("Mobile client ui", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
   test.setTimeout(60_000);
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-ui-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
@@ -488,17 +481,10 @@ test("Mobile client ui", async ({
 });
 
 async function setupMobile320Composer(testBrowser) {
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-composer-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
