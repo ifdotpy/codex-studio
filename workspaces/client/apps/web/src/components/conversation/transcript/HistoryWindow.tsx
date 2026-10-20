@@ -11,6 +11,7 @@ import {
 } from "react";
 import "../../../api";
 import { messageRenderKey } from "../../message-delivery/messageDelivery";
+import { FOLLOW_THRESHOLD_PX } from "../../useConversationScroll";
 import type { HistoryGroup } from "../../turnHistoryModel";
 import {
   HISTORY_WINDOW_THRESHOLD,
@@ -129,7 +130,10 @@ export default function HistoryWindow({
         const box = row.getBoundingClientRect();
         return box.bottom > bounds.top && box.top < bounds.bottom;
       });
-      if (root.scrollHeight - root.scrollTop - root.clientHeight < 32) {
+      if (
+        root.scrollHeight - root.scrollTop - root.clientHeight <
+        FOLLOW_THRESHOLD_PX
+      ) {
         viewportAnchor.current = null;
         save(`${storageKey}:window-anchor`, null);
       } else if (row) {
