@@ -600,6 +600,8 @@ async function setupMobile320Composer(testBrowser) {
 test("Mobile composer 320px setup renders the settled action row", async ({
   browser: testBrowser,
 }) => {
+  // Seeding the Rust fixture dominates the run on a loaded runner.
+  test.setTimeout(90_000);
   const { page, managed } = await setupMobile320Composer(testBrowser);
   try {
     const actionRow = page.locator("#composer .composer-submit-actions");

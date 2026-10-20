@@ -143,6 +143,35 @@ export async function startRustBackend(stateDir, { modelsFile } = {}) {
   return { child, port, origin, token, post };
 }
 
+/** Delay between idle polls while seeded turns finish, milliseconds. */
+const IDLE_POLL_MS = 100;
+/** Longest wait for the seeded turns to finish, milliseconds. */
+const IDLE_WAIT_MS = 60_000;
+
+/** Wait until every seeded agent that is not held has no turn in flight. */
+async function waitUntilIdle(origin, holdWorkers) {
+  const deadline = Date.now() + IDLE_WAIT_MS;
+  for (;;) {
+    const response = await fetch(
+      `${origin}/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1`,
+    );
+    const agents = (await response.json()).documents
+      .map((document) => JSON.parse(document.payload))
+      .filter((entity) => entity.collection === "agent")
+      .map((entity) => entity.value);
+    const busy = agents.filter(
+      (agent) =>
+        agent.inFlight && !(holdWorkers && agent.name?.startsWith("Worker")),
+    );
+    if (agents.length && !busy.length) return;
+    if (Date.now() > deadline)
+      throw new Error(
+        `Seeded turns never finished: ${busy.map((a) => a.name)}`,
+      );
+    await new Promise((resolveWait) => setTimeout(resolveWait, IDLE_POLL_MS));
+  }
+}
+
 async function main() {
   const [stateDir, ...flags] = process.argv.slice(2);
   mkdirSync(stateDir, { recursive: true });
@@ -192,6 +221,7 @@ async function main() {
       cwd,
     }),
   ]);
+  await waitUntilIdle(backend.origin, process.env.FIXTURE_HOLD_WORKERS === "1");
   createInterface({ input: process.stdin }).on("line", async (line) => {
     const message = JSON.parse(line);
     if (message.method === "fixture/create-worker")
