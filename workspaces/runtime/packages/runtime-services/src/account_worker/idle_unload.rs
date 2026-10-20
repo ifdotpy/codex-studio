@@ -101,6 +101,9 @@ pub(super) struct IdleClocks {
     process: Option<Instant>,
     /// The event source that can recheck the idle process's remaining owner.
     process_blocked: Option<IdleBlocker>,
+    /// After a sweep with an unknown provider result, no deadline is earlier
+    /// than this backoff, whatever state change recomputes it.
+    retry_at: Option<Instant>,
     initialized: bool,
 }
 
@@ -309,6 +312,7 @@ impl IdleClocks {
                     .map(|since| since + delay),
             )
             .min()
+            .map(|deadline| self.retry_at.map_or(deadline, |retry| deadline.max(retry)))
     }
 }
 
@@ -358,6 +362,7 @@ impl Worker {
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
             return Ok(());
         }
+        self.idle_clocks.retry_at = None;
         self.idle_check_threads(now, delay, due).await
     }
 
@@ -496,7 +501,9 @@ impl Worker {
                 self.idle_deadline = None;
             }
         } else if retry {
-            self.idle_deadline = Some(tokio::time::Instant::now() + IDLE_RETRY_BACKOFF);
+            let retry_at = Instant::now() + IDLE_RETRY_BACKOFF;
+            self.idle_clocks.retry_at = Some(retry_at);
+            self.idle_deadline = Some(retry_at);
         } else {
             self.idle_deadline = next_deadline(&self.idle_clocks, Some(delay));
         }
