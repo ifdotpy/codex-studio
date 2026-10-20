@@ -238,8 +238,9 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
     drop(permit);
     tokio::time::resume();
     let mut count = 0;
+    let mut acknowledged = cursor;
     loop {
-        peer.acknowledged(cursor + 1 + count).await;
+        acknowledged = peer.acknowledged_at_least(acknowledged + 1).await;
         // Order the read after the worker's next serve cycle, which flushes a due deadline.
         worker_barrier(&worker).await;
         count += 1;

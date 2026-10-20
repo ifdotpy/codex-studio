@@ -463,9 +463,15 @@ impl SessionControl {
     /// Call only after durable settlement. Success means recorded for contiguous
     /// forwarding; it is not a receipt that the supervisor has already ACKed.
     pub async fn settled(&self, cursor: EventCursor) -> Result<(), SessionTaskError> {
+        self.settled_all(vec![cursor]).await
+    }
+
+    /// [`Self::settled`] for a drained batch in one round trip. Cursors are
+    /// recorded in order; the first refused cursor stops the batch.
+    pub async fn settled_all(&self, cursors: Vec<EventCursor>) -> Result<(), SessionTaskError> {
         let (reply, receipt) = oneshot::channel();
         self.settlements
-            .send(Settlement { cursor, reply })
+            .send(Settlement { cursors, reply })
             .await
             .map_err(|_| SessionTaskError::Closed)?;
         receipt.await.map_err(|_| SessionTaskError::Closed)?
@@ -492,7 +498,7 @@ struct SettlementState {
     settled: bool,
 }
 struct Settlement {
-    cursor: EventCursor,
+    cursors: Vec<EventCursor>,
     reply: oneshot::Sender<Result<(), SessionTaskError>>,
 }
 enum Command {
@@ -827,7 +833,7 @@ impl SessionTask {
                     if adapter.status.borrow().info.as_ref().is_some_and(|info| info.generation.0 != self.state.generation()) { return Err(SessionError::StaleGeneration.into()); }
                 }
                 settlement = self.settled.recv() => {
-                    if let Some(settlement) = settlement { let result = self.settle(settlement.cursor); let _ignored = settlement.reply.send(result); }
+                    if let Some(settlement) = settlement { let result = self.settle(&settlement.cursors); let _ignored = settlement.reply.send(result); }
                     else { return Ok(()); }
                 }
                 slot = self.events.clone().reserve_owned(), if self.retained.pending.is_some() || self.retained.control.is_some() => {
@@ -1304,18 +1310,21 @@ impl SessionTask {
         }
     }
 
-    fn settle(&mut self, cursor: EventCursor) -> Result<(), SessionTaskError> {
-        if cursor <= self.acknowledged {
-            return Ok(());
-        }
-        let state = self
-            .seen
-            .get_mut(&cursor.0)
-            .ok_or(SessionTaskError::UndeliveredCursor)?;
-        if !state.delivered {
-            return Err(SessionTaskError::UndeliveredCursor);
-        }
-        state.settled = true;
+    fn settle(&mut self, cursors: &[EventCursor]) -> Result<(), SessionTaskError> {
+        let result = cursors.iter().try_for_each(|cursor| {
+            if *cursor <= self.acknowledged {
+                return Ok(());
+            }
+            let state = self
+                .seen
+                .get_mut(&cursor.0)
+                .ok_or(SessionTaskError::UndeliveredCursor)?;
+            if !state.delivered {
+                return Err(SessionTaskError::UndeliveredCursor);
+            }
+            state.settled = true;
+            Ok(())
+        });
         if let Some(last) = self
             .seen
             .iter()
@@ -1324,7 +1333,7 @@ impl SessionTask {
         {
             self.ack_target = Some(EventCursor(*last.0));
         }
-        Ok(())
+        result
     }
 }
 

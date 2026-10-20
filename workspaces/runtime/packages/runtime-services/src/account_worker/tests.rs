@@ -627,6 +627,20 @@ impl Peer {
             }
         }
     }
+    /// Wait until the contiguous ACK reaches `cursor`. A batch settles in one
+    /// round trip, so its ACK may pass `cursor`; return the ACKed cursor.
+    async fn acknowledged_at_least(&mut self, cursor: u64) -> u64 {
+        loop {
+            let got = tokio::time::timeout(std::time::Duration::from_secs(120), self.acks.recv())
+                .await
+                .expect("settlement deadline")
+                .expect("session acknowledges")
+                .0;
+            if got >= cursor {
+                return got;
+            }
+        }
+    }
     async fn acknowledged_or_worker_exits(&mut self, cursor: u64, worker: &mut AccountHandle) {
         loop {
             let received = tokio::select! {
@@ -2982,11 +2996,15 @@ async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
         .faults
         .release_journal_batch
         .notify_one();
-    first_peer.acknowledged(first + 1).await;
     assert!(matches!(
         worker.completion().await,
         Err(WorkerError::TaskFailed)
     ));
+    // A batch settles once, after every committed entry's effects, so the
+    // injected loss leaves the whole committed batch unacknowledged.
+    while let Ok(ack) = first_peer.acks.try_recv() {
+        assert!(ack.0 < first, "no entry of the failed batch is ACKed");
+    }
     let committed_snapshot = streams(&recovered_state).await;
     assert_eq!(committed_snapshot["delta"], "part-0;part-1;part-2;part-3;");
     assert_eq!(committed_snapshot["closed"].as_array().unwrap().len(), 1);

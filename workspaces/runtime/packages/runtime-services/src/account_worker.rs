@@ -3244,6 +3244,8 @@ impl Worker {
         self.arm_flush();
         self.schedule_publication_drain()?;
         let committed_any = !committed.is_empty();
+        let mut cursors = Vec::with_capacity(committed.len());
+        let mut settle_cursors = Vec::with_capacity(committed.len());
         for (index, (entry, effect)) in committed.into_iter().enumerate() {
             #[cfg(not(test))]
             let _ = index;
@@ -3259,18 +3261,77 @@ impl Worker {
             {
                 return Err(WorkerError::TaskFailed);
             }
-            self.journal_committed(entry, effect, source, settle)
-                .await?;
+            let cursor = entry.cursor;
+            cursors.push(cursor);
+            if self.journal_committed(entry, effect, source).await? {
+                settle_cursors.push(cursor);
+            }
+        }
+        if settle && !self.closing && !settle_cursors.is_empty() {
+            self.settle_journal(settle_cursors, source).await?;
+        }
+        if let Some(actor_id) = actor_id {
+            for cursor in cursors {
+                if let Some(reply) = self
+                    .vm_notification_waiters
+                    .remove(&(actor_id.to_owned(), cursor.0))
+                {
+                    let _sent = reply.send(Ok(()));
+                }
+            }
         }
         Ok(committed_any && !had_deferred)
     }
+    /// Report a drained batch's committed cursors to their session in one
+    /// round trip, in journal order, after the batch's commit.
+    async fn settle_journal(
+        &mut self,
+        cursors: Vec<studio_runtime_process::EventCursor>,
+        source: Option<&VmActorIdentity>,
+    ) -> Result<(), WorkerError> {
+        let actor_id = source.map(|source| source.actor_id.as_str());
+        let actor_epoch = source.map(|source| source.epoch);
+        let actor_incarnation = source.map(|source| source.incarnation);
+        if let Some(actor) = actor_id
+            && !self.vm_sessions.get(actor).is_some_and(|session| {
+                Some(session.epoch) == actor_epoch && Some(session.incarnation) == actor_incarnation
+            })
+        {
+            return Err(WorkerError::StaleVmActor);
+        }
+        let control = match self.control_for_actor(actor_id) {
+            Ok(control) => control,
+            Err(WorkerError::Closed) if actor_id.is_some() => {
+                if let Some(actor) = actor_id {
+                    self.retire_vm_actor(actor);
+                }
+                return Err(self.stale_vm_actor(actor_id));
+            }
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = control.settled_all(cursors).await {
+            if actor_id.is_some() && matches!(error, SessionTaskError::Closed) {
+                if let Some(actor) = actor_id {
+                    self.retire_closed_vm_actor(actor, actor_epoch).await?;
+                }
+                return Err(self.stale_vm_actor(actor_id));
+            }
+            if actor_id.is_some() {
+                return Err(error.into());
+            }
+            self.closing = true;
+            control.cancel();
+        }
+        Ok(())
+    }
+    /// Apply one committed entry's in-memory effects. Returns whether its
+    /// cursor settles with the batch; a callback request settles on its reply.
     async fn journal_committed(
         &mut self,
         entry: JournalEntry,
         effect: Option<Effect>,
         source: Option<&VmActorIdentity>,
-        settle: bool,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<bool, WorkerError> {
         if source.is_none()
             && let JournalPayload::Frame(Frame::Notification(notification)) = &entry.payload
         {
@@ -3282,7 +3343,6 @@ impl Worker {
         }
         let actor_id = source.map(|source| source.actor_id.as_str());
         let actor_epoch = source.map(|source| source.epoch);
-        let actor_incarnation = source.map(|source| source.incarnation);
         let cursor = entry.cursor;
         let completed = match &entry.payload {
             JournalPayload::Frame(Frame::Notification(frame)) => {
@@ -3399,47 +3459,10 @@ impl Worker {
                 actor_id.map(str::to_owned),
                 actor_epoch,
             ));
-        } else if settle && !self.closing {
-            if let Some(actor) = actor_id
-                && !self.vm_sessions.get(actor).is_some_and(|session| {
-                    Some(session.epoch) == actor_epoch
-                        && Some(session.incarnation) == actor_incarnation
-                })
-            {
-                return Err(WorkerError::StaleVmActor);
-            }
-            let control = match self.control_for_actor(actor_id) {
-                Ok(control) => control,
-                Err(WorkerError::Closed) if actor_id.is_some() => {
-                    if let Some(actor) = actor_id {
-                        self.retire_vm_actor(actor);
-                    }
-                    return Err(self.stale_vm_actor(actor_id));
-                }
-                Err(error) => return Err(error),
-            };
-            if let Err(error) = control.settled(cursor).await {
-                if actor_id.is_some() && matches!(error, SessionTaskError::Closed) {
-                    if let Some(actor) = actor_id {
-                        self.retire_closed_vm_actor(actor, actor_epoch).await?;
-                    }
-                    return Err(self.stale_vm_actor(actor_id));
-                }
-                if actor_id.is_some() {
-                    return Err(error.into());
-                }
-                self.closing = true;
-                control.cancel();
-            }
+        } else {
+            return Ok(true);
         }
-        if let Some(actor_id) = actor_id
-            && let Some(reply) = self
-                .vm_notification_waiters
-                .remove(&(actor_id.to_owned(), cursor.0))
-        {
-            let _sent = reply.send(Ok(()));
-        }
-        Ok(())
+        Ok(false)
     }
     async fn vm_notification(
         &mut self,
