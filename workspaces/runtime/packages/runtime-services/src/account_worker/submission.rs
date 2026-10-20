@@ -5,6 +5,7 @@
 //! with an Unknown outcome, never an unrecorded write.
 use super::*;
 use crate::provider_session_task::PreparedRequest;
+use rusqlite::OptionalExtension;
 
 /// One request to commit, built by the worker and run in the agent's task
 /// (or inline for an interrupt).
@@ -170,14 +171,26 @@ async fn vm_launch_request(
         .worker_run("vm_launch_request", move |store| async move {
             store
                 .read_async("runtime-services/account_worker_read", move |connection| {
+                    // A host agent, the common case, needs only its mode, not its record.
+                    let vm = connection
+                        .prepare_cached(
+                            "SELECT json_extract(record,'$.executionMode')='vm' \
+                             FROM runtime_agents WHERE id=?1",
+                        )?
+                        .query_row([&lookup_id], |row| row.get::<_, Option<bool>>(0))
+                        .optional()?;
+                    match vm {
+                        None => {
+                            return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
+                        }
+                        Some(Some(true)) => {}
+                        Some(_) => return Ok(None),
+                    }
                     let Some(record) =
                         AgentRepository::get(connection, &AgentId::from(lookup_id.as_str()))?
                     else {
                         return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
                     };
-                    if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
-                        return Ok(None);
-                    }
                     if !crate::linux_vm_provider::vm_actor_matches(
                         connection,
                         &record.id.0,
