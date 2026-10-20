@@ -216,6 +216,153 @@ impl SchedulerRepository {
         Ok(interrupted)
     }
 
+    /// The attempt that a new connection must restore from a recovery receipt
+    /// of `agent`, which has no `startAttempt`, so that journal delivery and
+    /// history reconciliation can settle it. A disconnect receipt names an
+    /// unresolved attempt only while the agent is still interrupted (see
+    /// `OPEN_DISCONNECT_RECEIPT_SQL`). A restart marker names one while it is
+    /// open or `held` for history reconciliation. An attempt whose turn
+    /// already ended owes nothing: restored, it looked unresolved, so the next
+    /// provider generation interrupted the finished agent again.
+    pub fn open_recovery_attempt(
+        connection: &Connection,
+        agent: &AgentRecord,
+    ) -> StoreResult<Option<Value>> {
+        if agent
+            .extra
+            .get("startAttempt")
+            .is_some_and(|a| !a.is_null())
+        {
+            return Ok(None);
+        }
+        let disconnect = agent
+            .extra
+            .get("disconnectRecovery")
+            .filter(|_| agent.status == AgentStatus::Interrupted);
+        let restart = agent
+            .extra
+            .get("restartRecovery")
+            .filter(|marker| restart_marker_open(marker) || marker["stage"] == "held");
+        let Some(attempt) = disconnect
+            .or(restart)
+            .and_then(|receipt| receipt.get("startAttempt"))
+            .filter(|attempt| attempt.is_object())
+        else {
+            return Ok(None);
+        };
+        Ok((!settled_attempt(connection, agent, attempt)?).then(|| attempt.clone()))
+    }
+
+    /// Return each idle agent of `account` that a stale recovery receipt left
+    /// interrupted to the outcome of its last completed turn. An earlier build
+    /// restored the receipt's settled attempt as live, and a later provider
+    /// generation interrupted the agent for it. Nothing is sent to the
+    /// provider and no parent is notified: the turn already reported its end.
+    /// A turn that the disconnect really cut off has no terminal receipt and
+    /// keeps its recovery. Returns the repaired agent ids.
+    pub fn settle_stale_recovery(
+        transaction: &Transaction<'_>,
+        account: &str,
+        at: f64,
+    ) -> StoreResult<Vec<String>> {
+        let mut repaired = Vec::new();
+        for mut agent in account_agents(
+            transaction,
+            account,
+            "(json_type(record,'$.disconnectRecovery.startAttempt')='object' \
+              OR json_type(record,'$.restartRecovery.startAttempt')='object') \
+             AND COALESCE(json_extract(record,'$.inFlight'),0)=0",
+        )? {
+            let Some(attempt) = stored_attempt(&agent).cloned() else {
+                continue;
+            };
+            let Some(id) = attempt["id"].as_str() else {
+                continue;
+            };
+            if !recovery_attempt_ids(&agent).any(|saved| saved == id)
+                || !settled_attempt(transaction, &agent, &attempt)?
+            {
+                continue;
+            }
+            // A later turn that is still open is not proven ended.
+            if let Some(turn) = agent
+                .extra
+                .get("turnId")
+                .and_then(Value::as_str)
+                .filter(|turn| !turn.is_empty())
+                && !completed_turn(transaction, &agent.id.0, turn)?
+            {
+                continue;
+            }
+            let last = agent
+                .extra
+                .get("lastCompletedTurn")
+                .and_then(Value::as_str)
+                .filter(|turn| !turn.is_empty())
+                .map(str::to_owned);
+            let mut changed = false;
+            if agent
+                .extra
+                .get("startAttempt")
+                .and_then(|a| a["id"].as_str())
+                == Some(id)
+                && (last.is_none() || bound_turn(&agent, &attempt) != last.as_deref())
+            {
+                agent.extra.remove("startAttempt");
+                changed = true;
+            }
+            if let Some(marker) = agent.extra.get_mut("restartRecovery")
+                && restart_marker_open(marker)
+                && marker["startAttempt"]["id"] == id
+            {
+                marker["stage"] = json!("finished");
+                marker["reconciledAt"] = json!(at);
+                marker["outcome"] = json!("settled");
+                changed = true;
+            }
+            let outcome = match agent
+                .extra
+                .get("lastCompletedTurnStatus")
+                .and_then(Value::as_str)
+            {
+                Some("completed") => Some(AgentStatus::Completed),
+                Some("failed") => Some(AgentStatus::Failed),
+                _ => None,
+            };
+            if let Some(status) = outcome.filter(|_| {
+                agent.status == AgentStatus::Interrupted
+                    && last.is_some()
+                    && matches!(
+                        agent.extra.get("error").and_then(Value::as_str),
+                        Some(
+                            PROVIDER_DISCONNECTED_TURN_ERROR
+                                | VM_PROVIDER_DISCONNECTED_TURN_ERROR
+                                | BACKEND_RESTARTED_TURN_ERROR
+                        )
+                    )
+            }) {
+                let error = if status == AgentStatus::Failed {
+                    agent.extra.insert("nativeFailureHold".into(), json!(true));
+                    agent
+                        .extra
+                        .get("lastCompletedTurnError")
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                agent.extra.insert("error".into(), error);
+                agent.status = status;
+                changed = true;
+            }
+            if changed {
+                publish_agent(transaction, &agent)?;
+                repaired.push(agent.id.0);
+            }
+        }
+        Ok(repaired)
+    }
+
     /// The error and retained cursor use existing fields published to the UI.
     pub fn hold_account(
         transaction: &Transaction<'_>,
@@ -2108,6 +2255,41 @@ pub(super) fn stored_attempt(agent: &AgentRecord) -> Option<&Value> {
                 .filter(|marker| restart_marker_open(marker))
                 .and_then(|r| r.get("startAttempt"))
         })
+}
+/// Whether the provider turn of `attempt` already ended. The settled attempt
+/// holds the `terminal` receipt that turn settlement saves on its execution
+/// attempt, or its bound turn is a completed turn of the agent. A native
+/// action attempt saved without `turnId` (live reviewers 8388eb70, 6f209a16
+/// and d0e0015f) is proven only by that receipt.
+pub(super) fn settled_attempt(
+    connection: &Connection,
+    agent: &AgentRecord,
+    attempt: &Value,
+) -> StoreResult<bool> {
+    if let Some(turn) = bound_turn(agent, attempt).filter(|turn| !turn.is_empty())
+        && (agent.extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn)
+            || completed_turn(connection, &agent.id.0, turn)?)
+    {
+        return Ok(true);
+    }
+    let Some(id) = attempt["id"].as_str() else {
+        return Ok(false);
+    };
+    Ok(connection
+        .query_row_cached(
+            "SELECT json_type(record,'$.receipts.terminal') IS 'object' \
+             FROM runtime_execution_attempts WHERE id=?1",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+/// The id of the attempt that a recovery receipt of `agent` names.
+fn recovery_attempt_ids(agent: &AgentRecord) -> impl Iterator<Item = &str> {
+    ["disconnectRecovery", "restartRecovery"]
+        .into_iter()
+        .filter_map(|key| agent.extra.get(key)?["startAttempt"]["id"].as_str())
 }
 fn restart_marker_open(marker: &Value) -> bool {
     marker["stage"]
