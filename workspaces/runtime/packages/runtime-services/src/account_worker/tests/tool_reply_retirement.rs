@@ -269,3 +269,78 @@ async fn claude_no_write_outcome_leaves_a_reply_row() {
     scenario_no_write_outcome_leaves_a_reply_row(studio_runtime_providers::ProviderKind::Claude)
         .await;
 }
+
+/// With no reply row, only the worker's callback journal fence stops a second
+/// send: a replay of a tool call whose write ended Unknown must end the worker
+/// as CallbackUnknown and write nothing to the provider.
+async fn scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = running_tool_turn(&state, &mut peer, provider).await;
+    let (_cursor, callback) = tool_call(&mut peer, 0).await;
+    let frame = json!({
+        "id":"tool-call-0",
+        "method":"item/tool/call",
+        "params":{
+            "threadId":"fake-thread-0",
+            "turnId":"turn",
+            "callId":"status-0",
+            "tool":"orchestration_status",
+            "arguments":{}
+        }
+    });
+    callback
+        .receipt
+        .send(CommandReceipt::Unknown)
+        .ok()
+        .expect("callback write receipt receiver");
+    let completion = tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+        .await
+        .expect("callback completion deadline");
+    assert!(
+        matches!(completion, Err(WorkerError::CallbackUnknown)),
+        "{completion:?}"
+    );
+    let mut replay = Peer::new();
+    let mut worker = provider_worker(&state, &mut replay, provider).await;
+    replay.cursor = peer.cursor - 1;
+    replay.frame(frame).await;
+    let completion = tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+        .await
+        .expect("replay completion deadline");
+    assert!(
+        matches!(completion, Err(WorkerError::CallbackUnknown)),
+        "an unknown callback write stays unknown on replay: {completion:?}"
+    );
+    let mut sent = Vec::new();
+    while let Ok(write) = replay.writes.try_recv() {
+        sent.push(write.value);
+    }
+    assert!(
+        sent.iter().all(|write| write["id"] != "tool-call-0"),
+        "the reply is never written twice: {sent:?}"
+    );
+    assert!(
+        replay.acks.try_recv().is_err(),
+        "the unknown cursor is not acknowledged"
+    );
+    assert_eq!(reply_rows(&state).await, (0, 0));
+}
+
+#[tokio::test]
+async fn codex_replay_after_an_unknown_write_never_sends_the_reply_again() {
+    scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn claude_replay_after_an_unknown_write_never_sends_the_reply_again() {
+    scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
+}
