@@ -2005,7 +2005,16 @@ pub(super) fn replace(
     phase: &str,
     value: Value,
 ) -> Result<(), WorkerError> {
-    tx.execute_cached("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,value.to_string()])?;
+    replace_text(tx, operation, phase, &value.to_string())
+}
+/// [`replace`] with the receipt's JSON text already encoded.
+fn replace_text(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+    phase: &str,
+    text: &str,
+) -> Result<(), WorkerError> {
+    tx.execute_cached("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,text])?;
     Ok(())
 }
 pub(super) fn checkpoint(
@@ -2647,29 +2656,18 @@ pub(crate) fn persist_streams(
     account: &str,
     streams: &NotificationStreamBuffer,
 ) -> Result<(), WorkerError> {
-    let mut metadata = serde_json::to_value(streams).map_err(|_| invalid(account))?;
-    let mut pending = Vec::new();
-    for entry in metadata["entries"]
-        .as_array_mut()
-        .ok_or_else(|| invalid(account))?
-    {
-        if entry["count"].as_u64().unwrap_or(0) > 0 {
-            pending.push(entry.clone());
-        }
-        entry["pending"] = json!("");
-        entry["count"] = json!(0);
-        entry["params"] = Value::Null;
-    }
+    let (metadata, pending) = streams.persisted_text().map_err(|_| invalid(account))?;
     let key = format!("streams:{account}");
-    replace(tx, &key, "metadata", metadata)?;
-    if pending.is_empty() {
-        tx.execute_cached(
-            "DELETE FROM runtime_operation_receipts WHERE id=?1",
-            [receipt_id(&key, "pending")],
-        )?;
-        Ok(())
-    } else {
-        replace(tx, &key, "pending", json!(pending))
+    replace_text(tx, &key, "metadata", &metadata)?;
+    match pending {
+        Some(pending) => replace_text(tx, &key, "pending", &pending),
+        None => {
+            tx.execute_cached(
+                "DELETE FROM runtime_operation_receipts WHERE id=?1",
+                [receipt_id(&key, "pending")],
+            )?;
+            Ok(())
+        }
     }
 }
 pub(super) fn load_streams(

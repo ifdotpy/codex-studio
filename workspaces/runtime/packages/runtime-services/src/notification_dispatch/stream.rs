@@ -216,6 +216,31 @@ pub struct NotificationStreamBuffer {
     post_commit_analytics_bytes: usize,
 }
 
+/// The durable metadata of a stream buffer: every field, with each entry's
+/// pending text, count and params blanked (the pending form keeps them).
+/// It borrows the buffer, so persisting copies no stream text.
+#[derive(Serialize)]
+struct StreamMetadata<'a> {
+    entries: Vec<EntryMetadata<'a>>,
+    closed: &'a [Shared<StreamKey>],
+    analytics: &'a [Shared<AnalyticsCapture>],
+    post_commit: &'a [Shared<NotificationPostCommit>],
+    publication_sequence: u64,
+    analytics_overflow: u64,
+    analytics_skipped: &'a [Shared<StreamKey>],
+}
+
+#[derive(Serialize)]
+struct EntryMetadata<'a> {
+    key: &'a StreamKey,
+    flushed: bool,
+    base: &'a Option<String>,
+    pending: &'static str,
+    count: u64,
+    characters: u64,
+    params: (),
+}
+
 #[derive(Deserialize)]
 struct PersistedNotificationStreamBuffer {
     #[serde(default)]
@@ -560,6 +585,43 @@ impl NotificationStreamBuffer {
             self.rebuild_indexes();
         }
     }
+    /// The durable JSON text of this buffer: its metadata, and its entries
+    /// with pending deltas (`None` when nothing is pending).
+    pub(crate) fn persisted_text(&self) -> serde_json::Result<(String, Option<String>)> {
+        let metadata = serde_json::to_string(&StreamMetadata {
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| EntryMetadata {
+                    key: &entry.key,
+                    flushed: entry.flushed,
+                    base: &entry.base,
+                    pending: "",
+                    count: 0,
+                    characters: entry.characters,
+                    params: (),
+                })
+                .collect(),
+            closed: &self.closed,
+            analytics: &self.analytics,
+            post_commit: &self.post_commit,
+            publication_sequence: self.publication_sequence,
+            analytics_overflow: self.analytics_overflow,
+            analytics_skipped: &self.analytics_skipped,
+        })?;
+        let pending = self
+            .entries
+            .iter()
+            .filter(|entry| entry.count > 0)
+            .collect::<Vec<_>>();
+        let pending = if pending.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&pending)?)
+        };
+        Ok((metadata, pending))
+    }
+
     pub(crate) fn pending_bytes(&self) -> usize {
         self.pending_bytes
     }
@@ -905,6 +967,60 @@ mod tests {
             streams.enqueue_delta(key, "late", &params),
             EnqueueResult::Closed
         ));
+    }
+
+    /// The borrowed durable form equals the former one: the buffer as a JSON
+    /// value with each entry's pending text, count and params blanked, plus a
+    /// copy of every entry with pending deltas.
+    #[test]
+    fn persisted_text_matches_the_blanked_value_form() {
+        let key = |item: &str, turn: Option<&str>| StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 3,
+            thread: "thread".into(),
+            turn: turn.map(str::to_owned),
+            item: item.into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        let params = json!({"threadId":"thread","turnId":"turn","itemId":"a"});
+        let mut streams = NotificationStreamBuffer::default();
+        assert!(matches!(
+            streams.enqueue_delta(key("a", Some("turn")), "pending é", &params),
+            EnqueueResult::Buffered
+        ));
+        assert!(matches!(
+            streams.enqueue_delta(key("b", None), "flushed", &params),
+            EnqueueResult::Buffered
+        ));
+        streams.flush(&key("b", None), "base").expect("flushes");
+        streams.preserve_base(&key("b", None), "hash".into());
+        assert!(matches!(
+            streams.enqueue_delta(key("c", Some("turn")), "closed", &params),
+            EnqueueResult::Buffered
+        ));
+        streams.flush(&key("c", Some("turn")), "").expect("flushes");
+        streams.close(&key("c", Some("turn")));
+        let former = |streams: &NotificationStreamBuffer| {
+            let mut metadata = serde_json::to_value(streams).expect("buffer encodes");
+            let mut pending = Vec::new();
+            for entry in metadata["entries"].as_array_mut().expect("entries") {
+                if entry["count"].as_u64().unwrap_or(0) > 0 {
+                    pending.push(entry.clone());
+                }
+                entry["pending"] = json!("");
+                entry["count"] = json!(0);
+                entry["params"] = Value::Null;
+            }
+            (metadata, (!pending.is_empty()).then(|| json!(pending)))
+        };
+        let parse = |text: &str| serde_json::from_str::<Value>(text).expect("JSON text");
+        for buffer in [streams.clone(), NotificationStreamBuffer::default()] {
+            let (metadata, pending) = buffer.persisted_text().expect("encodes");
+            let (expected_metadata, expected_pending) = former(&buffer);
+            assert_eq!(parse(&metadata), expected_metadata);
+            assert_eq!(pending.as_deref().map(parse), expected_pending);
+        }
     }
 
     #[test]
