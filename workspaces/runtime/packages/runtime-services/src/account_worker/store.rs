@@ -1402,6 +1402,7 @@ pub(super) async fn journal_batch(
         let mut committed = Vec::with_capacity(entries.len());
         let mut parked = Vec::new();
         let mut deferred = Vec::new();
+        let mut deferred_agent = None;
         let mut persist_snapshot = false;
         let mut outbox = PublicationOutbox::default();
         let mut entries = entries.into_iter();
@@ -1448,6 +1449,7 @@ pub(super) async fn journal_batch(
                     committed.push((entry, effect));
                 }
                 Ok(None) => {
+                    deferred_agent = subject;
                     deferred.push(entry);
                     deferred.extend(entries);
                     break;
@@ -1485,6 +1487,7 @@ pub(super) async fn journal_batch(
             committed,
             parked,
             deferred,
+            deferred_agent,
             settled,
             faults,
         })
@@ -2356,6 +2359,8 @@ pub(super) struct JournalBatch {
     pub parked: Vec<JournalEntry>,
     /// Entries that wait for a reply to bind them, in journal order.
     pub deferred: Vec<JournalEntry>,
+    /// The agent of the first deferred entry, an unbound turn completion.
+    pub deferred_agent: Option<String>,
     pub settled: Option<SettledOutcome>,
     /// Agent-scoped failures this transaction rolled back.
     pub faults: Vec<agent_fault::AgentFault>,

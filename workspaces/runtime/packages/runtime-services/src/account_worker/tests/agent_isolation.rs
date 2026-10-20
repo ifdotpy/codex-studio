@@ -294,3 +294,85 @@ async fn journal_keeps_reading_behind_a_completion_no_request_can_bind() {
     assert_running(&mut worker).await;
     worker.shutdown().await.unwrap();
 }
+
+/// A fault after the claim returns the unsubmitted input to the queue, so a
+/// later message starts the agent and sends that input once.
+#[tokio::test]
+async fn held_agent_keeps_its_unsent_input_and_a_message_starts_it_once() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    assert_eq!(state.event_status("input").await, "reserved");
+    // The claimed attempt already holds a conflicting thread receipt, as the
+    // 2026-10-20 stale start effect did.
+    let attempt = record_of(&state, &a).await["startAttempt"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let changed = tx.execute(
+                        "UPDATE runtime_execution_attempts SET record=json_set(record,'$.receipts.threadPrepared',json('{\"input\":{\"thread\":\"elsewhere\"},\"result\":false}')) WHERE id=?1",
+                        [attempt],
+                    )?;
+                    assert_eq!(changed, 1);
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let reply = peer
+        .frame(json!({"id":resume["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
+        .await;
+    peer.acknowledged_or_worker_exits(reply, &mut worker).await;
+    let held = record_of(&state, &a).await;
+    assert_held(&held, "runtime_execution_attempts/");
+    assert!(
+        held.get("startAttempt").is_none_or(Value::is_null),
+        "{held}"
+    );
+    assert_eq!(state.event_status("input").await, "pending");
+
+    // A manual message clears the hold (as `coordination` does) and is the
+    // user's decision to continue.
+    let agent_id = a.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            scheduler::lifecycle_transaction_with(&store, move |tx| {
+                let mut agent =
+                    AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+                agent.extra.insert("autoWake".into(), json!(true));
+                agent.extra.insert("error".into(), Value::Null);
+                agent.extra.remove("nativeFailureHold");
+                AgentRepository::put(tx, &agent)?;
+                Ok::<_, WorkerError>(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    state.enqueue("again").await;
+    state.wake(&worker).await;
+    let start = peer.write_turn_start().await;
+    let input = start["params"]["input"].to_string();
+    assert!(
+        input.contains("input") && input.contains("again"),
+        "{start}"
+    );
+    peer.accepted(&start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert_eq!(state.event_status("again").await, "delivered");
+    worker_barrier(&worker).await;
+    assert!(peer.writes.try_recv().is_err(), "the input is sent once");
+    assert_running(&mut worker).await;
+    worker.shutdown().await.unwrap();
+}

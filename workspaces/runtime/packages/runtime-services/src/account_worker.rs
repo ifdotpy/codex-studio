@@ -718,6 +718,7 @@ pub async fn start_account_worker_with_publication_sink(
             .then(|| tokio::time::Instant::now() + STREAM_CADENCE),
         streams,
         deferred: VecDeque::new(),
+        reported_faults: BTreeSet::new(),
         vm_notification_waiters: BTreeMap::new(),
         callbacks: BTreeMap::new(),
         managed_callback_cursors: BTreeSet::new(),
@@ -896,7 +897,11 @@ struct Worker {
     pending: BTreeMap<RequestId, Arc<Pending>>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
-    deferred: VecDeque<(JournalEntry, Option<VmActorIdentity>)>,
+    /// Journal entries that wait for a reply to bind them, with their VM
+    /// source and the agent an unbound completion belongs to.
+    deferred: VecDeque<(JournalEntry, Option<VmActorIdentity>, Option<String>)>,
+    /// Agents whose isolated data fault this worker already logged.
+    reported_faults: BTreeSet<String>,
     vm_notification_waiters:
         BTreeMap<(String, u64), tokio::sync::oneshot::Sender<Result<(), retained::PortError>>>,
     effects: VecDeque<Effect>,
@@ -1283,39 +1288,6 @@ impl Worker {
         }
     }
     async fn run_effect(&mut self, effect: Effect) -> Result<(), WorkerError> {
-        let agent = agent_fault::effect_agent(&effect).map(str::to_owned);
-        match self.run_effect_inner(effect).await {
-            // The effect's agent has invalid stored data. Running the effect
-            // again (here or after a restart) fails the same way: hold the
-            // agent and settle the effect once.
-            Err(error)
-                if agent.is_some()
-                    && !self.closing
-                    && agent_fault::data_fault(&error).is_some() =>
-            {
-                let agent_id = agent.unwrap_or_default();
-                let key = self.effect_in_hand.take();
-                let fault = self
-                    .db("hold_after_fault", move |store| async move {
-                        agent_fault::hold_after(
-                            &store,
-                            agent_id,
-                            agent_fault::FaultStage::DurableEffect,
-                            &error,
-                        )
-                        .await
-                    })
-                    .await?;
-                fault.report(&self.account);
-                if let Some(key) = key {
-                    self.complete_effect(key).await?;
-                }
-                Ok(())
-            }
-            result => result,
-        }
-    }
-    async fn run_effect_inner(&mut self, effect: Effect) -> Result<(), WorkerError> {
         self.effect_in_hand = store::effect_key(&self.account, &effect);
         match effect {
             Effect::Callback(cursor, frame, actor, epoch) => {
@@ -1887,7 +1859,7 @@ impl Worker {
             effect,
             outcome,
         } = done;
-        let rewake = self.preparing.remove(&agent_id).flatten();
+        let mut rewake = self.preparing.remove(&agent_id).flatten();
         let outcome = match outcome {
             // The agent's own data failed its preparation or commit, whose
             // transaction rolled back: nothing was submitted. Hold the agent,
@@ -1904,7 +1876,7 @@ impl Worker {
                         .await
                     })
                     .await?;
-                fault.report(&self.account);
+                fault.report(&self.account, &mut self.reported_faults);
                 if let Some(key) = effect {
                     self.complete_effect(key).await?;
                 }
@@ -1996,7 +1968,12 @@ impl Worker {
                 turn_preparation::Unclaimed::Nothing | turn_preparation::Unclaimed::NativeReview,
             ) => {}
             turn_preparation::Outcome::Committed(committed) => {
-                Box::pin(self.committed(committed)).await?;
+                // Its submitted commit may already bind a turn completion
+                // that arrives before `write` records the request as pending.
+                self.preparing.insert(agent_id.clone(), None);
+                let written = Box::pin(self.committed(committed)).await;
+                rewake = rewake.or(self.preparing.remove(&agent_id).flatten());
+                written?;
             }
         }
         if let Some(key) = effect {
@@ -3053,7 +3030,7 @@ impl Worker {
                 })
                 .await?;
             if let Some(fault) = fault {
-                fault.report(&self.account);
+                fault.report(&self.account, &mut self.reported_faults);
             }
             self.settled_outcome(settled, id, actor_id);
         }
@@ -3073,12 +3050,12 @@ impl Worker {
             && self
                 .deferred
                 .iter()
-                .all(|(entry, _)| self.completion_may_bind(entry))
+                .all(|(entry, _, agent)| self.completion_may_bind(entry, agent.as_deref()))
         {
             return Ok(());
         }
         for _ in 0..self.deferred.len() {
-            let Some((entry, deferred_source)) = self.deferred.pop_front() else {
+            let Some((entry, deferred_source, agent)) = self.deferred.pop_front() else {
                 continue;
             };
             if let Some(source) = deferred_source.as_ref() {
@@ -3089,7 +3066,7 @@ impl Worker {
                     continue;
                 }
             }
-            let park = !self.completion_may_bind(&entry);
+            let park = !self.completion_may_bind(&entry, agent.as_deref());
             match self
                 .journal_batch_with(vec![entry], deferred_source.as_ref(), settle, None, park)
                 .await
@@ -3107,15 +3084,18 @@ impl Worker {
         Ok(())
     }
     /// Whether a request that may still bind this deferred turn completion
-    /// is outstanding on its thread: a written request of this worker, or a
-    /// retained session request (a native review start).
-    fn completion_may_bind(&self, entry: &JournalEntry) -> bool {
+    /// is outstanding: a written request of this worker or a retained session
+    /// request (a native review start) on its thread, or a preparation or
+    /// commit of its agent.
+    fn completion_may_bind(&self, entry: &JournalEntry, agent: Option<&str>) -> bool {
         let Some(thread) = agent_fault::completion_thread(entry) else {
             return true;
         };
-        self.pending
-            .values()
-            .any(|pending| pending.intent.thread_id.as_deref() == Some(thread))
+        agent.is_some_and(|agent| self.preparing.contains_key(agent))
+            || self
+                .pending
+                .values()
+                .any(|pending| pending.intent.thread_id.as_deref() == Some(thread))
             || self
                 .retained_requests
                 .values()
@@ -3171,7 +3151,7 @@ impl Worker {
                 let _sent = waiter.send(Err(retained::PortError::Unknown));
             }
         }
-        self.deferred.retain(|(_, source)| {
+        self.deferred.retain(|(_, source, _)| {
             source
                 .as_ref()
                 .is_none_or(|source| source.actor_id != actor_id)
@@ -3345,18 +3325,23 @@ impl Worker {
             committed,
             parked,
             deferred,
+            deferred_agent,
             settled,
             faults,
         } = committed?;
         for fault in &faults {
-            fault.report(&self.account);
+            fault.report(&self.account, &mut self.reported_faults);
         }
         if let Some(settled) = settled {
             self.settled_outcome(settled, outcome_id.flatten(), actor_id);
         }
         let had_deferred = !deferred.is_empty();
-        self.deferred
-            .extend(deferred.into_iter().map(|entry| (entry, source.cloned())));
+        let mut deferred_agent = deferred_agent;
+        self.deferred.extend(
+            deferred
+                .into_iter()
+                .map(|entry| (entry, source.cloned(), deferred_agent.take())),
+        );
         #[cfg(test)]
         self.bridge
             .faults

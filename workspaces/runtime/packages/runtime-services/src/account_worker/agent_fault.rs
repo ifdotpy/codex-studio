@@ -1,13 +1,14 @@
 //! Isolation of one agent's invalid stored data from its account worker.
 //!
-//! A journal frame, a provider reply, a turn preparation or a durable effect
-//! of one agent can fail on a store invariant: a record that does not decode,
-//! or a receipt that conflicts with the saved one. Such a failure belongs to
-//! that agent. Its part of the transaction rolls back to a savepoint, the
-//! agent gets a visible durable hold, and the account worker keeps serving
-//! every other agent. The frame or effect is settled, so it neither blocks
-//! the account journal nor runs again. Storage failures (SQLite, I/O, writer
-//! or commit outcome) stay fatal for the worker.
+//! A journal frame, a provider reply or a turn preparation (with the durable
+//! effect that started it) of one agent can fail on a store invariant: a
+//! record that does not decode, or a receipt that conflicts with the saved
+//! one. Such a failure belongs to the agent the record names. Its part of the
+//! transaction rolls back to a savepoint, the agent gets a visible durable
+//! hold, and the account worker keeps serving every other agent. The frame or
+//! effect is settled, so it neither blocks the account journal nor runs
+//! again. Storage failures (SQLite, I/O, writer or commit outcome), and data
+//! errors that name no record or agent, stay fatal for the worker.
 use super::*;
 use rusqlite::OptionalExtension;
 use studio_runtime_store::{AgentStatus, CachedSql, EventWriteRepository};
@@ -16,6 +17,8 @@ use studio_runtime_store::{AgentStatus, CachedSql, EventWriteRepository};
 const AGENT_SCOPE_SAVEPOINT: &str = "account_worker_agent_scope";
 /// Savepoint around the hold write itself.
 const AGENT_HOLD_SAVEPOINT: &str = "account_worker_agent_hold";
+/// Savepoint around returning an unsubmitted claim's input to the queue.
+const AGENT_REQUEUE_SAVEPOINT: &str = "account_worker_agent_requeue";
 
 /// Where the failing data was applied; part of the visible hold text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,7 +26,6 @@ pub(super) enum FaultStage {
     JournalFrame,
     ProviderReply,
     TurnPreparation,
-    DurableEffect,
 }
 impl FaultStage {
     fn label(self) -> &'static str {
@@ -31,7 +33,6 @@ impl FaultStage {
             Self::JournalFrame => "a provider event",
             Self::ProviderReply => "a provider reply",
             Self::TurnPreparation => "turn preparation",
-            Self::DurableEffect => "a queued follow-up step",
         }
     }
 }
@@ -45,10 +46,11 @@ pub(super) struct AgentFault {
     pub hold: HoldResult,
 }
 impl AgentFault {
-    /// Log a fault once: when its hold is new, or when no hold can be kept.
-    /// A parked frame or effect does not run again, so this is not a loop.
-    pub(super) fn report(&self, account: &str) {
-        if self.hold != HoldResult::AlreadyHeld {
+    /// Log a fault when its hold is new, and otherwise once per agent and
+    /// worker (`reported`). A parked frame or effect does not run again, so a
+    /// held agent's later frames do not log in a loop.
+    pub(super) fn report(&self, account: &str, reported: &mut BTreeSet<String>) {
+        if reported.insert(self.agent_id.clone()) || self.hold == HoldResult::Placed {
             eprintln!(
                 "account worker {account} held agent {} after {} failed: {} ({:?})",
                 self.agent_id,
@@ -73,41 +75,31 @@ pub(super) enum HoldResult {
     Unavailable,
 }
 
-/// The record a data error names, or `None` for an error that is not about
-/// stored data (SQLite, I/O, writer, commit outcome, session, policy).
+/// The stored record (scope, id) that a data error names, or `None` for any
+/// other error: SQLite, I/O, writer, commit outcome, session or policy, and a
+/// decode error that names no record, since nothing ties it to one agent.
 pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
-    let store = match error {
+    let named = match error {
         WorkerError::Store(error)
         | WorkerError::Scheduler(scheduler::SchedulerError::Store(error))
         | WorkerError::Notification(
             crate::notification_dispatch::NotificationDispatchError::Store(error),
-        ) => error,
-        WorkerError::Scheduler(scheduler::SchedulerError::InvalidAttemptTimestamp) => {
-            return Some((String::new(), String::new()));
-        }
-        WorkerError::Notification(error) => {
-            use crate::notification_dispatch::NotificationDispatchError as E;
-            return match error {
-                E::InvalidStoredObject { table, id } => Some((table.clone(), id.clone())),
-                E::InvalidNotification
-                | E::ConflictingDelivery
-                | E::ConflictingInput
-                | E::Json(_) => Some((String::new(), String::new())),
-                _ => None,
-            };
-        }
+        ) => match error {
+            StoreError::InvalidSyncObject { scope, id }
+            | StoreError::InvalidSyncObjectField { scope, id, .. } => (scope.clone(), id.clone()),
+            StoreError::InvalidStoredRecord { object, id } => ((*object).to_owned(), id.clone()),
+            StoreError::InvalidStoredObject { table, id } => ((*table).to_owned(), id.clone()),
+            _ => return None,
+        },
+        WorkerError::Notification(
+            crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject {
+                table,
+                id,
+            },
+        ) => (table.clone(), id.clone()),
         _ => return None,
     };
-    match store {
-        StoreError::InvalidSyncObject { scope, id }
-        | StoreError::InvalidSyncObjectField { scope, id, .. } => Some((scope.clone(), id.clone())),
-        StoreError::InvalidStoredRecord { object, id } => Some(((*object).to_owned(), id.clone())),
-        StoreError::InvalidStoredObject { table, id } => Some(((*table).to_owned(), id.clone())),
-        StoreError::Json(_) | StoreError::SchemaValidation(_) | StoreError::RecordContract(_) => {
-            Some((String::new(), String::new()))
-        }
-        _ => None,
-    }
+    (!named.1.is_empty()).then_some(named)
 }
 
 /// Run `apply` in a savepoint. The outer error is a savepoint failure; the
@@ -124,18 +116,25 @@ fn in_savepoint<T>(
             Ok(Ok(value))
         }
         Err(error) => {
-            tx.execute_batch(&format!(
-                "ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"
-            ))?;
+            // A failed rollback leaves the transaction state unknown: return
+            // the first error as fatal, so nothing more is written in it.
+            if tx
+                .execute_batch(&format!(
+                    "ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"
+                ))
+                .is_err()
+            {
+                return Err(error);
+            }
             Ok(Err(error))
         }
     }
 }
 
 /// Apply one agent's part of an account transaction. `subject` is the agent
-/// that `apply` works for once it knows it. A data error of that agent (or of
-/// the agent the failing record belongs to) rolls back `apply` and holds the
-/// agent; every other error is returned unchanged.
+/// that `apply` works for once it knows it. A data error rolls back `apply`
+/// and holds the agent the failing record belongs to, else `subject`; every
+/// other error, and one that names no agent, is returned unchanged.
 pub(super) fn isolate<T>(
     tx: &studio_runtime_store::Transaction<'_>,
     server_id: Option<&str>,
@@ -150,13 +149,9 @@ pub(super) fn isolate<T>(
     let Some((scope, id)) = data_fault(&error) else {
         return Err(error);
     };
-    let agent_id = match subject.clone() {
-        Some(agent) => agent,
-        None => match record_agent(tx, &scope, &id)? {
-            Some(agent) => agent,
-            // Data that names no agent is account-scoped: keep it fatal.
-            None => return Err(error),
-        },
+    let Some(agent_id) = record_agent(tx, &scope, &id)?.or_else(|| subject.clone()) else {
+        // Data that names no agent is account-scoped: keep it fatal.
+        return Err(error);
     };
     let detail = error.to_string();
     let hold = hold_agent(tx, server_id, &agent_id, stage, &detail)?;
@@ -211,7 +206,9 @@ pub(super) fn hold_message(stage: FaultStage, detail: &str) -> String {
 
 /// Hold `agent_id` durably: failed, not woken, not in flight, with the cause
 /// as its error. A manual message clears the hold (see `coordination`). An
-/// agent that is already held keeps its first cause.
+/// agent that is already held or paused keeps its state and first cause. An
+/// unsubmitted claim first returns its input to the queue: that input never
+/// reached the provider, and a reserved event would block every later claim.
 pub(super) fn hold_agent(
     tx: &studio_runtime_store::Transaction<'_>,
     server_id: Option<&str>,
@@ -223,13 +220,32 @@ pub(super) fn hold_agent(
     let held = in_savepoint(tx, AGENT_HOLD_SAVEPOINT, || {
         match AgentRepository::get(tx, &AgentId::from(agent_id)) {
             Ok(None) => Ok(HoldResult::Missing),
-            Ok(Some(mut agent)) => {
-                if agent.status == AgentStatus::Failed
-                    && agent.extra.get("nativeFailureHold") == Some(&Value::Bool(true))
-                    && agent.extra.get("autoWake") == Some(&Value::Bool(false))
+            Ok(Some(agent)) => {
+                if agent.status == AgentStatus::Paused
+                    || studio_runtime_store::truthy(agent.extra.get("nativeFailureHold"))
+                    || agent
+                        .extra
+                        .get("startOutcomeHold")
+                        .is_some_and(|hold| !hold.is_null())
                 {
                     return Ok(HoldResult::AlreadyHeld);
                 }
+                if let Some(identity) = unsubmitted_attempt(&agent) {
+                    match in_savepoint(tx, AGENT_REQUEUE_SAVEPOINT, || {
+                        Ok(SchedulerRepository::requeue_unsubmitted_attempt(
+                            tx, &identity,
+                        )?)
+                    })? {
+                        Ok(_) => {}
+                        // The attempt itself is the invalid data: its input
+                        // stays reserved with the held agent.
+                        Err(error) if data_fault(&error).is_some() => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
+                    return Ok(HoldResult::Missing);
+                };
                 agent.status = AgentStatus::Failed;
                 agent.extra.insert("nativeFailureHold".into(), json!(true));
                 agent.extra.insert("autoWake".into(), json!(false));
@@ -282,26 +298,35 @@ pub(super) fn hold_agent(
     }
 }
 
-/// Hold `agent_id` in its own transaction, after a step that ran outside an
-/// account transaction (a turn preparation or a durable effect) failed.
+/// The current unsubmitted start attempt of `agent`, if it has one.
+fn unsubmitted_attempt(
+    agent: &studio_runtime_store::AgentRecord,
+) -> Option<studio_runtime_store::TurnAttemptIdentity> {
+    let attempt = agent.extra.get("startAttempt")?;
+    (attempt["submitted"] == false).then(|| studio_runtime_store::TurnAttemptIdentity {
+        agent_id: agent.id.0.clone(),
+        epoch: attempt["epoch"].as_i64().unwrap_or(agent.epoch),
+        attempt_id: attempt["id"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+
+/// Hold the agent of a failed turn preparation in its own transaction: the
+/// agent the failing record belongs to, else `subject`. `error` must be a
+/// [`data_fault`].
 pub(super) async fn hold_after(
     store: &RuntimeStore,
-    agent_id: String,
+    subject: String,
     stage: FaultStage,
     error: &WorkerError,
 ) -> Result<AgentFault, WorkerError> {
     let detail = error.to_string();
+    let (scope, id) = data_fault(error).unwrap_or_default();
     let server_id = store.local_server_id()?;
     let hold_detail = detail.clone();
-    let hold_agent_id = agent_id.clone();
-    let hold = scheduler::lifecycle_transaction_with(store, move |tx| {
-        hold_agent(
-            tx,
-            server_id.as_deref(),
-            &hold_agent_id,
-            stage,
-            &hold_detail,
-        )
+    let (agent_id, hold) = scheduler::lifecycle_transaction_with(store, move |tx| {
+        let agent_id = record_agent(tx, &scope, &id)?.unwrap_or(subject);
+        let hold = hold_agent(tx, server_id.as_deref(), &agent_id, stage, &hold_detail)?;
+        Ok::<_, WorkerError>((agent_id, hold))
     })
     .await?;
     Ok(AgentFault {
@@ -310,15 +335,6 @@ pub(super) async fn hold_after(
         detail,
         hold,
     })
-}
-
-/// The agent of a durable effect, when it has one.
-pub(super) fn effect_agent(effect: &Effect) -> Option<&str> {
-    match effect {
-        Effect::Submit(intent) => Some(intent.agent_id.as_str()),
-        Effect::Interrupt { agent, .. } | Effect::Wake(agent, _) => Some(agent.as_str()),
-        Effect::Callback(..) => None,
-    }
 }
 
 /// The thread of a provider `turn/completed` journal entry.
