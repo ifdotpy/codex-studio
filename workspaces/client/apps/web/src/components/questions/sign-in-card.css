@@ -1,0 +1,131 @@
+/* The sign-in request card (docs/vm-browser-bridge.md, section 6.2). It follows the
+   question card, and it is one column at phone width. */
+#requests .request-card.request-sign-in {
+  border-color: var(--accent);
+}
+.sign-in-card {
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--studio-text-body);
+}
+.sign-in-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.sign-in-card-icon {
+  color: var(--accent);
+  flex: none;
+}
+.sign-in-card-chat {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.sign-in-card-state {
+  color: var(--accent);
+  font-size: var(--studio-text-meta);
+}
+.sign-in-card-host {
+  margin: 8px 0 4px;
+  font-size: calc(var(--studio-text-body) + 4px);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sign-in-card-rows {
+  margin: 6px 0;
+  font-size: var(--studio-text-meta);
+}
+.sign-in-card-rows > div {
+  display: grid;
+  grid-template-columns: minmax(84px, 1fr) minmax(0, 3fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.sign-in-card-rows dt {
+  color: var(--muted);
+}
+.sign-in-card-rows dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sign-in-card-device {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.sign-in-card-device > span {
+  display: block;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.sign-in-card-code {
+  display: block;
+  margin: 2px 0 4px;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: calc(var(--studio-text-body) + 8px);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.sign-in-card-device p {
+  margin: 0;
+  font-size: var(--studio-text-meta);
+  overflow-wrap: anywhere;
+}
+.sign-in-card-link summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--studio-text-meta);
+}
+.sign-in-card-link code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: var(--studio-text-meta);
+}
+.sign-in-card-paste {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.sign-in-card-paste p {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.sign-in-card-paste label > span {
+  display: block;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  margin-bottom: 4px;
+}
+.sign-in-card-paste input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+  /* 16px stops phone browsers from zooming into the field. */
+  font-size: max(16px, var(--studio-text-body));
+}
+.sign-in-card-error {
+  margin: 8px 0 0;
+  color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-4));
+  overflow-wrap: anywhere;
+}
+.sign-in-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.sign-in-card-actions > * {
+  max-width: 100%;
+}

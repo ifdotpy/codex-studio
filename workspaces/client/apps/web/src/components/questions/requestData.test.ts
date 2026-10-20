@@ -198,10 +198,43 @@ describe("browserOpenDetails", () => {
       host: "accounts.example.com",
       url: "https://accounts.example.com/authorize?client_id=kube",
       port: 8000,
+      redirectPath: "/",
       clientId: "kube",
       scope: "openid",
       linuxUser: "studio-a-1",
     });
+  });
+
+  it("reads the waiting phase, its deadline, and a sent paste", () => {
+    const request: RequestDto = {
+      id: "request-waiting",
+      method: "browser/open",
+      status: "pending",
+      params: {
+        url: "https://id.example.com/authorize?state=s",
+        host: "id.example.com",
+        redirect: { host: "127.0.0.1", port: 40645, path: "/oauth/callback" },
+        expiresAt: 1_800_000_600,
+        phase: "waiting",
+        waiting: { expiresAt: 1_800_000_900 },
+        paste: { at: 1_800_000_100 },
+        outcome: null,
+      },
+    };
+    expect(browserOpenDetails(request)).toMatchObject({
+      port: 40645,
+      redirectPath: "/oauth/callback",
+      phase: "waiting",
+      expiresAt: 1_800_000_600,
+      waitingExpiresAt: 1_800_000_900,
+      pasteSent: true,
+    });
+    const before = browserOpenDetails({
+      ...request,
+      params: { ...request.params, phase: "other", paste: null },
+    });
+    expect(before?.phase).toBeUndefined();
+    expect(before?.pasteSent).toBeUndefined();
   });
 
   it("has no forward port for a device code page and ignores other methods", () => {
@@ -212,11 +245,13 @@ describe("browserOpenDetails", () => {
         url: "https://device.example.com/?user_code=ABCD",
         host: "device.example.com",
         redirect: null,
+        userCode: "ABCD",
       },
     };
     expect(browserOpenDetails(device)).toEqual({
       host: "device.example.com",
       url: "https://device.example.com/?user_code=ABCD",
+      userCode: "ABCD",
     });
     expect(
       browserOpenDetails({
