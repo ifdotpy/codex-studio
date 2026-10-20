@@ -401,9 +401,8 @@ fn checked_actor(
 
 fn team_agents(connection: &Connection, root: &str) -> Result<Vec<AgentRecord>, StatusError> {
     let mut statement = connection.prepare(
-        "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 \
-         AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,'')) \
-         ORDER BY rowid",
+        "SELECT id FROM runtime_agents WHERE root_id=?1 \
+         AND (deleted_at IS NULL OR deleted_at IN (0,'')) ORDER BY rowid",
     )?;
     let ids = statement
         .query_map([root], |row| row.get::<_, String>(0))?
@@ -555,17 +554,7 @@ fn capacity_snapshot(
 }
 
 fn dispatch_active_slots(connection: &Connection) -> Result<Vec<Value>, StatusError> {
-    let mut statement = connection.prepare(
-        "SELECT id,json_extract(record,'$.rootId') FROM runtime_agents \
-         WHERE json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval') \
-         UNION ALL SELECT id,json_extract(record,'$.rootId') FROM runtime_agents \
-         WHERE json_extract(record,'$.startAttempt.activeAtReservation')=1 AND EXISTS (\
-           SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input \
-           JOIN runtime_events AS event ON event.id=input.value \
-           WHERE event.agent=runtime_agents.id \
-           AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') \
-           AND event.status IN ('reserved','dispatching','uncertain'))",
-    )?;
+    let mut statement = connection.prepare(studio_runtime_store::RESERVED_TURN_INPUT)?;
     let rows = statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
@@ -583,12 +572,11 @@ fn status_path_inputs(
     root_id: &str,
 ) -> Result<Vec<StatusPathInput>, StatusError> {
     let mut statement = connection.prepare(
-        "SELECT id,json_extract(record,'$.cwd'), \
-         COALESCE((json_type(record,'$.workspaceOperation')='text' AND json_extract(record,'$.workspaceOperation')!=''),0) \
-         FROM runtime_agents WHERE \
-         (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,'')) AND \
-         ((json_type(record,'$.workspaceOperation')='text' AND json_extract(record,'$.workspaceOperation')!='') OR \
-          (json_extract(record,'$.rootId')=?1 AND json_extract(record,'$.status')='queued')) ORDER BY id",
+        "SELECT id,cwd, \
+         COALESCE((typeof(workspace_operation)='text' AND workspace_operation<>''),0) \
+         FROM runtime_agents WHERE (deleted_at IS NULL OR deleted_at IN (0,'')) AND \
+         ((typeof(workspace_operation)='text' AND workspace_operation<>'') OR \
+          (root_id=?1 AND status='queued')) ORDER BY id",
     )?;
     let rows = statement
         .query_map([root_id], |row| {

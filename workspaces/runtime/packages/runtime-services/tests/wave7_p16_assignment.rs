@@ -9,10 +9,10 @@ mod prepared_python;
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("memory SQLite opens");
     connection
-        .execute_batch(
+        .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
             "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
-        )
+        ))
         .expect("work tables create");
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -185,7 +185,7 @@ fn real_python_spawn_assignment_corpus_matches_complete_work_rows() {
         let id = before["id"].as_str().expect("work id");
         let root = before["rootId"].as_str().expect("root id");
         let connection = Connection::open_in_memory().expect("database opens");
-        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);").expect("tables create");
+        connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);")).expect("tables create");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");

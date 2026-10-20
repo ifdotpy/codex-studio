@@ -226,17 +226,12 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
         {
             continue;
         }
-        let columns = if logical && name == "sync_entities" {
-            "collection,id,payload,deleted"
+        let sql = if logical && name == "sync_entities" {
+            "SELECT collection,id,payload,deleted FROM sync_entities".to_owned()
         } else {
-            "*"
+            studio_runtime_store::agent_columns::select_declared_sql(&connection, &name).unwrap()
         };
-        let mut statement = connection
-            .prepare(&format!(
-                "SELECT {columns} FROM \"{}\"",
-                name.replace('"', "\"\"")
-            ))
-            .unwrap();
+        let mut statement = connection.prepare(&sql).unwrap();
         let count = statement.column_count();
         let rows=statement.query_map([],|row| {
             let mut values=Vec::new();

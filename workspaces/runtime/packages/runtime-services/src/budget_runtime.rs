@@ -536,7 +536,7 @@ mod tests {
         let mut histories = BTreeMap::new();
         histories.insert("a".into(), history);
         let db = Connection::open_in_memory().expect("canvas db");
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL);")
+        db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL);"))
             .expect("canvas schema");
         db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");

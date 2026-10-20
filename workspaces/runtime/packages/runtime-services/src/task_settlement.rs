@@ -211,7 +211,7 @@ pub fn absent_command_checks(
          JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') \
          WHERE json_extract(t.record,'$.status')='running' \
          AND json_extract(t.record,'$.kind')='command' \
-         AND COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 ORDER BY 1",
+         AND a.account_key=?1 ORDER BY 1",
     )?;
     let agents = statement
         .query_map([account], |row| row.get::<_, String>(0))?

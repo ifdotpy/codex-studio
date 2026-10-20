@@ -57,8 +57,8 @@ pub(crate) fn agent_view_contexts(
     for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let mut statement = transaction.prepare(&format!(
-            "SELECT DISTINCT json_extract(record,'$.parentId') FROM runtime_agents \
-             WHERE json_extract(record,'$.parentId') IN ({placeholders})"
+            "SELECT DISTINCT parent_id FROM runtime_agents \
+             WHERE parent_id IN ({placeholders})"
         ))?;
         parent_ids.extend(
             statement
@@ -232,11 +232,16 @@ pub(crate) fn agent_view_context(
         && !exists_for_agent(transaction, "runtime_events", "agent", id)?
         && !exists_for_agent(transaction, "runtime_items", "agent", id)?
         && !transaction.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=?1)",
+            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE parent_id=?1)",
             [id],
             |row| row.get::<_, bool>(0),
         )?
-        && !exists_for_agent(transaction, "runtime_monitors", "json_extract(record,'$.agent')", id)?;
+        && !exists_for_agent(
+            transaction,
+            "runtime_monitors",
+            "json_extract(record,'$.agent')",
+            id,
+        )?;
     let mut latest: Option<(f64, String)> = None;
     let mut statement = transaction.prepare_cached(
         "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
@@ -479,7 +484,7 @@ mod room_preparation_tests {
     fn paths_are_prepared_without_transaction_and_snapshot_is_rechecked() {
         let root = tempfile::tempdir().expect("isolated state");
         let mut connection = Connection::open_in_memory().expect("database");
-        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);").expect("tables");
+        connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);")).expect("tables");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
@@ -560,14 +565,14 @@ mod room_preparation_tests {
         const AGENT_COUNT: usize = 2_000;
         let mut connection = Connection::open_in_memory().expect("database");
         connection
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
                  CREATE INDEX runtime_item_agent ON runtime_items(agent);",
-            )
+            ))
             .expect("context tables");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -656,14 +661,14 @@ mod room_preparation_tests {
         let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(
                      json_extract(record,'$.agent'),json_extract(record,'$.status'));
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
                  INSERT INTO runtime_monitors VALUES
-                     ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');",
+                     ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');"),
             )
             .expect("context fixture");
         connection

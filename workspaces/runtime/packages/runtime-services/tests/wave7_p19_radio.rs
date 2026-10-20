@@ -172,7 +172,11 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
             _ => format!("runtime_{table}"),
         };
         let mut query = db
-            .prepare(&format!("SELECT * FROM {table_name} ORDER BY {order}"))
+            .prepare(&format!(
+                "{} ORDER BY {order}",
+                studio_runtime_store::agent_columns::select_declared_sql(&db, &table_name)
+                    .expect("columns")
+            ))
             .expect("table");
         let columns = query
             .column_names()
@@ -554,7 +558,10 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
         .into_iter()
         .map(|name| {
             let mut query = db
-                .prepare(&format!("SELECT * FROM \"{name}\""))
+                .prepare(
+                    &studio_runtime_store::agent_columns::select_declared_sql(&db, &name)
+                        .expect("columns"),
+                )
                 .expect("snapshot table");
             let count = query.column_count();
             let rows = query

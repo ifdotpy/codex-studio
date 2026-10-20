@@ -6,6 +6,13 @@ use crate::{StoreError, StoreResult};
 
 pub struct ReviewerArchiveRepository;
 
+/// Completed reviewers that may be newly scheduled, by parent.
+const PENDING_INDEX: &str = "runtime_agent_reviewer_archive_pending_v2";
+/// Scheduled reviewer archives by retry deadline.
+const RETRY_DUE_INDEX: &str = "runtime_agent_reviewer_archive_retry_due_v2";
+/// The retry deadline key of [`RETRY_DUE_INDEX`]; an unset deadline is due at once.
+const RETRY_DEADLINE: &str = "COALESCE(review_archive_next_at,0)";
+
 impl ReviewerArchiveRepository {
     pub(crate) fn prepare_indexes(transaction: &Transaction<'_>) -> StoreResult<()> {
         for definition in Self::index_definitions() {
@@ -17,26 +24,23 @@ impl ReviewerArchiveRepository {
     /// Canonical DDL for the reviewer archive worker's repository-owned indexes.
     #[doc(hidden)]
     pub fn index_definitions() -> Vec<crate::OwnedRuntimeIndexDefinition> {
-        let candidate_eligibility = candidate_eligibility("record");
-        let retry_eligibility = retry_eligibility("record");
+        let candidate_eligibility = candidate_eligibility("");
+        let retry_eligibility = retry_eligibility("");
         vec![
             crate::OwnedRuntimeIndexDefinition {
-                name: "runtime_agent_reviewer_archive_pending",
+                name: PENDING_INDEX,
                 table: "runtime_agents",
                 create_sql: format!(
-                    "CREATE INDEX IF NOT EXISTS runtime_agent_reviewer_archive_pending \
-                     ON runtime_agents(json_extract(record,'$.parentId'),id) \
-                     WHERE {candidate_eligibility}"
+                    "CREATE INDEX IF NOT EXISTS {PENDING_INDEX} \
+                     ON runtime_agents(parent_id,id) WHERE {candidate_eligibility}"
                 ),
             },
             crate::OwnedRuntimeIndexDefinition {
-                name: "runtime_agent_reviewer_archive_retry_due",
+                name: RETRY_DUE_INDEX,
                 table: "runtime_agents",
                 create_sql: format!(
-                    "CREATE INDEX IF NOT EXISTS runtime_agent_reviewer_archive_retry_due \
-                     ON runtime_agents(CASE WHEN json_valid(record) THEN \
-                         COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END,id) \
-                     WHERE {retry_eligibility}"
+                    "CREATE INDEX IF NOT EXISTS {RETRY_DUE_INDEX} \
+                     ON runtime_agents({RETRY_DEADLINE},id) WHERE {retry_eligibility}"
                 ),
             },
             crate::OwnedRuntimeIndexDefinition {
@@ -54,10 +58,9 @@ impl ReviewerArchiveRepository {
     /// Completed reviewers that can be newly scheduled. The partial index
     /// excludes historical markers using the same predicate as this query.
     pub fn candidates(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
-        let eligibility = candidate_eligibility("a.record");
+        let eligibility = candidate_eligibility("a.");
         let mut statement = connection.prepare(&format!(
-            "SELECT a.id,a.record FROM runtime_agents AS a \
-             INDEXED BY runtime_agent_reviewer_archive_pending \
+            "SELECT a.id,a.record FROM runtime_agents AS a INDEXED BY {PENDING_INDEX} \
              WHERE {eligibility} ORDER BY a.id"
         ))?;
         let rows = statement
@@ -90,15 +93,10 @@ impl ReviewerArchiveRepository {
 
     /// Durable archive markers whose retry deadline has elapsed.
     pub fn due_retries(connection: &Connection, now: f64) -> StoreResult<Vec<(String, String)>> {
-        let eligibility = retry_eligibility("record");
-        let scheduled = "CASE WHEN json_valid(record) THEN \
-            json_extract(record,'$.reviewArchiveScheduled') IS NOT NULL ELSE 0 END";
-        let deadline = "CASE WHEN json_valid(record) THEN \
-            COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END";
+        let eligibility = retry_eligibility("");
         let mut statement = connection.prepare(&format!(
-            "SELECT id,record FROM runtime_agents INDEXED BY runtime_agent_reviewer_archive_retry_due \
-             WHERE {eligibility} AND {scheduled} \
-               AND {deadline}<=?1 ORDER BY id"
+            "SELECT id,record FROM runtime_agents INDEXED BY {RETRY_DUE_INDEX} \
+             WHERE {eligibility} AND {RETRY_DEADLINE}<=?1 ORDER BY id"
         ))?;
         let rows = statement
             .query_map([now], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -109,20 +107,15 @@ impl ReviewerArchiveRepository {
     /// Earliest persisted retry deadline using the same eligibility predicate
     /// and index as `due_retries`.
     pub fn next_retry_at(connection: &Connection, after: f64) -> StoreResult<Option<f64>> {
-        let eligibility = retry_eligibility("record");
-        let scheduled = "CASE WHEN json_valid(record) THEN \
-            json_extract(record,'$.reviewArchiveScheduled') IS NOT NULL ELSE 0 END";
-        let deadline = "CASE WHEN json_valid(record) THEN \
-            COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END";
-        let numeric_deadline = "CASE WHEN json_valid(record) THEN \
-            json_type(record,'$.reviewArchiveNextAt') IN ('integer','real') ELSE 0 END";
+        let eligibility = retry_eligibility("");
         connection
             .query_row(
                 &format!(
-                    "SELECT {deadline} FROM runtime_agents INDEXED BY runtime_agent_reviewer_archive_retry_due \
-                     WHERE {eligibility} AND {scheduled} AND {numeric_deadline} \
-                       AND CAST(json_extract(record,'$.reviewArchiveNextAt') AS REAL)>?1 \
-                     ORDER BY {deadline},id LIMIT 1"
+                    "SELECT {RETRY_DEADLINE} FROM runtime_agents INDEXED BY {RETRY_DUE_INDEX} \
+                     WHERE {eligibility} \
+                       AND typeof(review_archive_next_at) IN ('integer','real') \
+                       AND review_archive_next_at>?1 \
+                     ORDER BY {RETRY_DEADLINE},id LIMIT 1"
                 ),
                 [after],
                 |row| row.get(0),
@@ -132,56 +125,29 @@ impl ReviewerArchiveRepository {
     }
 }
 
-/// Owns the candidate index predicate and its consuming query predicate.
-fn candidate_eligibility(record: &str) -> String {
+/// Owns the candidate index predicate and its consuming query predicate,
+/// over the agent columns with prefix `a` (`""` or an alias with its dot).
+fn candidate_eligibility(a: &str) -> String {
     format!(
-        "CASE WHEN json_valid({record}) THEN ( \
-         json_extract({record},'$.role')='reviewer' \
-         AND json_extract({record},'$.status')='completed' \
-         AND {} AND {} \
-         AND (json_type({record},'$.reviewArchiveScheduled') IS NOT 'text' \
-              OR json_extract({record},'$.reviewArchiveScheduled')='') \
-         ) ELSE 0 END",
-        falsey(record, "$.agentArchive"),
-        falsey(record, "$.reviewArchiveError"),
+        "{a}role='reviewer' AND {a}status='completed' \
+         AND NOT {a}agent_archived AND NOT {a}review_archive_failed \
+         AND NOT {a}review_archive_scheduled"
     )
 }
 
 /// Owns the durable retry index predicate and its consuming query predicate.
-fn retry_eligibility(record: &str) -> String {
+fn retry_eligibility(a: &str) -> String {
     format!(
-        "CASE WHEN json_valid({record}) THEN ( \
-         json_extract({record},'$.role')='reviewer' \
-         AND json_extract({record},'$.status')='completed' \
-         AND {} \
-         AND json_extract({record},'$.reviewArchiveScheduled') IS NOT NULL \
-         ) ELSE 0 END",
-        falsey(record, "$.agentArchive"),
-    )
-}
-
-/// Mirrors `studio_runtime_store::truthy` for JSON values. All JSON1 calls are
-/// behind CASE so malformed persisted records are excluded without an error.
-fn falsey(record: &str, path: &str) -> String {
-    format!(
-        "(json_type({record},'{path}') IS NULL \
-         OR json_type({record},'{path}')='null' \
-         OR json_type({record},'{path}')='false' \
-         OR (json_type({record},'{path}') IN ('integer','real') \
-             AND json_extract({record},'{path}')=0) \
-         OR (json_type({record},'{path}')='text' \
-             AND json_extract({record},'{path}')='') \
-         OR (json_type({record},'{path}')='array' \
-             AND json_array_length({record},'{path}')=0) \
-         OR (json_type({record},'{path}')='object' \
-             AND json_extract({record},'{path}')='{{}}'))"
+        "{a}role='reviewer' AND {a}status='completed' \
+         AND NOT {a}agent_archived AND {a}review_archive_marked"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ReviewerArchiveRepository as Repository, candidate_eligibility, retry_eligibility,
+        PENDING_INDEX, RETRY_DEADLINE, RETRY_DUE_INDEX, ReviewerArchiveRepository as Repository,
+        candidate_eligibility, retry_eligibility,
     };
     use crate::Connection;
     use serde_json::{Value, json};
@@ -189,9 +155,11 @@ mod tests {
     fn database() -> Connection {
         let mut connection = Connection::open_in_memory().expect("memory database opens");
         connection
+            .execute_batch(crate::agent_columns::agent_table_sql())
+            .expect("agents table creates");
+        connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);\
-                 CREATE TABLE runtime_events(\
+                "CREATE TABLE runtime_events(\
                     id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,\
                     status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,\
                     turn_id TEXT,error TEXT);\
@@ -309,7 +277,7 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES ('malformed','{bad json')",
                 [],
             )
-            .expect("malformed record inserts");
+            .expect_err("the agent columns reject a malformed record");
 
         let candidates = Repository::candidates(&connection).expect("candidates load");
         let ids = candidates.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
@@ -364,8 +332,8 @@ mod tests {
         let connection = database();
         let candidates = format!(
             "EXPLAIN QUERY PLAN SELECT a.id,a.record FROM runtime_agents AS a \
-             INDEXED BY runtime_agent_reviewer_archive_pending WHERE {} ORDER BY a.id",
-            candidate_eligibility("a.record")
+             INDEXED BY {PENDING_INDEX} WHERE {} ORDER BY a.id",
+            candidate_eligibility("a.")
         );
         let details = connection
             .prepare(&candidates)
@@ -376,23 +344,14 @@ mod tests {
             .expect("candidate plan rows load")
             .join(" ");
         assert!(
-            details.contains("runtime_agent_reviewer_archive_pending"),
-            "{details}"
-        );
-        assert!(
-            details.contains("USING INDEX runtime_agent_reviewer_archive_pending"),
+            details.contains(&format!("USING INDEX {PENDING_INDEX}")),
             "{details}"
         );
 
         let retries = format!(
             "EXPLAIN QUERY PLAN SELECT id,record FROM runtime_agents \
-             INDEXED BY runtime_agent_reviewer_archive_retry_due WHERE {} \
-             AND CASE WHEN json_valid(record) \
-                 THEN json_extract(record,'$.reviewArchiveScheduled') IS NOT NULL ELSE 0 END \
-             AND CASE WHEN json_valid(record) \
-                 THEN COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END<=?1 \
-             ORDER BY id",
-            retry_eligibility("record")
+             INDEXED BY {RETRY_DUE_INDEX} WHERE {} AND {RETRY_DEADLINE}<=?1 ORDER BY id",
+            retry_eligibility("")
         );
         let details = connection
             .prepare(&retries)
@@ -403,11 +362,7 @@ mod tests {
             .expect("retry plan rows load")
             .join(" ");
         assert!(
-            details.contains("runtime_agent_reviewer_archive_retry_due"),
-            "{details}"
-        );
-        assert!(
-            details.contains("USING INDEX runtime_agent_reviewer_archive_retry_due"),
+            details.contains(&format!("USING INDEX {RETRY_DUE_INDEX}")),
             "{details}"
         );
 

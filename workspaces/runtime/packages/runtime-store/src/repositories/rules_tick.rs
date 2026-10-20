@@ -51,14 +51,14 @@ impl RulesTickRepository {
     pub fn activity(connection: &Connection, root_id: &str) -> StoreResult<RuleActivity> {
         let agents = read_activity(
             connection,
-            "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 ORDER BY rowid LIMIT ?2",
+            "SELECT id,record FROM runtime_agents WHERE root_id=?1 ORDER BY rowid LIMIT ?2",
             root_id,
             "agents",
         )?;
         let monitors = read_activity(
             connection,
             "SELECT m.id,m.record FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent') \
-             WHERE json_extract(a.record,'$.rootId')=?1 AND json_extract(m.record,'$.status')='running' ORDER BY m.rowid LIMIT ?2",
+             WHERE a.root_id=?1 AND json_extract(m.record,'$.status')='running' ORDER BY m.rowid LIMIT ?2",
             root_id,
             "monitors",
         )?;

@@ -369,7 +369,10 @@ fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
         .map(|name| {
             let name = name.expect("name");
             let mut query = connection
-                .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
+                .prepare(
+                    &studio_runtime_store::agent_columns::select_declared_sql(&connection, &name)
+                        .expect("columns"),
+                )
                 .expect("table");
             let count = query.column_count();
             let mut rows: Vec<String> = query

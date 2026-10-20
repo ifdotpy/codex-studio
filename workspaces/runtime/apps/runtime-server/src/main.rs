@@ -2074,9 +2074,9 @@ mod exit_logging_tests {
     fn auth_resume_proof_tick_skips_empty_objects_before_real_pending_proof() {
         let connection = rusqlite::Connection::open_in_memory().expect("memory database");
         connection
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
-            )
+            ))
             .expect("agents table");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -2114,9 +2114,9 @@ mod exit_logging_tests {
         let connection = rusqlite::Connection::open_in_memory().expect("memory database");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
-                 CREATE TABLE runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);",
+                 CREATE TABLE runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);"),
             )
             .expect("continuation tables");
         connection

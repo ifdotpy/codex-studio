@@ -344,9 +344,7 @@ impl ChatLookup for StoreChats {
     fn chat(&self, session: &str) -> Option<ChatContext> {
         let connection = self.store.read().ok()?;
         let mut statement = connection
-            .prepare(
-                "SELECT record FROM runtime_agents WHERE id=?1 OR json_extract(record,'$.threadId')=?1 LIMIT 2",
-            )
+            .prepare("SELECT record FROM runtime_agents WHERE id=?1 OR thread_id=?1 LIMIT 2")
             .ok()?;
         let rows: Vec<String> = statement
             .query_map([session], |row| row.get(0))

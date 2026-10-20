@@ -341,7 +341,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
         // Expression indexes reject corrupt JSON on insertion. An unindexed isolated table
         // lets the repository exercise its read diagnostic for already-corrupt stored bytes.
         let db = studio_runtime_store::Connection::open_in_memory().expect("isolated row fixture");
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_usage_resumes(id TEXT,agent TEXT,record TEXT); CREATE TABLE runtime_capacity_retries(id TEXT,agent TEXT,record TEXT);").expect("tables");
+        db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_usage_resumes(id TEXT,agent TEXT,record TEXT); CREATE TABLE runtime_capacity_retries(id TEXT,agent TEXT,record TEXT);")).expect("tables");
         db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [&agent])

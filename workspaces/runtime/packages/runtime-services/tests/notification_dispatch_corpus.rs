@@ -912,7 +912,10 @@ fn raw_rows(
         })
         .map(|table| {
             let mut statement = tx
-                .prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))
+                .prepare(
+                    &studio_runtime_store::agent_columns::select_declared_sql(tx, &table)
+                        .expect("columns"),
+                )
                 .expect("raw table");
             let columns = statement.column_count();
             let rows = statement

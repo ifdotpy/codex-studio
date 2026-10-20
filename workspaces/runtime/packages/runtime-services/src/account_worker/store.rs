@@ -239,7 +239,7 @@ pub(super) async fn recover(
         // receipt-pending hold and let the next generation interrupt the
         // finished agent again. Openness is read before reconciliation, which
         // can continue an interrupted turn and so close its receipt.
-        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
+        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE a.account_key=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
         let ids = statement
             .query_map(
                 params![

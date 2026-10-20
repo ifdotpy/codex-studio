@@ -309,12 +309,8 @@ pub(super) async fn wait_for_managed_catalog(
 }
 
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
-WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1
-  AND json_extract(record,'$.startAttempt.connectionGeneration')=?2
-  AND json_extract(record,'$.threadId')=?3
-  AND json_extract(record,'$.turnId')=?4
-  AND json_extract(record,'$.status')='running'
-  AND json_extract(record,'$.autoWake')=1
+WHERE account_key=?1 AND start_attempt_connection_generation=?2
+  AND thread_id=?3 AND turn_id=?4 AND status='running' AND auto_wake=1
   AND (?5 IS NULL OR id=?5)
 LIMIT 2";
 
@@ -447,7 +443,7 @@ mod tests {
         assert!(
             details
                 .iter()
-                .any(|detail| detail.contains("runtime_agent_callback_context")),
+                .any(|detail| detail.contains("runtime_agent_callback_context_v2")),
             "callback lookup must use its selective index: {details:?}"
         );
         drop(connection);

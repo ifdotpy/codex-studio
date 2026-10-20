@@ -1357,7 +1357,7 @@ pub(crate) fn prune_inactive_streams(
 ) -> Result<(), NotificationDispatchError> {
     for key in streams.selected(None) {
         let active: bool = transaction.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2 AND (?3 IS NULL OR json_extract(record,'$.turnId')=?3) AND json_extract(record,'$.deletedAt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))",
+            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
             rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
         ).map_err(StoreError::from)?;
         if active && recovering && !streams.has_pending(&key) && streams.has_base(&key) {
@@ -1412,15 +1412,17 @@ fn stream_owner(
     key: &StreamKey,
 ) -> Result<Option<(String, String)>, NotificationDispatchError> {
     let owner = if key.agent_id.is_empty() {
-        transaction.query_row_cached(
-            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
-            rusqlite::params![key.account, key.thread],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ).optional()
+        transaction
+            .query_row_cached(
+                "SELECT id,record FROM runtime_agents WHERE account_key=?1 AND thread_id=?2",
+                rusqlite::params![key.account, key.thread],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
     } else {
         transaction
             .query_row_cached(
-                "SELECT id,record FROM runtime_agents WHERE id=?1 AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2",
+                "SELECT id,record FROM runtime_agents WHERE id=?1 AND account_key=?2",
                 rusqlite::params![key.agent_id, key.account],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
@@ -2107,7 +2109,7 @@ mod tests {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,turn_id TEXT,error TEXT);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL);
@@ -2122,7 +2124,7 @@ mod tests {
                  CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY,search_rowid INTEGER NOT NULL UNIQUE);
                  CREATE TABLE runtime_search_indexed(id TEXT PRIMARY KEY);
                  INSERT INTO runtime_agents VALUES('agent','{\"id\":\"agent\",\"rootId\":\"agent\",\"epoch\":1,\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0,\"activeTools\":[],\"autoWake\":false}');
-                 INSERT INTO sync_entities VALUES('agent','agent',1,'old','{\"collection\":\"agent\",\"id\":\"agent\",\"value\":{\"id\":\"agent\",\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0}}',0);",
+                 INSERT INTO sync_entities VALUES('agent','agent',1,'old','{\"collection\":\"agent\",\"id\":\"agent\",\"value\":{\"id\":\"agent\",\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0}}',0);"),
             )
             .expect("notification dispatch tables create");
         connection

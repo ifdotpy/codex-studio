@@ -580,7 +580,7 @@ fn context_repair_absent_schema_is_named_without_writes() {
 
 fn memory_fixture(case: &Value) -> rusqlite::Connection {
     let db = rusqlite::Connection::open_in_memory().expect("memory fixture");
-    db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+    db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
         CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,epoch INTEGER,kind TEXT,text TEXT,status TEXT,created REAL,turn_id TEXT,error TEXT);
         CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);
         CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
@@ -588,7 +588,7 @@ fn memory_fixture(case: &Value) -> rusqlite::Connection {
         CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT);
         CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
         CREATE TABLE sync_documents(seq INTEGER);
-        CREATE TABLE sync_versions(seq INTEGER);").expect("fixture schema");
+        CREATE TABLE sync_versions(seq INTEGER);")).expect("fixture schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     ContextRepairRepository::put_agent(&db, &case["agent"]).expect("record stores");

@@ -949,8 +949,6 @@ fn feature_catalog(path: &Path) -> Vec<(String, String, String, String)> {
         "runtime_native_limit_refreshes",
         "runtime_native_sweeps",
         "runtime_supervisor_cursor",
-        "runtime_agent_sweep_busy",
-        "runtime_agent_sweep_cleanup",
         "runtime_native_action_receipts",
         "runtime_safety_retries",
         "runtime_context_terminal_receipts",

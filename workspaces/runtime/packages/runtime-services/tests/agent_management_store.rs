@@ -381,7 +381,7 @@ async fn deleted_team_broadcast_projection_survives_repeated_delete() {
 fn input_states(deleted_worker: bool) -> Connection {
     let connection = Connection::open_in_memory().expect("memory database");
     connection
-        .execute_batch(
+        .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
             "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT);
         CREATE TABLE runtime_events(id TEXT, agent TEXT, status TEXT, epoch INTEGER, error TEXT);
         INSERT INTO runtime_events VALUES
@@ -389,7 +389,7 @@ fn input_states(deleted_worker: bool) -> Connection {
           ('dispatching','worker','dispatching',1,NULL),('uncertain','worker','uncertain',1,NULL),
           ('delivered','worker','delivered',1,NULL),('foreign','other','pending',1,NULL),
           ('stale','other','pending',0,NULL),('foreign-uncertain','other','uncertain',1,NULL);",
-        )
+        ))
         .expect("delivery states");
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())

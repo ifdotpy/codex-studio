@@ -95,18 +95,7 @@ impl Admission for MessageNativeAdmission {
             let global_limit = usize::try_from(global_limit)
                 .map_err(|_| NativeError::Invalid("review/global-concurrency"))?;
             let active = tx
-                .prepare(
-                    "SELECT id, json_extract(record,'$.rootId') FROM runtime_agents \
-                     WHERE json_extract(record,'$.inFlight')=1 \
-                        OR json_extract(record,'$.status') IN ('running','starting','approval') \
-                        OR (json_extract(record,'$.startAttempt.activeAtReservation')=1 AND EXISTS (\
-                            SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input \
-                            JOIN runtime_events AS event ON event.id=input.value \
-                            WHERE event.agent=runtime_agents.id \
-                              AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') \
-                              AND event.status IN ('reserved','dispatching','uncertain'))) \
-                     ORDER BY id",
-                )?
+                .prepare(studio_runtime_store::RESERVED_TURN_INPUT)?
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
                 })?

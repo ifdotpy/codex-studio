@@ -1,3 +1,4 @@
+pub mod agent_columns;
 pub mod agent_volatile;
 pub mod blocking_pool;
 mod bootstrap;
@@ -77,7 +78,7 @@ pub use records::{
     TranscriptItemRecord, UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
     decode_agent_value,
 };
-pub use repositories::agent_indexed_reads::AgentIndexedReads;
+pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
 pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
@@ -1258,6 +1259,7 @@ impl RuntimeStore {
         };
         store
             .transaction(move |transaction| {
+                agent_columns::prepare(transaction)?;
                 bootstrap::prepare_sync_schema(transaction)?;
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
                 AgentRepository::prepare_change_journal(transaction)?;

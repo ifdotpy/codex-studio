@@ -95,9 +95,8 @@ fn team(
     root: &str,
     include_deleted: bool,
 ) -> Result<Vec<Value>, CallbackError> {
-    let mut statement = tx.prepare_cached(
-        "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 ORDER BY rowid",
-    )?;
+    let mut statement =
+        tx.prepare_cached("SELECT id,record FROM runtime_agents WHERE root_id=?1 ORDER BY rowid")?;
     let rows = statement
         .query_map([root], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

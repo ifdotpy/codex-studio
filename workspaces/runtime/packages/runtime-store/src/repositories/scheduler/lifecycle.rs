@@ -529,13 +529,11 @@ impl SchedulerRepository {
         connection: &Connection,
     ) -> StoreResult<Vec<String>> {
         let mut statement = connection.prepare_cached(
-            "SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') \
-             FROM runtime_agents \
-             WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' \
-             AND json_extract(record,'$.startAttempt.submitted')=1 \
-             AND json_extract(record,'$.startAttempt.connectionGeneration') IS NOT NULL \
-             AND json_extract(record,'$.status') IN ('starting','running','waiting','paused','interrupted') \
-             AND json_extract(record,'$.deletedAt') IS NULL \
+            "SELECT DISTINCT account_key FROM runtime_agents \
+             WHERE provider='codex' AND start_attempt_submitted=1 \
+             AND start_attempt_connection_generation IS NOT NULL \
+             AND status IN ('starting','running','waiting','paused','interrupted') \
+             AND deleted_at IS NULL \
              ORDER BY 1",
         )?;
         let rows = statement.query_map([], |row| row.get(0))?;
@@ -587,9 +585,7 @@ impl SchedulerRepository {
     ) -> StoreResult<(bool, Option<(TurnAttemptIdentity, bool)>)> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_agents \
-             WHERE json_extract(record,'$.threadId')=?1 \
-             AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 \
-             ORDER BY rowid LIMIT 2",
+             WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
         )?;
         let rows = statement
             .query_map(params![thread_id, account_key], |row| {
@@ -822,7 +818,7 @@ impl SchedulerRepository {
     pub fn recover_unsubmitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
         // Only accounts with a reserved event can match the per-account
         // predicate below; the runtime_event_queue index finds them directly.
-        let mut statement = transaction.prepare_cached("SELECT DISTINCT COALESCE(json_extract(a.record,'$.accountKey'),'default') FROM runtime_agents a WHERE a.id IN (SELECT agent FROM runtime_events WHERE status='reserved')")?;
+        let mut statement = transaction.prepare_cached("SELECT DISTINCT a.account_key FROM runtime_agents a WHERE a.id IN (SELECT agent FROM runtime_events WHERE status='reserved')")?;
         let accounts = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1853,12 +1849,11 @@ pub(super) fn unresolved_sql() -> String {
         unresolved_base_sql()
     )
 }
-/// An agent's account, written exactly as the `runtime_agent_account_scope`
-/// index expression so SQLite searches that index instead of scanning agents.
-const ACCOUNT_SCOPE_SQL: &str = "CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' ELSE json_extract(record,'$.accountKey') END";
+/// The live agents of account `?1` that match `predicate`; it searches the
+/// account index instead of scanning agents.
 fn account_agents_sql(predicate: &str) -> String {
     format!(
-        "SELECT id,record FROM runtime_agents WHERE {ACCOUNT_SCOPE_SQL}=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
+        "SELECT id,record FROM runtime_agents WHERE account_key=?1 AND deleted_at IS NULL AND ({predicate})"
     )
 }
 pub(super) fn account_agents(
@@ -2790,7 +2785,7 @@ mod account_scope_tests {
             .expect("plan text");
         assert!(
             plan.iter()
-                .any(|step| step.contains("runtime_agent_account_scope")),
+                .any(|step| step.contains("USING INDEX runtime_agent_account ")),
             "{plan:?}"
         );
     }

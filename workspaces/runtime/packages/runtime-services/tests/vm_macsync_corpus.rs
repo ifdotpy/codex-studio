@@ -111,7 +111,7 @@ fn oracle(root: &Path, choice: &str) -> Value {
 
 fn runtime_database(path: &Path) -> Connection {
     let connection = Connection::open(path).expect("P03 database opens");
-    connection.execute_batch("CREATE TABLE groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,members TEXT NOT NULL);
+    connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,members TEXT NOT NULL);
         CREATE TABLE graph_edges(id TEXT PRIMARY KEY,source TEXT NOT NULL,target TEXT NOT NULL,kind TEXT NOT NULL,UNIQUE(source,target,kind));
         CREATE TABLE messages(id TEXT PRIMARY KEY,room TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,at REAL NOT NULL,deliveries TEXT NOT NULL);
         CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
@@ -120,7 +120,7 @@ fn runtime_database(path: &Path) -> Connection {
         CREATE TABLE graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
         CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
         CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);").expect("P03 schema creates");
+        CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")).expect("P03 schema creates");
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");

@@ -17,7 +17,7 @@ use studio_runtime_store::{ContinuationRepository, ContinuationTable, Transactio
 static TEAM_TOKENS_USED_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "SELECT COALESCE(SUM(CAST(COALESCE({},0) AS INTEGER)),0) \
-         FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 OR id=?1",
+         FROM runtime_agents WHERE root_id=?1 OR id=?1",
         studio_runtime_store::agent_volatile::field_sql("runtime_agents", "tokensUsed")
     )
 });

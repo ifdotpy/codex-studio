@@ -130,17 +130,15 @@ impl WorkspaceViewsRepository {
         connection: &Connection,
         root: Option<&str>,
     ) -> StoreResult<Vec<StoredRecord>> {
-        let root_filter = root
-            .map(|_| " AND json_extract(a.record,'$.rootId')=?")
-            .unwrap_or("");
+        let root_filter = root.map(|_| " AND a.root_id=?").unwrap_or("");
         let sql = format!(
             "SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents a \
              ON json_extract(t.record,'$.agent')=a.id \
-             WHERE json_extract(a.record,'$.deletedAt') IS NULL {root_filter} \
+             WHERE a.deleted_at IS NULL {root_filter} \
              AND json_extract(t.record,'$.status')='running' \
              UNION ALL SELECT id,record FROM (SELECT t.id,t.record FROM runtime_tasks t \
              JOIN runtime_agents a ON json_extract(t.record,'$.agent')=a.id \
-             WHERE json_extract(a.record,'$.deletedAt') IS NULL {root_filter} \
+             WHERE a.deleted_at IS NULL {root_filter} \
              AND json_extract(t.record,'$.status')!='running' \
              ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)"
         );
@@ -171,7 +169,7 @@ impl WorkspaceViewsRepository {
             return Ok(Vec::new());
         }
         let agent_scope = root
-            .map(|_| " AND json_extract(record,'$.agent') IN (SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? AND json_extract(record,'$.deletedAt') IS NULL)")
+            .map(|_| " AND json_extract(record,'$.agent') IN (SELECT id FROM runtime_agents WHERE root_id=? AND deleted_at IS NULL)")
             .unwrap_or("");
         let terminal = ["completed", "failed", "cancelled", "lost"]
             .iter()

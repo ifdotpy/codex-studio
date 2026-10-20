@@ -716,13 +716,13 @@ mod tests {
         let account = accounts()[0].clone();
         let database = Connection::open_in_memory().expect("open worker database");
         database
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE INDEX runtime_agent_live_root ON runtime_agents(json_extract(record,'$.rootId'),id)
-                     WHERE json_extract(record,'$.deletedAt') IS NULL;
                  CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
-            )
+            ))
             .expect("worker tables");
+        studio_runtime_store::AgentIndexedReads::prepare_index(&database)
+            .expect("agent indexes create");
         database
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
