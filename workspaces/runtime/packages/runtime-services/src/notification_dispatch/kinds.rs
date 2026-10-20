@@ -459,16 +459,18 @@ pub(super) fn flush_command(
     let saved = serde_json::from_str::<Value>(record["text"].as_str().unwrap_or_default())
         .ok()
         .filter(Value::is_object);
-    let previous = super::durable_stream_base(tx, streams, key)?
-        .unwrap_or_else(|| command_base(saved.as_ref(), task.as_ref()));
+    // The stored item holds the flushed output unless item/started replaced
+    // it, which preserved the flushed output as the durable base first.
+    let previous = match super::durable_stream_base(tx, streams, key)? {
+        Some(base) if streams.has_pending(key) => {
+            NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
+            base
+        }
+        Some(base) => base,
+        None => command_base(saved.as_ref(), task.as_ref()),
+    };
     let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
     if let Some((text, count, params)) = streams.flush(key, &previous) {
-        NotificationDispatchRepository::put_stream_base(
-            tx,
-            &super::stream_base_id(key),
-            Some(&text),
-        )?;
-        streams.set_flushed_base(key, super::sha256_hex(text.as_bytes()));
         let truncated = item["outputTruncated"] == true
             || task.as_ref().is_some_and(|t| t["outputTruncated"] == true)
             || previous.chars().count() as u64

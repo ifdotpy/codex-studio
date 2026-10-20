@@ -1215,6 +1215,20 @@ fn write_text_notification(
             EnqueueResult::Closed => Ok(false),
         };
     }
+    if matches!(update, TextUpdate::Started(..)) && streams.awaits_base(&key) {
+        // The snapshot replaces the flushed text; later flushes continue the
+        // flushed text, so keep it as the stream's durable base.
+        let flushed = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?
+            .map(|(record, _)| saved_text(transaction, &id, &record))
+            .transpose()?
+            .unwrap_or_default();
+        streams.preserve_base(&key, sha256_hex(flushed.as_bytes()));
+        NotificationDispatchRepository::put_stream_base(
+            transaction,
+            &stream_base_id(&key),
+            Some(&flushed),
+        )?;
+    }
     let (text, streaming, phase, index_search, completed) = match update {
         TextUpdate::Started(snapshot, phase) => (
             snapshot.unwrap_or_default().to_owned(),
@@ -1563,22 +1577,31 @@ fn flush_text_stream(
     observed_at: f64,
     delta: Option<&str>,
 ) -> Result<(), NotificationDispatchError> {
+    streams.flush_analytics(key, agent);
+    if delta.is_none() && !streams.has_pending(key) {
+        return Ok(());
+    }
     let id = format!("{agent_id}:{}", key.item);
     let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
-    let previous = old
-        .as_ref()
-        .map(|(record, _)| saved_text(transaction, &id, record))
-        .transpose()?
-        .unwrap_or_default();
-    let previous = durable_stream_base(transaction, streams, key)?.unwrap_or(previous);
-    streams.flush_analytics(key, agent);
+    // The stored item holds the flushed text unless item/started replaced it,
+    // which preserved the flushed text as the durable base first.
+    let base = durable_stream_base(transaction, streams, key)?;
+    let previous = match base {
+        Some(base) => {
+            NotificationDispatchRepository::put_stream_base(
+                transaction,
+                &stream_base_id(key),
+                None,
+            )?;
+            base
+        }
+        None => old
+            .as_ref()
+            .map(|(record, _)| saved_text(transaction, &id, record))
+            .transpose()?
+            .unwrap_or_default(),
+    };
     if let Some((text, count, params)) = streams.flush_with_delta(key, &previous, delta) {
-        NotificationDispatchRepository::put_stream_base(
-            transaction,
-            &stream_base_id(key),
-            Some(&text),
-        )?;
-        streams.set_flushed_base(key, sha256_hex(text.as_bytes()));
         let phase = old
             .as_ref()
             .and_then(|(record, _)| record.get("phase"))
@@ -1596,7 +1619,8 @@ fn flush_text_stream(
             &record,
             observed_at,
             &text,
-            text.chars().count() > ITEM_PREVIEW_CHARS,
+            // Search indexes the item at item/started and item/completed only.
+            false,
         )?;
         update_common_agent_fields(agent, "item/agentMessage/delta", &params, observed_at)?;
         agent["events"] = Value::from(
@@ -3008,6 +3032,82 @@ mod tests {
         transaction
             .commit()
             .expect("invalid item refusal leaves transaction usable");
+    }
+
+    /// Stream flushes write the text once, to the item: no durable base copy
+    /// and no search row until item/completed indexes the whole answer. A
+    /// snapshot after a flush keeps the flushed text as the stream's base.
+    #[test]
+    fn stream_flushes_store_the_text_once_and_index_it_at_completion() {
+        use rusqlite::OptionalExtension;
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction begins");
+        let mut streams = NotificationStreamBuffer::default();
+        let delta = |item: &str, text: &str| json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":item,"delta":text}});
+        let base_rows = |tx: &rusqlite::Transaction<'_>| -> i64 {
+            tx.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("base rows")
+        };
+        let search = |tx: &rusqlite::Transaction<'_>, id: &str| -> Option<String> {
+            tx.query_row("SELECT body FROM runtime_search WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .expect("search row")
+        };
+        let text = |tx: &rusqlite::Transaction<'_>, id: &str| -> String {
+            let item = TranscriptRepository::item(tx, "agent", id)
+                .expect("item reads")
+                .expect("item exists");
+            TranscriptRepository::full_text(tx, &item)
+                .expect("full text")
+                .unwrap_or_else(|| item.record["text"].as_str().expect("text").to_owned())
+        };
+        // A long answer, flushed after every delta.
+        let mut expected = String::new();
+        for part in 0..30_u64 {
+            let chunk = char::from(b'a' + (part % 26) as u8)
+                .to_string()
+                .repeat(1_000);
+            expected.push_str(&chunk);
+            dispatch(
+                &transaction,
+                &mut streams,
+                part + 1,
+                &delta("long", &chunk),
+                1.0,
+            )
+            .expect("delta");
+            assert_eq!(text(&transaction, "agent:long"), expected);
+            assert_eq!(base_rows(&transaction), 0);
+            assert_eq!(search(&transaction, "agent:long"), None);
+        }
+        dispatch(&transaction, &mut streams, 31, &json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"long","type":"agentMessage","text":""}}}), 2.0).expect("completed");
+        assert_eq!(text(&transaction, "agent:long"), expected);
+        assert_eq!(
+            search(&transaction, "agent:long").as_deref(),
+            Some(expected.as_str())
+        );
+        // A snapshot after a flush: later deltas continue the flushed text.
+        dispatch(&transaction, &mut streams, 32, &delta("short", "one"), 3.0).expect("delta");
+        assert_eq!(base_rows(&transaction), 0);
+        dispatch(&transaction, &mut streams, 33, &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"short","type":"agentMessage","text":"snap"}}}), 4.0).expect("started");
+        assert_eq!(text(&transaction, "agent:short"), "snap");
+        assert_eq!(base_rows(&transaction), 1);
+        dispatch(&transaction, &mut streams, 34, &delta("short", "two"), 5.0).expect("delta");
+        assert_eq!(text(&transaction, "agent:short"), "onetwo");
+        assert_eq!(base_rows(&transaction), 0);
+        dispatch(&transaction, &mut streams, 35, &json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"short","type":"agentMessage","text":""}}}), 6.0).expect("completed");
+        assert_eq!(text(&transaction, "agent:short"), "onetwo");
+        assert_eq!(
+            search(&transaction, "agent:short").as_deref(),
+            Some("onetwo")
+        );
+        assert_eq!(base_rows(&transaction), 0);
     }
 
     #[test]

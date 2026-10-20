@@ -13427,9 +13427,26 @@
         },
         "expected_pending_bytes": 0,
         "tick": true
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "bounded-answer",
+              "type": "agentMessage",
+              "text": ""
+            }
+          }
+        }
       }
     ],
     "return": [
+      {
+        "status": "written"
+      },
       {
         "status": "written"
       },
@@ -13456,9 +13473,26 @@
         },
         "expected_pending_bytes": 0,
         "tick": true
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "bounded-answer",
+              "type": "agentMessage",
+              "text": ""
+            }
+          }
+        }
       }
     ],
     "return": [
+      {
+        "status": "written"
+      },
       {
         "status": "written"
       }

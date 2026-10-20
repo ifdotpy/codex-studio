@@ -50,7 +50,25 @@ def snapshot(root):
     result = oracle.snapshot(root, tables=tables)
     if _runtime is not None and pathlib.Path(root) != _runtime.root:
         # Compare Rust's durable stream bases with Python's live buffer before removing this exact internal
-        # receipt kind from relational parity; missing/extra/wrong bases fail.
+        # receipt kind from relational parity; missing/extra/wrong bases fail. Rust keeps a base durable only
+        # while it differs from the stream's stored item (after item/started replaced a flushed text); a base
+        # the item already holds is expected to be absent.
+        def item_holds(db, agent_id, item, method, base):
+            item_id = f'{agent_id}:{item}'
+            row = db.execute('SELECT record FROM runtime_items WHERE id=?', (item_id,)).fetchone()
+            if row is None:
+                return False
+            record = json.loads(row[0])
+            text = record.get('text', '')
+            if record.get('truncated'):
+                full = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?', (item_id,)).fetchone()
+                text = full[0] if full else text
+            if method == 'item/commandExecution/outputDelta':
+                try:
+                    text = json.loads(text).get('aggregatedOutput', '')
+                except (TypeError, ValueError, AttributeError):
+                    return False
+            return text == base
         expected_bases = {}
         with _runtime.read_db() as db:
             for key, entry in _runtime._stream_buffer.entries.items():
@@ -59,7 +77,7 @@ def snapshot(root):
                 if base is None or method not in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
                     continue
                 agent = db.execute("SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?", (thread,)).fetchone()
-                if agent is None:
+                if agent is None or item_holds(db, agent[0], item, method, base):
                     continue
                 stream_key = dict(agent_id=agent[0], account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
                 encoded = json.dumps(stream_key, ensure_ascii=False, separators=(',', ':'))

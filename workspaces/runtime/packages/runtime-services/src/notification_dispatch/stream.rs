@@ -610,13 +610,11 @@ impl NotificationStreamBuffer {
         }
         false
     }
-    pub(super) fn set_flushed_base(&mut self, key: &StreamKey, hash: String) {
-        if let Some(index) = self.indexes.entries.get(key).copied()
-            && let Some(entry) = self.entries.get_mut(index)
-        {
-            entry.base = Some(hash);
-            entry.flushed = true;
-        }
+    /// A flushed stream whose stored item still holds its flushed text.
+    pub(super) fn awaits_base(&self, key: &StreamKey) -> bool {
+        self.indexes.entries.get(key).is_some_and(|index| {
+            self.entries[*index].flushed && self.entries[*index].base.is_none()
+        })
     }
     pub(super) fn enqueue_delta(
         &mut self,
