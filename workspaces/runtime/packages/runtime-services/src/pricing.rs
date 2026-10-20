@@ -52,6 +52,14 @@ pub struct LoadedPricing {
     pub signature: Option<String>,
 }
 
+/// The artifact envelope; the catalog stays a document because its signature is the hash
+/// of its canonical JSON text.
+#[derive(serde::Deserialize)]
+struct PricingArtifact {
+    version: Option<u64>,
+    catalog: Option<Value>,
+}
+
 static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
     LazyLock::new(crate::file_derived::FileDerived::default);
 
@@ -59,11 +67,11 @@ static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
 /// `None` when the file is missing or unreadable.
 pub fn load_pricing(state_root: &Path) -> Option<Arc<LoadedPricing>> {
     LOADED.get_or_load(&state_root.join(PRICING_ARTIFACT), |path| {
-        let artifact = serde_json::from_slice::<Value>(&std::fs::read(path).ok()?).ok();
+        let artifact = serde_json::from_slice::<PricingArtifact>(&std::fs::read(path).ok()?).ok();
         let catalog_value = artifact
             .as_ref()
-            .filter(|artifact| artifact.get("version").and_then(Value::as_u64) == Some(1))
-            .and_then(|artifact| artifact.get("catalog"));
+            .filter(|artifact| artifact.version == Some(1))
+            .and_then(|artifact| artifact.catalog.as_ref());
         Some(LoadedPricing {
             catalog: catalog_value.and_then(|value| PricingCatalog::from_value(value).ok()),
             signature: catalog_value.and_then(crate::analytics::catalog_signature),

@@ -6,6 +6,8 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use serde::Deserialize;
+use serde::de::IgnoredAny;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AnalyticsRepository, AnalyticsStoreError, CostUsageRepositoryError, RuntimeStore, analytics,
@@ -423,33 +425,122 @@ fn valid_session_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// A field of the type the contract names; any other JSON type reads as absent.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Typed<T> {
+    Is(T),
+    Other(IgnoredAny),
+}
+
+impl<T> Typed<T> {
+    fn get(self) -> Option<T> {
+        match self {
+            Self::Is(value) => Some(value),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// The native ids a Studio session state file names.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionState {
+    native_id: Option<Typed<String>>,
+    history_branches: Option<Typed<Vec<Typed<NativeIdOf>>>>,
+    control_requests: Option<Typed<BTreeMap<String, Typed<ControlRequest>>>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeIdOf {
+    native_id: Option<Typed<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ControlRequest {
+    source_native_id: Option<Typed<String>>,
+    target_native_id: Option<Typed<String>>,
+}
+
 fn read_session_native_ids(path: &Path) -> Option<Vec<String>> {
     if fs::metadata(path).ok()?.len() > MAX_SESSION_STATE_BYTES {
         return None;
     }
-    let value = serde_json::from_slice::<Value>(&fs::read(path).ok()?).ok()?;
-    let mut ids = BTreeSet::new();
-    let mut add = |value: Option<&Value>| {
-        if let Some(value) = value
-            .and_then(Value::as_str)
-            .filter(|id| valid_session_id(id))
-        {
-            ids.insert(value.to_owned());
-        }
-    };
-    add(value.get("nativeId"));
-    if let Some(branches) = value.get("historyBranches").and_then(Value::as_array) {
-        for branch in branches {
-            add(branch.get("nativeId"));
-        }
-    }
-    if let Some(controls) = value.get("controlRequests").and_then(Value::as_object) {
-        for control in controls.values() {
-            add(control.get("sourceNativeId"));
-            add(control.get("targetNativeId"));
-        }
-    }
+    let state = serde_json::from_slice::<SessionState>(&fs::read(path).ok()?).ok()?;
+    let branches = state
+        .history_branches
+        .and_then(Typed::get)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(Typed::get)
+        .map(|branch| branch.native_id);
+    let controls = state
+        .control_requests
+        .and_then(Typed::get)
+        .unwrap_or_default()
+        .into_values()
+        .filter_map(Typed::get)
+        .flat_map(|control| [control.source_native_id, control.target_native_id]);
+    let ids = std::iter::once(state.native_id)
+        .chain(branches)
+        .chain(controls)
+        .filter_map(|id| id.and_then(Typed::get))
+        .filter(|id| valid_session_id(id))
+        .collect::<BTreeSet<_>>();
     Some(ids.into_iter().collect())
+}
+
+/// One line of a Claude session log; only assistant responses with usage matter.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogLine {
+    #[serde(rename = "type")]
+    kind: Option<Typed<String>>,
+    timestamp: Option<Typed<String>>,
+    request_id: Option<LogIdentity>,
+    uuid: Option<LogIdentity>,
+    message: Option<Typed<LogMessage>>,
+}
+
+#[derive(Deserialize)]
+struct LogMessage {
+    id: Option<LogIdentity>,
+    model: Option<Typed<String>>,
+    usage: Option<Typed<LogTokens>>,
+}
+
+#[derive(Deserialize)]
+struct LogTokens {
+    input_tokens: Option<Typed<f64>>,
+    cache_read_input_tokens: Option<Typed<f64>>,
+    cache_creation_input_tokens: Option<Typed<f64>>,
+    output_tokens: Option<Typed<f64>>,
+}
+
+/// A response identity field of any JSON type: the first truthy one names the response,
+/// and only a string can be an id.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LogIdentity {
+    Text(String),
+    Number(f64),
+    Flag(bool),
+    List(Vec<IgnoredAny>),
+    Map(BTreeMap<String, IgnoredAny>),
+}
+
+impl LogIdentity {
+    fn truthy(&self) -> bool {
+        match self {
+            Self::Text(value) => !value.is_empty(),
+            Self::Number(value) => *value != 0.0,
+            Self::Flag(value) => *value,
+            Self::List(value) => !value.is_empty(),
+            Self::Map(value) => !value.is_empty(),
+        }
+    }
 }
 
 /// The first usage row of every response id in one session log, in file order.
@@ -466,80 +557,65 @@ fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
             Ok(_) => {}
         }
         let line = String::from_utf8_lossy(&line);
-        let Ok(row) = serde_json::from_str::<Value>(&line) else {
+        let Ok(row) = serde_json::from_str::<LogLine>(&line) else {
             continue;
         };
-        if row.get("type").and_then(Value::as_str) != Some("assistant") {
+        if row.kind.and_then(Typed::get).as_deref() != Some("assistant") {
             continue;
         }
-        let Some(message) = row.get("message") else {
+        let Some(message) = row.message.and_then(Typed::get) else {
             continue;
         };
         let Some(model) = message
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|model| !model.is_empty() && *model != "<synthetic>")
+            .model
+            .and_then(Typed::get)
+            .filter(|model| !model.is_empty() && model != "<synthetic>")
         else {
             continue;
         };
-        if !valid_claude_timestamp(row.get("timestamp").and_then(Value::as_str)) {
+        if !valid_claude_timestamp(row.timestamp.and_then(Typed::get).as_deref()) {
             continue;
         }
-        let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) else {
+        let Some(usage) = message.usage.and_then(Typed::get) else {
             continue;
         };
-        let identity = [message.get("id"), row.get("requestId"), row.get("uuid")]
+        let identity = [message.id, row.request_id, row.uuid]
             .into_iter()
             .flatten()
-            .find(|value| is_json_truthy(value));
-        let Some(id) = identity
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        else {
+            .find(LogIdentity::truthy);
+        let Some(LogIdentity::Text(id)) = identity else {
             continue;
         };
+        // An absent count is zero; a count of another type voids all three input counts.
+        let count = |value: Option<Typed<f64>>| match value {
+            None => Some(0.0),
+            Some(value) => value.get().filter(|number| *number >= 0.0),
+        };
         let input_values = [
-            "input_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        ]
-        .map(|name| usage.get(name).map_or(Some(0.0), nonnegative_number));
+            count(usage.input_tokens),
+            count(usage.cache_read_input_tokens),
+            count(usage.cache_creation_input_tokens),
+        ];
         let (input_tokens, cached_tokens, write_tokens) =
             if input_values.iter().all(Option::is_some) {
                 (input_values[0], input_values[1], input_values[2])
             } else {
                 (None, None, None)
             };
-        if !seen.insert(id.to_owned()) {
+        if !seen.insert(id.clone()) {
             continue;
         }
         rows.push(LogUsage {
-            id: id.to_owned(),
-            model: model.to_owned(),
+            id,
+            model,
             input_tokens,
             cached_tokens,
             write_tokens,
-            output_tokens: usage.get("output_tokens").and_then(Value::as_f64),
+            output_tokens: usage.output_tokens.and_then(Typed::get),
             input_tokens_are_uncached: input_tokens.is_some(),
         });
     }
     Some(rows)
-}
-
-fn nonnegative_number(value: &Value) -> Option<f64> {
-    let number = value.as_f64()?;
-    (number >= 0.0).then_some(number)
-}
-
-fn is_json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
 }
 
 fn valid_claude_timestamp(value: Option<&str>) -> bool {
