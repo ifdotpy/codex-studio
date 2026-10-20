@@ -9,6 +9,16 @@ import "../api";
 
 type Position = { top: number; following: boolean; distance: number };
 
+/** Distance from the bottom, in CSS pixels, inside which the transcript keeps
+ * following new content. */
+export const FOLLOW_THRESHOLD_PX = 32;
+/** Time, in milliseconds, for which wheel, touch, or key input is recent. */
+const RECENT_INPUT_MS = 600;
+/** Scroll distance, in CSS pixels, of one wheel line (`deltaMode` 1). */
+const WHEEL_LINE_PX = 40;
+/** Rounding allowance, in CSS pixels, between input deltas and a move. */
+const INPUT_SLACK_PX = 4;
+
 export function useFollowState(
   subscribe: (listener: () => void) => () => void,
   getSnapshot: () => boolean,
@@ -46,10 +56,14 @@ export function useConversationScroll(id: string, ready: boolean) {
   const bottomDistance = useRef(0);
   const lastScrollInput = useRef(-Infinity);
   const hasRecentScrollInput = useCallback(
-    () => performance.now() - lastScrollInput.current < 600,
+    () => performance.now() - lastScrollInput.current < RECENT_INPUT_MS,
     [],
   );
+  // CSS pixels that the recent input can scroll up and down.
+  const inputReach = useRef({ up: 0, down: 0 });
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
+  // False until the first restore of the current chat applies its position.
+  const restored = useRef(false);
 
   const persist = () => {
     const position = positions.current.get(current.current);
@@ -97,9 +111,53 @@ export function useConversationScroll(id: string, ready: boolean) {
       ? { element, offset: element.getBoundingClientRect().top - bounds.top }
       : null;
   };
-  const restore = () => {
+  // Update follow state from the reader's current position.
+  const track = () => {
+    const root = scroll.current;
+    if (!root) return;
+    const atBottom =
+      root.scrollHeight - root.scrollTop - root.clientHeight <
+      FOLLOW_THRESHOLD_PX;
+    // A layout change can move scrollTop. A downward move over unchanged
+    // content comes from the user, including momentum and scrollbar drags.
+    const value =
+      atBottom &&
+      (following.current ||
+        (root.scrollTop > lastTop.current &&
+          root.scrollHeight === lastHeight.current) ||
+        hasRecentScrollInput());
+    updateFollow(value);
+    remember();
+  };
+  // WebKit (the macOS client) applies a wheel or trackpad step to scrollTop
+  // before it dispatches the scroll event. A render or observer in that gap
+  // must keep the reader's new position, not restore the old one. Code that
+  // moves scrollTop calls remember(). An unrecorded move belongs to the
+  // reader only when recent input can explain its direction and distance:
+  // WebKit also moves scrollTop by itself while the transcript changes, by
+  // much more than the input.
+  const trackUnseenScroll = () => {
+    const root = scroll.current;
+    if (
+      !root ||
+      !restored.current ||
+      root.scrollTop === lastTop.current ||
+      !hasRecentScrollInput()
+    )
+      return;
+    const moved = root.scrollTop - lastTop.current;
+    const reach = moved < 0 ? inputReach.current.up : inputReach.current.down;
+    if (Math.abs(moved) > reach + INPUT_SLACK_PX) return;
+    track();
+    // The scroll event that follows sees no change and does not persist.
+    persist();
+  };
+  // An explicit follow request wins over an unseen reader move.
+  const restore = (explicit = false) => {
     const root = scroll.current;
     if (!root || !available.current) return;
+    if (!explicit) trackUnseenScroll();
+    restored.current = true;
     const hadAnchor = !!anchor.current;
     if (following.current)
       root.scrollTop =
@@ -121,7 +179,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     updateFollow(value);
     if (value) {
       bottomDistance.current = 0;
-      restore();
+      restore(true);
     } else remember();
     persist();
   };
@@ -143,6 +201,8 @@ export function useConversationScroll(id: string, ready: boolean) {
       lastTop.current = valid ? stored.top : 0;
       bottomDistance.current = valid ? stored.distance : 0;
       updateFollow(valid ? stored.following : true);
+      // The old chat's scrollTop is not a reader move in this chat.
+      restored.current = false;
     }
     restore();
   });
@@ -151,6 +211,10 @@ export function useConversationScroll(id: string, ready: boolean) {
     const root = scroll.current;
     const body = content.current;
     if (!root || !body) return;
+    let touchY: number | null = null;
+    const touchStart = (event: TouchEvent) => {
+      touchY = event.touches[0]?.clientY ?? null;
+    };
     const input = (event: Event) => {
       if (event instanceof KeyboardEvent) {
         if (
@@ -173,8 +237,39 @@ export function useConversationScroll(id: string, ready: boolean) {
           return;
       }
       if (event.type === "pointerdown" && event.target !== root) return;
-      lastScrollInput.current = performance.now();
+      const now = performance.now();
+      if (now - lastScrollInput.current >= RECENT_INPUT_MS)
+        inputReach.current = { up: 0, down: 0 };
+      lastScrollInput.current = now;
+      const extend = (delta: number) => {
+        if (delta < 0) inputReach.current.up -= delta;
+        else inputReach.current.down += delta;
+      };
+      if (event instanceof WheelEvent)
+        extend(
+          event.deltaY *
+            (event.deltaMode === 1
+              ? WHEEL_LINE_PX
+              : event.deltaMode === 2
+                ? root.clientHeight
+                : 1),
+        );
+      else if (event instanceof KeyboardEvent) {
+        const distance = ["Home", "End"].includes(event.key)
+          ? Infinity
+          : root.clientHeight;
+        const up =
+          ["ArrowUp", "PageUp", "Home"].includes(event.key) ||
+          (event.key === " " && event.shiftKey);
+        extend(up ? -distance : distance);
+      } else if (event.type === "touchmove") {
+        // Desktop WebKit has no TouchEvent constructor to test against.
+        const y = (event as TouchEvent).touches[0]?.clientY;
+        if (y !== undefined && touchY !== null) extend(touchY - y);
+        touchY = y ?? null;
+      } else inputReach.current = { up: Infinity, down: Infinity };
     };
+    root.addEventListener("touchstart", touchStart, { passive: true });
     for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
       root.addEventListener(type, input, { passive: true });
     const checkpoint = () => {
@@ -182,10 +277,10 @@ export function useConversationScroll(id: string, ready: boolean) {
     };
     window.addEventListener("pagehide", checkpoint);
     document.addEventListener("visibilitychange", checkpoint);
-    const observer = new ResizeObserver(restore);
+    const observer = new ResizeObserver(() => restore());
     observer.observe(root);
     observer.observe(body);
-    const mutations = new MutationObserver(restore);
+    const mutations = new MutationObserver(() => restore());
     mutations.observe(body, { childList: true, subtree: true });
     return () => {
       checkpoint();
@@ -193,6 +288,7 @@ export function useConversationScroll(id: string, ready: boolean) {
       document.removeEventListener("visibilitychange", checkpoint);
       observer.disconnect();
       mutations.disconnect();
+      root.removeEventListener("touchstart", touchStart);
       for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
         root.removeEventListener(type, input);
     };
@@ -202,18 +298,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     const root = scroll.current;
     if (!root || !available.current || root.scrollTop === lastTop.current)
       return;
-    const atBottom =
-      root.scrollHeight - root.scrollTop - root.clientHeight < 32;
-    // A layout change can move scrollTop. A downward move over unchanged
-    // content comes from the user, including momentum and scrollbar drags.
-    const value =
-      atBottom &&
-      (following.current ||
-        (root.scrollTop > lastTop.current &&
-          root.scrollHeight === lastHeight.current) ||
-        performance.now() - lastScrollInput.current < 600);
-    updateFollow(value);
-    remember();
+    track();
     persist();
   };
   const revealRequest = useCallback((node: HTMLElement) => {
