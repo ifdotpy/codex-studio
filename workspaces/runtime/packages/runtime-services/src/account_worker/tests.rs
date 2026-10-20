@@ -3,6 +3,7 @@ mod agent_isolation;
 #[cfg(unix)]
 mod auth_hold;
 mod browser_skill;
+mod capacity_retry;
 mod claude_preparation;
 mod exited_generation_callback;
 mod idle_unload;

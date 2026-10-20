@@ -2729,7 +2729,7 @@ pub(super) fn delete_delivered_publications(
 
 /// One pass that deletes its delivered prefix in its own transaction.
 /// Settle a capacity retry's record with its `turn/start` outcome; other attempts stage nothing.
-fn stage_capacity_start(
+pub(super) fn stage_capacity_start(
     tx: &studio_runtime_store::Transaction<'_>,
     intent: &crate::scheduler::TurnIntent,
     outcome: CapacityStartOutcome<'_>,
