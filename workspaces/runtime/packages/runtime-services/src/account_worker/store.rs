@@ -766,11 +766,12 @@ fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
 
 pub(super) async fn submitted(
     store: &RuntimeStore,
-    context: Pending,
+    context: impl Into<Arc<Pending>>,
     account: &str,
     request: RecoveredRequest,
     evidence: SubmissionEvidence,
 ) -> Result<bool, WorkerError> {
+    let context: Arc<Pending> = context.into();
     let SubmissionEvidence {
         turn,
         submission,
@@ -872,7 +873,7 @@ pub(super) async fn submitted(
                 tx,
                 &context.operation,
                 "submitted",
-                json!({"context":context,"request":record(&request)}),
+                json!({"context":&*context,"request":record(&request)}),
             )
         })?;
         Ok(true)
@@ -901,7 +902,7 @@ pub(super) async fn outcome(
     store: Arc<RuntimeStore>,
     account: String,
     resources: Arc<preparation::PreparationResources>,
-    pending: Option<Pending>,
+    pending: Option<Arc<Pending>>,
     outcome: SessionOutcome,
     session_closed: bool,
 ) -> Result<SettledOutcome, WorkerError> {
@@ -931,7 +932,7 @@ pub(super) async fn outcome(
 pub(super) struct OutcomeStep {
     pub account: String,
     pub resources: Arc<preparation::PreparationResources>,
-    pub context: Pending,
+    pub context: Arc<Pending>,
     pub outcome: SessionOutcome,
     pub session_closed: bool,
 }

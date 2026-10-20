@@ -43,7 +43,7 @@ pub(super) enum Committed {
 
 pub(super) struct Ready {
     pub id: RequestId,
-    pub context: Pending,
+    pub context: Arc<Pending>,
     pub method: Method,
     pub prepared: PreparedRequest,
     pub control: SessionControl,
@@ -118,7 +118,8 @@ impl Commit {
             Err(error) => return Err(error.into()),
         };
         let recovery = prepared.recovery_record();
-        let save_context = context.clone();
+        let context = Arc::new(context);
+        let save_context = Arc::clone(&context);
         let authorized = crate::diagnostics::measure_runtime_stage_async(
             "turn_submission.submitted",
             bridge.worker_run("submitted", move |store| async move {

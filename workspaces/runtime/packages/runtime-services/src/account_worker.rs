@@ -663,7 +663,7 @@ pub async fn start_account_worker_with_publication_sink(
     let idle_setting_changes = bridge.idle_setting_changes();
     let idle_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker = Worker {
-        resources,
+        resources: Arc::new(resources),
         bridge: bridge.clone(),
         account: account.clone(),
         vm_credential_refresh_at,
@@ -711,7 +711,7 @@ pub async fn start_account_worker_with_publication_sink(
         barriers: Vec::new(),
         pending: recovered
             .into_iter()
-            .map(|(context, record)| (record.ticket.id, context))
+            .map(|(context, record)| (record.ticket.id, Arc::new(context)))
             .collect(),
         flush_at: (streams.pending_bytes() > 0)
             .then(|| tokio::time::Instant::now() + STREAM_CADENCE),
@@ -831,7 +831,8 @@ struct Worker {
     retained_requests: BTreeMap<RequestId, retained::PendingRequest>,
     retained_frames: BTreeMap<String, retained_frame::PendingFrame>,
     retained_barriers: Vec<retained::PendingBarrier>,
-    resources: preparation::PreparationResources,
+    /// Shared with every preparation and outcome task; never deep-copied per request.
+    resources: Arc<preparation::PreparationResources>,
     bridge: StoreBridge,
     account: String,
     vm_credential_refresh_at: Option<tokio::time::Instant>,
@@ -890,7 +891,8 @@ struct Worker {
     idle_snapshot: Option<idle_unload::IdleSnapshotTask>,
     #[cfg(test)]
     barriers: Vec<tokio::sync::oneshot::Sender<usize>>,
-    pending: BTreeMap<RequestId, Pending>,
+    /// Written requests by ticket; shared with their outcome tasks, never deep-copied.
+    pending: BTreeMap<RequestId, Arc<Pending>>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
     deferred: VecDeque<(JournalEntry, Option<VmActorIdentity>)>,
@@ -2142,7 +2144,7 @@ impl Worker {
     async fn settle_unwritten(
         &mut self,
         id: RequestId,
-        context: Pending,
+        context: Arc<Pending>,
         method: Method,
     ) -> Result<(), WorkerError> {
         self.pending.insert(id.clone(), context);
@@ -2208,7 +2210,7 @@ impl Worker {
         if !authorized {
             return Ok(());
         }
-        self.pending.insert(id.clone(), context);
+        self.pending.insert(id.clone(), Arc::new(context));
         // A worker that began closing during the durable boundary never writes:
         // that proves the request not sent, so the input returns to the queue.
         let outcome = if self.closing {
@@ -2365,7 +2367,8 @@ impl Worker {
             )
             .await?;
             for (context, request) in recovered {
-                self.pending.insert(request.ticket.id.clone(), context);
+                self.pending
+                    .insert(request.ticket.id.clone(), Arc::new(context));
             }
             let control = session.control.clone();
             let mut events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
@@ -2945,7 +2948,7 @@ impl Worker {
                 }
             };
             let account = self.account.clone();
-            let resources = Arc::new(self.resources.clone());
+            let resources = Arc::clone(&self.resources);
             let closing = self.closing;
             // Any turn/start outcome but its write or accepted reply may mean
             // the provider no longer has the thread loaded.

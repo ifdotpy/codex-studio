@@ -7,7 +7,7 @@ use crate::{diagnostics::measure_runtime_stage_async as stage, workspace_ready::
 
 pub(super) struct Run {
     pub bridge: StoreBridge,
-    pub resources: preparation::PreparationResources,
+    pub resources: Arc<preparation::PreparationResources>,
     pub generation: u64,
     pub connection_id: String,
     pub intent: TurnIntent,
@@ -79,7 +79,7 @@ pub(super) struct Wake {
     pub epoch: i64,
     pub effect: Option<String>,
     /// Native review children run their first turn with these resources.
-    pub resources: preparation::PreparationResources,
+    pub resources: Arc<preparation::PreparationResources>,
 }
 
 pub(super) async fn run(run: Run) -> Box<Done> {
