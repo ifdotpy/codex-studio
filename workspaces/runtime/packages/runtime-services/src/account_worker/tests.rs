@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+mod agent_isolation;
 #[cfg(unix)]
 mod auth_hold;
 mod browser_skill;
@@ -4844,9 +4845,9 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         None,
         Vec::new(),
         None,
+        false,
     )
     .await
-    .unwrap()
     .expect("VM actor journal entry is durable");
     let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from("sibling"))
         .unwrap()
@@ -4878,9 +4879,9 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         None,
         Vec::new(),
         None,
+        false,
     )
     .await
-    .unwrap()
     .expect("sibling VM actor journal entry is durable");
     store
         .transaction_with(move |tx| -> Result<(), WorkerError> {

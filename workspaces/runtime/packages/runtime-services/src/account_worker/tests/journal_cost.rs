@@ -55,7 +55,12 @@ async fn journal(
     streams: NotificationStreamBuffer,
     entries: Vec<JournalEntry>,
 ) -> NotificationStreamBuffer {
-    let (streams, committed, deferred, _) = store::journal_batch(
+    let store::JournalBatch {
+        streams,
+        committed,
+        deferred,
+        ..
+    } = store::journal_batch(
         Arc::clone(store),
         "default",
         SCOPE,
@@ -66,9 +71,9 @@ async fn journal(
         None,
         Vec::new(),
         None,
+        false,
     )
     .await
-    .expect("journal batch")
     .expect("journal batch commits");
     assert!(deferred.is_empty());
     assert!(!committed.is_empty());
