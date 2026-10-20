@@ -118,14 +118,15 @@ describe("ui team scale helpers", () => {
       },
       35,
     );
-    expect(tracker.leadReportedAtMs()).toBeNull();
+    expect(tracker.leadReports()).toEqual([]);
     tracker.observe({ id: "lead", lastAnswer: "TAG_ALL_REPLIED" }, 40);
     const summary = tracker.summary();
     expect(summary).toMatchObject({
       visible: 1,
       started: 1,
       replied: 1,
-      leadReportedAtMs: 40,
+      // One of two workers replied: the report does not count yet.
+      leadReportedAtMs: null,
     });
     expect(summary.missingTokens).toEqual(["TAG_W0002"]);
     expect(tracker.workers()[0]).toMatchObject({
@@ -133,6 +134,22 @@ describe("ui team scale helpers", () => {
       startedAtMs: 20,
       completedAtMs: 30,
     });
+  });
+
+  it("counts only a lead report made after the last worker reply", () => {
+    const tracker = createTeamTracker("lead", "TAG", 1);
+    tracker.observe({ id: "lead", lastAnswer: "TAG_ALL_REPLIED" }, 5);
+    tracker.observe({ id: "w1", rootId: "lead", inFlight: true }, 6);
+    tracker.observe({ id: "lead", lastAnswer: "..." }, 7);
+    tracker.observe({ id: "w1", rootId: "lead", lastAnswer: "TAG_W0001" }, 30);
+    expect(tracker.summary()).toMatchObject({
+      replied: 1,
+      lastReplyMs: 30,
+      leadReportedAtMs: null,
+    });
+    tracker.observe({ id: "lead", lastAnswer: "TAG_ALL_REPLIED" }, 41);
+    expect(tracker.summary().leadReportedAtMs).toBe(41);
+    expect(tracker.leadReports()).toEqual([5, 41]);
   });
 
   it("spreads the deadline over throttle waves per account", () => {

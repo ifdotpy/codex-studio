@@ -670,6 +670,19 @@ It is a manual, announced live run, outside every test tier. A small run:
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
 lists the options. Evidence goes to a directory outside the checkout.
 
+Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
+lead and worker transcripts, the lead's tool requests, the backend journal of the
+run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
+and diagnostics counters. The run fails on a failed or interrupted turn, a worker
+with more than one turn or an error, a `child_result` delivered twice or never,
+any input delivered twice, a tool call or request without a result, a tool request
+applied while the model was told it failed, a lead final report made before the
+last worker reply, a backend restart, an `ERROR` or panic journal line, a growing
+error counter or a non-empty input queue. Everything else suspicious (failed lead
+tool calls, placeholder answers, repeated final reports, long lead input waits,
+start-order inversions, provider retries, other journal warnings) is listed under
+`anomalies` in `summary.txt` and `evidence.json`.
+
 ## Interpret evidence
 
 Report which suites actually ran, which failed, and which were excluded. A

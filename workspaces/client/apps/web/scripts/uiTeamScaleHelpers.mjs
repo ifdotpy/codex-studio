@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { auditSummaryLines } from "./uiTeamScaleAudit.mjs";
 
 // Pure helpers of verify-ui-team-scale.mjs. Every value below has one owner:
 // this module for the verifier's own pacing and limits, the runtime for the
@@ -143,7 +144,10 @@ export function createTeamTracker(leadId, runTag, workers) {
   const byId = new Map();
   // Provider retry state per team member (the lead included).
   const retries = new Map();
-  let leadReportedAtMs = null;
+  // Times at which the lead's last answer turned into the final report; a
+  // report before the last worker reply is a false one.
+  const leadReports = [];
+  let leadShowsReport = false;
   const text = (value) =>
     `${value.lastAnswer ?? ""}\n${value.overview?.result ?? ""}`;
   return {
@@ -165,13 +169,11 @@ export function createTeamTracker(leadId, runTag, workers) {
         }
       }
       if (value.id === leadId) {
-        if (
-          leadReportedAtMs === null &&
-          // The final answer only: the overview result carries interim
-          // text and placeholders while the lead still waits for workers.
-          (value.lastAnswer ?? "").includes(leadDoneToken(runTag))
-        )
-          leadReportedAtMs = atMs;
+        // The final answer only: the overview result carries interim text
+        // and placeholders while the lead still waits for workers.
+        const shows = (value.lastAnswer ?? "").includes(leadDoneToken(runTag));
+        if (shows && !leadShowsReport) leadReports.push(atMs);
+        leadShowsReport = shows;
         return;
       }
       if (value.rootId !== leadId) return;
@@ -218,12 +220,21 @@ export function createTeamTracker(leadId, runTag, workers) {
       }
       return { events, agents, waitMs };
     },
-    leadReportedAtMs: () => leadReportedAtMs,
+    leadReports: () => [...leadReports],
     summary() {
       const rows = [...byId.values()];
       const tokens = new Set(
         rows.filter((row) => row.token).map((row) => row.token),
       );
+      const lastReplyMs =
+        tokens.size === workers
+          ? Math.max(...rows.map((row) => row.completedAtMs ?? 0))
+          : null;
+      // The report that counts comes at or after the last worker reply.
+      const leadReportedAtMs =
+        lastReplyMs === null
+          ? null
+          : (leadReports.find((atMs) => atMs >= lastReplyMs) ?? null);
       return {
         expected: workers,
         visible: rows.length,
@@ -233,6 +244,7 @@ export function createTeamTracker(leadId, runTag, workers) {
           (token) => !tokens.has(token),
         ),
         leadReportedAtMs,
+        lastReplyMs,
         accountDistribution: Object.fromEntries(
           [
             ...rows.reduce((counts, row) => {
@@ -319,6 +331,7 @@ export const USAGE = `Usage: node verify-ui-team-scale.mjs [options]
   --project PATH       registered project (default: main checkout of this repository)
   --origin URL         backend (default http://127.0.0.1:4620)
   --evidence-dir DIR   absolute directory outside the checkout (default under ~/.cache)
+  --journal-unit UNIT  systemd user unit of the backend whose journal is audited (default codex-studio)
   --keep               skip the cleanup so the chat can be inspected
 Live run against a real backend: announce it. Headless Chromium only.`;
 
@@ -329,6 +342,7 @@ export function parseArgs(argv, defaults) {
     worker: "codex-luna",
     workerWorkspace: "shared",
     origin: "http://127.0.0.1:4620",
+    journalUnit: "codex-studio",
     keep: false,
     help: false,
     ...defaults,
@@ -352,6 +366,8 @@ export function parseArgs(argv, defaults) {
       options.workerWorkspace = value(index++, arg);
     else if (arg === "--project") options.project = value(index++, arg);
     else if (arg === "--origin") options.origin = value(index++, arg);
+    else if (arg === "--journal-unit")
+      options.journalUnit = value(index++, arg);
     else if (arg === "--evidence-dir")
       options.evidenceDir = value(index++, arg);
     else assert.fail(`Unknown option ${arg}.\n${USAGE}`);
@@ -438,6 +454,7 @@ export function summaryText(journal) {
       `${m.providerCpuPercentPeak} / ${m.providerRssMiBPeak}`,
     ),
     line("cleanup", journal.cleanup?.state ?? "not run"),
+    ...(journal.audit ? auditSummaryLines(journal.audit) : ["audit: not run"]),
     "",
   ].join("\n");
 }

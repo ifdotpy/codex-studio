@@ -44,6 +44,23 @@ import {
   stageDeadlineMs,
   summaryText,
 } from "./uiTeamScaleHelpers.mjs";
+import {
+  AUDIT_FETCH_CONCURRENCY,
+  JOURNAL_GREP,
+  TRANSCRIPT_PAGE_LIMIT,
+  auditDiagnostics,
+  auditJournal,
+  auditLead,
+  auditLeadReport,
+  auditToolRequests,
+  auditWorker,
+  auditWorkerEntity,
+  diagnosticsCounters,
+  mapLimited,
+  mergeAudits,
+  startOrderInversions,
+  toolCalls,
+} from "./uiTeamScaleAudit.mjs";
 
 const REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -73,6 +90,8 @@ const PROVIDER_PROCESS_NAMES = ["codex", "claude"];
 // threads of an account and outlives them by design, so it is reported but
 // not a leak; loaded threads are checked through the diagnostics counter.
 const AGENT_OWNED_PROCESS_NAMES = ["claude"];
+// Largest backend journal read for one run window, bytes.
+const JOURNAL_MAX_BYTES = 512 * 1024 * 1024;
 
 let aborted = false;
 let signalCount = 0;
@@ -475,10 +494,11 @@ async function main() {
     PROVIDER_PROCESS_NAMES,
   );
   journal.baselineProviderProcesses = baselineProviderPids.size;
-  const diagnosticsBefore = compactDiagnostics(
-    await api("GET", "/api/diagnostics"),
-  );
+  const rawDiagnosticsBefore = await api("GET", "/api/diagnostics");
+  const diagnosticsBefore = compactDiagnostics(rawDiagnosticsBefore);
   journal.diagnostics.before = diagnosticsBefore;
+  journal.diagnostics.countersBefore =
+    diagnosticsCounters(rawDiagnosticsBefore);
 
   const runStart = performance.now();
   const runMs = () => Math.round(performance.now() - runStart);
@@ -815,10 +835,11 @@ async function main() {
           .pages()[0]
           .evaluate(() => window.__uiProbe)
       : null;
-    const diagnosticsAfter = compactDiagnostics(
-      await api("GET", "/api/diagnostics"),
-    );
+    const rawDiagnosticsAfter = await api("GET", "/api/diagnostics");
+    const diagnosticsAfter = compactDiagnostics(rawDiagnosticsAfter);
     journal.diagnostics.after = diagnosticsAfter;
+    journal.diagnostics.countersAfter =
+      diagnosticsCounters(rawDiagnosticsAfter);
     const summary = tracker?.summary() ?? {
       started: 0,
       replied: 0,
@@ -968,6 +989,32 @@ async function main() {
       : evaluateCriteria(journal.metrics, options.workers);
     if (journal.deadlineReached) journal.result.failures.push("stageDeadline");
     journal.result.passed &&= !journal.deadlineReached;
+    if (leadId) {
+      journal.audit = await auditRun({
+        origin: options.origin,
+        token: session.token,
+        backendPid,
+        journalUnit: options.journalUnit,
+        since: journal.startedAt,
+        leadId,
+        runTag,
+        workerIds: workerRows.map((row) => row.id),
+        entities: agents,
+        timeline: workerTimeline,
+        rel,
+        tracker,
+        throttling,
+        diagnostics: {
+          before: journal.diagnostics.countersBefore,
+          after: journal.diagnostics.countersAfter,
+        },
+      });
+      const kinds = [
+        ...new Set(journal.audit.failures.map((entry) => entry.kind)),
+      ];
+      journal.result.failures.push(...kinds);
+      journal.result.passed &&= kinds.length === 0;
+    }
   } catch (error) {
     journal.result = {
       passed: false,
@@ -1011,6 +1058,127 @@ async function main() {
     journal.cleanup.state === "nothing created";
   process.stdout.write(`evidence: ${journalPath}\n`);
   if (!journal.result.passed || !cleanupOk) process.exitCode = 1;
+}
+
+// Strict audit before the cleanup deletes the team: transcripts, tool
+// requests, backend journal and diagnostics of the run window. Its requests
+// are kept out of the run's API latency journal.
+async function auditRun({
+  origin,
+  token,
+  backendPid,
+  journalUnit,
+  since,
+  leadId,
+  runTag,
+  workerIds,
+  entities,
+  timeline,
+  rel,
+  tracker,
+  throttling,
+  diagnostics,
+}) {
+  const api = createApi(origin, token, { http: [] });
+  const transcript = async (id) => {
+    const items = [];
+    let before = null;
+    do {
+      const page = await api(
+        "GET",
+        `/api/transcript/page?id=${encodeURIComponent(id)}&limit=${TRANSCRIPT_PAGE_LIMIT}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
+      );
+      items.unshift(...page.items);
+      before = page.nextCursor;
+    } while (before);
+    return items;
+  };
+  const parts = [];
+  const desktop = await api("GET", "/api/desktop");
+  if (desktop.pid !== backendPid)
+    parts.push({
+      failures: [
+        { kind: "backendRestarted", from: backendPid, to: desktop.pid },
+      ],
+    });
+  const leadItems = await transcript(leadId);
+  const lead = auditLead(leadItems, workerIds, `${runTag}_ALL_REPLIED`);
+  parts.push(lead);
+  const requests = (
+    await api("GET", `/api/tool-requests?agent=${encodeURIComponent(leadId)}`)
+  ).requests;
+  parts.push(auditToolRequests(requests, toolCalls(leadItems)));
+  const workers = await mapLimited(
+    workerIds,
+    AUDIT_FETCH_CONCURRENCY,
+    async (id) => auditWorker(id, await transcript(id)),
+  );
+  parts.push(...workers);
+  parts.push({
+    failures: workerIds.flatMap((id) =>
+      entities.has(id) ? auditWorkerEntity(entities.get(id)) : [],
+    ),
+  });
+  const summary = tracker.summary();
+  parts.push({
+    failures: auditLeadReport(
+      tracker.leadReports().map(rel),
+      rel(summary.lastReplyMs),
+    ),
+  });
+  parts.push({
+    anomalies: startOrderInversions(
+      timeline.map((row) => ({
+        accountKey: row.accountKey,
+        firstSeenAtMs: row.firstSeenAtMs,
+        startedAtMs: row.startedAtMs,
+      })),
+    ),
+  });
+  if (throttling.events)
+    parts.push({ anomalies: [{ kind: "providerRetries", ...throttling }] });
+  parts.push(auditDiagnostics(diagnostics.before, diagnostics.after));
+  const journalRead = spawnSync(
+    "journalctl",
+    [
+      "--user",
+      "--unit",
+      journalUnit,
+      "--since",
+      `@${Math.floor(Date.parse(since) / 1000)}`,
+      "--output",
+      "short-iso-precise",
+      "--no-pager",
+      "--quiet",
+      "--case-sensitive=false",
+      "--grep",
+      JOURNAL_GREP,
+    ],
+    { encoding: "utf8", maxBuffer: JOURNAL_MAX_BYTES },
+  );
+  if (journalRead.status === 0)
+    parts.push(auditJournal(journalRead.stdout.split("\n")));
+  else
+    parts.push({
+      anomalies: [
+        {
+          kind: "journalUnavailable",
+          unit: journalUnit,
+          error: String(journalRead.error?.message ?? journalRead.stderr).slice(
+            0,
+            300,
+          ),
+        },
+      ],
+    });
+  return {
+    ...mergeAudits(parts),
+    leadTurns: lead.turns,
+    leadChildResults: lead.childResults,
+    leadMaxInputWaitMs: lead.maxInputWaitMs,
+    workerTurns: workers.reduce((sum, worker) => sum + worker.turns, 0),
+    leadToolRequests: requests.length,
+  };
 }
 
 async function cleanup({
