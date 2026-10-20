@@ -1830,7 +1830,9 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     seed_backlog(&fixture, 48, false).await;
     fixture.enqueue(0, "eligible-after-blocked-prefix").await;
     fixture.enqueue(1, "eligible-other-account").await;
-    let (launcher, mut writes) = scripted();
+    // Written receipts: a lost turn/start receipt closes the session by design,
+    // and that worker exit would race this test's registry shutdown.
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     // An uninitialized default worker cannot drain its lane, so the registry
     // sees it full for the whole first pass and must still reach the second
     // account. Without the hold, the order of the two starts is a race.
@@ -1894,7 +1896,9 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         .await
         .unwrap();
 
-    let (launcher, mut writes) = scripted();
+    // Written receipts: a lost turn/start receipt closes the session by design,
+    // and that worker exit would race this test's registry shutdown.
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     // Every paged account except the last two fails to start on every attempt, so
     // the registry's retry timer cannot open another launch; the strict
     // continuation then reaches the eligible tail without a timer or another
