@@ -858,12 +858,10 @@ impl State {
         let agent = self.agent.clone();
         self.bridge
             .run(move |store| async move {
-                let raw: String = store.read()?.query_row(
-                    "SELECT record FROM runtime_agents WHERE id=?1",
-                    [agent],
-                    |r| r.get(0),
-                )?;
-                Ok(serde_json::from_str(&raw).unwrap())
+                Ok(
+                    studio_runtime_store::agent_volatile::merged_record(&*store.read()?, &agent)?
+                        .expect("agent row"),
+                )
             })
             .await
             .unwrap()

@@ -105,7 +105,7 @@ impl TerminalsRepository {
                 id: id.to_owned(),
             });
         };
-        let record = crate::records::decode_record::<TerminalRecord>(id, &encoded)?;
+        let record = crate::records::decode_record::<TerminalRecord>(connection, id, &encoded)?;
         Ok(Some(TerminalRow {
             id: record.id().as_str().to_owned(),
             record,

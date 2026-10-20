@@ -94,7 +94,8 @@ with runtime.lock, runtime.db() as db:
         sync_documents = [row[0] for row in db.execute('SELECT seq FROM sync_documents ORDER BY seq')]
         sync_versions = [row[0] for row in db.execute('SELECT seq FROM sync_versions ORDER BY seq')]
         raw_agent = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent['id'],)).fetchone()[0]
-        return {'agent':raw_agent, 'events':events, 'metadata':metadata, 'sync':sync,
+        # Compared as JSON: Rust stores volatile agent fields apart (format 2026-10-20).
+        return {'agent':json.loads(raw_agent), 'events':events, 'metadata':metadata, 'sync':sync,
                 'completed':completed, 'syncDocuments':sync_documents, 'syncVersions':sync_versions}
     result = {}
     for name, agent in agents.items():
@@ -215,13 +216,9 @@ async fn named_team_and_radio_refusals_match_python_preparation_and_preserve_who
 
 fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
     let reader = store.read().expect("policy snapshot reads");
-    let raw_agent: String = reader
-        .query_row(
-            "SELECT record FROM runtime_agents WHERE id=?1",
-            [agent],
-            |row| row.get(0),
-        )
-        .expect("agent snapshot reads");
+    let raw_agent = studio_runtime_store::agent_volatile::merged_record(&reader, agent)
+        .expect("agent snapshot reads")
+        .expect("agent row exists");
     let events = reader.prepare("SELECT id,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=?1 ORDER BY created,rowid")
         .expect("event snapshot prepares").query_map([agent], |row| Ok((
             row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?,

@@ -1673,6 +1673,9 @@ mod account_wake_index_tests {
             )
             .expect("pre-index schema creates");
         connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
+        connection
     }
 
     fn put_agent(connection: &Connection, id: &str, value: serde_json::Value) {

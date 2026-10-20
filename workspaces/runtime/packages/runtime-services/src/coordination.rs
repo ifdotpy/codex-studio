@@ -1207,6 +1207,9 @@ mod tests {
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
         ).expect("coordination schema creates");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
             let record = json!({"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
@@ -1233,6 +1236,9 @@ mod tests {
              CREATE TABLE IF NOT EXISTS sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE IF NOT EXISTS sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
         ).expect("durable test schema creates");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
             let record = json!({"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection

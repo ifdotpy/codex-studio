@@ -82,7 +82,11 @@ fn read_activity(
             ));
         }
         let id: String = row.get(0)?;
-        result.push(decode(row.get(1)?, object, &id)?);
+        let mut record = decode(row.get(1)?, object, &id)?;
+        if object == "agents" {
+            crate::agent_volatile::merge(connection, &id, &mut record)?;
+        }
+        result.push(record);
     }
     Ok(result)
 }

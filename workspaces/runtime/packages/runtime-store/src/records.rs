@@ -493,8 +493,17 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         }
     }
 
+    /// The record text a reader receives: an agent's with its volatile fields.
+    fn reader_text(&self, row_id: &str, encoded: String) -> StoreResult<String> {
+        if R::TABLE == AgentRecord::TABLE {
+            crate::agent_volatile::merged_text(self.connection, row_id, encoded)
+        } else {
+            Ok(encoded)
+        }
+    }
+
     pub(crate) fn decode_stored(&self, row_id: &str, encoded: &str) -> StoreResult<R> {
-        decode_record::<R>(row_id, encoded)
+        decode_record::<R>(self.connection, row_id, encoded)
     }
 
     pub fn get(&self, id: &R::Id) -> StoreResult<Option<R>> {
@@ -520,7 +529,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text_ref(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        decode_record::<R>(id.as_ref(), encoded).map(Some)
+        decode_record::<R>(self.connection, id.as_ref(), encoded).map(Some)
     }
 
     /// Keep the original JSON text for consumers whose contract depends on
@@ -548,7 +557,8 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        decode_record::<R>(id.as_ref(), &encoded).map(|record| Some((record, encoded)))
+        let record = decode_record::<R>(self.connection, id.as_ref(), &encoded)?;
+        Ok(Some((record, self.reader_text(id.as_ref(), encoded)?)))
     }
 
     pub fn list(&self) -> StoreResult<Vec<R>> {
@@ -574,7 +584,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
-            records.push(decode_record::<R>(&id, encoded)?);
+            records.push(decode_record::<R>(self.connection, &id, encoded)?);
         }
         Ok(records)
     }
@@ -602,7 +612,8 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text(row.get_ref(1)?, R::TABLE, &id)?;
-            records.push((decode_record::<R>(&id, &encoded)?, encoded));
+            let record = decode_record::<R>(self.connection, &id, &encoded)?;
+            records.push((record, self.reader_text(&id, encoded)?));
         }
         Ok(records)
     }
@@ -621,7 +632,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         };
         let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
         let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
-        decode_record::<R>(&id, encoded).map(Some)
+        decode_record::<R>(self.connection, &id, encoded).map(Some)
     }
 
     /// Full rowid-ordered read that keeps each physical row id beside its record.
@@ -638,7 +649,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let row_id = row.get::<_, i64>(0)?;
             let id = stored_text(row.get_ref(1)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text_ref(row.get_ref(2)?, R::TABLE, &id)?;
-            records.push((row_id, decode_record::<R>(&id, encoded)?));
+            records.push((row_id, decode_record::<R>(self.connection, &id, encoded)?));
         }
         Ok(records)
     }
@@ -659,7 +670,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
 
     /// Upsert a record and related non-record columns in a hybrid table.
     pub fn put_with_columns(&self, record: &R, columns: &[(&str, SqlValue)]) -> StoreResult<()> {
-        if R::KEY_MODE != RecordKeyMode::PayloadId {
+        if R::KEY_MODE != RecordKeyMode::PayloadId || R::TABLE == AgentRecord::TABLE {
             return Err(crate::StoreError::RecordContract(
                 "external-key records must be written with put_at",
             ));
@@ -766,6 +777,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
     }
 
     fn update_at_key(&self, id: &str, record: &R) -> StoreResult<bool> {
+        if R::TABLE == AgentRecord::TABLE {
+            let value = checked_value(record, id)?;
+            return crate::agent_volatile::update(self.connection, id, &value);
+        }
         let encoded = encode_record(record, id)?;
         let changed = self.connection.execute(
             &format!("UPDATE {} SET record=?1 WHERE id=?2", quoted_table::<R>()),
@@ -775,6 +790,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
     }
 
     fn put_at_key(&self, id: &str, record: &R, update: bool) -> StoreResult<bool> {
+        if R::TABLE == AgentRecord::TABLE {
+            let value = checked_value(record, id)?;
+            return crate::agent_volatile::put(self.connection, id, &value, !update);
+        }
         let encoded = encode_record(record, id)?;
         let conflict = if update {
             "DO UPDATE SET record=excluded.record"
@@ -938,10 +957,14 @@ pub(crate) fn decode_value(
     validate_value(schema, value, invalid)
 }
 
-pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
-    if R::TABLE == "runtime_agents" {
+pub(crate) fn decode_record<R: JsonRecord>(
+    connection: &Connection,
+    row_id: &str,
+    encoded: &str,
+) -> StoreResult<R> {
+    if R::TABLE == AgentRecord::TABLE {
         // The checked value already carries the typed fields; decode moves it.
-        return serde_json::from_value::<R>(decode_agent_value(row_id, encoded)?)
+        return serde_json::from_value::<R>(decode_agent_value(connection, row_id, encoded)?)
             .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None));
     }
     let invalid = || crate::StoreError::InvalidStoredObject {
@@ -958,9 +981,14 @@ pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> Store
     Ok(record)
 }
 
-/// An agent row as checked JSON: the schema, the [`AgentRecord`] typed fields
-/// and the row key, without building the typed record.
-pub fn decode_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
+/// An agent row as checked JSON with its volatile fields merged
+/// ([`crate::agent_volatile::merge`]): the schema, the [`AgentRecord`] typed
+/// fields and the row key, without building the typed record.
+pub fn decode_agent_value(
+    connection: &Connection,
+    row_id: &str,
+    encoded: &str,
+) -> StoreResult<Value> {
     /// The fields [`AgentRecord`] types; every other field is free JSON.
     #[derive(Deserialize)]
     struct TypedFields<'a> {
@@ -972,7 +1000,7 @@ pub fn decode_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
         #[serde(rename = "status")]
         _status: &'a str,
     }
-    let value: Value = serde_json::from_str(encoded).map_err(|_| {
+    let mut value: Value = serde_json::from_str(encoded).map_err(|_| {
         invalid_agent_field(
             row_id,
             "",
@@ -980,6 +1008,7 @@ pub fn decode_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
             None,
         )
     })?;
+    crate::agent_volatile::merge(connection, row_id, &mut value)?;
     if !studio_runtime_schema::validate(AgentRecord::SCHEMA, &value)
         .map_err(crate::StoreError::SchemaValidation)?
     {
@@ -1026,6 +1055,11 @@ pub(crate) fn invalid_agent_field(
 }
 
 fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String> {
+    Ok(serde_json::to_string(&checked_value(record, row_id)?)?)
+}
+
+/// The record as JSON, checked against its schema and row key.
+fn checked_value<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<Value> {
     let value = serde_json::to_value(record)?;
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
@@ -1039,7 +1073,7 @@ fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String>
     {
         return Err(invalid());
     }
-    Ok(serde_json::to_string(&value)?)
+    Ok(value)
 }
 
 fn stored_text(value: ValueRef<'_>, table: &'static str, id: &str) -> StoreResult<String> {
@@ -1223,6 +1257,9 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
             .expect("agent table creates");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         connection
     }
 
@@ -1498,6 +1535,9 @@ mod tests {
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL CHECK(id != 'blocked'));",
             )
             .expect("checked table creates");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let table = Table::<AgentRecord>::new(&connection);
         let blocked = agent(json!({"id":"blocked","rootId":"blocked","epoch":0,"status":"idle"}));
         assert!(matches!(

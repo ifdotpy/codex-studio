@@ -357,6 +357,9 @@ mod tests {
                  CREATE TABLE runtime_items(agent TEXT);",
             )
             .expect("required parent tables are created");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let transaction = connection
             .transaction()
             .expect("bootstrap transaction starts");

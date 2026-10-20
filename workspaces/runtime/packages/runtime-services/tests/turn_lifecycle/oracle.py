@@ -152,6 +152,20 @@ def normalize(value, key=""):
     return value
 
 
+def merge_volatile_agent_fields(db, agent_id, record):
+    """Rust storage format 2026-10-20 keeps volatile agent fields in
+    runtime_agent_volatile, one JSON column each; a Python state has no table."""
+    try:
+        cursor = db.execute("SELECT * FROM runtime_agent_volatile WHERE id=?", (agent_id,))
+    except sqlite3.OperationalError:
+        return record
+    row = cursor.fetchone()
+    for (name, *_), column in zip(cursor.description, tuple(row) if row else ()):
+        if name != "id" and column is not None:
+            record[name] = json.loads(column)
+    return record
+
+
 def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
     root = str(root)
     shapes = {}
@@ -185,6 +199,8 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
                 for field in ("record", "payload", "result"):
                     if field in record and record[field] is not None:
                         record[field] = json.loads(record[field])
+                if table == "runtime_agents":
+                    merge_volatile_agent_fields(db, record["id"], record["record"])
                 if tables == TABLES and table == "runtime_operation_receipts" and record["id"] == "account-worker:account:default:attempt:turn/start:submitted":
                     # Rust's extra transport receipt has no Python row. Validate
                     # its binding before applying the existing rust_receipts class;

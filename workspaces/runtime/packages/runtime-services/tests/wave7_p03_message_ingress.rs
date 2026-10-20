@@ -271,6 +271,12 @@ async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
             .await
             .unwrap_or_else(|error| panic!("{name}: Python state opens: {error}"));
         oracle.call(json!({"configure":root,"case":case}));
+        // Python wrote old-format agents into the opened state: move their
+        // volatile fields as the open does (format 2026-10-20).
+        store
+            .transaction(studio_runtime_store::agent_volatile::migrate_2026_10_20)
+            .await
+            .expect("volatile agent fields move");
         let mut results = Vec::new();
         for step in case["steps"].as_array().expect("steps") {
             if let Some(status) = step.get("status") {

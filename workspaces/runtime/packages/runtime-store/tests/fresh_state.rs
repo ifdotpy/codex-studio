@@ -59,6 +59,7 @@ async fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migr
     );
     let rust_catalog = catalog_snapshot(&rust_state);
     assert_rust_owned_feature_schema_objects(&rust_catalog, &feature_schema);
+    assert_agent_volatile_schema_objects(&rust_catalog);
     assert_rust_owned_runtime_indexes(&rust_catalog);
     assert_shared_task_indexes_match_python(&expected["databases"]);
     assert_valid_markers(&expected["markers"]);
@@ -465,6 +466,8 @@ fn catalog_without_rust_owned_objects(catalog: &Value) -> Value {
                 .iter()
                 .any(|(owned, _, _)| *owned == name)
                 && !RUST_OWNED_RUNTIME_INDEX_NAMES.contains(&name)
+                && !studio_runtime_store::agent_volatile::schema_objects()
+                    .any(|(owned, _, _)| owned == name)
         });
     }
     common
@@ -562,6 +565,22 @@ fn assert_rust_owned_feature_schema_objects(catalog: &Value, feature_schema: &Pa
             expected_sql,
             "{name} matches its canonical Rust feature-schema declaration"
         );
+    }
+}
+
+/// The Rust-only volatile agent storage (format 2026-10-20) exists as its
+/// owner declares it.
+fn assert_agent_volatile_schema_objects(catalog: &Value) {
+    let objects = catalog["canvas.sqlite3"]["sqlite_master"]
+        .as_array()
+        .expect("catalog lists objects");
+    for (name, kind, table) in studio_runtime_store::agent_volatile::schema_objects() {
+        let object = objects
+            .iter()
+            .find(|object| object["name"] == name)
+            .unwrap_or_else(|| panic!("Rust startup creates {name}"));
+        assert_eq!(object["type"], kind, "{name} type");
+        assert_eq!(object["table"], table, "{name} table");
     }
 }
 

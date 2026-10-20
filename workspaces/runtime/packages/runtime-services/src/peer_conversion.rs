@@ -180,6 +180,10 @@ fn put(db: &Transaction<'_>, table: &'static str, value: &Value) -> Result<(), P
         .as_str()
         .ok_or(ProjectsError::Invalid("record ID missing"))?;
     records::validate(table, id, value.clone())?;
+    if table == studio_runtime_store::agent_volatile::AGENT_TABLE {
+        studio_runtime_store::agent_volatile::update(db, id, value)?;
+        return Ok(());
+    }
     db.execute(
         &format!("UPDATE {table} SET record=?1 WHERE id=?2"),
         params![value.to_string(), id],

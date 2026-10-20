@@ -15,6 +15,7 @@ pub(super) fn snapshot(
         [&context.agent],
         |row| row.get(0),
     )?;
+    let raw = studio_runtime_store::agent_volatile::merged_text(tx, &context.agent, raw)?;
     CallbackSnapshot::from_record(&raw, context)
 }
 pub(super) fn save_actor(tx: &Transaction<'_>, actor: &Value) -> Result<(), CallbackError> {
@@ -22,11 +23,7 @@ pub(super) fn save_actor(tx: &Transaction<'_>, actor: &Value) -> Result<(), Call
         .as_str()
         .ok_or(CallbackError::Stored("runtime_agents/id".into()))?;
     records::validate("runtime_agents", id, actor.clone())?;
-    let changed = tx.execute(
-        "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-        params![id, actor.to_string()],
-    )?;
-    if changed != 1 {
+    if !studio_runtime_store::agent_volatile::update(tx, id, actor)? {
         return Err(CallbackError::Stale);
     }
     crate::agents_create::publish_agent(tx, actor)?;

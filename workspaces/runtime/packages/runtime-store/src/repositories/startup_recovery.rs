@@ -87,10 +87,10 @@ impl AgentSelection {
             "SELECT id,record FROM runtime_agents WHERE {} ORDER BY id",
             (self.predicate)()
         ))?;
-        statement
+        let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::agent_volatile::merged_rows(connection, rows)
     }
 }
 
@@ -318,6 +318,9 @@ mod tests {
                    ('r6','{\"agent\":\"gone\",\"stage\":\"queued\"}');",
             )
             .expect("corpus");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let counts =
             StartupRecoveryRepository::unsettled_tool_request_counts_by_account(&connection)
                 .expect("counts");
@@ -443,6 +446,9 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
             .expect("table");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         StartupRecoveryRepository::prepare_indexes(&connection).expect("indexes");
         for (selection, index) in [
             (&super::CLEANUP_INTENTS, "runtime_agent_cleanup_intent"),

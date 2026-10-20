@@ -24,6 +24,9 @@ fn database() -> Connection {
                  CREATE TABLE sync_versions(seq INTEGER);",
             )
             .expect("scheduler tables create");
+    connection
+        .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+        .expect("volatile agent table creates");
     let mut extra = BTreeMap::new();
     extra.insert("autoWake".to_owned(), json!(true));
     extra.insert("inFlight".to_owned(), json!(false));

@@ -481,6 +481,9 @@ mod room_preparation_tests {
         let mut connection = Connection::open_in_memory().expect("database");
         connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);").expect("tables");
         connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
+        connection
             .execute(
                 "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
                 [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
@@ -507,6 +510,9 @@ mod room_preparation_tests {
                  INSERT INTO runtime_projects(id,record) VALUES('broken-project','{');",
             )
             .expect("malformed source fixtures");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
 
         assert!(RoomDirectory::prepare(&connection).is_err());
         let prepared = RoomDirectory::prepare_for_sync(&connection)
@@ -563,6 +569,9 @@ mod room_preparation_tests {
                  CREATE INDEX runtime_item_agent ON runtime_items(agent);",
             )
             .expect("context tables");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let mut agents = Vec::with_capacity(AGENT_COUNT);
         let mut work = Vec::with_capacity(AGENT_COUNT);
         let transaction = connection.transaction().expect("seed transaction");
@@ -657,6 +666,9 @@ mod room_preparation_tests {
                      ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');",
             )
             .expect("context fixture");
+        connection
+            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile agent table creates");
         let agents = [
             (
                 "lead-busy".to_owned(),
