@@ -118,12 +118,15 @@ pub enum WorkerStatus {
     Failed,
     Interrupted,
     Paused,
-    Active,
+    Queued,
+    /// Starting, running, waiting, or awaiting approval.
+    Running,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Worker {
     pub id: String,
     pub root_id: String,
+    pub parent_id: Option<String>,
     pub worktree_ready: bool,
     pub deleted: bool,
     pub status: WorkerStatus,
@@ -856,6 +859,64 @@ fn artifact(row: &Event, value: &Value, body: &str) -> ArtifactIntent {
         ),
     }
 }
+/// Authoritative child counts of one parent, computed from the store at delivery
+/// time so a parent never has to count `child_result` events. The one owner of the
+/// team progress line; both providers consume it through `compile`. Counts are
+/// agents. A finished child is completed, failed, interrupted, or paused without
+/// auto-wake (the same definition as `AgentIndexedReads::ACTIVE_TEAM_MEMBERS_SQL`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct TeamProgress {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub interrupted: usize,
+    pub running: usize,
+    pub queued: usize,
+}
+impl TeamProgress {
+    pub fn of(s: &PreparationSnapshot) -> Self {
+        let mut progress = Self::default();
+        for w in s
+            .workers
+            .iter()
+            .filter(|w| !w.deleted && w.parent_id.as_deref() == Some(s.actor.id.as_str()))
+        {
+            progress.total += 1;
+            match w.status {
+                WorkerStatus::Completed => progress.completed += 1,
+                WorkerStatus::Paused if !w.auto_wake => progress.completed += 1,
+                WorkerStatus::Failed => progress.failed += 1,
+                WorkerStatus::Interrupted => progress.interrupted += 1,
+                WorkerStatus::Queued => progress.queued += 1,
+                WorkerStatus::Paused | WorkerStatus::Running => progress.running += 1,
+            }
+        }
+        progress
+    }
+    pub fn finished(&self) -> usize {
+        self.completed + self.failed + self.interrupted
+    }
+    /// The delivery line, or `None` when the parent has no children.
+    pub fn line(&self) -> Option<String> {
+        if self.total == 0 {
+            return None;
+        }
+        let mut line = format!(
+            "Children: {} total, {} finished ({} completed, {} failed, {} interrupted), {} running, {} queued.",
+            self.total,
+            self.finished(),
+            self.completed,
+            self.failed,
+            self.interrupted,
+            self.running,
+            self.queued
+        );
+        if self.finished() == self.total {
+            line.push_str(" All children have finished.");
+        }
+        Some(line)
+    }
+}
 fn event_text(
     s: &PreparationSnapshot,
     rows: &[Event],
@@ -950,6 +1011,13 @@ fn event_text(
     }
     if !missing.is_empty() {
         return Err(PrepareError::ArtifactsRequired(missing));
+    }
+    if rows
+        .iter()
+        .any(|r| matches!(r.kind.as_str(), "child_result" | "child_stopped"))
+        && let Some(line) = TeamProgress::of(s).line()
+    {
+        parts.push(format!("[Team progress]\n{line}"));
     }
     Ok((parts.join("\n\n"), artifacts))
 }
@@ -1166,5 +1234,40 @@ pub fn accept(
         manifest_upsert: Some(prepared.manifest.clone()),
         reminder_insert: prepared.manifest.versions.get("worktreeReminder").cloned(),
         transcript_turn_id: Some(turn_id.clone()),
+    }
+}
+
+#[cfg(test)]
+mod team_progress_tests {
+    use super::TeamProgress;
+
+    #[test]
+    fn line_counts_every_child_and_marks_the_finished_team() {
+        let running = TeamProgress {
+            total: 5,
+            completed: 2,
+            failed: 1,
+            interrupted: 0,
+            running: 1,
+            queued: 1,
+        };
+        assert_eq!(
+            running.line().as_deref(),
+            Some(
+                "Children: 5 total, 3 finished (2 completed, 1 failed, 0 interrupted), 1 running, 1 queued."
+            )
+        );
+        let done = TeamProgress {
+            total: 128,
+            completed: 128,
+            ..TeamProgress::default()
+        };
+        assert_eq!(
+            done.line().as_deref(),
+            Some(
+                "Children: 128 total, 128 finished (128 completed, 0 failed, 0 interrupted), 0 running, 0 queued. All children have finished."
+            )
+        );
+        assert_eq!(TeamProgress::default().line(), None);
     }
 }

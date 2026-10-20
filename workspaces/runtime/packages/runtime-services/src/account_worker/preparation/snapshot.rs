@@ -1053,8 +1053,13 @@ pub(super) fn submission_snapshot(
         });
     }
     let mut workers = Vec::new();
-    // Only a lead's turn context reads its team (the finished-worktree reminder).
-    let team = if flag(record, "isLead")? {
+    // Only a lead's turn context (finished-worktree reminder) or a batch carrying
+    // child events (team progress line) reads the team.
+    let child_events = intent
+        .events
+        .iter()
+        .any(|e| matches!(e.kind.as_str(), "child_result" | "child_stopped"));
+    let team = if child_events || flag(record, "isLead")? {
         studio_runtime_store::AgentIndexedReads::team_records(tx, root_id)?
     } else {
         Vec::new()
@@ -1066,12 +1071,14 @@ pub(super) fn submission_snapshot(
             Some("failed") => turn::WorkerStatus::Failed,
             Some("interrupted") => turn::WorkerStatus::Interrupted,
             Some("paused") => turn::WorkerStatus::Paused,
-            Some(_) => turn::WorkerStatus::Active,
+            Some("queued") => turn::WorkerStatus::Queued,
+            Some(_) => turn::WorkerStatus::Running,
             None => return Err(invalid("worker/status")),
         };
         workers.push(turn::Worker {
             id: decode(v["id"].clone(), "worker/id")?,
             root_id: root_id.into(),
+            parent_id: text(&v, "parentId")?,
             worktree_ready: flag(&v, "worktreeReady")?,
             deleted: v
                 .get("deletedAt")
