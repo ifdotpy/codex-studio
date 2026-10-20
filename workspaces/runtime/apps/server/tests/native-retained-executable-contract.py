@@ -61,7 +61,6 @@ class Contract(PidFileContract):
         self.old = self.bundle(self.case.binary.read_bytes(), '0.1.0')
         self.new = self.bundle(self.case.binary.read_bytes() + b'\n# newer\n', '0.2.0')
         self.command = [self.old['path'], 'app-server', '--listen', 'stdio://',
-                        '-c', 'thread_unload_delay_secs=0',
                         '-c', 'cli_auth_credentials_store="file"']
         # These tests model a host-launched fake process and separately stub
         # its argv reader. Do not let an installed Linux VM prefix change that

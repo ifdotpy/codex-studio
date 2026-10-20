@@ -41,8 +41,9 @@ pub(super) fn session_status_invalidates_snapshot(
 /// costs about 0.25 CPU-s against about 0.015 CPU-s for a warm turn, and a Codex
 /// unload with resume 15-70 ms against about 32 ms for a warm turn (scripted
 /// model fixtures, 2026-10-19). Codex frees an unsubscribed thread after its
-/// own `thread_unload_delay_secs`, which the host launch sets to zero
-/// (`CODEX_THREAD_UNLOAD_DELAY` in `provider_adapter`).
+/// own `thread_unload_delay_secs`; its host launch keeps Codex's default,
+/// because a changed launch command no longer reattaches running app-servers
+/// after an upgrade (live 2026-10-20: every account lost its provider link).
 const WORKER_UNLOAD_DELAY: Duration = Duration::ZERO;
 /// Deadline of one provider request of the sweep.
 const IDLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);

@@ -131,11 +131,6 @@ WORKSPACE_AGENT_RESOURCE_FIELDS = (
 )
 _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN: set[str] = set()
 
-# Codex config override: seconds an unsubscribed thread stays loaded in the host
-# app-server; zero frees it when Studio unsubscribes it. Parity with
-# CODEX_THREAD_UNLOAD_DELAY in runtime-services provider_adapter.rs.
-CODEX_THREAD_UNLOAD_DELAY = ("-c", "thread_unload_delay_secs=0")
-
 @dataclass(frozen=True)
 class TokenRateObservation:
     agent: dict[str, object]
@@ -547,7 +542,7 @@ class AppServer:
         self.stderr_done = threading.Event()
         from codex_log_rotation import RotatingLog
         self.log = RotatingLog(root / "app-server.log", max_bytes=50 * 1024 * 1024, backups=4)
-        command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://", *CODEX_THREAD_UNLOAD_DELAY]
+        command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
         env = app_server_launch_environment(home=home, isolated=isolated)
         if isolated:
             command.extend(["-c", 'cli_auth_credentials_store="file"'])

@@ -611,8 +611,7 @@ def retained_executable(runtime, account_key, home, selected):
         return None
     from codex_process_supervisor import (native_launch_environment, retained_native_launch,
                                           supervisor_launch_snapshot)
-    from codex_runtime import CODEX_THREAD_UNLOAD_DELAY
-    command = [selected['path'], 'app-server', '--listen', 'stdio://', *CODEX_THREAD_UNLOAD_DELAY]
+    command = [selected['path'], 'app-server', '--listen', 'stdio://']
     env = os.environ.copy()
     if home is not None:
         env['CODEX_HOME'] = str(home)
