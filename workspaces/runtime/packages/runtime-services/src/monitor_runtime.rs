@@ -1022,6 +1022,27 @@ fn legacy_reattach_notice(
             && scoped_turn(restart, &restart["reattachedAt"]))
 }
 
+/// Actor inputs consumed by monitor command/permission preparation. Execution
+/// progress and turnId are excluded: the command belongs to the agent/epoch,
+/// and the monitor row retains its original turn as creation provenance.
+/// See prepare_monitor_command/monitor_command_settings and monitor_port's
+/// apply_turn_permissions. Live ownership is checked by policy::start/apply.
+const MONITOR_START_ACTOR_INPUTS: &[&str] = &[
+    "/threadId",
+    "/cwd",
+    "/provider",
+    "/executionMode",
+    "/yoloMode",
+    "/approvalPolicy",
+    "/sandbox",
+    "/profile/id",
+    "/role",
+    "/isLead",
+    "/imageWorkspace",
+    "/imageWorkspaceReady",
+    "/layrScratch",
+];
+
 #[derive(Clone)]
 pub struct PreparedStart {
     pub monitor: Value,
@@ -1041,9 +1062,11 @@ pub async fn reserve_start(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
+            let current_actor = actor.value();
             if snapshot.record() != &prepared.monitor
-                || serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?
-                    != prepared.actor
+                || MONITOR_START_ACTOR_INPUTS
+                    .iter()
+                    .any(|path| current_actor.pointer(path) != prepared.actor.pointer(path))
             {
                 return Err(MonitorError::Refused("Monitor changed during preparation"));
             }
