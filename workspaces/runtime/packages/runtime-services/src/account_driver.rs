@@ -913,6 +913,41 @@ fn login_terminal(receipt: &Value) -> bool {
     )
 }
 
+/// The user-readable error of a sign-in request that the provider never received.
+pub const LOGIN_NOT_SENT_ERROR: &str = "Could not start sign-in. Try again.";
+
+/// A sign-in account that never received a provider identity and whose every
+/// sign-in request has ended (error or cancelled). Such a row is hidden from
+/// the account list; a later reservation removes it so failed or abandoned
+/// sign-ins do not accumulate. A row with an identity, a live or uncertain
+/// request, or a place in the archive is never a candidate.
+fn abandoned_login_account(value: &Value, key: &str) -> bool {
+    if !key.starts_with("login-") || value["defaultAccountKey"] == key {
+        return false;
+    }
+    let Ok(row) = registry_account(value, key) else {
+        return false;
+    };
+    if row.get("accountId").is_some_and(truthy_value)
+        || row.get("duplicateOf").is_some_and(truthy_value)
+        || row.get("deleted").is_some_and(truthy_value)
+        || row.get("disconnected").is_some_and(truthy_value)
+        || row.get("status").and_then(Value::as_str) == Some("ready")
+    {
+        return false;
+    }
+    let mut receipts = value
+        .get("logins")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(_, receipt)| receipt)
+        .filter(|receipt| receipt["accountKey"] == key)
+        .peekable();
+    receipts.peek().is_some()
+        && receipts.all(|receipt| matches!(receipt["status"].as_str(), Some("cancelled" | "error")))
+}
+
 fn existing_login(
     value: &Value,
     request: &CodexLoginRequest,
@@ -993,6 +1028,65 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(Some(result))
     }
 
+    /// Remove each [`abandoned_login_account`] from `value` and `order`. The
+    /// credentials are read again first: a home that gained an identity after
+    /// its request ended stays registered. The home directory stays on disk.
+    fn remove_abandoned_logins(&self, value: &mut Value, order: &mut RegistryOrder) {
+        let candidates: Vec<String> = order
+            .accounts
+            .iter()
+            .filter(|key| abandoned_login_account(value, key))
+            .cloned()
+            .collect();
+        for key in candidates {
+            if self.refresh_value(value, &key, true).is_err()
+                || !abandoned_login_account(value, &key)
+            {
+                continue;
+            }
+            if let Some(accounts) = value.get_mut("accounts").and_then(Value::as_object_mut) {
+                accounts.remove(&key);
+            }
+            order.accounts.retain(|account| account != &key);
+        }
+    }
+
+    /// The registry row of a Codex account whose sign-in request is being
+    /// dispatched now (receipt status `starting`), without `_` fields. Such an
+    /// account may start a provider session before it is ready, because the
+    /// sign-in itself runs in that session. `None` for every other account.
+    pub fn login_launch_record(&self, account: &str) -> Result<Option<Value>, AccountDriverError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let Ok(row) = registry_account(&state.value, account) else {
+            return Ok(None);
+        };
+        let starting = state
+            .value
+            .get("logins")
+            .and_then(Value::as_object)
+            .is_some_and(|logins| {
+                logins.values().any(|receipt| {
+                    receipt["accountKey"] == account && receipt["status"] == "starting"
+                })
+            });
+        if !starting
+            || studio_runtime_providers::ProviderKind::key_of(row) != Some("codex")
+            || row.get("deleted").is_some_and(truthy_value)
+            || row.get("disconnected").is_some_and(truthy_value)
+        {
+            return Ok(None);
+        }
+        let mut row = row
+            .as_object()
+            .ok_or(AccountDriverError::InvalidRegistry)?
+            .clone();
+        row.retain(|field, _| !field.starts_with('_'));
+        Ok(Some(Value::Object(row)))
+    }
+
     /// `home` is prepared by the caller without holding this registry lock or a
     /// store transaction. A successful return is the durable intent commit point.
     pub fn reserve_codex_login(
@@ -1013,6 +1107,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         let mut value = state.value.clone();
         let mut order = state.order.clone();
+        self.remove_abandoned_logins(&mut value, &mut order);
         let key = request
             .account_key
             .clone()
@@ -1063,12 +1158,15 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(LoginReservation::Dispatch(receipt))
     }
 
+    /// `not_sent_cause` names, in user-readable words, why a request with
+    /// `sent == false` never reached the provider; it is added to the error.
     pub fn finish_codex_login(
         &self,
         request: &str,
         account: &str,
         response: Option<&Value>,
         sent: bool,
+        not_sent_cause: Option<&str>,
         now: f64,
     ) -> Result<Value, AccountMutationError> {
         let mut state = self
@@ -1125,10 +1223,13 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             }
         } else {
             receipt["status"] = serde_json::json!(if sent { "uncertain" } else { "error" });
-            receipt["error"] = serde_json::json!(if sent {
-                "Sign-in response is unconfirmed. Check its status before starting again."
-            } else {
-                "Could not start sign-in. Try again."
+            receipt["error"] = serde_json::json!(match (sent, not_sent_cause) {
+                (true, _) => {
+                    "Sign-in response is unconfirmed. Check its status before starting again."
+                        .to_owned()
+                }
+                (false, Some(cause)) => format!("Could not start sign-in: {cause}. Try again."),
+                (false, None) => LOGIN_NOT_SENT_ERROR.to_owned(),
             });
         }
         let result = receipt.clone();

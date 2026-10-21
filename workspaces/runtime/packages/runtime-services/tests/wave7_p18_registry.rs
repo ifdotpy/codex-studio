@@ -54,6 +54,7 @@ fn registry_login_writes_match_python_and_replay_without_writes() {
                 reserved["accountKey"].as_str().expect("account"),
                 (case["outcome"] == "written").then_some(&case["response"]),
                 case["outcome"] != "not_sent",
+                None,
                 10.0,
             )
             .expect("receipt");
@@ -94,12 +95,12 @@ fn restart_and_cancellation_latch_never_authorize_another_send() {
         LoginReservation::Replay(_)
     ));
     let account = format!("login-{REQUEST}");
-    driver.finish_codex_login(REQUEST, &account, Some(&json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid","userCode":"fixture"})), true, 3.0).expect("late receipt");
+    driver.finish_codex_login(REQUEST, &account, Some(&json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid","userCode":"fixture"})), true, None, 3.0).expect("late receipt");
     assert!(matches!(
         driver.reserve_codex_cancel(REQUEST).expect("cancel intent"),
         LoginReservation::Dispatch(_)
     ));
-    driver.finish_codex_login(REQUEST, &account, Some(&json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid","userCode":"fixture"})), true, 4.0).expect("duplicate start receipt cannot clear cancellation latch");
+    driver.finish_codex_login(REQUEST, &account, Some(&json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid","userCode":"fixture"})), true, None, 4.0).expect("duplicate start receipt cannot clear cancellation latch");
     drop(driver);
     let driver = AccountDriver::open(&path).expect("restart cancellation");
     assert!(matches!(
@@ -146,7 +147,7 @@ fn early_completion_and_foreign_notification_preserve_exact_identity() {
         .expect("completion before start acknowledgement");
     assert_eq!(completed["status"], "ready");
     let before = read(&path);
-    let result = driver.finish_codex_login(REQUEST,"default",Some(&json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid","userCode":"fixture"})),true,2.0).expect("late acknowledgement");
+    let result = driver.finish_codex_login(REQUEST,"default",Some(&json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid","userCode":"fixture"})),true,None,2.0).expect("late acknowledgement");
     assert_eq!(result, completed);
     assert_eq!(read(&path), before);
     assert!(
@@ -180,7 +181,7 @@ fn registry_failpoints_before_every_login_write_leave_a_recoverable_receipt() {
         }
         if matches!(boundary, "cancel_intent" | "cancel_receipt") {
             driver
-                .finish_codex_login(REQUEST, &account, Some(&response), true, 2.0)
+                .finish_codex_login(REQUEST, &account, Some(&response), true, None, 2.0)
                 .expect("receipt");
         }
         if boundary == "cancel_receipt" {
@@ -198,7 +199,7 @@ fn registry_failpoints_before_every_login_write_leave_a_recoverable_receipt() {
             ),
             "start_receipt" => assert!(
                 driver
-                    .finish_codex_login(REQUEST, &account, Some(&response), true, 3.0)
+                    .finish_codex_login(REQUEST, &account, Some(&response), true, None, 3.0)
                     .is_err()
             ),
             "cancel_intent" => assert!(driver.reserve_codex_cancel(REQUEST).is_err()),

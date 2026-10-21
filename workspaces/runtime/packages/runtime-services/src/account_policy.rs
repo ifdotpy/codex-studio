@@ -389,9 +389,7 @@ pub(crate) fn project_registry_value(
         row.retain(|field, _| !field.starts_with('_'));
         if row.get("deleted") == Some(&Value::Bool(true)) {
             archived.push(Value::Object(row));
-        } else if !key.starts_with("login-")
-            || row.get("status").and_then(Value::as_str) == Some("ready")
-        {
+        } else if listed_account(key, &row) {
             if can_attempt_native_proof(accounts_by_key.get(key).and_then(Value::as_object)) {
                 row.insert("canAttemptNativeProof".into(), Value::Bool(true));
             }
@@ -412,6 +410,22 @@ pub(crate) fn project_registry_value(
         logins,
         known_account_keys: known,
     })
+}
+
+/// Whether a non-archived registry row is in the account list. A row made by
+/// a Studio sign-in (`login-` key) is listed once it is ready, and also later
+/// when it has a provider identity, so a signed-out account keeps its
+/// sign-in action. A sign-in row without an identity (in progress, failed or
+/// cancelled) stays hidden, and so does a non-ready duplicate row.
+fn listed_account(key: &str, row: &Map<String, Value>) -> bool {
+    if !key.starts_with("login-") || row.get("status").and_then(Value::as_str) == Some("ready") {
+        return true;
+    }
+    row.get("accountId")
+        .is_some_and(|id| studio_runtime_store::truthy(Some(id)))
+        && !row
+            .get("duplicateOf")
+            .is_some_and(|duplicate| studio_runtime_store::truthy(Some(duplicate)))
 }
 
 pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
