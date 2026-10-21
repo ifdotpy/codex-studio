@@ -10,6 +10,16 @@ pub(super) fn execute(
     let actor = snapshot.actor();
     let root = text(actor, "rootId")?;
     let who = &snapshot.context().agent;
+    if args["action"] == "set_default_gate" {
+        return Ok(crate::task_gate::set_default(
+            tx,
+            who,
+            args.get("gate")
+                .ok_or(CallbackError::Invalid("Supply gate or null"))?,
+            Some(id),
+            &crate::event_write::request_signature(args),
+        )?);
+    }
     let records = WorkItemsRepository::work(tx)?
         .into_iter()
         .filter_map(|r| r.record)
@@ -53,6 +63,7 @@ pub(super) fn execute(
     if let Some(work) = work {
         if action == "get" {
             let mut result = brief(&work_policy::work_item_view(work, &statuses));
+            result["gate"] = work.get("gate").cloned().unwrap_or(Value::Null);
             result["description"] = work["description"].clone();
             if let Some(schema) = work.get("resultSchema") {
                 result["resultSchema"] = schema.clone();
@@ -112,6 +123,7 @@ pub(super) fn execute(
     let command = match action {
         "create" => WorkWrite::Create(CreateWork {
             result_schema: args.get("result_schema").cloned(),
+            gate: args.get("gate").cloned(),
             actor_id: who.clone(),
             title: text(args, "title")?.into(),
             description: optional("description")?.unwrap_or_default(),
@@ -121,6 +133,7 @@ pub(super) fn execute(
         }),
         "update" => WorkWrite::Mutate(WorkMutation::Update {
             result_schema: args.get("result_schema").cloned(),
+            gate: args.get("gate").cloned(),
             task_id: text(args, "task_id")?.into(),
             version: args["version"].as_i64(),
             title: optional("title")?,
@@ -163,8 +176,16 @@ pub(super) fn execute(
 
 fn validate_command(args: &Value) -> Result<(), CallbackError> {
     let fields: &[&str] = match args["action"].as_str().unwrap_or("list") {
-        "create" => &["title", "description", "status", "owner", "dependencies"],
+        "create" => &[
+            "gate",
+            "title",
+            "description",
+            "status",
+            "owner",
+            "dependencies",
+        ],
         "update" => &[
+            "gate",
             "title",
             "description",
             "status",
@@ -176,6 +197,9 @@ fn validate_command(args: &Value) -> Result<(), CallbackError> {
         "reject" => &["result", "version"],
         _ => return Ok(()),
     };
+    if let Some(gate) = args.get("gate") {
+        crate::task_gate::normalize(gate)?;
+    }
     let consumed = Value::Object(
         fields
             .iter()

@@ -380,6 +380,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     check_delivery_parity(openapi)?;
     crate::task_results::check_schema_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::task_gate::check_api_contract(openapi)?;
     expect_number(
         openapi,
         "/components/schemas/ManagedMessageBody/properties/assets/maxItems",

@@ -857,6 +857,7 @@ fn accepted_archive_due_records(
 }
 
 pub struct CreateWork {
+    pub gate: Option<Value>,
     pub actor_id: String,
     pub title: String,
     pub description: String,
@@ -873,6 +874,7 @@ pub enum WorkActorWrite {
 
 pub enum WorkMutation {
     Update {
+        gate: Option<Value>,
         task_id: String,
         version: Option<i64>,
         title: Option<String>,
@@ -896,6 +898,8 @@ pub enum WorkMutation {
 
 #[derive(Clone)]
 pub struct SubmitWork {
+    pub prepared_gate_workspace:
+        Option<Arc<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>>,
     pub task_id: String,
     pub version: Option<i64>,
     pub result: Value,
@@ -1177,6 +1181,7 @@ pub struct ClaimWork {
 }
 
 pub struct AcceptWork {
+    pub override_reason: Option<String>,
     pub task_id: String,
     pub version: Option<i64>,
     pub reason: String,
@@ -1217,12 +1222,14 @@ pub async fn prepare_vm_accept(
     request_id: Option<&str>,
     signature: &str,
     reason: &str,
+    override_reason: Option<&str>,
 ) -> Result<VmAcceptPreparation, WorkWriteError> {
     let agent_id = agent_id.to_owned();
     let task_id = task_id.to_owned();
     let request_id = request_id.map(str::to_owned);
     let signature = signature.to_owned();
     let reason = reason.to_owned();
+    let override_reason = override_reason.map(str::to_owned);
     store
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;
@@ -1258,6 +1265,7 @@ pub async fn prepare_vm_accept(
                 &reason,
                 &agent_id,
                 now,
+                override_reason.as_deref(),
             )?;
             for row in WorkItemsRepository::dependent_work(tx, &lead.root_id.0, &task_id)? {
                 let dependent = WorkItemsRepository::work_record(tx, &row.id)?
@@ -2133,6 +2141,7 @@ fn decide_accept(
     reason: &str,
     by: &str,
     now: f64,
+    override_reason: Option<&str>,
 ) -> Result<Value, Error> {
     let record = snapshot.record;
     if record["status"] == "accepted" {
@@ -2149,6 +2158,7 @@ fn decide_accept(
     if record["status"] != "review" {
         return Err(Error::InvalidRequest("Submit a result before review"));
     }
+    crate::task_gate::require_pass(record, override_reason)?;
     let mut updated = record.clone();
     if crate::event_write::python_strip(reason).is_empty() {
         return Err(Error::InvalidRequest("Field must not be empty"));
@@ -2157,6 +2167,13 @@ fn decide_accept(
         &mut updated,
         json!({"resultId":result_id,"decision":"accept","reason":text(reason, false)?,"by":by,"created":now}),
     )?;
+    if let Some(reason) = override_reason {
+        updated["decisions"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap()["gateOverrideReason"] = json!(reason);
+    }
     updated["status"] = json!("accepted");
     updated["archive"] =
         json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"});
@@ -2299,7 +2316,16 @@ fn create(
     let id = work_id(event_write::unix_time()?);
     let dependencies = unique(input.dependencies);
     validate_dependencies(tx, &agent.root_id.0, &id, &dependencies)?;
+    let gate = crate::task_gate::normalize(
+        input.gate.as_ref().unwrap_or(
+            root_agent(tx, agent)?
+                .extra
+                .get("taskDefaultGate")
+                .unwrap_or(&Value::Null),
+        ),
+    )?;
     let mut work = json!({
+        "gate":gate,
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
         "owner": owner, "dependencies": dependencies, "status": status,
         "created": event_write::unix_time()?, "updated": event_write::unix_time()?, "version": 1,
@@ -2370,6 +2396,7 @@ fn mutate(
 
     match mutation {
         WorkMutation::Update {
+            gate,
             title,
             description,
             owner: requested_owner,
@@ -2392,6 +2419,9 @@ fn mutate(
                 studio_runtime_schema::task_results::compile(&schema)
                     .map_err(Error::InvalidResultSchema)?;
                 work["resultSchema"] = schema;
+            }
+            if let Some(gate) = gate {
+                work["gate"] = crate::task_gate::normalize(&gate)?;
             }
             if let Some(title) = title {
                 work["title"] = json!(text(&title, false)?);
@@ -2650,7 +2680,7 @@ fn submit(
     let identity = WorkItemsRepository::submission_identity(tx, &submitter)?;
     let result_id = new_id()?;
     let now = event_write::unix_time()?;
-    let (updated, artifact) = decide_submit(
+    let (mut updated, artifact) = decide_submit(
         WorkSnapshot {
             record: &work,
             dependency_statuses: &statuses,
@@ -2661,13 +2691,29 @@ fn submit(
         now,
         result_id,
     )?;
+    let gated = crate::task_gate::admit(
+        tx,
+        &submitter,
+        &mut updated,
+        input.prepared_gate_workspace.as_deref(),
+        &input.state_dir,
+        now,
+    )
+    .map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Store(error) => WorkWriteError::Store(error),
+        _ => WorkWriteError::Event(Error::Conflict(
+            "The acceptance gate could not be admitted; check workspace and monitor capacity",
+        )),
+    })?;
     let result = updated["results"]
         .as_array()
         .and_then(|results| results.last())
         .cloned()
         .ok_or_else(|| invalid("runtime_work", &input.task_id))?;
     let mut event_inserted = false;
-    if actor_id != Some(agent.root_id.0.as_str()) {
+    if (!gated && actor_id != Some(agent.root_id.0.as_str()))
+        || (gated && result["gate"]["status"] != "running")
+    {
         let lead = AgentRepository::get(tx, &agent.root_id)?
             .ok_or_else(|| invalid("runtime_agents", &agent.root_id.0))?;
         let result_id = result["id"]
@@ -2799,6 +2845,9 @@ fn accept(
     if actor_id.is_some_and(|actor| actor != agent.root_id.0) {
         return Err(Error::InvalidRequest("Only the lead can accept or reject a result").into());
     }
+    if input.override_reason.is_some() && agent.id != agent.root_id {
+        return Err(Error::InvalidRequest("Only the lead can override an acceptance gate").into());
+    }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
     if let Some(owner_id) = work["owner"].as_str()
         && owner_id != agent.root_id.0
@@ -2833,6 +2882,7 @@ fn accept(
         &input.reason,
         actor_id.unwrap_or("user"),
         now,
+        input.override_reason.as_deref(),
     )?;
     let result_id = updated["decisions"]
         .as_array()
@@ -3431,6 +3481,7 @@ mod actor_tests {
             None,
             "submit-unsupported-platform",
             WorkWrite::Submit(SubmitWork {
+                prepared_gate_workspace: None,
                 task_id: "task".to_owned(),
                 version: Some(1),
                 result: "result".into(),
@@ -3909,6 +3960,7 @@ mod actor_tests {
             "create-assigned-work",
             WorkActorWrite::Create(CreateWork {
                 result_schema: None,
+                gate: None,
                 actor_id: "lead".to_owned(),
                 title: "Assigned task".to_owned(),
                 description: "Do the task".to_owned(),
@@ -3948,6 +4000,7 @@ mod actor_tests {
             "reassign-ready-work",
             WorkActorWrite::Mutate(WorkMutation::Update {
                 result_schema: None,
+                gate: None,
                 task_id: "reassign".to_owned(),
                 version: Some(2),
                 title: None,
@@ -4044,6 +4097,7 @@ mod actor_tests {
             Some("vm-owner-race-submit"),
             "request-signature",
             WorkWrite::Submit(super::SubmitWork {
+                prepared_gate_workspace: None,
                 task_id: "vm-owner-race".to_owned(),
                 version: None,
                 result: "result".into(),
@@ -4104,6 +4158,7 @@ mod actor_tests {
             "create-with-worker-selected",
             WorkWrite::Create(CreateWork {
                 result_schema: None,
+                gate: None,
                 actor_id: "lead".to_owned(),
                 title: "must be refused".to_owned(),
                 description: String::new(),
@@ -4139,6 +4194,7 @@ mod actor_tests {
             "worker-assignment-update",
             WorkActorWrite::Mutate(WorkMutation::Update {
                 result_schema: None,
+                gate: None,
                 task_id: "unauthorized-update".to_owned(),
                 version: Some(2),
                 title: None,
@@ -4223,6 +4279,47 @@ mod actor_tests {
     }
 
     #[test]
+    fn acceptance_gate_failed_refuses_accept_before_releasing_dependents() {
+        let mut connection = database();
+        let mut task = work(
+            "gated",
+            Some("lead"),
+            "review",
+            json!([
+                {"id":"result-gate","agent":"lead","text":"done","checks":"failed","revision":"abc1234","files":[],
+                 "gate":{"status":"failed","exitCode":1}}
+            ]),
+        );
+        task["gate"] = json!({"command":"false"});
+        insert_work(&connection, &task);
+        let tx = connection.transaction().expect("transaction");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "gate-accept",
+            WorkWrite::Accept(AcceptWork {
+                override_reason: None,
+                task_id: "gated".into(),
+                version: Some(2),
+                reason: "reviewed".into(),
+                merged_result_id: None,
+            }),
+        );
+        assert!(
+            result.is_err(),
+            "a failed required gate must refuse acceptance"
+        );
+        assert_eq!(
+            WorkItemsRepository::work_record(&tx, "gated")
+                .unwrap()
+                .unwrap()["status"],
+            "review"
+        );
+    }
+
+    #[test]
     fn lead_actor_accepting_its_own_result_does_not_self_notify() {
         let mut connection = database();
         insert_work(
@@ -4244,6 +4341,7 @@ mod actor_tests {
             None,
             "accept-as-lead",
             WorkWrite::Accept(AcceptWork {
+                override_reason: None,
                 task_id: "accept".to_owned(),
                 version: Some(2),
                 reason: "verified".to_owned(),
@@ -4297,6 +4395,7 @@ mod actor_tests {
                 None,
                 "accept-review",
                 WorkWrite::Accept(AcceptWork {
+                    override_reason: None,
                     task_id: "review-task".to_owned(),
                     version: Some(2),
                     reason: "review read".to_owned(),
@@ -4419,6 +4518,7 @@ mod actor_tests {
             .await
             .expect("seed");
         let mut input = super::SubmitWork {
+            prepared_gate_workspace: None,
             task_id: "file-submission".into(),
             version: Some(2),
             result: "done".into(),
@@ -4509,6 +4609,7 @@ mod actor_tests {
             None,
             "submit-as-worker",
             WorkWrite::Submit(super::SubmitWork {
+                prepared_gate_workspace: None,
                 task_id: "submit".to_owned(),
                 version: Some(2),
                 result: "done".into(),
@@ -4554,6 +4655,7 @@ mod actor_tests {
             None,
             "submit-as-lead",
             WorkWrite::Submit(super::SubmitWork {
+                prepared_gate_workspace: None,
                 task_id: "lead-submit".to_owned(),
                 version: Some(2),
                 result: "done".into(),

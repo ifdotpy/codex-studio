@@ -288,8 +288,12 @@ pub(crate) fn python_operation_signature(body: &Value) -> Result<String, ApiErro
     Ok(studio_runtime_store::sha256_hex(canonical.as_bytes()))
 }
 
-pub(crate) fn work_request_signature(agent: &str, body: &Value) -> Result<String, ApiError> {
-    let value = json!({"agent": agent, "actor": null, "body": body});
+pub(crate) fn work_request_signature(
+    agent: &str,
+    actor: Option<&str>,
+    body: &Value,
+) -> Result<String, ApiError> {
+    let value = json!({"agent": agent, "actor": actor, "body": body});
     let canonical = event_write::python_json(&value);
     Ok(studio_runtime_store::sha256_hex(canonical.as_bytes()))
 }

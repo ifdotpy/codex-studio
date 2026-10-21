@@ -305,3 +305,4 @@ mod registration_tests {
 }
 
 mod worker_capabilities;
+pub mod task_gate;

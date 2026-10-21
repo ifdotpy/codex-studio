@@ -44,6 +44,9 @@ pub async fn recover_on_startup(
     if !now.is_finite() || now < 0.0 {
         return Err(MonitorError::Refused("Invalid startup recovery clock"));
     }
+    store
+        .transaction_with(move |tx| crate::task_gate::recover(tx, now))
+        .await?;
     let mut recovery = StartupRecovery::default();
     loop {
         let count = crate::monitor_receipts::recover_pending(store, STARTUP_RECEIPT_BATCH).await?;
@@ -453,7 +456,7 @@ pub async fn answer_approval(
                         },
                         now,
                     )?;
-                } else {
+                } else if !crate::task_gate::settle(tx, &monitor, now)? {
                     event_write::enqueue_event(
                         tx,
                         &actor,
@@ -847,6 +850,9 @@ fn exit_event(
     monitor: &Value,
     now: f64,
 ) -> Result<(), MonitorError> {
+    if crate::task_gate::settle(tx, monitor, now)? {
+        return Ok(());
+    }
     let mut payload: TerminalPayload =
         serde_json::from_value(monitor.clone()).map_err(studio_runtime_store::StoreError::from)?;
     payload.output_match_summary = crate::monitor_matches::summary(monitor)
