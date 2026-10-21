@@ -54,6 +54,9 @@ fn mount_error(agent_id: &str, status: &'static str, detail: String) -> ImageWor
     }
 }
 
+/// An agent of this store with its image path and the image's device and inode.
+type AttachmentOwner<'a> = (&'a str, Option<&'a Path>, Option<(u64, u64)>);
+
 #[cfg(unix)]
 fn file_identity(path: Option<&Path>) -> Option<(u64, u64)> {
     let metadata = fs::metadata(path?).ok()?;
@@ -221,7 +224,7 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
     fn owns_attachment(
         &self,
         attachment: &WorkspaceAttachment,
-        owners: &[(&str, Option<&Path>, Option<(u64, u64)>)],
+        owners: &[AttachmentOwner<'_>],
     ) -> bool {
         attachment
             .image

@@ -120,6 +120,10 @@ pub const fn macos_memory_limit(host_memory_bytes: u64) -> u64 {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs on the runtime-http Linux VM settings blocking-pool worker"
+)]
 fn read_macos_host_memory_bytes() -> Result<u64, SettingsError> {
     let mut child = Command::new("sysctl")
         .args(["-n", "hw.memsize"])

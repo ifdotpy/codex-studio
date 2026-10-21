@@ -1628,7 +1628,7 @@ fn git_output_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ImageWorkspac
     let command_args = args;
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("git"),
-        cwd: repo.as_os_str(),
+        git_directory: Some(repo.as_os_str()),
         args: command_args,
         environment: &[("GIT_OPTIONAL_LOCKS", "0")],
         input: None,
