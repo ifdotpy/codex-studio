@@ -639,11 +639,7 @@ function wireThread(s, metadata, includeTurns = true) {
   };
 }
 async function permissions(s, turn, name, input, options) {
-  const denial = capabilityToolDenial(
-    s.capabilityProfile,
-    name,
-    options?.mcpServer,
-  );
+  const denial = capabilityToolDenial(s.capabilityProfile, name);
   if (denial) return { behavior: "deny", message: denial };
   if (!turn)
     return {

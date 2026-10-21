@@ -21,12 +21,7 @@ function matches(pattern, name) {
   return new RegExp(`^${escaped}$`).test(name);
 }
 
-export function capabilityToolDenial(profile, name, mcpServer) {
-  // Current CLIs supply provenance. Keep the prefix fallback for older CLIs.
-  const studio = mcpServer
-    ? mcpServer.name === "studio" && mcpServer.source === "sdk"
-    : name.startsWith("mcp__studio__");
-  if (studio) return null;
+export function capabilityToolDenial(profile, name) {
   if (name === "Agent") return "Studio manages agents. Native Agent is denied.";
   if (profile?.disallowedTools?.some((pattern) => matches(pattern, name)))
     return `capabilityProfile.disallowedTools denies ${name}`;
@@ -38,22 +33,29 @@ export function capabilityToolDenial(profile, name, mcpServer) {
   return null;
 }
 
+function sdkExactToolName(name) {
+  // SDK permission rules accept server shorthand and scoped expressions. Only
+  // send exact tool names; the hook enforces the contract's other patterns.
+  return (
+    /^[A-Za-z][A-Za-z0-9_-]*$/.test(name) &&
+    (!name.startsWith("mcp__") || /^mcp__.+__.+$/.test(name))
+  );
+}
+
 export function capabilityToolOptions(profile) {
   const allowed = profile?.allowedTools;
   const denied = profile?.disallowedTools || [];
   const options = {
-    // CLI deny rules do not support arbitrary tool-name globs. The hook below
-    // handles these and MCP names, whose CLI rules can also match whole servers.
+    // CLI permission syntax differs from the contract's tool-name globs.
+    // The hook below enforces patterns that cannot safely be passed to the CLI.
     disallowedTools: [
-      ...new Set([
-        "Agent",
-        ...denied.filter(
-          (name) => !name.includes("*") && !name.startsWith("mcp__"),
-        ),
-      ]),
+      ...new Set(["Agent", ...denied.filter(sdkExactToolName)]),
     ],
   };
   if (allowed != null) {
+    options.allowedTools = allowed.filter(
+      (name) => sdkExactToolName(name) && !capabilityToolDenial(profile, name),
+    );
     // --tools controls built-ins only. MCP tools and wildcard rules need the
     // execution guard too, including under bypassPermissions and SDK approvals.
     const builtins = allowed.filter((name) => !name.startsWith("mcp__"));
@@ -67,11 +69,7 @@ export function capabilityToolOptions(profile) {
         {
           hooks: [
             async (input) => {
-              const reason = capabilityToolDenial(
-                profile,
-                input.tool_name,
-                input.mcp_server,
-              );
+              const reason = capabilityToolDenial(profile, input.tool_name);
               return reason
                 ? {
                     hookSpecificOutput: {

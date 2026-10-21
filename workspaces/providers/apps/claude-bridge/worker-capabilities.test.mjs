@@ -38,7 +38,7 @@ export function query({prompt,options}){
     log({kind:'prompt'});
     yield {type:'system',subtype:'init',slash_commands:[]};
     yield {type:'user',isReplay:true,uuid:input.uuid};
-    const attempts=['Read','Write','Bash','Agent','mcp__chosen__read','mcp__other__write','mcp__studio__orchestration_message'];
+    const attempts=['Read','Write','Bash','Agent','mcp__chosen__read','mcp__other__write','mcp__studio__orchestration_message','mcp__studio__orchestration_monitor'];
     const denied=[];
     for(const name of attempts){
      for(const matcher of options.hooks?.PreToolUse || []){
@@ -112,7 +112,7 @@ async function fixture() {
 }
 
 for (const method of ["thread/start", "thread/resume"]) {
-  test(`${method} enforces the tool allowlist, adds denials, and preserves Studio tools`, async () => {
+  test(`${method} enforces the tool allowlist, adds denials, and restricts Studio tools`, async () => {
     const bridge = await fixture();
     const capabilityProfile = {
       allowedTools: ["Read", "Bash", "Agent", "mcp__chosen__*"],
@@ -135,12 +135,19 @@ for (const method of ["thread/start", "thread/resume"]) {
       .at(-1).options;
     assert.deepEqual(options.tools, ["Read"]);
     assert.deepEqual(options.disallowedTools, ["Agent", "Bash"]);
-    assert.equal(Object.hasOwn(options, "allowedTools"), false);
+    assert.deepEqual(options.allowedTools, ["Read"]);
     assert.equal(Object.hasOwn(options, "maxTurns"), false);
     assert.ok(options.mcpServers.studio);
     assert.deepEqual(
       events.filter((event) => event.kind === "hookDenials").at(-1).denied,
-      ["Write", "Bash", "Agent", "mcp__other__write"],
+      [
+        "Write",
+        "Bash",
+        "Agent",
+        "mcp__other__write",
+        "mcp__studio__orchestration_message",
+        "mcp__studio__orchestration_monitor",
+      ],
     );
   });
 
@@ -267,6 +274,8 @@ test("null inherits defaults; empty arrays remove built-ins and user MCP servers
       "Agent",
       "mcp__chosen__read",
       "mcp__other__write",
+      "mcp__studio__orchestration_message",
+      "mcp__studio__orchestration_monitor",
     ],
   );
 });
@@ -328,9 +337,16 @@ test("wildcard allow and deny rules use exact case-sensitive glob matches", asyn
   const options = capabilityToolOptions(profile);
   assert.deepEqual(options.tools, { type: "preset", preset: "claude_code" });
   assert.deepEqual(options.disallowedTools, ["Agent"]);
-  for (const name of ["Read", "mcp__chosen__read", "mcp__studio__anything"])
+  for (const name of ["Read", "mcp__chosen__read"])
     assert.equal(capabilityToolDenial(profile, name), null);
-  for (const name of ["read", "Write", "Bash", "Agent", "mcp__chosen__write"])
+  for (const name of [
+    "read",
+    "Write",
+    "Bash",
+    "Agent",
+    "mcp__chosen__write",
+    "mcp__studio__anything",
+  ])
     assert.ok(capabilityToolDenial(profile, name));
   const hook = options.hooks.PreToolUse[0].hooks[0];
   assert.equal(
@@ -338,36 +354,72 @@ test("wildcard allow and deny rules use exact case-sensitive glob matches", asyn
     "deny",
   );
   assert.deepEqual(await hook({ tool_name: "Read" }), {});
-  assert.equal(
+  assert.ok(
     capabilityToolDenial({ disallowedTools: ["*"] }, "mcp__studio__anything"),
-    null,
   );
 });
 
-test("a user MCP server cannot claim the Studio tool exception", async () => {
-  const profile = { allowedTools: [] };
-  const hook = capabilityToolOptions(profile).hooks.PreToolUse[0].hooks[0];
-  const tool_name = "mcp__studio__impostor__write";
-  assert.equal(
-    (
-      await hook({
-        tool_name,
-        mcp_server: { name: "studio__impostor", source: "user" },
-      })
-    ).hookSpecificOutput.permissionDecision,
-    "deny",
-  );
-  assert.equal(
-    (await hook({ tool_name, mcp_server: { name: "studio", source: "user" } }))
-      .hookSpecificOutput.permissionDecision,
-    "deny",
-  );
+for (const profile of [
+  { allowedTools: ["Read"] },
+  { allowedTools: [] },
+  { allowedTools: ["mcp__studio__*"], disallowedTools: ["mcp__studio__*"] },
+]) {
+  test(`Studio monitor obeys ${JSON.stringify(profile)} regardless of provenance`, async () => {
+    const hook = capabilityToolOptions(profile).hooks.PreToolUse[0].hooks[0];
+    for (const mcp_server of [
+      undefined,
+      { name: "studio", source: "sdk" },
+      { name: "studio", source: "user" },
+    ]) {
+      const result = await hook({
+        tool_name: "mcp__studio__orchestration_monitor",
+        mcp_server,
+      });
+      assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+    }
+  });
+}
+
+test("SDK permission lists contain only exact permitted tool names", async () => {
+  const options = capabilityToolOptions({
+    allowedTools: [
+      "Read",
+      "Bash",
+      "Agent",
+      "mcp__chosen",
+      "mcp__chosen__read",
+      "mcp__studio__orchestration_message",
+      "mcp__chosen__*",
+    ],
+    disallowedTools: ["Bash", "mcp__chosen__write"],
+  });
+  assert.deepEqual(options.allowedTools, [
+    "Read",
+    "mcp__chosen__read",
+    "mcp__studio__orchestration_message",
+  ]);
+  assert.deepEqual(options.disallowedTools, [
+    "Agent",
+    "Bash",
+    "mcp__chosen__write",
+  ]);
+  assert.deepEqual(options.tools, ["Read"]);
+  const hook = options.hooks.PreToolUse[0].hooks[0];
   assert.deepEqual(
     await hook({
       tool_name: "mcp__studio__orchestration_message",
       mcp_server: { name: "studio", source: "sdk" },
     }),
     {},
+  );
+  assert.equal(
+    (
+      await hook({
+        tool_name: "mcp__studio__orchestration_monitor",
+        mcp_server: { name: "studio", source: "sdk" },
+      })
+    ).hookSpecificOutput.permissionDecision,
+    "deny",
   );
 });
 
