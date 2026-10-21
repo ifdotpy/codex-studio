@@ -128,6 +128,10 @@ test-rust-many-agents:
 test-sign-in-live *args:
     @python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/sign-in-live.py --run {{args}}
 
+[doc("Post-install smoke of the installed app: read-only live checks, then sign-in, turn, orchestration and resume flows on a private backend from the bundle with a few small model requests. Options: --app PATH, --read-only (docs/testing.md).")]
+smoke-installed *args:
+    @python3 workspaces/runtime/apps/server/src/smoke-installed.py "$@"
+
 [doc("Run all manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy

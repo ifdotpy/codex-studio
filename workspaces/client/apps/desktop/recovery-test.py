@@ -318,6 +318,7 @@ class RustSelectionTest(unittest.TestCase):
                 self.assertEqual(environment["CODEX_BIN"], "/usr/bin/true")
                 self.assertEqual(environment.get("CODEX_AGENTS_SUPERVISOR_MODE"),
                                  "1" if supervisor_enabled else None)
+                self.assertEqual((self.state / "canvas.log").stat().st_mode & 0o077, 0)
 
     def test_rust_selection_refuses_a_missing_or_non_executable_server(self):
         plain = self.fake_executable("not-executable", "#!/bin/sh\n", mode=0o644)
