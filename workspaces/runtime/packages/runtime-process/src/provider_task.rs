@@ -1084,6 +1084,8 @@ async fn event_pump(
 /// equals the accepted launch. A just-started child can show a record in
 /// transition (see `read_process_environment`), which the next read corrects.
 /// A child whose record still differs at the end is refused as unverifiable.
+/// This and `RETAINED_ENVIRONMENT_RETRY` own the values that the Python
+/// supervisor copies; `test_codex_process_supervisor_environment.py` checks them.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const RETAINED_ENVIRONMENT_SETTLE: Duration = Duration::from_secs(5);
 
