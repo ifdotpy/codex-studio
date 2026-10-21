@@ -170,6 +170,7 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // Test fixture writes and rereads the registry file.
     async fn accounts_route_requires_provider_for_legacy_codex_and_claude() {
         for with_driver in [false, true] {
             let root = tempfile::tempdir().expect("isolated state");
