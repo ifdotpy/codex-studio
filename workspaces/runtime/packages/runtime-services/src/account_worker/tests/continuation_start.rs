@@ -222,6 +222,143 @@ async fn a_due_capacity_retry_starts_its_turn_and_reports_once() {
     }
 }
 
+/// Crash at the durable submission boundary before a write/reply receipt. Both
+/// providers restore the exact ticket, expose Unknown, and never send the input again.
+#[tokio::test]
+async fn capacity_retry_restart_unknown_reports_once_without_resending() {
+    for (kind, generation) in ProviderKind::ALL
+        .into_iter()
+        .flat_map(|kind| [1, 2].map(move |generation| (kind, generation)))
+    {
+        let (state, account) = fixture(kind).await;
+        let (mut peer, mut worker) = open(&state, &account).await;
+        fail_first_turn(&state, &mut peer, &worker, capacity_error()).await;
+        worker.shutdown().await.unwrap();
+        tick_when_due(&state, "capacityRetry", None).await;
+        let agent = state.agent.clone();
+        let epoch = state.epoch;
+        let resources = account.resources();
+        let id = state
+            .bridge
+            .run(move |store| async move {
+                let intent = store::claim(Arc::clone(&store), "default", &agent, epoch)
+                    .await?
+                    .expect("retry claimed");
+                let operation = format!("account:default:{}:turn/start", intent.attempt_id);
+                let request = RecoveredRequest {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        id: RequestId::String(operation.clone()),
+                        generation: 1,
+                        method: Method::TurnStart,
+                    },
+                    operation_id: OperationId(operation.clone()),
+                    thread_id: intent.thread_id.clone(),
+                    lightweight: false,
+                    deadline_ms: DEADLINE.as_millis().try_into().unwrap(),
+                    unknown: false,
+                    remote_id: None,
+                };
+                let prepared = preparation::prepare(
+                    Arc::clone(&store),
+                    &resources,
+                    &intent,
+                    Method::TurnStart,
+                    1,
+                )
+                .await?;
+                let id = request.ticket.id.clone();
+                assert!(
+                    store::submitted(
+                        &store,
+                        Pending {
+                            thread: prepared.thread,
+                            compiled: prepared.compiled,
+                            intent: prepared.intent,
+                            method: Method::TurnStart.as_str().into(),
+                            operation,
+                        },
+                        "default",
+                        request,
+                        store::SubmissionEvidence {
+                            turn: None,
+                            submission: prepared.submission,
+                            guard: Some(prepared.guard),
+                            connection_id: "test-connection".into(),
+                            effect: None,
+                        },
+                    )
+                    .await?
+                );
+                Ok(id)
+            })
+            .await
+            .unwrap();
+        let before = record_of(&state, &state.agent).await;
+        let retry_id = before["capacityRetry"]["id"].as_str().unwrap().to_owned();
+        let followup = format!(
+            "{}{retry_id}",
+            crate::capacity_retry::CAPACITY_FOLLOWUP_PREFIX
+        );
+        assert_eq!(before["capacityRetry"]["status"], "starting");
+        assert!(child_results(&state).await.is_empty());
+
+        // A new bridge is the backend restart boundary. Repeated recovery must
+        // keep both the ticket and its one parent notice.
+        let bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+        for _ in 0..2 {
+            bridge
+                .run(move |store| async move {
+                    store::recover(&store, "default", Generation(generation), true).await?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let record = record_of(&state, &state.agent).await;
+            assert_eq!(
+                record["capacityRetry"]["status"], "unknown",
+                "{kind:?}: {record}"
+            );
+            assert_eq!(
+                super::capacity_retry::retry_of(&state, &retry_id).await["status"],
+                "unknown"
+            );
+            assert_eq!(state.event_status(&followup).await, "uncertain");
+            let results = child_results(&state).await;
+            assert_eq!(results.len(), 1, "{kind:?}: {results:?}");
+            assert_eq!(results[0].0, format!("hold:{retry_id}:unknown"));
+            assert!(results[0].1["reason"].as_str().unwrap().contains("unknown"));
+        }
+        let mut peer = Peer::identity("default", generation, None);
+        peer.wire = kind.wire();
+        let mut worker = peer
+            .open_worker_with_resources(bridge, account.resources())
+            .await;
+        if generation == 1 {
+            // A positive late receipt refines the same retry and batch.
+            let cursor = peer
+                .frame(json!({"id":id,"result":{"turn":{"id":RETRIED_TURN}}}))
+                .await;
+            peer.acknowledged(cursor).await;
+            let record = record_of(&state, &state.agent).await;
+            assert_eq!(
+                record["capacityRetry"]["acceptedTurnId"], RETRIED_TURN,
+                "{kind:?}: {record}"
+            );
+            assert_eq!(record["capacityRetryCount"], 1);
+            assert_eq!(state.event_status(&followup).await, "delivered");
+            assert_eq!(child_results(&state).await.len(), 1);
+        }
+        worker.shutdown().await.unwrap();
+        while let Ok(write) = peer.writes.try_recv() {
+            assert_ne!(
+                write.value["method"], "turn/start",
+                "{kind:?}: {}",
+                write.value
+            );
+        }
+    }
+}
+
 /// The last allowed retry fails again: the retry is exhausted and the lead
 /// gets the retried turn's failure once.
 #[tokio::test]
