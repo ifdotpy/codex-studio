@@ -108,13 +108,18 @@ export function accountThrottle(account: Account): Throttle {
 export const throttleSummary = (throttle: Throttle) =>
   `${throttle.burst} per burst · ${throttle.pauseSeconds} s pause · ${throttle.maxRunningTurns} running`;
 
+/** Turn start limits are a setting of one Studio server. `serverLabel` names
+ * that server where one account appears on several servers. */
 export default function AccountStartThrottle({
   account,
+  serverLabel,
   onSaved,
 }: {
   account: Account;
+  serverLabel?: string;
   onSaved: (state: PostResult<"/api/accounts/throttle">) => void;
 }) {
+  const scope = serverLabel ? ` on ${serverLabel}` : "";
   const { post } = useServerApi();
   const [values, setValues] = useState(() => accountThrottle(account));
   const [busy, setBusy] = useState(false);
@@ -145,7 +150,7 @@ export default function AccountStartThrottle({
   return (
     <details className="account-register account-start-throttle">
       <summary>
-        Turn start limits: {throttleSummary(accountThrottle(account))}
+        Turn start limits{scope}: {throttleSummary(accountThrottle(account))}
       </summary>
       <form
         onSubmit={(event) => {
@@ -158,7 +163,7 @@ export default function AccountStartThrottle({
             <NumberInput
               key={spec.field}
               label={spec.label}
-              aria-label={`${spec.label} for ${account.email || account.label}`}
+              aria-label={`${spec.label} for ${account.email || account.label}${scope}`}
               title={spec.tooltip}
               min={spec.min}
               max={spec.max}

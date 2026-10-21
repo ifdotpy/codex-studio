@@ -17,11 +17,19 @@ import {
 import { ActionButton, SettingsSection } from "../components/ui/primitives";
 import type { ServerAccount, ServerCommand } from "./navigation";
 import type { StudioServer } from "./registry";
-import { rowServers, serverAccountRows } from "./serverAccountRows";
-import ServerAccountLimits, {
+import {
+  rowServers,
+  serverAccountRows,
+  type ServerAccountRow,
+} from "./serverAccountRows";
+import {
+  AccountLimitsAcrossServers,
   matchServerAccount,
+  ServerTurnStartLimits,
   useServerFullAccounts,
+  type AccountSource,
 } from "./ServerAccountLimits";
+import type { Account } from "../components/Accounts";
 import type { ServerServices } from "./serverServices";
 
 type AccountAction = Extract<ServerCommand, { action: "account-action" }>;
@@ -29,6 +37,31 @@ type StartAccount = (
   serverId: string,
   command: Extract<ServerCommand, { action: "account-sign-in" }>,
 ) => void;
+
+/** The copies of one provider account on each server that has it, with the
+ * server's full account record. A disconnected copy is left out. */
+export function accountSources(
+  row: ServerAccountRow,
+  servers: StudioServer[],
+  fullAccounts: Record<string, Account[]>,
+  servicesFor?: (serverId: string) => ServerServices | undefined,
+): AccountSource[] {
+  return servers.flatMap((server) => {
+    const listed = row.byServer[server.id];
+    const account =
+      listed && matchServerAccount(fullAccounts[server.id], listed);
+    return account && !account.disconnected
+      ? [
+          {
+            serverId: server.id,
+            serverLabel: server.label,
+            account,
+            services: servicesFor?.(server.id),
+          },
+        ]
+      : [];
+  });
+}
 
 export default function ServerAccountsPanel({
   servers,
@@ -101,230 +134,234 @@ export default function ServerAccountsPanel({
           <p>No accounts found. Add a Codex or Claude account.</p>
         ) : (
           <div className="server-accounts-list">
-            {rows.map((row) => (
-              <article
-                className="server-account-row"
-                key={row.key}
-                data-account-identity={row.key}
-              >
-                <div className="server-account-heading">
-                  <div>
-                    <Badge size="xs" variant="light">
-                      {row.provider === "claude" ? "Claude" : "Codex"}
-                    </Badge>
-                    <strong>{row.label || row.email || "Account"}</strong>
-                    {servers
-                      .filter((server) => row.byServer[server.id]?.isDefault)
-                      .map((server) => (
-                        <Badge
-                          key={server.id}
-                          size="xs"
-                          color="blue"
-                          variant="light"
-                        >
-                          Default · {server.label}
-                        </Badge>
-                      ))}
-                    {!row.email && (
-                      <span className="account-muted">Email unavailable</span>
-                    )}
-                    {row.plan && (
-                      <small>
-                        {row.email ? `${row.email} · ` : ""}
-                        {row.plan}
-                      </small>
-                    )}
-                    {row.email && !row.plan && <small>{row.email}</small>}
-                  </div>
-                  <Menu
-                    opened={openAccountMenuKey === row.key}
-                    onChange={(nextOpened) => {
-                      setOpenAccountMenuKey((current) =>
-                        nextOpened
-                          ? row.key
-                          : current === row.key
-                            ? null
-                            : current,
-                      );
-                      if (!nextOpened)
-                        restoreMenuTriggerFocusAfterClose(
-                          accountMenuTriggers.current.get(row.key) ?? null,
-                        );
-                    }}
-                    position="bottom-end"
-                    withinPortal={false}
-                    withInitialFocusPlaceholder={false}
-                  >
-                    <Menu.Target>
-                      <ActionButton
-                        ref={(node) => {
-                          if (node)
-                            accountMenuTriggers.current.set(row.key, node);
-                          else accountMenuTriggers.current.delete(row.key);
-                        }}
-                        actionRole="quiet"
-                        onClick={(event) =>
-                          event.currentTarget.focus({ preventScroll: true })
-                        }
-                        data-mantine-stop-propagation={
-                          openAccountMenuKey === row.key || suppressNextEscape
-                            ? "true"
-                            : undefined
-                        }
-                        onKeyDown={(event) =>
-                          closeMenuFromTriggerOnEscape(
-                            event,
-                            openAccountMenuKey === row.key,
-                            () =>
-                              setOpenAccountMenuKey((current) =>
-                                current === row.key ? null : current,
-                              ),
-                            suppressNextEscape,
-                            clearSuppression,
-                          )
-                        }
-                        onBlur={clearSuppression}
-                        aria-label={`Actions for ${row.email || row.label}`}
-                      >
-                        <Ellipsis size={18} />
-                      </ActionButton>
-                    </Menu.Target>
-                    <Menu.Dropdown data-mantine-stop-propagation="true">
-                      {servers
-                        .filter((server) => row.byServer[server.id])
-                        .map((server) => (
-                          <div key={server.id}>
-                            <Menu.Label>{server.label}</Menu.Label>
-                            {(
-                              [
-                                ...(row.provider === "claude"
-                                  ? (["configure-profile"] as const)
-                                  : []),
-                                "rename",
-                                "default",
-                                "disconnect",
-                                "remove",
-                              ] as const
-                            ).map((operation) => (
-                              <Menu.Item
-                                key={operation}
-                                color={
-                                  operation === "remove" ||
-                                  operation === "disconnect"
-                                    ? "red"
-                                    : undefined
-                                }
-                                onClick={() =>
-                                  accountAction(server.id, {
-                                    action: "account-action",
-                                    operation,
-                                    provider: row.provider,
-                                    email: row.email,
-                                    label: row.label,
-                                  })
-                                }
-                              >
-                                {operation === "rename"
-                                  ? "Rename"
-                                  : operation === "configure-profile"
-                                    ? "Configure"
-                                    : operation === "default"
-                                      ? "Make default"
-                                      : operation === "disconnect"
-                                        ? "Sign out"
-                                        : "Remove"}
-                              </Menu.Item>
-                            ))}
-                          </div>
-                        ))}
-                    </Menu.Dropdown>
-                  </Menu>
-                </div>
-                <div
-                  className="server-account-chips"
-                  aria-label={`Servers for ${row.email || row.label}`}
+            {rows.map((row) => {
+              const sources = accountSources(
+                row,
+                servers,
+                fullAccounts,
+                servicesFor,
+              );
+              return (
+                <article
+                  className="server-account-row"
+                  key={row.key}
+                  data-account-identity={row.key}
                 >
-                  {rowServers(row, servers).map((server) => {
-                    const account = row.byServer[server.id];
-                    const offline = [
-                      "offline",
-                      "degraded",
-                      "schema-mismatch",
-                    ].includes(statuses[server.id] || "");
-                    const state = offline
-                      ? "offline"
-                      : account?.status === "ready"
-                        ? "ready"
-                        : account
-                          ? "reauth"
-                          : "missing";
-                    const text =
-                      state === "ready"
-                        ? `✓ ${server.label}`
-                        : state === "reauth"
-                          ? `⚠ ${server.label} · sign in again`
-                          : state === "offline"
-                            ? `${server.label} · offline`
-                            : `+ ${server.label}`;
-                    return (
-                      <button
-                        type="button"
-                        key={server.id}
-                        className="server-account-chip"
-                        data-state={state}
-                        disabled={offline}
-                        onClick={() =>
-                          startAccount(server.id, {
-                            action: "account-sign-in",
-                            provider: row.provider,
-                            email: row.email,
-                            label: row.label,
-                            serverLabel: server.label,
-                          })
-                        }
-                      >
-                        {text}
-                      </button>
-                    );
-                  })}
-                </div>
-                {servers
-                  .filter((server) => row.byServer[server.id])
-                  .map((server) => {
-                    const account = matchServerAccount(
-                      fullAccounts[server.id],
-                      row.byServer[server.id],
-                    );
-                    return (
-                      account &&
-                      !account.disconnected && (
-                        <div
+                  <div className="server-account-heading">
+                    <div>
+                      <Badge size="xs" variant="light">
+                        {row.provider === "claude" ? "Claude" : "Codex"}
+                      </Badge>
+                      <strong>{row.label || row.email || "Account"}</strong>
+                      {servers
+                        .filter((server) => row.byServer[server.id]?.isDefault)
+                        .map((server) => (
+                          <Badge
+                            key={server.id}
+                            size="xs"
+                            color="blue"
+                            variant="light"
+                          >
+                            Default · {server.label}
+                          </Badge>
+                        ))}
+                      {!row.email && (
+                        <span className="account-muted">Email unavailable</span>
+                      )}
+                      {row.plan && (
+                        <small>
+                          {row.email ? `${row.email} · ` : ""}
+                          {row.plan}
+                        </small>
+                      )}
+                      {row.email && !row.plan && <small>{row.email}</small>}
+                    </div>
+                    <Menu
+                      opened={openAccountMenuKey === row.key}
+                      onChange={(nextOpened) => {
+                        setOpenAccountMenuKey((current) =>
+                          nextOpened
+                            ? row.key
+                            : current === row.key
+                              ? null
+                              : current,
+                        );
+                        if (!nextOpened)
+                          restoreMenuTriggerFocusAfterClose(
+                            accountMenuTriggers.current.get(row.key) ?? null,
+                          );
+                      }}
+                      position="bottom-end"
+                      withinPortal={false}
+                      withInitialFocusPlaceholder={false}
+                    >
+                      <Menu.Target>
+                        <ActionButton
+                          ref={(node) => {
+                            if (node)
+                              accountMenuTriggers.current.set(row.key, node);
+                            else accountMenuTriggers.current.delete(row.key);
+                          }}
+                          actionRole="quiet"
+                          onClick={(event) =>
+                            event.currentTarget.focus({ preventScroll: true })
+                          }
+                          data-mantine-stop-propagation={
+                            openAccountMenuKey === row.key || suppressNextEscape
+                              ? "true"
+                              : undefined
+                          }
+                          onKeyDown={(event) =>
+                            closeMenuFromTriggerOnEscape(
+                              event,
+                              openAccountMenuKey === row.key,
+                              () =>
+                                setOpenAccountMenuKey((current) =>
+                                  current === row.key ? null : current,
+                                ),
+                              suppressNextEscape,
+                              clearSuppression,
+                            )
+                          }
+                          onBlur={clearSuppression}
+                          aria-label={`Actions for ${row.email || row.label}`}
+                        >
+                          <Ellipsis size={18} />
+                        </ActionButton>
+                      </Menu.Target>
+                      <Menu.Dropdown data-mantine-stop-propagation="true">
+                        {servers
+                          .filter((server) => row.byServer[server.id])
+                          .map((server) => (
+                            <div key={server.id}>
+                              <Menu.Label>{server.label}</Menu.Label>
+                              {(
+                                [
+                                  ...(row.provider === "claude"
+                                    ? (["configure-profile"] as const)
+                                    : []),
+                                  "rename",
+                                  "default",
+                                  "disconnect",
+                                  "remove",
+                                ] as const
+                              ).map((operation) => (
+                                <Menu.Item
+                                  key={operation}
+                                  color={
+                                    operation === "remove" ||
+                                    operation === "disconnect"
+                                      ? "red"
+                                      : undefined
+                                  }
+                                  onClick={() =>
+                                    accountAction(server.id, {
+                                      action: "account-action",
+                                      operation,
+                                      provider: row.provider,
+                                      email: row.email,
+                                      label: row.label,
+                                    })
+                                  }
+                                >
+                                  {operation === "rename"
+                                    ? "Rename"
+                                    : operation === "configure-profile"
+                                      ? "Configure"
+                                      : operation === "default"
+                                        ? "Make default"
+                                        : operation === "disconnect"
+                                          ? "Sign out"
+                                          : "Remove"}
+                                </Menu.Item>
+                              ))}
+                            </div>
+                          ))}
+                      </Menu.Dropdown>
+                    </Menu>
+                  </div>
+                  <AccountLimitsAcrossServers sources={sources} />
+                  <ul
+                    className="server-account-servers"
+                    aria-label={`Servers for ${row.email || row.label}`}
+                  >
+                    {rowServers(row, servers).map((server) => {
+                      const account = row.byServer[server.id];
+                      const offline = [
+                        "offline",
+                        "degraded",
+                        "schema-mismatch",
+                      ].includes(statuses[server.id] || "");
+                      const state = offline
+                        ? "offline"
+                        : account?.status === "ready"
+                          ? "ready"
+                          : account?.status === "error"
+                            ? "error"
+                            : account
+                              ? "reauth"
+                              : "missing";
+                      const text =
+                        state === "ready"
+                          ? `✓ ${server.label}`
+                          : state === "error"
+                            ? `⚠ ${server.label} · error, sign in again`
+                            : state === "reauth"
+                              ? `⚠ ${server.label} · sign in again`
+                              : state === "offline"
+                                ? `${server.label} · offline`
+                                : `+ ${server.label}`;
+                      const source = sources.find(
+                        (item) => item.serverId === server.id,
+                      );
+                      return (
+                        <li
                           key={server.id}
-                          className="server-account-limits"
+                          className="server-account-server"
                           data-server-id={server.id}
                         >
-                          {servers.length > 1 && <small>{server.label}</small>}
-                          <ServerAccountLimits
-                            account={account}
-                            services={servicesFor?.(server.id)}
-                            onSaved={(accounts) =>
-                              setFullAccounts((old) => ({
-                                ...old,
-                                [server.id]: accounts,
-                              }))
+                          <button
+                            type="button"
+                            className="server-account-chip"
+                            data-state={state}
+                            disabled={offline}
+                            onClick={() =>
+                              startAccount(server.id, {
+                                action: "account-sign-in",
+                                provider: row.provider,
+                                email: row.email,
+                                label: row.label,
+                                serverLabel: server.label,
+                              })
                             }
-                          />
-                        </div>
-                      )
-                    );
-                  })}
-              </article>
-            ))}
+                          >
+                            {text}
+                          </button>
+                          {source && (
+                            <ServerTurnStartLimits
+                              source={source}
+                              onSaved={(accounts) =>
+                                setFullAccounts((old) => ({
+                                  ...old,
+                                  [server.id]: accounts,
+                                }))
+                              }
+                            />
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </article>
+              );
+            })}
           </div>
         )}
         <p className="server-accounts-help">
-          Green: signed in on that server. Yellow: sign in again. Dashed: click
-          to sign in on that server.
+          The remaining limit belongs to the account, so it shows once. Each
+          server line shows the sign-in on that server and its turn start
+          limits. Green: signed in. Yellow: sign in again. Dashed: click to sign
+          in on that server.
         </p>
       </SettingsSection>
       <Modal

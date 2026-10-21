@@ -4,7 +4,7 @@ import { useState } from "react";
 import { accountDisplayName } from "../../accountName";
 import { errorText } from "../../api";
 import type { Agent } from "../../types";
-import { ProviderMark } from "../AccountTiles";
+import { AccountRemainingText, ProviderMark } from "../AccountTiles";
 import type { AccountsState } from "../Accounts";
 
 export function AccountExclusionsControl({
@@ -38,6 +38,7 @@ export function AccountExclusionsControl({
               <span style={{ marginInlineStart: 8 }}>
                 <span>{accountDisplayName(account)}</span>
                 {account.email && <small>{account.email}</small>}
+                <AccountRemainingText account={account} />
                 {account.id === lead.accountKey && (
                   <small>Current account</small>
                 )}

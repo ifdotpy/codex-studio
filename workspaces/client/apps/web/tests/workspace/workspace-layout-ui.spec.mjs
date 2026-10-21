@@ -548,8 +548,9 @@ async function runWorkspaceLayout(
         account: settings.account,
         project: projectGeometry,
       };
+      // The tile adds the remaining limit ("58% left") after the name.
       assert.equal(
-        settings.account?.text,
+        settings.account?.text.replace(/\d+% left$/, ""),
         longAccountLabel,
         `${prefix}: account label`,
       );

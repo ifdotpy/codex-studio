@@ -30,6 +30,14 @@ test("accounts settings show per-server state and provider choices", async ({
       status: "ready",
       isDefault: true,
     },
+    {
+      id: "local-shared",
+      label: "Shared",
+      provider: "codex",
+      email: "shared@example.test",
+      plan: "Pro",
+      status: "ready",
+    },
   ];
   const remoteAccounts = [
     {
@@ -50,7 +58,20 @@ test("accounts settings show per-server state and provider choices", async ({
       status: "ready",
       isDefault: true,
     },
+    {
+      id: "remote-shared",
+      label: "Shared",
+      provider: "codex",
+      email: "shared@example.test",
+      plan: "Pro",
+      status: "ready",
+    },
   ];
+  // Both servers read the same provider account; Remote has the newer reading.
+  const sharedReadings = {
+    "local-shared": { ageSeconds: 600, usedPercent: 10 },
+    "remote-shared": { ageSeconds: 180, usedPercent: 67 },
+  };
   const local = await fixture("Local", false, localAccounts);
   const remote = await fixture("Remote", true, remoteAccounts);
   const empty = await fixture("Empty", true, []);
@@ -88,6 +109,35 @@ test("accounts settings show per-server state and provider choices", async ({
       },
     },
   );
+  await page.route("**/api/limits?*", async (route) => {
+    const accountKey = new URL(route.request().url()).searchParams.get(
+      "account_key",
+    );
+    const reading = sharedReadings[accountKey];
+    const at = Date.now() / 1000 - (reading?.ageSeconds ?? 0);
+    await route.fulfill({
+      json: {
+        accountKey,
+        at,
+        readAt: at,
+        error: null,
+        data: reading
+          ? {
+              rateLimitsByLimitId: {
+                codex: {
+                  limitId: "codex",
+                  primary: {
+                    usedPercent: reading.usedPercent,
+                    windowDurationMins: 300,
+                    resetsAt: at + 3000,
+                  },
+                },
+              },
+            }
+          : null,
+      },
+    });
+  });
   const pageClockStart = new Date();
   await page.clock.install({ time: pageClockStart });
   await page.goto(local.origin + "/?studio-navigation=combined");
@@ -136,11 +186,31 @@ test("accounts settings show per-server state and provider choices", async ({
   );
   await expect(work).toBeVisible();
   await expect(work.getByText("Default · Local")).toBeVisible();
-  await expect(
-    work.locator(".account-start-throttle > summary").first(),
-  ).toContainText(
-    /^Turn start limits: \d+ per burst · \d+ s pause · \d+ running$/,
+  await expect(work.locator(".account-start-throttle > summary")).toHaveText([
+    /^Turn start limits on Local: \d+ per burst · \d+ s pause · \d+ running$/,
+  ]);
+  // A read that returns no data ends; it does not stay "Reading limits…".
+  await expect(work.locator(".account-limit-summary")).toHaveText(
+    /^Remaining limit\s*Unavailable$/,
   );
+  // One provider account shows one remaining limit, not one per server.
+  const shared = accounts.locator(
+    '[data-account-identity="codex:shared@example.test"]',
+  );
+  await expect(shared.locator(".account-limit-summary")).toHaveCount(1);
+  await expect(
+    shared.getByRole("meter", { name: "Remaining limit" }),
+  ).toHaveAttribute("aria-valuenow", "33");
+  await expect(shared.locator(".account-limit-summary")).toContainText(
+    "33% left",
+  );
+  await expect(shared.locator(".account-limit-note")).toHaveText(
+    /^Updated \d+ min ago on Remote$/,
+  );
+  await expect(shared.locator(".account-start-throttle > summary")).toHaveText([
+    /^Turn start limits on Local: /,
+    /^Turn start limits on Remote: /,
+  ]);
   await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
     work.getByRole("button", { name: /sign in again/ }),

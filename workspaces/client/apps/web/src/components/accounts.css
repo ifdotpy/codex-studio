@@ -402,6 +402,10 @@
   font-size: var(--studio-text-meta);
   color: var(--muted);
 }
+.account-limit-note {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
 .account-limit-summary > :last-child {
   font-variant-numeric: tabular-nums;
 }
