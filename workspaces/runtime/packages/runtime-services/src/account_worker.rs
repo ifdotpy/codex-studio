@@ -422,6 +422,9 @@ pub enum AccountCommand {
     },
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),
+    /// Observe command dispatch without waiting for detached preparations.
+    #[cfg(test)]
+    DispatchBarrier(tokio::sync::oneshot::Sender<usize>),
     /// Re-evaluate idle candidates as if a durable blocker commit notified the worker.
     #[cfg(test)]
     IdleStateChange(tokio::time::Instant),
@@ -1456,6 +1459,15 @@ impl Worker {
     }
     async fn dispatch_command(&mut self, command: AccountCommand) -> Result<(), WorkerError> {
         match command {
+            #[cfg(test)]
+            AccountCommand::DispatchBarrier(reply) => {
+                let _sent = reply.send(
+                    self.bridge
+                        .faults
+                        .journal_count
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                );
+            }
             #[cfg(test)]
             AccountCommand::Barrier(reply) => {
                 // A test barrier also waits for in-flight preparations.

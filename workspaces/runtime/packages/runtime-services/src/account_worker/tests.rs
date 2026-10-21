@@ -3190,29 +3190,21 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    let permit = state.bridge.faults.operation_gate.write().await;
-    let before = state
+    worker_barrier(&worker).await;
+    state
         .bridge
         .faults
-        .count
-        .load(std::sync::atomic::Ordering::SeqCst);
+        .hold_journal_batch
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     peer.frame(json!({"method":"test/barrier","params":{}}))
         .await;
-    while state
-        .bridge
-        .faults
-        .count
-        .load(std::sync::atomic::Ordering::SeqCst)
-        == before
-    {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            state.bridge.faults.entered.notified(),
-        )
-        .await
-        .expect("setup barrier deadline");
-    }
-    // With the worker blocked in its first transaction, 32 admitted entries fill
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.bridge.faults.journal_batch_ready.notified(),
+    )
+    .await
+    .expect("first journal pauses before collecting the available batch");
+    // With the worker blocked before journal collection, 32 admitted entries fill
     // both bounded 16-entry lanes. More are replenished while commands run.
     for _ in 0..32 {
         peer.frame(json!({"method":"test/barrier","params":{}}))
@@ -3241,8 +3233,7 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
             }
         }
     });
-    // The wake's claim runs in its own task; hold it at its first store call
-    // to observe when the worker dispatched the wake.
+    // Hold the detached claim until dispatch has been measured independently.
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("claim_steer".into());
     worker
         .send(AccountCommand::Stop {
@@ -3251,20 +3242,31 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
         .await
         .unwrap();
     state.wake(&worker).await;
+    let (dispatch, dispatched) = oneshot::channel();
+    worker
+        .send(AccountCommand::DispatchBarrier(dispatch))
+        .await
+        .unwrap();
     let (done, observed) = oneshot::channel();
     worker.send(AccountCommand::Barrier(done)).await.unwrap();
-    drop(permit);
+    state
+        .bridge
+        .faults
+        .hold_journal_batch
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    state.bridge.faults.release_journal_batch.notify_one();
+    // Capture inside command dispatch: observing the detached claim later can
+    // include unrelated journal work performed after stop and wake progressed.
+    let processed = tokio::time::timeout(std::time::Duration::from_secs(10), dispatched)
+        .await
+        .expect("commands cannot wait for the journal to empty")
+        .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         state.bridge.faults.paused.notified(),
     )
     .await
-    .expect("commands cannot wait for the journal to empty");
-    let processed = state
-        .bridge
-        .faults
-        .journal_count
-        .load(std::sync::atomic::Ordering::SeqCst);
+    .expect("the dispatched wake reaches its claim");
     assert!(
         processed <= 5,
         "stop and wake waited for {processed} journal entries"
