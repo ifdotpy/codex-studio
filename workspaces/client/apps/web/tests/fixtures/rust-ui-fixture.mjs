@@ -26,6 +26,7 @@
 //                                 steps its first turn runs
 //   FIXTURE_SCRIPT                JSON array of provider scripts (prompt, steps)
 import { spawn } from "node:child_process";
+import * as diagFs from "node:fs";
 import {
   existsSync,
   mkdirSync,
@@ -204,10 +205,19 @@ export async function startRustBackend(
     .split(delimiter)
     .filter((entry) => !existsSync(join(entry, "codex")))
     .join(delimiter);
+  const diagDir = join(
+    tmpdir(),
+    "codex-playwright-radiag",
+    "playwright-output",
+  );
+  diagFs.mkdirSync(diagDir, { recursive: true });
+  const diagFile = join(diagDir, `server-${port}-${Date.now()}.log`);
+  const diagFd = diagFs.openSync(diagFile, "a");
   const child = spawn(serverBinary(), ["--port", String(port)], {
-    stdio: ["ignore", 2, 2],
+    stdio: ["ignore", diagFd, diagFd],
     env: {
       ...process.env,
+      RUST_BACKTRACE: "1",
       PATH: path,
       CODEX_AGENTS_STATE_DIR: stateDir,
       CODEX_BIN: fakeCodex,
@@ -217,6 +227,12 @@ export async function startRustBackend(
       ...(modelsFile ? { FAKE_CODEX_MODELS: modelsFile } : {}),
     },
   });
+  child.once("exit", (code, signal) =>
+    diagFs.appendFileSync(
+      diagFile,
+      `\nSERVER EXIT code=${code} signal=${signal} at ${new Date().toISOString()}\n`,
+    ),
+  );
   const exited = new Promise((_, reject) =>
     child.once("exit", (code, signal) =>
       reject(new Error(`studio-runtime-server exited ${code ?? signal}`)),
