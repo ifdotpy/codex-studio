@@ -1517,20 +1517,12 @@
             "title": "Plan"
           },
           "provider": {
-            "anyOf": [
-              {
-                "enum": [
-                  "codex",
-                  "claude"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "codex",
+              "claude"
             ],
-            "default": null,
-            "title": "Provider"
+            "title": "Provider",
+            "type": "string"
           },
           "source": {
             "title": "Source",
@@ -1556,6 +1548,7 @@
           "home",
           "label",
           "source",
+          "provider",
           "status"
         ],
         "title": "Account",

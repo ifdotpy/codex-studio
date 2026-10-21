@@ -33,25 +33,36 @@ const render = (element: ReturnType<typeof createElement>) =>
   renderToStaticMarkup(createElement(MantineProvider, null, element));
 const count = (text: string, part: string) => text.split(part).length - 1;
 
-test("turn start limits name the Studio server that stores them", () => {
-  const markup = render(
-    createElement(ServerTurnStartLimits, {
-      source: {
-        serverId: "mbp",
-        serverLabel: "Igor MBP",
-        account: account({
-          startThrottle: { burst: 8, pauseSeconds: 30, maxRunningTurns: 16 },
-        }),
-      },
-      onSaved: () => {},
-    }),
-  );
-  expect(markup).toContain(
-    "Turn start limits on Igor MBP: 8 per burst · 30 s pause · 16 running",
-  );
-  expect(markup).toContain("<details");
-  expect(markup).not.toContain("<details open");
-});
+test.each(["codex", "claude"] as const)(
+  "%s card turn start limits name the Studio server that stores them",
+  (provider) => {
+    const fullAccount = account({
+      provider,
+      startThrottle: { burst: 8, pauseSeconds: 30, maxRunningTurns: 16 },
+    });
+    const matched = matchServerAccount([fullAccount], {
+      provider,
+      email: "person@example.test",
+      label: "Work",
+    });
+    expect(matched).toBe(fullAccount);
+    const markup = render(
+      createElement(ServerTurnStartLimits, {
+        source: {
+          serverId: "mbp",
+          serverLabel: "Igor MBP",
+          account: matched!,
+        },
+        onSaved: () => {},
+      }),
+    );
+    expect(markup).toContain(
+      "Turn start limits on Igor MBP: 8 per burst · 30 s pause · 16 running",
+    );
+    expect(markup).toContain("<details");
+    expect(markup).not.toContain("<details open");
+  },
+);
 
 test("a panel row maps to its server's account by provider and email, or label without an email", () => {
   const codex = account({});

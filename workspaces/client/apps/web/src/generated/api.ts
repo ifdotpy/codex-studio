@@ -2814,9 +2814,9 @@ export interface components {
       plan?: null | string;
       /**
        * Provider
-       * @default null
+       * @enum {string}
        */
-      provider?: ("codex" | "claude") | null;
+      provider: "codex" | "claude";
       /** Source */
       source: string;
       /** @default null */
