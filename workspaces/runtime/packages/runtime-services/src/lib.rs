@@ -303,3 +303,5 @@ mod registration_tests {
         assert_eq!(declared_modules(include_str!("lib.rs")), source_modules);
     }
 }
+
+pub mod task_gate;

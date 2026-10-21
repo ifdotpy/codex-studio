@@ -166,6 +166,13 @@ impl PreparationResources {
                 &tool.name,
                 &mut tool.input_schema,
             );
+            studio_runtime_schema::task_gate::apply_tool_contract(
+                &tool.name,
+                &mut tool.input_schema,
+            );
+            if tool.name == "orchestration_task" {
+                tool.description.push_str(&format!(" gate on create/update runs a managed acceptance check at the submitted Git commit. set_default_gate sets the lead default for new tasks. Gate timeout defaults to {} ms. Layr and non-Git submissions report not_run and require override_reason. Failed or unknown gates refuse acceptance unless the lead supplies override_reason. Submit again to rerun a gate.", studio_runtime_schema::task_gate::DEFAULT_TIMEOUT_MS));
+            }
             if tool.name == "orchestration_spawn" {
                 let properties = tool
                     .input_schema

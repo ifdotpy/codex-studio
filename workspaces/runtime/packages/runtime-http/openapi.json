@@ -59897,7 +59897,8 @@
               "submit",
               "cancel",
               "accept",
-              "reject"
+              "reject",
+              "set_default_gate"
             ],
             "title": "Action",
             "type": "string"
@@ -60088,6 +60089,45 @@
             ],
             "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
             "additionalProperties": true
+          },
+          "gate": {
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "maxLength": 32000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "timeout_ms": {
+                    "default": 600000,
+                    "maximum": 3600000,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+          },
+          "override_reason": {
+            "description": "Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision.",
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [
@@ -60143,6 +60183,11 @@
             ],
             "default": null,
             "title": "Resultid"
+          },
+          "gateOverrideReason": {
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [
@@ -60193,6 +60238,11 @@
           },
           "resultId": {
             "title": "Resultid",
+            "type": "string"
+          },
+          "gateOverrideReason": {
+            "maxLength": 32000,
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -60275,6 +60325,11 @@
           "resultId": {
             "default": null,
             "title": "Resultid",
+            "type": "string"
+          },
+          "gateOverrideReason": {
+            "maxLength": 32000,
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -60643,6 +60698,9 @@
             "minimum": 0,
             "title": "Version",
             "type": "integer"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           }
         },
         "required": [
@@ -60783,6 +60841,9 @@
           },
           "result": {
             "$ref": "#/components/schemas/JsonValue"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TaskGateEvidence"
           }
         },
         "required": [
@@ -60866,6 +60927,9 @@
           },
           "result": {
             "$ref": "#/components/schemas/JsonValue"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TaskGateEvidence"
           }
         },
         "required": [
@@ -60984,6 +61048,9 @@
           },
           "result": {
             "$ref": "#/components/schemas/JsonValue"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TaskGateEvidence"
           }
         },
         "required": [
@@ -61164,6 +61231,9 @@
             "minimum": 0,
             "title": "Version",
             "type": "integer"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           }
         },
         "required": [
@@ -62894,6 +62964,122 @@
           "taskId"
         ],
         "title": "AgentStall"
+      },
+      "TaskAcceptanceGate": {
+        "anyOf": [
+          {
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "timeout_ms": {
+                "default": 600000,
+                "maximum": 3600000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+      },
+      "TaskGateEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "finished": {
+            "type": "number"
+          },
+          "log": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "monitorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "maxLength": 12000,
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_run",
+              "running",
+              "passed",
+              "failed",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "config",
+          "cwd",
+          "revision",
+          "monitorId",
+          "exitCode",
+          "output",
+          "log"
+        ],
+        "type": "object"
+      },
+      "TaskGateDefaultResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "defaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          }
+        },
+        "required": [
+          "id",
+          "defaultGate"
+        ]
       }
     }
   },
@@ -81511,6 +81697,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/WorkList"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskGateDefaultResponse"
                     }
                   ],
                   "title": "Response Work Action Api Work Post"

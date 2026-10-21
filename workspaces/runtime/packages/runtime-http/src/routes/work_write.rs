@@ -140,9 +140,26 @@ pub(crate) async fn perform(
         .filter(|id| !id.is_empty())
         .map(str::to_owned);
     let signature = work_items::work_request_signature(&agent, actor_id.as_deref(), &body)?;
+    if action == "set_default_gate" {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let gate = body.get("gate").cloned().ok_or_else(invalid_request)?;
+        return store
+            .transaction_with(move |tx| {
+                studio_runtime_services::task_gate::set_default(
+                    tx,
+                    &agent,
+                    &gate,
+                    request_id.as_deref(),
+                    &signature,
+                )
+            })
+            .await
+            .map_err(|error| write_error(WorkWriteError::Event(error)));
+    }
     let mut command = match action {
         "create" => WorkWrite::Create(CreateWork {
             result_schema: body.get("result_schema").cloned(),
+            gate: body.get("gate").cloned(),
             actor_id: agent.clone(),
             title: required_text(&body, "title")?,
             description: optional_text(&body, "description")?.unwrap_or_default(),
@@ -152,6 +169,7 @@ pub(crate) async fn perform(
         }),
         "update" => WorkWrite::Mutate(WorkMutation::Update {
             result_schema: body.get("result_schema").cloned(),
+            gate: body.get("gate").cloned(),
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             title: optional_text(&body, "title")?,
@@ -185,6 +203,7 @@ pub(crate) async fn perform(
                 .unwrap_or_else(|| agent.clone()),
         }),
         "submit" => WorkWrite::Submit(SubmitWork {
+            prepared_gate_workspace: None,
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             result: body.get("result").cloned().ok_or_else(|| {
@@ -202,6 +221,7 @@ pub(crate) async fn perform(
             vm_evidence_request_id: None,
         }),
         "accept" => WorkWrite::Accept(AcceptWork {
+            override_reason: optional_text(&body, "override_reason")?,
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             reason: review_result(&body)?,
@@ -239,6 +259,42 @@ pub(crate) async fn perform(
     if let WorkWrite::Accept(input) = &mut command {
         prepare_vm_accept(&state, &agent, request_id.as_deref(), &signature, input).await?;
     }
+    if let WorkWrite::Submit(input) = &mut command {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let task_id = input.task_id.clone();
+        let actor_id = agent.clone();
+        let owner = store
+            .read_async("task-gate/prepare", move |tx| {
+                let actor = studio_runtime_services::event_write::checked_agent(tx, &actor_id)?;
+                let task = studio_runtime_store::WorkItemsRepository::work_record(tx, &task_id)?
+                    .ok_or(
+                        studio_runtime_services::event_write::EventWriteError::InvalidRequest(
+                            "Unknown work item",
+                        ),
+                    )?;
+                if task["rootId"] != actor.root_id.0 {
+                    return Err(
+                        studio_runtime_services::event_write::EventWriteError::InvalidRequest(
+                            "Unknown task in this team",
+                        ),
+                    );
+                }
+                if task.get("gate").is_none_or(Value::is_null) {
+                    return Ok(None);
+                }
+                let owner = task["owner"].as_str().unwrap_or(&actor_id);
+                studio_runtime_services::event_write::checked_agent(tx, owner).map(Some)
+            })
+            .await
+            .map_err(|e| write_error(WorkWriteError::Event(e)))?;
+        if let Some(owner) = owner {
+            // Monitor output validates paths against the store's resolved state identity.
+            input.state_dir = store.root().to_owned();
+            input.prepared_gate_workspace = super::agents_create::prepare_parent_workspace(&owner)
+                .ok()
+                .map(Arc::from);
+        }
+    }
     commit(
         state, runtime, agent, actor_id, request_id, signature, command,
     )
@@ -274,6 +330,7 @@ async fn prepare_vm_accept(
         request.as_deref(),
         &request_signature,
         &reason,
+        input.override_reason.as_deref(),
     )
     .await
     .map_err(write_error)?;
@@ -525,6 +582,9 @@ async fn commit(
         .map_err(commit_error)?;
     if let Some(refusal) = result.record.get("submissionRefusal") {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, refusal.to_string()));
+    }
+    if is_submit && let Some(runtime) = runtime.as_ref() {
+        runtime.wake_tick();
     }
     if !checks.is_empty() {
         let Some(runtime) = runtime else {
@@ -1301,6 +1361,191 @@ mod managed_work_port_tests {
             matches!(refused, WorkActionOutcome::Refused(_)),
             "{refused:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn acceptance_gate_schema_refusal_never_admits_monitor() {
+        let (state, store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create",
+            "title":"Schema before gate", "owner":"worker", "gate":"true",
+            "result_schema":schema()}),
+                "schema-gate-create",
+            )
+            .await,
+        );
+        let task = &created["id"];
+        let args = json!({"action":"submit", "task_id":task,
+            "result":{"count":"invalid"}, "checks":"checked",
+            "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+        let refusal: Value = serde_json::from_str(&refused(
+            port.act("worker", &args, "schema-gate-invalid").await,
+        ))
+        .unwrap();
+        assert_eq!(refusal["errors"][0]["path"], "/count");
+        let count = store
+            .read_async("gate-test/schema", |db| {
+                db.query_row("SELECT count(*) FROM runtime_monitors", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        let mut valid = args;
+        valid["result"] = json!({"count":1});
+        let submitted = written(port.act("worker", &valid, "schema-gate-valid").await);
+        // No prepared workspace is recorded explicitly, never certified as a pass.
+        assert_eq!(submitted["results"][0]["gate"]["status"], "not_run");
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"accept",
+            "task_id":task,"result":"reviewed"}),
+                "schema-gate-accept"
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn acceptance_gate_tool_caller_inherits_default_admits_monitor_and_refuses_failed_accept()
+    {
+        let (state, store, directory) = state().await;
+        let cwd = directory.path().to_string_lossy().into_owned();
+        store
+            .transaction(move |tx| {
+                let mut worker = AgentRepository::get(tx, &"worker".into())?.unwrap();
+                worker.extra.insert("cwd".into(), json!(cwd));
+                worker.extra.insert("yoloMode".into(), json!(true));
+                AgentRepository::put(tx, &worker)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let port = managed_work_port(state, None);
+        let default = written(
+            port.act(
+                "lead",
+                &json!({"action":"set_default_gate","gate":{"command":"false","timeout_ms":4321}}),
+                "set-default",
+            )
+            .await,
+        );
+        assert_eq!(default["defaultGate"]["timeout_ms"], 4321);
+        assert!(matches!(
+            port.act(
+                "worker",
+                &json!({"action":"set_default_gate","gate":null}),
+                "worker-default"
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"Gate","owner":"worker"}),
+                "create-gate",
+            )
+            .await,
+        );
+        assert_eq!(created["gate"], default["defaultGate"]);
+        let task = created["id"].as_str().unwrap().to_owned();
+        let submitted = written(
+            port.act(
+                "worker",
+                &json!({"action":"submit","task_id":task,"result":"done","checks":"reported",
+            "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+                "submit-gate",
+            )
+            .await,
+        );
+        let id = submitted["results"][0]["gate"]["monitorId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let log_root = studio_runtime_services::monitor_output::log_root(store.root());
+        store
+            .transaction_with(move |tx| {
+                let monitor = studio_runtime_store::MonitorsRepository::get(tx, &id)?.unwrap();
+                assert_eq!(
+                    std::path::Path::new(monitor.value()["log"].as_str().unwrap()).parent(),
+                    Some(log_root.as_path())
+                );
+                assert_eq!(monitor.value()["timeout_ms"], 4321);
+                assert_eq!(monitor.value()["agent"], "worker");
+                studio_runtime_services::monitor_runtime::finish_in_transaction(
+                    tx,
+                    &id,
+                    None,
+                    Some(1),
+                    None,
+                    2.0,
+                )
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"accept","task_id":task,"result":"reviewed"}),
+                "accept-gate"
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
+        assert!(matches!(port.act("worker",&json!({"action":"accept","task_id":task,"result":"reviewed","override_reason":"skip"}),"worker-override").await,WorkActionOutcome::Refused(_)));
+        let accepted=written(port.act("lead",&json!({"action":"accept","task_id":task,"result":"reviewed","override_reason":"Manual evidence checked"}),"override-gate").await);
+        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(
+            accepted["decisions"][0]["gateOverrideReason"],
+            "Manual evidence checked"
+        );
+    }
+
+    #[tokio::test]
+    async fn acceptance_gate_tool_caller_cannot_submit_another_owners_task() {
+        let (state, store, directory) = state().await;
+        let cwd = directory.path().to_string_lossy().into_owned();
+        store
+            .transaction(move |tx| {
+                let mut lead = AgentRepository::get(tx, &"lead".into())?.unwrap();
+                lead.extra.insert("cwd".into(), json!(cwd));
+                lead.extra.insert("yoloMode".into(), json!(true));
+                AgentRepository::put(tx, &lead)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"Lead task","owner":"lead","gate":"true"}),
+                "owned-create",
+            )
+            .await,
+        );
+        let task = created["id"].as_str().unwrap();
+        let outcome=port.act("worker",&json!({"action":"submit","task_id":task,"result":"spoofed","checks":"none","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),"spoof-submit").await;
+        assert!(
+            matches!(outcome, WorkActionOutcome::Refused(message) if message.contains("Only the assigned worker"))
+        );
+        let task = task.to_owned();
+        let unchanged = store
+            .read_async("gate-test/owner", move |tx| {
+                studio_runtime_store::WorkItemsRepository::work_record(tx, &task)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unchanged["results"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -23067,6 +23067,15 @@ export interface components {
      * @enum {string}
      */
     TailscaleStatus: "verified" | "unavailable";
+    /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+    TaskAcceptanceGate:
+      | string
+      | {
+          command: string;
+          /** @default 600000 */
+          timeout_ms?: number;
+        }
+      | null;
     /** TaskCursor */
     TaskCursor: {
       /** Id */
@@ -23271,6 +23280,23 @@ export interface components {
       timeout_ms?: number | null;
       /** Turnid */
       turnId?: null | string;
+    };
+    TaskGateDefaultResponse: {
+      defaultGate: components["schemas"]["TaskAcceptanceGate"];
+      id: string;
+    };
+    TaskGateEvidence: {
+      config: components["schemas"]["TaskAcceptanceGate"];
+      cwd: string | null;
+      error?: string | null;
+      exitCode: number | null;
+      finished?: number;
+      log: string | null;
+      monitorId: string | null;
+      output: string;
+      revision: string;
+      /** @enum {unknown} */
+      status: "not_run" | "running" | "passed" | "failed" | "unknown";
     };
     /** TaskHistoryCursor */
     TaskHistoryCursor: {
@@ -26120,7 +26146,8 @@ export interface components {
         | "submit"
         | "cancel"
         | "accept"
-        | "reject";
+        | "reject"
+        | "set_default_gate";
       /**
        * Agent
        * @default null
@@ -26146,11 +26173,22 @@ export interface components {
        * @default null
        */
       files?: string[] | null;
+      /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+      gate?:
+        | string
+        | {
+            command: string;
+            /** @default 600000 */
+            timeout_ms?: number;
+          }
+        | null;
       /**
        * Id
        * @default null
        */
       id?: null | string;
+      /** @description Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision. */
+      override_reason?: string;
       /**
        * Owner
        * @default null
@@ -26205,6 +26243,7 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
+      gateOverrideReason?: string;
       /**
        * Owner
        * @default null
@@ -26229,6 +26268,7 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
+      gateOverrideReason?: string;
       /** Owner */
       owner?: null | string;
       /** Reason */
@@ -26259,6 +26299,7 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
+      gateOverrideReason?: string;
       /**
        * Owner
        * @default null
@@ -26474,6 +26515,7 @@ export interface components {
        * @default null
        */
       displayStatus?: null | string;
+      gate?: components["schemas"]["TaskAcceptanceGate"];
       /** Id */
       id: string;
       /**
@@ -26545,6 +26587,7 @@ export interface components {
       created: number;
       /** Files */
       files: string[];
+      gate?: components["schemas"]["TaskGateEvidence"];
       /** Id */
       id: string;
       result?: components["schemas"]["JsonValue"];
@@ -26575,6 +26618,7 @@ export interface components {
       created: number;
       /** Files */
       files: string[];
+      gate?: components["schemas"]["TaskGateEvidence"];
       /** Id */
       id: string;
       /** Layrline */
@@ -26620,6 +26664,7 @@ export interface components {
       created: number;
       /** Files */
       files: string[];
+      gate?: components["schemas"]["TaskGateEvidence"];
       /** Id */
       id: string;
       /**
@@ -27131,6 +27176,7 @@ export interface components {
             | "accepted"
             | "cancelled"
           );
+      gate?: components["schemas"]["TaskAcceptanceGate"];
       /**
        * Handoff
        * @default null
@@ -37434,7 +37480,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["WorkItem"]
-            | components["schemas"]["WorkList"];
+            | components["schemas"]["WorkList"]
+            | components["schemas"]["TaskGateDefaultResponse"];
         };
       };
       /** @description Bad Request */

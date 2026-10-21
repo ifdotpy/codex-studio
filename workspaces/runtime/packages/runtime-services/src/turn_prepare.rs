@@ -777,6 +777,15 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(&text)
         && value.is_object()
     {
+        // A bounded review must retain the acceptance outcome even when its log is large.
+        if row.kind == "work_review" && value["result"]["gate"].is_object() {
+            summary["task"] = value["task"].clone();
+            summary["gate"] = json!({
+                "status":value["result"]["gate"]["status"],
+                "exitCode":value["result"]["gate"]["exitCode"],
+                "monitorId":value["result"]["gate"]["monitorId"],
+            });
+        }
         let path = if value["result"].is_object() {
             &value["result"]["resultFile"]
         } else {
@@ -1547,6 +1556,20 @@ mod input_origin_tests {
             preserve_progress: false,
             preserve_complaint: false,
         }
+    }
+
+    #[test]
+    fn acceptance_gate_outcome_survives_bounded_work_review() {
+        let mut row = event("work_review", None);
+        row.text = json!({"task":"gated-task","result":{"text":"done","gate":{
+            "status":"failed","exitCode":7,"monitorId":"gate-monitor","output":"x".repeat(12000)
+        }}})
+        .to_string();
+        let projected: Value = serde_json::from_str(&bound_event(&row, &row.text, 1000)).unwrap();
+        assert_eq!(projected["task"], "gated-task");
+        assert_eq!(projected["gate"]["status"], "failed");
+        assert_eq!(projected["gate"]["exitCode"], 7);
+        assert_eq!(projected["read"]["tool"], "orchestration_read");
     }
 
     #[test]
