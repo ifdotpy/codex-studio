@@ -13,7 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 // Approved paid-test profiles. Never use an account's default model: it can
@@ -904,13 +904,27 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
     const pending = checks.get(index) ?? Promise.resolve();
     checks.set(index, pending.then(() => inspect(index)).catch(fail));
   };
+  const checkAll = () => {
+    for (let index = 0; index < tokens.length; index += 1) check(index);
+  };
+  const ownName = basename(directory);
   const watcher = watch(directory, (_eventType, filename) => {
     if (closed) return;
     if (filename == null) {
-      for (let index = 0; index < tokens.length; index += 1) check(index);
+      checkAll();
       return;
     }
     const name = String(filename);
+    // macOS FSEvents also reports the watched directory itself under its own
+    // base name (for example its recent creation). Only an entry inside the
+    // directory with that name is an unknown marker.
+    if (name === ownName) {
+      lstat(join(directory, name)).then(
+        () => fail(new Error(`Unknown readiness marker name: ${name}`)),
+        (error) => (error?.code === "ENOENT" ? checkAll() : fail(error)),
+      );
+      return;
+    }
     // A temporary name exists only until the atomic rename publishes the final name.
     if (name.endsWith(".tmp")) return;
     const match = READINESS_MARKER_PATTERN.exec(name);
@@ -923,7 +937,7 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
   const onAbort = () =>
     fail(signal.reason ?? new Error("Readiness wait was aborted."));
   signal?.addEventListener("abort", onAbort, { once: true });
-  for (let index = 0; index < tokens.length; index += 1) check(index);
+  checkAll();
   return {
     path: (index) => join(directory, readinessMarkerName(index)),
     async next(deadlineAt) {
