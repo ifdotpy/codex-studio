@@ -273,6 +273,13 @@ pub(crate) fn poll_event(
     );
 }
 
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        clippy::disallowed_methods,
+        reason = "test helper; ps prints one line and exits at once"
+    )
+)]
 pub(crate) fn pid_exists(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
