@@ -642,7 +642,8 @@ class AccountsRouterTests(unittest.TestCase):
             body = {"home": str(second)}
             response = self.client.post("/api/accounts/register", json=body)
             self.assertEqual(response.status_code, 200, response.text)
-            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            # The wait only guards against a hang.
+            event = loop.run_until_complete(subscription.next_event(timeout=HANG_GUARD_SECONDS))
             self.assertIsNotNone(event)
             assert event is not None
             self.assertEqual(event.reason, "change")
@@ -698,7 +699,8 @@ class AccountsRouterTests(unittest.TestCase):
 
             publish.assert_called_once()
             self.assertEqual(lock_was_available, [True])
-            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            # The wait only guards against a hang.
+            event = loop.run_until_complete(subscription.next_event(timeout=HANG_GUARD_SECONDS))
             self.assertIsNotNone(event)
             assert event is not None
             self.assertEqual(event.reason, "change")

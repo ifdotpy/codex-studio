@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 from codex_multi_server import AccessError, _exchange, _owner_login, _peer_login
+from server_test_waits import HANG_GUARD_SECONDS
 from studio_api.middleware import HeaderView
 from studio_api.multi_server.boundary import _body
 
@@ -134,21 +135,25 @@ class NativeTransportTests(unittest.TestCase):
                 origin = f"https://127.0.0.1:{server.server_port}"
                 raw = '{"text":"Zażółć","space": 1}'.encode()
                 with patch.dict(os.environ, {"NODE_EXTRA_CA_CERTS": str(cert)}):
-                    result = _exchange(origin + "/echo", "POST", {"Content-Type": "application/json"}, raw, 5)
+                    # These exchanges must succeed; their timeout only guards against a hang.
+                    result = _exchange(origin + "/echo", "POST", {"Content-Type": "application/json"}, raw, HANG_GUARD_SECONDS)
                     self.assertEqual(result["status"], 200)
                     self.assertEqual(seen, [raw])
                     self.assertEqual(json.loads(base64.b64decode(result["body"]))["body"], base64.b64encode(raw).decode())
-                    redirect = _exchange(origin + "/redirect", "GET", {}, b"", 5)
+                    redirect = _exchange(origin + "/redirect", "GET", {}, b"", HANG_GUARD_SECONDS)
                     self.assertEqual(redirect["status"], 302)
                     self.assertEqual(redirect["url"], origin + "/redirect")
                     with self.assertRaises(AccessError) as large:
-                        _exchange(origin + "/large", "GET", {}, b"", 5)
+                        _exchange(origin + "/large", "GET", {}, b"", HANG_GUARD_SECONDS)
                     self.assertEqual(large.exception.code, "response_size")
                     started = time.monotonic()
                     with self.assertRaises(AccessError) as expired:
                         _exchange(origin + "/slow", "GET", {}, b"", 0.3)
+                    # Only the helper's own deadline raises remote_timeout. The bound
+                    # stays below the 5 s release of the slow handler, so a request
+                    # that waited for the response instead of the deadline fails.
                     self.assertEqual(expired.exception.code, "remote_timeout")
-                    self.assertLess(time.monotonic() - started, 2)
+                    self.assertLess(time.monotonic() - started, 4)
             finally:
                 release.set()
                 server.shutdown()

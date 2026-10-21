@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+# A wait for an expected event uses the hang guard; it only guards against a hang.
 from server_test_waits import HANG_GUARD_SECONDS
 
 from studio_api.sync.resources.hub import (
@@ -99,7 +100,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(baseline["resourceVersions"][0]["revision"], 0)
 
         self.assertEqual(hub.publish(resource), 1)
-        event = await subscription.next_event(timeout=1)
+        event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert event is not None
         self.assertEqual(event.resources, [resource])
@@ -147,7 +148,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initial["panel"], 0)
 
         hub.publish(watched_panel)
-        typed = await subscription.next_event(timeout=1)
+        typed = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(typed)
         assert typed is not None
         typed_versions = {
@@ -158,7 +159,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
 
         hub.publish_entity_sequence(5, [5])
         hub.publish_entity_sequence(6, [6])
-        state_event = await subscription.next_event(timeout=1)
+        state_event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(state_event)
         assert state_event is not None
         self.assertEqual(state_event.resources, [state])
@@ -167,7 +168,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await subscription.next_event(timeout=0.05))
 
         hub.publish_overflow()
-        overflow = await subscription.next_event(timeout=1)
+        overflow = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(overflow)
         assert overflow is not None
         state_version = next(
@@ -190,7 +191,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
             MAX_ENTITY_SEQUENCE_IDS + 1,
             list(range(1, MAX_ENTITY_SEQUENCE_IDS + 2)),
         )
-        event = await subscription.next_event(timeout=1)
+        event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
 
         self.assertIsNotNone(event)
         assert event is not None
@@ -246,7 +247,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub._resource_revision(state), 10)
 
         hub.publish_entity_sequence(11, [11])
-        event = await subscription.next_event(timeout=1)
+        event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert event is not None
         self.assertEqual(event.resourceVersions[0].revision, 11)
@@ -261,7 +262,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subscription.initial.revision, 0)
         hub.publish(panel("agent-a"))
         hub.publish(panel("agent-a"))
-        event = await subscription.next_event(timeout=1)
+        event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert event is not None
         self.assertEqual(event.reason, "change")
@@ -280,7 +281,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(watchdog.attached, ["agent-a", "agent-a"])
         self.assertEqual(first.initial.revision, 1)
         self.assertEqual(second.initial.revision, 2)
-        changed = await first.next_event(timeout=1)
+        changed = await first.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(changed)
         self.assertEqual(changed.revision, 2)
         self.assertIsNone(await second.next_event(timeout=0.01))
@@ -331,7 +332,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         hub = ResourceHub("workspace-a")
         subscription = hub.subscribe(resources, loop=loop)
         hub.publish_many(resources)
-        event = await subscription.next_event(timeout=1)
+        event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert event is not None
         self.assertEqual(event.reason, "overflow")
@@ -365,7 +366,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(hub.publish_token_rates(changed), 1)
         self.assertEqual(hub.publish_token_rates(changed), 1)
-        event = await subscription.next_event(timeout=1)
+        event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsInstance(event, ResourceTokenRatesEvent)
         assert isinstance(event, ResourceTokenRatesEvent)
         self.assertEqual(event.rates["agent-a"].outputTokens, 9)

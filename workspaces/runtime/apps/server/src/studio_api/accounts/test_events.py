@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any, Protocol, cast
 from unittest.mock import patch
 
+# Waits for an expected event use the shared hang guard; they only guard against a hang.
 from server_test_waits import HANG_GUARD_SECONDS
 
 from studio_api.accounts.events import (
@@ -90,7 +91,7 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                     lambda: publish_models_change(state_dir),
                 ):
                     publish()
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
                     assert event is not None
                     self.assertEqual(event.reason, "change")
@@ -128,7 +129,7 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             )
             try:
                 publish_account_change(state_dir)
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(event.reason, "change")
@@ -224,7 +225,7 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                     runtime.notification(message, "account-a", "connection-a")
                     self.assertIsNone(await subscription.next_event(timeout=0.01))
                     runtime._publish_committed_resource_changes()
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
                     assert event is not None
                     self.assertEqual(
@@ -283,7 +284,7 @@ class CatalogPublicationTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(len(submitted), 1)
                 self.assertEqual(published, [True])
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(event.reason, "change")
@@ -324,7 +325,7 @@ class CatalogPublicationTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(CatalogPending):
                     cache.read("account-a", server, "connection-a", lambda: True, on_commit=publish)
                 first.set_exception(RuntimeError("provider unavailable"))
-                failed = await subscription.next_event(timeout=1)
+                failed = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(failed)
                 assert failed is not None
                 self.assertEqual(failed.resources, [ResourceRef(ModelsResource(kind="models"))])
@@ -345,7 +346,7 @@ class CatalogPublicationTests(unittest.IsolatedAsyncioTestCase):
                                retry=True, on_commit=publish),
                     expected,
                 )
-                recovered = await subscription.next_event(timeout=1)
+                recovered = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(recovered)
                 assert recovered is not None
                 self.assertEqual(recovered.resources, [ResourceRef(ModelsResource(kind="models"))])
@@ -492,7 +493,7 @@ class ClaudeLoginEventTests(unittest.IsolatedAsyncioTestCase):
                     "codex_claude_login.publish_account_change", side_effect=published
                 ) as publish:
                     self.assertTrue(manager._publish_verification_url(job, url))
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
                     self.assertFalse(manager._publish_verification_url(job, url))
 
