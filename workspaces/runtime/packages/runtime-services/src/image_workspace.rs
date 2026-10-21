@@ -2426,6 +2426,51 @@ mod tests {
     }
 
     #[test]
+    fn volume_of_another_state_at_its_own_mount_point_is_not_stray() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        // A second Studio state folder (the live one, while a fixture runs)
+        // has its own agent volume attached at its own mount point.
+        let live = fixture.path().join("live/workspaces");
+        let image = live.join("agents/agent-9/workspace.asif");
+        fs::create_dir_all(image.parent().expect("agent folder")).expect("agent folder");
+        fs::write(&image, "live image").expect("live image");
+        attach_marked_volume(&manager, &live.join("mnt/agent-9"), &image, "agent-9");
+        let report = manager.check_mounts().expect("check");
+        assert_eq!(report["strayAttachments"], json!([]), "{report}");
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["agents"][0]["status"], "mounted");
+    }
+
+    #[test]
+    fn volume_of_this_state_outside_its_mount_point_is_stray() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = ready_workspaces(fixture.path(), &["agent-1"]);
+        // An image of this state without an agent row, attached elsewhere.
+        let image = manager.store.join("agents/agent-9/workspace.asif");
+        fs::create_dir_all(image.parent().expect("agent folder")).expect("agent folder");
+        fs::write(&image, "own image").expect("own image");
+        let elsewhere = fixture.path().join("elsewhere/mnt/agent-9");
+        attach_marked_volume(&manager, &elsewhere, &image, "agent-9");
+        // A volume of another image attached under this state's mount folder.
+        let foreign = fixture.path().join("other/agents/agent-8/workspace.asif");
+        let under_store = manager.store.join("mnt/agent-8");
+        attach_marked_volume(&manager, &under_store, &foreign, "agent-8");
+        let report = manager.check_mounts().expect("check");
+        assert_eq!(report["ok"], false, "{report}");
+        let stray = report["strayAttachments"].as_array().expect("stray");
+        let agents = stray
+            .iter()
+            .map(|item| item["agentId"].as_str().expect("agent").to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            agents,
+            BTreeSet::from(["agent-8".to_owned(), "agent-9".to_owned()]),
+            "{report}"
+        );
+    }
+
+    #[test]
     fn unmarked_volume_whose_image_is_another_file_is_refused() {
         let fixture = tempfile::tempdir().expect("fixture");
         let manager = ready_workspaces(fixture.path(), &["agent-1"]);
