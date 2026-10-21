@@ -590,6 +590,106 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
     );
 }
 
+/// A broadcast checks each team member. One member record that the gate
+/// cannot check (here a relative cwd) must not refuse the whole broadcast:
+/// every other member gets the message, and the result names the refused
+/// member with its stored-record location. The saved receipt holds the same
+/// result, so a replay of the request reports the same members.
+#[tokio::test]
+async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_others() {
+    let oracle = template();
+    let lead = &oracle["agents"][0];
+    let lead_id = lead["id"].as_str().unwrap();
+    let child = oracle["agents"][1]["id"].as_str().unwrap();
+    let bad = "cccccccc-member-relative-cwd";
+    let mut member = lead.clone();
+    member["id"] = json!(bad);
+    member["parentId"] = json!(lead_id);
+    member["isLead"] = json!(false);
+    member["threadId"] = json!(format!("thread-{bad}"));
+    member["cwd"] = json!("relative/cwd");
+    let (_root, store, sent) =
+        try_send_with(0, "broadcast", "send-broadcast-bad-member", vec![member]).await;
+    let sent = sent.expect("one bad member does not refuse the broadcast");
+    assert!(sent["deliveries"].get(child).is_some(), "{sent}");
+    assert!(sent["deliveries"].get(bad).is_none(), "{sent}");
+    assert_eq!(
+        sent["refused"][bad],
+        json!(format!("Invalid stored record at agents/{bad}/cwd")),
+        "{sent}"
+    );
+    let reader = store.test_reader().unwrap();
+    let (deliveries, receipt): (String, String) = reader
+        .query_row(
+            "SELECT m.deliveries,r.result FROM runtime_chat_messages m JOIN runtime_operation_receipts r ON r.id=m.id WHERE m.id='send-broadcast-bad-member'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&deliveries).unwrap(),
+        sent["deliveries"]
+    );
+    assert_eq!(serde_json::from_str::<Value>(&receipt).unwrap(), sent);
+    let bad_events: i64 = reader
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE agent=?1",
+            [bad],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_events, 0);
+}
+
+/// When no member of a broadcast can be checked, nothing is sent, and the
+/// refusal names the stored-record location.
+#[tokio::test]
+async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location() {
+    let oracle = template();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap();
+    let template = PathBuf::from(oracle["template"].as_str().unwrap()).join("canvas.sqlite3");
+    let connection =
+        rusqlite::Connection::open_with_flags(template, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let mut statement = connection
+        .prepare("SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 AND id!=?1 ORDER BY id")
+        .unwrap();
+    let broken = statement
+        .query_map([lead], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|raw| {
+            let mut record: Value = serde_json::from_str(&raw.unwrap()).unwrap();
+            record["cwd"] = json!("relative/cwd");
+            record
+        })
+        .collect::<Vec<_>>();
+    let members = broken
+        .iter()
+        .filter(|record| !studio_runtime_store::truthy(record.get("deletedAt")))
+        .map(|record| {
+            format!(
+                "Invalid stored record at agents/{}/cwd",
+                record["id"].as_str().unwrap()
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(!members.is_empty(), "the fixture team has a member");
+    let (_root, store, sent) =
+        try_send_with(0, "broadcast", "send-broadcast-no-member", broken).await;
+    let refusal = sent.expect_err("no member can be checked").to_string();
+    assert!(members.contains(&refusal), "{refusal}");
+    let messages: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast-no-member'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(messages, 0);
+}
+
 /// A stored-record refusal names its location instead of a generic text.
 #[test]
 fn a_stored_refusal_names_its_location() {

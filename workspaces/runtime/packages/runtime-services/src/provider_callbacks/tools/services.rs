@@ -261,7 +261,7 @@ impl crate::managed_host_tools::InterruptPort for ProductionPorts {
             .map_err(|_| crate::managed_host_tools::Error::Stale)?;
         messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
             CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-            CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+            CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
             CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
             _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
         })
@@ -600,7 +600,9 @@ pub(super) async fn resolve_interrupt_target(
             let target =
                 messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
                     CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                    CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                    CallbackError::Stored(location) => {
+                        crate::managed_host_tools::Error::StoredAt(location)
+                    }
                     CallbackError::Invalid(message) => {
                         crate::managed_host_tools::Error::Invalid(message)
                     }
@@ -632,7 +634,9 @@ pub(super) async fn resolve_send_target(
             let target =
                 messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
                     CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                    CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                    CallbackError::Stored(location) => {
+                        crate::managed_host_tools::Error::StoredAt(location)
+                    }
                     CallbackError::Invalid(message) => {
                         crate::managed_host_tools::Error::Invalid(message)
                     }

@@ -1102,25 +1102,29 @@ fn settle_outcome(
                     // settles the attempt a second time.
                 }
                 Method::ThreadResume | Method::ThreadStart => {
-                    if let ResponseBody::Result(ref value) = body
-                        && let Some((next, thread)) = preparation::accept_thread(
+                    // Name the provider's own error; a rejected reply names
+                    // the check that failed. The input is never sent here.
+                    let accepted = match &body {
+                        ResponseBody::Result(value) => preparation::accept_thread(
                             tx, state_root, &resources, &context, &ticket, value,
                         )?
-                    {
-                        effect = Some(next);
-                        loaded = Some(thread);
-                    } else {
-                        // Name the provider's own error; a rejected reply names
-                        // the identity check. The input is never sent here.
-                        let detail = match &body {
-                            ResponseBody::Error(error) => error["message"]
-                                .as_str()
-                                .map(|message| message.chars().take(300).collect::<String>())
-                                .unwrap_or_else(|| "provider error".to_owned()),
-                            ResponseBody::Result(_) => {
-                                "the reply does not match the prepared thread".to_owned()
-                            }
-                        };
+                        .map_err(|rejection| {
+                            format!("the reply does not match the prepared thread: {rejection}")
+                        }),
+                        ResponseBody::Error(error) => Err(error["message"]
+                            .as_str()
+                            .map(|message| message.chars().take(300).collect::<String>())
+                            .unwrap_or_else(|| "provider error".to_owned())),
+                    };
+                    let rejected = match accepted {
+                        Ok((next, thread)) => {
+                            effect = Some(next);
+                            loaded = Some(thread);
+                            None
+                        }
+                        Err(detail) => Some(detail),
+                    };
+                    if let Some(detail) = rejected {
                         let reason = format!(
                             "Provider thread resume failed ({detail}); input remains pending."
                         );
