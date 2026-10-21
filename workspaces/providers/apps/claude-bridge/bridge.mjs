@@ -391,6 +391,12 @@ const settings = (s) => ({
   includePartialMessages: true,
   env: {
     ...process.env,
+    // Per-thread host declarations must reach the CLI process, not settings.json.
+    ...Object.fromEntries(
+      ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+        .filter((key) => typeof s.claude?.env?.[key] === "string")
+        .map((key) => [key, s.claude.env[key]]),
+    ),
     ...browserEnvironment(root, s.id),
     ...(s.moveProof
       ? {

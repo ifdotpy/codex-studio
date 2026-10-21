@@ -251,6 +251,14 @@ pub struct PendingPreparation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostWorktree {
+    /// Absolute worker directory; the session cwd must be inside it.
+    pub tree: String,
+    /// Absolute checkout paths whose writes must stay inside `tree`.
+    pub fence: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub actor: Actor,
     pub root: Root,
@@ -259,6 +267,8 @@ pub struct Snapshot {
     pub guidance: GuidanceBundle,
     pub catalog: CatalogSnapshot,
     pub workspace: WorkspaceReadiness,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_worktree: Option<HostWorktree>,
     pub unsupported: Option<Refusal>,
     pub admission: Option<HoldReason>,
     pub pending: Option<PendingPreparation>,
@@ -835,7 +845,10 @@ pub fn reduce_receipt(
         Some(StaleReason::Connection)
     } else if current.actor.cwd != old.actor.cwd {
         Some(StaleReason::Cwd)
-    } else if current.settings != old.settings || current.account.provider != old.account.provider {
+    } else if current.settings != old.settings
+        || current.account.provider != old.account.provider
+        || current.host_worktree != old.host_worktree
+    {
         Some(StaleReason::Settings)
     } else if current.actor.thread_id != old.actor.thread_id {
         Some(StaleReason::Thread)

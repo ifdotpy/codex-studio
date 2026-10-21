@@ -1004,6 +1004,51 @@ fn preserve_complaint(
     Ok(false)
 }
 
+/// Use ready workspace facts, not the lead's inherited workspace preference.
+fn host_worktree(
+    record: &Value,
+    root: &Value,
+    role: thread::Role,
+    lead: bool,
+) -> Result<Option<thread::HostWorktree>, WorkerError> {
+    if record["provider"] != "claude"
+        || lead
+        || role != thread::Role::Implementer
+        || record["parentId"].as_str().is_none()
+        || record["executionMode"] == "vm"
+        || !((record["worktree"] == true && record["worktreeReady"] == true)
+            || (record["imageWorkspace"] == true && record["imageWorkspaceReady"] == true))
+    {
+        return Ok(None);
+    }
+    let tree = text(record, "cwd")?.ok_or_else(|| invalid("agent/cwd"))?;
+    if !Path::new(&tree).is_absolute() {
+        return Err(invalid("agent/cwd"));
+    }
+    // hostProjectPath survives worktree provisioning. Image copies also retain
+    // imageWorkspaceRepo. The root paths protect the lead for nested workers.
+    let mut fence = Vec::new();
+    for value in [
+        &record["imageWorkspaceRepo"],
+        &record["hostProjectPath"],
+        &root["cwd"],
+        &root["hostProjectPath"],
+    ] {
+        if let Some(path) = value.as_str().filter(|path| !path.is_empty()) {
+            if !Path::new(path).is_absolute() {
+                return Err(invalid("agent/workspace-fence"));
+            }
+            if path != tree && !fence.iter().any(|entry| entry == path) {
+                fence.push(path.to_owned());
+            }
+        }
+    }
+    if fence.is_empty() {
+        return Err(invalid("agent/workspace-fence"));
+    }
+    Ok(Some(thread::HostWorktree { tree, fence }))
+}
+
 pub(super) fn thread_snapshot(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
@@ -1124,6 +1169,7 @@ pub(super) fn thread_snapshot(
                 .map(str::to_owned),
         },
         workspace: thread::WorkspaceReadiness::Ready { progress_directory },
+        host_worktree: host_worktree(record, &root, role, lead)?,
         unsupported,
         admission,
         pending: None,
@@ -1767,5 +1813,97 @@ mod resource_tests {
             Err(WorkerError::PreparationRefused(reason))
                 if reason == "thread-preparation/missing-guidance"
         ));
+    }
+}
+
+#[cfg(test)]
+mod workspace_fence_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn claude_workspace_fence_reaches_thread_launch_options() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
+            AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
+            for (mode, provider, role, ready, fenced) in [
+                ("worktree", "claude", "implementer", true, true),
+                ("image", "claude", "implementer", true, true),
+                ("shared", "claude", "implementer", true, false),
+                ("worktree", "claude", "reviewer", true, false),
+                ("image", "claude", "reviewer", true, false),
+                ("worktree", "claude", "implementer", false, false),
+                ("image", "claude", "implementer", false, false),
+                ("worktree", "codex", "implementer", true, false),
+            ] {
+                let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
+                    "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
+                    "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
+                    "imageWorkspaceRepo":if mode == "image" { json!("/image source") } else { Value::Null },
+                    "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
+                    "imageWorkspace":mode == "image","imageWorkspaceReady":ready,
+                    "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
+                let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
+                    &ThreadFilesystemInputs { progress_directory: None }, None)?;
+                for resumed in [false, true] {
+                    let mut snapshot = snapshot.clone();
+                    snapshot.actor.thread_id = resumed.then(|| "existing-thread".into());
+                    let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                        thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
+                        other => panic!("expected thread launch, got {other:?}"),
+                    };
+                    let options = attempt.params.get("claude").unwrap_or(&Value::Null);
+                    if fenced {
+                        assert_eq!(options["permissionMode"], "bypassPermissions");
+                        assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
+                        let fence: Vec<String> = serde_json::from_str(
+                            options["env"]["CLAUDE_CODE_HOST_WORKTREE_FENCE"].as_str().expect("JSON fence"))
+                            .expect("fence array");
+                        let expected = if mode == "image" {
+                            vec!["/image source", "/parent copy", "/source checkout"]
+                        } else { vec!["/parent copy", "/source checkout"] };
+                        assert_eq!(fence, expected);
+                        let mut current = snapshot.clone();
+                        current.actor.prepare_attempt = Some(attempt.attempt_id.clone());
+                        let receipt = thread::ProviderReceipt {
+                            identity: attempt.receipt_identity(),
+                            thread_id: Some("existing-thread".into()),
+                            fields: Map::new(),
+                            reattached: false,
+                        };
+                        assert!(matches!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
+                            thread::ReceiptOutcome::Accepted { .. }));
+                        current.host_worktree.as_mut().expect("worker fence").fence.push("/changed-source".into());
+                        assert_eq!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
+                            thread::ReceiptOutcome::Stale(thread::StaleReason::Settings));
+                    } else {
+                        assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
+                    }
+                    assert_eq!(attempt.params["sandbox"], "danger-full-access");
+                }
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("production snapshot and provider params");
+    }
+
+    #[test]
+    fn claude_workspace_fence_rejects_missing_or_relative_source() {
+        let mut record = json!({"provider":"claude","role":"implementer","parentId":"lead",
+            "worktree":true,"worktreeReady":true,"cwd":"/worker","hostProjectPath":"relative"});
+        assert!(host_worktree(&record, &json!({}), thread::Role::Implementer, false).is_err());
+        record["hostProjectPath"] = Value::Null;
+        assert!(host_worktree(&record, &json!({}), thread::Role::Implementer, false).is_err());
+        // A lead's workspace preference must not turn it into a fenced worker.
+        assert!(
+            host_worktree(&record, &json!({}), thread::Role::Implementer, true)
+                .expect("lead")
+                .is_none()
+        );
     }
 }
