@@ -452,7 +452,10 @@ mod tests {
     async fn a_child_provision_reserves_only_its_destination() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let project_directory = tempfile::tempdir().expect("temporary project directory");
-        let project = std::fs::canonicalize(project_directory.path()).expect("canonical project");
+        let project =
+            studio_runtime_store::path_identity::CanonicalPath::existing(project_directory.path())
+                .expect("canonical project")
+                .into_path_buf();
         let destination = project.join(".worktrees/codex-agents/child");
         std::fs::create_dir_all(destination.join("project")).expect("child worktree");
         let store = Arc::new(
