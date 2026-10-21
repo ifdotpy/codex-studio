@@ -230,3 +230,19 @@ test("branch rejects missing selected native boundary before native mutation", a
   );
   assert.equal(f.calls(), 0);
 });
+
+test("branch from completed turn preserves a running source and refuses its active point", async () => {
+  const f = fixture();
+  f.session.turns[1].status = "inProgress";
+  const before = structuredClone(f.session);
+  const target = await forkAtTurn(f.session, { lastTurnId: "u1" }, f.deps);
+  assert.deepEqual(f.session, before);
+  assert.equal(target.turns.length, 1);
+  assert.equal(target.turns[0].status, "completed");
+  for (const params of [{}, { lastTurnId: "u2" }])
+    await assert.rejects(
+      forkAtTurn(f.session, params, f.deps),
+      /completed Claude turn/,
+    );
+  assert.equal(f.calls(), 1);
+});

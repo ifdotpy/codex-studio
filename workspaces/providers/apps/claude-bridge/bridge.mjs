@@ -2461,8 +2461,14 @@ async function handle(method, p) {
     return { data: [...queries.keys()], nextCursor: null };
   if (method === "thread/fork") {
     const old = await session(p.threadId);
-    if (queries.get(old.id)?.turn || queries.get(old.id)?.tasks.size)
-      throw new Error("Pause Claude before branching");
+    const active = queries.get(old.id);
+    if (
+      (active?.turn || active?.tasks.size) &&
+      (p.lastTurnId == null || p.lastTurnId === old.turns.at(-1)?.id)
+    )
+      throw new Error(
+        "Select an earlier completed Claude turn before branching",
+      );
     const s = await forkAtTurn(old, p, {
       forkSession,
       getSessionMessages,
