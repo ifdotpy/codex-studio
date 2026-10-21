@@ -500,7 +500,9 @@ fn claude_launch(
         .ok_or_else(|| refused("claude/account-identity"))?;
     let credential_identity =
         text("_credentialIdentity").ok_or_else(|| refused("claude/account-identity"))?;
-    if account_id != format!("claude:{email}") || credential_identity != account_id {
+    if account_id != format!("claude:{email}")
+        || !crate::account_driver::claude_identity::belongs_to(credential_identity, email)
+    {
         return Err(refused("claude/account-identity"));
     }
     let options = profile.get("claudeOptions").unwrap_or(&Value::Null);
@@ -696,7 +698,7 @@ mod tests {
             .join("node_modules/@anthropic-ai/claude-agent-sdk");
         std::fs::create_dir_all(&sdk).expect("sdk dir");
         std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
-        let profile = json!({
+        let mut profile = json!({
             "id": "added", "provider": "claude", "status": "ready", "home": dir.path(), "email": "a@example.test",
             "accountId": "claude:a@example.test",
             "_credentialIdentity": "claude:a@example.test",
@@ -707,7 +709,20 @@ mod tests {
             "STUDIO_NODE_BIN".to_owned(),
             binary.to_string_lossy().into_owned(),
         )]);
-        super::claude_launch(&profile, dir.path(), root.clone(), environment).expect("launch spec");
+        super::claude_launch(&profile, dir.path(), root.clone(), environment.clone())
+            .expect("launch spec");
         assert!(root.is_dir());
+        let identity = crate::account_driver::claude_identity::identity(
+            "a@example.test",
+            Some("org-a"),
+            Some("account-a"),
+        );
+        profile["_credentialIdentity"] = json!(identity);
+        let (launch, _) = super::claude_launch(&profile, dir.path(), root, environment)
+            .expect("organization pin");
+        assert_eq!(
+            launch.environment["STUDIO_CLAUDE_CREDENTIAL_IDENTITY"],
+            identity
+        );
     }
 }

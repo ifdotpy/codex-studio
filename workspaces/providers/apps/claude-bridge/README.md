@@ -20,3 +20,21 @@ Unreadable, changed, unrelated, or unsupported native evidence becomes
 `uncertain`. Automatic recovery must not continue an uncertain turn.
 The reader shares the bounded file and identity checks used for historical
 Bash receipts. The mirror journal still discards a torn final record.
+
+## Account identity
+
+`STUDIO_CLAUDE_ACCOUNT` contains the email. Rust also passes
+`STUDIO_CLAUDE_CREDENTIAL_IDENTITY`, which includes the organization UUID and
+account UUID when available. The format owner is
+`runtime-services/src/account_driver/claude_identity.rs`. Both languages test
+`claude_identity_cases.json` for parity.
+
+The bridge reads UUIDs from SDK metadata or the native `.claude.json` account
+record. The SDK's `organization` field is a display name, not an identity.
+`account/read` reports the UUIDs and `_credentialIdentity`.
+
+An email-only pin can gain UUIDs once. The bridge saves this evidence in
+`<account-server-root>/claude-account-identity` before it submits input or
+returns usage. A restart preserves the pin. A changed or missing UUID then
+blocks the request. The Rust registry uses the same one-way upgrade rule.
+Codex identity and the existing Claude `accountId` remain unchanged.

@@ -87,6 +87,24 @@ impl BridgeSnapshot {
                 .filter(|v| !v.is_empty())
                 .ok_or(BridgeHold::Account)?
         };
+        let credential = self
+            .raw
+            .get("_credentialIdentity")
+            .and_then(Value::as_str)
+            .ok_or(BridgeHold::Account)?;
+        if !crate::account_driver::claude_identity::belongs_to(credential, &identity) {
+            return Err(BridgeHold::Account);
+        }
+        if self.raw.get("_nativeAuthPending") != Some(&json!(true))
+            && !metadata
+                .credential_identity
+                .as_deref()
+                .is_some_and(|observed| {
+                    crate::account_driver::claude_identity::accepts(credential, observed)
+                })
+        {
+            return Err(BridgeHold::Account);
+        }
         if !paths.sdk_present {
             return Err(BridgeHold::Support);
         }
@@ -127,6 +145,16 @@ impl BridgeSnapshot {
                 .map_err(|_| BridgeHold::Options)?,
         );
         env.insert("STUDIO_CLAUDE_ACCOUNT".into(), identity);
+        env.insert(
+            "STUDIO_CLAUDE_CREDENTIAL_IDENTITY".into(),
+            metadata
+                .credential_identity
+                .clone()
+                .filter(|observed| {
+                    crate::account_driver::claude_identity::accepts(credential, observed)
+                })
+                .unwrap_or_else(|| credential.to_owned()),
+        );
         env.insert(
             "STUDIO_CLAUDE_BIN".into(),
             paths.executable.to_string_lossy().into_owned(),

@@ -444,7 +444,12 @@ pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> b
         && row.get("duplicateOf").is_none()
         && !email.is_empty()
         && row.get("accountId").and_then(Value::as_str) == Some(&format!("claude:{email}"))
-        && row.get("_credentialIdentity") == row.get("accountId")
+        && row
+            .get("_credentialIdentity")
+            .and_then(Value::as_str)
+            .is_some_and(|identity| {
+                crate::account_driver::claude_identity::belongs_to(identity, email)
+            })
 }
 
 fn registry_error(pointer: &str, reason: &'static str) -> AccountPolicyError {

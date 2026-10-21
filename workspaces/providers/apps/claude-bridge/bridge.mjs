@@ -1,3 +1,4 @@
+import { createAccountCheck } from "./account-identity.mjs";
 import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { interruptInputQueue } from "./stop-inputs.mjs";
@@ -421,68 +422,11 @@ const settings = (s) => ({
   },
   stderr: (line) => process.stderr.write(line),
 });
-function checkAccount(account) {
-  const reject = (reason, message) => {
-    throw Object.assign(new Error(message), {
-      claudeAccountValidationFailed: true,
-      data: {
-        turnStartOutcome: "not_applied",
-        claudePreparationFailure: "account_validation",
-        claudeAccountFailure: reason,
-      },
-    });
-  };
-  const expected = process.env.STUDIO_CLAUDE_ACCOUNT;
-  if (!expected)
-    reject(
-      "expected_identity",
-      "Claude Code account identity is not configured. No input was submitted.",
-    );
-  if (!account || typeof account !== "object" || Array.isArray(account))
-    reject(
-      "account_metadata",
-      "Claude Code account metadata is missing. No input was submitted.",
-    );
-  if (typeof account.email !== "string" || !account.email.trim())
-    reject(
-      "email_metadata",
-      "Claude Code email metadata is missing. No input was submitted.",
-    );
-  if (account.email !== expected)
-    reject(
-      "identity_mismatch",
-      "Claude Code account or subscription changed: expected " +
-        expected +
-        ", got " +
-        account.email +
-        ". Restore the original login.",
-    );
-  if (typeof account.apiProvider !== "string" || !account.apiProvider)
-    reject(
-      "provider_metadata",
-      "Claude Code API provider metadata is missing. No input was submitted.",
-    );
-  if (account.apiProvider !== "firstParty")
-    reject(
-      "provider_mismatch",
-      "Claude Code API provider is " +
-        account.apiProvider +
-        ", expected firstParty. Restore the original login.",
-    );
-  if (
-    typeof account.subscriptionType !== "string" ||
-    !account.subscriptionType.trim()
-  )
-    reject(
-      "subscription_metadata",
-      "Claude Code subscription metadata is missing. No input was submitted.",
-    );
-  if (account.apiKeySource && account.apiKeySource !== "none")
-    reject(
-      "api_key_source",
-      "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
-    );
-}
+const checkAccount = createAccountCheck({
+  expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
+  expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+  identityPath: path.join(root, "claude-account-identity"),
+});
 async function verifiedAccount(
   q,
   deadline,
@@ -505,6 +449,7 @@ async function verifiedAccount(
       ![
         "account_metadata",
         "email_metadata",
+        "organization_metadata",
         "provider_metadata",
         "subscription_metadata",
       ].includes(error?.data?.claudeAccountFailure) ||
@@ -2194,6 +2139,9 @@ async function handle(method, p) {
       account: {
         type: "claude",
         email: account.email,
+        organizationUuid: account.organizationUuid,
+        accountUuid: account.accountUuid,
+        _credentialIdentity: account._credentialIdentity,
         planType: account.subscriptionType,
       },
       requiresOpenaiAuth: false,
