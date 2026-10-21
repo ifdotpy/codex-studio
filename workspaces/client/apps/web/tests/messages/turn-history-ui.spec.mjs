@@ -6,19 +6,18 @@ import {
   readTestState,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production UI with isolated files and recorded transcript fixtures. No model calls.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 test("Turn History Ui", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
 }) => {
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), "studio-turn-history-"));
   const report = join(
     directory,
@@ -33,15 +32,9 @@ test("Turn History Ui", async ({
       "base64",
     ),
   );
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      directory,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const proc = spawn(process.execPath, [rustUiFixture, directory], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let page,
     log = "";
   proc.stderr.on("data", (d) => (log += d));

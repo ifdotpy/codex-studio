@@ -3,10 +3,11 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
+  queryFixtureDatabase,
 } from "../playwright.mjs";
 // Real App, Conversation, and RxDB. Only an isolated fixture receives writes.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,17 +22,9 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
   );
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-mobile-send-ui-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      temporary,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, temporary], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let context,
     server,
     log = "";
@@ -451,18 +444,18 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     assert.equal((await page.evaluate(() => window.httpSend)).id, realBody.id);
     await page.reload();
     await input.waitFor();
-    const counts = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          "-c",
-          'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); print(json.dumps([db.execute("SELECT COUNT(*) FROM runtime_events WHERE id=?",(sys.argv[2],)).fetchone()[0],db.execute("SELECT COUNT(*) FROM messages WHERE id=?",(sys.argv[2],)).fetchone()[0]]))',
-          join(temporary, "canvas.sqlite3"),
-          realBody.id,
-        ],
-        { encoding: "utf8" },
-      ),
-    );
+    const counts = [
+      queryFixtureDatabase(
+        temporary,
+        "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
+        realBody.id,
+      )[0].n,
+      queryFixtureDatabase(
+        temporary,
+        "SELECT COUNT(*) AS n FROM messages WHERE id=?",
+        realBody.id,
+      )[0].n,
+    ];
     assert.deepEqual(counts, [1, 1]);
     expect(errors).toEqual([]);
     console.log(

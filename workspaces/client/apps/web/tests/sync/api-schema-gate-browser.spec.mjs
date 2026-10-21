@@ -13,6 +13,7 @@ import {
   expect,
   spawnFixture,
   test,
+  rustUiFixture,
 } from "../playwright.mjs";
 
 test.use({ apiSchemaFixtureHeaders: false });
@@ -20,20 +21,10 @@ test.use({ apiSchemaFixtureHeaders: false });
 const SILENT_HANDSHAKE_RETRY_ADVANCE_MS = 16_000;
 
 async function startColdGateFixture() {
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cold-gate-"));
-  const fixture = spawnFixture(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CODEX_PLAYWRIGHT_SIGNED_OUT: "1" },
-    },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;
@@ -476,18 +467,10 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       browserFailures.push(`${response.status()} ${response.url()} ${body}`);
     }
   });
-  const fixture = spawnFixture(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CODEX_PLAYWRIGHT_WEB_DIST: webDist },
-    },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, CODEX_STUDIO_WEB_DIST: webDist },
+  });
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;
@@ -864,17 +847,11 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
 test("a stream mismatch keeps the transcript and draft while stopping every request", async ({
   page,
 }) => {
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-stream-gate-"));
-  const fixture = spawnFixture(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env },
+  });
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;
@@ -952,15 +929,10 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
   test.setTimeout(120_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cache-variant-"));
-  const fixture = spawnFixture(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env },
+  });
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;

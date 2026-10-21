@@ -87,7 +87,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     env: {
       ...process.env,
       EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
-      FIXTURE_HOLD_WORKERS: "1",
+      FIXTURE_HOLD: "workers",
     },
   });
   let browser,

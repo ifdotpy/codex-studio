@@ -6,6 +6,7 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
+  rustFixtureStateDirectory,
 } from "../playwright.mjs";
 // Built App and a private runtime fixture. No model calls or user state.
 import assert from "node:assert/strict";
@@ -63,7 +64,9 @@ async function runMessageReceiptScenario(
 
   const changeFixture = async (agent, phase, target, token) => {
     const value = { id, uncertainId, text, uncertainText, observedFirst };
-    const db = new DatabaseSync(join(temporary, "canvas.sqlite3"));
+    const db = new DatabaseSync(
+      join(rustFixtureStateDirectory(temporary), "canvas.sqlite3"),
+    );
     db.exec("PRAGMA busy_timeout=5000");
     // The store's entity triggers call functions the server registers. This
     // connection supplies stand-ins; the server rebuilds the entities it serves.

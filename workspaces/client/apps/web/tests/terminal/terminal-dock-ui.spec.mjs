@@ -8,6 +8,7 @@ import {
   syncIdentityFixture,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
+  rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -739,15 +740,9 @@ test("Terminal dock", async () => {
 
   // The same dock also exercises real shell input and saved output through the HTTP server.
   const liveRoot = await mkdtemp(join(tmpdir(), "codex-terminal-live-"));
-  const fixture = spawn(
-    process.env.CODEX_AGENTS_PYTHON || "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      liveRoot,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, liveRoot], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let fixtureLog = "",
     liveBrowser,
     liveOrigin,
