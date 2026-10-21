@@ -97,7 +97,7 @@ macro_rules! truthy {
 
 /// The indexed agent fields; see the module documentation. Changing this list
 /// changes the table: it needs a new dated migration that rebuilds the table.
-pub const AGENT_COLUMNS: [AgentColumn; 42] = [
+pub const AGENT_COLUMNS: [AgentColumn; 41] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -169,12 +169,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 42] = [
         "start_attempt_connection_generation",
         "",
         "record->>'$.startAttempt.connectionGeneration'",
-        "",
-    ),
-    column(
-        "start_attempt_capacity_retry_id",
-        "TEXT",
-        "record->>'$.startAttempt.capacityRetryId'",
         "",
     ),
     column(
@@ -328,8 +322,31 @@ fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
 /// Bring `runtime_agents` to this format; the first startup step, before any
 /// index on the columns is created. `RuntimeStore::open` calls it.
 pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
-    if crate::schema::table_exists(transaction, AGENT_TABLE)? && !has_columns(transaction)? {
-        migrate_2026_10_20_columns(transaction)?;
+    if crate::schema::table_exists(transaction, AGENT_TABLE)? {
+        migrate_2026_10_21_capacity_retry_column(transaction)?;
+        if !has_columns(transaction)? {
+            migrate_2026_10_20_columns(transaction)?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove the obsolete capacity-start column and its dependent v4 wake index.
+/// Startup installs the replacement index later in the same transaction. Records,
+/// rowids and triggers stay unchanged; reopening after commit is a no-op. Keep
+/// this migration until every state has opened with a build of 2026-10-21 or later.
+fn migrate_2026_10_21_capacity_retry_column(transaction: &Transaction<'_>) -> StoreResult<()> {
+    let has_legacy_column: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('runtime_agents') \
+         WHERE name='start_attempt_capacity_retry_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_legacy_column {
+        transaction.execute_batch(
+            "DROP INDEX IF EXISTS runtime_agent_account_wake_candidates_v4;
+             ALTER TABLE runtime_agents DROP COLUMN start_attempt_capacity_retry_id;",
+        )?;
     }
     Ok(())
 }
@@ -619,6 +636,96 @@ mod tests {
             "a second open changes nothing"
         );
         assert_eq!(rows(&reader), rows_before);
+    }
+
+    #[tokio::test]
+    async fn migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("store opens");
+        store
+            .transaction(|tx| {
+                for agent in agents() {
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                        rusqlite::params![agent["id"].as_str(), agent.to_string()],
+                    )?;
+                }
+                let triggers = tx
+                    .prepare(
+                        "SELECT sql FROM sqlite_master \
+                         WHERE type='trigger' AND tbl_name='runtime_agents'",
+                    )?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Recreate the previous generated-column format, including the
+                // dependent partial index that must be dropped before its column.
+                let old_table = table_sql("runtime_agents_capacity_fixture").replace(
+                    "record TEXT NOT NULL",
+                    "start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
+                 (record->>'$.startAttempt.capacityRetryId') STORED,record TEXT NOT NULL",
+                );
+                tx.execute_batch(&old_table)?;
+                tx.execute_batch(
+                    "INSERT INTO runtime_agents_capacity_fixture(rowid,id,record)
+                   SELECT rowid,id,record FROM runtime_agents;
+                 ALTER TABLE runtime_agents RENAME TO runtime_agents_before_capacity_fixture;
+                 DROP TABLE runtime_agents_before_capacity_fixture;
+                 ALTER TABLE runtime_agents_capacity_fixture RENAME TO runtime_agents;
+                 CREATE INDEX runtime_agent_account_wake_candidates_v4
+                   ON runtime_agents(account_key,id)
+                   WHERE start_attempt_action='capacity' AND start_attempt_submitted=0
+                     AND capacity_retry_id=start_attempt_capacity_retry_id AND status='starting';",
+                )?;
+                for trigger in triggers {
+                    tx.execute_batch(&trigger)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("previous format installs");
+        let before = {
+            let reader = store.test_reader().expect("reader");
+            (rows(&reader), journal(&reader), catalog(&reader, "trigger"))
+        };
+        drop(store);
+        let mut indexes_after = None;
+        for _ in 0..2 {
+            let store = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("old state opens");
+            let reader = store.test_reader().expect("reader");
+            assert_eq!(rows(&reader), before.0);
+            assert_eq!(journal(&reader), before.1, "migration journals nothing");
+            assert_eq!(catalog(&reader, "trigger"), before.2);
+            let column_count: i64 = reader
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_xinfo('runtime_agents') \
+                 WHERE name='start_attempt_capacity_retry_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("column catalog");
+            assert_eq!(column_count, 0);
+            let indexes = catalog(&reader, "index");
+            assert!(
+                !indexes
+                    .iter()
+                    .any(|name| name == "runtime_agent_account_wake_candidates_v4")
+            );
+            assert!(
+                indexes.contains(
+                    &crate::SchedulerRepository::account_wake_index_definition()
+                        .name
+                        .to_owned()
+                )
+            );
+            if let Some(previous) = &indexes_after {
+                assert_eq!(&indexes, previous, "reopening changes no indexes");
+            }
+            indexes_after = Some(indexes);
+        }
     }
 
     /// A record write updates the columns; malformed JSON is refused.

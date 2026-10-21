@@ -73,8 +73,14 @@ impl InstallRoot {
     }
 }
 
-/// Resolve the package root from the installed executable or this source build.
+/// Resolve the package root from the executable, or the source build in debug mode.
 pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
+    resolve_install_root_from_executable(std::env::current_exe().ok().as_deref())
+}
+
+fn resolve_install_root_from_executable(
+    executable: Option<&Path>,
+) -> Result<InstallRoot, WorkerError> {
     let located = || {
         WorkerError::PreparationRefused(
             "runtime-server/install-root: expected the Claude bridge directory (scripts/claude_bridge when installed, workspaces/providers/apps/claude-bridge in a source checkout) beside the executable or under the source checkout".into(),
@@ -85,7 +91,7 @@ pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
         root.claude_bridge_dir().join("bridge.mjs").is_file()
     };
 
-    if let Ok(executable) = std::env::current_exe() {
+    if let Some(executable) = executable {
         for ancestor in executable.ancestors() {
             let candidate = if ancestor.file_name().is_some_and(|name| name == "bin") {
                 ancestor.parent().unwrap_or(ancestor)
@@ -98,10 +104,13 @@ pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
         }
     }
 
-    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    let source_root = source_root.canonicalize().map_err(|_| located())?;
-    if is_root(&source_root) {
-        return Ok(InstallRoot(source_root));
+    #[cfg(debug_assertions)]
+    {
+        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+        let source_root = source_root.canonicalize().map_err(|_| located())?;
+        if is_root(&source_root) {
+            return Ok(InstallRoot(source_root));
+        }
     }
     Err(located())
 }
@@ -2015,6 +2024,39 @@ mod install_root_tests {
             packaged_layout.claude_bridge_dir(),
             packaged_scripts.join("claude_bridge")
         );
+    }
+
+    #[test]
+    fn install_root_resolves_packaged_bridge_relative_to_executable() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("package");
+        let bridge = root.join("scripts/claude_bridge");
+        fs::create_dir_all(&bridge).unwrap();
+        fs::write(bridge.join("bridge.mjs"), "").unwrap();
+        let executable = root.join("bin/studio-runtime-server");
+        let resolved = super::resolve_install_root_from_executable(Some(&executable)).unwrap();
+        assert_eq!(resolved.workspace_root(), root);
+    }
+
+    #[test]
+    fn install_root_source_fallback_is_debug_only() {
+        // No executable location can find a bridge in this case. A release
+        // test build must refuse even while its original checkout still exists.
+        let resolved = super::resolve_install_root_from_executable(None);
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            resolved.unwrap().workspace_root(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../..")
+                .canonicalize()
+                .unwrap()
+        );
+        #[cfg(not(debug_assertions))]
+        assert!(matches!(
+            resolved,
+            Err(super::WorkerError::PreparationRefused(message))
+                if message.starts_with("runtime-server/install-root:")
+        ));
     }
 
     #[tokio::test]

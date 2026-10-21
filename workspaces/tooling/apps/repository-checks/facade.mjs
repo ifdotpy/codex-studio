@@ -829,7 +829,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
-      label: "Rust state migration witness",
+      label: "Rust state migration witnesses",
       commands: [
         [
           "cargo",
@@ -845,14 +845,14 @@ function fastTierCommands(root) {
             "studio-runtime-store",
             "--lib",
             "agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
+            "agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once",
           ],
         ],
       ],
       options: {
-        selector:
-          "runtime-store agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
+        selector: "runtime-store agent_columns::tests::migration_",
         reason:
-          "Check that a pre-2026-10-20 state migrates to the agent columns once.",
+          "Check that older states migrate to current agent columns and wake indexes once.",
       },
     },
     {

@@ -42,6 +42,10 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     fast.command,
     /migration_2026_10_20_columns_round_trips_an_old_state_once/,
   );
+  assert.match(
+    fast.command,
+    /migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once/,
+  );
   assert.match(fast.command, /test:unit:fast/);
   assert.doesNotMatch(
     fast.command,
