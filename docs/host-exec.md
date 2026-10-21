@@ -59,6 +59,17 @@ A different payload with the same ID fails. A pending receipt after a restart
 reports an unknown outcome. It does not repeat the command or a source write.
 A lost host owner leaves the slot leased for inspection.
 
+A Studio restart during a call does not lose its result. Studio saves the exact
+guest request (request ID and parameters) on the tool receipt before it sends it.
+The guest keeps a receipt for each `host.exec` request ID. After the restart,
+Studio sends the same request again (`codex_host_exec.resume`). The guest returns
+its saved answer, or it waits for the command that still runs. It never starts
+the command again. The waiting caller then gets the real result, with an empty
+`output` and a `recovery` note: read the output with `status`. An explicit guest
+error also reaches the caller. While the resume can still succeed, Studio keeps
+back the saved "outcome unknown" answer. When the guest gives no answer after
+`RESUME_ATTEMPTS` tries, the caller gets that answer.
+
 A failure before the run request (slot preparation, manifest, or transfer)
 releases the Mac slot. The saved status records `sync_failed` and `preRunError`.
 The Mac slot gets a new generation, so failed guest staging is never used again.
@@ -293,6 +304,7 @@ Run checks one at a time:
 
 ```sh
 python3 -B workspaces/runtime/apps/server/tests/host-exec-contract.py
+python3 -B workspaces/runtime/apps/server/tests/host-exec-restart-contract.py
 python3 -B workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py
 python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime
