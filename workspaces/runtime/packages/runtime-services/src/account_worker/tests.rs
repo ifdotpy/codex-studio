@@ -9,6 +9,7 @@ mod claude_preparation;
 mod continuation_start;
 mod exited_generation_callback;
 mod idle_unload;
+mod input_origin;
 mod journal_cost;
 mod late_thread_reply;
 mod login_completion;

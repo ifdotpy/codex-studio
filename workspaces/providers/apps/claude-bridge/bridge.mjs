@@ -1,3 +1,4 @@
+import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { browserEnvironment } from "./browser-environment.mjs";
 import {
@@ -2016,6 +2017,19 @@ async function startSession(s, active, p) {
         }
         persistLater(s, active);
       } else if (m.type === "result") {
+        // A shouldQuery:false prefix produces its own zero-turn receipt.
+        // Its UUID is distinct from the final part that owns this turn.
+        if (
+          m.num_turns === 0 &&
+          active.input.nonQueryIds.delete(m.user_message_uuid)
+        ) {
+          if (!m.is_error) continue;
+          // A failed prefix must not leave its remaining parts on this query.
+          // Any part already handed to the SDK keeps an uncertain outcome.
+          await finishTurn(s, active, m);
+          active.input.withdraw();
+          break;
+        }
         if (
           (active.pendingSteers.size || active.reservingInput) &&
           !m.is_error &&
@@ -2082,17 +2096,24 @@ function newActive(turn) {
   active.ready.catch(() => {});
   return active;
 }
-function userMessage(s, turn, blocks, id) {
-  const message = {
-    type: "user",
-    uuid: nativeUserMessageId(id || turn.id),
-    session_id: s.nativeId || s.id,
-    parent_tool_use_id: null,
-    message: { role: "user", content: blocks },
-  };
-  Object.defineProperty(message, "studioInputIdentity", { value: id });
+function userMessage(s, turn, groups, id) {
+  const messages = sdkInputMessages(
+    s.nativeId || s.id,
+    id || turn.id,
+    groups,
+    nativeUserMessageId,
+  );
+  const message = messages.at(-1);
+  const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  if (messages.length > 1) {
+    item.nativeIds = messages.map((part) => part.uuid);
+    // The queue removes this whole submission before yielding its first part.
+    // A partial SDK read is uncertain and must never be reported as unapplied.
+    Object.defineProperty(message, "studioInputBatch", { value: messages });
+  }
   return message;
 }
+
 async function handle(method, p) {
   if (commandMethods.has(method)) return commands.handle(method, p);
   if (
@@ -2574,8 +2595,9 @@ async function handle(method, p) {
       nativeCommand = explicitNativeCommand(p.claudeCommand, commands);
       // Unknown slash text remains ordinary user input; never extract commands from it.
     }
-    const blocks = await content(
+    const groups = await inputGroups(
       nativeCommand ? [{ type: "text", text: nativeCommand }] : p.input,
+      content,
     );
     const turnId = randomUUID();
     const turn = {
@@ -2592,6 +2614,12 @@ async function handle(method, p) {
         },
       ],
     };
+    const message = userMessage(
+      s,
+      turn,
+      groups,
+      p.clientUserMessageId || turn.id,
+    );
     let active = queries.get(s.id);
     const startedAt = Date.now();
     const deadline = startedAt + PREPARATION_TIMEOUT_MS;
@@ -2721,9 +2749,7 @@ async function handle(method, p) {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },
     });
-    active.input.push(
-      userMessage(s, turn, blocks, p.clientUserMessageId || turn.id),
-    );
+    active.input.push(message);
     turn.startOutcome = "accepted";
     // The reply reports the turn as Claude accepted it. The SDK stream runs
     // while the receipt saves, so a fast turn may already have ended; its
@@ -2771,7 +2797,7 @@ async function handle(method, p) {
     active.pendingSteers.add(id);
     let item;
     try {
-      const blocks = await content(p.input);
+      const groups = await inputGroups(p.input, content);
       if (
         active.turn !== turn ||
         queries.get(s.id) !== active ||
@@ -2789,6 +2815,7 @@ async function handle(method, p) {
         deliveryStatus: "preparing",
       };
       turn.items.push(item);
+      const message = userMessage(s, turn, groups, id);
       try {
         await persist(s);
       } catch (error) {
@@ -2802,7 +2829,7 @@ async function handle(method, p) {
         throw notSubmitted(
           "Claude stopped before this steer could be submitted",
         );
-      active.input.push(userMessage(s, turn, blocks, id));
+      active.input.push(message);
       item.deliveryStatus = "submitted";
       return { turnId: turn.id };
     } catch (error) {

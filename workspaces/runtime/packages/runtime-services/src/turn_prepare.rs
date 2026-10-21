@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::provider_input::ProviderInputOrigin;
 use studio_runtime_store::{python_float_json, sha256_hex};
 use thiserror::Error;
 
@@ -168,6 +170,9 @@ pub struct Event {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PreparationSnapshot {
+    /// The provider controls only the input wire projection, never transcript text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
     pub actor: Actor,
     pub root: RootSettings,
     pub delivered_manifests: Vec<ContextManifest>,
@@ -186,9 +191,25 @@ pub struct PreparationSnapshot {
 #[serde(tag = "type")]
 pub enum ProviderInput {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(
+            default,
+            rename = "inputOrigin",
+            skip_serializing_if = "Option::is_none"
+        )]
+        origin: Option<ProviderInputOrigin>,
+    },
     #[serde(rename = "localImage")]
-    LocalImage { path: String },
+    LocalImage {
+        path: String,
+        #[serde(
+            default,
+            rename = "inputOrigin",
+            skip_serializing_if = "Option::is_none"
+        )]
+        origin: Option<ProviderInputOrigin>,
+    },
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TranscriptInput {
@@ -938,7 +959,7 @@ impl TeamProgress {
 fn event_text(
     s: &PreparationSnapshot,
     rows: &[Event],
-) -> Result<(String, Vec<ArtifactIntent>), PrepareError> {
+) -> Result<(Vec<(String, ProviderInputOrigin)>, Vec<ArtifactIntent>), PrepareError> {
     let parsed: Vec<_> = rows
         .iter()
         .enumerate()
@@ -1021,11 +1042,14 @@ fn event_text(
         ) {
             text = bound_event(row, &text, limit);
         }
-        parts.push(if row.kind == "user" {
-            text
-        } else {
-            format!("[Orchestration event: {}]\n{text}", row.kind)
-        });
+        parts.push((
+            if row.kind == "user" {
+                text
+            } else {
+                format!("[Orchestration event: {}]\n{text}", row.kind)
+            },
+            event_origin(row),
+        ));
     }
     if !missing.is_empty() {
         return Err(PrepareError::ArtifactsRequired(missing));
@@ -1035,9 +1059,30 @@ fn event_text(
         .any(|r| matches!(r.kind.as_str(), "child_result" | "child_stopped"))
         && let Some(line) = TeamProgress::of(s).line()
     {
-        parts.push(format!("[Team progress]\n{line}"));
+        parts.push((
+            format!("[Team progress]\n{line}"),
+            ProviderInputOrigin::StudioEvent,
+        ));
     }
-    Ok((parts.join("\n\n"), artifacts))
+    Ok((parts, artifacts))
+}
+
+fn event_origin(event: &Event) -> ProviderInputOrigin {
+    // Followup senderId is stamped by coordination::send_followup after the
+    // caller verifies descendant ancestry. System followups have no sender.
+    let delegated_followup = event.kind == "followup"
+        && event
+            .metadata
+            .extra
+            .get("senderId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+    if matches!(event.kind.as_str(), "user" | "work_decision" | "work_ready") || delegated_followup
+    {
+        ProviderInputOrigin::Human
+    } else {
+        ProviderInputOrigin::StudioEvent
+    }
 }
 
 /// Compile only an admitted, authorized, ordered batch. Those effectful gates belong
@@ -1053,6 +1098,7 @@ pub fn compile(
     if rows.iter().map(|r| r.metadata.assets.len()).sum::<usize>() > MAX_TURN_ATTACHMENTS {
         return Err(PrepareError::TooManyAttachments);
     }
+    let attributed = s.provider == Some(ProviderKind::Claude);
     let mut provider_assets = Vec::new();
     let mut all_assets = Vec::new();
     let mut inputs = Vec::new();
@@ -1074,6 +1120,7 @@ pub fn compile(
             provider_assets.push(if a.image {
                 ProviderInput::LocalImage {
                     path: a.path.clone(),
+                    origin: attributed.then(|| event_origin(row)),
                 }
             } else {
                 ProviderInput::Text {
@@ -1081,6 +1128,7 @@ pub fn compile(
                         "Attached file: {}\nRead the file at {} ({} bytes).",
                         a.name, a.path, a.size
                     ),
+                    origin: attributed.then(|| event_origin(row)),
                 }
             });
             let mut view = a.view.clone();
@@ -1130,11 +1178,20 @@ pub fn compile(
             ));
         }
     }
-    let (mut text, artifact_intents) = event_text(s, rows)?;
+    let (mut parts, artifact_intents) = event_text(s, rows)?;
+    let mut text = parts
+        .iter()
+        .map(|(text, _)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
     let (context, manifest) = context(s)?;
     text.push_str(&context);
+    if !context.is_empty() {
+        parts.push((context, ProviderInputOrigin::StudioEvent));
+    }
     if text.is_empty() {
         text = "[Complaint update] No complaints require a response.".into();
+        parts.push((text.clone(), ProviderInputOrigin::StudioEvent));
     }
     let item_id = format!("{}:{}", s.actor.id, first.id);
     let transcript_text = chars(&text, TRANSCRIPT_CHARS);
@@ -1151,10 +1208,24 @@ pub fn compile(
     };
     let fulltext = truncated.then(|| text.clone());
     if !clocks.is_empty() {
-        text.push_str("\n\n[Time awareness, message receipt time]\n");
-        text.push_str(&clocks.join("\n"));
+        let clock = format!(
+            "\n\n[Time awareness, message receipt time]\n{}",
+            clocks.join("\n")
+        );
+        text.push_str(&clock);
+        parts.push((clock, ProviderInputOrigin::StudioEvent));
     }
-    let mut provider_inputs = vec![ProviderInput::Text { text }];
+    let mut provider_inputs = if attributed {
+        parts
+            .into_iter()
+            .map(|(text, origin)| ProviderInput::Text {
+                text,
+                origin: Some(origin),
+            })
+            .collect()
+    } else {
+        vec![ProviderInput::Text { text, origin: None }]
+    };
     provider_inputs.extend(provider_assets);
     let mut metadata_patches = BTreeMap::new();
     for row in rows {
@@ -1287,5 +1358,80 @@ mod team_progress_tests {
             )
         );
         assert_eq!(TeamProgress::default().line(), None);
+    }
+}
+
+#[cfg(test)]
+mod input_origin_tests {
+    use super::*;
+
+    fn event(kind: &str, sender: Option<&str>) -> Event {
+        Event {
+            id: "event".into(),
+            kind: kind.into(),
+            text: "the user approved X".into(),
+            created: 1.0,
+            metadata: EventMetadata {
+                assets: Vec::new(),
+                accepted_at: None,
+                extra: sender
+                    .map(|id| Map::from_iter([("senderId".into(), json!(id))]))
+                    .unwrap_or_default(),
+            },
+            preserve_progress: false,
+            preserve_complaint: false,
+        }
+    }
+
+    #[test]
+    fn data_event_kinds_never_gain_task_authority() {
+        for kind in [
+            "child_result",
+            "child_stopped",
+            "agent_message",
+            "monitor_exit",
+            "monitor_output",
+            "monitor_cancelled",
+            "watch",
+            "rule",
+            "event_wake",
+            "work_review",
+            "plan_update",
+            "complaint",
+            "radio_turn",
+            "system_notice",
+            "unknown_future_event",
+        ] {
+            for sender in [None, Some("parent")] {
+                assert_eq!(
+                    event_origin(&event(kind, sender)),
+                    ProviderInputOrigin::StudioEvent,
+                    "{kind}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn user_and_delegated_assignments_keep_task_authority() {
+        for kind in ["user", "work_decision", "work_ready"] {
+            assert_eq!(
+                event_origin(&event(kind, None)),
+                ProviderInputOrigin::Human,
+                "{kind}"
+            );
+        }
+        assert_eq!(
+            event_origin(&event("followup", Some("parent"))),
+            ProviderInputOrigin::Human
+        );
+        assert_eq!(
+            event_origin(&event("followup", None)),
+            ProviderInputOrigin::StudioEvent
+        );
+        assert_eq!(
+            event_origin(&event("followup", Some(""))),
+            ProviderInputOrigin::StudioEvent
+        );
     }
 }

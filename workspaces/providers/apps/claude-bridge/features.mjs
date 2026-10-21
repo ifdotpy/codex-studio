@@ -138,6 +138,15 @@ export function usageTokens(usage) {
 }
 export class InputQueue {
   values = [];
+  nonQueryIds = new Set();
+  pending = [];
+  // Stop removes every SDK message that has not crossed the iterator boundary.
+  withdraw() {
+    const messages = this.pending.splice(0);
+    for (const value of this.values.splice(0))
+      messages.push(...(value.studioInputBatch || [value]));
+    return messages;
+  }
   wake = null;
   closed = false;
   push(value) {
@@ -156,7 +165,15 @@ export class InputQueue {
       if (!this.values.length)
         await new Promise((resolve) => (this.wake = resolve));
       if (this.closed) break;
-      if (this.values.length) yield this.values.shift();
+      if (this.values.length) {
+        const value = this.values.shift();
+        this.pending = [...(value.studioInputBatch || [value])];
+        while (this.pending.length && !this.closed) {
+          const message = this.pending.shift();
+          if (message.shouldQuery === false) this.nonQueryIds.add(message.uuid);
+          yield message;
+        }
+      }
     }
   }
 }

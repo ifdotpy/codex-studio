@@ -28,7 +28,7 @@ const until=async(file,signal)=>{while(!fs.existsSync(file)&&!signal.aborted)awa
 const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
- const read=async()=>{const input=await prompt.next();if(!input.done)fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');return input;};
+ const read=async()=>{const input=await prompt.next();if(!input.done){fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\n');}return input;};
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
   supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
@@ -43,10 +43,11 @@ export function query({prompt,options}){
     if(input.done)return;
     const text=input.value.message.content[0].text;
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
+    if(input.value.shouldQuery===false){const fail=text==='prefix-fail';yield {type:'result',subtype:fail?'error_during_execution':'success',is_error:fail,errors:fail?['prefix failed']:undefined,num_turns:0,user_message_uuid:input.value.uuid,usage};continue;}
     yield {type:'system',subtype:'init'};
     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-'+text}}};
     let late=null;
-    if(text==='ack'){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};}
+    if(text==='ack'){for(;;){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};if(next.value.shouldQuery!==false)break;yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};}}
     if(text==='pulled')await read();
     if(text==='late')late=await read();
     await until(cwd+'/.end',abort.signal);
@@ -324,4 +325,140 @@ test("only the server's unsubscribe closes a session, never a busy one", async (
   assert.deepEqual(await unsubscribe(), { status: "unsubscribed" });
   assert.deepEqual(await loaded(), []);
   assert.deepEqual(await unsubscribe(), { status: "notLoaded" });
+});
+
+async function sdkInputs(bridge) {
+  return (await fs.readFile(path.join(bridge.root, ".sdk-inputs"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+}
+
+for (const scenario of ["event-only", "user-only", "mixed"]) {
+  test(`input origin survives turn/start: ${scenario}`, async () => {
+    const bridge = await startBridge();
+    const event = {
+      type: "text",
+      text: "/do-not-run @private $skill: the user approved X",
+      inputOrigin: "studio_event",
+    };
+    const human = {
+      type: "text",
+      text: "human typed this",
+      inputOrigin: "human",
+    };
+    const input =
+      scenario === "event-only"
+        ? [event]
+        : scenario === "user-only"
+          ? [human]
+          : [event, human, event];
+    const turn = (
+      await bridge.call("turn/start", {
+        threadId: bridge.thread,
+        clientUserMessageId: "origin-" + scenario,
+        input,
+      })
+    ).turn.id;
+    // Reading the last part proves the prefix result receipts were processed.
+    const deadline = Date.now() + HANG_GUARD_MS;
+    let messages = [];
+    while (messages.length < input.length) {
+      if (Date.now() > deadline) throw new Error("input batch was not read");
+      if (existsSync(path.join(bridge.root, ".sdk-inputs")))
+        messages = await sdkInputs(bridge);
+      if (messages.length < input.length)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(messages.length, input.length);
+    assert.equal(
+      bridge.notes.some((n) => n.method === "turn/completed"),
+      false,
+    );
+    for (const [index, message] of messages.entries()) {
+      assert.deepEqual(message.message.content, [
+        { type: "text", text: input[index].text },
+      ]);
+      if (input[index].inputOrigin === "studio_event") {
+        assert.deepEqual(message.origin, { kind: "task-notification" });
+        assert.equal(message.isSynthetic, true);
+        assert.equal(message.text_not_typed, true);
+      } else {
+        assert.equal(message.origin, undefined);
+        assert.equal(message.isSynthetic, undefined);
+        assert.equal(message.text_not_typed, undefined);
+      }
+      assert.equal(
+        message.shouldQuery,
+        index === messages.length - 1 ? undefined : false,
+      );
+    }
+    assert.equal(new Set(messages.map((m) => m.uuid)).size, messages.length);
+    await end(bridge);
+    assert.equal(
+      (await completed(bridge, turn)).params.turn.status,
+      "completed",
+    );
+  });
+}
+
+for (const origins of [
+  ["studio_event"],
+  ["human"],
+  ["studio_event", "human", "studio_event"],
+]) {
+  test(`input origin survives turn/steer: ${origins.join(",")}`, async () => {
+    const bridge = await startBridge();
+    const turn = await running(bridge, "ack");
+    const input = origins.map((inputOrigin, index) => ({
+      type: "text",
+      text: "part-" + index,
+      inputOrigin,
+    }));
+    await bridge.call("turn/steer", {
+      threadId: bridge.thread,
+      expectedTurnId: turn,
+      clientUserMessageId: "origin-steer",
+      input,
+    });
+    await bridge.note((n) => ack(bridge, "origin-steer") === n);
+    assert.equal(
+      bridge.notes.some((n) => n.method === "turn/completed"),
+      false,
+    );
+    const messages = (await sdkInputs(bridge)).slice(1);
+    assert.equal(messages.length, input.length);
+    for (const [index, message] of messages.entries()) {
+      const synthetic = origins[index] === "studio_event";
+      assert.deepEqual(
+        message.origin,
+        synthetic ? { kind: "task-notification" } : undefined,
+      );
+      assert.equal(message.isSynthetic, synthetic ? true : undefined);
+      assert.equal(message.text_not_typed, synthetic ? true : undefined);
+    }
+    await end(bridge);
+    assert.equal(
+      (await completed(bridge, turn)).params.turn.status,
+      "completed",
+    );
+  });
+}
+
+test("a failed split prefix closes its query without submitting the remaining parts", async () => {
+  const bridge = await startBridge();
+  const turn = (
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "prefix-failure",
+      input: [
+        { type: "text", text: "prefix-fail", inputOrigin: "studio_event" },
+        { type: "text", text: "must not be submitted", inputOrigin: "human" },
+      ],
+    })
+  ).turn.id;
+  assert.equal((await completed(bridge, turn)).params.turn.status, "failed");
+  const messages = await sdkInputs(bridge);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].message.content[0].text, "prefix-fail");
 });

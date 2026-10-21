@@ -1371,6 +1371,7 @@ pub(super) fn submission_snapshot(
     let concurrency = root_concurrency(&root)?;
     Ok((
         turn::PreparationSnapshot {
+            provider: Some(intent.provider),
             actor: turn::Actor {
                 id: intent.agent_id.clone(),
                 root_id: root_id.into(),
