@@ -1347,7 +1347,7 @@ mod child_turn_parent_tests {
             tx.execute("INSERT INTO runtime_work(id,record) VALUES('task',?1)",
                 [json!({"id":"task","rootId":"lead","owner":"child","status":"running","updated":1}).to_string()])?;
             Ok(())
-        }).await.unwrap();
+        }).await.expect("test fixture value");
         assert!(finish(&store, &intent, "completed").await);
         let events = parent_events(&store);
         assert_eq!(events.len(), 1);
@@ -1355,7 +1355,7 @@ mod child_turn_parent_tests {
         let payload: serde_json::Value = events[0].2.clone();
         assert_eq!(payload["result"], "done");
         let stall: studio_runtime_schema::agent_progress::AgentStall =
-            serde_json::from_value(payload["stall"].clone()).unwrap();
+            serde_json::from_value(payload["stall"].clone()).expect("test fixture value");
         assert_eq!(stall.task_id, "task");
         assert!(stall.since >= 1.0);
         assert!(finish(&store, &intent, "completed").await);

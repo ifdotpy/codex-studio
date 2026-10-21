@@ -177,23 +177,23 @@ mod tests {
 
     #[test]
     fn idle_assignment_stalls_but_live_commands_and_submitted_work_do_not() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = Connection::open_in_memory().expect("test fixture value");
         connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(json_extract(record,'$.agent'),json_extract(record,'$.status'));
-            CREATE TABLE runtime_execution_runs(agent TEXT, created REAL, record TEXT);").unwrap();
+            CREATE TABLE runtime_execution_runs(agent TEXT, created REAL, record TEXT);").expect("test fixture value");
         connection
             .execute(
                 "INSERT INTO runtime_execution_runs VALUES('worker',20,?1)",
                 [json!({"finished":30.0}).to_string()],
             )
-            .unwrap();
+            .expect("test fixture value");
         let task: Assignment = serde_json::from_value(
             json!({"id":"task","owner":"worker","status":"running","updated":10}),
         )
-        .unwrap();
+        .expect("test fixture value");
         let mut agent = json!({"id":"worker","rootId":"lead","epoch":0,"status":"completed"});
         let mut tasks = vec![task];
-        let progress = derive(&connection, &agent, &tasks).unwrap();
+        let progress = derive(&connection, &agent, &tasks).expect("test fixture value");
         assert_eq!(
             progress.stall,
             Some(AgentStall {
@@ -206,7 +206,7 @@ mod tests {
             stall: progress.stall,
             ..Default::default()
         };
-        let view = crate::sync_views::agent_entity_view(&agent, &context).unwrap();
+        let view = crate::sync_views::agent_entity_view(&agent, &context).expect("test fixture value");
         assert_eq!(view["stall"]["taskId"], "task");
         assert!(
             studio_runtime_schema::validate_sync_entity_payload_strict(
@@ -215,7 +215,7 @@ mod tests {
                 false,
                 &json!({"collection":"agent","id":"worker","value":view})
             )
-            .unwrap()
+            .expect("test fixture value")
         );
         for status in [
             AgentStatus::Running,
@@ -227,12 +227,12 @@ mod tests {
         ] {
             agent["status"] = json!(status);
             assert!(
-                derive(&connection, &agent, &tasks).unwrap().stall.is_none(),
+                derive(&connection, &agent, &tasks).expect("test fixture value").stall.is_none(),
                 "{status:?}"
             );
         }
         agent["status"] = json!("waiting_on_monitor");
-        assert!(derive(&connection, &agent, &tasks).unwrap().stall.is_none());
+        assert!(derive(&connection, &agent, &tasks).expect("test fixture value").stall.is_none());
         agent["status"] = json!("idle");
         for status in [
             WorkStatus::Review,
@@ -240,13 +240,13 @@ mod tests {
             WorkStatus::Cancelled,
         ] {
             tasks[0].status = Some(status);
-            assert!(derive(&connection, &agent, &tasks).unwrap().stall.is_none());
+            assert!(derive(&connection, &agent, &tasks).expect("test fixture value").stall.is_none());
         }
         tasks[0].status = Some(WorkStatus::Running);
         for (id, status) in [("m1", "running"), ("m2", "starting"), ("old", "completed")] {
-            connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)",rusqlite::params![id,json!({"id":id,"agent":"worker","status":status,"command":"just test-fast\nsecond line","created":5,"tail":"old output\nfinal output\n"}).to_string()]).unwrap();
+            connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)",rusqlite::params![id,json!({"id":id,"agent":"worker","status":status,"command":"just test-fast\nsecond line","created":5,"tail":"old output\nfinal output\n"}).to_string()]).expect("test fixture value");
         }
-        let progress = derive(&connection, &agent, &tasks).unwrap();
+        let progress = derive(&connection, &agent, &tasks).expect("test fixture value");
         assert!(progress.stall.is_none());
         assert_eq!(progress.commands.len(), 2);
         assert_eq!(progress.commands[0].stage, "just test-fast");
@@ -255,7 +255,7 @@ mod tests {
             command_progress: progress.commands,
             ..Default::default()
         };
-        let view = crate::sync_views::agent_entity_view(&agent, &context).unwrap();
+        let view = crate::sync_views::agent_entity_view(&agent, &context).expect("test fixture value");
         assert_eq!(view["commandProgress"][1]["monitorId"], "m2");
         assert!(
             studio_runtime_schema::validate_sync_entity_payload_strict(
@@ -264,29 +264,29 @@ mod tests {
                 false,
                 &json!({"collection":"agent","id":"worker","value":view})
             )
-            .unwrap()
+            .expect("test fixture value")
         );
     }
 
     #[test]
     fn invalid_monitor_rows_do_not_hide_live_owner_progress() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = Connection::open_in_memory().expect("test fixture value");
         // Match the recovery corruption fixture: no expression index can be
         // maintained over the malformed JSON row.
         connection
             .execute_batch(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
             )
-            .unwrap();
+            .expect("test fixture value");
         for (id, raw) in [
             ("malformed", "{".to_owned()),
             ("invalid-owner-row", json!({"id":"invalid-owner-row","agent":"worker","status":"running","command":42}).to_string()),
             ("other-owner", json!({"id":"other-owner","agent":"other","status":"running","command":"other gate"}).to_string()),
             ("live", json!({"id":"live","agent":"worker","status":"running","command":"owner gate","tail":"still running"}).to_string()),
         ] {
-            connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", [id,&raw]).unwrap();
+            connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", [id,&raw]).expect("test fixture value");
         }
-        let progress = derive(&connection, &json!({"id":"worker","status":"idle"}), &[]).unwrap();
+        let progress = derive(&connection, &json!({"id":"worker","status":"idle"}), &[]).expect("test fixture value");
         assert_eq!(progress.commands.len(), 1);
         assert_eq!(progress.commands[0].monitor_id, "live");
         assert_eq!(progress.commands[0].last_output_line, "still running");
@@ -298,22 +298,22 @@ mod tests {
         use studio_runtime_store::{
             AgentId, AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
         };
-        let directory = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        let directory = tempfile::tempdir().expect("test fixture value");
+        let store = RuntimeStore::open(Some(directory.path())).await.expect("test fixture value");
         store.transaction_with(|tx| {
-            let actor = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).unwrap();
+            let actor = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
             AgentRepository::put(tx,&actor)?;
             let record = json!({"id":"m","agent":"worker","epoch":0,"status":"running","command":"just test-fast","created":5,"tail":"first"});
-            Table::<MonitorRecord>::new(tx).put(&MonitorRecord::from_value(record.clone()).unwrap())?;
+            Table::<MonitorRecord>::new(tx).put(&MonitorRecord::from_value(record.clone()).expect("test fixture value"))?;
             let snapshot = crate::monitor_policy::MonitorSnapshot::checked(record.clone(),actor.value())?;
             let mut decision = snapshot.decision();
             decision.record["tail"] = json!("first\nlast gate passed");
             crate::monitor_runtime::apply(tx,&snapshot,&actor,&decision,20.0)?;
-            let raw: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='agent' AND id='worker'",[],|r|r.get(0)).unwrap();
-            let view: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let raw: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='agent' AND id='worker'",[],|r|r.get(0)).expect("test fixture value");
+            let view: serde_json::Value = serde_json::from_str(&raw).expect("test fixture value");
             assert_eq!(view["value"]["commandProgress"][0]["lastOutputLine"],"last gate passed");
-            assert_eq!(AgentRepository::get(tx,&AgentId::from("worker"))?.unwrap().status,AgentStatus::Running);
+            assert_eq!(AgentRepository::get(tx,&AgentId::from("worker"))?.expect("test fixture value").status,AgentStatus::Running);
             Ok::<(),crate::monitor_policy::MonitorError>(())
-        }).await.unwrap();
+        }).await.expect("test fixture value");
     }
 }

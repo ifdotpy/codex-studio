@@ -95,19 +95,19 @@ mod tests {
                 started_at: 1.0,
                 last_output_line: "pass".into(),
             })
-            .unwrap(),
+            .expect("test fixture value"),
             serde_json::to_value(AgentStall {
                 task_id: "t".into(),
                 since: 2.0,
             })
-            .unwrap(),
+            .expect("test fixture value"),
         ];
         for ((_, schema), example) in schemas().into_iter().zip(examples) {
-            let validator = jsonschema::validator_for(&schema).unwrap();
+            let validator = jsonschema::validator_for(&schema).expect("test fixture value");
             assert!(validator.is_valid(&example));
             assert_eq!(
-                schema["required"].as_array().unwrap().len(),
-                example.as_object().unwrap().len()
+                schema["required"].as_array().expect("test fixture value").len(),
+                example.as_object().expect("test fixture value").len()
             );
         }
         assert!(
