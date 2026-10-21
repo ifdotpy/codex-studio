@@ -84,14 +84,13 @@ until Studio can reconcile it with the native profile. A retry with the same req
 ID does not start another login. An existing native account appears only once.
 
 **Sign in again** on a saved account finishes when Codex reports the completed
-login for that request. In the Rust backend, if that report is lost, **Check status** finishes the
+login for that request. If that report is lost, **Check status** finishes the
 request when the account credentials were written during the sign-in and hold
 the account's original account ID. Credentials of another account end the
 request with an error. A request that is not finished by its deadline
 (`CODEX_LOGIN_RECEIPT_LIFETIME_SECONDS` in
 `workspaces/runtime/packages/runtime-services/src/account_driver.rs`) expires
-with an error, and a new sign-in can start. The Python backend has neither of
-these two recovery steps.
+with an error, and a new sign-in can start.
 
 Checks: `workspaces/runtime/apps/server/tests/account-login-contract.py`, `workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`,
 and `workspaces/client/apps/web/tests/accounts/accounts-ui-smoke.spec.mjs`. These checks use isolated fixtures.
