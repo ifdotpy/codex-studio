@@ -21,6 +21,15 @@ Unreadable, changed, unrelated, or unsupported native evidence becomes
 The reader shares the bounded file and identity checks used for historical
 Bash receipts. The mirror journal still discards a torn final record.
 
+A malformed complete journal row requires native transcript evidence before
+repair. Automatic repair supports complete text histories with exact message
+identities, content, and parent links. Valid patch sequences must remain
+contiguous. A corrupt complete final row, tool history, compaction, or uncertain
+control state requires manual repair. The bridge returns a clear error and
+writes a `.repair.json` marker. A confirmed repair preserves the original
+journal in `.jsonl.corrupt` and returns `journalRepair.skippedRows` with the
+thread history.
+
 ## Account identity
 
 `STUDIO_CLAUDE_ACCOUNT` contains the email. Rust also passes

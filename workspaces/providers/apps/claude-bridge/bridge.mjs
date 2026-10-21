@@ -620,7 +620,12 @@ function wireThread(s, metadata, includeTurns = true) {
     historyVersion: createHash("sha256")
       .update(metadata.revision)
       .digest("hex"),
-    ...(includeTurns ? { turns: s.turns } : { turns: [] }),
+    ...(includeTurns
+      ? {
+          turns: s.turns,
+          ...(s.journalRepair ? { journalRepair: s.journalRepair } : {}),
+        }
+      : { turns: [] }),
     status: { type: queries.get(id)?.turn ? "active" : "idle" },
     modelProvider: "claude",
   };
