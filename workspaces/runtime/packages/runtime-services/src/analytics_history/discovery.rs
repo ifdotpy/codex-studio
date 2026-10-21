@@ -175,8 +175,10 @@ impl DiscoveryRound {
     }
 }
 
+/// The resolved form of `path` ([`studio_runtime_store::path_identity::resolve`]), so that the
+/// event of a removed rollout names the same path as its discovery did.
 fn canonical_or_absolute(path: &Path) -> PathBuf {
-    if let Ok(path) = fs::canonicalize(path) {
+    if let Some(path) = studio_runtime_store::path_identity::resolve(path) {
         return path;
     }
     if path.is_absolute() {
@@ -212,9 +214,11 @@ mod tests {
         fs::write(&appended, b"{}").expect("new rollout");
         discovery.file_changed(root.path(), &appended, false, true);
         fs::remove_dir_all(&sessions).expect("remove scanned tree to prove no rescan");
+        // Discovery reports resolved paths; the macOS temporary folder is under `/var`.
         assert!(matches!(
             discovery.resolve(root.path(), "second-thread", &cancel),
-            Ok(RolloutPath::Found(path)) if path == appended
+            Ok(RolloutPath::Found(path))
+                if studio_runtime_store::path_identity::same(&path, &appended)
         ));
     }
 

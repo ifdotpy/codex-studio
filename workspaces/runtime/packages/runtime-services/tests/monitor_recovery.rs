@@ -741,3 +741,54 @@ fn a_cancelled_command_sends_no_stall_notice() {
         "a cancelled command waits only for its exit"
     );
 }
+
+/// A monitor record can name its log through a link to the state folder, as
+/// a state folder under the macOS temporary folder does (`/var` is a link to
+/// `/private/var`). Output delivery accepts that log as the same file; a log in
+/// another folder stays refused.
+#[cfg(unix)]
+#[tokio::test]
+async fn output_accepts_a_log_named_through_a_link_to_the_state_folder() {
+    let root = fixtures::tempdir();
+    let canonical = root.path().canonicalize().expect("canonical fixture root");
+    let target = canonical.join("state");
+    std::fs::create_dir(&target).expect("state folder");
+    let link = canonical.join("linked-state");
+    std::os::unix::fs::symlink(&target, &link).expect("link to the state folder");
+    let store = RuntimeStore::open(Some(&link))
+        .await
+        .expect("store opens through the link");
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor fixture")
+        .to_owned();
+    let operation = operation(&case);
+    let output = MonitorOutput::default();
+
+    case["before"]["log"] = json!(canonical.join("other").join(format!("{id}.log")));
+    fixtures::seed(&store, &case).await;
+    assert!(
+        output
+            .append(&store, &id, &operation, 0, b"marker", 2001.0)
+            .await
+            .is_err(),
+        "a log in another folder is refused"
+    );
+
+    case["before"]["log"] =
+        json!(studio_runtime_services::monitor_output::log_root(&link).join(format!("{id}.log")));
+    fixtures::seed(&store, &case).await;
+    output
+        .append(&store, &id, &operation, 0, b"marker", 2001.0)
+        .await
+        .expect("the linked log names the state log");
+    assert_eq!(
+        std::fs::read(
+            studio_runtime_services::monitor_output::log_root(&target).join(format!("{id}.log"))
+        )
+        .expect("monitor log"),
+        b"marker"
+    );
+}

@@ -357,6 +357,9 @@ async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expect
     .unwrap_or_else(|_| panic!("durable agent {agent_id} status {expected:?} hang guard"));
 }
 
+/// Used only by the Linux supervisor scenarios, as are the helpers below
+/// gated the same way.
+#[cfg(target_os = "linux")]
 fn watch_file_changes(
     path: &std::path::Path,
 ) -> (
@@ -380,6 +383,7 @@ fn watch_file_changes(
     (watcher, receiver)
 }
 
+#[cfg(target_os = "linux")]
 async fn wait_for_file_lines(
     path: &std::path::Path,
     expected_lines: usize,
@@ -1634,6 +1638,7 @@ mod host_runtime;
 #[path = "../src/provider_ports.rs"]
 #[allow(dead_code)]
 mod provider_ports;
+#[cfg(target_os = "linux")]
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
 
@@ -2025,6 +2030,7 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
         .unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn rust_supervisor_binary() -> PathBuf {
     std::env::var_os("STUDIO_SUPERVISOR_BINARY")
         .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
@@ -2036,6 +2042,7 @@ fn rust_supervisor_binary() -> PathBuf {
         })
 }
 
+#[cfg(target_os = "linux")]
 fn spawn_rust_supervisor(root: &std::path::Path, stderr: &std::path::Path) -> std::process::Child {
     std::process::Command::new(rust_supervisor_binary())
         .arg("--state")
@@ -2048,6 +2055,7 @@ fn spawn_rust_supervisor(root: &std::path::Path, stderr: &std::path::Path) -> st
         .unwrap_or_else(|error| panic!("could not start Rust supervisor test fixture: {error}"))
 }
 
+#[cfg(target_os = "linux")]
 async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Value {
     use tokio::io::AsyncWriteExt;
     let mut peer = tokio::io::BufReader::new(
@@ -2360,6 +2368,42 @@ fn launch_admission_refreshes_restored_and_changed_credentials() {
 }
 
 #[test]
+fn sign_in_dispatch_admits_launch_of_an_account_that_is_not_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let login_home = root.path().join("accounts/login-fixture");
+    std::fs::create_dir_all(&login_home).unwrap();
+    let registry = root.path().join("accounts/registry.json");
+    let write = |status: &str| {
+        std::fs::write(
+            &registry,
+            json!({"version":1,"defaultAccountKey":"default",
+                "accounts":{
+                    "default":{"id":"default","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"},
+                    "login-fixture":{"id":"login-fixture","home":login_home,"label":"New account","source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"}
+                },
+                "logins":{"fixture-request":{"requestId":"fixture-request","accountKey":"login-fixture","status":status,"createdAt":1.0}},
+                "deleteReceipts":{}})
+            .to_string(),
+        )
+        .unwrap();
+        studio_runtime_services::account_driver::AccountDriver::open(&registry).unwrap()
+    };
+    let driver = write("starting");
+    assert_eq!(
+        host_runtime::account_home(&driver, "login-fixture").unwrap(),
+        (login_home.to_string_lossy().into_owned(), true)
+    );
+    assert!(host_runtime::account_home(&driver, "default").is_err());
+    for other in ["pending", "error", "cancelled"] {
+        let driver = write(other);
+        assert!(
+            host_runtime::account_home(&driver, "login-fixture").is_err(),
+            "{other}"
+        );
+    }
+}
+
+#[test]
 fn claude_profile_is_not_refreshed_through_codex_account_home_admission() {
     use std::sync::atomic::AtomicUsize;
     struct CountingReader(Arc<AtomicUsize>);
@@ -2472,13 +2516,16 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     assert!(!launch.environment.contains_key("ANTHROPIC_API_KEY"));
 }
 
+#[cfg(target_os = "linux")]
 #[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
 mod supervisor_ready;
 
+#[cfg(target_os = "linux")]
 struct SupervisorFixture {
     child: std::process::Child,
     native: Vec<u32>,
 }
+#[cfg(target_os = "linux")]
 impl Drop for SupervisorFixture {
     fn drop(&mut self) {
         for pid in &self.native {

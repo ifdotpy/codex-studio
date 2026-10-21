@@ -710,7 +710,11 @@ async fn test_bridge(store: Arc<RuntimeStore>) -> StoreBridge {
 
 impl State {
     async fn new() -> Self {
-        let root = test_root().join(format!(
+        Self::new_at(test_root()).await
+    }
+    /// The fixture state in a new folder under `base`.
+    async fn new_at(base: PathBuf) -> Self {
+        let root = base.join(format!(
             "worker-{}",
             uuid::Uuid::new_v5(
                 &uuid::Uuid::NAMESPACE_OID,
@@ -904,6 +908,41 @@ impl Drop for State {
         }
     }
 }
+/// A stored cwd can name the workspace through a link, as the macOS
+/// temporary folder does (`/var` is a link to `/private/var`). Preparation
+/// sends the canonical cwd. The thread receipt and the turn commit must accept
+/// that cwd as the same folder; a text comparison made the receipt stale, and
+/// the agent never started its turn.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cwd_under_a_linked_folder_resumes_its_thread_and_starts_its_turn() {
+    let directory = tempfile::tempdir().expect("temporary folder");
+    let target = directory
+        .path()
+        .canonicalize()
+        .expect("canonical folder")
+        .join("target");
+    std::fs::create_dir(&target).expect("target folder");
+    let link = directory.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).expect("link to the target folder");
+    let state = State::new_at(link).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        state.start(&mut peer, &worker),
+    )
+    .await
+    .expect("the resumed thread starts its turn");
+    assert_eq!(
+        start["params"]["cwd"].as_str().map(PathBuf::from),
+        state.root.canonicalize().ok(),
+        "the turn runs in the canonical folder"
+    );
+    peer.accepted(&start).await;
+    worker.shutdown().await.unwrap();
+}
+
 async fn scenario_normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement()
 {
     let state = State::new().await;

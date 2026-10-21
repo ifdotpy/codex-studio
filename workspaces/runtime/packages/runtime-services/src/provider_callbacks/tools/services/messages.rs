@@ -9,17 +9,25 @@ use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 pub(super) fn authorization_records(
     tx: &Transaction<'_>,
 ) -> Result<AuthorizationRecords, CallbackError> {
+    // The gate reads only resolved paths. This read does no filesystem I/O,
+    // so the resolution is `path_identity::lexical`: an equivalent
+    // spelling, such as a trailing separator, gets the same identity. A path
+    // without such a form stays unresolved, and the gate refuses its record.
     let agents = records::all(tx, "runtime_agents")?;
     let mut paths = BTreeMap::new();
     for actor in &agents {
-        if let Some(path) = actor["cwd"].as_str() {
-            paths.insert(path.into(), path.into());
+        if let Some(path) = actor["cwd"].as_str()
+            && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
+        {
+            paths.insert(path.into(), resolved);
         }
     }
     let projects = records::all(tx, "runtime_projects")?;
     for project in &projects {
-        if let Some(path) = project["path"].as_str() {
-            paths.insert(path.into(), path.into());
+        if let Some(path) = project["path"].as_str()
+            && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
+        {
+            paths.insert(path.into(), resolved);
         }
     }
     Ok(AuthorizationRecords {
@@ -30,14 +38,38 @@ pub(super) fn authorization_records(
             .collect::<Result<_, CallbackError>>()?,
         rooms: BTreeMap::new(),
         complaints: BTreeMap::new(),
-        projects: projects
-            .into_iter()
-            .map(|p| Ok((text(&p, "path")?.to_owned(), p.to_string())))
-            .collect::<Result<_, CallbackError>>()?,
+        projects: projects_by_resolved_path(projects, &paths)?,
         event_meta: BTreeMap::new(),
         events: Vec::new(),
         resolved_paths: paths,
     })
+}
+/// The gate keys a project by its resolved path. When two records name one
+/// directory, the record whose stored path is already that form wins, so a
+/// second spelling never replaces the authority of an exact record.
+fn projects_by_resolved_path(
+    projects: Vec<Value>,
+    paths: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, CallbackError> {
+    let mut exact = BTreeMap::new();
+    let mut respelled = BTreeMap::new();
+    for project in projects {
+        let path = text(&project, "path")?;
+        match paths.get(path) {
+            Some(resolved) if resolved != path => {
+                respelled
+                    .entry(resolved.clone())
+                    .or_insert_with(|| project.to_string());
+            }
+            _ => {
+                exact.insert(path.to_owned(), project.to_string());
+            }
+        }
+    }
+    for (key, project) in respelled {
+        exact.entry(key).or_insert(project);
+    }
+    Ok(exact)
 }
 fn authorize(
     rows: &mut AuthorizationRecords,
@@ -248,17 +280,46 @@ fn send_as_actor(
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
     let mut authority = authorization_records(tx)?;
-    for recipient in &recipients {
-        authorize(&mut authority, text(recipient, "id")?, who, &room)?;
+    let broadcast = target == "broadcast";
+    let mut refused = serde_json::Map::new();
+    let mut first_refusal = None;
+    let mut admitted = Vec::with_capacity(recipients.len());
+    for recipient in recipients {
+        match authorize(&mut authority, text(&recipient, "id")?, who, &room) {
+            Ok(()) => {}
+            // One member record that the gate cannot check must not refuse
+            // the broadcast to the other members. The result names it.
+            Err(CallbackError::Stored(location)) if broadcast => {
+                let recipient_id = text(&recipient, "id")?;
+                crate::diagnostics::log_stderr(format_args!(
+                    "Broadcast {id} skips member {recipient_id}: invalid stored authority at {location}"
+                ));
+                refused.insert(
+                    recipient_id.into(),
+                    json!(crate::managed_host_tools::Error::StoredAt(location.clone()).to_string()),
+                );
+                first_refusal.get_or_insert(location);
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
         if recipient["id"] != recipient["rootId"] {
-            let root = event_write::checked_agent(tx, text(recipient, "rootId")?)?;
+            let root = event_write::checked_agent(tx, text(&recipient, "rootId")?)?;
             event_write::assert_delegation(&root)?;
         }
         // Python `codex_radio.guard_message`: only the sender's live shared
         // reply turn blocks a private message to a fellow room member.
-        crate::radio_runtime::guard_message(tx, who, text(recipient, "id")?)
+        crate::radio_runtime::guard_message(tx, who, text(&recipient, "id")?)
             .map_err(radio_guard_error)?;
+        admitted.push(recipient);
     }
+    // When no member can be checked, nothing is sent.
+    if admitted.is_empty()
+        && let Some(location) = first_refusal
+    {
+        return Err(CallbackError::Stored(location));
+    }
+    let recipients = admitted;
     let room_id = text(&room, "id")?.to_owned();
     if let Some(mut previous) = records::get(tx, "runtime_rooms", &room_id)? {
         let fields = room
@@ -332,7 +393,12 @@ fn send_as_actor(
     let view = crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, true)?)
         .ok_or_else(|| CallbackError::Stored(room_id.clone()))?;
     SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;
-    let result = json!({"id":id,"room":room_id,"deliveries":deliveries});
+    let mut result = json!({"id":id,"room":room_id,"deliveries":deliveries});
+    // A broadcast member that was not checked is named with its refusal.
+    // The receipt keeps it, so a replay of this request reports it again.
+    if !refused.is_empty() {
+        result["refused"] = Value::Object(refused);
+    }
     event_write::save_receipt(tx, Some(id), &event_write::request_signature(args), &result)?;
     Ok(result)
 }
@@ -458,6 +524,15 @@ pub(super) fn peers(
             {
                 Ok(()) => true,
                 Err(CallbackError::Invalid(_)) => false,
+                // As for agents, a room that the gate cannot check is not visible.
+                Err(CallbackError::Stored(location)) => {
+                    crate::diagnostics::log_stderr(format_args!(
+                        "Room {} is not visible to {}: invalid stored authority at {location}",
+                        text(&room, "id")?,
+                        snapshot.context().agent
+                    ));
+                    false
+                }
                 Err(error) => return Err(error),
             };
         if visible {
@@ -524,42 +599,69 @@ fn visible_agents(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
 ) -> Result<Vec<Value>, CallbackError> {
-    let actor = snapshot.actor();
     let mut visible = Vec::new();
-    let mut authority = authorization_records(tx)?;
+    let mut authority = None;
     for agent in records::all(tx, "runtime_agents")? {
-        if studio_runtime_store::truthy(agent.get("deletedAt")) {
-            continue;
-        }
-        let mut ids = vec![text(actor, "id")?, text(&agent, "id")?];
-        ids.sort();
-        let room = json!({"id":"peer-check","kind":"private","members":ids});
-        let allowed = if agent["rootId"] == actor["rootId"] {
-            true
-        } else {
-            match authorize(
-                &mut authority,
-                text(&agent, "id")?,
-                text(actor, "id")?,
-                &room,
-            ) {
-                Ok(()) => true,
-                Err(CallbackError::Invalid(_)) => false,
-                Err(error) => return Err(error),
-            }
-        };
-        if allowed {
+        if agent_visible(tx, snapshot, &agent, &mut authority)? {
             visible.push(agent);
         }
     }
     Ok(visible)
 }
 
+/// Whether the caller may see `agent`. An agent of another root is visible
+/// only when the room gate admits a private room with it. A stored record
+/// that the gate cannot check is not visible. That refusal is about one
+/// record, so it must not refuse the caller's whole request. `authority` is
+/// loaded at the first check that needs it.
+fn agent_visible(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    agent: &Value,
+    authority: &mut Option<AuthorizationRecords>,
+) -> Result<bool, CallbackError> {
+    if studio_runtime_store::truthy(agent.get("deletedAt")) {
+        return Ok(false);
+    }
+    let actor = snapshot.actor();
+    if agent["rootId"] == actor["rootId"] {
+        return Ok(true);
+    }
+    let rows = match authority {
+        Some(rows) => rows,
+        None => authority.insert(authorization_records(tx)?),
+    };
+    let mut ids = vec![text(actor, "id")?, text(agent, "id")?];
+    ids.sort();
+    let room = json!({"id":"peer-check","kind":"private","members":ids});
+    match authorize(rows, text(agent, "id")?, text(actor, "id")?, &room) {
+        Ok(()) => Ok(true),
+        Err(CallbackError::Invalid(_)) => Ok(false),
+        Err(CallbackError::Stored(location)) => {
+            crate::diagnostics::log_stderr(format_args!(
+                "Agent {} is not visible to {}: invalid stored authority at {location}",
+                text(agent, "id")?,
+                text(actor, "id")?
+            ));
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// An exact full ID is checked alone, so the records of other agents cannot
+/// refuse it. Other text resolves as a unique prefix among visible agents.
 pub(super) fn resolve_agent(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
     supplied: &str,
 ) -> Result<String, CallbackError> {
+    if let Some(agent) = records::get(tx, "runtime_agents", supplied)?
+        && agent["id"] == supplied
+        && agent_visible(tx, snapshot, &agent, &mut None)?
+    {
+        return Ok(supplied.to_owned());
+    }
     resolve_visible_agent_prefix(
         visible_agents(tx, snapshot)?
             .into_iter()

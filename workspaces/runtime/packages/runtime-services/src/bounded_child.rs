@@ -259,7 +259,7 @@ mod tests {
     use super::{ChildError, Request, read_bounded, run};
     use std::ffi::OsStr;
     use std::io::Cursor;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// Cutover attempt 3 showed only "the Git process could not run". The error
     /// must name the failing step and the operating-system error.
@@ -334,6 +334,7 @@ mod tests {
     #[test]
     fn deadline_includes_pipes_held_by_a_helper_in_a_new_session() {
         use std::os::unix::fs::PermissionsExt;
+        use std::time::Instant;
 
         let root = tempfile::tempdir().expect("temporary fixture");
         let marker = root.path().join("helper-pid");

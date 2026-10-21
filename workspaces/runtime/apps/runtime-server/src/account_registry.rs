@@ -1491,9 +1491,25 @@ impl AccountRegistry {
                 Some(RegistryTrigger::Ensure(request)) => {
                     let response = match self.ensure_account_session(&request.account).await {
                         Ok(scope) if scope.account == request.account => Ok(scope),
-                        _ => Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
-                            "provider-session/account-session",
-                        )),
+                        result => {
+                            match result {
+                                Err(error) => {
+                                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                        "account session for {} did not start: {error}",
+                                        request.account
+                                    ))
+                                }
+                                Ok(_) => {
+                                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                        "account session for {} started with another account scope",
+                                        request.account
+                                    ))
+                                }
+                            }
+                            Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                                "provider-session/account-session",
+                            ))
+                        }
                     };
                     if request.response.send(response).is_err() {
                         eprintln!("account-session requester stopped before receiving its result");
@@ -1961,16 +1977,16 @@ async fn prepared_host(store: &RuntimeStore) -> Result<Arc<PreparedHost>, Worker
 #[cfg(test)]
 mod bounded_reconcile_tests {
     use super::*;
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        sync::mpsc,
-    };
-    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, StoreError};
+    use std::collections::BTreeMap;
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
 
     // The image hold exists only on hosts without the image backend.
     #[cfg(not(target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn image_classification_waits_off_executor_while_writer_is_held() {
+        use std::{collections::BTreeSet, sync::mpsc};
+        use studio_runtime_store::StoreError;
+
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))

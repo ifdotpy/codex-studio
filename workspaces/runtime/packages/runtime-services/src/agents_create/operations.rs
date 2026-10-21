@@ -3790,7 +3790,12 @@ mod tests {
     async fn account_admission_releases_snapshot_before_project_account_lookup() {
         let state = tempfile::tempdir().expect("temporary state");
         let project = tempfile::tempdir().expect("existing project directory");
-        let project_path = project.path().to_string_lossy().into_owned();
+        // A registered project stores its canonical path; the macOS temporary
+        // folder is under the `/var` link.
+        let project_path = studio_runtime_store::path_identity::resolve(project.path())
+            .expect("resolved project directory")
+            .to_string_lossy()
+            .into_owned();
         let store = RuntimeStore::open(Some(state.path()))
             .await
             .expect("runtime store");

@@ -26,7 +26,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::workspace_ready::{
     ProvisionIdentity, ReadyToken, WorkspaceReadyRepository, reservations, workspace_generation,
 };
-use studio_runtime_store::{CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot};
+use studio_runtime_store::{
+    CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot, path_identity,
+};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
@@ -397,8 +399,10 @@ async fn publish_verified(
         let valid = current.as_ref().is_some_and(|current| {
             let Ok(actor) = actor(current) else { return false };
             let Some(observed) = &observed else { return false };
+            // `decide_workspace` compares resolved paths, as `observe` gives them.
+            let cwd = path_identity::resolve(&actor.cwd).unwrap_or_else(|| actor.cwd.clone());
             let decision = decide_workspace(&actor, &current.agent.record,
-                Some(&actor.cwd), &reservations(current), Some(&transaction_identity), true, observed);
+                Some(&cwd), &reservations(current), Some(&transaction_identity), true, observed);
             confined && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
         });
         if !valid {
@@ -565,7 +569,7 @@ fn observe(
             agent: context.actor.id.clone(),
             source: workspace_generation(source),
             thread_id: source.get("threadId").cloned().unwrap_or_default(),
-            cwd: destination.join(relative),
+            cwd: provision_cwd(&destination, relative)?,
             destination: destination.clone(),
             branch: format!("codex-agent/{}", context.actor.id),
             repository: repository.clone(),
@@ -576,7 +580,7 @@ fn observe(
     // A stored journal is data, not authority to choose another path or branch.
     if plan.repository != repository
         || plan.destination != destination
-        || plan.cwd != destination.join(relative)
+        || plan.cwd != provision_cwd(&destination, relative)?
         || plan.branch != format!("codex-agent/{}", context.actor.id)
         || plan.id != format!("provision:{}:{}", context.actor.id, context.actor.epoch)
         || !matches!(plan.base_commit.len(), 40 | 64)
@@ -824,6 +828,12 @@ impl Git {
             "created":now(),"cwd":plan.cwd}),
         )
     }
+}
+/// The agent cwd inside a new worktree. `relative` is empty when the agent
+/// works at the repository root, and `Path::join` of an empty path adds a
+/// trailing separator, so the result takes its lexical form.
+fn provision_cwd(destination: &Path, relative: &Path) -> Result<PathBuf, WorkspaceError> {
+    path_identity::lexical(&destination.join(relative)).ok_or(WorkspaceError::InvalidRecord)
 }
 fn canonical(path: &str) -> Result<PathBuf, WorkspaceError> {
     PathBuf::from(path)

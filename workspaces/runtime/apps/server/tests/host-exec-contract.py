@@ -271,7 +271,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(old["reason"], "sync_failed")
         self.assertEqual(old["preRunError"]["code"], "layr_failed")
         self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
-        staging = self.slots.root / key("project") / key("agent") / old["slotId"] / old["generation"]
+        staging = (self.slots.root / key("project") / key("agent") / old["slotId"]
+                   / (str(old["generationNumber"]) + "-" + old["generation"]))
         self.assertTrue((staging / "lease.json").exists())
         self.assertFalse((self.line / "must-not-run").exists())
         self.assertFalse(self.host.commands)
@@ -709,7 +710,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.project_settings({"slots": 1})
         third = await self.acquire("c")
         self.assertEqual(third["slotId"], self.host.load("b")["slotId"])
-        self.assertEqual(len(list((self.state / "host-slots" / key("project")).iterdir())), 1)
+        slots = [path for path in (self.state / "host-slots" / key("project")).iterdir() if path.is_dir()]
+        self.assertEqual(len(slots), 1)
 
     async def test_source_transfer_walks_the_project_folder_rarely(self):
         for index in range(300):
@@ -1093,6 +1095,187 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             Slots(self.state, private / "layr", self.slots.agents)
         self.assertEqual(caught.exception.code, "forbidden")
         self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
+    def enable_cleanup(self):
+        """Allow stale staging cleanup below the temporary fixture root only. The home guard of
+        the tests wraps os.open, which hides the file descriptor based rmtree of the guest."""
+        self.slots.cleanup_root = self.slots.root
+        self.slots.symlink_safe_removal = True
+
+    def staging(self, op, agent="agent"):
+        """The guest staging folder of one Mac slot lease."""
+        folder = op["generation"] if "generationNumber" not in op else str(op["generationNumber"]) + "-" + op["generation"]
+        return self.slots.root / key("project") / key(agent) / op["slotId"] / folder
+
+    async def test_slot_generation_numbers_only_grow(self):
+        self.host.slots = 1
+        first = await self.acquire("number-1")
+        self.assertEqual(first["generationNumber"], 1)
+        await self.guest.call("release", {"operationId": "number-1", "agentId": "agent"}, "release")
+        warm = await self.acquire("number-2")
+        # A warm slot keeps its generation and its number.
+        self.assertEqual((warm["generation"], warm["generationNumber"]), (first["generation"], 1))
+        await self.guest.call("release", {"operationId": "number-2", "agentId": "agent", "abandon": True}, "release")
+        fresh = await self.acquire("number-3")
+        self.assertNotEqual(fresh["generation"], first["generation"])
+        self.assertEqual(fresh["generationNumber"], 2)
+        await self.guest.call("release", {"operationId": "number-3", "agentId": "agent"}, "release")
+        # A removed and remade slot continues the numbers of its project.
+        slot = Path(fresh["slotPath"]).parent
+        self.host.remove_slot(slot)
+        again = await self.acquire("number-4")
+        self.assertEqual((again["slotId"], again["generationNumber"]), (fresh["slotId"], 3))
+
+    async def test_a_slot_from_before_generation_numbers_gets_one_with_its_next_generation(self):
+        self.host.slots = 1
+        first = await self.acquire("legacy-1")
+        await self.guest.call("release", {"operationId": "legacy-1", "agentId": "agent"}, "release")
+        slot = Path(first["slotPath"]).parent
+        (slot / "slot.json").write_text(json.dumps({"generation": first["generation"], "usedAt": 1}))
+        (slot.parent / ".generation-counter.json").unlink()
+        legacy = await self.acquire("legacy-2")
+        self.assertNotIn("generationNumber", legacy)
+        await self.guest.call("release", {"operationId": "legacy-2", "agentId": "agent", "abandon": True}, "release")
+        numbered = await self.acquire("legacy-3")
+        self.assertEqual(numbered["generationNumber"], 1)
+
+    def test_the_cleanup_root_is_the_guest_slot_folder_of_the_broker(self):
+        import host_exec_slot
+        import layr_admin
+        self.assertEqual(host_exec_slot.GUEST_SLOTS_ROOT, layr_admin.ROOT.parent / "host-slots")
+        self.assertEqual(self.slots.cleanup_root, host_exec_slot.GUEST_SLOTS_ROOT)
+
+    def test_stale_staging_cleanup_refuses_an_unexpected_root(self):
+        slot = self.slots.root / key("project") / key("agent") / "0"
+        # The fixture root is not the guest slot folder.
+        self.assertIn("outside", self.slots.cleanup_refusal(slot))
+        self.enable_cleanup()
+        self.assertIsNone(self.slots.cleanup_refusal(slot))
+        self.slots.symlink_safe_removal = False
+        self.assertIn("symlink-safe", self.slots.cleanup_refusal(slot))
+        self.slots.symlink_safe_removal = True
+        self.assertIn("direct slot folder", self.slots.cleanup_refusal(slot.parent))
+        self.assertIn("direct slot folder", self.slots.cleanup_refusal(slot / ".." / ".." / ".." / "x" / "y" / "z"))
+        original = self.slots.root
+        try:
+            for root, reason in ((Path(""), "empty"), (Path("/"), "empty"), (Path.home(), "home"),
+                                 (Path("/home/someone"), "home")):
+                self.slots.root = self.slots.cleanup_root = root
+                with self.subTest(root=str(root)):
+                    self.assertIn(reason, self.slots.cleanup_refusal(root / "p" / "a" / "0"))
+        finally:
+            self.slots.root = self.slots.cleanup_root = original
+
+    async def test_prepare_removes_only_unleased_older_numbered_staging(self):
+        self.enable_cleanup()
+        slot = self.slots.root / key("project") / key("agent") / "0"
+        for path in (self.slots.root / key("project"), self.slots.root / key("project") / key("agent"), slot):
+            path.mkdir(exist_ok=True)
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep")
+        def staging(name, lease=False):
+            folder = slot / name
+            (folder / "source").mkdir(parents=True)
+            (folder / "source" / "file").write_text("x")
+            if lease:
+                (folder / "lease.json").write_text('{"operationId": "old"}')
+            return folder
+        stale = staging("1-" + "a" * 32)
+        # A link inside stale staging is removed, never followed.
+        (stale / "source" / "link").symlink_to(outside, target_is_directory=True)
+        leased = staging("2-" + "b" * 32, lease=True)
+        busy = staging("3-" + "c" * 32)
+        legacy = staging("d" * 32)
+        newer = staging("9-" + "e" * 32)
+        other = staging("notes")
+        linked = slot / ("1-" + "f" * 32)
+        linked.symlink_to(outside, target_is_directory=True)
+        plain = slot / ("2-" + "0" * 32)
+        plain.write_text("not a folder")
+        self.slots.in_use[str(busy)] = 1
+        logged = []
+        params = {"agentId": "agent", "slotId": "0", "generation": "1" * 32, "generationNumber": 5,
+                  "operationId": "cleanup"}
+        with patch("host_exec_slot.log", side_effect=logged.append):
+            prepared = await self.slots.dispatch("cleanup", "host.slot.prepare", params)
+        current = slot / ("5-" + "1" * 32)
+        self.assertEqual(Path(prepared["path"]), current / "source")
+        self.assertFalse(os.path.lexists(stale))
+        for kept in (leased, busy, legacy, newer, other, linked, plain, current):
+            self.assertTrue(os.path.lexists(kept), kept.name)
+        self.assertEqual((outside / "keep.txt").read_text(), "keep")
+        self.assertIn("removed stale staging: " + str(stale), logged)
+        self.assertIn("kept staging with a guest lease: " + str(leased), logged)
+        self.assertIn("kept staging that a request uses: " + str(busy), logged)
+        self.assertIn("kept staging from before generation numbers: " + str(legacy), logged)
+        self.assertIn("kept staging that is not a broker-owned folder: " + str(linked), logged)
+        self.assertEqual(self.slots.in_use, {str(busy): 1})
+
+    async def test_prepare_without_a_generation_number_deletes_nothing(self):
+        self.enable_cleanup()
+        slot = self.slots.root / key("project") / key("agent") / "0"
+        stale = slot / ("1-" + "a" * 32)
+        stale.mkdir(parents=True)
+        params = {"agentId": "agent", "slotId": "0", "generation": "1" * 32, "operationId": "legacy"}
+        prepared = await self.slots.dispatch("legacy", "host.slot.prepare", params)
+        self.assertEqual(Path(prepared["path"]), slot / ("1" * 32) / "source")
+        self.assertTrue(stale.is_dir())
+
+    async def test_a_request_for_staging_under_removal_fails_without_writes(self):
+        folder = self.slots.root / key("project") / key("agent") / "0" / ("1-" + "a" * 32)
+        self.slots.deleting.add(str(folder))
+        params = {"agentId": "agent", "slotId": "0", "generation": "a" * 32, "generationNumber": 1,
+                  "operationId": "late"}
+        with self.assertRaises(HostExecError) as caught:
+            await self.slots.dispatch("late", "host.slot.forget", params)
+        self.assertEqual(caught.exception.code, "lease_lost")
+        self.assertFalse(os.path.lexists(folder))
+
+    async def test_a_failed_sync_staging_is_removed_by_the_next_generation(self):
+        self.host.slots = 1
+        self.enable_cleanup()
+        layr = self.slots.layr
+        async def failed_layr(context, args, ok=(0,)):
+            if args[0] == "export":
+                raise HostExecError("layr_failed", "Permission denied")
+            return await layr(context, args, ok)
+        with patch.object(self.slots, "layr", side_effect=failed_layr):
+            with self.assertRaises(HostExecError):
+                await self.execute("failed-first", 'print("never")')
+        old = self.host.load("failed-first")
+        self.assertFalse((self.staging(old) / "lease.json").exists())
+        result = await self.execute("next", 'print("next")')
+        self.assertEqual(result["exitCode"], 0)
+        self.assertEqual(result["generationNumber"], old["generationNumber"] + 1)
+        self.assertFalse(os.path.lexists(self.staging(old)))
+        self.assertTrue(self.staging(result).is_dir())
+
+    async def test_a_guest_restart_forgets_the_guest_lease_of_a_released_slot(self):
+        self.host.slots = 1
+        self.enable_cleanup()
+        await self.run_then_lose_guest("lost", 'open("out", "w").write("mac result")')
+        await asyncio.gather(*list(self.host.commands.values()))
+        old = self.host.load("lost")
+        self.assertTrue((self.staging(old) / "lease.json").exists())
+        guest = self.restarted_guest()
+        new = await guest.handle("after-restart", {"agentId": "agent", "operationId": "after-restart",
+            "argv": [sys.executable, "-c", 'print("next")'], "cwd": str(self.line), "timeoutSeconds": 5}, self.emit)
+        self.assertEqual(new["exitCode"], 0)
+        self.assertEqual(new["generationNumber"], old["generationNumber"] + 1)
+        # Recovery forgot the old guest lease, so the next generation removed the old staging.
+        self.assertFalse(os.path.lexists(self.staging(old)))
+
+    async def test_an_agent_release_forgets_the_guest_lease(self):
+        self.host.slots = 1
+        await self.run_then_lose_guest("abandoned", 'print("done")')
+        await asyncio.gather(*list(self.host.commands.values()))
+        old = self.host.load("abandoned")
+        self.assertTrue((self.staging(old) / "lease.json").exists())
+        released = await self.guest.handle("release", {"agentId": "agent", "operationId": "abandoned",
+                                                       "action": "release"}, self.emit)
+        self.assertEqual(released["state"], "released")
+        self.assertFalse((self.staging(old) / "lease.json").exists())
 
     def test_vm_gate(self):
         runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "native"})

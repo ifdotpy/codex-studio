@@ -1700,7 +1700,9 @@ mod tests {
             .persist_rule_monitor(&check)
             .await
             .expect("rule monitor");
-        let expected = studio_runtime_services::monitor_output::log_root(root.path())
+        // The store resolves its root: on macOS the temporary folder is under
+        // the `/var` link, and the record names the resolved state root.
+        let expected = studio_runtime_services::monitor_output::log_root(store.root())
             .join(format!("{}.log", check.monitor_id));
         assert_eq!(monitor["log"].as_str(), expected.to_str());
     }

@@ -674,7 +674,8 @@ fn a_turn_outcome_settles_every_run_that_bound_the_turn() {
 
 /// The stored rows of the incident load as they are: their recovery marker
 /// has `connectionId` and `supervisor` set to null, and three runs name one
-/// turn. Shapes are copied from canvas.sqlite3 (agent d0c9c794).
+/// turn. Shapes are copied from canvas.sqlite3 (agent d0c9c794); times are
+/// the shortest decimal form of the same `f64` values.
 #[test]
 fn stored_incident_runs_that_share_a_turn_settle_without_an_edit() {
     let mut connection = database();

@@ -137,7 +137,8 @@ for target in ({"type":"uncommittedChanges"},{"type":"baseBranch","branch":"main
         with patch("codex_agent_review.require_repository"), patch("codex_worker_accounts.resolve",return_value=("default",{})), patch("time.time",return_value=NOW):
             result=review_request(rt,a,args,"review-request")
         child=rt.agent(result['agentId'])
-        output['reviews'].append(dict(actor=a,root=a,args=args,key="review-request",directory=a["cwd"],spec=rt.spec,child=child,result=result))
+        # ReviewPlan takes the resolved directory, as Python resolves the cwd.
+        output['reviews'].append(dict(actor=a,root=a,args=args,key="review-request",directory=str(Path(a["cwd"]).resolve()),spec=rt.spec,child=child,result=result))
         if not options:
             output['reviewTurns'].append(review_turn(rt, child))
         rt.connection.close()

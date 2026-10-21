@@ -47,6 +47,9 @@ GUEST_UPDATE_PART_BYTES = 1024 * 1024
 # The virtiofs tag of the Rosetta for Linux directory share (docs/linux-vm-workspaces.md,
 # "x86_64 binaries"). The VM helper attaches the share with this tag; the guest mounts it.
 LINUX_VM_ROSETTA_TAG = "rosetta"
+# Prefix of the guest native provider handle of one agent: the handle is this prefix, then the
+# agent ID. The host builds the handle; the guest checks that a handle names its own agent.
+LINUX_VM_PROVIDER_HANDLE_PREFIX = "linux-worker:"
 
 # Persisted agent errors for a turn whose provider connection ended. Connection recovery,
 # the scheduler, and the web "Check connection" action match these exact texts.

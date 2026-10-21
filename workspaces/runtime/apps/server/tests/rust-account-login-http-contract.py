@@ -424,12 +424,16 @@ class AccountLoginHTTPContract(unittest.TestCase):
         self.assertNotIn("fixture-api-key", serialized)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_login_and_cancel_without_live_worker_return_python_receipts(self) -> None:
+    def test_new_account_login_starts_its_session_and_cancel_without_worker_waits(self) -> None:
+        # A new account has no provider session; the sign-in starts one for
+        # its home and returns the provider's device code.
         starts_before = self.backend.provider_start_times()
         response = self.request("POST", "/api/accounts/login", {"login_id": str(uuid.uuid4())})
         assert_status(self, response, 200)
-        self.assertEqual(response.json()["status"], "error")
-        self.assertEqual(response.json()["error"], "Could not start sign-in. Try again.")
+        self.assertEqual(response.json()["status"], "pending", response.json())
+        self.assertEqual(response.json()["userCode"], "FIXTURE-CODE")
+        self.assertEqual(len(self.backend.provider_start_times()), len(starts_before) + 1)
+        starts_before = self.backend.provider_start_times()
         cancel = self.request(
             "POST", "/api/accounts/login/cancel", {"login_id": self.live_login_id}
         )

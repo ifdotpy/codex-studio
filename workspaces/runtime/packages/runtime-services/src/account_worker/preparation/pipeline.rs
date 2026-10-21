@@ -1246,7 +1246,7 @@ pub(crate) fn accept_review_thread(
     reply: &Value,
 ) -> Result<Option<Value>, WorkerError> {
     let attempt = &prepared.attempt;
-    let current = thread_snapshot(
+    let mut current = thread_snapshot(
         tx,
         resources,
         record,
@@ -1255,6 +1255,7 @@ pub(crate) fn accept_review_thread(
         &filesystem.0.thread_inputs,
         None,
     )?;
+    align_receipt_cwd(&mut current, &attempt.snapshot);
     let receipt = thread::ProviderReceipt {
         identity: attempt.receipt_identity(),
         thread_id: reply["thread"]["id"].as_str().map(str::to_owned),
@@ -1601,10 +1602,11 @@ async fn prepare_native_snapshot(
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/account_worker_native_snapshot_cwd",
                 move || {
-                    if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
-                        return Err(refusal("workspace-readiness/cwd-unavailable".into()));
+                    // Send the canonical form, as a workspace token does.
+                    match std::fs::canonicalize(&cwd) {
+                        Ok(resolved) if resolved.is_dir() => Ok::<_, WorkerError>(resolved),
+                        _ => Err(refusal("workspace-readiness/cwd-unavailable".into())),
                     }
-                    Ok::<_, WorkerError>(cwd)
                 },
             )
             .await

@@ -164,19 +164,22 @@ pub trait ManagedCreationEnvironment: Send + Sync {
                         "workspace-state/image-provisioning",
                     )
                 })?;
-            return Some(workspace)
+            Some(workspace)
                 .filter(|workspace| {
                     workspace.get("path").and_then(Value::as_str).is_some()
                         && workspace.get("mount").and_then(Value::as_str).is_some()
                 })
                 .ok_or(ManagedCreationEnvironmentError::Unavailable(
                     "workspace-state/image-provisioning",
-                ));
+                ))
         }
-        let _ = (root, agent_id);
-        Err(ManagedCreationEnvironmentError::Unavailable(
-            "workspace-state/image-provisioning",
-        ))
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (root, agent_id);
+            Err(ManagedCreationEnvironmentError::Unavailable(
+                "workspace-state/image-provisioning",
+            ))
+        }
     }
 }
 

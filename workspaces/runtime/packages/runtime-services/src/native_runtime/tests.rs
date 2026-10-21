@@ -107,7 +107,9 @@ impl FailPoints for OneShot {
 
 fn fixture() -> (TempDir, PathBuf, PathBuf) {
     let temp = TempDir::new().expect("temporary root");
-    let source = temp.path().join("candidate");
+    // The store refuses a root under any link, such as the macOS `/var`.
+    let base = studio_runtime_store::path_identity::resolve(temp.path()).expect("resolved root");
+    let source = base.join("candidate");
     fs::create_dir(&source).expect("candidate directory");
     let binary = source.join("codex");
     fs::write(&binary, "version=1.2.3\n").expect("fake executable bytes");
@@ -119,7 +121,7 @@ fn fixture() -> (TempDir, PathBuf, PathBuf) {
         fs::set_permissions(source.join(COMPANION), fs::Permissions::from_mode(0o700))
             .expect("companion mode");
     }
-    let root = temp.path().join("state");
+    let root = base.join("state");
     (temp, root, binary)
 }
 

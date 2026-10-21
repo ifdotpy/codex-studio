@@ -973,11 +973,15 @@ impl LoginService {
             .config
             .directory
             .join(format!("config-{}", snapshot.request_id()));
-        if snapshot
+        // The stored configuration folder is canonical; the state folder may be
+        // under a link, such as the macOS `/var`.
+        if !snapshot
             .record()
             .pointer("/metadata/configDir")
             .and_then(Value::as_str)
-            != expected.to_str()
+            .is_some_and(|stored| {
+                studio_runtime_store::path_identity::same(std::path::Path::new(stored), &expected)
+            })
         {
             return Ok(snapshot.clone());
         }

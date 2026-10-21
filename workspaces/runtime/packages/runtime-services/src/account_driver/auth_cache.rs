@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
+use studio_runtime_store::path_identity;
 use tokio::sync::watch;
 
 /// Length of the window that merges one burst of filesystem events of a
@@ -196,15 +197,18 @@ impl CredentialLocation {
         hasher.finish()
     }
 
-    /// Whether `event` names one of this location's credential files.
-    fn is_touched_by(&self, event: &Event) -> bool {
-        event.paths.iter().any(|path| {
-            path.parent()
-                .is_some_and(|parent| self.directories.iter().any(|directory| directory == parent))
-                && path
-                    .file_name()
-                    .is_some_and(|name| self.credential_files.iter().any(|file| name == file.name))
-        })
+    /// Every spelling of this location's directories that an event can name:
+    /// as written and resolved. macOS FSEvents reports resolved paths, so a
+    /// directory under a link such as `/var` arrives as `/private/var/...`.
+    fn event_directories(&self) -> Vec<PathBuf> {
+        let mut spellings = self.directories.clone();
+        spellings.extend(
+            self.directories
+                .iter()
+                .filter_map(|directory| path_identity::resolve(directory))
+                .filter(|resolved| !self.directories.contains(resolved)),
+        );
+        spellings
     }
 
     fn fingerprint(&self) -> Vec<FileFingerprint> {
@@ -254,8 +258,31 @@ impl Default for AuthCache {
     }
 }
 
+/// A credential location under watch and the directory spellings that its
+/// events can name ([`CredentialLocation::event_directories`]).
+struct WatchedLocation {
+    location: CredentialLocation,
+    directories: Vec<PathBuf>,
+}
+
+impl WatchedLocation {
+    /// Whether `event` names one of this location's credential files.
+    fn is_touched_by(&self, event: &Event) -> bool {
+        event.paths.iter().any(|path| {
+            path.parent()
+                .is_some_and(|parent| self.directories.iter().any(|directory| directory == parent))
+                && path.file_name().is_some_and(|name| {
+                    self.location
+                        .credential_files
+                        .iter()
+                        .any(|file| name == file.name)
+                })
+        })
+    }
+}
+
 /// Credential locations under watch, shared with the notify callback.
-type WatchedLocations = Arc<Mutex<Vec<CredentialLocation>>>;
+type WatchedLocations = Arc<Mutex<Vec<WatchedLocation>>>;
 
 /// Identity digest of each watched location as last seen.
 type SeenIdentities = Arc<Mutex<HashMap<CredentialLocation, u64>>>;
@@ -283,11 +310,11 @@ impl CredentialWatcher {
             let locations = callback_locations
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for location in locations
+            for watched in locations
                 .iter()
-                .filter(|location| location.is_touched_by(&event))
+                .filter(|watched| watched.is_touched_by(&event))
             {
-                events.send(location.clone()).ok();
+                events.send(watched.location.clone()).ok();
             }
         })?;
         // Ends when the watcher, which owns the sender, is dropped.
@@ -339,10 +366,18 @@ impl CredentialWatcher {
                     .or_insert_with(|| location.identity_digest());
             }
         }
+        // Resolved once here, not for each event in the notify callback.
+        let watched = wanted
+            .into_iter()
+            .map(|location| WatchedLocation {
+                directories: location.event_directories(),
+                location,
+            })
+            .collect();
         *self
             .locations
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = wanted;
+            .unwrap_or_else(PoisonError::into_inner) = watched;
         self.watched.retain(|directory| {
             let keep = directories.contains(directory);
             if !keep {

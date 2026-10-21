@@ -1494,9 +1494,7 @@ async fn repair_idle_with_broker_inner(
         })
         .await?;
     let located = crate::context_repair_files::locate_codex_history(provider_home, &thread)?;
-    if Path::new(native_path).canonicalize().ok().as_deref()
-        != located.canonicalize().ok().as_deref()
-    {
+    if !studio_runtime_store::path_identity::same(Path::new(native_path), &located) {
         return Err(RepairError::ReceiptHold);
     }
     crate::context_repair_files::verify_history_ancestry(provider_home, &located, &thread)?;

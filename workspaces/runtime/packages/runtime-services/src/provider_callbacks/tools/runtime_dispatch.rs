@@ -786,6 +786,7 @@ fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {
         C::Invalid(message) => Error::Invalid(message),
         C::Dependency(name) => Error::Unavailable(name),
         C::Store(error) => Error::Store(error),
+        C::Stored(location) => Error::StoredAt(location),
         _ => Error::Stale,
     }
 }
@@ -1064,6 +1065,24 @@ mod tests {
             other.result.value,
             json!("Not implemented: requires agent-create/managed-environment")
         );
+    }
+
+    /// A stored-record refusal from the lifecycle checks names its location.
+    /// It is not a changed caller identity, so it must not read as `Stale`.
+    #[test]
+    fn a_stored_record_refusal_names_its_location_not_a_stale_caller() {
+        let refusal = super::not_sent(super::callback_refusal(
+            crate::provider_callbacks::CallbackError::Stored("agents/a/cwd".into()),
+        ));
+        assert_eq!(refusal.certainty, DeliveryCertainty::NotSent);
+        assert_eq!(
+            refusal.result.value,
+            json!("Invalid stored record at agents/a/cwd")
+        );
+        assert!(matches!(
+            super::callback_refusal(crate::provider_callbacks::CallbackError::Stale),
+            crate::managed_host_tools::Error::Stale
+        ));
     }
 
     #[test]

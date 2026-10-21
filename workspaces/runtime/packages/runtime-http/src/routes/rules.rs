@@ -429,23 +429,9 @@ fn resolve_workspace_path(agent: &Value, input: &str) -> Result<String, ApiError
     } else if !path.is_absolute() {
         path = Path::new(cwd).join(path);
     }
-    weakly_canonicalize(&path)
+    studio_runtime_store::path_identity::resolve(&path)
         .map(|path| path.to_string_lossy().into_owned())
-        .map_err(|_| located("path"))
-}
-
-fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
-    match std::fs::canonicalize(path) {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(name) = path.file_name() else {
-                return Err(error);
-            };
-            let parent = path.parent().ok_or(error)?;
-            Ok(weakly_canonicalize(parent)?.join(name))
-        }
-        Err(error) => Err(error),
-    }
+        .ok_or_else(|| located("path"))
 }
 
 fn now_seconds() -> Result<f64, ApiError> {

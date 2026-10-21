@@ -69,3 +69,32 @@
 .setup-account:hover:not(:disabled) {
   background: light-dark(#e8eaf0, #2f3038);
 }
+
+/* A tile names the account and states its remaining limit on one line. */
+.setup-account .mantine-Button-label:has(> .setup-account-label),
+.setup-account-label {
+  width: 100%;
+}
+.setup-account-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.setup-account-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-remaining {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.account-remaining[data-exhausted="true"] {
+  color: var(--mantine-color-red-6);
+}

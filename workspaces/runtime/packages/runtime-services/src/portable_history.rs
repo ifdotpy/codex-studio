@@ -1373,8 +1373,14 @@ fn add_native_page(recent: &mut Recent, page: &Value) {
     }
 }
 
+/// The archive folder under the resolved state root, as Python resolves
+/// `rt.root`. Archive paths are canonical, so a state root under a link (such
+/// as the macOS `/var`) must not refuse its own archives. An unresolvable root
+/// stays as written, and the canonical path check then refuses it.
 fn archive_directory(state_root: &Path) -> PathBuf {
-    state_root.join(ARCHIVE_DIRECTORY)
+    studio_runtime_store::path_identity::resolve(state_root)
+        .unwrap_or_else(|| state_root.to_owned())
+        .join(ARCHIVE_DIRECTORY)
 }
 
 #[cfg(unix)]

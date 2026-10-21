@@ -173,13 +173,15 @@ fn monitor_cancel_owner(
     }
 }
 
-/// Keep a named refusal visible to the caller. Other failures keep their
-/// generic text, because they can carry stored detail.
+/// Keep a named refusal visible to the caller. A stored-record refusal names
+/// its location, which holds a table key, a record ID and a field name, never
+/// a stored value. Other failures keep their generic text.
 fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {
     match error {
         CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
         CallbackError::Dependency(name) => crate::managed_host_tools::Error::Unavailable(name),
         CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
+        CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
         _ => crate::managed_host_tools::Error::Invalid("Message ingress refused this request"),
     }
 }
@@ -266,7 +268,7 @@ impl crate::managed_host_tools::InterruptPort for ProductionPorts {
             .map_err(|_| crate::managed_host_tools::Error::Stale)?;
         messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
             CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-            CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+            CallbackError::Stored(location) => crate::managed_host_tools::Error::StoredAt(location),
             CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
             _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
         })
@@ -605,7 +607,9 @@ pub(super) async fn resolve_interrupt_target(
             let target =
                 messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
                     CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                    CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                    CallbackError::Stored(location) => {
+                        crate::managed_host_tools::Error::StoredAt(location)
+                    }
                     CallbackError::Invalid(message) => {
                         crate::managed_host_tools::Error::Invalid(message)
                     }
@@ -637,7 +641,9 @@ pub(super) async fn resolve_send_target(
             let target =
                 messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
                     CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                    CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                    CallbackError::Stored(location) => {
+                        crate::managed_host_tools::Error::StoredAt(location)
+                    }
                     CallbackError::Invalid(message) => {
                         crate::managed_host_tools::Error::Invalid(message)
                     }
@@ -896,6 +902,7 @@ pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> Callback
             id,
             location,
         } => CallbackError::Stored(format!("{table}/{id} at {location}")),
+        E::StoredAt(location) => CallbackError::Stored(location),
         E::Unavailable(name) => CallbackError::Dependency(name),
         E::Store(error) => CallbackError::Store(error),
         E::Sqlite(error) => CallbackError::Store(error.into()),

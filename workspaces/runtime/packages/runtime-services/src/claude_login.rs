@@ -221,7 +221,7 @@ impl LoginSnapshot {
         match metadata.status {
             AuthStatus::SignedOut => true,
             AuthStatus::Ready => self.provider_identity_mismatch(metadata),
-            AuthStatus::Error | AuthStatus::Unchanged => false,
+            AuthStatus::Error => false,
         }
     }
     fn provider_identity_mismatch(&self, metadata: &AuthMetadata) -> bool {

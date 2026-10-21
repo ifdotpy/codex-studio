@@ -17,6 +17,7 @@ import uuid
 from common import GuestError, atomic_json, identifier, require
 from native import Native
 from project_env import wrap
+from shared_values_generated import LINUX_VM_PROVIDER_HANDLE_PREFIX
 
 READ_METHODS = {"agent.context", "line.status", "line.evidence", "layr.provider.list",
                 "layr.provider.rpc", "agent.progress", "layr.file.stat", "layr.file.read"}
@@ -435,7 +436,7 @@ class AgentHandlers:
             if method == "layr.credentials.sync":
                 return {"synced": True}
             handle = params.get("handle")
-            require(handle == "linux-worker:" + context["agentId"], "The provider handle differs from its agent")
+            require(handle == LINUX_VM_PROVIDER_HANDLE_PREFIX + context["agentId"], "The provider handle differs from its agent")
             argv = params.get("argv")
             require(isinstance(argv, list) and all(isinstance(a, str) and "\0" not in a for a in argv), "The provider argv is invalid")
             expected = ["codex", "app-server", "--listen", "stdio://", "-c", 'cli_auth_credentials_store="file"']

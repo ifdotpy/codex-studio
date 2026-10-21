@@ -240,6 +240,10 @@ pub const GUEST_UPDATE_PART_BYTES: usize = 1048576;
 /// The virtiofs tag of the Rosetta for Linux directory share (docs/linux-vm-workspaces.md,
 /// "x86_64 binaries"). The VM helper attaches the share with this tag; the guest mounts it.
 pub const LINUX_VM_ROSETTA_TAG: &str = "rosetta";
+/// Prefix of the guest native provider handle of one agent: the handle is this prefix, then
+/// the agent ID (docs/linux-vm-workspaces.md). The host builds the handle; the guest checks
+/// that a handle names its own agent.
+pub const LINUX_VM_PROVIDER_HANDLE_PREFIX: &str = "linux-worker:";
 
 #[cfg(test)]
 mod tests {

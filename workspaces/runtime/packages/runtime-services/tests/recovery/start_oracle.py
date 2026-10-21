@@ -11,7 +11,8 @@ from unittest.mock import patch
 from oracle import turn, writer
 
 at = 1000.0
-root = str(Path(os.environ['TMPDIR']) / 'supervisor')
+# Python stores the resolved supervisor state folder (supervisor_identity).
+root = str(Path(os.environ['TMPDIR']).resolve() / 'supervisor')
 base = dict(id='agent', rootId='agent', epoch=0, status='starting', accountKey='default',
             threadId='thread', turnId=None, inFlight=True, autoWake=True,
             error='turn/start response timed out; outcome unknown',

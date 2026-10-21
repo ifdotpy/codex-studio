@@ -50,10 +50,24 @@ async fn try_send(
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    try_send_args(
+    try_send_with(sender_index, target, id, Vec::new()).await
+}
+
+async fn try_send_with(
+    sender_index: usize,
+    target: &str,
+    id: &str,
+    extra_agents: Vec<Value>,
+) -> (
+    tempfile::TempDir,
+    RuntimeStore,
+    Result<Value, crate::managed_host_tools::Error>,
+) {
+    try_send_args_with(
         sender_index,
         json!({"agent_id":target,"text":"dispatch input"}),
         id,
+        extra_agents,
     )
     .await
 }
@@ -62,6 +76,19 @@ async fn try_send_args(
     sender_index: usize,
     args: Value,
     id: &str,
+) -> (
+    tempfile::TempDir,
+    RuntimeStore,
+    Result<Value, crate::managed_host_tools::Error>,
+) {
+    try_send_args_with(sender_index, args, id, Vec::new()).await
+}
+
+async fn try_send_args_with(
+    sender_index: usize,
+    args: Value,
+    id: &str,
+    extra_agents: Vec<Value>,
 ) -> (
     tempfile::TempDir,
     RuntimeStore,
@@ -77,6 +104,18 @@ async fn try_send_args(
         .unwrap();
     }
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    store
+        .transaction(move |tx| {
+            for record in extra_agents {
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(record)?,
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
     let actor = oracle["agents"][sender_index].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -558,6 +597,174 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
             ))
         ),
         "{refused:?}"
+    );
+}
+
+/// 2026-10-21: three agents of another team got a cwd with a trailing slash,
+/// and every `orchestration_send` got "Message ingress refused this request".
+/// The visibility scan checked each agent of another root, and one refused
+/// record failed the whole call. A trailing slash is the same path identity.
+/// A record that the gate cannot check (here a relative cwd) stays hidden and
+/// does not refuse sends to other agents.
+#[tokio::test]
+async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
+    let oracle = template();
+    let lead = &oracle["agents"][0];
+    let child = oracle["agents"][1]["id"].as_str().unwrap();
+    let foreign = |id: &str, cwd: &str| {
+        let mut record = lead.clone();
+        record["id"] = json!(id);
+        record["rootId"] = json!("99999999-root-of-another-team");
+        record["parentId"] = json!("99999999-root-of-another-team");
+        record["isLead"] = json!(false);
+        record["threadId"] = json!(format!("thread-{id}"));
+        record["cwd"] = json!(cwd);
+        record
+    };
+    let trailing = format!("{}/", lead["cwd"].as_str().unwrap());
+    let others = || {
+        vec![
+            foreign("aaaaaaaa-trailing-slash", &trailing),
+            foreign("bbbbbbbb-relative-cwd", "relative/cwd"),
+        ]
+    };
+    for (target, id) in [
+        (child, "send-child-full"),
+        (&child[..8], "send-child-prefix"),
+    ] {
+        let (_root, _store, sent) = try_send_with(0, target, id, others()).await;
+        assert_eq!(sent.unwrap()["status"], "queued", "{target}");
+    }
+    let (_root, store, refused) =
+        try_send_with(0, "bbbbbbbb-relative-cwd", "send-hidden", others()).await;
+    let mut rows = store
+        .transaction(|tx| Ok(messages::authorization_records(tx).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.resolved_paths[&trailing],
+        lead["cwd"].as_str().unwrap()
+    );
+    rows.recipient_id = "aaaaaaaa-trailing-slash".into();
+    crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
+        .expect("a trailing slash is the same path identity");
+    assert!(
+        matches!(
+            refused,
+            Err(crate::managed_host_tools::Error::Invalid(
+                "Unknown agent ID in this caller's scope"
+            ))
+        ),
+        "{refused:?}"
+    );
+}
+
+/// A broadcast checks each team member. One member record that the gate
+/// cannot check (here a relative cwd) must not refuse the whole broadcast:
+/// every other member gets the message, and the result names the refused
+/// member with its stored-record location. The saved receipt holds the same
+/// result, so a replay of the request reports the same members.
+#[tokio::test]
+async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_others() {
+    let oracle = template();
+    let lead = &oracle["agents"][0];
+    let lead_id = lead["id"].as_str().unwrap();
+    let child = oracle["agents"][1]["id"].as_str().unwrap();
+    let bad = "cccccccc-member-relative-cwd";
+    let mut member = lead.clone();
+    member["id"] = json!(bad);
+    member["parentId"] = json!(lead_id);
+    member["isLead"] = json!(false);
+    member["threadId"] = json!(format!("thread-{bad}"));
+    member["cwd"] = json!("relative/cwd");
+    let (_root, store, sent) =
+        try_send_with(0, "broadcast", "send-broadcast-bad-member", vec![member]).await;
+    let sent = sent.expect("one bad member does not refuse the broadcast");
+    assert!(sent["deliveries"].get(child).is_some(), "{sent}");
+    assert!(sent["deliveries"].get(bad).is_none(), "{sent}");
+    assert_eq!(
+        sent["refused"][bad],
+        json!(format!("Invalid stored record at agents/{bad}/cwd")),
+        "{sent}"
+    );
+    let reader = store.test_reader().unwrap();
+    let (deliveries, receipt): (String, String) = reader
+        .query_row(
+            "SELECT m.deliveries,r.result FROM runtime_chat_messages m JOIN runtime_operation_receipts r ON r.id=m.id WHERE m.id='send-broadcast-bad-member'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&deliveries).unwrap(),
+        sent["deliveries"]
+    );
+    assert_eq!(serde_json::from_str::<Value>(&receipt).unwrap(), sent);
+    let bad_events: i64 = reader
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE agent=?1",
+            [bad],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_events, 0);
+}
+
+/// When no member of a broadcast can be checked, nothing is sent, and the
+/// refusal names the stored-record location.
+#[tokio::test]
+async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location() {
+    let oracle = template();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap();
+    let template = PathBuf::from(oracle["template"].as_str().unwrap()).join("canvas.sqlite3");
+    let connection =
+        rusqlite::Connection::open_with_flags(template, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let mut statement = connection
+        .prepare("SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 AND id!=?1 ORDER BY id")
+        .unwrap();
+    let broken = statement
+        .query_map([lead], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|raw| {
+            let mut record: Value = serde_json::from_str(&raw.unwrap()).unwrap();
+            record["cwd"] = json!("relative/cwd");
+            record
+        })
+        .collect::<Vec<_>>();
+    let members = broken
+        .iter()
+        .filter(|record| !studio_runtime_store::truthy(record.get("deletedAt")))
+        .map(|record| {
+            format!(
+                "Invalid stored record at agents/{}/cwd",
+                record["id"].as_str().unwrap()
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(!members.is_empty(), "the fixture team has a member");
+    let (_root, store, sent) =
+        try_send_with(0, "broadcast", "send-broadcast-no-member", broken).await;
+    let refusal = sent.expect_err("no member can be checked").to_string();
+    assert!(members.contains(&refusal), "{refusal}");
+    let messages: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast-no-member'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(messages, 0);
+}
+
+/// A stored-record refusal names its location instead of a generic text.
+#[test]
+fn a_stored_refusal_names_its_location() {
+    assert_eq!(
+        callback_refusal(CallbackError::Stored("agents/a/cwd".into())).to_string(),
+        "Invalid stored record at agents/a/cwd"
     );
 }
 

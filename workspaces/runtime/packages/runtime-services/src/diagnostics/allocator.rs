@@ -4,7 +4,9 @@ use serde_json::json;
 
 use super::startup::{current_rss_bytes, startup_memory_enabled, startup_memory_marks};
 
-/// Maximum private allocator XML captured for parsing, in bytes.
+/// Maximum private allocator XML captured for parsing, in bytes. The XML
+/// parser below exists only for the GNU allocator and its tests.
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 const ALLOCATOR_XML_LIMIT_BYTES: usize = 128 * 1024;
 /// `fmemopen` needs one extra byte for its trailing NUL.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -81,6 +83,7 @@ fn allocator_snapshot() -> Option<AllocatorSummary> {
     None
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 fn checked_xml(buffer: &[u8], length: usize) -> Option<&str> {
     if length > ALLOCATOR_XML_LIMIT_BYTES || length > buffer.len() {
         return None;
@@ -99,6 +102,7 @@ struct AllocatorSummary {
     allocator_used_bytes_approx: u64,
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 /// Parse only glibc's aggregate footer after its last per-heap section.
 fn parse_allocator_summary(xml: &str) -> Option<AllocatorSummary> {
     if !xml.starts_with("<malloc version=\"") || !xml.trim_end().ends_with("</malloc>") {
@@ -136,6 +140,7 @@ fn parse_allocator_summary(xml: &str) -> Option<AllocatorSummary> {
     })
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 fn global_total_size(footer: &str, expected_type: &str) -> Option<Option<u64>> {
     let mut found = None;
     for tag in tags_with_prefix(footer, "<total ") {
@@ -153,6 +158,7 @@ fn global_total_size(footer: &str, expected_type: &str) -> Option<Option<u64>> {
     Some(found)
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 fn global_system_current(footer: &str) -> Option<u64> {
     let mut found = None;
     for tag in tags_with_prefix(footer, "<system ") {
@@ -167,6 +173,7 @@ fn global_system_current(footer: &str) -> Option<u64> {
     found
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 fn tags_with_prefix<'a>(text: &'a str, prefix: &str) -> impl Iterator<Item = &'a str> {
     text.match_indices(prefix).filter_map(move |(start, _)| {
         let tail = text.get(start..)?;
@@ -175,6 +182,7 @@ fn tags_with_prefix<'a>(text: &'a str, prefix: &str) -> impl Iterator<Item = &'a
     })
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let mut value = None;
     for part in tag.split_ascii_whitespace() {
