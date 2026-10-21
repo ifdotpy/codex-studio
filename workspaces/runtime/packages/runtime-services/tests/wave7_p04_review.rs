@@ -618,3 +618,29 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         }
     }
 }
+
+#[tokio::test]
+async fn deferring_a_question_publishes_the_request_entity() {
+    let (_root, store, context) = fixture().await;
+    let (id, _) = pending(&store, &context).await;
+    let entity_payload = |store: &RuntimeStore| -> String {
+        store
+            .read()
+            .expect("read entity")
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='request' AND id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .expect("request entity")
+    };
+    assert!(!entity_payload(&store).contains("\"deferred\":true"));
+    let request = id.clone();
+    store
+        .transaction_with_error(move |tx| {
+            studio_runtime_services::questions_write::defer_question(tx, &request, true, |_| true)
+        })
+        .await
+        .expect("defer the question");
+    assert!(entity_payload(&store).contains("\"deferred\":true"));
+}
