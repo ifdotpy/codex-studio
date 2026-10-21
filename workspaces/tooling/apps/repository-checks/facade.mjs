@@ -847,7 +847,7 @@ function fastTierCommands(root) {
             "--test",
             "sql_callback_guard",
             "-E",
-            "test(agent_columns::tests::migration_) | binary(sql_callback_guard) | test(sql_guard_tests::)",
+            "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once) | test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once) | binary(sql_callback_guard) | test(sql_guard_tests::)",
           ],
         ],
       ],
