@@ -79,6 +79,25 @@ import "./servers.css";
 const uiOnly =
   new URLSearchParams(location.search).get("studio-ui-only") === "1";
 export default function MultiServerApp() {
+  // Pairing changes the shell, but must keep the local database and transport owner.
+  const [localServices] = useState(() =>
+    uiOnly ? undefined : createServerServices(localServer()),
+  );
+  const shell = <MultiServerShell localServices={localServices} />;
+  return localServices ? (
+    <ServerServicesProvider services={localServices}>
+      {shell}
+    </ServerServicesProvider>
+  ) : (
+    shell
+  );
+}
+
+function MultiServerShell({
+  localServices,
+}: {
+  localServices?: ServerServices;
+}) {
   const [failure, setFailure] = useState("");
   const [newChatDialog, setNewChatDialog] = useState<{
     project: LocationProject;
@@ -329,11 +348,13 @@ export default function MultiServerApp() {
             previous.owner.origin === server.origin &&
             previous.owner.credentialId === server.credentialId
               ? previous
-              : createServerServices(server);
+              : server.id === "local" && localServices
+                ? localServices
+                : createServerServices(server);
           return [server.id, instance] as const;
         }),
       ),
-    [servers],
+    [servers, localServices],
   );
   const screenOwners = useRef(
     new Map<string, { service: ServerServices; channel: ScreenChannel }>(),

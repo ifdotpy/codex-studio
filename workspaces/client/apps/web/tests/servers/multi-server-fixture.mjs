@@ -9,6 +9,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import {
+  mergePreferenceFields,
+  prunePreferenceFields,
+} from "../../src/sync/uiPreferenceMerge.ts";
 const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
 export function fixtureWorkspaceId(label) {
   return crypto.createHash("sha256").update(label).digest("hex").slice(0, 32);
@@ -68,6 +72,7 @@ export async function fixture(
   const streams = new Set();
   const nonces = new Set();
   const notify = [];
+  const preferences = { user: {}, server: {} };
   const agent = {
     id: "overlap",
     name: `${label} chat`,
@@ -218,6 +223,14 @@ export async function fixture(
     }
     if (url.pathname === "/api/sync/drafts") {
       json([]);
+      return;
+    }
+    if (url.pathname === "/api/sync/preferences" && request.method === "POST") {
+      assert.ok(body.scope === "user" || body.scope === "server");
+      preferences[body.scope] = prunePreferenceFields(
+        mergePreferenceFields(preferences[body.scope], body.fields),
+      );
+      json({ fields: preferences[body.scope] });
       return;
     }
     if (

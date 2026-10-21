@@ -1,4 +1,4 @@
-import { useServerApi } from "./ServerServicesContext";
+import { useServerApi, useServerResourceReads } from "./ServerServicesContext";
 import {
   capturePreferenceWrite,
   readPreferenceFields,
@@ -29,7 +29,6 @@ import {
 import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
 import { refreshServerName, watchRegisteredServerNames } from "./serverNames";
-import { watchResourceReads } from "../components/watchResourceReads";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
   enabled: boolean,
@@ -37,6 +36,7 @@ export function useServerDiscovery(
   localAvailable = true,
 ) {
   const { refreshSession, serverAccess } = useServerApi();
+  const watchResourceReads = useServerResourceReads();
 
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
   const [, setPreferenceRevision] = useState(0);
@@ -269,7 +269,7 @@ export function useServerDiscovery(
       window.removeEventListener(DISCOVERY_REFRESH_EVENT, refresh);
       watcher();
     };
-  }, [localAvailable]);
+  }, [localAvailable, watchResourceReads]);
   useEffect(() => {
     if (!localAvailable) return;
     active.current = true;

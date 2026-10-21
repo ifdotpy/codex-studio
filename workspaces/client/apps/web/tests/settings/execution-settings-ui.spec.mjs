@@ -712,6 +712,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       "PASS execution settings UI: short model rows and recommended tags, keyboard list, main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
         root,
     );
+  } catch (error) {
+    throw new Error(`${error.message}\nFixture log:\n${log}`, { cause: error });
   } finally {
     if (process.env.CODEX_TEST_DESKTOP) await browser?.close();
   }
