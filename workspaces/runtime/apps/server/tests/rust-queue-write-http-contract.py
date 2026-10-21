@@ -600,8 +600,11 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 database.execute(f'DROP TRIGGER "{name}"')
             for name, _sql in indexes:
                 database.execute(f'DROP INDEX "{name}"')
+            # agent_columns.rs owns STORED JSON-derived columns, which reject
+            # invalid JSON even with triggers/indexes removed. A JSON array is
+            # writable but remains an invalid persisted agent object.
             database.execute(
-                "UPDATE runtime_agents SET record='{' WHERE id=?", (self.agent_id,)
+                "UPDATE runtime_agents SET record='[]' WHERE id=?", (self.agent_id,)
             )
             database.commit()
         try:
