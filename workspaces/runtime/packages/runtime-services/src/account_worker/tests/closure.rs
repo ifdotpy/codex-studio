@@ -668,6 +668,44 @@ async fn recovered_thread_rejection_replaces_receipt_pending_hold() {
     unresolved_thread_receipt_survives_replacement(true).await;
 }
 
+/// 2026-10-21: two agents stopped with "Provider thread resume failed (the
+/// reply does not match the prepared thread)", and the record did not say
+/// which check failed. The stored error names the failed check.
+#[tokio::test]
+async fn a_rejected_thread_reply_names_the_failed_check() {
+    for (thread, check) in [
+        (
+            json!({"id":"another-thread"}),
+            "the reply thread another-thread is not the prepared thread fake-thread-0",
+        ),
+        (json!({}), "the reply has no thread ID"),
+    ] {
+        let state = State::new().await;
+        let mut peer = Peer::new();
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        state.wake(&worker).await;
+        let resume = peer.write("thread/resume").await;
+        let reply = peer
+            .frame(json!({"id":resume["id"],"result":{"thread":thread}}))
+            .await;
+        peer.acknowledged(reply).await;
+        worker_barrier(&worker).await;
+        let held = state.record().await;
+        assert_eq!(
+            held["error"],
+            format!(
+                "Provider thread resume failed (the reply does not match the prepared thread: {check}); input remains pending."
+            )
+        );
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "a rejected thread reply sends no input"
+        );
+        assert_ne!(state.event_status("input").await, "delivered");
+        worker.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
     let state = State::new().await;

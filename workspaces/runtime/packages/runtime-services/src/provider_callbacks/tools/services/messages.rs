@@ -277,17 +277,46 @@ fn send_as_actor(
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
     let mut authority = authorization_records(tx)?;
-    for recipient in &recipients {
-        authorize(&mut authority, text(recipient, "id")?, who, &room)?;
+    let broadcast = target == "broadcast";
+    let mut refused = serde_json::Map::new();
+    let mut first_refusal = None;
+    let mut admitted = Vec::with_capacity(recipients.len());
+    for recipient in recipients {
+        match authorize(&mut authority, text(&recipient, "id")?, who, &room) {
+            Ok(()) => {}
+            // One member record that the gate cannot check must not refuse
+            // the broadcast to the other members. The result names it.
+            Err(CallbackError::Stored(location)) if broadcast => {
+                let recipient_id = text(&recipient, "id")?;
+                eprintln!(
+                    "Broadcast {id} skips member {recipient_id}: invalid stored authority at {location}"
+                );
+                refused.insert(
+                    recipient_id.into(),
+                    json!(crate::managed_host_tools::Error::StoredAt(location.clone()).to_string()),
+                );
+                first_refusal.get_or_insert(location);
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
         if recipient["id"] != recipient["rootId"] {
-            let root = event_write::checked_agent(tx, text(recipient, "rootId")?)?;
+            let root = event_write::checked_agent(tx, text(&recipient, "rootId")?)?;
             event_write::assert_delegation(&root)?;
         }
         // Python `codex_radio.guard_message`: only the sender's live shared
         // reply turn blocks a private message to a fellow room member.
-        crate::radio_runtime::guard_message(tx, who, text(recipient, "id")?)
+        crate::radio_runtime::guard_message(tx, who, text(&recipient, "id")?)
             .map_err(radio_guard_error)?;
+        admitted.push(recipient);
     }
+    // When no member can be checked, nothing is sent.
+    if admitted.is_empty()
+        && let Some(location) = first_refusal
+    {
+        return Err(CallbackError::Stored(location));
+    }
+    let recipients = admitted;
     let room_id = text(&room, "id")?.to_owned();
     if let Some(mut previous) = records::get(tx, "runtime_rooms", &room_id)? {
         let fields = room
@@ -355,7 +384,12 @@ fn send_as_actor(
     let view = crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, true)?)
         .ok_or_else(|| CallbackError::Stored(room_id.clone()))?;
     SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;
-    let result = json!({"id":id,"room":room_id,"deliveries":deliveries});
+    let mut result = json!({"id":id,"room":room_id,"deliveries":deliveries});
+    // A broadcast member that was not checked is named with its refusal.
+    // The receipt keeps it, so a replay of this request reports it again.
+    if !refused.is_empty() {
+        result["refused"] = Value::Object(refused);
+    }
     event_write::save_receipt(tx, Some(id), &event_write::request_signature(args), &result)?;
     Ok(result)
 }
