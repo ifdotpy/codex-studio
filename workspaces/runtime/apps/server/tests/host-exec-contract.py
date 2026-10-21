@@ -27,11 +27,16 @@ from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition  # noqa: E4
 sys.path.insert(0, str(VM_GUEST_ROOT))
 import codex_host_exec_server
 from codex_host_exec_server import HostService, clone_tree
-from codex_host_exec import run_tool, tool_definition
+from codex_host_exec import ENV_STATE, ENV_TREE, run_tool, tool_definition
 from host_exec import HostExec
 import host_exec_protocol
 from host_exec_protocol import FRAME_LIMIT, HostExecError, conflicts, key, mapped, page, scan
 from host_exec_slot import HostSlotHandlers
+
+
+# The fake guest layr: the saved line state and the git tree ID that `rev-parse <state>^{tree}` prints.
+FIXTURE_STATE = "0123456789abcdef0123456789abcdef"
+FIXTURE_TREE = "5e2352431d25bc530ae038e5958b5c3ec3574d26"
 
 
 class Agents:
@@ -71,7 +76,11 @@ class Slots(HostSlotHandlers):
     async def layr(self, context, args, ok=(0,)):
         line = Path(context["path"])
         if args[0] == "rev-parse":
-            return "0123456789abcdef0123456789abcdef"
+            if args[1].endswith("^{tree}"):
+                self.tree_requests.append(args[1])
+                # A layr from before the tree form exits 128 with an empty standard output.
+                return "" if self.old_layr else FIXTURE_TREE + "\n"
+            return FIXTURE_STATE
         if args[:2] == ["cache", "list"]:
             return "".join(path + ("\tcache\n" if (line / path).is_dir() else "\tabsent\n") for path in self.caches)
         if args[0] == "export":
@@ -110,6 +119,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.slots.caches = []
         self.slots.collect_batches = []
         self.slots.collect_conflicts = []
+        self.slots.old_layr = False
+        self.slots.tree_requests = []
         async def host_context(agent):
             return await self.slots.agents.dispatch("context", "agent.context", {"agentId": agent})
         self.guest = HostExec(SimpleNamespace(state=self.state, host_context=host_context))
@@ -185,6 +196,39 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["exitCode"], 0)
         # The fake guest layr names this state for the saved line (rev-parse HEAD@{0}).
         self.assertIn("state=0123456789abcdef0123456789abcdef", "".join(row.get("text", "") for row in self.events))
+
+    async def test_the_command_knows_the_git_tree_of_its_layr_state(self):
+        script = ('import os; print("state=" + os.environ["%s"]); print("tree=" + os.environ.get("%s", "none"))'
+                  % (ENV_STATE, ENV_TREE))
+        result = await self.execute("tree", script)
+        self.assertEqual(result["exitCode"], 0)
+        self.assertEqual(self.slots.tree_requests, [FIXTURE_STATE + "^{tree}"])
+        text = "".join(row.get("text", "") for row in self.events)
+        self.assertIn("state=" + FIXTURE_STATE, text)
+        self.assertIn("tree=" + FIXTURE_TREE, text)
+        self.assertEqual(result["layrTree"], FIXTURE_TREE)
+
+    async def test_a_layr_without_the_tree_form_gives_no_tree(self):
+        # The inherited environment must not name a tree of another state either.
+        self.slots.old_layr = True
+        with patch.dict(os.environ, {ENV_TREE: "f" * 40}):
+            result = await self.execute("old-layr", 'import os; print("tree=" + os.environ.get("%s", "none"))' % ENV_TREE)
+        self.assertEqual(result["exitCode"], 0)
+        self.assertNotIn("layrTree", result)
+        self.assertIn("tree=none", "".join(row.get("text", "") for row in self.events))
+
+    async def test_the_mac_refuses_an_invalid_tree_id(self):
+        op = await self.acquire("bad-tree")
+        manifest = scan(Path(op["slotPath"]))
+        run = {"operationId": "bad-tree", "agentId": "agent", "argv": [sys.executable, "-c", "print(1)"],
+               "manifestSha256": key(json.dumps(manifest, sort_keys=True))}
+        for fields in ({"layrState": FIXTURE_STATE, "layrTree": "abc"},
+                       {"layrState": FIXTURE_STATE, "layrTree": FIXTURE_TREE.upper()},
+                       {"layrTree": FIXTURE_TREE}):
+            with self.subTest(fields=fields), self.assertRaises(HostExecError) as caught:
+                await self.guest.call("run", {**run, **fields}, "run:" + json.dumps(fields, sort_keys=True))
+            self.assertEqual(caught.exception.code, "invalid_params")
+        self.assertFalse(self.host.commands)
 
     async def test_exact_retry_and_changed_content(self):
         params = {"operationId": "retry", "agentId": "agent", "projectId": "project", "linePath": str(self.line)}

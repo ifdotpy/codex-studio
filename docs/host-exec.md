@@ -13,6 +13,16 @@ Use these environment variables for output outside the source folder:
 and writes that state into the slot before the command. The `.git` folder of the slot is the
 line's git layer and can name an older commit; use this ID to identify the sources.
 
+`HOST_EXEC_TREE` is the git tree ID of that state: the 40 hexadecimal digits that
+`layr rev-parse <state>^{tree}` prints in the guest. It is the tree of the commit that
+`layr push` exports for the state, so it equals `git rev-parse HEAD^{tree}` after a git
+sync of that state. Use it to record the whole source tree of a build. A tree computed
+in the slot is not this value: the slot holds ignored build output, and layr-only files
+of the state do not have to be there. The
+guest asks layr for the tree when it saves the line for the command. A layr from before
+2026-10-17 has no tree form; then the command gets no `HOST_EXEC_TREE`, never a guessed
+value. `codex_host_exec.py` owns the names of these variables.
+
 For example:
 
 ```json
@@ -58,6 +68,17 @@ Each mutation has a durable receipt. An exact retry returns the saved receipt.
 A different payload with the same ID fails. A pending receipt after a restart
 reports an unknown outcome. It does not repeat the command or a source write.
 A lost host owner leaves the slot leased for inspection.
+
+A Studio restart during a call does not lose its result. Studio saves the exact
+guest request (request ID and parameters) on the tool receipt before it sends it.
+The guest keeps a receipt for each `host.exec` request ID. After the restart,
+Studio sends the same request again (`codex_host_exec.resume`). The guest returns
+its saved answer, or it waits for the command that still runs. It never starts
+the command again. The waiting caller then gets the real result, with an empty
+`output` and a `recovery` note: read the output with `status`. An explicit guest
+error also reaches the caller. While the resume can still succeed, Studio keeps
+back the saved "outcome unknown" answer. When the guest gives no answer after
+`RESUME_ATTEMPTS` tries, the caller gets that answer.
 
 A failure before the run request (slot preparation, manifest, or transfer)
 releases the Mac slot. The saved status records `sync_failed` and `preRunError`.
@@ -293,6 +314,7 @@ Run checks one at a time:
 
 ```sh
 python3 -B workspaces/runtime/apps/server/tests/host-exec-contract.py
+python3 -B workspaces/runtime/apps/server/tests/host-exec-restart-contract.py
 python3 -B workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py
 python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime

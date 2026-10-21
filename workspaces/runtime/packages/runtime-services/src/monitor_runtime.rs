@@ -984,6 +984,63 @@ pub async fn reconcile_unknown(
         .await
 }
 
+/// Running commands with a native operation, no rule, no reattach in progress
+/// and no queued event, after `after` in ID order. These are the only commands
+/// whose exit depends on a live waiter in the monitor port.
+pub async fn unqueued_running_ids(
+    store: &RuntimeStore,
+    after: Option<&str>,
+) -> Result<Vec<String>, MonitorError> {
+    let after = after.unwrap_or_default().to_owned();
+    store
+        .read_async("runtime-services/monitor_orphans", move |connection| {
+            let mut statement = connection.prepare_cached(
+                "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND json_type(record,'$.operation')='object' AND json_extract(record,'$.ruleId') IS NULL AND COALESCE(json_extract(record,'$.reattachRecovery.status'),'')!='running' AND COALESCE(json_array_length(record,'$.streamQueue'),0)=0 AND id>?1 ORDER BY id LIMIT ?2",
+            )?;
+            let ids = statement
+                .query_map((after.as_str(), MONITOR_TICK_BATCH as i64), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, studio_runtime_store::StoreError>(ids)
+        })
+        .await
+        .map_err(MonitorError::from)
+}
+
+/// Stage the exact-identity reattach for a running command whose exit has no
+/// owner in this process: its request future ended, failed or was lost with an
+/// account worker. The next reattach pass asks the provider about the exact
+/// `monitor:<id>` operation and settles a gone process once. Returns whether
+/// the command was staged. A command whose state changed is left untouched.
+pub async fn reconcile_orphan(
+    store: &RuntimeStore,
+    id: &str,
+    now: f64,
+) -> Result<bool, MonitorError> {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            let record = snapshot.record();
+            if record["status"] != "running"
+                || snapshot.operation().is_none()
+                || snapshot.recovering()
+                || record.get("ruleId").is_some_and(|rule| !rule.is_null())
+                || record
+                    .get("streamQueue")
+                    .and_then(Value::as_array)
+                    .is_some_and(|queue| !queue.is_empty())
+            {
+                return Ok(false);
+            }
+            let decision = policy::restart_recovery(&snapshot, now)?;
+            apply(tx, &snapshot, &actor, &decision, now)?;
+            Ok(true)
+        })
+        .await
+}
+
 /// Decide an active command's failed reattach as lost and enqueue its one result.
 /// Idempotent: a command with no running recovery is left untouched.
 pub async fn settle_reattach(

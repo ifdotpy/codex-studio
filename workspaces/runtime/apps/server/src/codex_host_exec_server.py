@@ -22,7 +22,8 @@ import time
 from typing import Any, TYPE_CHECKING
 
 from codex_layout import VM_GUEST_ROOT
-from codex_host_exec import service_build_id
+from codex_host_exec import (ENV_ARTIFACTS, ENV_DERIVED_DATA, ENV_PACKAGE_CACHE, ENV_STATE, ENV_TREE,
+                             service_build_id)
 
 # The host side shares the frame protocol with the guest (mypy finds it through mypy_path).
 sys.path.insert(0, str(VM_GUEST_ROOT))
@@ -706,6 +707,11 @@ class HostService:
             require(layr_state is None or (isinstance(layr_state, str) and 7 <= len(layr_state) <= 64
                                            and all(c in "0123456789abcdef" for c in layr_state)),
                     "Invalid layr state ID")
+            # The git tree ID of that state; a guest whose layr cannot name it sends none.
+            layr_tree = params.get("layrTree")
+            require(layr_tree is None or (layr_state is not None and isinstance(layr_tree, str)
+                                          and re.fullmatch(r"[0-9a-f]{40}", layr_tree) is not None),
+                    "Invalid layr tree ID")
             async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
                 source = await asyncio.to_thread(self.scan_slot, slot, mac_only)
                 # The scan let other requests run: the operation must still be leased.
@@ -723,7 +729,8 @@ class HostService:
                     require(cwd.is_dir(), "The command cwd is not a directory")
                 self.evict(slot.parent, self.budget_of(op), exclude=slot)
                 op.update(state="running", startedAt=time.time(), caches=caches,
-                          **({"layrState": layr_state} if layr_state else {}))
+                          **({"layrState": layr_state} if layr_state else {}),
+                          **({"layrTree": layr_tree} if layr_tree else {}))
                 self.save(identity, op)
                 self.commands[identity] = asyncio.create_task(self.command(identity, dict(op), argv, cwd, timeout, source))
                 return op
@@ -887,9 +894,13 @@ class HostService:
         output_bytes = 0
         child = None
         slot = self.slot(op)
-        environment = {**os.environ, "HOST_EXEC_DERIVED_DATA": op["derivedData"],
-                       "HOST_EXEC_PACKAGE_CACHE": op["packageCache"], "HOST_EXEC_ARTIFACTS": op["artifactsPath"],
-                       **({"HOST_EXEC_STATE": op["layrState"]} if op.get("layrState") else {})}
+        environment = {**os.environ, ENV_DERIVED_DATA: op["derivedData"],
+                       ENV_PACKAGE_CACHE: op["packageCache"], ENV_ARTIFACTS: op["artifactsPath"],
+                       **({ENV_STATE: op["layrState"]} if op.get("layrState") else {}),
+                       **({ENV_TREE: op["layrTree"]} if op.get("layrTree") else {})}
+        if not op.get("layrTree"):
+            # The inherited environment must not name another tree.
+            environment.pop(ENV_TREE, None)
         async def drain(pipe: asyncio.StreamReader, stream: str) -> None:
             nonlocal output_bytes, reason
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")

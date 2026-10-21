@@ -42,6 +42,8 @@ Archive or removal deletes the worker line and keeps its states.
 Use `host_exec` for commands that require macOS.
 It transfers the selected state to a Mac slot and returns the command result.
 `HOST_EXEC_STATE` in the command names the layr state that the slot holds.
+`HOST_EXEC_TREE` is the git tree ID of that state (`layr rev-parse <state>^{tree}`).
+Record it as the source tree of a build. It is absent when the guest layr cannot name it.
 Do not treat the Mac native project folder as a copy of the VM main line.
 The read-only Mac share exposes the VM main line and states.
 

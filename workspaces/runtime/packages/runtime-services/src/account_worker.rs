@@ -3627,6 +3627,34 @@ impl Worker {
         }
         Ok(())
     }
+    /// Apply the provider's sign-in completion to the account registry before
+    /// its cursor settles. A failure leaves the receipt open; the registry
+    /// reconcile settles it from the credentials or at its deadline.
+    async fn login_completed(&self, params: Option<&Value>) {
+        let Some(driver) = self.resources.account_driver.clone() else {
+            return;
+        };
+        let account = self.account.clone();
+        let params = params.cloned().unwrap_or(Value::Null);
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker",
+            move || driver.codex_login_completed(&account, &params),
+        )
+        .await;
+        match result {
+            Ok(Ok(changed)) if !changed.is_empty() => self.bridge.event_wake().notify_one(),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => crate::diagnostics::log_stderr(format_args!(
+                "account {} sign-in completion was not applied: {error}",
+                self.account
+            )),
+            Err(_) => crate::diagnostics::log_stderr(format_args!(
+                "account {} sign-in completion task failed",
+                self.account
+            )),
+        }
+    }
+
     /// Apply one committed entry's in-memory effects. Returns whether its
     /// cursor settles with the batch; a callback request settles on its reply.
     async fn journal_committed(
@@ -3643,6 +3671,9 @@ impl Worker {
                 notification.params.as_ref(),
             )
             .await?;
+            if notification.method.as_str() == "account/login/completed" {
+                self.login_completed(notification.params.as_ref()).await;
+            }
         }
         let actor_id = source.map(|source| source.actor_id.as_str());
         let actor_epoch = source.map(|source| source.epoch);

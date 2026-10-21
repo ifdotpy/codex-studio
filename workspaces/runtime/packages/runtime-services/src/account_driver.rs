@@ -137,6 +137,12 @@ pub trait ProviderAuthReader: Send + Sync {
 
     /// The profiles of the registry changed: watch exactly their credential files.
     fn watch(&self, _profiles: &[AuthProfile]) {}
+
+    /// Wall time of the last write to the profile's Codex credential file, in
+    /// Unix seconds. `None` when it is unknown or the profile is not Codex.
+    fn codex_credentials_written_at(&self, _profile: &AuthProfile) -> Option<f64> {
+        None
+    }
 }
 
 /// Reads auth status through the profile's provider adapter and the shared
@@ -152,6 +158,12 @@ impl ProviderAuthReader for SystemProviderAuthReader {
         auth_cache::shared().invalidate(
             &crate::provider_adapter::adapter(profile.provider).credential_location(profile),
         );
+    }
+
+    fn codex_credentials_written_at(&self, profile: &AuthProfile) -> Option<f64> {
+        (profile.provider == studio_runtime_providers::ProviderKind::Codex)
+            .then(|| codex_credentials_written_at(&profile.home))
+            .flatten()
     }
 
     fn watch(&self, profiles: &[AuthProfile]) {
@@ -261,6 +273,17 @@ pub fn codex_auth_metadata(home: &Path) -> AuthMetadata {
         CodexAuth::Unreadable => AuthMetadata::codex_error(),
         CodexAuth::Parsed(metadata) => metadata,
     }
+}
+
+/// Modification time of `<home>/auth.json` in Unix seconds. Only file metadata
+/// is read; the credentials themselves are not opened.
+pub fn codex_credentials_written_at(home: &Path) -> Option<f64> {
+    let modified = fs::metadata(home.join("auth.json")).ok()?.modified().ok()?;
+    let seconds = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs_f64();
+    seconds.is_finite().then_some(seconds)
 }
 
 /// Python `auth_metadata` writes a different field set for each of these cases.
@@ -887,6 +910,30 @@ fn login_terminal(receipt: &Value) -> bool {
 /// The user-readable error of a sign-in request that the provider never received.
 pub const LOGIN_NOT_SENT_ERROR: &str = "Could not start sign-in. Try again.";
 
+/// Lifetime of a Codex sign-in receipt whose provider reply gave no expiry, in
+/// seconds after its `createdAt`. A receipt that is still active after this
+/// time is expired, so a lost provider completion cannot keep it active.
+pub const CODEX_LOGIN_RECEIPT_LIFETIME_SECONDS: f64 = 30.0 * 60.0;
+
+/// The user-readable error of a Codex sign-in receipt that expired.
+pub const LOGIN_EXPIRED_ERROR: &str = "Sign-in expired. Start it again.";
+
+/// Wall time, in Unix seconds, after which an active receipt is expired: the
+/// provider's `expiresAt` when it gave one, else `createdAt` plus
+/// [`CODEX_LOGIN_RECEIPT_LIFETIME_SECONDS`]. `None` without a valid time.
+fn login_deadline(receipt: &Value) -> Option<f64> {
+    receipt
+        .get("expiresAt")
+        .and_then(Value::as_f64)
+        .or_else(|| {
+            receipt
+                .get("createdAt")
+                .and_then(Value::as_f64)
+                .map(|created| created + CODEX_LOGIN_RECEIPT_LIFETIME_SECONDS)
+        })
+        .filter(|deadline| deadline.is_finite())
+}
+
 /// A sign-in account that never received a provider identity and whose every
 /// sign-in request has ended (error or cancelled). Such a row is hidden from
 /// the account list; a later reservation removes it so failed or abandoned
@@ -1411,6 +1458,160 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             self.persist(&mut state, value)?;
         }
         Ok(result)
+    }
+
+    /// Apply the provider's `account/login/completed` notification that the
+    /// retained session of `account` delivered. Only an unfinished receipt of
+    /// the same account whose native `loginId` is the notification's (or still
+    /// unknown on a receipt that is still open) changes. Returns the receipts.
+    pub fn codex_login_completed(
+        &self,
+        account: &str,
+        params: &Value,
+    ) -> Result<Vec<Value>, AccountMutationError> {
+        let (Some(native_id), Some(success)) = (
+            params
+                .get("loginId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty()),
+            params.get("success").and_then(Value::as_bool),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let (requests, profile) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| AccountDriverError::Poisoned)?;
+            let requests: Vec<String> = state
+                .value
+                .get("logins")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter(|(_, receipt)| {
+                    receipt["accountKey"] == account
+                        && match receipt.get("loginId").and_then(Value::as_str) {
+                            // A late completion may still finish an expired receipt.
+                            Some(saved) => {
+                                saved == native_id
+                                    && !matches!(
+                                        receipt["status"].as_str(),
+                                        Some("ready" | "duplicate" | "cancelled")
+                                    )
+                            }
+                            // The start reply was lost; the request is still open.
+                            None => !login_terminal(receipt),
+                        }
+                })
+                .map(|(request, _)| request.clone())
+                .collect();
+            if requests.is_empty() {
+                return Ok(Vec::new());
+            }
+            (
+                requests,
+                auth_profile(registry_account(&state.value, account)?)?,
+            )
+        };
+        // The provider has just written the credentials; read them again.
+        let metadata = success.then(|| {
+            self.reader.invalidate(&profile);
+            self.reader.read(&profile)
+        });
+        requests
+            .iter()
+            .map(|request| {
+                self.complete_codex_login(request, account, native_id, success, metadata.as_ref())
+            })
+            .collect()
+    }
+
+    /// Settle each unfinished Codex sign-in receipt whose provider completion
+    /// is lost. A sign-in again request whose account credentials were written
+    /// after the request started and before its deadline completed natively:
+    /// it is ready only when those credentials hold the expected account id.
+    /// An unfinished receipt after its deadline is expired with
+    /// [`LOGIN_EXPIRED_ERROR`]. Returns whether the registry changed.
+    pub fn reconcile_codex_logins(&self, now: f64) -> Result<bool, AccountMutationError> {
+        if !now.is_finite() {
+            return Ok(false);
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let requests: Vec<String> = state
+            .value
+            .get("logins")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter(|(_, receipt)| !login_terminal(receipt))
+            .map(|(request, _)| request.clone())
+            .collect();
+        if requests.is_empty() {
+            return Ok(false);
+        }
+        let mut value = state.value.clone();
+        for request in &requests {
+            let receipt = value["logins"][request].clone();
+            let Some(account) = receipt["accountKey"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(row) = registry_account(&value, &account) else {
+                continue;
+            };
+            if studio_runtime_providers::ProviderKind::key_of(row) != Some("codex") {
+                continue;
+            }
+            let profile = auth_profile(row)?;
+            let deadline = login_deadline(&receipt);
+            if receipt.get("reauthAccountKey").is_some()
+                && receipt.get("nativeCompleted") != Some(&Value::Bool(true))
+                && receipt.get("loginId").is_some_and(truthy_value)
+                && let (Some(created), Some(deadline)) =
+                    (receipt.get("createdAt").and_then(Value::as_f64), deadline)
+                && self
+                    .reader
+                    .codex_credentials_written_at(&profile)
+                    .is_some_and(|written| written > created && written <= deadline)
+            {
+                value["logins"][request]["nativeCompleted"] = Value::Bool(true);
+            }
+            // Credentials of another account than the pinned one read as
+            // Changed; a completed "sign in again" request then ends in error.
+            let status = self.refresh_value(&mut value, &account, true)?;
+            if status == AccountStatus::Ready
+                || (status == AccountStatus::Changed
+                    && value["logins"][request]["nativeCompleted"] == true)
+            {
+                reconcile_local_login(&mut value, &state.order, request, &account)?;
+            }
+            if login_terminal(&value["logins"][request])
+                || deadline.is_none_or(|deadline| now <= deadline)
+            {
+                continue;
+            }
+            let expired = value["logins"][request]
+                .as_object_mut()
+                .ok_or(AccountDriverError::InvalidRegistry)?;
+            expired.insert("status".into(), Value::String("error".into()));
+            expired.insert("error".into(), Value::String(LOGIN_EXPIRED_ERROR.into()));
+            expired.remove("userCode");
+            expired.remove("verificationUrl");
+            if receipt.get("reauthAccountKey").is_none() {
+                let row = registry_account_mut(&mut value, &account)?;
+                row["status"] = Value::String("error".into());
+                row["error"] = Value::String(LOGIN_EXPIRED_ERROR.into());
+            }
+        }
+        // Refreshed account rows alone are not persisted, as in a listing.
+        if value.get("logins") == state.value.get("logins") {
+            return Ok(false);
+        }
+        self.persist(&mut state, value)?;
+        Ok(true)
     }
 
     pub fn update_claude_settings(

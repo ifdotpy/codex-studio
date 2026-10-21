@@ -125,6 +125,10 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
         names = {tool.get('name') for tool in agent.get('activeTools', [])}
         if 'mcp__studio__' + str(record.get('tool')) not in names:
             continue
+        from codex_host_exec import resume_pending
+        if resume_pending(record):
+            # The saved guest request can still give the real result (codex_host_exec.resume).
+            continue
         proof = _native_proof(runtime, server, record)
         if proof is None:
             continue

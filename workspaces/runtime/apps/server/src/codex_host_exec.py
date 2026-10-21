@@ -10,10 +10,14 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, Iterator, Protocol
+from typing import TYPE_CHECKING, Any, Iterator, Protocol
 
 from codex_layout import VM_GUEST_ROOT
+
+if TYPE_CHECKING:
+    from codex_time import ToolResult
 
 
 class GuestClient(Protocol):
@@ -24,15 +28,33 @@ class GuestClient(Protocol):
                timeout: float = 60) -> Iterator[dict[str, Any]]: ...
 
 
+# Environment names of the Mac command (docs/host-exec.md); the Mac service sets them.
+ENV_DERIVED_DATA = "HOST_EXEC_DERIVED_DATA"
+ENV_PACKAGE_CACHE = "HOST_EXEC_PACKAGE_CACHE"
+ENV_ARTIFACTS = "HOST_EXEC_ARTIFACTS"
+# The ID of the layr state that the slot holds.
+ENV_STATE = "HOST_EXEC_STATE"
+# The git tree ID of that state: what `layr rev-parse <state>^{tree}` prints, 40 hex digits.
+ENV_TREE = "HOST_EXEC_TREE"
 # The host_exec tool actions; the guest broker implements each (vm-guest/host_exec.py).
 ACTIONS = ("execute", "status", "cancel", "list", "release")
+# Seconds between two resume attempts of one interrupted receipt while the VM gives no answer.
+RESUME_RETRY_SECONDS = 30
+# Resume attempts of one interrupted receipt without a guest answer. After the last one the
+# saved "outcome unknown" answer goes to the waiting caller (codex_tool_response_recovery).
+RESUME_ATTEMPTS = 10
+# Seconds between two scans for interrupted receipts while a scan still found one to resume.
+RESUME_SCAN_SECONDS = 10
+RESUME_NOTE = ("Studio restarted while this call ran. This is the saved guest result of the same request; "
+               "nothing was repeated. The output stays readable with action status and this operationId.")
 
 
 def tool_definition() -> dict[str, Any]:
     # The same canonical format as TOOLS: the app-server rejects a mixed list.
     return {"type": "function", "name": "host_exec", "description": (
         "Run a macOS command from your VM line. Sources return through layr. Slots keep stable paths and caches. "
-        "Use HOST_EXEC_DERIVED_DATA, HOST_EXEC_PACKAGE_CACHE and HOST_EXEC_ARTIFACTS for build output. "
+        f"Use {ENV_DERIVED_DATA}, {ENV_PACKAGE_CACHE} and {ENV_ARTIFACTS} for build output. "
+        f"{ENV_STATE} names the layr state in the slot and {ENV_TREE} its git tree ID. "
         "The line's layr cache folders go to the Mac, but Mac changes inside them never return. "
         "Supply the same request_id for exact retries. Lost results never repeat the command. "
         "Use status to read saved output and cancel to stop the command. Artifacts return as files. "
@@ -210,6 +232,8 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
             raise ValueError("Supply the host_exec operation_id")
         params.update(operationId=operation, afterSeq=args.get("after_seq", 0))
         timeout = 15
+    stream_timeout = float(timeout) + 3660 if action == "execute" else 60
+    remember_request(runtime, request_id, {"requestId": identity, "params": params, "timeout": stream_timeout})
     remote: GuestClient = client(runtime)
     # The Mac service may have stopped since the VM started (only a VM start ensured it before);
     # a check costs one local request.
@@ -220,7 +244,7 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
     operation_note = ("Operation: " + str(params["operationId"]) + ". Use action status or list; never repeat the command."
                       if "operationId" in params else "")
     try:
-        for frame in remote.stream("host.exec", params, request_id=identity, timeout=float(timeout) + 3660 if action == "execute" else 60):
+        for frame in remote.stream("host.exec", params, request_id=identity, timeout=stream_timeout):
             if frame.get("event") == "output":
                 value = frame["data"].get("text", "")
                 if length < 256 * 1024:
@@ -237,3 +261,123 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
     if result is None:
         raise RuntimeError("The host command has no proven result. " + operation_note)
     return {**result, "output": "".join(output)}
+
+
+def remember_request(runtime: Any, key: str, request: dict[str, Any]) -> None:
+    """Save the exact guest request on its running tool receipt before dispatch. The guest keeps a
+    durable receipt of each host.exec request ID: after a Studio restart the same request returns
+    the saved result or joins the running task, and it never runs the command again."""
+    if not callable(getattr(runtime, "tool_request", None)):
+        return
+    with runtime.lock, runtime.db() as db:
+        record = runtime.tool_request(key, db)
+        if record is None or record.get("stage") != "running" or record.get("hostExecRequest") == request:
+            return
+        record["hostExecRequest"] = request
+        runtime.put(db, "tool_requests", record)
+
+
+def resume_pending(record: Any) -> bool:
+    """An interrupted host_exec receipt whose saved guest request can still give the real result.
+    Its saved "outcome unknown" answer waits until the resume settles or gives up."""
+    return bool(isinstance(record, dict) and record.get("tool") == "host_exec"
+                and record.get("stage") == "interrupted" and isinstance(record.get("hostExecRequest"), dict)
+                and (record.get("hostExecResume") or {}).get("state") != "failed")
+
+
+def _current(runtime: Any, db: Any, key: str, raw: str) -> bool:
+    row = db.execute("SELECT record FROM runtime_tool_requests WHERE id=?", (key,)).fetchone()
+    return bool(row and row[0] == raw and not runtime.closed)
+
+
+def _settle(runtime: Any, key: str, raw: str, answer: "ToolResult") -> bool:
+    from codex_payloads import externalize_result
+    from codex_time import stamp_tool_result
+    result = stamp_tool_result(answer, time.time())
+    with runtime.lock, runtime.db() as db:
+        if not _current(runtime, db, key, raw):
+            return False
+        db.execute("INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
+                   (key, json.dumps(externalize_result(runtime.root, db, result))))
+        saved = runtime.tool_result(db, key)
+        runtime.finish_tool_request(key, saved if isinstance(saved, dict) else result, db=db)
+    return True
+
+
+def _postpone(runtime: Any, key: str, raw: str, error: BaseException) -> None:
+    with runtime.lock, runtime.db() as db:
+        if not _current(runtime, db, key, raw):
+            return
+        record = runtime.tool_request(key, db)
+        attempts = int((record.get("hostExecResume") or {}).get("attempts", 0)) + 1
+        record["hostExecResume"] = {"state": "failed" if attempts >= RESUME_ATTEMPTS else "retry",
+                                    "attempts": attempts, "at": time.time(),
+                                    "nextAt": time.time() + RESUME_RETRY_SECONDS,
+                                    "error": (type(error).__name__ + ": " + str(error))[:500]}
+        runtime.put(db, "tool_requests", record)
+
+
+def resume(runtime: Any, key: str) -> str:
+    """Settle one interrupted host_exec receipt from the guest receipt of the same request."""
+    from codex_linux_vm import LinuxVMError
+    from codex_linux_workspaces import client
+    with runtime.lock, runtime.read_db() as db:
+        row = db.execute("SELECT record FROM runtime_tool_requests WHERE id=?", (key,)).fetchone()
+        record = runtime.tool_request(key, db) if row else None
+    if record is None or not resume_pending(record) or record.get("nativeDelivery"):
+        return "superseded"
+    raw, request = row[0], record["hostExecRequest"]
+    operation = request["params"].get("operationId")
+    note = RESUME_NOTE + (" Operation: " + str(operation) + "." if operation else "")
+    try:
+        remote: GuestClient = client(runtime)
+        ensure_service(remote.state_dir)
+        result: dict[str, Any] | None = None
+        for frame in remote.stream("host.exec", request["params"], request_id=request["requestId"],
+                                   timeout=float(request["timeout"])):
+            if "result" in frame:
+                result = frame["result"]
+        if result is None:
+            raise LinuxVMError("The guest returned no host_exec result.", uncertain=True)
+    except LinuxVMError as error:
+        if error.code is None:
+            # No guest answer (the VM or its channel is down): try again later, then give up.
+            _postpone(runtime, key, raw, error)
+            return "postponed"
+        # The guest answered this request with an explicit error, as the original call would have.
+        failure: "ToolResult" = {"success": False, "contentItems": [{"type": "inputText", "text": str(error) + " " + note}]}
+        return "settled" if _settle(runtime, key, raw, failure) else "superseded"
+    except Exception as error:
+        _postpone(runtime, key, raw, error)
+        return "postponed"
+    value = {**result, "output": "", "recovery": note}
+    answer: "ToolResult" = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+    return "settled" if _settle(runtime, key, raw, answer) else "superseded"
+
+
+def resume_tick(runtime: Any) -> None:
+    """Start one resume per interrupted host_exec receipt. A Studio restart is the only source of
+    interrupted receipts, so the scans stop when none waits for a resume."""
+    state = runtime.__dict__.setdefault("_host_exec_resume", {"next": 0.0, "done": False, "jobs": {}})
+    now = time.monotonic()
+    if state["done"] or now < state["next"] or runtime.closed:
+        return
+    state["next"] = now + RESUME_SCAN_SECONDS
+    with runtime.lock, runtime.read_db() as db:
+        rows = db.execute("SELECT id, record FROM runtime_tool_requests WHERE json_extract(record,'$.tool')='host_exec' "
+                          "AND json_extract(record,'$.stage')='interrupted' "
+                          "AND json_type(record,'$.hostExecRequest')='object' "
+                          "AND json_extract(record,'$.nativeDelivery') IS NULL").fetchall()
+    jobs = state["jobs"]
+    for finished in [key for key, job in jobs.items() if not job.is_alive()]:
+        jobs.pop(finished)
+    waiting = [(key, json.loads(raw)) for key, raw in rows]
+    waiting = [(key, record) for key, record in waiting if resume_pending(record)]
+    if not waiting and not jobs:
+        state["done"] = True
+        return
+    for key, record in waiting:
+        if key in jobs or (record.get("hostExecResume") or {}).get("nextAt", 0) > time.time():
+            continue
+        jobs[key] = threading.Thread(target=resume, args=(runtime, key), name="studio-host-exec-resume", daemon=True)
+        jobs[key].start()

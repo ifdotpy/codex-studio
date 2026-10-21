@@ -144,6 +144,22 @@ export default function AccountSignIn({
       clearStableRequestId(mutationKey);
       await state.refresh();
     });
+  // A replay of the same sign-in request starts nothing. The server settles a
+  // lost completion from the account credentials, or expires the request.
+  const check = () =>
+    run("check", async () => {
+      if (targetAccount && receipt) {
+        const mutationKey = `${storageKey}:${receipt.requestId}:check`;
+        const result = await post(
+          "/api/accounts/login",
+          { login_id: receipt.requestId, account_key: targetAccount.id },
+          { timeoutMs: 30000, requestId: stableRequestId(mutationKey) },
+        );
+        clearStableRequestId(mutationKey);
+        store({ ...result, requestId: receipt.requestId });
+      }
+      await state.refresh();
+    });
   let url: string | null = null;
   try {
     const value = new URL(receipt?.verificationUrl || "");
@@ -284,11 +300,7 @@ export default function AccountSignIn({
                   variant="subtle"
                   leftSection={<RefreshCw size={13} />}
                   disabled={!!busy}
-                  onClick={() =>
-                    void run("check", async () => {
-                      await state.refresh();
-                    })
-                  }
+                  onClick={() => void check()}
                 >
                   Check status
                 </Button>

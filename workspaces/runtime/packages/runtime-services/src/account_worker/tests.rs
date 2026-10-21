@@ -11,6 +11,7 @@ mod exited_generation_callback;
 mod idle_unload;
 mod journal_cost;
 mod late_thread_reply;
+mod login_completion;
 #[cfg(unix)]
 mod many_agents;
 mod native_review;

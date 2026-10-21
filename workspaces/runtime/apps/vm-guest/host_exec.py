@@ -316,7 +316,8 @@ class HostExec:
         try:
             await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
                 "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
-                "caches": caches, **({"layrState": prepared["state"]} if prepared.get("state") else {})}, "run", LONG_CALL)
+                "caches": caches, **({"layrState": prepared["state"]} if prepared.get("state") else {}),
+                **({"layrTree": prepared["tree"]} if prepared.get("tree") else {})}, "run", LONG_CALL)
         except HostExecError as exc:
             # The run handler checks the manifest before it schedules a command. Only this
             # explicit rejection proves that no command started; a lost reply keeps the lease.
