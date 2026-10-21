@@ -487,6 +487,12 @@ to send instructions. Historical saved plan text remains in storage.
 Existing chats, receipts, and agent state remain in
 `~/.local/state/codex-agents/canvas.sqlite3`. Source extraction does not move state.
 `CODEX_AGENTS_STATE_DIR` and `CODEX_HOME` retain their meanings.
+`CODEX_WORKER_BUILD_ROOTS` is a host path list of absolute build-output or cache
+folders encoded as UTF-8 (colon-separated on Unix). Set it when worker commands redirect output
+to another filesystem. The Rust server parses it once at startup; empty or
+relative entries fail startup. Server `CARGO_TARGET_DIR`, when set, is also
+watched. Change live server configuration through `just deliver-server`.
+See [storage admission](orchestration.md#full-disk) for reports and holds.
 Historical Canvas positions remain in each browser profile. Message drafts remain available.
 Closing Electron leaves the backend active.
 

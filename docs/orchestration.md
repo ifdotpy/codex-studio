@@ -647,8 +647,29 @@ Increase the budget with `codex-control configure`, then send a new instruction 
 
 ### Full disk
 
-A full disk is a wait, not a failure. `codex_shared_values.py` owns the thresholds
-for the volume that holds the state directory. Both backends use them:
+The Rust backend's existing `DiskGate` owns storage admission and the typed
+`orchestration_status.storage.filesystems` report. It reports available bytes,
+filesystem identity, watched paths, and purpose-specific thresholds. Paths on the
+same filesystem share one sample; a new workspace uses its nearest existing
+parent. Reports include the state volume, live worker workspace volumes across
+teams, and configured build-output volumes. Configure external output locations
+with [`CODEX_WORKER_BUILD_ROOTS`](product-guide.md#state).
+
+Before claiming queued implementer input, the gate checks every watched workspace
+and build-output filesystem against
+[`WORKER_STORAGE_MIN_FREE_BYTES`](../workspaces/runtime/packages/runtime-services/src/disk_space.rs).
+A low or unreadable filesystem leaves the input queued with the original identity
+and publishes a storage-hold reason on the agent. The account worker rechecks
+using the existing disk recheck interval. The hold ends at the same floor;
+there is no additional worker hysteresis. Leads and reviewers remain available
+for cleanup. This admission check does not reserve disk capacity or interrupt
+running work. State-volume full-disk hysteresis and ENOSPC recovery remain as
+follows.
+
+A full disk is a wait, not a failure.
+[`shared_values.rs`](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
+owns the thresholds for the volume that holds the state directory; Python
+consumes generated copies. Both backends use them:
 
 - Below `DISK_FULL_ENTER_FREE_BYTES` (1 GiB free), the disk is full. Studio
   starts no new turn and no automatic continuation. Queued input stays queued
@@ -1134,6 +1155,11 @@ the archive receipt. Repeated calls keep the same request result.
 `archive_finished` checks completed, failed, interrupted, and stopped paused
 descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
+The Rust backend runs the existing archive owner deepest-first. Safe Git cleanup
+removes the entire worktree, including ignored `target/` output, after preserving
+its commit under an archive ref. Dirty or unverified worktrees remain intact.
+Git does not measure removed byte counts; `unknownBytes` counts those removals
+instead of claiming a size. External build-output folders remain in place.
 The lead sees one reminder when three or more finished workers hold workspaces.
 Set `unassign_work=true` on `archive` or `archive_finished` to return open assigned
 tasks to the unassigned ready backlog. The archive and task changes commit in one

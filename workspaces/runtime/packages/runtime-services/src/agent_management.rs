@@ -153,6 +153,42 @@ impl Agent {
     }
 }
 
+/// Archive blocker kinds shared by single-worker decisions and batch reports.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ArchiveBlockerKind {
+    ActiveTurn,
+    ParkedEvent,
+    WorkspaceOperation,
+    TurnState,
+    Descendants,
+    InputDelivery,
+    Monitors,
+    BackgroundTasks,
+    Questions,
+    AssignedWork,
+    ToolRequests,
+    NativeStateUnconfirmed,
+}
+impl ArchiveBlockerKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::ActiveTurn => "active_turn",
+            Self::ParkedEvent => "parked_event",
+            Self::WorkspaceOperation => "workspace_operation",
+            Self::TurnState => "turn_state",
+            Self::Descendants => "descendants",
+            Self::InputDelivery => "input_delivery",
+            Self::Monitors => "monitors",
+            Self::BackgroundTasks => "background_tasks",
+            Self::Questions => "questions",
+            Self::AssignedWork => "assigned_work",
+            Self::ToolRequests => "tool_requests",
+            Self::NativeStateUnconfirmed => "native_state_unconfirmed",
+        }
+    }
+}
+
 /// Raw rows from one store transaction, also the differential corpus boundary.
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Records {
@@ -253,6 +289,50 @@ impl ManagementSnapshot {
             work,
             tables: records.tables,
         })
+    }
+
+    /// Select finished descendants deepest first; every individual archive still
+    /// rechecks its epoch, active work and descendants in the lifecycle writer.
+    pub(crate) fn finished_descendants(
+        &self,
+        actor: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, Value)>, ManagementError> {
+        let lead = self.agent(actor)?;
+        if lead.identity.is_lead != Some(true)
+            || lead.identity.epoch != epoch
+            || lead.identity.auto_wake != Some(true)
+            || lead.flag("deletedAt")
+        {
+            return Err(ManagementError::Invalid(
+                "Only the active orchestrator can manage its workers",
+            ));
+        }
+        let mut candidates = Vec::new();
+        for agent in &self.agents {
+            if agent.id() == actor
+                || agent.identity.root_id != lead.identity.root_id
+                || agent.flag("deletedAt")
+                || !finished(agent)
+            {
+                continue;
+            }
+            self.authorize(actor, epoch, agent.id())?;
+            let mut depth = 0;
+            let mut current = agent;
+            while current.id() != actor {
+                current = self.agent(current.identity.parent_id.as_deref().ok_or(
+                    ManagementError::Invalid("This worker is not your descendant"),
+                )?)?;
+                depth += 1;
+            }
+            candidates.push((depth, agent.id().to_owned(), agent.record.clone()));
+        }
+        candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        Ok(candidates
+            .into_iter()
+            .map(|(_, id, record)| (id, record))
+            .collect())
     }
 
     fn rows(&self, table: &str) -> &[Value] {
@@ -454,23 +534,29 @@ impl ManagementSnapshot {
     }
     fn blockers(&self, agent: &Agent, unassign: bool) -> Vec<Value> {
         let mut blocks = Vec::new();
-        let mut add = |kind: &str, ids: Vec<Value>| {
+        let mut add = |kind: ArchiveBlockerKind, ids: Vec<Value>| {
             if !ids.is_empty() {
                 blocks.push(json!({"kind":kind,"count":ids.len(),"ids":ids.into_iter().take(20).collect::<Vec<_>>()}));
             }
         };
         if agent.active() {
-            add("active_turn", vec![json!(agent.id())]);
+            add(ArchiveBlockerKind::ActiveTurn, vec![json!(agent.id())]);
         }
         if agent.flag("parkedEvent") {
-            add("parked_event", vec![agent.record["parkedEvent"].clone()]);
+            add(
+                ArchiveBlockerKind::ParkedEvent,
+                vec![agent.record["parkedEvent"].clone()],
+            );
         }
         if agent.flag("workspaceOperation") {
-            add("workspace_operation", vec![json!(agent.id())]);
+            add(
+                ArchiveBlockerKind::WorkspaceOperation,
+                vec![json!(agent.id())],
+            );
         }
         if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm") {
             add(
-                "turn_state",
+                ArchiveBlockerKind::TurnState,
                 agent
                     .record
                     .get("layrTurnSaves")
@@ -488,7 +574,7 @@ impl ManagementSnapshot {
             );
         }
         add(
-            "descendants",
+            ArchiveBlockerKind::Descendants,
             self.agents
                 .iter()
                 .filter(|a| {
@@ -498,7 +584,7 @@ impl ManagementSnapshot {
                 .collect(),
         );
         add(
-            "input_delivery",
+            ArchiveBlockerKind::InputDelivery,
             self.owned("runtime_events", "agent", agent.id())
                 .into_iter()
                 .filter(|r| {
@@ -509,7 +595,7 @@ impl ManagementSnapshot {
                 .collect(),
         );
         add(
-            "monitors",
+            ArchiveBlockerKind::Monitors,
             self.owned("runtime_monitors", "agent", agent.id())
                 .into_iter()
                 .filter(|r| is_status(r, &["starting", "running", "approval"]))
@@ -517,7 +603,7 @@ impl ManagementSnapshot {
                 .collect(),
         );
         add(
-            "background_tasks",
+            ArchiveBlockerKind::BackgroundTasks,
             self.owned("runtime_tasks", "agent", agent.id())
                 .into_iter()
                 .filter(|r| is_status(r, &["running", "starting", "pending", "unknown"]))
@@ -525,7 +611,7 @@ impl ManagementSnapshot {
                 .collect(),
         );
         add(
-            "questions",
+            ArchiveBlockerKind::Questions,
             self.owned("runtime_requests", "agent", agent.id())
                 .into_iter()
                 .filter(|r| is_status(r, &["pending"]))
@@ -534,7 +620,7 @@ impl ManagementSnapshot {
         );
         if !unassign {
             add(
-                "assigned_work",
+                ArchiveBlockerKind::AssignedWork,
                 self.open_work(agent)
                     .iter()
                     .map(|r| r.record["id"].clone())
@@ -546,7 +632,7 @@ impl ManagementSnapshot {
         // recorded in the archive instead (`unknownToolRequests`).
         let finished = finished(agent);
         add(
-            "tool_requests",
+            ArchiveBlockerKind::ToolRequests,
             self.owned("runtime_tool_requests", "agent", agent.id())
                 .into_iter()
                 .filter(|r| {
@@ -590,10 +676,9 @@ impl ManagementSnapshot {
 /// Python `_finished`.
 fn finished(agent: &Agent) -> bool {
     matches!(
-        agent.record.get("status").and_then(Value::as_str),
-        Some("completed" | "failed" | "interrupted")
-    ) || (agent.record.get("status").and_then(Value::as_str) == Some("paused")
-        && !agent.flag("autoWake"))
+        agent.identity.status,
+        AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Interrupted
+    ) || (agent.identity.status == AgentStatus::Paused && agent.identity.auto_wake != Some(true))
 }
 
 /// Python `_completed_native_turn`: a durable completion of the last submitted
@@ -618,9 +703,9 @@ fn completed_native_turn(agent: &Agent) -> bool {
 }
 
 /// Python `manage_agent` archive replay: the cleanup receipts already saved.
-fn archived_cleanup_result(agent: &Agent) -> (Value, Value) {
-    let record = &agent.record;
-    let cleaned = (!agent.flag("worktreeReady"))
+pub(crate) fn archived_cleanup_result(record: &Value) -> (Value, Value) {
+    let flag = |name: &str| truthy(record.get(name));
+    let cleaned = (!flag("worktreeReady"))
         .then(|| record.get("cleanedWorktree"))
         .flatten()
         .filter(|cleaned| truthy(Some(cleaned)));
@@ -633,7 +718,7 @@ fn archived_cleanup_result(agent: &Agent) -> (Value, Value) {
         }
         None => json!({"state":"kept","reason":"already archived","bytes":0}),
     };
-    let cleaned_image = (!agent.flag("imageWorkspaceReady"))
+    let cleaned_image = (!flag("imageWorkspaceReady"))
         .then(|| record.get("cleanedImageWorkspace"))
         .flatten()
         .filter(|cleaned| truthy(Some(cleaned)));
@@ -1093,7 +1178,7 @@ fn archive(
                 "unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))
             })));
         }
-        let (worktree, workspace) = archived_cleanup_result(agent);
+        let (worktree, workspace) = archived_cleanup_result(&agent.record);
         return Ok(Decision::result(
             json!({"status":"archived","agent":brief(&agent.record),"replayed":true,"workspace":workspace,"worktree":worktree,"unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))}),
         ));
@@ -1113,7 +1198,7 @@ fn archive(
         return Ok(Decision::result(json!({
             "status":"blocked",
             "agent":brief(&agent.record),
-            "blockers":[{"kind":"native_state_unconfirmed","count":1,"ids":[agent.id()]}]
+            "blockers":[{"kind":ArchiveBlockerKind::NativeStateUnconfirmed,"count":1,"ids":[agent.id()]}]
         })));
     }
     // The workspace cleanup service removes the worktree, archives the image

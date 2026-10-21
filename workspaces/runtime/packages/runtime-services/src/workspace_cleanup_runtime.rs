@@ -424,6 +424,24 @@ fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, Work
     Ok(effects)
 }
 
+/// The batch archive preflight uses the same original-link, clean-tree and
+/// nested-worktree checks as the effect owner. Ignored build output is removable.
+pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceCleanupError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Workspace {
+        #[serde(default)]
+        worktree_ready: bool,
+    }
+    let workspace: Workspace =
+        serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    if workspace.worktree_ready {
+        let identity = worktree_identity(agent)?;
+        check_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
+    }
+    Ok(())
+}
+
 fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
     let id = agent
         .get("id")

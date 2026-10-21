@@ -3280,7 +3280,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
 
     let (success, restored) = manage(
         "manage-restore",
-        json!({"action":"restore","agent_id":worker}),
+        json!({"action":"restore","agent_id":worker,"unassign_work":false}),
     )
     .await;
     assert!(success, "{restored}");
@@ -3289,4 +3289,24 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert!(record.get("deletedAt").is_none(), "{record}");
     assert_eq!(record["status"], "paused");
     assert_eq!(record["autoWake"], false);
+    let (success, batch) = manage(
+        "manage-archive-finished",
+        json!({"action":"archive_finished","request_id":"finished-batch"}),
+    )
+    .await;
+    assert!(success, "{batch}");
+    let report: crate::agent_management_store::ArchiveFinishedResult =
+        serde_json::from_value(batch.clone()).expect("typed archive summary");
+    assert_eq!(report.archived, 1);
+    let (success, replay) = manage(
+        "manage-archive-finished",
+        json!({"action":"archive_finished","request_id":"finished-batch"}),
+    )
+    .await;
+    assert!(success, "{replay}");
+    assert_eq!(
+        replay, batch,
+        "lost tool reply replays the original batch result"
+    );
+    assert!(worker_record(&store, &worker)["deletedAt"].is_number());
 }

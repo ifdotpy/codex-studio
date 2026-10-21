@@ -279,7 +279,7 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         ),
         None => None,
     };
-    if crate::disk_space::full_free_bytes().is_some() {
+    if crate::disk_space::hold_agent_turn(&bridge.store, agent_id, epoch).await? {
         // While the disk is full no new turn starts. The input stays queued
         // with its identity; the desktop shows one notice with the free space.
         return Ok(Err(Unclaimed::DiskFull(epoch)));

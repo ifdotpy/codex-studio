@@ -150,6 +150,7 @@ struct StatusPathInput {
 struct StatusPathSnapshot {
     inputs: Vec<StatusPathInput>,
     resolved: BTreeMap<String, String>,
+    storage: crate::disk_space::StorageReport,
 }
 
 /// Build a status snapshot and retain its revision in the same serialized
@@ -170,12 +171,16 @@ pub async fn model_directory(
         return Err(StatusError::InvalidArguments);
     }
     let read_actor = actor_id.to_owned();
-    let (root_id, inputs) = store
+    let (root_id, inputs, workspaces) = store
         .read_async("runtime-services/managed_status_watch", move |connection| {
             let actor = checked_actor(connection, &read_actor, actor_epoch)?;
             let root_id = actor.root_id.0;
             let inputs = status_path_inputs(connection, &root_id)?;
-            Ok::<_, StatusError>((root_id, inputs))
+            Ok::<_, StatusError>((
+                root_id,
+                inputs,
+                crate::disk_space::workspace_paths(connection)?,
+            ))
         })
         .await?;
     let resolved = inputs
@@ -186,7 +191,12 @@ pub async fn model_directory(
                 .map_err(|_| StatusError::InvalidArguments)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let paths = StatusPathSnapshot { inputs, resolved };
+    let storage = crate::disk_space::storage_report(store.root(), &workspaces);
+    let paths = StatusPathSnapshot {
+        inputs,
+        resolved,
+        storage,
+    };
     let actor_id = actor_id.to_owned();
     let args = args.clone();
     store
@@ -267,7 +277,20 @@ fn status_in_transaction(
     });
     let defaults = worker_defaults(root);
     let capacity = capacity_snapshot(tx, &team, root, paths)?;
-    let revision_source = json!([active_records, finished_counts, counts, defaults, capacity]);
+    // Storage samples are fresh metadata. Only admission state enters the list
+    // revision: fluctuating byte counts must not invalidate finished-page cursors.
+    let storage_held = paths
+        .storage
+        .hold_reason(crate::thread_prepare::Role::Implementer)
+        .is_some();
+    let revision_source = json!([
+        active_records,
+        finished_counts,
+        counts,
+        defaults,
+        capacity,
+        storage_held
+    ]);
     let revision = digest(&revision_source)?;
 
     let since_revision = args.get("since_revision").and_then(Value::as_str);
@@ -348,6 +371,7 @@ fn status_in_transaction(
         "finishedCounts": finished_counts,
         "workerDefaults": defaults,
         "capacity": capacity,
+        "storage": paths.storage,
     });
     if args.get("include_finished") == Some(&Value::Bool(true)) {
         let limit = match args.get("limit") {
@@ -1374,6 +1398,15 @@ mod tests {
         )
         .await
         .expect("status snapshot");
+        let storage: crate::disk_space::StorageReport =
+            serde_json::from_value(first["storage"].clone()).expect("typed filesystem report");
+        assert!(!storage.filesystems.is_empty());
+        assert!(storage.filesystems.iter().any(|volume| {
+            volume
+                .rules
+                .iter()
+                .any(|rule| rule.purpose == crate::disk_space::StoragePurpose::Workspace)
+        }));
         assert_eq!(first["capacity"]["teamLimit"], 2);
         assert_eq!(first["capacity"]["teamActive"], 1);
         assert_eq!(first["capacity"]["queued"][0]["reasons"], json!(["paused"]));

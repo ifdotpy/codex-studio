@@ -702,6 +702,42 @@ pub(super) async fn dispatch(
     Ok(Some(dispatched))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum LifecycleRequest {
+    Archive {
+        agent_id: String,
+        #[serde(default, rename = "request_id")]
+        _request_id: Option<String>,
+        #[serde(default)]
+        reason: String,
+        #[serde(default)]
+        unassign_work: bool,
+    },
+    Restore {
+        agent_id: String,
+        #[serde(default, rename = "request_id")]
+        _request_id: Option<String>,
+        #[serde(default)]
+        unassign_work: bool,
+    },
+    ArchiveFinished {
+        #[serde(default, rename = "request_id")]
+        _request_id: Option<String>,
+        #[serde(default)]
+        unassign_work: bool,
+    },
+}
+
+enum LifecycleCommand {
+    Single(crate::agent_management::Action),
+    Finished {
+        actor: String,
+        epoch: i64,
+        unassign_work: bool,
+    },
+}
+
 /// Python `manage_agent` archive and restore. The shared lifecycle owner
 /// commits the decision, then completes the workspace cleanup it queued.
 async fn lifecycle_management(
@@ -729,29 +765,43 @@ async fn lifecycle_management(
             move |tx| {
                 let args = super::services::manage::resolved_args(tx, &actor_value, &args)
                     .map_err(callback_refusal)?;
-                let (action, unassign_work) =
-                    super::services::manage::checked_action(&args).map_err(callback_refusal)?;
-                let target = args["agent_id"]
-                    .as_str()
-                    .filter(|id| {
-                        studio_runtime_store::system_reads::get(tx, "runtime_agents", id)
-                            .is_ok_and(|agent| agent.is_some())
-                    })
-                    .ok_or(Error::Invalid("Unknown managed agent"))?
-                    .to_owned();
-                Ok::<_, Error>(if action == "archive" {
-                    crate::agent_management::Action::Archive {
-                        actor: actor_id,
-                        epoch,
-                        target,
-                        reason: args["reason"].as_str().unwrap_or_default().to_owned(),
+                let request: LifecycleRequest = serde_json::from_value(args)
+                    .map_err(|_| Error::Invalid("Invalid agent lifecycle arguments"))?;
+                Ok::<_, Error>(match request {
+                    LifecycleRequest::Archive {
+                        agent_id,
+                        reason,
                         unassign_work,
-                    }
-                } else {
-                    crate::agent_management::Action::Restore {
+                        ..
+                    } => LifecycleCommand::Single(crate::agent_management::Action::Archive {
                         actor: actor_id,
                         epoch,
-                        target,
+                        target: agent_id,
+                        reason,
+                        unassign_work,
+                    }),
+                    LifecycleRequest::Restore {
+                        agent_id,
+                        unassign_work,
+                        ..
+                    } => {
+                        if unassign_work {
+                            return Err(Error::Invalid(
+                                "unassign_work applies only to archive or archive_finished",
+                            ));
+                        }
+                        LifecycleCommand::Single(crate::agent_management::Action::Restore {
+                            actor: actor_id,
+                            epoch,
+                            target: agent_id,
+                        })
+                    }
+                    LifecycleRequest::ArchiveFinished { unassign_work, .. } => {
+                        LifecycleCommand::Finished {
+                            actor: actor_id,
+                            epoch,
+                            unassign_work,
+                        }
                     }
                 })
             },
@@ -763,7 +813,28 @@ async fn lifecycle_management(
         // These checks only read; a refusal proves that nothing was applied.
         Err(error) => return Ok(not_sent(error)),
     };
-    match crate::agent_management_store::execute(store, &action, now).await {
+    let outcome = match action {
+        LifecycleCommand::Single(action) => {
+            crate::agent_management_store::execute(store, &action, now).await
+        }
+        LifecycleCommand::Finished {
+            actor,
+            epoch,
+            unassign_work,
+        } => crate::agent_management_store::archive_finished(
+            store,
+            &actor,
+            epoch,
+            unassign_work,
+            now,
+        )
+        .await
+        .and_then(|result| {
+            serde_json::to_value(result)
+                .map_err(|error| crate::agent_management::ManagementError::Store(error.into()))
+        }),
+    };
+    match outcome {
         Ok(value) => Ok(written(value, Vec::new())),
         // Every decision refusal precedes its single writer transaction.
         Err(crate::agent_management::ManagementError::Invalid(message)) => {
