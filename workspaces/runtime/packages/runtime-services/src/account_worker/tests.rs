@@ -4,6 +4,7 @@ mod agent_isolation;
 mod auth_hold;
 mod browser_skill;
 mod callback_handoff;
+mod callback_head_of_line;
 mod capacity_retry;
 mod claude_preparation;
 #[cfg(unix)]
