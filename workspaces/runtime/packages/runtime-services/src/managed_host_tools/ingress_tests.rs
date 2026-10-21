@@ -2,6 +2,8 @@
 
 #[path = "ingress_tests/claude_permissions.rs"]
 mod claude_permissions;
+#[path = "ingress_tests/worker_capabilities.rs"]
+mod worker_capabilities;
 
 use crate::managed_host_tools::{
     Actor, ChildCreationPort, ComplaintPort, ContextPort, Error, InterruptPort, OperationResult,
@@ -2407,6 +2409,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             studio_runtime_store::ProfileRepository::save(
                 tx,
                 &studio_runtime_store::ProfileRecord {
+                    capabilities: Default::default(),
                     id: "profile-reviewer".to_owned(),
                     name: "Profile reviewer".to_owned(),
                     role: studio_runtime_store::ProfileRole::Implementer,

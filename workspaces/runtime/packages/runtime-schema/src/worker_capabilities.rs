@@ -19,6 +19,11 @@
 //! stops automatic continuation with `worker_max_turns` as `terminalReason`, a
 //! visible error message, and the ordinary parent completion event. Only an
 //! explicit lead instruction resets the count. SDK maxTurns is not this count.
+//! Root agent creation rejects maxTurns because only child workers have this
+//! counter. Codex rejects allowedTools, disallowedTools and skills, including
+//! empty lists. Codex MCP selection reads the native merged config and marks
+//! selected servers required. Codex VM workers reject mcpServers because Studio
+//! cannot read their native configuration through the host session.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

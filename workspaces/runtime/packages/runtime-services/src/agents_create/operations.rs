@@ -645,6 +645,7 @@ async fn create(
             &id,
             &request.intent,
             &intent,
+            profile.as_ref(),
             std::sync::Arc::clone(&validate),
         )
         .await;
@@ -873,6 +874,28 @@ async fn create(
     record["fastMode"] = json!(settings.fast_mode);
     record["daybreakEnabled"] = json!(settings.daybreak_enabled);
     record["cyberAccessProgram"] = json!(settings.cyber_access_program);
+    let profile_caps = profile
+        .as_ref()
+        .map(crate::worker_capabilities::from_value)
+        .transpose()
+        .map_err(OperationError::Invalid)?
+        .unwrap_or_default();
+    let overrides =
+        crate::worker_capabilities::from_value(&intent).map_err(OperationError::Invalid)?;
+    let caps = crate::worker_capabilities::narrow(&profile_caps, &overrides)
+        .map_err(OperationError::Invalid)?;
+    if caps.max_turns.is_some() {
+        return Err(OperationError::Invalid(
+            "maxTurns requires a managed child worker",
+        ));
+    }
+    crate::worker_capabilities::for_provider(&caps, &provider).map_err(OperationError::Invalid)?;
+    if provider == "codex" && workspace == "layr" && caps.mcp_servers.is_some() {
+        return Err(OperationError::Invalid(
+            "Codex mcpServers profiles are not supported for VM workers",
+        ));
+    }
+    record["capabilityProfile"] = json!(caps);
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
         record["profileInstructions"] = profile["instructions"].clone();
@@ -1030,6 +1053,7 @@ async fn create_child(
     id: &str,
     execution_intent: &Value,
     creation_intent: &Value,
+    profile: Option<&Value>,
     validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
@@ -1244,6 +1268,31 @@ async fn create_child(
     if workspace == "image" {
         set_image_workspace_fields(&mut record, cwd);
     }
+    let parent_caps =
+        crate::worker_capabilities::from_record(&parent).map_err(OperationError::Invalid)?;
+    let profile_caps = profile
+        .map(crate::worker_capabilities::from_value)
+        .transpose()
+        .map_err(OperationError::Invalid)?
+        .unwrap_or_default();
+    let base_caps = crate::worker_capabilities::narrow(&parent_caps, &profile_caps)
+        .map_err(OperationError::Invalid)?;
+    let overrides =
+        crate::worker_capabilities::from_value(creation_intent).map_err(OperationError::Invalid)?;
+    let caps = crate::worker_capabilities::narrow(&base_caps, &overrides)
+        .map_err(OperationError::Invalid)?;
+    crate::worker_capabilities::for_provider(&caps, &provider).map_err(OperationError::Invalid)?;
+    if provider == "codex" && workspace == "layr" && caps.mcp_servers.is_some() {
+        return Err(OperationError::Invalid(
+            "Codex mcpServers profiles are not supported for VM workers",
+        ));
+    }
+    record["capabilityProfile"] = json!(caps);
+    record["completedWorkerTurns"] = json!(0);
+    record["profileId"] = json!(request.profile);
+    record["profileInstructions"] = profile
+        .map(|p| p["instructions"].clone())
+        .unwrap_or(json!(""));
     record["creationIntent"] = creation_intent.clone();
     record["provider"] = json!(provider);
     record["yoloMode"] = root_yolo;

@@ -225,7 +225,7 @@ async fn update_profiles(
             crate::generated::ProfileBodyEffort::Max => ReasoningEffort::Max,
             crate::generated::ProfileBodyEffort::Ultra => ReasoningEffort::Ultra,
         });
-        let profile = panels::make_profile(
+        let mut profile = panels::make_profile(
             id,
             &name,
             role,
@@ -234,6 +234,22 @@ async fn update_profiles(
             body.instructions.as_deref().unwrap_or_default(),
         )
         .map_err(profile_field_error)?;
+        profile.capabilities = studio_runtime_schema::worker_capabilities::WorkerCapabilities {
+            allowed_tools: body.allowed_tools.flatten(),
+            disallowed_tools: body.disallowed_tools.flatten(),
+            mcp_servers: body.mcp_servers.flatten(),
+            skills: body.skills.flatten(),
+            max_turns: body
+                .max_turns
+                .flatten()
+                .map(|n| u32::try_from(n))
+                .transpose()
+                .map_err(|_| validation_error("maxTurns"))?,
+        };
+        profile
+            .capabilities
+            .validate()
+            .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
         let response = serde_json::to_value(&profile).map_err(|_| ApiError::internal())?;
         store
             .transaction_with(move |transaction| ProfileRepository::save(transaction, &profile))

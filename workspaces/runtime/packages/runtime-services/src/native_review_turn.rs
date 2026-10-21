@@ -542,7 +542,12 @@ impl ReviewPreparation {
         .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?;
         let resources = self
             .resources
-            .for_receipt(&self.store, &request.agent, Some(prepared.cwd()))
+            .for_receipt(
+                &self.store,
+                &request.agent,
+                Some(prepared.cwd()),
+                prepared.mcp_servers(),
+            )
             .await
             .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?;
         let root = self.store.root().to_path_buf();
