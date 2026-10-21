@@ -24,6 +24,10 @@ class GuestClient(Protocol):
                timeout: float = 60) -> Iterator[dict[str, Any]]: ...
 
 
+# The host_exec tool actions; the guest broker implements each (vm-guest/host_exec.py).
+ACTIONS = ("execute", "status", "cancel", "list", "release")
+
+
 def tool_definition() -> dict[str, Any]:
     # The same canonical format as TOOLS: the app-server rejects a mixed list.
     return {"type": "function", "name": "host_exec", "description": (
@@ -31,9 +35,11 @@ def tool_definition() -> dict[str, Any]:
         "Use HOST_EXEC_DERIVED_DATA, HOST_EXEC_PACKAGE_CACHE and HOST_EXEC_ARTIFACTS for build output. "
         "The line's layr cache folders go to the Mac, but Mac changes inside them never return. "
         "Supply the same request_id for exact retries. Lost results never repeat the command. "
-        "Use status to read saved output and cancel to stop the command. Artifacts return as files."),
+        "Use status to read saved output and cancel to stop the command. Artifacts return as files. "
+        "Use list to find your operations, also after a lost result, and release to free the slot of "
+        "an exited command whose result you will not collect; its saved output stays readable."),
         "inputSchema": {"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["execute", "status", "cancel"]},
+            "action": {"type": "string", "enum": list(ACTIONS)},
             "command": {"type": "string"}, "cwd": {"type": "string"},
             "timeout_seconds": {"type": "number", "minimum": 0.01, "maximum": 3600},
             "request_id": {"type": "string"}, "operation_id": {"type": "string"},
@@ -176,11 +182,12 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
     if actor.get("role") == "reviewer":
         raise PermissionError("host_exec is unavailable to read-only reviewers")
     from codex_linux_workspaces import client
+    from codex_linux_vm import LinuxVMError
     root = runtime.agent(actor.get("rootId") or actor["id"])
     if root.get("executionMode") != "vm" or actor.get("executionMode", "vm") != "vm":
         raise PermissionError("host_exec is available only to VM agents")
     action = args.get("action", "execute")
-    if action not in {"execute", "status", "cancel"}:
+    if action not in ACTIONS:
         raise ValueError("Unknown host_exec action")
     identity = args.get("request_id") or request_id
     # Provider call IDs can exceed the guest's identity limit. Hash, do not truncate.
@@ -195,6 +202,8 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
             raise ValueError("The command timeout must be between 0 and 3600 seconds")
         params.update(argv=["/bin/zsh", "-lc", command], cwd=args.get("cwd", actor["cwd"]),
                       timeoutSeconds=timeout, operationId=identity)
+    elif action == "list":
+        timeout = 15
     else:
         operation = args.get("operation_id")
         if not isinstance(operation, str) or not operation:
@@ -208,14 +217,23 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
     output: list[str] = []
     length = 0
     result: dict[str, Any] | None = None
-    for frame in remote.stream("host.exec", params, request_id=identity, timeout=float(timeout) + 3660 if action == "execute" else 60):
-        if frame.get("event") == "output":
-            value = frame["data"].get("text", "")
-            if length < 256 * 1024:
-                output.append(value[:256 * 1024 - length])
-                length += len(value)
-        if "result" in frame:
-            result = frame["result"]
+    operation_note = ("Operation: " + str(params["operationId"]) + ". Use action status or list; never repeat the command."
+                      if "operationId" in params else "")
+    try:
+        for frame in remote.stream("host.exec", params, request_id=identity, timeout=float(timeout) + 3660 if action == "execute" else 60):
+            if frame.get("event") == "output":
+                value = frame["data"].get("text", "")
+                if length < 256 * 1024:
+                    output.append(value[:256 * 1024 - length])
+                    length += len(value)
+            if "result" in frame:
+                result = frame["result"]
+    except LinuxVMError as exc:
+        if not operation_note:
+            raise
+        # The agent needs the operation to find its outcome. The error keeps its uncertainty.
+        raise LinuxVMError(str(exc) + " " + operation_note, uncertain=exc.uncertain, code=exc.code,
+                           detail=exc.detail) from exc
     if result is None:
-        raise RuntimeError("The host command has no proven result. Operation: " + str(params["operationId"]))
+        raise RuntimeError("The host command has no proven result. " + operation_note)
     return {**result, "output": "".join(output)}

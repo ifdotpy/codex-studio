@@ -33,6 +33,12 @@ class HostExec:
     def __init__(self, service: Any):
         self.service = service
         self.config = service.state / "host-exec.json"
+        # The guest has one service process at a time, and its requests die with it. The Mac
+        # frees the slots of operations of an earlier owner (recover, docs/host-exec.md).
+        self.owner = uuid.uuid4().hex
+        self.recovered = False
+        # The operations that an execute request of this process runs now.
+        self.live: set[str] = set()
 
     def configure(self, params: dict[str, Any]) -> dict[str, Any]:
         token = params.get("token")
@@ -93,7 +99,34 @@ class HostExec:
             require(page["next"] > after, "The manifest cursor did not advance", "outcome_unknown")
             after = page["next"]
 
+    async def recover(self) -> None:
+        """Free the Mac slots of the operations of earlier guest services once per process. A
+        failure keeps the request; the next request tries again."""
+        if self.recovered:
+            return
+        try:
+            # Each attempt is a new request: a repeat releases nothing twice and starts no command.
+            await self.call("recover", {"operationId": "guest-owner:" + self.owner, "owner": self.owner},
+                            "recover:" + uuid.uuid4().hex, 60)
+        except HostExecError as exc:
+            # An older Mac service has no recovery method.
+            if exc.code != "invalid_params":
+                return
+        self.recovered = True
+
     async def handle(self, request_id: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
+        await self.recover()
+        identity = params.get("operationId", request_id)
+        execute = params.get("action", "execute") == "execute"
+        if execute:
+            self.live.add(identity)
+        try:
+            return await self.handle_operation(request_id, params, emit)
+        finally:
+            if execute:
+                self.live.discard(identity)
+
+    async def handle_operation(self, request_id: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
         # The steps record the leased operation, and the run request before it is sent.
         steps: dict[str, Any] = {}
         try:
@@ -134,13 +167,26 @@ class HostExec:
                         raise
                 cancelled = await self.call("release", common, "cancel-release:" + request_id)
             return cancelled
+        if action == "list":
+            # The agent's operations, also the ones whose result it lost.
+            return await self.call("list", common, "list:" + request_id)
+        if action == "release":
+            # An operation that no request of this guest runs: a lost result, a failed collection,
+            # or an exited command. The Mac refuses a running command; its saved results stay.
+            require(identity not in self.live, "A request of this guest runs the command; cancel it or wait",
+                    "busy")
+            current = await self.call("status", common, "release-status:" + request_id)
+            if current["state"] == "released":
+                return current
+            return await self.call("release", {**common, "abandon": True}, "release:" + request_id)
         require(action == "execute", "Unknown host command action")
         require(not context.get("readOnly"), "A review line cannot accept host command changes", "forbidden")
         cwd = Path(params.get("cwd", context["cwd"]))
         line = Path(context["path"])
         require(cwd.is_absolute() and cwd.is_relative_to(line) and ".." not in cwd.parts,
                 "The host command cwd is outside its line")
-        op = await self.call("acquire", {**common, "projectId": context["projectId"], "linePath": str(line)}, "acquire")
+        op = await self.call("acquire", {**common, "projectId": context["projectId"], "linePath": str(line),
+                                         "owner": self.owner}, "acquire")
         steps["leased"] = op
         slot = {**common, "slotId": op["slotId"], "generation": op["generation"]}
         # Paths that the project settings keep on the Mac (docs/host-exec.md).
