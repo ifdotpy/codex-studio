@@ -108,17 +108,38 @@ impl MessageAdmission for PreparedAdmission {
                 continue;
             };
             let path = self.paths.get(cwd(agent)?);
-            let other_path = self.paths.get(cwd(&other)?);
-            if path.is_none() || other_path.is_none() {
-                // Python resolves both cwd values in its locked snapshot
-                // (codex_workspace.py:2219); Rust cannot canonicalize a newly
-                // observed cwd inside the writer transaction.
-                return Err(CoordinationError::AdmissionDenied(
-                    "Workspace admission changed while the message was being prepared".into(),
-                ));
+            let mut reserved = false;
+            if operation == "provision"
+                && let Some(destination) = provision_destination(tx, &other)?
+            {
+                // A provision reserves only the destination of the new worktree,
+                // as in `Reservation::blocks`. Its owner's cwd is still the
+                // source checkout, so neither the parent, the siblings nor the
+                // owner itself waits for it. The owner's next preparation adopts
+                // or refuses the worktree.
+                let Some(path) = path else {
+                    return Err(CoordinationError::AdmissionDenied(
+                        "Workspace admission changed while the message was being prepared".into(),
+                    ));
+                };
+                if !path.as_path().starts_with(&destination) {
+                    continue;
+                }
+                reserved = true;
             }
-            if path != other_path {
-                continue;
+            if !reserved {
+                let other_path = self.paths.get(cwd(&other)?);
+                if path.is_none() || other_path.is_none() {
+                    // Python resolves both cwd values in its locked snapshot
+                    // (codex_workspace.py:2219); Rust cannot canonicalize a newly
+                    // observed cwd inside the writer transaction.
+                    return Err(CoordinationError::AdmissionDenied(
+                        "Workspace admission changed while the message was being prepared".into(),
+                    ));
+                }
+                if path != other_path {
+                    continue;
+                }
             }
             unsupported_operation |= !matches!(operation, "checkpoint" | "capture");
             let mut blocker = json!({"agentId":id,"operation":operation});
@@ -324,6 +345,31 @@ pub(crate) fn attachments(assets: &[Value]) -> Result<(), CoordinationError> {
     Ok(())
 }
 
+/// The destination that the provisioning journal of `agent` reserves. The
+/// provisioning owner builds it under the canonical repository root and
+/// refuses a linked ancestor, so its recorded form is its identity.
+fn provision_destination(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+) -> Result<Option<std::path::PathBuf>, CoordinationError> {
+    let Some(id) = agent
+        .extra
+        .get("workspaceReservationId")
+        .and_then(Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let Some(record) =
+        studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
+    else {
+        return Ok(None);
+    };
+    let owned = record.get("kind").and_then(Value::as_str) == Some("provision")
+        && record.get("agent").and_then(Value::as_str) == Some(agent.id.0.as_str());
+    let destination = record.get("cwd").and_then(Value::as_str);
+    Ok(destination.filter(|_| owned).map(std::path::PathBuf::from))
+}
+
 fn other_operation(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -400,5 +446,69 @@ mod tests {
             .await
             .expect("positive token budget history loads after the SQL callback");
         assert!(admission.histories.contains_key("lead"));
+    }
+
+    #[tokio::test]
+    async fn a_child_provision_reserves_only_its_destination() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let project_directory = tempfile::tempdir().expect("temporary project directory");
+        let project =
+            studio_runtime_store::path_identity::CanonicalPath::existing(project_directory.path())
+                .expect("canonical project")
+                .into_path_buf();
+        let destination = project.join(".worktrees/codex-agents/child");
+        std::fs::create_dir_all(destination.join("project")).expect("child worktree");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let operation = "provision:child:0";
+        let agents = [
+            json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,
+                "autoWake":true,"cwd":project}),
+            // A failed provisioning keeps its reservation; its cwd is the source.
+            json!({"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+                "autoWake":true,"cwd":project,"worktree":true,"worktreeReady":false,
+                "workspaceOperation":"provision","workspaceReservationId":operation,
+                "worktreePreparation":"preparing"}),
+            json!({"id":"inside","rootId":"inside","epoch":0,"status":"idle","autoWake":true,
+                "cwd":destination.join("project")}),
+        ];
+        let record = json!({"id":operation,"kind":"provision","agent":"child","epoch":0,
+            "phase":"recovery_required","cwd":destination});
+        store
+            .transaction_with_error(move |tx| {
+                for agent in agents {
+                    AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                }
+                tx.execute(
+                    "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
+                    rusqlite::params![operation, record.to_string()],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("seed agents");
+        for (recipient, admitted) in [("lead", true), ("child", true), ("inside", false)] {
+            let prepared = store
+                .read_async("tests/message-admission", move |connection| {
+                    PreparedAdmission::read(connection, recipient)
+                })
+                .await
+                .expect("SQL inputs")
+                .prepare()
+                .await
+                .expect("paths");
+            let decision = store
+                .read_async("tests/message-admission", move |tx| {
+                    let agent =
+                        AgentRepository::get(tx, &AgentId::from(recipient))?.expect("recipient");
+                    Ok::<_, CoordinationError>(prepared.workspace(tx, &agent).is_ok())
+                })
+                .await
+                .expect("admission");
+            assert_eq!(decision, admitted, "{recipient}");
+        }
     }
 }
