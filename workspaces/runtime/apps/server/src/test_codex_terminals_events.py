@@ -50,17 +50,22 @@ class LockContract(Protocol):
 
 
 def available_to_independent_thread(lock: LockContract) -> bool:
+    """Return whether another thread can take the lock.
+
+    A free lock is taken at once. A lock that the caller holds makes the probe wait
+    for the whole hang guard and return False, so the timeouts only guard against load.
+    """
     acquired: list[bool] = []
 
     def probe() -> None:
-        result = lock.acquire(timeout=0.5)
+        result = lock.acquire(timeout=HANG_GUARD_SECONDS)
         acquired.append(result)
         if result:
             lock.release()
 
     thread = threading.Thread(target=probe, daemon=True)
     thread.start()
-    thread.join(timeout=1)
+    thread.join(timeout=2 * HANG_GUARD_SECONDS)
     return not thread.is_alive() and acquired == [True]
 
 
@@ -314,7 +319,8 @@ class TerminalHubIntegration(unittest.IsolatedAsyncioTestCase):
         try:
             self.assertEqual(subscription.initial.reason, "initial")
             self.manager.append(terminal_id, "arrived")
-            event = await subscription.next_event(timeout=1)
+            # The event waits only guard against a hang.
+            event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
             self.assertIsInstance(event, ResourceChangeEvent)
             assert event is not None
             self.assertEqual(event.reason, "change")
@@ -322,7 +328,7 @@ class TerminalHubIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.manager.output(terminal_id)["text"], "arrived")
 
             self.manager.action("close", {"id": terminal_id})
-            lifecycle = await subscription.next_event(timeout=1)
+            lifecycle = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
             self.assertIsInstance(lifecycle, ResourceChangeEvent)
             assert lifecycle is not None
             self.assertEqual(

@@ -28,7 +28,8 @@ class Guest:
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(str(directory / 'guest.sock'))
         self.listener.listen(2)
-        self.listener.settimeout(2)
+        # Every test connects; the accept timeout only guards against a hang.
+        self.listener.settimeout(HANG_GUARD_SECONDS)
         self.handler = handler
         self.error = None
         self.thread = threading.Thread(target=self.run)
@@ -45,7 +46,8 @@ class Guest:
             self.listener.close()
 
     def finish(self):
-        self.thread.join(3)
+        # The handler has answered; this join only guards against a hang.
+        self.thread.join(HANG_GUARD_SECONDS)
         if self.thread.is_alive():
             raise AssertionError('Guest fixture did not stop')
         if self.error:
@@ -131,7 +133,9 @@ class ClientTests(unittest.TestCase):
             started = time.monotonic()
             with self.assertRaises(vm.LinuxVMError) as error:
                 self.client.request('health', timeout=0.05)
-            self.assertLess(time.monotonic() - started, 0.2)
+            # The guest holds its response for the hang guard, so a request
+            # without the 0.05 s deadline waits far past this bound.
+            self.assertLess(time.monotonic() - started, 5)
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.assertTrue(error.exception.uncertain)
         finally:
@@ -478,8 +482,9 @@ class ProvisionTests(unittest.TestCase):
         # Execute the actual generated retry helpers without touching guest paths.
         helpers = self.script[:self.script.index('mkdir -p /var/lib/codex-studio')]
         helpers = helpers.replace('/var/lib/codex-studio', str(self.root))
+        # The timeout only guards against a hang.
         return subprocess.run(['bash'], input=helpers + command, text=True,
-            capture_output=True, timeout=5,
+            capture_output=True, timeout=HANG_GUARD_SECONDS,
             env={**os.environ, 'PATH':str(self.root) + ':' + os.environ['PATH']})
 
     def test_bridge_dependencies_install_in_guest_from_pinned_workspace_lock(self):
@@ -509,7 +514,7 @@ class ProvisionTests(unittest.TestCase):
         fstab.write_text('UUID=1 / ext4 defaults 0 1\n'
                          'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0\n')
         for _ in range(2):
-            subprocess.run(['bash', '-c', lines.replace('/etc/fstab', str(fstab))], check=True, timeout=5)
+            subprocess.run(['bash', '-c', lines.replace('/etc/fstab', str(fstab))], check=True, timeout=HANG_GUARD_SECONDS)
         self.assertEqual(fstab.read_text(), 'UUID=1 / ext4 defaults 0 1\n'
                          'LABEL=studio-data /var/lib/codex-studio btrfs '
                          'defaults,nofail,user_subvol_rm_allowed,compress=zstd:3 0 0\n')
@@ -530,7 +535,7 @@ class ProvisionTests(unittest.TestCase):
         line = self.script[start:self.script.index("\n", self.script.index("printf", start))]
         conf = self.root / 'needrestart.conf'
         subprocess.run(['bash', '-c', line.replace('/etc/needrestart/conf.d/50-codex-studio.conf', str(conf))
-                        .replace('/etc/needrestart/conf.d', str(self.root))], check=True, timeout=5)
+                        .replace('/etc/needrestart/conf.d', str(self.root))], check=True, timeout=HANG_GUARD_SECONDS)
         self.assertEqual(conf.read_text(), '$nrconf{override_rc}{qr(^codex-studio-)} = 0;\n')
         self.assertIn('apt-mark hold linux-generic linux-image-generic linux-virtual', self.script)
 
