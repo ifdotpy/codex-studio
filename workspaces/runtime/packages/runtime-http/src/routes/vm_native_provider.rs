@@ -6,6 +6,7 @@ use std::{
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use studio_runtime_providers::{RequestId, RequestTicket};
+use studio_runtime_schema::shared_values::LINUX_VM_PROVIDER_HANDLE_PREFIX;
 use studio_runtime_services::linux_vm_guest::GuestError;
 use studio_runtime_services::{
     account_session_runtime::{
@@ -45,7 +46,7 @@ impl VmNativeProvider {
         Self {
             guest,
             notification_sink,
-            handle: format!("linux-worker:{agent_id}"),
+            handle: format!("{LINUX_VM_PROVIDER_HANDLE_PREFIX}{agent_id}"),
             agent_id: agent_id.to_owned(),
             agent_epoch: epoch,
             scope: ConnectionScope {

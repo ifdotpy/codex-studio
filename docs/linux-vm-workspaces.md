@@ -181,7 +181,8 @@ the VM, writes a new provision seed and starts the VM.
 
 A `running`, `starting` or `lost` provider in `provider.list` stops the reboot path. An
 operator can approve one lost provider with `--approved-orphan <handle>`. The handle is
-`linux-worker:<agent UUID>` (owner `PROVIDER_HANDLE_PREFIX` in `codex_linux_vm.py`), or the
+`linux-worker:<agent UUID>` (owner `LINUX_VM_PROVIDER_HANDLE_PREFIX` in
+`runtime-schema/src/shared_values.rs`), or the
 UUID name of a provider directory without `native.json`. An approved row does not block when:
 
 - its reason is `native_process_lost`: the guest proved that the process is gone, so its

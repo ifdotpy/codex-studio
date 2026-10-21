@@ -242,6 +242,7 @@ if set(HEAVY_SUITES).intersection(AUTOMATED_SUITES):
     raise AssertionError("heavy suites must not also be in AUTOMATED_SUITES")
 NON_TESTS = {
     f"{TESTS_REL}/test_isolation.py": "shared fixture helper",
+    f"{TESTS_REL}/live_isolation.py": "shared state isolation of the opt-in live checks",
     f"{TESTS_REL}/vm-native-fixture.py": "shared VM provider fixture helper",
     f"{TESTS_REL}/host-exec-native.py": "manual live VM proof that needs --state, --agent and --cwd",
     f"{TESTS_REL}/sign-in-live.py": "manual real-model sign-in check; run it with just test-sign-in-live",

@@ -1,29 +1,50 @@
 #!/usr/bin/env python3
-"""Opt-in live check. Uses the configured Codex account and model."""
+"""Opt-in live check. Uses the configured Codex account and model.
+
+The Runtime state is a throwaway folder (live_isolation.py), also when CODEX_AGENTS_STATE_DIR
+is unset or names the state of the running Studio.
+"""
 
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from live_isolation import isolate_live_environment, live_state_root
+
+# Before the first Studio import: no supervisor routing and a private image store.
+isolate_live_environment()
 
 import argparse
 import json
-from pathlib import Path
-import sys
-import tempfile
 import time
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from codex_runtime import Runtime
-from studio_api.testing import read_runtime_state
-p = argparse.ArgumentParser(description=__doc__)
-p.add_argument('--run', action='store_true', required=True)
-a = p.parse_args()
-root = Path(tempfile.mkdtemp(prefix='codex-runtime-live-'))
-r = Runtime(root)
-print('Evidence:', root, flush=True)
-try:
+
+
+def state_root() -> Path:
+    """The throwaway state folder of this check; CODEX_AGENTS_STATE_DIR names it."""
+    return live_state_root("codex-runtime-live-")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--run', action='store_true', required=True)
+    p.parse_args()
+    root = state_root()
+    from codex_runtime import Runtime
+    from studio_api.testing import read_runtime_state
+    r = Runtime(root)
+    print('Evidence:', root, flush=True)
+    try:
+        run(r, root, read_runtime_state)
+    finally:
+        for node in read_runtime_state(r)['agents']:
+            if not node.get('parentId'): r.stop(node['id'])
+        r.close()
+
+
+def run(r, root, read_runtime_state) -> None:
     lead = r.new_lead({})
     r.conversation_settings(lead['id'], {'cwd': str(root)})
     lead = r.agent(lead['id'])
@@ -69,7 +90,7 @@ with WAITING_FOR_EVENTS and wait for automatic continuation.""")
         time.sleep(.5)
     else:
         raise AssertionError('Timed out before all completion events reached the lead')
-finally:
-    for node in read_runtime_state(r)['agents']:
-        if not node.get('parentId'): r.stop(node['id'])
-    r.close()
+
+
+if __name__ == '__main__':
+    main()

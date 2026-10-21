@@ -17,6 +17,7 @@ from codex_layout import REPOSITORY_ROOT, VM_GUEST_ROOT
 from codex_linux_vm import (Client, LinuxVMError, _atomic_json, is_agent_provider_handle,
                             is_legacy_provider_handle)
 from codex_linux_vm_update import apply_in_place, plan as choose
+from codex_shared_values import LINUX_VM_PROVIDER_HANDLE_PREFIX
 
 BACKUP_RESERVE_BYTES = 20 * 1024**3
 
@@ -48,8 +49,8 @@ def _upgrade(client: Client, helper: Path, payload: Path, operation: str,
     allowed_orphans = allowed_orphans or set()
     for handle in allowed_orphans:
         if not (is_agent_provider_handle(handle) or is_legacy_provider_handle(handle)):
-            raise ValueError('An approved orphan handle must be linux-worker:<agent UUID> or a '
-                             'canonical UUID.')
+            raise ValueError(f'An approved orphan handle must be {LINUX_VM_PROVIDER_HANDLE_PREFIX}<agent UUID> '
+                             'or a canonical UUID.')
     # A packaged payload keeps the guest at vm/guest; a source checkout at its workspace path.
     client.guest_dir = payload / 'vm/guest' if (payload / 'vm/guest').is_dir() else VM_GUEST_ROOT
     directory = client.state_dir / 'updates' / operation

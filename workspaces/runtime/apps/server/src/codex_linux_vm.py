@@ -30,7 +30,8 @@ import zlib
 
 from codex_layout import (CLAUDE_BRIDGE_ROOT, DESKTOP_ROOT, PROVIDERS_ROOT,
                          REPOSITORY_ROOT, SERVER_SOURCE_ROOT, VM_GUEST_ROOT)
-from codex_shared_values import GUEST_PAYLOAD_RECORD_PATH, GUEST_UPDATE_KEY_PATH
+from codex_shared_values import (GUEST_PAYLOAD_RECORD_PATH, GUEST_UPDATE_KEY_PATH,
+                                 LINUX_VM_PROVIDER_HANDLE_PREFIX)
 from codex_state import state_dir as studio_state_dir
 
 _GIB = 1024 ** 3
@@ -42,14 +43,11 @@ _INITRD_URL = 'https://cloud-images.ubuntu.com/releases/noble/release-20260926/u
 _INITRD_SHA256 = 'f77f65eccd619be537e44a7bb2664048e27f20fc8c8e7d4eeb5cf63d0c8cd213'
 _MAX_FRAME = 2 * 1024 * 1024
 GUEST_REQUEST_ID_MAX_CHARS = 128
-# Guest native provider handle of one agent: this prefix, then the agent ID.
-# Host owner of the format; the Rust runtime mirrors it as PROVIDER_HANDLE_PREFIX
-# in linux_vm_provider.rs, and the guest checks it in vm-guest/layr_agents.py.
-PROVIDER_HANDLE_PREFIX = 'linux-worker:'
 
 
 def provider_handle(agent_id: str) -> str:
-    return PROVIDER_HANDLE_PREFIX + agent_id
+    """The guest native provider handle of one agent (owner: runtime-schema shared_values.rs)."""
+    return LINUX_VM_PROVIDER_HANDLE_PREFIX + agent_id
 
 
 def _canonical_uuid(value: str) -> bool:
@@ -61,8 +59,8 @@ def _canonical_uuid(value: str) -> bool:
 
 def is_agent_provider_handle(handle: str) -> bool:
     """A native handle of one Studio agent, whose ID is a canonical UUID."""
-    return (handle.startswith(PROVIDER_HANDLE_PREFIX)
-            and _canonical_uuid(handle[len(PROVIDER_HANDLE_PREFIX):]))
+    return (handle.startswith(LINUX_VM_PROVIDER_HANDLE_PREFIX)
+            and _canonical_uuid(handle[len(LINUX_VM_PROVIDER_HANDLE_PREFIX):]))
 
 
 def is_legacy_provider_handle(handle: str) -> bool:
