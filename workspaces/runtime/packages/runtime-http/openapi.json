@@ -5405,7 +5405,7 @@
       },
       "AgentEntityStartWaitDto": {
         "additionalProperties": false,
-        "description": "A queued turn that waits for its account's start throttle (see AccountStartThrottle).\n\n`slot`: the account already runs `maxRunningTurns` turns. `pause`: the pause after\na burst lasts until `until` (Unix seconds). Valid while the agent is queued at `epoch`.",
+        "description": "The epoch-scoped admission owner and minimal detail, owned by runtime-schema.",
         "properties": {
           "epoch": {
             "maximum": 9007199254740991,
@@ -5414,24 +5414,49 @@
             "type": "integer"
           },
           "maxRunningTurns": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Maxrunningturns",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Maxrunningturns"
           },
           "reason": {
             "enum": [
               "slot",
-              "pause"
+              "pause",
+              "start_queue",
+              "disk",
+              "model_catalog",
+              "provider_session",
+              "dependency",
+              "dispatch_pending",
+              "paused",
+              "native_failure",
+              "account_transfer"
             ],
             "title": "Reason",
             "type": "string"
           },
           "runningTurns": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Runningturns",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runningturns"
           },
           "until": {
             "anyOf": [
@@ -5448,9 +5473,7 @@
         },
         "required": [
           "reason",
-          "epoch",
-          "runningTurns",
-          "maxRunningTurns"
+          "epoch"
         ],
         "title": "AgentEntityStartWaitDto",
         "type": "object"
@@ -50868,6 +50891,7 @@
             "type": "integer"
           },
           "maxRunningTurns": {
+            "default": null,
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Maxrunningturns",
@@ -50876,12 +50900,22 @@
           "reason": {
             "enum": [
               "slot",
-              "pause"
+              "pause",
+              "start_queue",
+              "disk",
+              "model_catalog",
+              "provider_session",
+              "dependency",
+              "dispatch_pending",
+              "paused",
+              "native_failure",
+              "account_transfer"
             ],
             "title": "Reason",
             "type": "string"
           },
           "runningTurns": {
+            "default": null,
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Runningturns",
@@ -50895,9 +50929,7 @@
         },
         "required": [
           "reason",
-          "epoch",
-          "runningTurns",
-          "maxRunningTurns"
+          "epoch"
         ],
         "title": "StartWaitRecordResponse",
         "type": "object"

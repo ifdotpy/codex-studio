@@ -5852,6 +5852,7 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
     }
     let pending = state.record().await;
     assert_eq!(pending["status"], "starting");
+    assert_eq!(pending["startWait"]["reason"], "dependency");
     assert_eq!(
         pending["startAttempt"]["prepareError"],
         "workspace-readiness/pending"
@@ -5878,6 +5879,7 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
     let ready = state.record().await;
     assert_eq!(ready["startAttempt"]["id"], pending["startAttempt"]["id"]);
     assert!(ready["startAttempt"].get("prepareError").is_none());
+    assert!(ready.get("startWait").is_none());
     peer.accepted(&turn).await;
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();

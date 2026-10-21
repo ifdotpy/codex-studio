@@ -1091,6 +1091,20 @@ impl AccountRegistry {
                 AccountPageDispatch::Exhausted
             });
         }
+        use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+        // The registry owns provider startup, before a worker can claim input.
+        if !self.workers.contains_key(account) {
+            let waits = agents
+                .iter()
+                .map(|(agent, epoch)| {
+                    (
+                        agent.clone(),
+                        AgentStartWait::new(StartWaitReason::ProviderSession, *epoch),
+                    )
+                })
+                .collect();
+            studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
+        }
         if let Err(error) = self.start(account).await {
             return Ok(AccountPageDispatch::StartFailed(error));
         }
@@ -1304,11 +1318,25 @@ impl AccountRegistry {
         shutdown: Option<&Shutdown>,
         failure: &mut Option<WorkerError>,
     ) -> Result<(), WorkerError> {
-        if self
+        if let Some(retry_at) = self
             .worker_retry_at
             .get(&account)
-            .is_some_and(|retry_at| *retry_at > tokio::time::Instant::now())
+            .filter(|retry_at| **retry_at > tokio::time::Instant::now())
         {
+            use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+            let until = event_time()
+                + retry_at
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_secs_f64();
+            let waits = pending_agents
+                .iter()
+                .map(|(agent, epoch, _)| {
+                    let mut wait = AgentStartWait::new(StartWaitReason::ProviderSession, *epoch);
+                    wait.until = Some(until);
+                    (agent.clone(), wait)
+                })
+                .collect();
+            studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
             return Ok(());
         }
         self.worker_retry_at.remove(&account);

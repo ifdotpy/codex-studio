@@ -792,6 +792,12 @@ class SchemaContractTests(unittest.TestCase):
             for field in ("process", "responseTarget", "itemId"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
 
+        # #373 R7: non-account admission waits carry no invented slot counts.
+        # The reason enum remains closed and is checked against its Rust owner.
+        for field in ("runningTurns", "maxRunningTurns"):
+            add(f"/components/schemas/AgentEntityStartWaitDto/properties/{field}",
+                "@nullable", "@nullableBranch")
+
         # Accounts carry their optional turn start throttle, and a queued agent
         # its optional start wait (account_start_gate); until is null for a
         # slot wait.

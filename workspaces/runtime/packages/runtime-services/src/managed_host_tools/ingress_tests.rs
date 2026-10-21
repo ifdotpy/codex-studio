@@ -2978,12 +2978,9 @@ async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
             capacity["queued"][0]["id"], children[1]["id"],
             "{provider}: the second worker waits for a running slot"
         );
-        assert!(
-            capacity["queued"][0]["reasons"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("team_concurrency")),
-            "{provider}: {capacity}"
+        assert_eq!(
+            capacity["queued"][0]["reasons"][0]["reason"], "dispatch_pending",
+            "{provider}: status must not infer an account gate from team counts: {capacity}"
         );
 
         let count = |store: &RuntimeStore| -> i64 {

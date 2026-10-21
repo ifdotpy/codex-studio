@@ -602,7 +602,10 @@ pub(crate) const WORKSPACE_PENDING_REASON: &str = "workspace-readiness/pending";
 /// Pending reason of a turn that waits for a model catalog refresh.
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
-    WorkerError::PreparationPending(CATALOG_PENDING_REASON.into())
+    WorkerError::PreparationPending(super::super::PreparationBlock::new(
+        studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog,
+        CATALOG_PENDING_REASON,
+    ))
 }
 /// The admission of a record whose settings an accepted thread commit froze:
 /// it needs no catalog read and no transaction of its own.
@@ -920,7 +923,7 @@ async fn workspace_with_vm_action(
             prepared.map_err(|error| match error {
                 error @ (crate::native_actions::NativeError::Unknown
                 | crate::native_actions::NativeError::Unavailable(_)) => {
-                    WorkerError::PreparationPending(format!("workspace-readiness/{error}"))
+                    WorkerError::PreparationPending(format!("workspace-readiness/{error}").into())
                 }
                 error => refusal(error.to_string()),
             })?;
@@ -2162,6 +2165,10 @@ pub(crate) fn commit(
     {
         attempt.remove("prepareError");
     }
+    frozen
+        .as_object_mut()
+        .ok_or_else(|| invalid("agent"))?
+        .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
     let frozen = decode(frozen, &context.intent.agent_id)?;
     stage("turn_submission.commit.agent_put", || {
         AgentRepository::put(tx, &frozen)
