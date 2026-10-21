@@ -35,6 +35,10 @@ pub enum NotSentReason {
 
 const CANCEL_RETRY_BASE_SECONDS: f64 = 1.0;
 const CANCEL_RETRY_MAX_SECONDS: f64 = 64.0;
+/// First wait before a failed terminal monitor write is tried again. Unit: seconds.
+pub const TERMINAL_WRITE_RETRY_MIN_SECONDS: u64 = 1;
+/// Longest wait between attempts of a failed terminal monitor write. Unit: seconds.
+pub const TERMINAL_WRITE_RETRY_MAX_SECONDS: u64 = 30;
 
 pub trait MonitorNative {
     /// Repeated calls with the same effect identity must reconcile the same native write.
@@ -46,6 +50,54 @@ pub trait MonitorNative {
         operation: &'a Operation,
         effect: &'a Effect,
     ) -> futures_util::future::BoxFuture<'a, Submission>;
+
+    /// Wait before attempt `attempt + 1` of a terminal monitor write that
+    /// failed with a retryable store error, for example a full disk.
+    fn terminal_write_pause<'a>(
+        &'a self,
+        attempt: u32,
+        _error: &'a MonitorError,
+    ) -> futures_util::future::BoxFuture<'a, ()> {
+        Box::pin(tokio::time::sleep(terminal_write_retry_delay(attempt)))
+    }
+}
+
+/// Exponential backoff for terminal monitor writes, from
+/// `TERMINAL_WRITE_RETRY_MIN_SECONDS` to `TERMINAL_WRITE_RETRY_MAX_SECONDS`.
+pub fn terminal_write_retry_delay(attempt: u32) -> std::time::Duration {
+    let seconds = TERMINAL_WRITE_RETRY_MIN_SECONDS
+        .saturating_mul(1_u64 << attempt.saturating_sub(1).min(16))
+        .min(TERMINAL_WRITE_RETRY_MAX_SECONDS);
+    std::time::Duration::from_secs(seconds)
+}
+
+/// Run an idempotent terminal monitor write until it commits. A full disk or
+/// another retryable store failure holds the write and tries it again; it must
+/// never leave a command whose process ended without its settled outcome. A
+/// definitive refusal is returned at once.
+pub async fn retry_terminal_write<T, F, Fut>(
+    port: &(impl MonitorNative + ?Sized),
+    label: &str,
+    mut write: F,
+) -> Result<T, MonitorError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, MonitorError>>,
+{
+    let mut attempt = 0_u32;
+    loop {
+        match write().await {
+            Ok(value) => return Ok(value),
+            Err(error) if error.retryable_store_failure() => {
+                attempt = attempt.saturating_add(1);
+                crate::diagnostics::log_stderr(format_args!(
+                    "{label} was not recorded (attempt {attempt}), retrying: {error}"
+                ));
+                port.terminal_write_pause(attempt, &error).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 // Hold admission and its transport submission in one sequence. A concurrent cancel
@@ -86,23 +138,28 @@ pub async fn start(
             submission.await
         }
     };
+    // The command may have run and ended. Its terminal write is retried until
+    // it commits, so a full disk delays the outcome but never drops it.
     if let Submission::NotSent { error, .. } = &submission {
-        crate::monitor_receipts::finish(
-            store,
-            &crate::monitor_receipts::ResultReceipt {
-                version: 1,
-                key: id.into(),
-                code: None,
-                error: Some(error.chars().take(12000).collect()),
-                operation: Some(prepared.operation.clone()),
-                finished: now,
-            },
-        )
+        let receipt = crate::monitor_receipts::ResultReceipt {
+            version: 1,
+            key: id.into(),
+            code: None,
+            error: Some(error.chars().take(12000).collect()),
+            operation: Some(prepared.operation.clone()),
+            finished: now,
+        };
+        retry_terminal_write(port, "monitor start refusal", || {
+            crate::monitor_receipts::finish(store, &receipt)
+        })
         .await?;
     }
     if matches!(submission, Submission::Unknown) {
         let observed = crate::event_write::unix_time()?;
-        monitor_runtime::reconcile_unknown(store, id, observed).await?;
+        retry_terminal_write(port, "monitor unknown start reconciliation", || {
+            monitor_runtime::reconcile_unknown(store, id, observed)
+        })
+        .await?;
     }
     Ok(submission)
 }

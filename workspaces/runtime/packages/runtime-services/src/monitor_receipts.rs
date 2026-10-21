@@ -14,10 +14,10 @@ static RECOVERY_WARNING_REPORTED: AtomicBool = AtomicBool::new(false);
 
 fn report_recovery_warning(path: &Path, error: impl std::fmt::Display) {
     if !RECOVERY_WARNING_REPORTED.swap(true, Ordering::Relaxed) {
-        eprintln!(
+        crate::diagnostics::log_stderr(format_args!(
             "monitor receipt recovery skipped {}: {error}",
             path.display()
-        );
+        ));
     }
 }
 
