@@ -1961,16 +1961,16 @@ async fn prepared_host(store: &RuntimeStore) -> Result<Arc<PreparedHost>, Worker
 #[cfg(test)]
 mod bounded_reconcile_tests {
     use super::*;
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        sync::mpsc,
-    };
-    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, StoreError};
+    use std::collections::BTreeMap;
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
 
     // The image hold exists only on hosts without the image backend.
     #[cfg(not(target_os = "macos"))]
     #[tokio::test(flavor = "current_thread")]
     async fn image_classification_waits_off_executor_while_writer_is_held() {
+        use std::{collections::BTreeSet, sync::mpsc};
+        use studio_runtime_store::StoreError;
+
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
