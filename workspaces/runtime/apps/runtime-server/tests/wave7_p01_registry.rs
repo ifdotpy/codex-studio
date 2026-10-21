@@ -857,7 +857,7 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
     // A project id is its resolved path, as Python stores it. The radio skips a
     // project whose id differs from its resolved path, such as one that names
     // the macOS temporary folder through the /var link.
-    let project_root = project_root.canonicalize().unwrap();
+    let project_root = CanonicalPath::existing(&project_root).unwrap();
     std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(&project_root)
@@ -2466,7 +2466,7 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     let root_guard = tempfile::tempdir().unwrap();
     // The launch resolves its Node executable, so the expectation names the
     // macOS temporary folder through /private/var, not the /var link.
-    let root = root_guard.path().canonicalize().unwrap();
+    let root = CanonicalPath::existing(root_guard.path()).unwrap();
     let bridge_dir = root.join("bridge");
     let bin_dir = root.join("bin");
     let sdk = bridge_dir.join("node_modules/@anthropic-ai/claude-agent-sdk");

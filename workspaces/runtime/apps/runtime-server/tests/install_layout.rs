@@ -57,7 +57,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     let prefix_guard = tempdir().unwrap();
     // Python resolves its module path, so its layout names the macOS
     // temporary folder through /private/var, not the /var link.
-    let prefix = prefix_guard.path().canonicalize().unwrap();
+    let prefix = CanonicalPath::existing(prefix_guard.path()).unwrap();
     let workspace = prefix.join("workspace");
     let binary_dir = workspace.join("bin");
     let scripts = workspace.join("scripts");
