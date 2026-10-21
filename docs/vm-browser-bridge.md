@@ -604,9 +604,16 @@ chat stops; the existing rules then expire the pending record.
   sessions through `studio-browser.json` and Codex threads through the per-thread
   `shell_environment_policy.set` overrides. The Codex app-server launch command does not
   change. A folder `<state>/browser-host/bin` holds `xdg-open`, `x-www-browser` and
-  `www-browser` links to the launcher for tools that search `PATH`.
-  - Owners: Python `codex_browser_host.py` (`session_environment`, `thread_environment`) and
-    Rust `browser_environment.rs`; `tests/browser_environment_differential.rs` compares them.
+  `www-browser` links to the launcher for tools that search `PATH`. On a macOS host it also
+  holds `open`, for tools that run `open URL` and ignore `BROWSER` (kubelogin and other Go
+  tools with `pkg/browser`, Node `open`).
+  - Owners: Python `codex_browser_host.py` (`session_environment`, `thread_environment`,
+    `OPEN_SHIM`) and Rust `browser_environment.rs` and `browser_host.rs` (`write_launcher`).
+    The `open` script text has one owner, `runtime-services/src/browser_open.sh`; the Python
+    copy is checked against it by `test_codex_browser_host_env.py`.
+  - `open` sends exactly one `http` or `https` URL to the launcher. Every other use (no
+    argument, a file, an option, two URLs) runs `/usr/bin/open` with the same arguments.
+    Linux hosts get no `open`: there it is another program (openvt).
   - Codex gets the three names only for a host Codex chat (not Claude, not VM), and only when
     `<state>/browser-host/studio-browser` exists. The value is stable for each chat, so the
     thread settings digest changes once.
@@ -614,13 +621,28 @@ chat stops; the existing rules then expire the pending record.
     Responses provider on the loopback: with the overrides `shell_environment_policy.set.BROWSER`
     and `.STUDIO_BROWSER_SESSION` in `thread/start` `config`, the thread's `exec_command`
     (`/bin/zsh -lc`) printed both values; without them, `BROWSER` was empty.
-  - `PATH` for Codex: in the same run, `shell_environment_policy.set.PATH` replaced the whole
-    `PATH` of the command (the login shell did not add the person's entries back). Studio
-    therefore does not set `PATH` for Codex threads, and their tools that search `PATH` do not
-    find the links. Claude sessions get the link folder first on `PATH`
-    (`STUDIO_BROWSER_PATH` in `studio-browser.json`).
-  - On macOS some tools run `open` and ignore `BROWSER` (kubelogin). Studio does not replace
-    `open`. The agent guidance says to pass `"$BROWSER"` to a browser command option.
+  - `PATH` for Codex, measured on 2026-10-21 with the same fixture and a `ZDOTDIR` whose
+    `.zprofile` and `.zshrc` each add one entry. Without an override the command `PATH` had
+    both entries, then the `path_helper` order. With `shell_environment_policy.set.PATH` and
+    `shell_snapshot` on (the default), the command `PATH` was exactly the set value (after
+    Codex's own `codex-path`): Codex replays a set value after the shell startup, so both
+    entries were lost. With `shell_snapshot` off, the login shell rebuilt `PATH` and put the set
+    folder last, after `/usr/bin`. The Studio supervisor runs with the launchd `PATH`, so a value
+    made from the launch environment would also lose Homebrew and `~/.local/bin`, and a value
+    taken from a login shell would keep entries that change for each shell (fnm). Studio
+    therefore does not set `PATH` for Codex threads. Their tools that search `PATH` for
+    `xdg-open` or `open` do not reach the launcher, and on a macOS host `open URL` opens the
+    browser of the host. The agent guidance says to pass `"$BROWSER"` to a browser command
+    option. A real fix needs a Codex setting that adds a folder to `PATH`.
+  - Claude sessions get the link folder first on `PATH` (`STUDIO_BROWSER_PATH` in
+    `studio-browser.json`). A login shell can move it: `/usr/libexec/path_helper` puts the
+    `/etc/paths` folders first, so `/usr/bin/open` would win. The bridge therefore also sets
+    `CLAUDE_ENV_FILE` to `<bridge root>/studio-browser-path.sh`, which puts the folder first
+    again. Claude Code runs that file ahead of each Bash command. Measured on 2026-10-21 with
+    Claude Code 2.1.300 (`-p`) and a fake Messages API on the loopback: the Bash command found
+    `bin/open` and `bin/xdg-open`, and the file's entry came before the session `PATH`. That run
+    made no shell snapshot, so the order after a snapshot is not measured. A person's own
+    `CLAUDE_ENV_FILE` stays in place.
 - Web: the sign-in card (`SignInCard.tsx`), paste mode for every window that cannot hold the
   port, and the countdown.
 - Desktop (Electron and Tauri): no change. They keep `openSignIn` and the forward.

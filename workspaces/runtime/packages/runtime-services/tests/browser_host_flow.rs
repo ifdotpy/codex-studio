@@ -455,3 +455,80 @@ fn the_launcher_and_the_path_links_reach_the_runtime_binary() {
     assert!(environment["BROWSER"].ends_with("browser-host/studio-browser"));
     assert!(environment["STUDIO_BROWSER_PATH"].ends_with("browser-host/bin"));
 }
+
+/// On macOS `bin/open` sends exactly one http or https URL to the launcher and gives every
+/// other use to `/usr/bin/open` with the same arguments. The passthrough cases here make the
+/// system `open` fail before it starts an application.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_open_shim_sends_only_one_web_link_to_the_launcher() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("test step");
+    let record = dir.path().join("launched.txt");
+    let fake = dir.path().join("fake-server");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            record.to_string_lossy()
+        ),
+    )
+    .expect("test step");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("test step");
+    browser_host::write_launcher(dir.path(), &fake).expect("test step");
+    let shim = dir.path().join("bin").join(browser_host::OPEN_NAME);
+    assert_eq!(
+        std::fs::read_to_string(&shim).expect("test step"),
+        browser_host::OPEN_SHIM
+    );
+    for link in [
+        "https://id.example.com/device?user_code=AB-CD",
+        "HTTP://127.0.0.1:8000/",
+    ] {
+        let status = std::process::Command::new(&shim)
+            .arg(link)
+            .status()
+            .expect("test step");
+        assert!(status.success(), "{link}");
+        assert_eq!(
+            std::fs::read_to_string(&record).expect("test step"),
+            format!("--studio-browser\n{link}\n")
+        );
+        std::fs::remove_file(&record).expect("test step");
+    }
+    let missing = dir.path().join("missing file.txt");
+    let cases: [Vec<std::ffi::OsString>; 3] = [
+        vec![],
+        vec![missing.clone().into()],
+        vec!["-R".into(), missing.into()],
+    ];
+    for arguments in cases {
+        let shimmed = std::process::Command::new(&shim)
+            .args(&arguments)
+            .output()
+            .expect("test step");
+        let system = std::process::Command::new("/usr/bin/open")
+            .args(&arguments)
+            .output()
+            .expect("test step");
+        assert_eq!(shimmed.status.code(), system.status.code(), "{arguments:?}");
+        assert_eq!(shimmed.stdout, system.stdout, "{arguments:?}");
+        assert_eq!(shimmed.stderr, system.stderr, "{arguments:?}");
+        assert!(!shimmed.status.success(), "{arguments:?}");
+    }
+    assert!(!record.exists());
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn only_a_macos_host_gets_the_open_shim() {
+    let dir = tempfile::tempdir().expect("test step");
+    browser_host::write_launcher(dir.path(), std::path::Path::new("/opt/server"))
+        .expect("test step");
+    assert!(
+        !dir.path()
+            .join("bin")
+            .join(browser_host::OPEN_NAME)
+            .exists()
+    );
+}
