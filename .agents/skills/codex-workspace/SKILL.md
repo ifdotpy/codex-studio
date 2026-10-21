@@ -333,6 +333,12 @@ Add `reason` for `archive`. Never replace the worker ID with a thread ID.
 A command that opens a browser to sign in goes through Studio by `BROWSER`.
 Studio shows the person a card, and the person signs in from any window, also a phone.
 If a command ignores `BROWSER` and has a browser command option, pass `"$BROWSER"` to it.
+When a command prints a link that the person must open to sign in or approve access,
+call `orchestration_sign_in` with that link. This applies to OAuth, OIDC, SSO, SAML,
+device code pages and loopback sign-in pages, for every tool.
+The card opens the link in the person's own browser and returns the result to the command.
+Do not give such a link in a message as the only way to open it.
+Studio also shows a sign-in link in your message as a card, but call the tool first.
 Keep the command waiting until the person finishes. Do not open sign-in links in another way.
 
 ## Layr VM chats

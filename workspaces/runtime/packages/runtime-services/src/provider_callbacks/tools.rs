@@ -119,6 +119,8 @@ enum ToolKind {
     Speak,
     #[serde(rename = "orchestration_title")]
     Title,
+    #[serde(rename = "orchestration_sign_in")]
+    SignIn,
     #[serde(rename = "host_exec")]
     HostExec,
     #[serde(other)]

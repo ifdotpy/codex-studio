@@ -144,6 +144,14 @@ impl ManagedToolRuntime {
         }
     }
 
+    /// Attach the browser bridges that take `orchestration_sign_in` links
+    /// (docs/vm-browser-bridge.md, section 7).
+    pub fn attach_sign_in(&self, sources: crate::sign_in::SignInSources) {
+        if self.ports.late.sign_in.set(sources).is_err() {
+            // The first attached bridges stay the owners of these links.
+        }
+    }
+
     /// Attach the provider-session voice adapter that plays
     /// `orchestration_speak` in a ready voice session.
     pub fn attach_voice(&self, port: Arc<dyn crate::voice_runtime::VoiceRequestPort>) {

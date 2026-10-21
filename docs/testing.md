@@ -84,6 +84,7 @@ without maintaining a second suite inventory.
 | Native profile migration | Isolated Electron profile round trip with hidden windows; manual heavy run                                                                                                            | `just test-native-profile-migration`       |
 | Native file events       | Compiled Swift helper and real macOS FSEvents delivery; manual heavy run                                                                                                              | `just test-native-file-events`             |
 | Native WebView           | Rust host build and isolated hidden WebView scenarios; manual heavy run                                                                                                               | `just test-native-webview`                 |
+| Sign-in live             | Real Codex and Claude leads give sign-in links of a local provider; each link must reach a sign-in card; manual heavy run with model requests                                         | `just test-sign-in-live`                   |
 | Load-class               | One exact load-class suite, with conditions printed before it starts                                                                                                                  | `just test-server-load <exact-suite-path>` |
 
 The native file event check depends on the host FSEvents service and is manual.

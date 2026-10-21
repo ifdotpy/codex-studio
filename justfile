@@ -124,6 +124,10 @@ test-rust-session-fairness:
 test-rust-many-agents:
     @cargo nextest run -p studio-runtime-services --lib --run-ignored only -E 'test(two_hundred_agents_complete_two_exchanges)'
 
+[doc("Manual heavy check with real models: Codex and Claude sign-in links reach the sign-in card (docs/vm-browser-bridge.md, section 7). Announce it; about 2 minutes for each scenario.")]
+test-sign-in-live *args:
+    @python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/sign-in-live.py --run {{args}}
+
 [doc("Run all manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy

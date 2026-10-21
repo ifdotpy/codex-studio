@@ -843,6 +843,10 @@ pub(super) fn execute(
             "Agent management dispatch was not handled",
         )),
         ToolKind::Speak => Err(CallbackError::Dependency("voice/provider-session")),
+        // The managed-tool dispatcher sends every sign-in link to the browser bridge.
+        ToolKind::SignIn => Err(CallbackError::Dependency(
+            super::runtime_dispatch::SIGN_IN_DEPENDENCY,
+        )),
         ToolKind::HostExec => Err(CallbackError::Dependency("host-exec/layr-bridge")),
         ToolKind::Title => {
             if actor["isLead"] != true {

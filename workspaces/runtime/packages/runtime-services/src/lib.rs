@@ -163,6 +163,7 @@ pub mod scheduler;
 pub mod server_exec;
 pub mod server_git;
 pub mod shell_command;
+pub mod sign_in;
 pub mod storage_retention;
 pub mod submit_gates;
 pub mod sync_documents;

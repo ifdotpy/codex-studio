@@ -50,7 +50,8 @@ A command that signs in through a browser works in the VM.
 Studio shows the person a card with the sign-in host.
 The browser on the Mac opens only after the person approves.
 Run the sign-in command, ask the person to approve the card, and wait for the command.
-Give a printed sign-in link to `studio-browser <link>` when the command does not open it.
+Give a printed sign-in link to `orchestration_sign_in` when the command does not open it.
+Without that tool, run `studio-browser <link>` in the VM.
 Do not open sign-in links in another way.
 The person can approve from any window, also from a phone.
 A phone sends the sign-in result back through the card, so keep the command waiting.

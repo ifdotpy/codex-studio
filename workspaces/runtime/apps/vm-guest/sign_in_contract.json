@@ -1,0 +1,35 @@
+{
+  "about": "The owner of the orchestration_sign_in tool and its result texts (docs/vm-browser-bridge.md, section 7). The Python server reads this file. The Rust catalog (runtime-services account_worker/preparation-resources.json) and the Rust results (runtime-services sign_in.rs) are checked against it.",
+  "tool": {
+    "type": "function",
+    "name": "orchestration_sign_in",
+    "description": "Show the person a sign-in card for a link that they must open to sign in or approve access: an OAuth, OpenID Connect, SSO or SAML sign-in page, a device code page, or the loopback sign-in page of a command. After the person approves the card, the link opens in the person's own browser on their Mac or phone, and the sign-in result returns to the command. Use this tool for every such link that a command prints or that you must give to the person. Do not open the link in another way, and do not give it in a message as the only way to open it. Keep the sign-in command running while the person signs in. A repeated call with the same link returns the same card.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      },
+      "required": ["url"],
+      "additionalProperties": false
+    }
+  },
+  "submitSeconds": 20,
+  "submitSecondsAbout": "The longest wait, in seconds, for the browser bridge to queue a link. A loopback start page costs one first hop of at most 5 seconds.",
+  "messageAgeSeconds": 600,
+  "messageAgeSecondsAbout": "The oldest completed agent message, in seconds, whose sign-in links get cards. It is the lifetime of a bridge request, so a message that history recovery writes again makes no card.",
+  "results": {
+    "pending": "Studio shows the person a sign-in card for {host}. After the approval, the link opens in the person's own browser. Keep the sign-in command running and wait for it.",
+    "approved": "The person approved the sign-in at {host}. Keep the sign-in command running: the result goes to it.",
+    "opened": "The person opened the page at {host}. Keep the sign-in command running until it ends.",
+    "declined": "The person declined to open {host}. Do not give this link again unless the person asks for it.",
+    "closed": "The sign-in request for {host} has ended. Run the sign-in command again if it still needs a sign-in.",
+    "refused": "Studio cannot show this link: {reason}",
+    "unsupported": "The browser bridge of this chat is older than this tool. Run \"$BROWSER\" with the link in the chat's shell instead; in the Linux VM, run studio-browser with the link."
+  },
+  "unsupportedMessage": "The browser method is not supported",
+  "unsupportedMessageAbout": "The refusal of a bridge from before browser.submit (browser_bridge.py and browser_host.rs, method call)."
+}
