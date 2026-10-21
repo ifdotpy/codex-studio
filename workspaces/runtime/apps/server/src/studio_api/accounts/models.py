@@ -16,6 +16,8 @@ from codex_shared_values import (
     ACCOUNT_START_BURST_MIN,
     ACCOUNT_START_PAUSE_MAX_SECONDS,
     ACCOUNT_START_PAUSE_MIN_SECONDS,
+    ACCOUNT_GROUP_PATTERN,
+    ACCOUNT_GROUPS_MAX,
 )
 
 
@@ -103,6 +105,7 @@ class Account(ContractModel):
     authenticationRecovery: str | None = None
     canAttemptNativeProof: bool | None = None
     startThrottle: AccountStartThrottle | None = None
+    group: str | None = Field(default=None, description="The account's group in account orders (see AccountGroupRequest).")
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
@@ -160,6 +163,9 @@ class AccountsResponse(ResponseModel):
     accounts: list[Account]
     archivedAccounts: list[Account]
     defaultAccountKey: str
+    defaultAccountGroups: list[str] = Field(
+        description="The default account order: group names that projects without their own order prefer, first to last.",
+    )
     logins: list[CodexLoginReceipt]
     supportsDisconnect: bool
     supportsDelete: bool
@@ -249,6 +255,8 @@ class Project(ContractModel):
     accountKey: str | None = None
     accountKeys: list[str] | None = None
     accountRevision: SafeInt | None = None
+    accountGroups: list[str] | None = None
+    accountGroupsRevision: SafeInt | None = None
     workerBaseRef: str | None = None
     workerBaseRevision: SafeInt | None = None
     workerEnvironment: Literal["host", "linux"] | None = None
@@ -466,6 +474,22 @@ class AccountNameRequest(RequiredAccountKeyRequest):
         except UnicodeEncodeError as error:
             raise ValueError("Label must contain valid Unicode scalar values") from error
         return value
+
+
+AccountGroupName = Annotated[str, Field(pattern=ACCOUNT_GROUP_PATTERN)]
+
+
+class AccountGroupRequest(ContractModel):
+    """Set one account's group, or clear it with null. Repeating a request sets the same value."""
+
+    account_key: str
+    group: AccountGroupName | None
+
+
+class DefaultAccountGroupsRequest(ContractModel):
+    """Replace the default account order of projects without their own order. An empty list removes it. Repeating a request sets the same value."""
+
+    groups: list[AccountGroupName] = Field(max_length=ACCOUNT_GROUPS_MAX)
 
 
 class AccountStartThrottleRequest(AccountStartThrottle):
@@ -808,11 +832,12 @@ class ProjectWriteRequest(ContractModel):
     server: str | None = Field(default=None, max_length=128)
     request_id: str | None = Field(default=None, min_length=1, max_length=128)
     action: Literal["register", "remove", "set_account", "set_worker_base", "set_worker_environment", "set_accounts",
-                    "rename", "add_folder", "rename_folder", "remove_folder"] | None = None
+                    "rename", "add_folder", "rename_folder", "remove_folder", "set_account_groups"] | None = None
     path: str = Field(min_length=1)
     name: str | None = None
     account_key: str | None = None
     account_keys: list[str] | None = None
+    account_groups: list[AccountGroupName] | None = Field(default=None, max_length=ACCOUNT_GROUPS_MAX)
     expected_revision: SafeInt | None = None
     base_ref: str | None = None
     environment: Literal["host", "linux"] | None = None

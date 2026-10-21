@@ -25,6 +25,10 @@ export const ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX = 32;
 export const ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE = 64;
 export const ACCOUNT_RUNNING_TURNS_MIN = 1;
 export const ACCOUNT_RUNNING_TURNS_MAX = 512;
+export const ACCOUNT_GROUPS_MAX = 16;
+export const ACCOUNT_GROUP_PATTERN = "^[a-z0-9][a-z0-9_-]{0,31}$";
+export const DEFAULT_CLAUDE_LEAD_MODEL = "claude-opus-5-5";
+export const DEFAULT_CLAUDE_LEAD_EFFORT = "medium";
 export const PROVIDER_DISCONNECTED_TURN_ERROR =
   "Codex disconnected. Review the transcript before resuming.";
 export const BACKEND_RESTARTED_TURN_ERROR =

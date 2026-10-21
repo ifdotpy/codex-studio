@@ -1017,6 +1017,8 @@ class ProjectEntityDto(ContractModel):
     accountKey: str | None = None
     accountRevision: SafeInt | None = None
     accountKeys: list[str] | None = None
+    accountGroups: list[str] | None = None
+    accountGroupsRevision: SafeInt | None = None
     workerEnvironment: Literal["host", "linux"] | None = None
     workerEnvironmentRevision: SafeInt | None = None
     organizationRevision: SafeInt | None = None

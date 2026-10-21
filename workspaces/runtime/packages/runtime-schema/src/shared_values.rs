@@ -161,6 +161,22 @@ pub const ACCOUNT_RUNNING_TURNS_MIN: u64 = 1;
 /// Most running turns per account.
 pub const ACCOUNT_RUNNING_TURNS_MAX: u64 = 512;
 
+// Account groups and the account order of a project. An account can carry one group name
+// (for example "personal"). A project's account order is a list of group names; the
+// server default order applies to a project without its own order. Studio prefers the
+// accounts of the first group, then the next group, and so on; accounts of other groups
+// and accounts without a group come last. The order is a preference: every account stays
+// selectable, and Studio uses the next account when a preferred one is not available.
+// The decision cases are in `workspaces/client/contracts/account-preference.json`.
+/// A valid account group name: lowercase letters, digits, "-" and "_", 1 to 32 characters.
+pub const ACCOUNT_GROUP_PATTERN: &str = "^[a-z0-9][a-z0-9_-]{0,31}$";
+/// Most group names in one account order.
+pub const ACCOUNT_GROUPS_MAX: usize = 16;
+/// Model of a new chat on a Claude account when the request names no model.
+pub const DEFAULT_CLAUDE_LEAD_MODEL: &str = "claude-opus-5-5";
+/// Reasoning effort of a new Claude chat when the request names no model and no effort.
+pub const DEFAULT_CLAUDE_LEAD_EFFORT: &str = "medium";
+
 // Persisted agent errors for a turn whose provider connection ended. Connection recovery,
 // the scheduler, and the web "Check connection" action match these exact texts.
 /// Turn error after the provider connection ended.

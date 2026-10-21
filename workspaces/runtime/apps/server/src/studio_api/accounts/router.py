@@ -20,6 +20,8 @@ from .models import (
     AccountKeyRequest,
     AccountNameRequest,
     AccountStartThrottleRequest,
+    AccountGroupRequest,
+    DefaultAccountGroupsRequest,
     RequiredAccountKeyRequest,
     ClaudeCancelRequest,
     ClaudeAddStartRequest,
@@ -343,6 +345,18 @@ def create_router(context: ApiContext) -> APIRouter:
         )
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
+
+    # Account orders are implemented by the Rust backend only. These routes keep
+    # the shared API schema and refuse without a write.
+    _ACCOUNT_ORDER_REFUSAL = "This server does not support account orders. Update it to the Rust backend"
+
+    @router.post("/api/accounts/group", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
+    def account_group(request: Request, body: Annotated[AccountGroupRequest, Body()]) -> Response:
+        raise HTTPException(status_code=400, detail=_ACCOUNT_ORDER_REFUSAL)
+
+    @router.post("/api/accounts/default-groups", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
+    def account_default_groups(request: Request, body: Annotated[DefaultAccountGroupsRequest, Body()]) -> Response:
+        raise HTTPException(status_code=400, detail=_ACCOUNT_ORDER_REFUSAL)
 
     @router.post("/api/accounts/disconnect", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_disconnect(request: Request, body: Annotated[RequiredAccountKeyRequest, Body()]) -> Response:

@@ -1,11 +1,11 @@
 {
   "blockers_ordered_by_operations_unblocked": [],
   "counts": {
-    "implemented": 160,
+    "implemented": 162,
     "named_dependencies": 0,
     "not_registered": 0,
     "partial": 0,
-    "total": 160
+    "total": 162
   },
   "lifecycle_dependencies": {
     "direct provider launch": {
@@ -332,6 +332,11 @@
     },
     {
       "dependencies": [],
+      "operation": "POST /api/accounts/default-groups",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
       "operation": "POST /api/accounts/delete",
       "status": "implemented"
     },
@@ -343,6 +348,11 @@
     {
       "dependencies": [],
       "operation": "POST /api/accounts/discover",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/group",
       "status": "implemented"
     },
     {
