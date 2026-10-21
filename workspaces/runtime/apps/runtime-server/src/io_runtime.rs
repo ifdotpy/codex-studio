@@ -213,6 +213,10 @@ fn persist_identity_on_owner(
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "terminal persistence retries run on the dedicated PTY reader thread"
+)]
 fn persist_notification_until_saved(
     pending: &mut Option<TerminalNotification>,
     mut persist: impl FnMut(TerminalNotification) -> Result<(), TerminalError>,

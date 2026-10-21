@@ -184,6 +184,7 @@ fn read_oracle_lines(stdout: ChildStdout, sender: mpsc::Sender<Result<String, St
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus, ()> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -447,6 +448,7 @@ async fn arm_statement(
     count
 }
 
+#[allow(clippy::disallowed_methods)]
 fn crash_child(root: &Path, table: &str, operation: &str, point: &str, occurrence: usize) {
     let status = Command::new(std::env::current_exe().expect("test binary"))
         .args(["--exact", "ingress_crash_child", "--nocapture"])

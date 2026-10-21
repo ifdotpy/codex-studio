@@ -1,3 +1,7 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "build script runs in a dedicated compiler process, outside Tokio"
+)]
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -7,6 +11,26 @@ use openapi_to_rust::analysis::SchemaType;
 use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    // Clippy does not merge parent configs: runtime/clippy.toml owns the shared policy.
+    let shared_clippy = manifest_dir.join("../../clippy.toml");
+    let http_clippy = manifest_dir.join("clippy.toml");
+    println!("cargo:rerun-if-changed={}", shared_clippy.display());
+    println!("cargo:rerun-if-changed={}", http_clippy.display());
+    let shared = fs::read_to_string(shared_clippy)?;
+    let http = fs::read_to_string(http_clippy)?;
+    let inherited = http
+        .lines()
+        .filter(|line| {
+            !line.contains("HTTP-only blocking filesystem guards")
+                && !line.contains("HTTP handlers must use tokio::fs")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert_eq!(
+        shared, inherited,
+        "HTTP Clippy config must preserve the policy owned by runtime/clippy.toml"
+    );
     let spec_path = manifest_dir.join("openapi.json");
     let output_dir = PathBuf::from(env::var("OUT_DIR")?).join("generated");
     println!("cargo:rerun-if-changed={}", spec_path.display());

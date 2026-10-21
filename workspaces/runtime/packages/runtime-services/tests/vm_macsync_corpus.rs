@@ -85,6 +85,7 @@ fn seed(root: &Path) {
     std::fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).expect("sync status");
 }
 
+#[allow(clippy::disallowed_methods)]
 fn oracle(root: &Path, choice: &str) -> Value {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = prepared_python::prepared_python(&source);

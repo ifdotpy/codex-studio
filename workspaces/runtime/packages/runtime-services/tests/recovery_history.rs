@@ -91,6 +91,7 @@ async fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>
         .exact_turn("thread", "turn")
         .await
 }
+#[allow(clippy::disallowed_methods)]
 async fn oracle(script: &'static str) -> std::process::Output {
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/tests/recovery_history",

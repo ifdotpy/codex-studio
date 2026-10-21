@@ -12,6 +12,7 @@ use studio_runtime_services::portable_history::{
 use studio_runtime_store::RuntimeStore;
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn python_archive_writer_and_context_are_read_without_loss() {
     let root = isolated_test_root();
     let output = Command::new(python_executable())
@@ -200,6 +201,7 @@ fn python_archive_writer_and_context_are_read_without_loss() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     let root = isolated_test_root();
     let output = Command::new(python_executable())

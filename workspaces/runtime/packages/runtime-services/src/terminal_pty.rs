@@ -518,6 +518,7 @@ fn field_u16(value: &Value, name: &str) -> Result<u16, SessionError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::{OsStr, OsString};

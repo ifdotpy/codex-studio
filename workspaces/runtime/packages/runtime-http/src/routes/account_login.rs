@@ -418,6 +418,7 @@ fn runtime_availability(name: &str) -> ApiError {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::{routes, run_account_operation, run_mutation};
     use crate::router::HttpState;

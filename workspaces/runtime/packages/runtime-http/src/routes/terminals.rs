@@ -162,7 +162,7 @@ async fn create(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let shell = terminal_shell();
+        let shell = terminal_shell().await;
         let environment = serde_json::json!({
             "TERM":"xterm-256color",
             "COLORTERM":"truecolor"
@@ -250,6 +250,10 @@ enum TerminalActionResponse {
 }
 
 /// Check a stored agent and canonicalize its working directory (filesystem work).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "terminal directory validation runs on the labeled terminal blocking worker"
+)]
 fn checked_agent_cwd(
     agent: Option<studio_runtime_store::AgentRecord>,
 ) -> Result<(String, String, PathBuf), TerminalError> {
@@ -277,17 +281,18 @@ fn checked_agent_cwd(
 }
 
 #[cfg(unix)]
-fn terminal_shell() -> String {
-    std::env::var_os("SHELL")
-        .map(PathBuf::from)
-        .filter(|path| {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::metadata(path).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
-        })
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "/bin/sh".to_owned())
+async fn terminal_shell() -> String {
+    if let Some(path) = std::env::var_os("SHELL") {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = PathBuf::from(path);
+        if tokio::fs::metadata(&path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        {
+            return path.to_string_lossy().into_owned();
+        }
+    }
+    "/bin/sh".to_owned()
 }
 
 fn terminal_body_error(error: TerminalError) -> ApiError {
@@ -331,6 +336,7 @@ inventory::submit! {
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::sync::Arc;
 

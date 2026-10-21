@@ -16,6 +16,7 @@ use tower::ServiceExt;
 
 const ORIGIN: &str = "https://studio.example.ts.net";
 
+#[allow(clippy::disallowed_methods)]
 fn configure(root: &Path, enabled: bool) {
     std::fs::write(
         root.join(REMOTE_ACCESS_FILE),

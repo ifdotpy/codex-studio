@@ -13,6 +13,7 @@ fn open_state(path: impl AsRef<std::path::Path>) -> rusqlite::Connection {
     db
 }
 
+#[allow(clippy::disallowed_methods)]
 fn fixtures(root: &std::path::Path) -> Vec<Value> {
     let python = python_test_support::prepared_python(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

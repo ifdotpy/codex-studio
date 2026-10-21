@@ -26,6 +26,7 @@ fn temporary_state() -> TempDir {
 
 struct Template(TempDir);
 impl Template {
+    #[allow(clippy::disallowed_methods)]
     fn new() -> Self {
         let root = temporary_state();
         let python = prepared_python_support::prepared_python(
@@ -682,6 +683,7 @@ impl RuleMonitor for DurableMonitor<'_> {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
     const CASE: &str = "committed_launch_intent_survives_process_exit_before_monitor_launch";
     if let Some(path) = std::env::var_os("RULES_CRASH_BEFORE_LAUNCH") {

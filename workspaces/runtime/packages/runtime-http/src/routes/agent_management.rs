@@ -643,6 +643,7 @@ inventory::submit! {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(clippy::disallowed_methods)]
 mod native_review_preflight_tests {
     use super::*;
     use base64::Engine;

@@ -126,6 +126,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod registration_tests {
     use super::manifest::RouteModuleRegistration;
     use std::fs;

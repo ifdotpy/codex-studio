@@ -967,6 +967,10 @@ async fn stop_in_pool(scope: Scope) -> Stopped {
 /// Python `Descendants.stop`: stop and kill every proven process of the
 /// command until none runs or the cleanup deadline passes. Each signal goes
 /// only to a PID whose start time still matches the selected process.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "stop_in_pool owns cleanup on a labeled blocking worker"
+)]
 fn stop_command(scope: &Scope) -> Stopped {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
     let deadline = Instant::now() + Duration::from_secs(STOP_SECONDS);

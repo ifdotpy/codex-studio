@@ -600,8 +600,10 @@ async fn finalize_accepted_archive(
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-http/routes/work_write",
                 move || {
+                    #[allow(clippy::disallowed_methods, reason = "repository validation runs on the labeled work_write blocking worker")]
+                    let directory_exists = std::path::Path::new(&cwd).is_dir();
                     if cwd.is_empty()
-                        || !std::path::Path::new(&cwd).is_dir()
+                        || !directory_exists
                         || !work_write::accepted_revision_is_on_local_main(&cwd, &revision)
                     {
                         let remote_origin =

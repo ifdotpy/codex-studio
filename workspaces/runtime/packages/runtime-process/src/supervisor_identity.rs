@@ -244,6 +244,10 @@ pub(super) fn inspect_start(pid: u32, expected: &str) -> Result<(StartMatch, Opt
     ))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "identity adoption runs on supervisor startup or connection blocking workers"
+)]
 fn legacy_start(pid: u32) -> Result<Option<String>> {
     // Read the historical Python token only during adoption, never before a signal.
     let mut child = Command::new("/bin/ps")
@@ -286,6 +290,10 @@ pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
     }
     Ok(())
 }
+#[allow(
+    clippy::disallowed_methods,
+    reason = "termination runs on supervisor startup or connection blocking workers"
+)]
 pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'static str> {
     if !is_native_start(expected) {
         return Err(Error::Refused(
@@ -376,6 +384,7 @@ pub(super) fn valid_start(value: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::process::Command;

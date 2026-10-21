@@ -3016,6 +3016,7 @@ fn invalid(object: &'static str, id: &str) -> Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod artifact_tests {
     use super::{ResultArtifact, write_result_artifact};
     use std::fs;

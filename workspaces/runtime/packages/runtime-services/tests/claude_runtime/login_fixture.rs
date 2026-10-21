@@ -159,6 +159,7 @@ pub struct Fixture {
     pub changes: Arc<Notify>,
 }
 impl Fixture {
+    #[allow(clippy::disallowed_methods)]
     pub fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
             "claude-fixture-{}-{}",
@@ -232,6 +233,7 @@ impl Fixture {
     }
 }
 impl Drop for Fixture {
+    #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         drop(std::fs::remove_dir_all(&self.directory));
     }

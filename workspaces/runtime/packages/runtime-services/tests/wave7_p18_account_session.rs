@@ -39,6 +39,7 @@ impl AccountSessionPort for Session {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let python = prepared_python_support::prepared_python(&root.join("../../apps/server/src"));
@@ -131,6 +132,7 @@ async fn absent_consumers_are_named_refusals() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn profile_normalization_matches_python() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let output = Command::new(prepared_python_support::prepared_python(

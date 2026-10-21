@@ -1125,6 +1125,7 @@ async fn wave7_p06_runtime_notification_corpus() {
     .await;
 }
 
+#[allow(clippy::disallowed_methods)]
 async fn corpus(full: bool, runtime_effects: bool) {
     let corpus_started = std::time::Instant::now();
     let mut cases: Vec<Value> = serde_json::from_str(if runtime_effects {

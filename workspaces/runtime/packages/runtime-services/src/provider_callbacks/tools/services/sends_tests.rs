@@ -9,6 +9,7 @@ use studio_runtime_store::RuntimeStore;
 #[path = "../../../../tests/support/prepared_python.rs"]
 mod prepared_python;
 
+#[allow(clippy::disallowed_methods)]
 fn template() -> &'static Value {
     static TEMPLATE: OnceLock<(tempfile::TempDir, Value)> = OnceLock::new();
     &TEMPLATE

@@ -881,6 +881,10 @@ fn acquire_codex_scan_lock(cancelled: &AtomicBool) -> Result<MutexGuard<'static,
     acquire_codex_scan_lock_for(COST_SCAN_TIMEOUT_SECONDS, Some(cancelled))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "usage scans execute on the labeled account-cost blocking worker"
+)]
 fn acquire_codex_scan_lock_for(
     timeout: Duration,
     cancelled: Option<&AtomicBool>,
@@ -1129,6 +1133,7 @@ fn local_day(timestamp: f64) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::{account_cost_snapshot, refresh_account_costs, scan_claude_sessions};
     use serde_json::{Value, json};

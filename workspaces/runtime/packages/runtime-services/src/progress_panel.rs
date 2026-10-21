@@ -430,6 +430,10 @@ pub fn layout_check(file: &Path, wait_seconds: f64) -> (Value, i32) {
     (result, code)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "progress-layout CLI runs this polling loop on its labeled blocking worker"
+)]
 fn layout_check_status(file: &Path, wait_seconds: f64) -> Result<Value, ProgressPanelError> {
     let file = std::path::absolute(file)?;
     let invalid = || ProgressPanelError::InvalidLayout("progress file path");

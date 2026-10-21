@@ -418,6 +418,10 @@ impl PtyHost for LocalPtyHost {
         Ok(())
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "PTY reads run on the dedicated terminal-pty reader thread"
+    )]
     fn read(&self, session: &mut Self::Session, buffer: &mut [u8]) -> Result<usize, Self::Error> {
         let mut master = session.0.master.as_ref();
         loop {
@@ -448,6 +452,10 @@ impl PtyHost for LocalPtyHost {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "PTY writes run on the labeled terminal I/O blocking-pool worker"
+)]
 fn write_bounded(master: &Pty, bytes: &[u8], deadline: Instant) -> Result<(), PtyHostError> {
     let flags = rustix::fs::fcntl_getfl(master.as_fd()).map_err(std::io::Error::from)?;
     rustix::fs::fcntl_setfl(master.as_fd(), flags | rustix::fs::OFlags::NONBLOCK)

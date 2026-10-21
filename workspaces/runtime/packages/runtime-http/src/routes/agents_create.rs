@@ -131,49 +131,51 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         &self.catalog
     }
 
-    fn validate_worker_choice(
-        &self,
-        store: &studio_runtime_store::RuntimeStore,
-        account_key: &str,
-        account: &AccountIdentity,
-        requested: &str,
-        default: &str,
-    ) -> Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>
-    {
-        use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
-        studio_runtime_services::provider_callbacks::validate_worker_model_choice(
-            requested, default, None,
-        )?;
-        if requested == default {
-            return Ok(());
-        }
-        let path = store.root().join("model-pricing/models-dev-v1.json");
-        let artifact = match std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        {
-            Some(value) if value.get("version").and_then(Value::as_u64) == Some(1) => value,
-            _ => return Ok(()),
-        };
-        let Some(catalog) = artifact.get("catalog").and_then(|value| {
-            studio_runtime_services::pricing::PricingCatalog::from_value(value).ok()
-        }) else {
-            return Ok(());
-        };
-        let requested_name = self.catalog.pricing_name(account_key, account, requested)?;
-        let default_name = self.catalog.pricing_name(account_key, account, default)?;
-        let provider_for = |model: &str| {
-            adapter(model_provider(model).unwrap_or(account.provider)).pricing_vendor()
-        };
-        let prices = Some((
-            catalog.worker_choice_rates(provider_for(requested), &requested_name),
-            catalog.worker_choice_rates(provider_for(default), &default_name),
-        ));
-        studio_runtime_services::provider_callbacks::validate_worker_model_choice(
-            requested, default, prices,
-        )
-        .map_err(|_| {
-            E::Invalid("Choose a model that costs no more than the default subagent model")
+    fn validate_worker_choice<'a>(
+        &'a self,
+        store: &'a studio_runtime_store::RuntimeStore,
+        account_key: &'a str,
+        account: &'a AccountIdentity,
+        requested: &'a str,
+        default: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>>{
+        Box::pin(async move {
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
+            studio_runtime_services::provider_callbacks::validate_worker_model_choice(
+                requested, default, None,
+            )?;
+            if requested == default {
+                return Ok(());
+            }
+            let path = store.root().join("model-pricing/models-dev-v1.json");
+            let artifact = match tokio::fs::read(path)
+                .await
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            {
+                Some(value) if value.get("version").and_then(Value::as_u64) == Some(1) => value,
+                _ => return Ok(()),
+            };
+            let Some(catalog) = artifact.get("catalog").and_then(|value| {
+                studio_runtime_services::pricing::PricingCatalog::from_value(value).ok()
+            }) else {
+                return Ok(());
+            };
+            let requested_name = self.catalog.pricing_name(account_key, account, requested)?;
+            let default_name = self.catalog.pricing_name(account_key, account, default)?;
+            let provider_for = |model: &str| {
+                adapter(model_provider(model).unwrap_or(account.provider)).pricing_vendor()
+            };
+            let prices = Some((
+                catalog.worker_choice_rates(provider_for(requested), &requested_name),
+                catalog.worker_choice_rates(provider_for(default), &default_name),
+            ));
+            studio_runtime_services::provider_callbacks::validate_worker_model_choice(
+                requested, default, prices,
+            )
+            .map_err(|_| {
+                E::Invalid("Choose a model that costs no more than the default subagent model")
+            })
         })
     }
 

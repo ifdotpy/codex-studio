@@ -79,6 +79,7 @@ impl RetainedAccountSession for CodexSession {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn python_corpus() -> Value {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = python_test_support::prepared_python(&source);

@@ -936,10 +936,15 @@ async fn v2_connection_loop(
                 }
             }
         } else {
-            let response = match serde_json::from_value::<Request>(raw)
-                .map_err(Error::from)
-                .and_then(|request| supervisor.handle(request.command, operator))
-            {
+            let worker = supervisor.clone();
+            let result = crate::blocking_pool::spawn_blocking("supervisor/command", move || {
+                serde_json::from_value::<Request>(raw)
+                    .map_err(Error::from)
+                    .and_then(|request| worker.handle(request.command, operator))
+            })
+            .await
+            .map_err(|_| Error::Refused("Supervisor command worker failed"))?;
+            let response = match result {
                 Ok(value) => json!({"requestId":request_id,"result":value}),
                 Err(error) => {
                     json!({"requestId":request_id,"error":error.to_string().chars().take(500).collect::<String>()})
@@ -1051,6 +1056,10 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
 }
 
 /// Serve only the explicitly selected directory. Does not install or connect to another service.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the synchronous supervisor daemon main thread owns the lease and listener"
+)]
 pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(Error::Refused(
@@ -1180,6 +1189,10 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
 /// One accepted connection, or `None` after an accept error. Children stay owned only while the
 /// listener runs, so an accept error (EMFILE at the descriptor limit, ECONNABORTED) must not end
 /// it; Python's socketserver also keeps serving. The pause keeps a lasting error from spinning.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "accept retries run on the synchronous supervisor listener thread"
+)]
 fn accepted(socket: std::io::Result<UnixStream>) -> Option<UnixStream> {
     match socket {
         Ok(socket) => Some(socket),

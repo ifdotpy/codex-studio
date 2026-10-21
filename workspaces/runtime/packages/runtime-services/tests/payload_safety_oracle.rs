@@ -12,6 +12,7 @@ use studio_runtime_services::safety_buffering::{
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 
+#[allow(clippy::disallowed_methods)]
 fn python_oracle() -> (Value, tempfile::TempDir) {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let tests = package.join("tests/turn_lifecycle");

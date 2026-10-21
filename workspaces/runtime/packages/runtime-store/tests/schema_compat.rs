@@ -458,6 +458,7 @@ fn drop_sync_family(path: &Path) {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn prepare_with_python(state: &Path) {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let script = r#"

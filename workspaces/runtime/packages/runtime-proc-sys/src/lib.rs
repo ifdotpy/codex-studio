@@ -219,7 +219,7 @@ mod macos {
 
     #[cfg(test)]
     mod tests {
-        #![allow(clippy::unwrap_used)]
+        #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
         use super::*;
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};

@@ -212,6 +212,7 @@ fn format_http_error(error: &io::Error) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::parse_port;
     use serde_json::Value;

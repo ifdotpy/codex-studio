@@ -506,6 +506,10 @@ fn run_claude_status(
     run_claude_status_with_timeout(binary, options, CLAUDE_TIMEOUT)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "auth probes execute on account-driver blocking workers"
+)]
 fn run_claude_status_with_timeout(
     binary: &str,
     options: Option<&Value>,
@@ -2799,6 +2803,7 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";

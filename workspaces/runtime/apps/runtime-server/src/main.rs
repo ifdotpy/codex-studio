@@ -356,8 +356,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         {
             return Err("--wait must be between 0 and 5 seconds".into());
         }
-        let (result, code) =
-            studio_runtime_services::progress_panel::layout_check(Path::new(file), wait);
+        let file = PathBuf::from(file);
+        let (result, code) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/progress-layout",
+            move || studio_runtime_services::progress_panel::layout_check(&file, wait),
+        )
+        .await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
         std::process::exit(code);
     }

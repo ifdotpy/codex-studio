@@ -898,6 +898,7 @@ impl PairedTransport for LoopbackPeer {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn run_git(directory: &std::path::Path, arguments: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
@@ -943,6 +944,7 @@ async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
     let seed = &seed().value;
     let (_home_directory, home) = seeded_store().await;

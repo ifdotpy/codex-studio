@@ -68,6 +68,10 @@ pub(crate) fn run_without_git_environment(request: Request<'_>) -> Result<Output
     run_with_environment(request, true)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "bounded child polling executes on the calling labeled blocking worker"
+)]
 fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output, ChildError> {
     let Request {
         program,
@@ -255,6 +259,7 @@ fn read_bounded(mut pipe: impl Read, limit: usize) -> std::io::Result<PipeOutput
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::{ChildError, Request, read_bounded, run};
     use std::ffi::OsStr;

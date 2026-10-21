@@ -406,6 +406,7 @@ fn peer_matches_from_rows(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod peer_location_tests {
     use super::*;
 

@@ -3,6 +3,7 @@
 mod base;
 pub use base::{events, seed, store, tempdir};
 
+#[allow(clippy::disallowed_methods)]
 pub fn corpus(root: &std::path::Path) -> Vec<serde_json::Value> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     if manifest

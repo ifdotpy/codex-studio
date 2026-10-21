@@ -231,6 +231,7 @@ impl Drop for PythonFixture {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn version_parse_and_comparison_match_the_real_python_functions() {
     let cases: Vec<[String; 2]> = serde_json::from_str(CASES).expect("version corpus");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
@@ -415,6 +416,7 @@ fn claude_version_probe_uses_launch_binary_and_reports_configured_binary_separat
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
     let temp = isolated_tempdir();
     let mut oracle = PythonFixture::new(temp.path());

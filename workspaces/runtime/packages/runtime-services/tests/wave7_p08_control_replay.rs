@@ -48,6 +48,7 @@ impl ClaudeSessionPort for RetainedOwner {
     }
 }
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_mutation() {
     let root = tempfile::tempdir().expect("scratch");
     let template = root.path().join("template");

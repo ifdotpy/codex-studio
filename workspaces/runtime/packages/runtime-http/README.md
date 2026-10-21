@@ -80,7 +80,7 @@ read the resulting `ValidatedRequest`; a raw body handler therefore runs only
 after shared validation. `ApiError` serializes through the shared
 `{ "error": "..." }` envelope. Put only the small, route-specific port needed
 by that group in state. Await asynchronous `RuntimeStore` operations directly.
-Use `tokio::task::spawn_blocking` only for synchronous filesystem, process, or
+Use labeled `blocking_pool::spawn_blocking` only for synchronous filesystem, process, or
 CPU work that must not run on a Tokio worker; never use it to disguise an async
 store operation. Do not retain a store transaction across an await.
 

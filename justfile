@@ -43,6 +43,10 @@ test-plan package case="" *args:
 check package *args:
     @node {{quote(facade)}} check {{quote(package)}} {{args}}
 
+[doc("Lint every runtime workspace target with warnings treated as errors.")]
+clippy-runtime:
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+
 [doc("Check generated API and persisted-state contracts in read-only drift mode.")]
 contracts-check:
     @node {{quote(facade)}} contracts-check

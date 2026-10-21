@@ -833,6 +833,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() {
     use studio_runtime_services::agent_lifecycle_runtime::{LifecycleEffect, LifecyclePorts};
     use studio_runtime_services::agent_management::ManagementError;

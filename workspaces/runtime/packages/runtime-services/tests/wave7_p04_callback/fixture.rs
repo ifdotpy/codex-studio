@@ -37,6 +37,7 @@ pub fn template() -> &'static Value {
         serde_json::from_slice(&output.stdout).unwrap()
     })
 }
+#[allow(clippy::disallowed_methods)]
 pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let data = template();
     let root = tempfile::tempdir().unwrap();

@@ -184,6 +184,7 @@ fn git() -> Git {
         deadline: Instant::now() + GIT_TIMEOUT,
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn command(cwd: &Path, args: &[&str]) -> String {
     assert!(
         cwd.starts_with(fixture_parent()),
@@ -1191,6 +1192,7 @@ async fn linked_worktree_and_submodule_sources_preserve_git_identity() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
     let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
@@ -1251,6 +1253,7 @@ async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn isolated_child_rejects_all_ambient_git_overrides() {
     let root = tempfile::Builder::new()
         .prefix("ambient-")
@@ -1541,6 +1544,7 @@ async fn admitted(fixture: &Fixture, decision: WorkspaceDecision) -> PathBuf {
 }
 
 #[cfg(unix)]
+#[allow(clippy::disallowed_methods)]
 async fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixture {
     use std::os::unix::fs::PermissionsExt;
     let Fixture {
@@ -1857,6 +1861,7 @@ async fn ready_linked_worktree(fixture: &Fixture) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::disallowed_methods)]
 async fn ready_worktree_git_budget_excludes_waiting_for_a_store_reader() {
     let fixture = Fixture::new().await;
     let linked = ready_linked_worktree(&fixture).await;

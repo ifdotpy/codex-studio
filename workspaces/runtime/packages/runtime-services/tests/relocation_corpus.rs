@@ -18,6 +18,7 @@ struct Fixture {
     data: Value,
 }
 impl Fixture {
+    #[allow(clippy::disallowed_methods)]
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temporary oracle root");
         let template = root.path().join("template");
@@ -783,6 +784,7 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn location_process_loss_before_and_after_commit_is_recoverable() {
     let fixture = Fixture::new();
     let case = &fixture.data["cases"][0];
@@ -864,6 +866,7 @@ async fn relocation_process_stop_child() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn oracle_guard_rejects_content_and_metadata_before_io() {
     let output = Command::new(prepared_python_support::prepared_python(
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

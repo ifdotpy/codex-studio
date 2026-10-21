@@ -474,6 +474,10 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
+)]
 fn api_types(root: &Path) -> Result<String, String> {
     let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
     let output = Command::new(&node)

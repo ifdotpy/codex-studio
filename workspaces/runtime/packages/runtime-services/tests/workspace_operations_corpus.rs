@@ -293,6 +293,7 @@ impl Fixture {
         json!({"agent":agent,"checkpoints":count,"operations":operations})
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn git(cwd: &Path, args: &[&str]) -> String {
     assert!(cwd.starts_with(std::env::temp_dir().join("cs-rust-workspace-operations")));
     let out = Command::new("git")

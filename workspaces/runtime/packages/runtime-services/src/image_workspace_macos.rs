@@ -388,6 +388,10 @@ impl WorkspaceBackend for MacAsifBackend {
         })
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "ASIF detach runs on the dedicated image workspace blocking worker"
+    )]
     fn unmount_workspace(&self, mount: &Path, force: bool) -> Result<Value, ImageWorkspaceError> {
         if !is_mount(mount)? {
             return Ok(json!({"method":"already-unmounted","terminatedPids":0}));
@@ -667,6 +671,10 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Result<Output, ImageW
     Ok(output)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "ASIF child polling runs on the dedicated image workspace blocking worker"
+)]
 fn run_allow_failure(
     program: &str,
     args: &[&str],

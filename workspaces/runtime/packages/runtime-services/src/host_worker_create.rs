@@ -631,6 +631,7 @@ fn validate_base(base_ref: Option<&str>, base_commit: Option<&str>) -> Result<()
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use rusqlite::Connection;

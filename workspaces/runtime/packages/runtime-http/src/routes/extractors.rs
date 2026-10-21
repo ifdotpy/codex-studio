@@ -139,6 +139,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use axum::body::{Body, to_bytes};
     use axum::extract::ConnectInfo;

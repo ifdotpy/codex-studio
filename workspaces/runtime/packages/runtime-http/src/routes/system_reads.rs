@@ -572,6 +572,7 @@ fn redact_untrusted_diagnostic_text(value: &mut Value) {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod diagnostics_http_tests {
     use super::{
         DIAGNOSTICS_RESPONSE_FIELDS, redact_untrusted_diagnostic_text,

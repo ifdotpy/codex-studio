@@ -17,6 +17,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, RuntimeStore, StoreError};
 
+#[allow(clippy::disallowed_methods)]
 fn template() -> tempfile::TempDir {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dir = tempfile::tempdir().expect("isolated Python state");

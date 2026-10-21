@@ -1201,6 +1201,7 @@ async fn refresh_vm_codex_token(
 /// Mirror Python `claude_access` (codex_linux_vm_auth.py:168-185): refresh
 /// inside the CLI's existing helper, then verify account identity and expiry
 /// before the access-only document reaches the durable guest-copy operation.
+#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
 fn read_vm_claude_credentials(
     accounts: &AccountDriver,
     request: ClaudeCredentialRequest<'_>,
@@ -1412,6 +1413,7 @@ fn read_vm_claude_oauth(
 #[cfg(target_os = "macos")]
 /// Read the same per-config Keychain service as
 /// `codex_linux_vm_credentials.py:13-19` and `codex_linux_vm_auth.py:96-120`.
+#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
 fn read_vm_claude_keychain(
     path: &Path,
     explicit_config_dir: bool,
@@ -1633,6 +1635,7 @@ fn find_vm_node() -> Option<PathBuf> {
 /// `codex_linux_vm_auth.py:122-156`. It emits one bounded readiness line; the
 /// caller releases its held query only after the on-disk access token is
 /// outside the native refresh window. Child output never includes secrets.
+#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
 fn run_vm_claude_refresh_helper(
     node: &Path,
     helper: &Path,
@@ -1810,6 +1813,7 @@ fn run_vm_claude_refresh_helper(
     }
 }
 
+#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
 fn stop_vm_claude_refresh_child(child: &mut dyn ChildWrapper) -> Result<(), WorkerError> {
     if child
         .inner_mut()
@@ -1993,6 +1997,7 @@ impl ProviderTaskFactory for LeasedProviderTaskFactory {
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module, clippy::unwrap_used)]
+#[allow(clippy::disallowed_methods)]
 mod install_root_tests {
     use super::{AccountDriver, CLAUDE_BRIDGE_RELATIVE, HttpState, InstallRoot};
     use std::{fs, path::PathBuf};

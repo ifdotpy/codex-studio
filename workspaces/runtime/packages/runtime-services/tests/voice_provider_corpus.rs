@@ -387,6 +387,7 @@ async fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() 
     assert_eq!(text, "last words");
 }
 
+#[allow(clippy::disallowed_methods)]
 async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
     static TEMPLATE: OnceLock<tempfile::TempDir> = OnceLock::new();
     let template = TEMPLATE.get_or_init(|| {
@@ -1409,6 +1410,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn python_approval_speech_rows_and_voice_views_match_rust() {
     let (root, store) = seeded_store().await;
     let store = Arc::new(store);
@@ -1487,6 +1489,7 @@ async fn python_approval_speech_rows_and_voice_views_match_rust() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     let (root, store) = seeded_store().await;
     let python_root = root.path().join("python-lifecycle-state");

@@ -76,6 +76,7 @@ impl studio_runtime_services::native_runtime::CompatibilityProbe for FixtureProb
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn rust_reads_the_complete_status_record_written_by_python() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../../apps/server/src");
