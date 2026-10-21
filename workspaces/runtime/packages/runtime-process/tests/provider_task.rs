@@ -604,15 +604,23 @@ async fn cancelling_shutdown_future_keeps_owned_join_handle() {
     .await;
 }
 
+/// The attachment info, or a panic that names why the attachment closed.
 async fn real_info(attachment: &mut ProviderAttachment) -> AttachmentInfo {
-    attachment
+    let info = attachment
         .status
         .wait_for(|status| status.info.is_some())
         .await
-        .unwrap()
-        .info
-        .clone()
-        .unwrap()
+        .map(|status| status.info.clone());
+    match info {
+        Ok(Some(info)) => info,
+        _ => {
+            let exit = attachment.completion().await;
+            panic!(
+                "the attachment closed before it reported info: {:?}",
+                exit.result
+            );
+        }
+    }
 }
 async fn real_write(
     attachment: &ProviderAttachment,
@@ -783,6 +791,77 @@ for line in sys.stdin:
     ));
     assert!(third.shutdown().await.recovery_needed.is_none());
     }).await;
+}
+
+/// A reattach soon after a start can read a launch record in transition: during
+/// an exec, or before libSystem clears the Apple strings on macOS. Here the child
+/// re-executes itself without HOME, waits for a release file, then re-executes
+/// with its accepted launch again. The reattach waits for the settled record and
+/// keeps the same child; one read would refuse it as unverifiable.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn real_supervisor_reattach_waits_for_a_launch_record_in_transition() {
+    let state = DisposableState::new();
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start_v2(&state);
+    real_watchdog(async {
+        let script = r#"
+import os,sys,time
+source = sys.orig_argv[sys.orig_argv.index('-c') + 1]
+stage = sys.argv[1] if len(sys.argv) > 1 else 'launch'
+# Keep the accepted launch: drop what Python startup adds to os.environ.
+env = {key: value for key, value in os.environ.items() if key != 'LC_CTYPE'}
+if stage == 'launch':
+ home = env.pop('HOME')
+ os.execve(sys.executable, [sys.executable, '-u', '-c', source, 'transition', home], env)
+if stage == 'transition':
+ open('transition', 'w').close()
+ while not os.path.exists('release'):
+  time.sleep(0.01)
+ env['HOME'] = sys.argv[2]
+ os.execve(sys.executable, [sys.executable, '-u', '-c', source, 'ready'], env)
+for line in sys.stdin:
+ pass
+"#;
+        let launch = ProviderLaunchSpec::new(
+            vec![python, "-u".into(), "-c".into(), script.into()],
+            support::child_environment(&state.0),
+            state.0.clone(),
+        );
+        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let handle = ProviderHandle::for_account("record-transition");
+        let opts = || OpenOptions {
+            clock: SessionClock::default(),
+            launch: launch.clone(),
+            expected_generation: None,
+        };
+        let mut first = factory
+            .open(handle.clone(), opts(), Shutdown::default())
+            .await
+            .unwrap();
+        let info = real_info(&mut first).await;
+        supervisor.own_child(info.pid);
+        drop(first.shutdown().await);
+        let transition = state.0.join("transition");
+        wait_until("child launch record in transition", || transition.exists());
+        // Release the child only after the reattach has started to read.
+        let release = state.0.join("release");
+        let releaser = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            std::fs::write(release, b"").unwrap();
+        });
+        let mut second = factory
+            .open(handle.clone(), opts(), Shutdown::default())
+            .await
+            .unwrap();
+        let resumed = real_info(&mut second).await;
+        assert!(resumed.resumed);
+        assert_eq!(resumed.pid, info.pid);
+        assert_eq!(resumed.generation, info.generation);
+        releaser.await.unwrap();
+        drop(second.shutdown().await);
+    })
+    .await;
 }
 
 /// The Claude bridge uses string JSON-RPC ids: `claude:<uuid>` for its own server requests,
