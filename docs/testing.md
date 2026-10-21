@@ -70,7 +70,12 @@ suites and builds the renderer bundle that the native client crate embeds before
 Rust nextest. For a standalone server run, prepare the HTTP fixture with
 `cargo build --locked --release -p studio-runtime-server`. Hosted CI builds it
 once per run, and the server jobs use that binary. The short local tier does not require that fixture binary;
-building a native desktop package does not produce it.
+building a native desktop package does not produce it. The historical upgrade
+contract stages the release executable under a disposable source install root,
+so Cargo output may live outside the checkout. Before Rust nextest, the facade
+resolves the prepared interpreter through
+[`codex_python.py`](../workspaces/runtime/apps/server/src/codex_python.py) and
+passes it to Python oracle children, including those with isolated home paths.
 
 The server runner checks each suite's private scratch paths for detached host-exec
 services after teardown. A surviving service fails its owning suite and is stopped

@@ -1510,6 +1510,15 @@ export function nextestSelectionError(exitCode) {
     : null;
 }
 
+function preparedPython(root) {
+  return runSync(
+    "python3",
+    [path.join(root, "workspaces/runtime/apps/server/src/codex_python.py")],
+    root,
+    "Prepared Python resolution",
+  ).trim();
+}
+
 export async function execute(
   root,
   item,
@@ -1559,6 +1568,7 @@ export async function execute(
                   // Rust Python-oracle tests must not resolve Node through a
                   // developer PATH that may traverse protected agent homes.
                   CODEX_NODE: process.execPath,
+                  CODEX_AGENTS_PYTHON: preparedPython(root),
                 }
               : {}),
           }
@@ -2418,6 +2428,7 @@ export async function main(argv = process.argv.slice(2)) {
                 ? {
                     NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
                     CODEX_NODE: process.execPath,
+                    CODEX_AGENTS_PYTHON: preparedPython(root),
                   }
                 : {}),
             }

@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -322,8 +323,20 @@ class RustUpgradeContract(unittest.TestCase):
         binary = Path(os.environ.get(
             "STUDIO_RUST_SERVER_BINARY", target / "release/studio-runtime-server"
         )).resolve()
-        self.assertTrue(binary.is_file(), f"fast-tier Rust server build missing: {binary}")
+        self.assertTrue(binary.is_file(), f"Rust HTTP fixture missing: {binary}; run just test-comprehensive")
 
+        # Release discovers its install root from its executable. Cargo targets
+        # may live outside the checkout, so give this fixture a private source
+        # install layout instead of relying on the compiler output's ancestors.
+        with tempfile.TemporaryDirectory(prefix="rust-upgrade-install-", dir=os.environ["TMPDIR"]) as install:
+            install_root = Path(install)
+            installed_binary = install_root / binary.name
+            shutil.copy2(binary, installed_binary)
+            (install_root / "workspaces").symlink_to(ROOT / "workspaces", target_is_directory=True)
+            self.check_rust_backend(installed_binary)
+        print(f"Rust historical-state HTTP test: {time.perf_counter() - started:.3f}s")
+
+    def check_rust_backend(self, binary: Path):
         with patch.dict(os.environ, {
             "STUDIO_HTTP_BACKEND_COMMAND": str(binary),
             "STUDIO_HTTP_BACKEND_PYTHON": sys.executable,
@@ -376,7 +389,6 @@ class RustUpgradeContract(unittest.TestCase):
                         ))
                     finally:
                         backend.close()
-        print(f"Rust historical-state HTTP test: {time.perf_counter() - started:.3f}s")
 
 
 class SupervisorUpgradeContract(unittest.TestCase):

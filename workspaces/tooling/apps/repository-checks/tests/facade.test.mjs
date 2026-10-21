@@ -338,6 +338,7 @@ test("Cargo facade failures retain selection, test failure, install guidance and
     cargo,
     `#!/bin/sh
 printf '%s' "$CODEX_NODE" > "$FIXTURE_NODE_CAPTURE"
+printf '%s' "$CODEX_AGENTS_PYTHON" > "$FIXTURE_NODE_CAPTURE.python"
 case "$FIXTURE_CARGO_MODE" in
   fail) printf '%s\\n' '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}'; exit 100 ;;
   empty) echo 'error: no tests to run'; exit 4 ;;
@@ -346,6 +347,12 @@ esac
 `,
   );
   chmodSync(cargo, 0o755);
+  const resolver = path.join(
+    root,
+    "workspaces/runtime/apps/server/src/codex_python.py",
+  );
+  mkdirSync(path.dirname(resolver), { recursive: true });
+  writeFileSync(resolver, "print('/fixture/prepared-python')\n");
   const original = {
     PATH: process.env.PATH,
     CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
@@ -366,6 +373,10 @@ esac
     const empty = await execute(root, item, "missing_case", true);
     assert.equal(empty.exitCode, 1);
     assert.equal(readFileSync(nodeCapture, "utf8"), process.execPath);
+    assert.equal(
+      readFileSync(`${nodeCapture}.python`, "utf8"),
+      "/fixture/prepared-python",
+    );
     assert.deepEqual(empty.errors, [
       "nextest found no tests matching this selection",
     ]);
