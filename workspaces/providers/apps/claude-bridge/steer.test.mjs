@@ -28,15 +28,23 @@ const until=async(file,signal)=>{while(!fs.existsSync(file)&&!signal.aborted)awa
 const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
+ let nativeQueue=[],stopTurn=null,queueMode=false,survive=false;
  const read=async()=>{const input=await prompt.next();if(!input.done){fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\n');}return input;};
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
   supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
   accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
   initializationResult:async()=>({commands:[]}),
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
+  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async(id)=>{fs.appendFileSync(cwd+'/.stopped-tasks',id+'\n');if(fs.existsSync(cwd+'/.task-failure'))throw new Error('Task stop failed');},
   setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){abort.abort();},interrupt:async()=>abort.abort(),
+  close(){abort.abort();},interrupt:async(options)=>{
+   if(!queueMode){abort.abort();return;}
+   fs.writeFileSync(cwd+'/.interrupt-options',JSON.stringify(options??null));
+   const cancelled=options?.cancelQueued&&!survive?nativeQueue.splice(0).map(m=>m.uuid):[];
+   const receipt={cancelled,still_queued:nativeQueue.map(m=>m.uuid)};
+   fs.writeFileSync(cwd+'/.native-interrupt-receipt',JSON.stringify(receipt));
+   stopTurn();return receipt;
+  },
   async *[Symbol.asyncIterator](){
    while(!abort.signal.aborted){
     const input=await read();
@@ -45,7 +53,21 @@ export function query({prompt,options}){
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     if(input.value.shouldQuery===false){const fail=text==='prefix-fail';yield {type:'result',subtype:fail?'error_during_execution':'success',is_error:fail,errors:fail?['prefix failed']:undefined,num_turns:0,user_message_uuid:input.value.uuid,usage};continue;}
     yield {type:'system',subtype:'init'};
+    if(text.startsWith('native-'))yield {type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'background-1'}]};
     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-'+text}}};
+    if(text.startsWith('native-')){
+     queueMode=true;survive=text.endsWith('survivor');
+     const stopped=new Promise(r=>stopTurn=r);
+     for(;;){const next=await read();nativeQueue.push(next.value);if(text!=='native-split-all'||next.value.shouldQuery!==false)break;}
+     fs.writeFileSync(cwd+'/.native-queued','');
+     await stopped;
+     yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['interrupted']};
+     for(const held of nativeQueue.splice(0)){
+      fs.writeFileSync(cwd+'/.survived','');
+      yield {type:'user',isReplay:true,uuid:held.uuid};
+     }
+     queueMode=false;continue;
+    }
     let late=null;
     if(text==='ack'){for(;;){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};if(next.value.shouldQuery!==false)break;yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};}}
     if(text==='pulled')await read();
@@ -123,7 +145,10 @@ async function startBridge() {
           ),
         ),
       ]);
-      if (message.error) throw new Error(message.error.message);
+      if (message.error)
+        throw Object.assign(new Error(message.error.message), {
+          data: message.error.data,
+        });
       return message.result;
     },
     async note(predicate) {
@@ -462,3 +487,154 @@ test("a failed split prefix closes its query without submitting the remaining pa
   assert.equal(messages.length, 1);
   assert.equal(messages[0].message.content[0].text, "prefix-fail");
 });
+
+async function nativeQueued(bridge) {
+  const deadline = Date.now() + HANG_GUARD_MS;
+  while (!existsSync(path.join(bridge.root, ".native-queued"))) {
+    if (Date.now() > deadline)
+      throw new Error("Native queue did not receive input");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+test("Stop cancels input held in Claude's native queue without closing the query", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "native-queue");
+  await steer(bridge, turn, "studio:correction");
+  await nativeQueued(bridge);
+  const receipt = await bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: turn,
+  });
+  assert.deepEqual(
+    JSON.parse(
+      await fs.readFile(path.join(bridge.root, ".interrupt-options"), "utf8"),
+    ),
+    { cancelQueued: true },
+  );
+  assert.deepEqual(receipt, {
+    cancelled: ["studio:correction"],
+    still_queued: [],
+  });
+  await completed(bridge, turn);
+  assert.equal(
+    await fs.readFile(path.join(bridge.root, ".stopped-tasks"), "utf8"),
+    "background-1\n",
+  );
+  const next = await running(bridge, "probe");
+  await end(bridge);
+  await completed(bridge, next);
+  assert.equal(existsSync(path.join(bridge.root, ".survived")), false);
+  assert.equal(ack(bridge, "studio:correction"), undefined);
+});
+
+test("Stop returns surviving native input with its exact Studio identity", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "native-survivor");
+  await steer(bridge, turn, "studio:survivor");
+  await nativeQueued(bridge);
+  const receipt = await bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: turn,
+    stopBackgroundTasks: false,
+  });
+  assert.deepEqual(receipt, {
+    cancelled: [],
+    still_queued: ["studio:survivor"],
+  });
+  assert.equal(existsSync(path.join(bridge.root, ".stopped-tasks")), false);
+});
+
+test("Stop without an active turn leaves the query unchanged", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "hold");
+  await end(bridge);
+  await completed(bridge, turn);
+  await assert.rejects(
+    bridge.call("turn/interrupt", { threadId: bridge.thread }),
+    /no active turn/,
+  );
+  const next = await running(bridge, "probe");
+  await end(bridge);
+  await completed(bridge, next);
+  assert.deepEqual(await inputs(bridge), ["hold", "probe"]);
+});
+
+test("a background task error preserves the successful queue cancellation receipt", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "native-queue");
+  await steer(bridge, turn, "studio:cancel-with-task-error");
+  await nativeQueued(bridge);
+  await fs.writeFile(path.join(bridge.root, ".task-failure"), "");
+  await assert.rejects(
+    bridge.call("turn/interrupt", { threadId: bridge.thread, turnId: turn }),
+    (error) => {
+      assert.equal(error.message, "Task stop failed");
+      assert.deepEqual(error.data.interruptReceipt, {
+        cancelled: ["studio:cancel-with-task-error"],
+        still_queued: [],
+      });
+      return true;
+    },
+  );
+});
+
+for (const scenario of [
+  "native-split-all",
+  "native-split-tail",
+  "native-split-survivor",
+]) {
+  test(`Stop settles a mixed input atomically: ${scenario}`, async () => {
+    const bridge = await startBridge();
+    const turn = await running(bridge, scenario);
+    const identity = "studio:mixed-stop";
+    const input = ["studio_event", "human", "studio_event"].map(
+      (inputOrigin, index) => ({
+        type: "text",
+        text: `mixed-part-${index}`,
+        inputOrigin,
+      }),
+    );
+    await bridge.call("turn/steer", {
+      threadId: bridge.thread,
+      expectedTurnId: turn,
+      clientUserMessageId: identity,
+      input,
+    });
+    await nativeQueued(bridge);
+    const beforeStop = (await sdkInputs(bridge)).slice(1);
+    assert.equal(beforeStop.length, scenario === "native-split-all" ? 3 : 1);
+    assert.equal(beforeStop[0].shouldQuery, false);
+    const receipt = await bridge.call("turn/interrupt", {
+      threadId: bridge.thread,
+      turnId: turn,
+    });
+    const survivor = scenario === "native-split-survivor";
+    assert.deepEqual(receipt, {
+      cancelled: survivor ? [] : [identity],
+      still_queued: survivor ? [identity] : [],
+    });
+    const nativeReceipt = JSON.parse(
+      await fs.readFile(
+        path.join(bridge.root, ".native-interrupt-receipt"),
+        "utf8",
+      ),
+    );
+    assert.equal(
+      nativeReceipt.cancelled.length,
+      survivor ? 0 : beforeStop.length,
+    );
+    assert.equal(nativeReceipt.still_queued.length, survivor ? 1 : 0);
+    await completed(bridge, turn);
+    const next = await running(bridge, "probe");
+    await end(bridge);
+    await completed(bridge, next);
+    assert.equal(ack(bridge, identity), undefined);
+    assert.equal(existsSync(path.join(bridge.root, ".survived")), survivor);
+    const afterStop = (await sdkInputs(bridge)).slice(1 + beforeStop.length);
+    assert.deepEqual(
+      afterStop.map((message) => message.message.content[0].text),
+      ["probe"],
+    );
+  });
+}

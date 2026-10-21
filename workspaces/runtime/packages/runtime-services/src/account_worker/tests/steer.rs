@@ -1084,3 +1084,111 @@ async fn a_followup_from_another_team_is_quarantined(provider: &'static str) {
     assert_eq!(followup_status(&state).await, ("failed".into(), None));
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn stop_receipt_cancels_native_queued_input() {
+    let (state, mut peer, mut worker) = running_turn("claude").await;
+    let request = steer(&state, &mut peer, &worker).await;
+    peer.reply(&request, json!({"turnId":"turn"})).await;
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: state.agent.clone(),
+        })
+        .await
+        .unwrap();
+    let interrupt = peer.write("turn/interrupt").await;
+    peer.reply(&interrupt, json!({"cancelled":[INPUT],"still_queued":[]}))
+        .await;
+    assert_eq!(input(&state).await.0, "cancelled");
+    assert_eq!(transcript(&state).await, 0);
+    no_write(&mut peer).await;
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stop_receipt_keeps_native_survivor_uncertain_after_turn_end() {
+    let (state, mut peer, mut worker) = running_turn("claude").await;
+    let request = steer(&state, &mut peer, &worker).await;
+    peer.reply(&request, json!({"turnId":"turn"})).await;
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: state.agent.clone(),
+        })
+        .await
+        .unwrap();
+    let interrupt = peer.write("turn/interrupt").await;
+    peer.reply(&interrupt, json!({"cancelled":[],"still_queued":[INPUT]}))
+        .await;
+    assert_eq!(input(&state).await.0, "uncertain");
+    frame(&mut peer, json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"interrupted"}}})).await;
+    assert_eq!(input(&state).await.0, "uncertain");
+    assert_eq!(transcript(&state).await, 0);
+    no_write(&mut peer).await;
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stop_receipt_refines_initial_input_without_terminal_delivery() {
+    for cancelled in [true, false] {
+        let state = State::new().await;
+        let mut peer = Peer::new();
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        let start = state.start(&mut peer, &worker).await;
+        peer.accepted(&start).await;
+        worker
+            .send(AccountCommand::Stop {
+                agent_id: state.agent.clone(),
+            })
+            .await
+            .unwrap();
+        let interrupt = peer.write("turn/interrupt").await;
+        let identity = start["params"]["clientUserMessageId"].clone();
+        let response = if cancelled {
+            json!({"cancelled":[identity],"still_queued":[]})
+        } else {
+            json!({"cancelled":[],"still_queued":[identity]})
+        };
+        peer.reply(&interrupt, response).await;
+        peer.completed().await;
+        let expected = if cancelled { "cancelled" } else { "uncertain" };
+        let actual = state
+            .bridge
+            .run(move |store| async move {
+                Ok(store.test_reader()?.query_row(
+                    "SELECT status FROM runtime_events WHERE id=?1",
+                    [identity.as_str().unwrap()],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
+        worker.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn stop_receipt_settles_cancellation_when_background_stop_fails() {
+    let (state, mut peer, mut worker) = running_turn("claude").await;
+    let request = steer(&state, &mut peer, &worker).await;
+    peer.reply(&request, json!({"turnId":"turn"})).await;
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: state.agent.clone(),
+        })
+        .await
+        .unwrap();
+    let interrupt = peer.write("turn/interrupt").await;
+    frame(
+        &mut peer,
+        json!({"id":interrupt["id"],"error":{"code":-1,"message":"Task stop failed",
+        "data":{"interruptReceipt":{"cancelled":[INPUT],"still_queued":[]}}}}),
+    )
+    .await;
+    assert_eq!(input(&state).await.0, "cancelled");
+    assert_eq!(
+        state.record().await["startAttempt"]["interrupt"]["outcome"],
+        "rejected"
+    );
+    worker.shutdown().await.unwrap();
+}

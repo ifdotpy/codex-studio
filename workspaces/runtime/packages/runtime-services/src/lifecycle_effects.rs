@@ -106,10 +106,10 @@ const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
 // Ordinary voice stops can remain in flight until their 30-second deadline.
 const VOICE_DELETE_HELD_WAIT: Duration = Duration::from_secs(35);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {
-    Accepted,
-    Rejected,
+    Accepted(Value),
+    Rejected(Value),
     NotSent,
     Unknown,
 }
@@ -347,9 +347,9 @@ impl ProductionLifecyclePorts {
                 continue;
             }
             let outcome = request_interrupt(self.interrupt_broker.as_ref(), &request).await;
-            let (state, error) = match outcome {
-                InterruptWriteResult::Accepted => ("accepted", None),
-                InterruptWriteResult::Rejected => ("rejected", None),
+            let (state, error) = match &outcome {
+                InterruptWriteResult::Accepted(_) => ("accepted", None),
+                InterruptWriteResult::Rejected(_) => ("rejected", None),
                 InterruptWriteResult::NotSent => ("unsent", None),
                 InterruptWriteResult::Unknown => ("unknown", None),
             };
@@ -357,6 +357,19 @@ impl ProductionLifecyclePorts {
             let generation = request.scope.generation;
             self.store
                 .transaction_with_error(move |tx| {
+                    let response = match &outcome {
+                        InterruptWriteResult::Accepted(response) => response,
+                        InterruptWriteResult::Rejected(error) => &error["data"]["interruptReceipt"],
+                        _ => &Value::Null,
+                    };
+                    SchedulerRepository::settle_interrupt_inputs(
+                        tx,
+                        &request.agent,
+                        &request.scope.account,
+                        generation,
+                        &request.thread,
+                        response,
+                    )?;
                     SchedulerRepository::settle_interrupt_result(
                         tx,
                         &request_ticket,
@@ -493,8 +506,8 @@ async fn request_interrupt(
                             && ticket.method == studio_runtime_providers::Method::TurnInterrupt
                             && matches!(&ticket.id, studio_runtime_providers::RequestId::String(id) if id == &request.ticket)
                     }) => match receipt.result {
-                        Some(ProviderResponse::Reply(_)) => InterruptWriteResult::Accepted,
-                        Some(ProviderResponse::Rejected(_)) => InterruptWriteResult::Rejected,
+                        Some(ProviderResponse::Reply(response)) => InterruptWriteResult::Accepted(response),
+                        Some(ProviderResponse::Rejected(error)) => InterruptWriteResult::Rejected(error),
                         None => InterruptWriteResult::Unknown,
                     },
                 RequestCertainty::NotSent => InterruptWriteResult::NotSent,
@@ -1672,13 +1685,15 @@ mod tests {
         let broker = Broker {
             scope: Some(request.scope.clone()),
             certainty: RequestCertainty::Written,
-            response: Some(ProviderResponse::Reply(json!({"turnId":"turn"}))),
+            response: Some(ProviderResponse::Reply(
+                json!({"cancelled":["studio:input"],"still_queued":[]}),
+            )),
             observed: Mutex::new(None),
         };
 
         assert_eq!(
             request_interrupt(&broker, &request).await,
-            InterruptWriteResult::Accepted
+            InterruptWriteResult::Accepted(json!({"cancelled":["studio:input"],"still_queued":[]}))
         );
         let observed = broker.observed.lock().expect("observed request lock");
         let observed = observed.as_ref().expect("broker records request");
@@ -1745,7 +1760,7 @@ mod tests {
         };
         assert_eq!(
             request_interrupt(&broker, &request).await,
-            InterruptWriteResult::Rejected
+            InterruptWriteResult::Rejected(json!({"code":"rejected"}))
         );
     }
 }

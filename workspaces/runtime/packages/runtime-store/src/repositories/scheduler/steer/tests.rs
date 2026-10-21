@@ -918,3 +918,89 @@ fn business_notification_resolved_during_busy_preparation_releases_the_exact_bat
     assert_eq!(open_receipts(&connection), 0);
     assert!(!submitted(&mut connection, "obsolete", 7));
 }
+
+#[test]
+fn stop_receipt_refines_unconfirmed_input_and_rejects_wrong_scope() {
+    let mut connection = database();
+    submit(&mut connection, "steer");
+    terminal(&mut connection, &[]);
+    let response = json!({"cancelled":["u1"],"still_queued":[]});
+    for (account, generation, thread) in [
+        ("other", 7, "thread"),
+        ("acct", 8, "thread"),
+        ("acct", 7, "other"),
+    ] {
+        settle(&mut connection, |tx| {
+            SchedulerRepository::settle_interrupt_inputs(
+                tx, AGENT, account, generation, thread, &response,
+            )
+        });
+        assert_eq!(status(&connection, "u1").0, "failed");
+    }
+    for _ in 0..2 {
+        settle(&mut connection, |tx| {
+            SchedulerRepository::settle_interrupt_inputs(tx, AGENT, "acct", 7, "thread", &response)
+        });
+        assert_eq!(status(&connection, "u1").0, "cancelled");
+    }
+    assert_eq!(
+        statuses(&connection),
+        ["cancelled", "cancelled", "pending", "cancelled"]
+    );
+    assert!(acknowledge(&mut connection).is_none());
+}
+
+#[test]
+fn stop_receipt_survivor_stays_uncertain_until_cancellation_or_acknowledgement() {
+    for cancel in [false, true] {
+        let mut connection = database();
+        submit(&mut connection, "steer");
+        settle(&mut connection, |tx| {
+            SchedulerRepository::settle_interrupt_inputs(
+                tx,
+                AGENT,
+                "acct",
+                7,
+                "thread",
+                &json!({"cancelled":["u1"],"still_queued":["u1"]}),
+            )
+        });
+        terminal(&mut connection, &[]);
+        terminal(&mut connection, &[]);
+        assert_eq!(status(&connection, "u1").0, "uncertain");
+        if cancel {
+            settle(&mut connection, |tx| {
+                SchedulerRepository::settle_interrupt_inputs(
+                    tx,
+                    AGENT,
+                    "acct",
+                    7,
+                    "thread",
+                    &json!({"cancelled":["u1"],"still_queued":[]}),
+                )
+            });
+            assert_eq!(status(&connection, "u1").0, "cancelled");
+        } else {
+            assert!(acknowledge(&mut connection).is_some());
+            assert_eq!(status(&connection, "u1").0, "delivered");
+        }
+    }
+}
+
+#[test]
+fn stop_receipt_cancels_the_initial_prompt_in_pending_dispatch() {
+    let mut connection = database();
+    connection.execute("INSERT INTO runtime_events VALUES('initial','agent','user','first','delivered',0,4,'turn-1',NULL)", []).unwrap();
+    settle(&mut connection, |tx| {
+        SchedulerRepository::settle_interrupt_inputs(
+            tx,
+            AGENT,
+            "acct",
+            7,
+            "thread",
+            &json!({"cancelled":["initial"],"still_queued":[]}),
+        )
+    });
+    assert_eq!(status(&connection, "initial").0, "cancelled");
+    assert_eq!(statuses(&connection), QUEUED);
+}

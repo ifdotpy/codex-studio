@@ -28,6 +28,9 @@ use studio_runtime_schema::DeliveryMoment;
 const STEER_RECEIPT_PREFIX: &str = "claude-steer:";
 const STEER_RECEIPT_SIGNATURE: &str = "claude-steer";
 /// Visible error of input whose delivery to the running turn is unknown.
+pub(super) const STOP_CANCELLED_ERROR: &str = "Cancelled by Stop before Claude read this input";
+pub(super) const STOP_QUEUED_ERROR: &str =
+    "Claude still holds this input after Stop. Delivery is unknown.";
 pub const STEER_UNCONFIRMED_ERROR: &str = "The agent did not confirm this message before its turn ended. It may have been read; Studio did not send it again.";
 
 /// One claimed busy-turn input batch.
@@ -576,7 +579,7 @@ impl SchedulerRepository {
         let changed = tx.execute_cached(
             "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
              WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
-             AND (status='dispatching' OR (status='failed' AND error=?5))",
+             AND (status IN ('dispatching','uncertain') OR (status='failed' AND error=?5))",
             params![turn_id, agent_id, epoch, events, STEER_UNCONFIRMED_ERROR],
         )?;
         // Input a user already changed after it became unconfirmed keeps that change.
@@ -623,6 +626,114 @@ impl SchedulerRepository {
         }))
     }
 
+    /// Settle an atomic Claude Stop receipt. Provider UUIDs have already been
+    /// mapped to Studio identities by the bridge. Ignore unrelated identities
+    /// and stale transport generations, including receipts after a newer turn.
+    pub fn settle_interrupt_inputs(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        account: &str,
+        generation: u64,
+        thread_id: &str,
+        response: &Value,
+    ) -> StoreResult<()> {
+        let (Some(cancelled), Some(still_queued)) = (
+            response["cancelled"].as_array(),
+            response["still_queued"].as_array(),
+        ) else {
+            return Ok(());
+        };
+        if !cancelled.iter().chain(still_queued).all(Value::is_string) {
+            return Ok(());
+        }
+        // The first prompt can still be in Claude's pending-dispatch window
+        // even after turn/start was accepted. Refine that exact attempt too.
+        if let Some(agent) = load_agent(tx, agent_id)? {
+            let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+            if attempt["accountKey"] == account
+                && attempt["connectionGeneration"].as_u64() == Some(generation)
+                && attempt["threadId"] == thread_id
+                && let Some(events) = attempt["events"].as_array()
+                && let Some(first) = events.first()
+            {
+                let status = if still_queued.contains(first) {
+                    Some("uncertain")
+                } else if cancelled.contains(first) {
+                    Some("cancelled")
+                } else {
+                    None
+                };
+                if let Some(status) = status {
+                    let epoch = attempt["epoch"]
+                        .as_i64()
+                        .ok_or_else(|| invalid_agent(agent_id))?;
+                    let turn = attempt["turnId"].as_str().unwrap_or_default();
+                    tx.execute_cached(
+                        "UPDATE runtime_events SET status=?1,error=?2 WHERE agent=?3 AND epoch=?4 \
+                         AND id IN (SELECT value FROM json_each(?5)) \
+                         AND (status IN ('reserved','dispatching','uncertain') OR (status='delivered' AND turn_id=?6))",
+                        params![status, if status == "cancelled" { STOP_CANCELLED_ERROR }
+                            else { STOP_QUEUED_ERROR },
+                            agent_id, epoch, attempt["events"].to_string(), turn],
+                    )?;
+                    let events: Vec<String> = serde_json::from_value(attempt["events"].clone())?;
+                    Self::project_chat_event_status(tx, agent_id, epoch, turn, &events, status)?;
+                }
+            }
+        }
+        for (id, mut receipt) in receipts(tx, &receipt_id(agent_id, ""))? {
+            if receipt["agent"] != agent_id
+                || receipt["accountKey"] != account
+                || receipt["generation"].as_u64() != Some(generation)
+                || receipt["threadId"] != thread_id
+                || !matches!(receipt["stage"].as_str(), Some("submitted" | "unconfirmed"))
+            {
+                continue;
+            }
+            let first = &receipt["events"][0];
+            let status = if still_queued.contains(first) {
+                "uncertain"
+            } else if cancelled.contains(first) {
+                "cancelled"
+            } else {
+                continue;
+            };
+            tx.execute_cached(
+                "UPDATE runtime_events SET status=?1,error=?2 \
+                 WHERE agent=?3 AND epoch=?4 AND id IN (SELECT value FROM json_each(?5)) \
+                 AND (status IN ('dispatching','uncertain') OR (status='failed' AND error=?6))",
+                params![
+                    status,
+                    if status == "cancelled" {
+                        STOP_CANCELLED_ERROR
+                    } else {
+                        STOP_QUEUED_ERROR
+                    },
+                    agent_id,
+                    receipt["epoch"].as_i64(),
+                    receipt_events(&id, &receipt)?,
+                    STEER_UNCONFIRMED_ERROR
+                ],
+            )?;
+            let event_ids: Vec<String> = serde_json::from_str(&receipt_events(&id, &receipt)?)?;
+            Self::project_chat_event_status(
+                tx,
+                agent_id,
+                receipt["epoch"].as_i64().unwrap_or(-1),
+                receipt["turnId"].as_str().unwrap_or_default(),
+                &event_ids,
+                status,
+            )?;
+            if status == "cancelled" {
+                delete(tx, &id)?;
+            } else {
+                receipt["interruptStillQueued"] = json!(true);
+                store(tx, &id, &receipt)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve every steer still open for a finished turn. Input the provider
     /// proves it never read returns to the queue; other input is unconfirmed.
     /// Unconfirmed receipts of the agent's earlier turns are dropped: their
@@ -639,7 +750,7 @@ impl SchedulerRepository {
                 continue;
             }
             if receipt["turnId"] != turn_id {
-                if receipt["stage"] == "unconfirmed" {
+                if receipt["stage"] == "unconfirmed" && receipt["interruptStillQueued"] != true {
                     delete(tx, &id)?;
                 }
                 continue;
@@ -652,7 +763,9 @@ impl SchedulerRepository {
                 Some("submitted") if unapplied.contains(&first) => {
                     release(tx, &id, &receipt)?;
                 }
-                Some("submitted") => unconfirm(tx, &id, receipt)?,
+                Some("submitted") if receipt["interruptStillQueued"] != true => {
+                    unconfirm(tx, &id, receipt)?;
+                }
                 _ => {}
             }
         }
