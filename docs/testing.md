@@ -33,9 +33,11 @@ which rejects filesystem and process owners called from SQLite callbacks. The re
 fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
 and real credit redemption require separate evidence. The web package owns selected
 API and verifier unit witnesses and type-check scripts, while the tooling package owns
-repository contract checks. Prepare the web WASM artifact once with
-`pnpm --filter codex-agents-web run build:wasm`; this generated artifact is a
-warm-checkout prerequisite and its cold build is outside the 30-second target.
+repository contract checks. Both local gates generate web WASM before checking
+it. The [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs)
+locates the exact CLI version pinned by the client-wasm crate on PATH, in Cargo's
+bin directory, or in Studio's versioned UI cache. If absent, it fails with the
+matching Cargo install command. Cold compilation is outside the warm target.
 The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
 passed in 23.759 seconds; cold setup was excluded.
 The short tier does not build the browser or contact a model provider.
@@ -63,12 +65,22 @@ suite durations over 10 seconds measured inside that parallel run. These values
 are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
-The comprehensive tier first builds its Rust HTTP fixture with
-`cargo build --locked --release -p studio-runtime-server`, and it builds the
-renderer bundle that the native client crate embeds before Rust nextest, so a
-clean worktree needs no manual step. Hosted CI builds it once per run, and the server jobs use
-that binary. The short local tier does not require that fixture binary;
-building a native desktop package does not produce it.
+The comprehensive gate builds its Rust HTTP fixture before running the server
+suites and builds the renderer bundle that the native client crate embeds before
+Rust nextest. For a standalone server run, prepare the HTTP fixture with
+`cargo build --locked --release -p studio-runtime-server`. Hosted CI builds it
+once per run, and the server jobs use that binary. The short local tier does not require that fixture binary;
+building a native desktop package does not produce it. The historical upgrade
+contract stages the release executable under a disposable source install root,
+so Cargo output may live outside the checkout. Before Rust nextest, the facade
+resolves the prepared interpreter through
+[`codex_python.py`](../workspaces/runtime/apps/server/src/codex_python.py) and
+passes it to Python oracle children, including those with isolated home paths.
+
+The server runner checks each suite's private scratch paths for detached host-exec
+services after teardown. A surviving service fails its owning suite and is stopped
+before scratch cleanup. Services belonging to other state directories are excluded.
+The Playwright wrapper removes the session's `BROWSER` selector before launch.
 
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them

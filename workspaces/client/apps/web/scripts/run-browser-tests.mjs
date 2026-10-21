@@ -19,6 +19,7 @@ const separatorIndex = args.indexOf("--");
 if (separatorIndex !== -1) args.splice(separatorIndex, 1);
 
 const environment = { ...process.env };
+delete environment.BROWSER;
 environment.PLAYWRIGHT_BROWSERS_PATH ??= defaultBrowserPath();
 const stateRoot = mkdtempSync(join(tmpdir(), "codex-playwright-"));
 const outputDirectory = join(stateRoot, "playwright-output");
