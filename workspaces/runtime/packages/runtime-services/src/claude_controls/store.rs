@@ -69,7 +69,9 @@ impl ControlStorage for StoredControls {
             let saved = store
                 .transaction(move |tx| Repository::load(tx, &request_id, &operation_id))
                 .await?;
-            let is_new = saved.as_ref().is_some_and(|(_, op)| op.is_none());
+            let is_new = saved
+                .as_ref()
+                .is_some_and(|(_, op)| op.as_ref().is_none_or(|op| op["phase"] == "failed"));
             let workspace = Arc::new(workspace);
             if is_new {
                 let workspace_copy = Arc::clone(&workspace);
@@ -84,7 +86,7 @@ impl ControlStorage for StoredControls {
                     let (agent, operation) =
                         Repository::load(tx, &request.id, &request.operation_id())?
                             .ok_or(ControlError::Changed)?;
-                    if operation.is_none()
+                    if operation.as_ref().is_none_or(|op| op["phase"] == "failed")
                         && (!is_new || !CheckpointsRepository::workspace_unchanged(tx, &workspace)?)
                     {
                         return Err(ControlError::Changed);
@@ -111,6 +113,7 @@ impl ControlStorage for StoredControls {
                     };
                     if let Some(saved) = &snapshot.saved
                         && saved["phase"] != "completed"
+                        && saved["phase"] != "failed"
                         && (saved.get("controlEpoch").and_then(Value::as_u64)
                             != Some(snapshot.epoch())
                             || (saved.get("provider").is_none_or(Value::is_null)
@@ -128,7 +131,11 @@ impl ControlStorage for StoredControls {
                         Repository::apply(tx, &writes.agent, &writes.operation, &[])?;
                         return Ok(None);
                     }
-                    if snapshot.saved.is_none() {
+                    if snapshot
+                        .saved
+                        .as_ref()
+                        .is_none_or(|op| op["phase"] == "failed")
+                    {
                         writes.operation["controlTransport"] = ticket;
                         writes.operation["controlEpoch"] = json!(snapshot.epoch());
                     }
@@ -197,7 +204,11 @@ impl ControlStorage for StoredControls {
             Ok(result)
         })
     }
-    fn failed(&self, expected: ControlSnapshot, uncertain: bool) -> ControlFuture<'_, ()> {
+    fn failed(
+        &self,
+        expected: ControlSnapshot,
+        evidence: FailureEvidence,
+    ) -> ControlFuture<'_, ()> {
         let store = self.store.clone();
         Box::pin(async move {
             store
@@ -224,7 +235,12 @@ impl ControlStorage for StoredControls {
                     if Some(&operation) != expected.saved.as_ref() {
                         return Err(ControlError::Changed);
                     }
-                    let unknown = uncertain || truthy(operation.get("submitted")) || truthy(operation.get("provider"));
+                    let unknown = evidence == FailureEvidence::Uncertain
+                        || truthy(operation.get("provider"))
+                        || (truthy(operation.get("submitted")) && evidence != FailureEvidence::NotSent);
+                    if !unknown && evidence == FailureEvidence::NotSent {
+                        operation["submitted"] = json!(false);
+                    }
                     operation["phase"] = json!(if unknown {
                         "recovery_required"
                     } else {

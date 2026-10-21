@@ -166,7 +166,7 @@ impl ControlStorage for NoWrites {
     fn failed(
         &self,
         _: studio_runtime_services::claude_controls::ControlSnapshot,
-        _: bool,
+        _: FailureEvidence,
     ) -> ControlFuture<'_, ()> {
         panic!("read must not write")
     }

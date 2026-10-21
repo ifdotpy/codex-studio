@@ -237,11 +237,11 @@ impl ControlStorage for Cut {
     fn failed(
         &self,
         expected: studio_runtime_services::claude_controls::ControlSnapshot,
-        uncertain: bool,
+        evidence: FailureEvidence,
     ) -> ControlFuture<'_, ()> {
         Box::pin(async move {
             self.at("failed", false).await;
-            self.inner.failed(expected, uncertain).await?;
+            self.inner.failed(expected, evidence).await?;
             self.at("failed", true).await;
             Ok(())
         })
@@ -556,7 +556,13 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
     let stale = adapter.reserve(request.clone(), binding).await.unwrap();
     let submitted=adapter.submitted(stale.clone(),request,json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]}),json!({"data":[]})).await.unwrap();
     assert!(matches!(
-        adapter.failed(stale, false).await,
+        adapter
+            .failed(stale.clone(), FailureEvidence::BeforeSubmission)
+            .await,
+        Err(ControlError::Changed)
+    ));
+    assert!(matches!(
+        adapter.failed(stale, FailureEvidence::NotSent).await,
         Err(ControlError::Changed)
     ));
     let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
@@ -566,7 +572,147 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
     assert_eq!(agent["workspaceOperation"], "branch");
     assert!(!agent["workspaceReservationId"].is_null());
     // Even a caller that reports certainty cannot discard durable submitted evidence.
-    adapter.failed(submitted, false).await.unwrap();
+    adapter
+        .failed(submitted, FailureEvidence::BeforeSubmission)
+        .await
+        .unwrap();
+    let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(agent["workspaceOperation"], "branch_recovery");
+    assert!(!agent["workspaceReservationId"].is_null());
+}
+
+struct NotSentOnce {
+    inner: RewindNative,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+impl ControlSession for NotSentOnce {
+    fn binding(&self) -> ControlBinding {
+        self.inner.binding()
+    }
+    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
+        if method == "thread/rollback"
+            && self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+        {
+            return Box::pin(async { Err(ControlError::NotSent) });
+        }
+        self.inner.call(method, params)
+    }
+}
+#[tokio::test]
+async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idle_proof() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let native = Arc::new(NotSentOnce {
+        inner: RewindNative(Mutex::new(vec![]), false),
+        attempts: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request = || {
+        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"not-sent","restore_files":true})).unwrap()
+    };
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::NotSent)
+    ));
+    let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert!(agent["workspaceOperation"].is_null());
+    assert!(agent["workspaceReservationId"].is_null());
+    let monitor = json!({"id":"busy","cwd":cwd,"status":"running"});
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_monitors VALUES('busy',?1)",
+                [monitor.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Busy)
+    ));
+    assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_monitors WHERE id='busy'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        controls.execute(request()).await.unwrap()["filesRestored"],
+        true
+    );
+    assert_eq!(
+        controls.execute(request()).await.unwrap()["filesRestored"],
+        true
+    );
+    assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        native
+            .inner
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call["method"] == "thread/rollback")
+            .count(),
+        1
+    );
+}
+
+struct RejectedRewind(RewindNative);
+impl ControlSession for RejectedRewind {
+    fn binding(&self) -> ControlBinding {
+        self.0.binding()
+    }
+    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
+        if method == "thread/rollback" {
+            return Box::pin(async {
+                Err(ControlError::RewindRejected(
+                    "The before-restore backup limit is reached.".into(),
+                ))
+            });
+        }
+        self.0.call(method, params)
+    }
+}
+#[tokio::test]
+async fn rewind_rejection_preserves_the_reason_without_claiming_no_file_effects() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        Arc::new(RejectedRewind(RewindNative(Mutex::new(vec![]), false))),
+    );
+    let request = ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota","restore_files":true})).unwrap();
+    let result = controls.execute(request).await;
+    assert!(
+        matches!(&result, Err(ControlError::RewindRejected(message)) if message.contains("backup limit"))
+    );
     let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
         .unwrap()
         .unwrap()

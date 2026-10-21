@@ -51,6 +51,13 @@ pub trait ControlSession: Send + Sync {
 }
 /// Every method compares source, epoch and reservation inside the same transaction.
 /// `reserve` resolves shared workspace idle evidence before its comparison transaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FailureEvidence {
+    Uncertain,
+    BeforeSubmission,
+    // The retained transport proves that this exact native request was not sent.
+    NotSent,
+}
 pub trait ControlStorage: Send + Sync {
     fn execution_key(&self, request: &ControlRequest) -> String {
         format!("{:p}:{}", self, request.id)
@@ -77,7 +84,8 @@ pub trait ControlStorage: Send + Sync {
         expected: ControlSnapshot,
         request: ControlRequest,
     ) -> ControlFuture<'_, Value>;
-    fn failed(&self, expected: ControlSnapshot, uncertain: bool) -> ControlFuture<'_, ()>;
+    fn failed(&self, expected: ControlSnapshot, evidence: FailureEvidence)
+    -> ControlFuture<'_, ()>;
 }
 pub struct Controls {
     store: Arc<dyn ControlStorage>,
@@ -109,7 +117,14 @@ impl Controls {
             .perform(&request, &binding, &mut snapshot, &mut uncertain)
             .await;
         if result.is_err() {
-            self.store.failed(snapshot, uncertain).await?;
+            let evidence = if matches!(&result, Err(ControlError::NotSent)) {
+                FailureEvidence::NotSent
+            } else if uncertain {
+                FailureEvidence::Uncertain
+            } else {
+                FailureEvidence::BeforeSubmission
+            };
+            self.store.failed(snapshot, evidence).await?;
         }
         result
     }

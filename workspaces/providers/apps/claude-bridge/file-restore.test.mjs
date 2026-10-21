@@ -1,10 +1,14 @@
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { prepareFileRestore, verifyFileRestore } from "./file-restore.mjs";
+import {
+  prepareFileRestore,
+  verifyFileRestore,
+  MAX_BEFORE_RESTORE_BYTES,
+} from "./file-restore.mjs";
 import { rollbackSession } from "./controls.mjs";
 
 async function fixture(run) {
@@ -299,4 +303,68 @@ test("native retention permits recent checkpoints and refuses expired checkpoint
       f.messages.at(-1).uuid,
     );
     assert.equal(plan.files.length, 2);
+  }));
+
+test("failed backup preparation removes only its unreferenced copies", async () =>
+  fixture(async (f) => {
+    const original = fs.copyFile;
+    let copies = 0;
+    const copy = vi
+      .spyOn(fs, "copyFile")
+      .mockImplementation(async (...args) => {
+        if (++copies === 2) throw new Error("backup disk full");
+        return original(...args);
+      });
+    try {
+      await assert.rejects(
+        f.deps.prepareFileRestore(f.session, f.messages, f.request.turnId),
+        /backup disk full/,
+      );
+      assert.deepEqual(
+        await fs.readdir(path.join(f.state, "file-rewinds")),
+        [],
+      );
+      assert.equal(
+        await fs.readFile(path.join(f.cwd, "a.txt"), "utf8"),
+        "user a.txt",
+      );
+    } finally {
+      copy.mockRestore();
+    }
+  }));
+
+test("backup admission refuses new copies without deleting retained recovery data", async () =>
+  fixture(async (f) => {
+    const retained = path.join(f.state, "file-rewinds", "retained");
+    const existing = path.join(retained, "0");
+    await fs.mkdir(retained, { recursive: true });
+    await fs.writeFile(existing, "unique recovery data");
+    const original = fs.lstat;
+    const stat = vi
+      .spyOn(fs, "lstat")
+      .mockImplementation(async (file, ...args) => {
+        const value = await original(file, ...args);
+        if (file !== existing) return value;
+        // Model a full byte budget without allocating a large test file.
+        return {
+          ...value,
+          size: MAX_BEFORE_RESTORE_BYTES,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        };
+      });
+    try {
+      await assert.rejects(
+        f.deps.prepareFileRestore(f.session, f.messages, f.request.turnId),
+        /backup limit/,
+      );
+      assert.deepEqual(await fs.readdir(path.dirname(retained)), ["retained"]);
+      assert.equal(await fs.readFile(existing, "utf8"), "unique recovery data");
+      assert.equal(
+        await fs.readFile(path.join(f.cwd, "a.txt"), "utf8"),
+        "user a.txt",
+      );
+    } finally {
+      stat.mockRestore();
+    }
   }));

@@ -26,6 +26,8 @@ pub enum ControlError {
     Conflict,
     #[error("Claude control outcome is unknown; workspace recovery is required")]
     Unknown,
+    #[error("Claude file restore requires recovery: {0}")]
+    RewindRejected(String),
     #[error("Claude control request was not sent")]
     NotSent,
     #[error("Claude control service is unavailable")]
@@ -203,18 +205,21 @@ impl ControlSnapshot {
                     removed: vec![],
                 });
             }
-            if op.phase == "failed" {
-                return Err(ControlError::Request);
+            if op.phase != "failed" {
+                if saved.get("provider").is_none_or(Value::is_null) && op.submitted == Some(true) {
+                    return Err(ControlError::Unknown);
+                }
+                return Ok(Writes {
+                    agent: self.raw.clone(),
+                    operation: saved,
+                    removed: vec![],
+                    result: Value::Null,
+                });
             }
-            if saved.get("provider").is_none_or(Value::is_null) && op.submitted == Some(true) {
+            if op.submitted == Some(true) || truthy(saved.get("provider")) {
                 return Err(ControlError::Unknown);
             }
-            return Ok(Writes {
-                agent: self.raw.clone(),
-                operation: saved,
-                removed: vec![],
-                result: Value::Null,
-            });
+            // A definite no-send result can reserve again after fresh idle proof.
         }
         if truthy(self.raw.get("inFlight"))
             || ["running", "starting", "approval"].contains(&self.agent.status.as_str())

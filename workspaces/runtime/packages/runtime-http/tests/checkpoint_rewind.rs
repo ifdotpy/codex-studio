@@ -25,6 +25,7 @@ struct Provider {
     block: AtomicBool,
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    settled: Arc<tokio::sync::Notify>,
 }
 impl AccountSessionPort for Provider {
     fn ensure_session<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, ConnectionScope> {
@@ -148,7 +149,6 @@ async fn fixture() -> (
         })
         .await
         .unwrap();
-    let provider = Arc::new(Provider::default());
     let mut state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
@@ -158,6 +158,10 @@ async fn fixture() -> (
         Some(store.clone()),
         None,
     );
+    let provider = Arc::new(Provider {
+        settled: state.event_wake_handle(),
+        ..Provider::default()
+    });
     state.account_session = Some(provider.clone());
     let app = router(state).unwrap();
     (root, cwd, store, app, provider)
@@ -436,5 +440,48 @@ async fn invalid_checkpoint_tree_refuses_before_provider_or_file_effects() {
     assert_eq!(
         std::fs::read_to_string(cwd.join("file.txt")).unwrap(),
         "later\n"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_http_caller_retains_execution_until_restore_settles() {
+    let (_root, cwd, store, app, provider) = fixture().await;
+    let (_, restore) = pending_restore(&app, &cwd).await;
+    provider.block.store(true, Ordering::SeqCst);
+    let first_app = app.clone();
+    let first_body = restore.clone();
+    let first =
+        tokio::spawn(async move { post(&first_app, "/api/checkpoint/restore", first_body).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.entered.notified(),
+    )
+    .await
+    .unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    assert_ne!(
+        post(&app, "/api/checkpoint/restore", restore.clone())
+            .await
+            .0,
+        200
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    provider.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let settled = provider.settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            let phase: String = store.test_reader().unwrap().query_row("SELECT json_extract(record,'$.phase') FROM runtime_workspace_operations WHERE json_extract(record,'$.kind')='restore'", [], |row| row.get(0)).unwrap();
+            if phase == "completed" { break; }
+            settled.await;
+        }
+    }).await.unwrap();
+    assert_eq!(post(&app, "/api/checkpoint/restore", restore).await.0, 200);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("file.txt")).unwrap(),
+        "checkpoint\n"
     );
 }

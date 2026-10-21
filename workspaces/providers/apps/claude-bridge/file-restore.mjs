@@ -42,7 +42,11 @@ async function identity(file) {
       after.ctimeMs !== opened.ctimeMs
     )
       throw invalid();
-    return { hash: hash.digest("hex"), mode: opened.mode & 0o777 };
+    return {
+      hash: hash.digest("hex"),
+      mode: opened.mode & 0o777,
+      bytes: opened.size,
+    };
   } finally {
     await handle.close();
   }
@@ -197,7 +201,62 @@ async function nativeBackups(session, messages, messageId, configDir) {
   });
 }
 
+// Admission limits preserve all referenced recovery copies. They never expire.
+// This module owns the total bytes and directory count per bridge state root.
+export const MAX_BEFORE_RESTORE_BYTES = 1024 ** 3;
+export const MAX_BEFORE_RESTORE_COPIES = 100;
+const preparations = new Map();
+async function admitBackup(parent, current, requiredBytes) {
+  const entries = await fs.readdir(parent, { withFileTypes: true });
+  let bytes = requiredBytes;
+  const full = () =>
+    new Error(
+      "The before-restore backup limit is reached. Review saved backups before another restore.",
+    );
+  if (entries.length > MAX_BEFORE_RESTORE_COPIES) throw full();
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw invalid();
+    const directory = path.join(parent, entry.name);
+    if (directory === current) continue;
+    for (const name of await fs.readdir(directory)) {
+      const stat = await fs.lstat(path.join(directory, name));
+      if (!stat.isFile() || stat.isSymbolicLink()) throw invalid();
+      bytes += stat.size;
+      if (bytes > MAX_BEFORE_RESTORE_BYTES) throw full();
+    }
+  }
+  if (bytes > MAX_BEFORE_RESTORE_BYTES) throw full();
+}
 export async function prepareFileRestore(
+  session,
+  messages,
+  messageId,
+  stateDir,
+  configDir,
+) {
+  // One serving bridge owns this state root. Serialize local admissions so two
+  // sessions cannot both consume the same remaining backup budget.
+  const key = path.resolve(stateDir);
+  const work = (preparations.get(key) || Promise.resolve())
+    .catch(() => {})
+    .then(() =>
+      prepareFileRestoreOwned(
+        session,
+        messages,
+        messageId,
+        stateDir,
+        configDir,
+      ),
+    );
+  preparations.set(key, work);
+  try {
+    return await work;
+  } finally {
+    if (preparations.get(key) === work) preparations.delete(key);
+  }
+}
+
+async function prepareFileRestoreOwned(
   session,
   messages,
   messageId,
@@ -232,43 +291,68 @@ export async function prepareFileRestore(
   const parent = path.join(stateDir, "file-rewinds");
   await fs.mkdir(parent, { recursive: true, mode: 0o700 });
   const directory = await fs.mkdtemp(path.join(parent, "before-"));
-  for (let i = 0; i < files.length; i++) {
-    const entry = files[i];
-    if (entry.before) {
-      entry.backup = path.join(directory, String(i));
-      await fs.copyFile(entry.file, entry.backup, constants.COPYFILE_EXCL);
-      await fs.chmod(entry.backup, entry.before.mode);
-      const handle = await fs.open(entry.backup, "r");
+  try {
+    for (let i = 0; i < files.length; i++)
+      if (files[i].before) files[i].backup = path.join(directory, String(i));
+    const plan = { cwd, directory, files };
+    const manifestText = JSON.stringify(plan);
+    await admitBackup(
+      parent,
+      directory,
+      files.reduce(
+        (sum, entry) => sum + (entry.before?.bytes || 0),
+        Buffer.byteLength(manifestText),
+      ),
+    );
+    for (let i = 0; i < files.length; i++) {
+      const entry = files[i];
+      if (entry.before) {
+        await fs.copyFile(entry.file, entry.backup, constants.COPYFILE_EXCL);
+        await fs.chmod(entry.backup, entry.before.mode);
+        const handle = await fs.open(entry.backup, "r");
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        if (!same(await identity(entry.backup), entry.before)) throw invalid();
+      }
+    }
+    const manifest = await fs.open(
+      path.join(directory, "manifest.json"),
+      "wx",
+      0o600,
+    );
+    try {
+      await manifest.writeFile(manifestText);
+      await manifest.sync();
+    } finally {
+      await manifest.close();
+    }
+    for (const dir of [directory, parent]) {
+      const handle = await fs.open(dir, "r");
       try {
         await handle.sync();
       } finally {
         await handle.close();
       }
-      if (!same(await identity(entry.backup), entry.before)) throw invalid();
     }
-  }
-  const plan = { cwd, directory, files };
-  const manifest = await fs.open(
-    path.join(directory, "manifest.json"),
-    "wx",
-    0o600,
-  );
-  try {
-    await manifest.writeFile(JSON.stringify(plan));
-    await manifest.sync();
-  } finally {
-    await manifest.close();
-  }
-  for (const dir of [directory, parent]) {
-    const handle = await fs.open(dir, "r");
+    await verifyFileRestore(plan, "before");
+    // A returned plan can already be referenced by a durable or uncertain receipt.
+    // Retain these recovery copies with the session; never expire them by age.
+    return plan;
+  } catch (error) {
+    // No plan reached the caller, so no file effect or receipt can depend on it.
     try {
-      await handle.sync();
-    } finally {
-      await handle.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "File restore preparation and backup cleanup failed",
+      );
     }
+    throw error;
   }
-  await verifyFileRestore(plan, "before");
-  return plan;
 }
 export async function verifyFileRestore(plan, stage) {
   if (!plan || !["before", "expected"].includes(stage)) throw invalid();

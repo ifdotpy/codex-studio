@@ -70,9 +70,9 @@ impl ClaudeSessionPort for ClaudePort {
                     request
                 ]))
             );
-            let timeout_seconds = if call.identity.method == Method::ThreadRollback
-                && call.params["restoreFiles"] == true
-            {
+            let restoring_files = call.identity.method == Method::ThreadRollback
+                && call.params["restoreFiles"] == true;
+            let timeout_seconds = if restoring_files {
                 crate::claude_controls::FILE_RESTORE_TIMEOUT_SECONDS
             } else {
                 20
@@ -111,6 +111,16 @@ impl ClaudeSessionPort for ClaudePort {
                     identity: call.identity,
                     result,
                 }),
+                RequestResult::Rejected(error) if restoring_files => {
+                    const MAX_REWIND_ERROR_CHARACTERS: usize = 2048;
+                    let reason = error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("The bridge rejected the file restore");
+                    Err(ControlError::RewindRejected(
+                        reason.chars().take(MAX_REWIND_ERROR_CHARACTERS).collect(),
+                    ))
+                }
                 RequestResult::Rejected(_) => Err(ControlError::Request),
                 RequestResult::NotSent => Err(ControlError::NotSent),
                 _ => Err(ControlError::Unknown),

@@ -80,6 +80,22 @@ pub(crate) async fn restore(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::CheckpointRestoreRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // The owned workflow must outlive a cancelled HTTP caller. A blocking Git
+    // child cannot be cancelled by dropping its awaiting future.
+    tokio::spawn(async move {
+        let wake = state.event_wake.clone();
+        let result = restore_owned(state, body).await;
+        wake.notify_one();
+        result
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn restore_owned(
+    state: HttpState,
+    body: crate::generated::CheckpointRestoreRequest,
+) -> Result<Json<Value>, ApiError> {
     // Port codex_workspace.py:1244-1455: reserve the workspace, fork/start
     // the provider thread, preserve the pre-restore tree, then restore Git and
     // durably settle transcript and workspace metadata.
