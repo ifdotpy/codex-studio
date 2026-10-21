@@ -2364,6 +2364,7 @@ mod daybreak_tests {
             workspace: thread::WorkspaceReadiness::Ready {
                 progress_directory: None,
             },
+            host_worktree: None,
             unsupported: None,
             admission: None,
             pending: None,

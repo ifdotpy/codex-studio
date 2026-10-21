@@ -354,7 +354,23 @@ impl ProviderAdapter for ClaudeAdapter {
         instructions: &mut String,
     ) {
         instructions.push_str(CLAUDE_SESSION_INSTRUCTIONS);
-        params.insert("claude".into(), json!(s.settings.claude_options));
+        let mut options = s.settings.claude_options.clone();
+        if let Some(worktree) = &s.host_worktree {
+            let mut environment = options
+                .get("env")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            // Claude 2.1.302 gFo/J1t (chunk-hqtnbrjd.js:59378-59432):
+            // the fence is a JSON array, not a PATH-style separated string.
+            environment.insert("CLAUDE_CODE_HOST_WORKTREE".into(), json!(worktree.tree));
+            environment.insert(
+                "CLAUDE_CODE_HOST_WORKTREE_FENCE".into(),
+                json!(json!(worktree.fence).to_string()),
+            );
+            options.insert("env".into(), json!(environment));
+        }
+        params.insert("claude".into(), json!(options));
         // A managed worker (a child agent) runs without the user's MCP servers.
         if s.actor.parent_id.is_some() {
             params.insert("userMcp".into(), json!(false));
