@@ -12,7 +12,9 @@ export const HANG_GUARD_MS = 10_000;
 // Copies the bridge sources to a temporary folder, replaces the SDK import with
 // `fakeSdk` (module source text) and starts the bridge with one new thread.
 export async function startBridge(fakeSdk, prefix = "claude-bridge-") {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), prefix)),
+  );
   for (const name of await fs.readdir(BRIDGE)) {
     if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
     const source = await fs.readFile(path.join(BRIDGE, name), "utf8");

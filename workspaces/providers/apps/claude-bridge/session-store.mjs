@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { reconcileRestartTurns } from "./restart-reconcile.mjs";
 
 const FORMAT = "studio-claude-session-v1";
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
@@ -497,16 +498,7 @@ export function createSessionStore(root, options = {}) {
     const saved = await readAll(id);
     const shadow = copy(saved.session);
     const session = reused || saved.session;
-    if (!reused) {
-      for (const turn of session.turns)
-        if (turn.status === "inProgress") {
-          turn.status = "interrupted";
-          turn.error = {
-            message:
-              "Claude connection ended. Review the saved transcript before continuing.",
-          };
-        }
-    }
+    if (!reused) await reconcileRestartTurns(session, options.nativeHistory);
     const cached = sessions.get(id);
     if (cached) {
       if (cached !== session)
