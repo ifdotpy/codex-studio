@@ -886,6 +886,33 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "monitor start preparation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--test",
+            "monitor_start_preparation",
+          ],
+        ],
+      ],
+      options: {
+        selector: "monitor start preparation ownership and progress conflicts",
+        reason:
+          "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
+      },
+    },
+    {
       item: web,
       label: "web focused type check",
       options: { script: "typecheck:fast", allowZeroTests: true },

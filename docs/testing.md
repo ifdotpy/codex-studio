@@ -100,6 +100,13 @@ fences project rows and agent membership/path/liveness facts; operation-specific
 execution preconditions are checked against current rows inside the writer.
 Filesystem path rechecks remain outside the transaction.
 
+The [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
+also checks monitor starts across actor progress and turn completion, alongside
+ownership and permission conflicts. The [reservation owner](../workspaces/runtime/packages/runtime-services/src/monitor_runtime.rs)
+fences the prepared command inputs and checks current ownership inside the writer.
+A monitor's creation turn remains provenance; completing that turn does not
+invalidate an otherwise authorized start.
+
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Suites that use the
 shared `disposable_state_dir` test helper keep SQLite state and oracle scratch
