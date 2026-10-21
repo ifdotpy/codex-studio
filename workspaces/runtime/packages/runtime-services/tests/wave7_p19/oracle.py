@@ -18,6 +18,7 @@ sys.path.insert(0, str(TESTS))
 spec = importlib.util.spec_from_file_location("p19_fixture", TESTS / "radio-contract.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from agent_progress_contract import expected_progress
 import codex_radio as radio
 import codex_peer_conversion as conversion
 from codex_sync_entities import (
@@ -99,6 +100,7 @@ def sync_changed_conversion(f, before, *, sync_project=False):
                 task = str(record.get("prompt") or "")
                 view["overview"] = {"task": task[:4000], "taskTruncated": len(task) > 4000,
                     "result": "", "resultTruncated": False, "resultTurnId": None, "resultFile": None}
+            view.update(expected_progress(db, record))
             sync_entity_put(db, "agent", agent_id, view)
         if sync_project:
             for path, raw in db.execute("SELECT id,record FROM runtime_projects ORDER BY id"):

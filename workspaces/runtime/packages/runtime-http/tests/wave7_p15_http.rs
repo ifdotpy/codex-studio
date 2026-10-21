@@ -230,8 +230,26 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
 
     assert_eq!(status, 200, "acknowledged input should succeed: {response}");
     let entities = response["_syncEntities"].as_array().expect("sync entities");
-    assert_eq!(entities.len(), 1);
-    assert_eq!(entities[0]["id"], format!("entity:monitor:{id}"));
+    assert_eq!(
+        entities.len(),
+        2,
+        "monitor input also publishes owner progress"
+    );
+    let ids = entities
+        .iter()
+        .map(|entity| entity["id"].as_str().expect("entity id"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let owner = case["before"]["agent"].as_str().expect("monitor owner");
+    assert_eq!(
+        ids,
+        [
+            format!("entity:monitor:{id}"),
+            format!("entity:agent:{owner}")
+        ]
+        .iter()
+        .map(String::as_str)
+        .collect()
+    );
     assert!(response["_syncEntitiesAfter"].is_number());
     let submitted = port.submitted.lock().expect("submitted effects");
     assert_eq!(

@@ -11,6 +11,8 @@ sys.path.insert(0, str(HERE.parent / "turn_lifecycle"))
 import oracle_guard  # The imported lifecycle oracle installs this guard once.
 sys.path.insert(0, str(HERE.parent / "agent_management"))
 from oracle import MemoryRuntime, NOW, Runtime, seed
+from agent_progress_contract import install_projection_contract
+install_projection_contract(Runtime)
 from codex_voice import VoiceStore
 from codex_sync_entities import encoded, project
 from codex_capacity_retry import CapacityRetryMixin

@@ -17,6 +17,8 @@ install_guard(block_processes=True)
 sys.path.insert(0, str(HERE.parents[3] / "apps/server/src"))
 import codex_rename
 import codex_runtime
+from agent_progress_contract import install_projection_contract
+install_projection_contract(codex_runtime.Runtime)
 import codex_sync_entities
 
 

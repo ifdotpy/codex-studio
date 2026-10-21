@@ -50,6 +50,8 @@ ORIGINAL_EXECUTOR_SUBMIT = concurrent.futures.ThreadPoolExecutor.submit
 ORIGINAL_THREAD_START = threading.Thread.start
 sys.path.insert(0, str(SERVER / "src"))
 from codex_runtime import Runtime
+from agent_progress_contract import install_projection_contract
+install_projection_contract(Runtime)
 import codex_runtime
 import codex_accounts
 import codex_efficiency

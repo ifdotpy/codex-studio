@@ -32,6 +32,8 @@ os.environ.clear()
 os.environ.update(environment)
 import codex_accounts
 import codex_runtime
+from agent_progress_contract import install_projection_contract
+install_projection_contract(codex_runtime.Runtime)
 from codex_agent_modes import mode_fields
 from codex_canvas import Canvas
 from types import SimpleNamespace
