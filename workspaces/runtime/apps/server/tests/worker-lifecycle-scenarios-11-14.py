@@ -239,7 +239,8 @@ class LifecycleScenarios(unittest.TestCase):
             ResponseTimeout("command/exec response timed out; outcome unknown")
         )
         eventually(lambda: bool(results))
-        results[0].result(timeout=4)
+        # The submitted result must finish; this wait only guards against a hang.
+        results[0].result(timeout=HANG_GUARD_SECONDS)
         self.runtime.pool.submit = original_submit
         self.server.commands.clear()
         self.restart()
@@ -267,7 +268,8 @@ class LifecycleScenarios(unittest.TestCase):
         try:
             self.runtime.monitors_tick()
             self.assertEqual(len(probes), 1)
-            probes[0].result(timeout=4)
+            # The probe must finish; this wait only guards against a hang.
+            probes[0].result(timeout=HANG_GUARD_SECONDS)
         finally:
             self.runtime.pool.submit = original_submit
         self.assertIsNotNone(self.monitor_record(key).get("lastLivenessResult"))
@@ -345,7 +347,8 @@ class LifecycleScenarios(unittest.TestCase):
         self.server.timeout_commands = True
         monitor = self.runtime.monitor(worker["id"], {"command": "true"},
                                        approved=True, rule={**rule, "inFlight": True, "checks": 1})
-        self.server.command_wait_entered.wait(3)
+        # The command wait must start; this only guards against a hang.
+        self.assertTrue(self.server.command_wait_entered.wait(HANG_GUARD_SECONDS))
         self.wait_monitor(monitor["id"])
         self.abandon_pending_commands()
         self.restart(hold_rules_tick=True)

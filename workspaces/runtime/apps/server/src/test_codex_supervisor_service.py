@@ -409,6 +409,19 @@ class Services(unittest.TestCase):
                     service.desktop(url, self.state)
                 self.assertIsNone(service.starting_desktop(url, self.state))
 
+    def test_a_connection_reset_during_connect_is_not_ready_yet(self) -> None:
+        import errno
+        from urllib.error import URLError
+        reset = URLError(OSError(errno.EINVAL, 'Invalid argument'))
+        with patch.object(service, 'desktop', side_effect=reset):
+            with patch.object(sys, 'platform', 'darwin'):
+                self.assertIsNone(service.starting_desktop('http://127.0.0.1:1', self.state))
+            with patch.object(sys, 'platform', 'linux'), self.assertRaises(URLError):
+                service.starting_desktop('http://127.0.0.1:1', self.state)
+        with patch.object(service, 'desktop', side_effect=URLError(OSError(errno.EACCES, 'denied'))), \
+                patch.object(sys, 'platform', 'darwin'), self.assertRaises(URLError):
+            service.starting_desktop('http://127.0.0.1:1', self.state)
+
     def test_rust_macos_over_registered_python_jobs_changes_nothing(self) -> None:
         environment = self.rust_binaries()
         before = self.save_config(port=4620, supervisorEnabled=True)

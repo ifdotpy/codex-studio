@@ -4,6 +4,7 @@ from __future__ import annotations
 from server_test_waits import HANG_GUARD_SECONDS
 
 import base64
+import inspect
 import subprocess
 import sys
 import threading
@@ -29,7 +30,7 @@ class PersistentCryptoTests(unittest.TestCase):
                                      data=base64.b64encode(b"different").decode())["valid"])
         assert original is not None
         original.kill()
-        original.wait(timeout=2)
+        original.wait(timeout=HANG_GUARD_SECONDS)  # Only guards against a hang.
         self.assertTrue(helper.call("verify", publicKey=pair["publicKey"], signature=signature, data=data)["valid"])
         self.assertIsNot(helper.process, original)
         helper.close()
@@ -44,15 +45,22 @@ class PersistentCryptoTests(unittest.TestCase):
         self.addCleanup(helper.close)
         native_popen = subprocess.Popen
 
+        stall_seconds = 30
+
         def stalled(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
-            return native_popen([sys.executable, "-c", "import time; time.sleep(30)"],
+            return native_popen([sys.executable, "-c", f"import time; time.sleep({stall_seconds})"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
         begin = time.monotonic()
         with patch("codex_multi_server_crypto.subprocess.Popen", side_effect=stalled):
             with self.assertRaises(RuntimeError):
                 helper.call("generate", timeout=0.05)
-        self.assertLess(time.monotonic() - begin, 1)
+        # Without the 0.05 s deadline the call waits for the default deadline or
+        # for the stalled helper to exit. Half of the default separates the two
+        # cases on a busy machine.
+        default_timeout = inspect.signature(CryptoProcess.call).parameters["timeout"].default
+        self.assertLess(default_timeout, stall_seconds)
+        self.assertLess(time.monotonic() - begin, default_timeout / 2)
         self.assertIsNone(helper.process)
         self.assertIn("publicKey", helper.call("generate"))
 

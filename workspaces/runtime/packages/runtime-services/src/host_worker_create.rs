@@ -90,7 +90,7 @@ pub(crate) fn inside_git_work_tree(path: &Path) -> bool {
 fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: OsStr::new("git"),
-        cwd: path.as_os_str(),
+        git_directory: Some(path.as_os_str()),
         args,
         environment: &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_CONFIG_NOSYSTEM", "1")],
         input: None,

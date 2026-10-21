@@ -128,6 +128,8 @@ class ArchiveFixture(codex_work.WorkMixin):
         self.callback = lambda *args: {'status': 'kept', 'retryable': True, 'reason': 'owner busy'}
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.reads = 0
+        # The busy timeout of each connection, in milliseconds; None selects the default.
+        self.busy_timeouts = []
         with self.db() as db:
             db.execute('PRAGMA journal_mode=WAL')
             db.execute('CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)')
@@ -142,6 +144,7 @@ class ArchiveFixture(codex_work.WorkMixin):
 
     @contextmanager
     def db(self, busy_timeout=None):
+        self.busy_timeouts.append(busy_timeout)
         db = sqlite3.connect(self.path, timeout=.2 if busy_timeout is None else busy_timeout / 1000)
         db.row_factory = sqlite3.Row
         try:
@@ -189,7 +192,8 @@ class ArchiveFixture(codex_work.WorkMixin):
         self.accepted_archive_tick()
 
     def idle(self):
-        self.executor.submit(lambda: None).result(timeout=1)
+        # The executor must drain; this wait only guards against a hang.
+        self.executor.submit(lambda: None).result(timeout=HANG_GUARD_SECONDS)
 
     def close(self):
         self.closed = True
@@ -286,14 +290,19 @@ class AcceptedArchiveScheduler(unittest.TestCase):
         writer = sqlite3.connect(rt.path)
         writer.execute('BEGIN IMMEDIATE')
         try:
-            before = time.monotonic()
+            rt.busy_timeouts.clear()
             worker = threading.Thread(target=rt.accepted_archive_tick)
             worker.start()
             with rt.lock:
                 pass
             worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
-            self.assertLess(time.monotonic() - before, .5)
+            # The index build gives up after its own short busy timeout instead of
+            # the default writer wait (200 ms in this fixture). Recording the
+            # requested timeout keeps this check independent of machine load.
+            self.assertEqual(len(rt.busy_timeouts), 1, rt.busy_timeouts)
+            self.assertIsNotNone(rt.busy_timeouts[0])
+            self.assertLess(rt.busy_timeouts[0], 200)
             self.assertFalse(rt.__dict__.get('_accepted_archive_index_ready'))
             self.assertEqual(rt.calls, [])
         finally:
@@ -545,7 +554,8 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
                     runtime = make_runtime(ControlledRuntime, Path(directory), fixture.FakeServer)
                     try:
                         lead = runtime.create({'name': 'Archive restart lead', 'cwd': directory, 'prompt': ''}, draft=True)
-                        due = time.time() + 60
+                        due_delay = 60
+                        due = time.time() + due_delay
                         with runtime.lock, runtime.db() as db:
                             runtime.put(db, 'work', {
                                 'id': 'restart-task', 'rootId': lead['id'], 'owner': lead['id'],
@@ -557,7 +567,9 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
                     before = time.monotonic()
                     runtime = make_runtime(ControlledRuntime, Path(directory), fixture.FakeServer)
                     try:
-                        self.assertLess(time.monotonic() - before, 2)
+                        # Startup must not wait for the pending archive; a wait for its
+                        # due time takes the whole delay, so half of it is the bound.
+                        self.assertLess(time.monotonic() - before, due_delay / 2)
                         runtime.accepted_archive_tick()
                         with runtime.read_db() as db:
                             work = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',

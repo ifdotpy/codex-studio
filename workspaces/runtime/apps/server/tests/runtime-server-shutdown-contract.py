@@ -15,6 +15,7 @@ import uuid
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 from runtime_test_environment import make_runtime
 from http_backend_harness import BackendProcess
@@ -96,7 +97,8 @@ class RuntimeServerShutdownContract(unittest.TestCase):
                 "GIT_CONFIG_NOSYSTEM": "1",
             },
             check=True,
-            timeout=5,
+            # The timeout only guards against a hang of the fixture commit.
+            timeout=HANG_GUARD_SECONDS,
         )
         cls.backend._command()
         cls.backend._bootstrap_python_state(cls.backend._environment())

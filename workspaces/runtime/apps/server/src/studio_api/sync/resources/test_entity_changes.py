@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from codex_sync_entities import ensure_tables, put
+from server_test_waits import HANG_GUARD_SECONDS
 from studio_api.models import SyncEntity
 from studio_api.sync.resources import hub as hub_module
 from studio_api.sync.resources.hub import (
@@ -60,7 +61,8 @@ class EntityChangesTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def receive(self) -> ResourceChangeEvent:
-        event = await self.subscription.next_event(timeout=1)
+        # The event is expected; the timeout only guards against a hang.
+        event = await self.subscription.next_event(timeout=HANG_GUARD_SECONDS)
         assert isinstance(event, ResourceChangeEvent)
         return event
 

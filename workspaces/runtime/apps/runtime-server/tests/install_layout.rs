@@ -54,13 +54,16 @@ async fn startup_stderr(child: &mut tokio::process::Child) -> String {
 async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     let startup_trace_owner = format!("const STARTUP_TRACE_ENV: &str = \"{STARTUP_TRACE_ENV}\";");
     assert!(include_str!("../src/main.rs").contains(&startup_trace_owner));
-    let prefix = tempdir().unwrap();
-    let workspace = prefix.path().join("workspace");
+    let prefix_guard = tempdir().unwrap();
+    // Python resolves its module path, so its layout names the macOS
+    // temporary folder through /private/var, not the /var link.
+    let prefix = prefix_guard.path().canonicalize().unwrap();
+    let workspace = prefix.join("workspace");
     let binary_dir = workspace.join("bin");
     let scripts = workspace.join("scripts");
     let bridge = scripts.join("claude_bridge");
-    let home = prefix.path().join("fresh-home");
-    let state = prefix.path().join("state");
+    let home = prefix.join("fresh-home");
+    let state = prefix.join("state");
     fs::create_dir_all(&binary_dir).unwrap();
     fs::create_dir_all(&scripts).unwrap();
     fs::create_dir_all(&bridge).unwrap();
@@ -135,7 +138,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
 
     // Seed an isolated managed-cache layout with the already prepared venv.
     // The server must discover it without invoking the poisoned PATH Python.
-    let cache = prefix.path().join("prepared-cache");
+    let cache = prefix.join("prepared-cache");
     let managed = StdCommand::new(&prepared)
         .args(["-c", "from pathlib import Path; from codex_python import managed_python; import sys; print(managed_python(Path(sys.argv[1])))"])
         .arg(&scripts)
@@ -155,7 +158,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
 
     let mut child = Command::new(binary)
         .args(["--port", "0"])
-        .current_dir(prefix.path())
+        .current_dir(&prefix)
         .env_clear()
         .env("HOME", &home)
         .env(STARTUP_TRACE_ENV, "1")
@@ -170,8 +173,8 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
             ])
             .unwrap(),
         )
-        .env("XDG_STATE_HOME", prefix.path().join("xdg-state"))
-        .env("TMPDIR", prefix.path())
+        .env("XDG_STATE_HOME", prefix.join("xdg-state"))
+        .env("TMPDIR", &prefix)
         .env("CODEX_AGENTS_STATE_DIR", &state)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -262,7 +265,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     let source_binary = PathBuf::from(env!("CARGO_BIN_EXE_studio-runtime-server"));
     let mut source_child = Command::new(source_binary)
         .args(["--port", "0"])
-        .current_dir(prefix.path())
+        .current_dir(&prefix)
         .env_clear()
         .env("HOME", &home)
         .env("XDG_CACHE_HOME", &cache)
@@ -276,8 +279,8 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
             ])
             .unwrap(),
         )
-        .env("XDG_STATE_HOME", prefix.path().join("source-xdg-state"))
-        .env("TMPDIR", prefix.path())
+        .env("XDG_STATE_HOME", prefix.join("source-xdg-state"))
+        .env("TMPDIR", &prefix)
         .env("CODEX_AGENTS_STATE_DIR", &state)
         .env("CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE", "1")
         .stdout(Stdio::piped())

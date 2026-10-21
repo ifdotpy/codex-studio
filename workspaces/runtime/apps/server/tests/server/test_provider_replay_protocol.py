@@ -178,7 +178,8 @@ class ReplayProtocol(unittest.TestCase):
             return subprocess.run(
                 [sys.executable, "-B", str(REPLAY_SERVER), str(fixture), str(replies)],
                 input=json.dumps(message) + "\n",
-                text=True, capture_output=True, timeout=5, check=False)
+                # The replay exits on EOF; the timeout only guards against a hang.
+                text=True, capture_output=True, timeout=HANG_GUARD_SECONDS, check=False)
 
     def test_unknown_rpc_fails_visibly(self):
         result = self.invoke("future/unrecognizedMethod")
@@ -223,7 +224,8 @@ class ReplayProtocol(unittest.TestCase):
                 self.assertIsNone(process.poll(), "server should remain readable until input closes")
             finally:
                 process.stdin.close()
-                process.wait(timeout=5)
+                # The replay exits on EOF; this wait only guards against a hang.
+                process.wait(timeout=HANG_GUARD_SECONDS)
                 process.stdout.close()
                 process.stderr.close()
             self.assertNotEqual(process.returncode, 0)

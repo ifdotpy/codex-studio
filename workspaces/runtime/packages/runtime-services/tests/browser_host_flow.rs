@@ -462,6 +462,10 @@ fn the_launcher_and_the_path_links_reach_the_runtime_binary() {
 /// system `open` fail before it starts an application.
 #[cfg(target_os = "macos")]
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the shim and /usr/bin/open exit at once on these arguments"
+)]
 fn the_open_shim_sends_only_one_web_link_to_the_launcher() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("test step");

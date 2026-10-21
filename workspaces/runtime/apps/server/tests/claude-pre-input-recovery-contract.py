@@ -209,7 +209,8 @@ class ClaudePreInputRecovery(unittest.TestCase):
             self.runtime.dispatch()
             f.eventually(lambda: original and self.runtime.agent(self.agent['id'])['status'] == 'queued')
             # Join the actual start worker after its synchronous late response.
-            self.runtime.pool.submit(lambda: None).result(timeout=3)
+            # The pool must drain; this wait only guards against a hang.
+            self.runtime.pool.submit(lambda: None).result(timeout=HANG_GUARD_SECONDS)
         self.attempt = original[0]
         self.assert_pending_batch()
         self.assertTrue(self.receipt()['retry'])

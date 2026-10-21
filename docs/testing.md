@@ -63,9 +63,11 @@ suite durations over 10 seconds measured inside that parallel run. These values
 are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
-Before the comprehensive server tier, build its Rust HTTP fixture with
-`cargo build --locked --release -p studio-runtime-server`. Hosted CI builds it
-once per run, and the server jobs use that binary. The short local tier does not require that fixture binary;
+The comprehensive tier first builds its Rust HTTP fixture with
+`cargo build --locked --release -p studio-runtime-server`, and it builds the
+renderer bundle that the native client crate embeds before Rust nextest, so a
+clean worktree needs no manual step. Hosted CI builds it once per run, and the server jobs use
+that binary. The short local tier does not require that fixture binary;
 building a native desktop package does not produce it.
 
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.

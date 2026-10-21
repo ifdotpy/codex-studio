@@ -176,16 +176,19 @@ class SupervisedClock(unittest.TestCase):
         self.proc.reply_release.set()
         self.proc.ack_release.set()
         self.server.close()
-        self.assertTrue(self.server.join_callbacks(2))
+        self.assertTrue(self.server.join_callbacks(HANG_GUARD_SECONDS))
         self.temp.cleanup()
 
     def clock(self):
         self.proc.emit({'id':self.CLOCK_ID, 'method':'currentTime/read'})
 
     def replied(self):
+        # A reply that waits behind the blocked callback stays blocked until the test
+        # releases it, so half the hang guard only absorbs load and still fails.
         with self.proc.condition:
             return self.proc.condition.wait_for(
-                lambda:any(frame.get('id') == self.CLOCK_ID for frame in self.proc.writes), .5)
+                lambda:any(frame.get('id') == self.CLOCK_ID for frame in self.proc.writes),
+                HANG_GUARD_SECONDS / 2)
 
     def wait_for(self, condition):
         return wait_for_condition(condition, "supervised clock reply")
@@ -228,7 +231,7 @@ class SupervisedClock(unittest.TestCase):
         self.assertIsNone(self.durable_reply())
         self.assertNotIn(2, self.proc.ack_pending)
         self.release.set()
-        self.assertTrue(self.server.join_callbacks(1))
+        self.assertTrue(self.server.join_callbacks(HANG_GUARD_SECONDS))
         with self.proc.journal.db() as db:
             row = db.execute('SELECT payload FROM events WHERE sequence=2').fetchone()
         self.assertEqual(json.loads(row[0])['id'], self.CLOCK_ID)
@@ -242,7 +245,7 @@ class SupervisedClock(unittest.TestCase):
         self.assertEqual(self.server._clock_reply_sequences, {(int,self.CLOCK_ID):[2]})
         self.assertNotIn(2, self.proc.ack_pending)
         self.release.set()
-        self.assertTrue(self.server.join_callbacks(1))
+        self.assertTrue(self.server.join_callbacks(HANG_GUARD_SECONDS))
         with self.proc.journal.db() as db:
             self.assertIsNotNone(db.execute('SELECT 1 FROM events WHERE sequence=2').fetchone())
 

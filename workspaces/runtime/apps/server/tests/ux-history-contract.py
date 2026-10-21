@@ -117,7 +117,8 @@ class HistoryContract(unittest.TestCase):
             return search_texts(db, refs)
         def search(): results.append(search_history(self.runtime, lead['id'], 'sentence'))
         def acquire():
-            scanning.wait(5)
+            # Probe the lock only while the scan is blocked; the wait guards a hang.
+            scanning.wait(HANG_GUARD_SECONDS)
             with self.runtime.lock: acquired.set()
         workers = [threading.Thread(target=target) for target in (search, acquire)]
         try:
@@ -127,7 +128,7 @@ class HistoryContract(unittest.TestCase):
                 self.assertTrue(acquired.wait(HANG_GUARD_SECONDS), 'runtime.lock stayed held during search')
         finally:
             resume.set()
-            for worker in workers: worker.join(5)
+            for worker in workers: worker.join(HANG_GUARD_SECONDS)
         self.assertEqual(results[0]['results'][0]['id'], lead['id']+':item-0000')
 
     def test_missing_truncated_body_fails_visibly_for_search_and_history_item(self):

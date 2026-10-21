@@ -730,7 +730,7 @@ impl Git {
         safe_args.extend_from_slice(args);
         let output = bounded_child::run_without_git_environment(bounded_child::Request {
             program: std::ffi::OsStr::new("git"),
-            cwd: cwd.as_os_str(),
+            git_directory: Some(cwd.as_os_str()),
             args: &safe_args,
             environment: &environment,
             input: None,

@@ -89,6 +89,15 @@ ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-pr
 
 # The server hashes its own executable at startup, a file of up to a gigabyte in
 # a debug build; unoptimized hashing delayed readiness by about 20 seconds.
+# Debug info level for local builds and tests. Full debuginfo made each
+# runtime-services test binary about 1 GB and dominated link time and disk
+# use (#373); line tables keep file:line in backtraces, dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.dev.package.sha2]
 opt-level = 3
 

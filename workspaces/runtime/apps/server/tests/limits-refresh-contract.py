@@ -133,7 +133,9 @@ class LimitsRefreshContracts(unittest.TestCase):
 
         def read(*args, **kwargs):
             started.set()
-            if not release.wait(5):
+            # The test releases the read. This wait outlasts the test's own
+            # hang guards so the test fails first.
+            if not release.wait(2 * HANG_GUARD_SECONDS):
                 raise TimeoutError("Fixture read was not released")
             return {"accountId": "default"}
 
@@ -143,11 +145,12 @@ class LimitsRefreshContracts(unittest.TestCase):
                 try:
                     self.assertTrue(started.wait(HANG_GUARD_SECONDS))
                     other = pool.submit(self.runtime.limits, self.other_key)
-                    self.assertEqual(other.result(timeout=2)["accountKey"], self.other_key)
+                    # A blocked other account fails at this hang guard.
+                    self.assertEqual(other.result(timeout=HANG_GUARD_SECONDS)["accountKey"], self.other_key)
                     self.assertFalse(pending.done())
                 finally:
                     release.set()
-                self.assertEqual(pending.result(timeout=2)["data"]["accountId"], "default")
+                self.assertEqual(pending.result(timeout=HANG_GUARD_SECONDS)["data"]["accountId"], "default")
 
     def test_successful_recent_cache_does_not_read(self):
         cached = self.cache()

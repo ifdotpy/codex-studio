@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -338,7 +339,7 @@ class NativeTurnItemsProtocol(unittest.TestCase):
             while True:
                 params = {'threadId': thread, 'turnId': turns[0], 'limit': 1, 'sortDirection': 'asc'}
                 if cursor is not None: params['cursor'] = cursor
-                page = server.call('thread/items/list', params, timeout=5)
+                page = server.call('thread/items/list', params, timeout=HANG_GUARD_SECONDS)  # Hang guard.
                 pages.extend(page['data'])
                 cursor = page.get('nextCursor')
                 if cursor is None: break

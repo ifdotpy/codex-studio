@@ -296,7 +296,8 @@ class ProviderVersionContract(unittest.TestCase):
 
         monitor = ProviderVersionMonitor(read_version=fail)
         monitor.tick(runtime)
-        monitor.worker.join(2)
+        # Each worker join only guards against a hang; the status assertions decide.
+        monitor.worker.join(HANG_GUARD_SECONDS)
         entries = monitor.status()["providers"]
         self.assertEqual({entry["status"] for entry in entries}, {"error"})
         self.assertTrue(all(entry["error"] for entry in entries))
@@ -305,7 +306,8 @@ class ProviderVersionContract(unittest.TestCase):
         runtime = Runtime()
         monitor = ProviderVersionMonitor(read_version=lambda *_args: None)
         monitor.tick(runtime)
-        monitor.worker.join(2)
+        # Each worker join only guards against a hang; the status assertions decide.
+        monitor.worker.join(HANG_GUARD_SECONDS)
         entries = monitor.status()["providers"]
         self.assertEqual({entry["status"] for entry in entries}, {"error"})
         self.assertTrue(all(entry["error"] for entry in entries))
@@ -419,10 +421,13 @@ class ProviderVersionContract(unittest.TestCase):
         runtime = Runtime()
         started = threading.Event()
         release = threading.Event()
+        read_threads = []
 
         def read(provider, _server, _account, _runtime):
+            read_threads.append(threading.current_thread())
             started.set()
-            release.wait(2)
+            # Hold the read until the test releases it, even on a busy machine.
+            release.wait(HANG_GUARD_SECONDS)
             return {"runningVersion": "0.153.3", "installedVersion": "0.153.3"} \
                 if provider == "codex" else {
                     "runningVersion": None,
@@ -431,10 +436,12 @@ class ProviderVersionContract(unittest.TestCase):
                 }
 
         monitor = ProviderVersionMonitor(read_version=read)
-        before = time.monotonic()
         monitor.tick(runtime)
-        self.assertLess(time.monotonic() - before, 0.5)
         self.assertTrue(started.wait(HANG_GUARD_SECONDS))
+        # The read blocks until release, so tick returned without waiting for it:
+        # the read runs on another thread, and that worker is still in the read.
+        self.assertNotIn(threading.current_thread(), read_threads)
+        self.assertTrue(monitor.worker.is_alive())
         release.set()
         monitor.worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(monitor.worker.is_alive())
@@ -454,7 +461,8 @@ class ProviderVersionContract(unittest.TestCase):
         def read(_provider, server, _account, _runtime):
             if server is old:
                 started.set()
-                release.wait(2)
+                # Hold the stale read until the test releases it, even on a busy machine.
+                release.wait(HANG_GUARD_SECONDS)
                 return {"runningVersion": "0.153.3", "installedVersion": "0.153.3"}
             return {"runningVersion": "0.153.4", "installedVersion": "0.153.4"}
 
@@ -469,10 +477,11 @@ class ProviderVersionContract(unittest.TestCase):
         self.assertEqual(monitor.status()["warnings"], [])
         self.assertEqual(monitor.status()["providers"][0]["status"], "checking")
         release.set()
-        old_worker.join(2)
+        old_worker.join(HANG_GUARD_SECONDS)
+        self.assertFalse(old_worker.is_alive())
         self.assertEqual(monitor.status()["warnings"], [])
         monitor.tick(runtime)
-        monitor.worker.join(2)
+        monitor.worker.join(HANG_GUARD_SECONDS)
         self.assertEqual(monitor.status()["warnings"], [])
         self.assertEqual(monitor.status()["providers"][0]["runningVersion"], "0.153.4")
 
@@ -482,7 +491,7 @@ class ProviderVersionContract(unittest.TestCase):
         runtime.connection_ids = {"future": "future-1"}
         monitor = ProviderVersionMonitor(read_version=lambda *_: None)
         monitor.tick(runtime)
-        monitor.worker.join(2)
+        monitor.worker.join(HANG_GUARD_SECONDS)
         entry = monitor.status()["providers"][0]
         self.assertEqual(entry["status"], "unknown")
         self.assertEqual(entry["provider"], "future-provider")

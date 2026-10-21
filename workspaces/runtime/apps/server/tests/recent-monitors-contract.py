@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -98,7 +99,9 @@ class ClaudeAccountRefresh(unittest.TestCase):
             got = []
 
             def probe():
-                acquired = accounts.lock.acquire(timeout=1)
+                # A caller that holds the lock keeps it for the whole probe, so half
+                # the hang guard only absorbs load and still fails on that bug.
+                acquired = accounts.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                 got.append(acquired)
                 if acquired:
                     accounts.lock.release()

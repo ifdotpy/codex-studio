@@ -15,6 +15,7 @@ from codex_layout import SERVER_TESTS_ROOT
 sys.path.insert(0, str(SERVER_TESTS_ROOT))
 import http_backend_harness
 import test_isolation
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 class BackendEnvironmentTests(unittest.TestCase):
@@ -64,13 +65,14 @@ signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
                 start_new_session=True,
             )
             try:
-                deadline = time.monotonic() + 5
+                # The runner start and its stop only need hang guards.
+                deadline = time.monotonic() + HANG_GUARD_SECONDS
                 while not pid_file.exists() and runner.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(pid_file.exists(), "runner started its owned server process")
                 child_pid = int(pid_file.read_text(encoding="ascii"))
                 runner.send_signal(signal.SIGTERM)
-                self.assertEqual(runner.wait(timeout=5), -signal.SIGTERM)
+                self.assertEqual(runner.wait(timeout=HANG_GUARD_SECONDS), -signal.SIGTERM)
                 with self.assertRaises(ProcessLookupError):
                     os.kill(child_pid, 0)
             finally:

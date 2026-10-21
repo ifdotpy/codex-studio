@@ -62,6 +62,7 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing, no_write_snapshot
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_sync_entities import register_functions
 
 _fixture_spec = importlib.util.spec_from_file_location("work_write_runtime_fixture", HERE / "runtime-contract.py")
@@ -176,7 +177,8 @@ while True:
             cwd=str(path.parent), stdout=subprocess.DEVNULL, stderr=stderr,
         )
         stderr.close()
-        deadline = time.monotonic() + 5
+        # The fake guest must bind its socket; this deadline only guards against a hang.
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while not self.ready_path.exists():
             if self.process.poll() is not None:
                 detail = self.stderr_path.read_text(encoding="utf-8", errors="replace")
@@ -204,7 +206,8 @@ while True:
             self.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             self.process.kill()
-            self.process.wait(timeout=2)
+            # A killed process must be reaped; this wait only guards against a hang.
+            self.process.wait(timeout=HANG_GUARD_SECONDS)
         self.path.unlink(missing_ok=True)
 
 

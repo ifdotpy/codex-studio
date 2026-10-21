@@ -213,7 +213,7 @@ class ReaderContract(unittest.TestCase):
 
     def test_stderr_is_drained_without_blocking(self):
         (self.home / 'mode').write_text('stderr')
-        self.assertEqual(len(self.read(timeout=3)['data']), 2)
+        self.assertEqual(len(self.read(timeout=30)['data']), 2)
         self.assert_reaped()
 
     def test_timeout_terminates_and_reaps_only_owned_process(self):
@@ -221,14 +221,18 @@ class ReaderContract(unittest.TestCase):
         started = time.monotonic()
         with self.assertRaises(TimeoutError):
             self.read(timeout=3)
-        self.assertLess(time.monotonic() - started, 5)
+        # The fixture never answers. One 3 s deadline plus the reap stays below
+        # twice the budget; an ignored or a second deadline does not.
+        self.assertLess(time.monotonic() - started, 2 * 3)
         self.assert_reaped()
 
     @unittest.skipIf(os.name == 'nt', 'POSIX process group contract')
     def test_timeout_kills_descendants_that_inherit_catalog_pipes(self):
         (self.home / 'mode').write_text('descendant')
+        # The fixture must start its descendant before the deadline; 5 s gives a
+        # busy machine room to start both processes.
         with self.assertRaises(TimeoutError):
-            self.read(timeout=2)
+            self.read(timeout=5)
         pid = int((self.home / 'descendant-pid').read_text())
         def descendant_gone():
             try:
@@ -251,7 +255,8 @@ class ReaderContract(unittest.TestCase):
                 started = time.monotonic()
                 with self.assertRaises((TimeoutError, ValueError)):
                     self.read(timeout=3)
-                self.assertLess(time.monotonic() - started, 5)
+                # One 3 s deadline plus cleanup stays below twice the budget.
+                self.assertLess(time.monotonic() - started, 2 * 3)
                 observed = self.home / 'observed'
                 self.assertTrue(observed.is_file(), f'{mode} fixture did not reach its catalog request')
                 self.assertEqual(observed.read_text(), mode)
@@ -266,8 +271,9 @@ class ReaderContract(unittest.TestCase):
         for mode in ('cycle', 'identity', 'error', 'large', 'request'):
             with self.subTest(mode=mode):
                 (self.home / 'mode').write_text(mode)
+                # The timeout only guards against a hang; each mode fails on its content.
                 with self.assertRaises((RuntimeError, ValueError)) as caught:
-                    self.read(timeout=3)
+                    self.read(timeout=30)
                 self.assertNotIn('secret', str(caught.exception))
                 self.assert_reaped()
 
@@ -301,7 +307,8 @@ class ReaderContract(unittest.TestCase):
             with self.assertRaises(CatalogPending):
                 cache.read('a', server, 'one', lambda: True, submit=submit)
         self.assertEqual(len(submitted), 1)
-        submitted[0].result(timeout=3)
+        # Wait for the reader's own deadline; this wait only guards against a hang.
+        submitted[0].result(timeout=reader.MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS + 5)
         self.assertEqual(len(cache.read('a', server, 'one', lambda: True, submit=submit)['data']), 2)
         self.assertEqual(len(submitted), 1)
         self.assert_reaped()

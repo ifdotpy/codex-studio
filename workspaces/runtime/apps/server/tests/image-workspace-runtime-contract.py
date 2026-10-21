@@ -493,12 +493,14 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             self.assertTrue(requested.wait(HANG_GUARD_SECONDS))
             operation = self.rt.preparations[worker]
             # The base engine calls this immediately when its base is ready.
-            callbacks[0]({'state': 'ready'}).result(3)
-            callbacks[0]({'state': 'ready'}).result(3)
+            # These futures must end while the native start is pending; a callback
+            # that waited for it would still miss the hang guard.
+            callbacks[0]({'state': 'ready'}).result(HANG_GUARD_SECONDS)
+            callbacks[0]({'state': 'ready'}).result(HANG_GUARD_SECONDS)
             self.assertFalse(self.rt.agent(worker)['imageWorkspaceReady'])
             engine.create_workspace.assert_not_called()
             native.set_result({'thread': {'id': 'race-thread'}})
-            self.assertEqual(operation['future'].result(3)['threadId'], 'race-thread')
+            self.assertEqual(operation['future'].result(HANG_GUARD_SECONDS)['threadId'], 'race-thread')
             fixture.f.eventually(lambda: self.rt.agent(worker)['imageWorkspaceReady'])
             fixture.f.eventually(lambda: self.rt.delivery_receipt(worker + ':initial')['status'] == 'delivered')
             record = self.rt.agent(worker)
@@ -545,7 +547,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             self.assertIs(waits[0], waits[1])
             self.assertEqual(len(requests), 1)
             native.set_result({'thread': {'id': 'fallback-thread'}})
-            self.assertEqual(waits[0].result(3)['threadId'], 'fallback-thread')
+            # The wait only guards against a hang.
+            self.assertEqual(waits[0].result(HANG_GUARD_SECONDS)['threadId'], 'fallback-thread')
             fixture.f.eventually(lambda: self.rt.agent(worker)['imageWorkspacePhase'] == 'fallback')
             record = self.rt.agent(worker)
             self.assertTrue(record['worktree'])
@@ -583,8 +586,9 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                 self.assertFalse(self.rt.agent(worker)['imageWorkspaceReady'])
             finally:
                 release.set()
-            self.assertIsNotNone(prepared.result(3)['threadId'])
-            callback.result(3)
+            # Both futures end after the release; these waits only guard against a hang.
+            self.assertIsNotNone(prepared.result(HANG_GUARD_SECONDS)['threadId'])
+            callback.result(HANG_GUARD_SECONDS)
             fixture.f.eventually(lambda: self.rt.agent(worker)['imageWorkspaceReady'])
             self.assertIsNone(self.rt.agent(worker)['error'])
 

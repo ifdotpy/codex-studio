@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 isolate_supervisor_environment()
@@ -325,7 +326,8 @@ class StaleToolRequestAckContract(unittest.TestCase):
         self.runtime._tool_turn_binding_waiters = RegisteredWaiterMap()
         binding_errors = []
         def bind_new_turn():
-            if not registered.wait(1):
+            # The callback registers at once; the wait only guards against a hang.
+            if not registered.wait(HANG_GUARD_SECONDS):
                 binding_errors.append('The callback did not register its turn waiter')
                 return
             self.update_actor(
@@ -340,7 +342,7 @@ class StaleToolRequestAckContract(unittest.TestCase):
         try:
             server = self.dispatcher(frames, 'old')
         finally:
-            notifier.join(timeout=1)
+            notifier.join(timeout=HANG_GUARD_SECONDS)  # Only guards against a hang.
             self.runtime._tool_turn_binding_waiters = waiters
         self.assertFalse(notifier.is_alive(), 'Turn binding fixture did not finish')
         self.assertEqual(binding_errors, [])

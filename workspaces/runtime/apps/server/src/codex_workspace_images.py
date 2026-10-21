@@ -1051,6 +1051,22 @@ def _inside(path: str | Path, root: Path) -> bool:
     return Path(os.path.realpath(path)).is_relative_to(Path(os.path.realpath(root)))
 
 
+def _owns_attachment(attachment: WorkspaceAttachment, store: Path,
+                     owners: list[tuple[str, Path | None, tuple[int, int] | None]]) -> bool:
+    """Whether an attached Studio volume is this state's concern.
+
+    Its image or a mount point lies in this store, or it belongs to an agent of this
+    store (for example after a move of the state folder). A volume of another state
+    folder elsewhere is that state's concern.
+    """
+    if attachment['image'] and _inside(attachment['image'], store):
+        return True
+    if any(_inside(mount, store) for mount in attachment['mounts']):
+        return True
+    return any(_attachment_belongs(attachment, agent_id, image, identity)
+               for agent_id, image, identity in owners)
+
+
 def check_mounts() -> dict[str, Any]:
     """Report every agent mount point and every Studio volume attached outside its place.
 
@@ -1071,9 +1087,12 @@ def check_mounts() -> dict[str, Any]:
         agents.append(probe)
     accounted = [Path(item['mount']) for item in agents
                  if item['mounted'] and item['status'] in {'mounted', 'attached-elsewhere'}]
+    owners = [(item['agentId'], Path(item['image']) if item['image'] else None,
+               _file_identity(item['image'])) for item in agents]
     stray = []
     for attachment in attachments:
-        if not _studio_attachment(attachment) or _base_staging_attachment(attachment, store):
+        if (not _studio_attachment(attachment) or _base_staging_attachment(attachment, store)
+                or not _owns_attachment(attachment, store, owners)):
             continue
         if attachment['mounts'] and all(any(_same_path(path, known) for known in accounted)
                                         for path in attachment['mounts']):

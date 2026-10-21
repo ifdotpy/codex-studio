@@ -26,6 +26,8 @@ from typing import Any, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_contracts import P20_OPERATION_MANIFEST_ENV
+# Probe request timeouts and the success wait only guard against a hang of the local backend.
+from server_test_waits import HANG_GUARD_SECONDS
 from runtime_test_environment import runtime_environment
 from codex_python import resolve_python
 
@@ -2011,7 +2013,7 @@ def probe_operations(
                                 "X-Canvas-Token": token,
                                 "X-Studio-API-Schema": backend.schema_hash,
                             },
-                            timeout=2.0,
+                            timeout=HANG_GUARD_SECONDS,
                         )
                         if queue_snapshot.status != 200:
                             raise RuntimeError(
@@ -2087,7 +2089,7 @@ def probe_operations(
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
                             try:
-                                with urllib.request.urlopen(request, timeout=2.0) as response:
+                                with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
                                     chunk = response.read(1)
                                     result = HttpResult(
                                         response.status,
@@ -2107,17 +2109,17 @@ def probe_operations(
                                 path,
                                 body=body if method in JSON_METHODS else None,
                                 headers=headers,
-                                timeout=2.0,
+                                timeout=HANG_GUARD_SECONDS,
                             )
                         try:
                             response_body = json.loads(result.body)
                         except (ValueError, TypeError):
                             response_body = None
                         if probe_case.get("wait_for_success") and not 200 <= result.status < 300:
-                            deadline = time.monotonic() + 5
+                            deadline = time.monotonic() + HANG_GUARD_SECONDS
                             while time.monotonic() < deadline and not 200 <= result.status < 300:
                                 time.sleep(0.05)
-                                result = backend.request(method, path, headers=headers, timeout=2.0)
+                                result = backend.request(method, path, headers=headers, timeout=HANG_GUARD_SECONDS)
                                 try:
                                     response_body = json.loads(result.body)
                                 except (ValueError, TypeError):
@@ -2422,7 +2424,7 @@ def probe_copied_data(
                 "/api/agents/finder-view?agent="
                 + urllib.parse.quote(witness["id"], safe=""),
                 headers=headers,
-                timeout=2.0,
+                timeout=HANG_GUARD_SECONDS,
             )
             unchanged_during_read = finder_snapshot.unchanged()
             old_data = preservation_snapshot.preserved_existing_rows()

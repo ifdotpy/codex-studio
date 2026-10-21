@@ -134,7 +134,8 @@ class Profiles(unittest.TestCase):
         def proof(account_key, observed):
             if threading.current_thread() is worker:
                 entered.set()
-                if not release.wait(5):
+                # The test releases the proof; the wait only guards against a hang.
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('Concurrent refresh did not finish')
                 # The runtime skips its read if another refresh already confirmed the account.
                 if not store.allow_native_auth_attempt(account_key, observed):

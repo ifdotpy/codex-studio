@@ -854,6 +854,10 @@ fn radio_queue_snapshot() -> Value {
 async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
     let project_root = fixture._root.path().join("radio-project");
     fs::create_dir_all(&project_root).unwrap();
+    // A project id is its resolved path, as Python stores it. The radio skips a
+    // project whose id differs from its resolved path, such as one that names
+    // the macOS temporary folder through the /var link.
+    let project_root = project_root.canonicalize().unwrap();
     std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(&project_root)
@@ -2459,9 +2463,12 @@ fn claude_profile_is_not_refreshed_through_codex_account_home_admission() {
 fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().unwrap();
-    let bridge_dir = root.path().join("bridge");
-    let bin_dir = root.path().join("bin");
+    let root_guard = tempfile::tempdir().unwrap();
+    // The launch resolves its Node executable, so the expectation names the
+    // macOS temporary folder through /private/var, not the /var link.
+    let root = root_guard.path().canonicalize().unwrap();
+    let bridge_dir = root.join("bridge");
+    let bin_dir = root.join("bin");
     let sdk = bridge_dir.join("node_modules/@anthropic-ai/claude-agent-sdk");
     std::fs::create_dir_all(&sdk).unwrap();
     std::fs::create_dir_all(&bin_dir).unwrap();
@@ -2482,7 +2489,7 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     let launch = host_runtime::claude_launch(
         profile,
         &bridge_dir,
-        root.path(),
+        &root,
         "claude-fixture-account",
         BTreeMap::from([
             (
@@ -2507,8 +2514,7 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     // so a Claude agent that Python started resumes after the cutover.
     assert_eq!(
         launch.command[2],
-        root.path()
-            .join("account-servers/claude-fixture-account")
+        root.join("account-servers/claude-fixture-account")
             .to_string_lossy()
     );
     assert_eq!(

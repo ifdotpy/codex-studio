@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_tool_requests import RequestMixin
+from server_test_waits import HANG_GUARD_SECONDS
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'fixtures'))
 from current_cleanup_receipts import migrate_receipts
 
@@ -97,8 +98,6 @@ class RequestContract(unittest.TestCase):
     def test_receipt_writes_wait_for_sqlite_without_holding_runtime_lock(self):
         # Use the production admission helper against one explicitly held
         # writer. Events establish ordering; timeouts only guard a deadlock.
-        from server_test_waits import HANG_GUARD_SECONDS
-
         for phase in ("reserve", "begin", "finish"):
             with self.subTest(phase=phase):
                 message = self.message(call="blocked-" + phase)
@@ -611,8 +610,9 @@ class RequestContract(unittest.TestCase):
         workers = [threading.Thread(target=claim) for _ in range(8)]
         for worker in workers:
             worker.start()
+        # Each claim returns; this join only guards against a hang.
         for worker in workers:
-            worker.join(5)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertEqual(values.count(True), 1)
         self.assertEqual(values.count(False), 7)
 

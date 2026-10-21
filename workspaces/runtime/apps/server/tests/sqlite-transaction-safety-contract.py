@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -58,22 +59,28 @@ with tempfile.TemporaryDirectory() as directory:
         assert [row[0] for row in rows] == ["writer after recovery"]
         assert diagnostics()["leaks"]["count"] >= 1
 
+        # The waiter's busy timeout and the join only guard against a hang.
         holder = connect(path, timeout=1, site="contract.lock_holder")
-        waiter = connect(path, timeout=1, site="contract.contended_writer",
+        waiter = connect(path, timeout=HANG_GUARD_SECONDS, site="contract.contended_writer",
                          check_same_thread=False)
         holder.execute("BEGIN IMMEDIATE")
         outcome = []
+        writing = threading.Event()
 
         def write_after_lock():
+            writing.set()
             with scope(waiter, "contract.contended_writer"):
                 waiter.execute("INSERT INTO events(value) VALUES ('after contention')")
             outcome.append(True)
 
         thread = threading.Thread(target=write_after_lock)
         thread.start()
-        time.sleep(0.05)
+        # Hold the lock well past the waiter's start, so a late thread start on a busy
+        # machine still leaves the measured wait above its 30 ms floor.
+        assert writing.wait(HANG_GUARD_SECONDS), "contended writer did not start"
+        time.sleep(0.2)
         holder.commit()
-        thread.join(timeout=2)
+        thread.join(timeout=HANG_GUARD_SECONDS)
         assert outcome == [True]
         measured = diagnostics()["writeWait"]["sites"]["contract.contended_writer"]
         assert measured["writeWaits"] >= 1

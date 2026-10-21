@@ -87,7 +87,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.assertEqual(len(active), 1)
         self.blocked_trace_functions = {frame["function"] for frame in active[0]["frames"]}
         self.release.set()
-        self.assertEqual(request.result(timeout=10)["status"], 200)
+        self.assertEqual(request.result(timeout=HANG_GUARD_SECONDS)["status"], 200)
 
     def stop_server(self):
         self.release.set()
@@ -105,7 +105,11 @@ class HttpRequestTracesContract(unittest.TestCase):
         return {"id": agent, "items": []}
 
     def request(self, path, method="GET", token=None, read_limit=None, include_headers=False):
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=1)
+        # The socket timeout only guards against a hang; a blocked handler is
+        # released by the test.
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_port, timeout=HANG_GUARD_SECONDS,
+        )
         try:
             headers = {"X-Canvas-Token": token} if token else {}
             if method == "POST":
@@ -151,7 +155,7 @@ class HttpRequestTracesContract(unittest.TestCase):
             self.assertEqual(self.journal.parent.stat().st_mode & 0o777, 0o700)
         finally:
             self.release.set()
-        response = request.result(timeout=1)
+        response = request.result(timeout=HANG_GUARD_SECONDS)  # Only guards against a hang.
         self.assertEqual(response["status"], 200, response)
         self.assertTrue(self.finished.wait(HANG_GUARD_SECONDS))
         traces.watchdog(self.root)
@@ -210,7 +214,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         ):
             response = self.request("/api/sync/pull" + query)
             self.assertEqual(response["status"], 200)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS  # Only guards against a hang.
         last_count = 0
         while True:
             route_stats = traces.route_metrics()

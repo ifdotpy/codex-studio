@@ -47,7 +47,9 @@ class RuntimeReadLock(unittest.TestCase):
         self.runtime = make_runtime(Runtime, self.root, fixture.FakeServer)
         self.runtime.closed = True
         self.runtime.changed.set()
-        self.runtime.scheduler.join(timeout=5)
+        # The join only guards against a hang; the scheduler sees closed at once.
+        self.runtime.scheduler.join(timeout=HANG_GUARD_SECONDS)
+        self.assertFalse(self.runtime.scheduler.is_alive())
         self.runtime.closed = False
         self.canvas = Canvas(self.root)
         self.canvas.runtime = self.runtime
@@ -100,22 +102,35 @@ class RuntimeReadLock(unittest.TestCase):
         def hold():
             with self.runtime.lock:
                 entered.set()
-                release.wait(5)
+                release.wait(HANG_GUARD_SECONDS)
         holder = threading.Thread(target=hold)
         holder.start()
         self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         try:
-            began = time.monotonic()
-            state = read_runtime_state(self.runtime, include_work=False)
-            chat = self.runtime.chat_read(self.room)
-            peers = self.runtime.peers(self.lead["id"])
-            self.assertLess(time.monotonic() - began, 2)
+            done, errors, results = threading.Event(), [], []
+
+            def read():
+                try:
+                    results.append((read_runtime_state(self.runtime, include_work=False),
+                                    self.runtime.chat_read(self.room),
+                                    self.runtime.peers(self.lead["id"])))
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    done.set()
+
+            threading.Thread(target=read, daemon=True).start()
+            # The holder keeps Runtime.lock until release, so reads that wait for
+            # it cannot finish here. The wait only tolerates a busy machine.
+            self.assertTrue(done.wait(HANG_GUARD_SECONDS / 2), "reads waited for Runtime.lock")
+            self.assertEqual(errors, [])
+            state, chat, peers = results[0]
             self.assertEqual(state["agents"][0]["id"], self.lead["id"])
             self.assertEqual(chat["messages"][0]["text"], "hello")
             self.assertEqual(peers["self"], self.lead["id"])
         finally:
             release.set()
-            holder.join(5)
+            holder.join(HANG_GUARD_SECONDS)
 
     def test_read_transaction_keeps_one_generation(self):
         with self.runtime.read_db() as db:
@@ -180,7 +195,8 @@ class RuntimeReadLock(unittest.TestCase):
 
             def __iter__(self):
                 reading.set()
-                if not release.wait(5):
+                # Hold the build until the test releases it, past the lock probe below.
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError("agent cache fixture did not release its cursor")
                 return iter(self.cursor)
 
@@ -227,7 +243,9 @@ class RuntimeReadLock(unittest.TestCase):
             writer.start()
             self.assertTrue(writer_entered.wait(HANG_GUARD_SECONDS))
             self.assertTrue(writer_done.wait(HANG_GUARD_SECONDS), "agent cache build blocked the SQLite writer")
-            available = runtime.lock.acquire(timeout=1)
+            # The gated build never ends before release, so a held lock still fails;
+            # the wait only tolerates a short step on a busy machine.
+            available = runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
             self.assertTrue(available, "agent cache build blocked another Runtime caller")
             if available:
                 runtime.lock.release()

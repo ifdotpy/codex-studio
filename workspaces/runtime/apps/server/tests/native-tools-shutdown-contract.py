@@ -49,7 +49,8 @@ class Shutdown(unittest.TestCase):
             runtime._native_tools_retiring = {"old": {"server": retired}, "same": {"server": current}}
             release, waiting = threading.Event(), threading.Event()
             failures = []
-            worker = threading.Thread(target=lambda: release.wait(3))
+            # The test releases the writer; this wait only guards against a hang.
+            worker = threading.Thread(target=lambda: release.wait(HANG_GUARD_SECONDS))
             runtime._native_tools_workers = {worker}
             worker.start()
             original_wait = codex_native_tools.wait_updates

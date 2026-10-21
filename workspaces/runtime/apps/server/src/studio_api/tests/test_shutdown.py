@@ -23,6 +23,13 @@ import httpx
 from server_test_waits import HANG_GUARD_SECONDS
 
 READY_FD_ENV = "STUDIO_SHUTDOWN_TEST_READY_FD"
+# Fixture modes whose shutdown stalls until the hard deadline ends the process.
+HARD_DEADLINE_MODES = frozenset({"loop", "cleanup", "thread", "startup"})
+# The short hard deadline that those modes measure, in seconds.
+FIXTURE_HARD_DEADLINE_SECONDS = 1.5
+# The other modes must finish gracefully. Their hard deadline stays far above a
+# busy machine's shutdown time and below the test's hang guard, in seconds.
+GRACEFUL_FIXTURE_HARD_DEADLINE_SECONDS = HANG_GUARD_SECONDS / 2
 
 
 def run_fixture(mode: str) -> None:
@@ -98,7 +105,9 @@ def run_fixture(mode: str) -> None:
     with patch.dict(sys.modules, {"codex_runtime": runtime_module, "codex_live_updates": updates_module}), \
             patch.object(codex_canvas, "make_server", make_server), \
             patch.object(studio_api.server._StudioUvicornServer, "startup", startup), \
-            patch.object(codex_canvas, "SHUTDOWN_TIMEOUT_SECONDS", 1.5, create=True), \
+            patch.object(codex_canvas, "SHUTDOWN_TIMEOUT_SECONDS",
+                         FIXTURE_HARD_DEADLINE_SECONDS if mode in HARD_DEADLINE_MODES
+                         else GRACEFUL_FIXTURE_HARD_DEADLINE_SECONDS, create=True), \
             patch.object(studio_api.server, "GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS", 0.3, create=True), \
             patch.object(RequestResponseCycle, "send", send_response), \
             patch.object(sys, "argv", ["codex-canvas", "--port", "0"]):
@@ -148,26 +157,28 @@ class BackendShutdownTests(unittest.TestCase):
                 if port is None:
                     if process.poll() is None:
                         process.kill()
-                    stdout, stderr = process.communicate(timeout=5)
+                    stdout, stderr = process.communicate(timeout=HANG_GUARD_SECONDS)
                     self.fail(f"Backend did not bind its isolated listeners: {stdout} {stderr}")
                 yield process, root / "state", port
             except Exception:
                 if process.poll() is None:
                     process.kill()
-                stdout, stderr = process.communicate(timeout=5)
+                stdout, stderr = process.communicate(timeout=HANG_GUARD_SECONDS)
                 print(f"Fixture output: {stdout} {stderr}", file=sys.stderr)
                 raise
             finally:
                 if process.poll() is None:
                     process.kill()
-                process.communicate(timeout=5)
+                process.communicate(timeout=HANG_GUARD_SECONDS)
 
     def assert_exit(self, process: subprocess.Popen[str], *, code: int = 0) -> tuple[str, str, dict[str, Any]]:
+        # The fixture's hard deadline ends every mode before this wait expires, so
+        # it only guards against a hang; the exit code and record carry the result.
         try:
-            stdout, stderr = process.communicate(timeout=4)
+            stdout, stderr = process.communicate(timeout=HANG_GUARD_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
-            stdout, stderr = process.communicate(timeout=5)
+            stdout, stderr = process.communicate(timeout=HANG_GUARD_SECONDS)
             self.fail(f"Backend ignored its shutdown request: {stdout} {stderr}")
         self.assertEqual(process.returncode, code, stderr)
         self.assertNotIn("KeyboardInterrupt", stderr)
@@ -176,11 +187,19 @@ class BackendShutdownTests(unittest.TestCase):
         self.assertEqual(records[0]["pid"], process.pid)
         return stdout, stderr, records[0]
 
+    def assert_hard_deadline(self, record: dict[str, Any]) -> None:
+        # Measure from the backend's own signal record, so process start and the
+        # request round trip on a busy machine do not count. The wide ratio still
+        # fails on a missing patch (the 60 s product default) or a hang;
+        # test_hard_deadline_runs_once_from_the_first_signal pins the exact deadline.
+        self.assertEqual(record["timeoutSeconds"], FIXTURE_HARD_DEADLINE_SECONDS)
+        self.assertLess(time.time() - record["at"], 4 * record["timeoutSeconds"])
+
     def test_sigterm_during_response_finishes_and_stops_both_listeners(self) -> None:
         for listener in ("tcp", "unix"):
             with self.subTest(listener=listener), self.backend("response") as (process, state, port):
                 transport = httpx.HTTPTransport(uds=str(state / "canvas.sock")) if listener == "unix" else None
-                with httpx.Client(transport=transport, timeout=3) as client:
+                with httpx.Client(transport=transport, timeout=HANG_GUARD_SECONDS) as client:
                     response = client.get(f"http://127.0.0.1:{port}/api/session")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("token", response.json())
@@ -191,7 +210,7 @@ class BackendShutdownTests(unittest.TestCase):
     def test_repeat_sigterm_and_sigint_allow_response_to_finish(self) -> None:
         for mode in ("repeat", "sigint"):
             with self.subTest(mode=mode), self.backend(mode) as (process, state, port):
-                response = httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=3)
+                response = httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=HANG_GUARD_SECONDS)
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("token", response.json())
                 _, _, record = self.assert_exit(process)
@@ -201,7 +220,7 @@ class BackendShutdownTests(unittest.TestCase):
     def test_graceful_timeout_cancels_a_stalled_response(self) -> None:
         with self.backend("grace") as (process, state, port):
             with self.assertRaises(httpx.RemoteProtocolError):
-                httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=3)
+                httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=HANG_GUARD_SECONDS)
             stdout, stderr, _ = self.assert_exit(process)
             self.assertIn("response-cancelled", stdout)
             self.assertIn("timeout graceful shutdown exceeded", stderr)
@@ -210,15 +229,14 @@ class BackendShutdownTests(unittest.TestCase):
     def test_hard_deadline_covers_loop_cleanup_and_interpreter_threads(self) -> None:
         for mode in ("loop", "cleanup", "thread"):
             with self.subTest(mode=mode), self.backend(mode) as (process, _state, port):
-                started = time.monotonic()
                 try:
-                    response = httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=3)
+                    response = httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=HANG_GUARD_SECONDS)
                 except httpx.RemoteProtocolError:
                     self.assertEqual(mode, "loop")
                 else:
                     self.assertEqual(response.status_code, 200)
-                stdout, _, _ = self.assert_exit(process, code=1)
-                self.assertLess(time.monotonic() - started, 3)
+                stdout, _, record = self.assert_exit(process, code=1)
+                self.assert_hard_deadline(record)
                 if mode == "thread":
                     self.assertIn("runtime-closed", stdout)
 
@@ -273,13 +291,40 @@ class BackendShutdownTests(unittest.TestCase):
 
     def test_sigterm_during_runtime_startup_obeys_hard_deadline(self) -> None:
         with self.backend("startup") as (process, _state, _port):
-            started = time.monotonic()
-            self.assert_exit(process, code=1)
-            self.assertLess(time.monotonic() - started, 3)
+            _, _, record = self.assert_exit(process, code=1)
+            self.assert_hard_deadline(record)
+
+    def test_hard_deadline_runs_once_from_the_first_signal(self) -> None:
+        import codex_canvas
+
+        now = [100.0]
+        exits: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            now[0] += seconds
+
+        def exit_process(code: int) -> None:
+            exits.append(now[0])
+            raise SystemExit(code)
+
+        clock = SimpleNamespace(monotonic=lambda: now[0], sleep=sleep, time=time.time)
+        shutdown = codex_canvas.BackendShutdown()
+        with patch.object(codex_canvas, "time", clock), \
+                patch("codex_canvas.os._exit", side_effect=exit_process):
+            shutdown.terminate(signal.SIGTERM, None)
+            now[0] += 1.0
+            # A repeated signal must not start a second deadline.
+            shutdown.terminate(signal.SIGINT, None)
+            with self.assertRaises(SystemExit):
+                shutdown.watch()
+        self.assertEqual(len(exits), 1)
+        self.assertGreaterEqual(exits[0], 100.0 + shutdown.timeout_seconds)
+        self.assertLess(exits[0], 100.0 + shutdown.timeout_seconds
+                        + codex_canvas.SHUTDOWN_POLL_SECONDS + 1e-6)
 
     def test_idle_backend_serves_requests_until_external_sigterm(self) -> None:
         with self.backend("idle") as (process, state, port):
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=3) as client:
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=HANG_GUARD_SECONDS) as client:
                 first = client.get("/api/session")
                 second = client.get("/api/session")
             self.assertEqual((first.status_code, second.status_code), (200, 200))
