@@ -4,6 +4,14 @@ pub mod store;
 use crate::event_write::{request_signature, truthy};
 use serde::Deserialize;
 use serde_json::{Value, json};
+/// Claude session permission modes accepted by settings and child creation.
+pub(crate) const PERMISSION_MODES: &[&str] = &[
+    "default",
+    "acceptEdits",
+    "auto",
+    "plan",
+    "bypassPermissions",
+];
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
     #[error("Invalid Claude control record at {0}")]
@@ -365,16 +373,7 @@ pub fn settings(value: &Value) -> Result<Value> {
         return Err(ControlError::Request);
     }
     if let Some(mode) = object.get("permissionMode")
-        && !mode.as_str().is_some_and(|m| {
-            [
-                "default",
-                "acceptEdits",
-                "auto",
-                "plan",
-                "bypassPermissions",
-            ]
-            .contains(&m)
-        })
+        && !mode.as_str().is_some_and(|m| PERMISSION_MODES.contains(&m))
     {
         return Err(ControlError::Request);
     }
