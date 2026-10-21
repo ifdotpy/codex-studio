@@ -13,6 +13,16 @@ Use these environment variables for output outside the source folder:
 and writes that state into the slot before the command. The `.git` folder of the slot is the
 line's git layer and can name an older commit; use this ID to identify the sources.
 
+`HOST_EXEC_TREE` is the git tree ID of that state: the 40 hexadecimal digits that
+`layr rev-parse <state>^{tree}` prints in the guest. It is the tree of the commit that
+`layr push` exports for the state, so it equals `git rev-parse HEAD^{tree}` after a git
+sync of that state. Use it to record the whole source tree of a build. A tree computed
+in the slot is not this value: the slot holds ignored build output, and layr-only files
+of the state do not have to be there. The
+guest asks layr for the tree when it saves the line for the command. A layr from before
+2026-10-17 has no tree form; then the command gets no `HOST_EXEC_TREE`, never a guessed
+value. `codex_host_exec.py` owns the names of these variables.
+
 For example:
 
 ```json

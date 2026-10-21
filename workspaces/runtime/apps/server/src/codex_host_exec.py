@@ -26,13 +26,22 @@ class GuestClient(Protocol):
 
 # The host_exec tool actions; the guest broker implements each (vm-guest/host_exec.py).
 ACTIONS = ("execute", "status", "cancel", "list", "release")
+# Environment names of the Mac command (docs/host-exec.md); the Mac service sets them.
+ENV_DERIVED_DATA = "HOST_EXEC_DERIVED_DATA"
+ENV_PACKAGE_CACHE = "HOST_EXEC_PACKAGE_CACHE"
+ENV_ARTIFACTS = "HOST_EXEC_ARTIFACTS"
+# The ID of the layr state that the slot holds.
+ENV_STATE = "HOST_EXEC_STATE"
+# The git tree ID of that state: what `layr rev-parse <state>^{tree}` prints, 40 hex digits.
+ENV_TREE = "HOST_EXEC_TREE"
 
 
 def tool_definition() -> dict[str, Any]:
     # The same canonical format as TOOLS: the app-server rejects a mixed list.
     return {"type": "function", "name": "host_exec", "description": (
         "Run a macOS command from your VM line. Sources return through layr. Slots keep stable paths and caches. "
-        "Use HOST_EXEC_DERIVED_DATA, HOST_EXEC_PACKAGE_CACHE and HOST_EXEC_ARTIFACTS for build output. "
+        f"Use {ENV_DERIVED_DATA}, {ENV_PACKAGE_CACHE} and {ENV_ARTIFACTS} for build output. "
+        f"{ENV_STATE} names the layr state in the slot and {ENV_TREE} its git tree ID. "
         "The line's layr cache folders go to the Mac, but Mac changes inside them never return. "
         "Supply the same request_id for exact retries. Lost results never repeat the command. "
         "Use status to read saved output and cancel to stop the command. Artifacts return as files. "

@@ -267,6 +267,12 @@ class HostSlotHandlers:
             await self.layr(context, ["save", "-q", "--force", "-m", "host_exec slot " + params["slotId"]])
             state = (await self.layr(context, ["rev-parse", "HEAD@{0}"])).strip()
             require(len(state) >= 7 and all(c in "0123456789abcdef" for c in state), "layr gave no state ID", "layr_failed")
+            # The git tree ID of the exact state (public layr CLI); product builds record it as provenance.
+            # A layr from before 2026-10-17 refuses the "^{tree}" form (exit 128): the command then
+            # gets no tree, never a guessed one.
+            tree = (await self.layr(context, ["rev-parse", state + "^{tree}"], ok=(0, 128))).strip()
+            require(not tree or re.fullmatch(r"[0-9a-f]{40}", tree) is not None,
+                    "layr gave an invalid tree ID for state " + state, "layr_failed")
             if not held.exists():
                 # An unknown folder content: start from an empty folder, then a full copy.
                 await self.io(context, {"action": "clear", "root": str(source)})
@@ -291,7 +297,7 @@ class HostSlotHandlers:
             atomic(parent / "paths.json", {"caches": caches, "macOnly": mac_only})
             atomic(held, {"state": state})
             return {"path": str(source), "nameConflicts": bad, "syncOutput": output, "caches": caches,
-                    "state": state, "status": "slot holds state " + state}
+                    "state": state, **({"tree": tree} if tree else {}), "status": "slot holds state " + state}
         require(lease.exists() and json.loads(lease.read_text())["operationId"] == operation,
                 "The command does not own its guest slot", "lease_lost")
         manifest_path = parent / (key(operation) + ".manifest.json")
