@@ -16,8 +16,9 @@ use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_driver::{AccountDriver, AuthMetadata, AuthStatus},
     account_session_runtime::{
-        AccountSessionPort, AccountSessionRuntime, ConnectionScope, LoginRequest, ProviderRequest,
-        ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
+        AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
+        LoginRequest, ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
+        SessionFuture, SessionFutureScope, SessionReceipt,
     },
     claude_login::ports::{LoginEvent, LoginReceipts},
 };
@@ -29,6 +30,11 @@ const CLAUDE_URL: &str = "https://claude.com/cai/oauth/authorize?fixture=1";
 
 struct CodexSession(AtomicUsize);
 impl RetainedAccountSession for CodexSession {
+    fn ensure_session(&self, account: String) -> SessionFutureScope {
+        let scope = self.current_scope(&account);
+        Box::pin(async move { scope.ok_or(AccountSessionError::Requires("fixture/session")) })
+    }
+
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
         Some(ConnectionScope {
             account: account.to_owned(),

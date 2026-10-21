@@ -2,6 +2,19 @@
   "source": "hand-authored supervisor event frames based on workspaces/runtime/apps/server/tests/process-supervisor-contract.py",
   "supervisorReplay": true,
   "rpcReplies": {
+    "account/login/start": {
+      "direction": "in",
+      "responseFor": "account/login/start",
+      "timestamp": 0,
+      "message": {
+        "result": {
+          "type": "chatgptDeviceCode",
+          "loginId": "fixture-device-login",
+          "verificationUrl": "https://example.invalid/device",
+          "userCode": "FIXTURE-CODE"
+        }
+      }
+    },
     "skills/list": {
       "direction": "in",
       "responseFor": "skills/list",

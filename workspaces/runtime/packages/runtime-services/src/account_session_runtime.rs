@@ -495,6 +495,29 @@ use tokio::time::Instant;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+/// How long a sign-in waits for the account's provider session to start
+/// before it reports that the request was not sent; unit: wall time.
+const LOGIN_SESSION_START_TIMEOUT: Duration = Duration::from_secs(20);
+/// Receipt error cause when the account's provider session did not start.
+const LOGIN_SESSION_NOT_STARTED: &str = "the Codex app server for this account did not start";
+
+/// The user-readable cause of a sign-in request that the session did not send.
+fn login_not_sent_cause(reason: Option<NotSentReason>) -> &'static str {
+    match reason {
+        Some(NotSentReason::NoLiveAccountWorker) | None => {
+            "the Codex app server for this account is not running"
+        }
+        Some(NotSentReason::ExpectedScopeMismatch) => {
+            "the Codex app server for this account restarted"
+        }
+        Some(NotSentReason::DeadlineExpired) => {
+            "the Codex app server for this account did not accept the request in time"
+        }
+        Some(NotSentReason::WorkerNotSent) => {
+            "the Codex app server for this account did not accept the request"
+        }
+    }
+}
 
 pub use crate::recovery_history::ConnectionScope;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -924,6 +947,32 @@ impl AccountSessionRuntime {
         }
         self.accounts()
     }
+    /// Recreate the missing home of a Studio sign-in account before it signs
+    /// in again. Such a home is `<accounts root>/login-<request UUID>` and
+    /// holds no credentials until the provider writes them; an existing home
+    /// and every other account are left unchanged.
+    fn restore_login_home(&self, account: &str) -> Result<(), AccountSessionError> {
+        let Some(request) = account
+            .strip_prefix("login-")
+            .filter(|request| uuid::Uuid::parse_str(request).is_ok())
+        else {
+            return Ok(());
+        };
+        let Ok(record) = self.driver.internal_record(account) else {
+            return Ok(());
+        };
+        let Some(home) = record.get("home").and_then(Value::as_str).map(Path::new) else {
+            return Ok(());
+        };
+        let registered_under_root = home.file_name() == Some(std::ffi::OsStr::new(account))
+            && home.parent().and_then(|parent| parent.canonicalize().ok())
+                == self.accounts_root.canonicalize().ok();
+        if !registered_under_root || std::fs::symlink_metadata(home).is_ok() {
+            return Ok(());
+        }
+        self.prepare_login_home(request).map(|_| ())
+    }
+
     fn prepare_login_home(&self, request: &str) -> Result<PathBuf, AccountSessionError> {
         let accounts_root = self
             .accounts_root
@@ -1319,6 +1368,10 @@ impl AccountSessionPort for AccountSessionRuntime {
                         spawn_account_driver(move || runtime.prepare_login_home(&request_id))
                             .await??
                     } else {
+                        let restorer = runtime.clone();
+                        let account = request.account_key.clone().unwrap_or_default();
+                        spawn_account_driver(move || restorer.restore_login_home(&account))
+                            .await??;
                         runtime.base_home.clone()
                     };
                     let driver = Arc::clone(&runtime.driver);
@@ -1336,32 +1389,73 @@ impl AccountSessionPort for AccountSessionRuntime {
                     let account = receipt["accountKey"].as_str().ok_or_else(|| {
                         AccountSessionError::InvalidResponse("/accountKey".into())
                     })?;
-                    let response = runtime
-                        .exchange(
-                            account,
-                            request.account_key.is_some(),
-                            request.login_id.clone(),
-                            "account/login/start",
-                            serde_json::json!({"type":"chatgptDeviceCode"}),
-                            LOGIN_TIMEOUT,
-                        )
-                        .await;
-                    let (result, sent) = match response {
-                        Ok(response) => (
-                            if response.certainty == RequestCertainty::Written {
-                                match response.result {
-                                    Some(ProviderResponse::Reply(value)) => Some(value),
-                                    Some(ProviderResponse::Rejected(_)) | None => None,
+                    // A new or signed-out account has no provider session yet.
+                    // The sign-in runs in that account's own session, so start
+                    // it first. No request is written before it is live.
+                    let started = tokio::time::timeout(
+                        LOGIN_SESSION_START_TIMEOUT,
+                        AccountSessionPort::ensure_session(&runtime, account),
+                    )
+                    .await;
+                    let (result, sent, not_sent_cause) = match started {
+                        Ok(Ok(_)) => {
+                            let response = runtime
+                                .exchange(
+                                    account,
+                                    request.account_key.is_some(),
+                                    request.login_id.clone(),
+                                    "account/login/start",
+                                    serde_json::json!({"type":"chatgptDeviceCode"}),
+                                    LOGIN_TIMEOUT,
+                                )
+                                .await;
+                            match response {
+                                Ok(response) if response.certainty == RequestCertainty::NotSent => {
+                                    let reason = response.not_sent_reason;
+                                    eprintln!(
+                                        "account sign-in {} for {account} was not sent: {reason:?}",
+                                        request.login_id
+                                    );
+                                    (None, false, Some(login_not_sent_cause(reason)))
                                 }
-                            } else {
-                                None
-                            },
-                            response.certainty != RequestCertainty::NotSent,
-                        ),
-                        // The durable login reservation already exists. Any adapter error
-                        // after this point lacks proof that the provider never received
-                        // the request, so keep the attempt uncertain.
-                        Err(_) => (None, true),
+                                Ok(response) => (
+                                    if response.certainty == RequestCertainty::Written {
+                                        match response.result {
+                                            Some(ProviderResponse::Reply(value)) => Some(value),
+                                            Some(ProviderResponse::Rejected(_)) | None => None,
+                                        }
+                                    } else {
+                                        None
+                                    },
+                                    true,
+                                    None,
+                                ),
+                                // The durable login reservation already exists. Any adapter
+                                // error after this point lacks proof that the provider never
+                                // received the request, so keep the attempt uncertain.
+                                Err(error) => {
+                                    eprintln!(
+                                        "account sign-in {} for {account} has an unknown outcome: {error}",
+                                        request.login_id
+                                    );
+                                    (None, true, None)
+                                }
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "account sign-in {} for {account} was not sent: the provider session did not start: {error}",
+                                request.login_id
+                            );
+                            (None, false, Some(LOGIN_SESSION_NOT_STARTED))
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "account sign-in {} for {account} was not sent: the provider session did not start within {LOGIN_SESSION_START_TIMEOUT:?}",
+                                request.login_id
+                            );
+                            (None, false, Some(LOGIN_SESSION_NOT_STARTED))
+                        }
                     };
                     let driver = Arc::clone(&runtime.driver);
                     let request_id = request.login_id.clone();
@@ -1373,6 +1467,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                             &account,
                             result.as_ref(),
                             sent,
+                            not_sent_cause,
                             finished_at,
                         )
                     })

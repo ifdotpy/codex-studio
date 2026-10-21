@@ -9,7 +9,7 @@ use studio_runtime_services::{
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
         LoginRequest, NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty,
-        RetainedAccountSession, SessionFuture, SessionReceipt,
+        RetainedAccountSession, SessionFuture, SessionFutureScope, SessionReceipt,
     },
 };
 
@@ -73,6 +73,15 @@ impl FakeSession {
 }
 
 impl RetainedAccountSession for FakeSession {
+    fn ensure_session(&self, account: String) -> SessionFutureScope {
+        let scope = self.current_scope(&account);
+        Box::pin(async move {
+            scope.ok_or(AccountSessionError::Requires(
+                "provider-session/account-session",
+            ))
+        })
+    }
+
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
         if self.no_scope {
             return None;
@@ -220,7 +229,10 @@ async fn login_not_sent_returns_python_error_receipt() {
     let fixture = Fixture::new();
     let receipt = fixture.login(RequestCertainty::NotSent, None).await;
     assert_eq!(receipt["status"], "error");
-    assert_eq!(receipt["error"], "Could not start sign-in. Try again.");
+    assert_eq!(
+        receipt["error"],
+        "Could not start sign-in: the Codex app server for this account is not running. Try again."
+    );
 }
 
 #[tokio::test]
@@ -239,7 +251,10 @@ async fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
         .await
         .expect("not-sent login receipt");
     assert_eq!(login["status"], "error");
-    assert_eq!(login["error"], "Could not start sign-in. Try again.");
+    assert_eq!(
+        login["error"],
+        "Could not start sign-in: the Codex app server for this account did not start. Try again."
+    );
     assert_eq!(session.calls.load(Ordering::SeqCst), 0);
 
     let cancel_fixture = Fixture::new();

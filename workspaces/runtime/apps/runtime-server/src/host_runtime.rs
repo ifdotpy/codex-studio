@@ -2749,10 +2749,24 @@ async fn next_direct_generation(
     .await
 }
 
+/// The home and isolation of a Codex account whose provider session may start:
+/// a ready account, or an account whose sign-in request is being dispatched
+/// (the sign-in runs in that session, before the account is ready).
 pub(crate) fn account_home<R: ProviderAuthReader>(
     accounts: &AccountDriver<R>,
     key: &str,
 ) -> Result<(String, bool), WorkerError> {
+    if let Some(record) = accounts
+        .login_launch_record(key)
+        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?
+    {
+        let home = record["home"]
+            .as_str()
+            .filter(|home| !home.is_empty())
+            .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
+            .to_owned();
+        return Ok((home, key != "default"));
+    }
     let initial = accounts
         .snapshot()
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
@@ -2811,17 +2825,26 @@ fn selected_account(
     let snapshot = accounts
         .snapshot()
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    let profile = snapshot
+    // A sign-in account is not listed until it has an identity; its sign-in
+    // request still launches its session.
+    let profile = match snapshot
         .accounts
         .iter()
         .find(|profile| profile["id"] == key)
-        .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    let kind = ProviderKind::of_record(profile).map_err(|_| {
+    {
+        Some(profile) => profile.clone(),
+        None => accounts
+            .login_launch_record(key)
+            .ok()
+            .flatten()
+            .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?,
+    };
+    let kind = ProviderKind::of_record(&profile).map_err(|_| {
         WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
     })?;
     if kind == ProviderKind::Codex {
         let (home, isolated) = account_home(accounts, key)?;
-        return Ok((kind, home, isolated, profile.clone()));
+        return Ok((kind, home, isolated, profile));
     }
     let profile = accounts
         .claude_profile(key)

@@ -16,8 +16,9 @@ use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
-        AccountSessionRuntime, ConnectionScope, ProviderRequest, ProviderResponse,
-        RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
+        AccountSessionError, AccountSessionRuntime, ConnectionScope, ProviderRequest,
+        ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture,
+        SessionFutureScope, SessionReceipt,
     },
 };
 use tower::ServiceExt;
@@ -30,6 +31,11 @@ struct Session {
     foreign: bool,
 }
 impl RetainedAccountSession for Session {
+    fn ensure_session(&self, account: String) -> SessionFutureScope {
+        let scope = self.current_scope(&account);
+        Box::pin(async move { scope.ok_or(AccountSessionError::Requires("fixture/session")) })
+    }
+
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
         Some(ConnectionScope {
             account: account.to_owned(),

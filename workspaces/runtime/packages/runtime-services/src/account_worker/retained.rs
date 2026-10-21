@@ -597,6 +597,25 @@ pub(super) fn valid_actorless_request_shape(
         }
         // The limits snapshot is a read issued by AccountSessionRuntime.
         Method::AccountRateLimitsRead => params.is_empty() && operation.starts_with("limits-read:"),
+        // AccountSessionRuntime::login sends the device-code start once per
+        // durable sign-in reservation; the operation is that request UUID.
+        Method::AccountLoginStart => {
+            only(&["type"], &[])
+                && params.get("type") == Some(&json!("chatgptDeviceCode"))
+                && uuid::Uuid::parse_str(operation).is_ok()
+        }
+        // AccountSessionRuntime::cancel_login cancels the provider login id
+        // saved on that reservation; the operation is "<request UUID>:cancel".
+        Method::AccountLoginCancel => {
+            only(&["loginId"], &[])
+                && params
+                    .get("loginId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 8192)
+                && operation
+                    .strip_suffix(":cancel")
+                    .is_some_and(|request| uuid::Uuid::parse_str(request).is_ok())
+        }
         // Reset-credit consumption is the only actorless account write. Bind it
         // to the durable charge identity, distinct transport sequence, and exact
         // provider request shape.
@@ -872,6 +891,14 @@ mod validation_tests {
             (Method::ClaudeDiagnostics, json!({})),
             (Method::AccountRateLimitsRead, json!({})),
             (
+                Method::AccountLoginStart,
+                json!({"type":"chatgptDeviceCode"}),
+            ),
+            (
+                Method::AccountLoginCancel,
+                json!({"loginId":"fixture-native-login"}),
+            ),
+            (
                 Method::OperationStatus,
                 json!({"operationId":"monitor:fixture"}),
             ),
@@ -886,10 +913,11 @@ mod validation_tests {
             ),
         ];
         for (method, params) in cases {
-            let operation = if method == Method::AccountRateLimitsRead {
-                "limits-read:fixture"
-            } else {
-                "fixture-operation"
+            let operation = match method {
+                Method::AccountRateLimitsRead => "limits-read:fixture",
+                Method::AccountLoginStart => "6f1d2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b",
+                Method::AccountLoginCancel => "6f1d2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b:cancel",
+                _ => "fixture-operation",
             };
             assert!(
                 valid_actorless_request_shape(method, &params, operation),
@@ -902,6 +930,27 @@ mod validation_tests {
                 "{method:?} accepted extra params: {extended}"
             );
         }
+        // A sign-in request is bound to its durable reservation identity.
+        assert!(!valid_actorless_request_shape(
+            Method::AccountLoginStart,
+            &json!({"type":"chatgptDeviceCode"}),
+            "fixture-operation"
+        ));
+        assert!(!valid_actorless_request_shape(
+            Method::AccountLoginStart,
+            &json!({"type":"apiKey"}),
+            "6f1d2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
+        ));
+        assert!(!valid_actorless_request_shape(
+            Method::AccountLoginCancel,
+            &json!({"loginId":"fixture-native-login"}),
+            "6f1d2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
+        ));
+        assert!(!valid_actorless_request_shape(
+            Method::AccountLoginCancel,
+            &json!({"loginId":""}),
+            "6f1d2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b:cancel"
+        ));
         assert!(!valid_actorless_request_shape(
             Method::ThreadRead,
             &json!({"threadId":"fixture-thread"}),

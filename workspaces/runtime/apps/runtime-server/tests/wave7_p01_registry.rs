@@ -2368,6 +2368,42 @@ fn launch_admission_refreshes_restored_and_changed_credentials() {
 }
 
 #[test]
+fn sign_in_dispatch_admits_launch_of_an_account_that_is_not_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let login_home = root.path().join("accounts/login-fixture");
+    std::fs::create_dir_all(&login_home).unwrap();
+    let registry = root.path().join("accounts/registry.json");
+    let write = |status: &str| {
+        std::fs::write(
+            &registry,
+            json!({"version":1,"defaultAccountKey":"default",
+                "accounts":{
+                    "default":{"id":"default","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"},
+                    "login-fixture":{"id":"login-fixture","home":login_home,"label":"New account","source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"}
+                },
+                "logins":{"fixture-request":{"requestId":"fixture-request","accountKey":"login-fixture","status":status,"createdAt":1.0}},
+                "deleteReceipts":{}})
+            .to_string(),
+        )
+        .unwrap();
+        studio_runtime_services::account_driver::AccountDriver::open(&registry).unwrap()
+    };
+    let driver = write("starting");
+    assert_eq!(
+        host_runtime::account_home(&driver, "login-fixture").unwrap(),
+        (login_home.to_string_lossy().into_owned(), true)
+    );
+    assert!(host_runtime::account_home(&driver, "default").is_err());
+    for other in ["pending", "error", "cancelled"] {
+        let driver = write(other);
+        assert!(
+            host_runtime::account_home(&driver, "login-fixture").is_err(),
+            "{other}"
+        );
+    }
+}
+
+#[test]
 fn claude_profile_is_not_refreshed_through_codex_account_home_admission() {
     use std::sync::atomic::AtomicUsize;
     struct CountingReader(Arc<AtomicUsize>);

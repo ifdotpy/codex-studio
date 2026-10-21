@@ -1491,9 +1491,21 @@ impl AccountRegistry {
                 Some(RegistryTrigger::Ensure(request)) => {
                     let response = match self.ensure_account_session(&request.account).await {
                         Ok(scope) if scope.account == request.account => Ok(scope),
-                        _ => Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
-                            "provider-session/account-session",
-                        )),
+                        result => {
+                            match result {
+                                Err(error) => eprintln!(
+                                    "account session for {} did not start: {error}",
+                                    request.account
+                                ),
+                                Ok(_) => eprintln!(
+                                    "account session for {} started with another account scope",
+                                    request.account
+                                ),
+                            }
+                            Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                                "provider-session/account-session",
+                            ))
+                        }
                     };
                     if request.response.send(response).is_err() {
                         eprintln!("account-session requester stopped before receiving its result");
