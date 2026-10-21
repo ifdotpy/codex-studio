@@ -671,6 +671,9 @@ pub(crate) fn settle_terminal_in_transaction(
                 now,
             )?;
         }
+        if native_status == "completed" {
+            crate::worker_capabilities::completed_turn(transaction, &identity.agent_id, turn_id)?;
+        }
         crate::lifecycle_effects::notify_parent_of_turn(
             transaction,
             &identity.agent_id,
@@ -860,6 +863,11 @@ pub(crate) fn claim_radio_turn_in_transaction(
     if !attempt_created.is_finite() {
         return Err(SchedulerError::InvalidAttemptTimestamp);
     }
+    if AgentRepository::get(transaction, &AgentId::from(agent_id))?
+        .is_some_and(|agent| crate::worker_capabilities::exhausted(&agent.value()))
+    {
+        return Ok(None);
+    }
     let claimed = SchedulerRepository::claim_selected_radio_turn(
         transaction,
         agent_id,
@@ -917,6 +925,11 @@ fn claim_intent_selected(
     attempt_created: f64,
     preparation: bool,
 ) -> Result<Option<TurnIntent>, SchedulerError> {
+    if AgentRepository::get(transaction, &AgentId::from(agent_id))?
+        .is_some_and(|agent| crate::worker_capabilities::exhausted(&agent.value()))
+    {
+        return Ok(None);
+    }
     let claim = if preparation {
         SchedulerRepository::claim_for_preparation
     } else {
@@ -1390,6 +1403,157 @@ mod child_turn_parent_tests {
             .expect("stop runs");
         finish(&store, &intent, "completed").await;
         assert!(parent_events(&store).is_empty(), "stale epoch");
+    }
+
+    #[tokio::test]
+    async fn capability_max_turns_stops_once_notifies_parent_and_only_lead_resets() {
+        for provider in ["codex", "claude"] {
+            let (_directory, store, intent) = seeded(provider).await;
+            store.transaction(|tx| {
+                let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.unwrap();
+                child.extra.insert("capabilityProfile".into(), json!({"maxTurns":1}));
+                AgentRepository::put(tx, &child)?;
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('next','child','followup','queued work','pending',2,1)", [])?;
+                Ok(())
+            }).await.unwrap();
+            assert!(finish(&store, &intent, "completed").await);
+            assert!(
+                finish(&store, &intent, "completed").await,
+                "receipt replay succeeds"
+            );
+            let child =
+                AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("child"))
+                    .unwrap()
+                    .unwrap()
+                    .value();
+            assert_eq!(child["completedWorkerTurns"], 1);
+            assert_eq!(child["autoWake"], false);
+            assert_eq!(child["terminalReason"], "worker_max_turns");
+            assert!(child["error"].as_str().unwrap().contains("maxTurns"));
+            let events = parent_events(&store);
+            assert_eq!(events.len(), 1);
+            assert!(events[0].2["result"].as_str().unwrap().contains("maxTurns"));
+            assert!(
+                claim_intent(&store, "child", 1, "blocked", 3.0)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let system = store
+                .transaction_with::<_, crate::coordination::CoordinationError>(|tx| {
+                    crate::coordination::send_system_followup(
+                        tx,
+                        crate::coordination::SystemFollowup {
+                            recipient_id: "child",
+                            id: "system-resume",
+                            text: "Continue",
+                            delivery: studio_runtime_schema::DeliveryMoment::NextTurn,
+                            now: 4.0,
+                        },
+                        &crate::message_admission::PreparedAdmission::default(),
+                    )
+                })
+                .await;
+            assert!(system.is_err());
+            store
+                .transaction(|tx| {
+                    let manager = AgentRecord::from_value(json!({
+                        "id":"manager","parentId":"lead","rootId":"lead","epoch":1,
+                        "status":"completed","cwd":"/work","autoWake":true
+                    }))
+                    .unwrap();
+                    AgentRepository::put(tx, &manager)?;
+                    let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.unwrap();
+                    child.extra.insert("parentId".into(), json!("manager"));
+                    AgentRepository::put(tx, &child)
+                })
+                .await
+                .unwrap();
+            let parent_instruction = store
+                .transaction_with::<_, crate::coordination::CoordinationError>(|tx| {
+                    crate::coordination::send_followup(
+                        tx,
+                        crate::coordination::AgentFollowup {
+                            sender_id: "manager",
+                            sender_epoch: 1,
+                            recipient_id: "child",
+                            id: "parent-resume",
+                            text: "Continue",
+                            delivery: studio_runtime_schema::DeliveryMoment::NextTurn,
+                            now: 4.5,
+                        },
+                        &crate::message_admission::PreparedAdmission::default(),
+                    )
+                })
+                .await;
+            assert!(
+                parent_instruction
+                    .unwrap_err()
+                    .to_string()
+                    .contains("maxTurns")
+            );
+            for _ in 0..2 {
+                store
+                    .transaction_with::<_, crate::coordination::CoordinationError>(|tx| {
+                        crate::coordination::send_followup(
+                            tx,
+                            crate::coordination::AgentFollowup {
+                                sender_id: "lead",
+                                sender_epoch: 1,
+                                recipient_id: "child",
+                                id: "lead-reset",
+                                text: "Continue",
+                                delivery: studio_runtime_schema::DeliveryMoment::NextTurn,
+                                now: 5.0,
+                            },
+                            &crate::message_admission::PreparedAdmission::default(),
+                        )
+                    })
+                    .await
+                    .unwrap();
+            }
+            let reset =
+                AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("child"))
+                    .unwrap()
+                    .unwrap()
+                    .value();
+            assert_eq!(reset["completedWorkerTurns"], 0);
+            assert_eq!(reset["autoWake"], true);
+            assert!(reset.get("terminalReason").is_none());
+            assert!(
+                lifecycle_transaction_with(&store, |tx| {
+                    claim_preparation_in_transaction(tx, "child", 1, "resumed", 6.0)
+                })
+                .await
+                .unwrap()
+                .is_some()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn capability_max_turns_counts_completed_turns_only() {
+        for status in ["failed", "interrupted"] {
+            let (_directory, store, intent) = seeded("codex").await;
+            store
+                .transaction(|tx| {
+                    let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.unwrap();
+                    child
+                        .extra
+                        .insert("capabilityProfile".into(), json!({"maxTurns":1}));
+                    AgentRepository::put(tx, &child)
+                })
+                .await
+                .unwrap();
+            assert!(finish(&store, &intent, status).await);
+            let child =
+                AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("child"))
+                    .unwrap()
+                    .unwrap()
+                    .value();
+            assert!(child.get("completedWorkerTurns").is_none());
+            assert!(child.get("terminalReason").is_none());
+        }
     }
 
     async fn disconnect(store: &RuntimeStore) {

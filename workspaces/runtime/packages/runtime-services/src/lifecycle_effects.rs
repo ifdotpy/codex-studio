@@ -78,6 +78,12 @@ impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
         let mut owner = AgentRecord::from_value(agent.clone())
             .map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
         studio_runtime_store::SchedulerRepository::wait_for_owned_monitors(tx, &mut owner)?;
+        if turn["status"] == "completed" {
+            crate::worker_capabilities::count_completed(
+                &mut owner,
+                turn["id"].as_str().unwrap_or_default(),
+            );
+        }
         *agent = owner.value();
         let mut before = agent.clone();
         before["turnId"] = turn["id"].clone();
@@ -1354,6 +1360,10 @@ fn notify_parent_of_settled_turn(
     let disconnected_completion = agent.status == AgentStatus::Completed
         && value.pointer("/disconnectRecovery/turnId") == Some(&json!(turn_id))
         && value.pointer("/disconnectRecovery/autoWake") == Some(&json!(true));
+    let capped = value["terminalReason"] == crate::worker_capabilities::TURN_LIMIT_REASON;
+    if capped && reports_turns(agent) {
+        return enqueue_turn_result(tx, agent, &value, turn_id, at);
+    }
     if !(studio_runtime_store::truthy(agent.extra.get("autoWake")) || disconnected_completion)
         || stopped
         || safety_retry

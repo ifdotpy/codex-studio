@@ -11,6 +11,7 @@ pub mod multi_server_protocol;
 pub mod provider_input;
 pub mod shared_values;
 pub mod task_results;
+pub mod worker_capabilities;
 
 pub use delivery::DeliveryMoment;
 
