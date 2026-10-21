@@ -706,6 +706,100 @@ async fn a_rejected_thread_reply_names_the_failed_check() {
     }
 }
 
+/// Fixture state in a canonical folder, so the stored cwd text differs from
+/// the canonical cwd only where a test makes it differ.
+async fn canonical_state() -> State {
+    let base = test_root();
+    std::fs::create_dir_all(&base).expect("test root");
+    State::new_at(base.canonicalize().expect("canonical test root")).await
+}
+
+/// Set the stored cwd of the fixture agent.
+async fn store_cwd(state: &State, cwd: String) {
+    let id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    row.extra.insert("cwd".into(), json!(cwd));
+                    AgentRepository::put(tx, &row)?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+}
+
+/// 2026-10-21 07:59 to 08:39 UTC: four worktree agents failed every thread
+/// resume with "the reply does not match the prepared thread". Each stored
+/// cwd ended in a separator (`.worktrees/codex-agents/<id>/`, written before
+/// #387). Preparation sends the canonical cwd, which has no trailing
+/// separator. Before #386 the receipt compared it as text with the stored
+/// cwd, so the reducer returned Stale(Cwd) for a thread in the same folder.
+/// Live records keep the separator, so the receipt must accept them.
+#[tokio::test]
+async fn a_stored_cwd_with_a_trailing_separator_resumes_its_thread() {
+    let state = canonical_state().await;
+    let canonical = state.root.to_str().expect("UTF-8 root").to_owned();
+    store_cwd(&state, format!("{canonical}/")).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    assert_eq!(
+        resume["params"]["cwd"], canonical,
+        "preparation sends the canonical cwd"
+    );
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    worker_barrier(&worker).await;
+    assert_eq!(
+        state.record().await["error"],
+        Value::Null,
+        "the reply of the same folder is accepted"
+    );
+    let start = peer.write("turn/start").await;
+    assert_eq!(
+        start["params"]["cwd"], canonical,
+        "the turn runs in the canonical cwd"
+    );
+    peer.accepted(&start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+
+/// A cwd that moved to another folder after the resume request was written
+/// still makes the reply stale, and the stored error names that check.
+#[tokio::test]
+async fn a_cwd_moved_to_another_folder_refuses_the_thread_reply() {
+    let state = canonical_state().await;
+    let moved = state.root.join("moved");
+    std::fs::create_dir(&moved).expect("other folder");
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    store_cwd(&state, moved.to_str().expect("UTF-8 folder").to_owned()).await;
+    let reply = peer
+        .frame(json!({"id":resume["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
+        .await;
+    peer.acknowledged(reply).await;
+    worker_barrier(&worker).await;
+    assert_eq!(
+        state.record().await["error"],
+        "Provider thread resume failed (the reply does not match the prepared thread: stale Cwd); input remains pending."
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "a stale thread reply sends no input"
+    );
+    assert_ne!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
     let state = State::new().await;
