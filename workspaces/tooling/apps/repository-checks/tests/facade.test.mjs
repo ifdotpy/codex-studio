@@ -67,6 +67,12 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     fixture < comprehensive.command.indexOf("test-server.py"),
     "the Rust HTTP fixture is built before the server suites",
   );
+  assert.ok(
+    comprehensive.command.indexOf("'build:bundle'") >= 0 &&
+      comprehensive.command.indexOf("'build:bundle'") <
+        comprehensive.command.indexOf("'nextest'"),
+    "the renderer that the native crate embeds is built before Rust nextest",
+  );
   assert.doesNotMatch(
     comprehensive.command,
     /test-server-load|runtime_load|mutations/,

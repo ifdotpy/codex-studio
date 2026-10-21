@@ -985,6 +985,15 @@ function comprehensiveTierCommands(root) {
     { item: server, label: "server" },
     { item: bridge, label: "server bridge" },
     {
+      // The native client crate embeds web/dist at compile time.
+      item: { name: "renderer build", ecosystem: "pnpm" },
+      label: "renderer build",
+      commands: [
+        ["pnpm", ["--filter", "codex-agents-web", "run", "build:bundle"]],
+      ],
+      options: { allowZeroTests: true, buildOnly: true },
+    },
+    {
       item: { name: "Rust workspace", ecosystem: "cargo" },
       label: "Rust nextest",
       commands: [
