@@ -57,7 +57,10 @@ pub(crate) fn checked_action(args: &Value) -> Result<(&str, bool), CallbackError
 
 /// Actions that the async lifecycle owner runs (`runtime_dispatch`).
 pub(crate) fn lifecycle_action(args: &Value) -> bool {
-    matches!(args["action"].as_str(), Some("archive" | "restore"))
+    matches!(
+        args["action"].as_str(),
+        Some("archive" | "archive_finished" | "restore")
+    )
 }
 
 /// Python `Runtime.dynamic` resolves a string `agent_id` with
@@ -147,9 +150,6 @@ pub(super) fn execute(
             "account-worker/agent-input-recovery",
         )),
         "reset_tools" => Err(CallbackError::Dependency("native-release/tool-reset")),
-        "archive_finished" => Err(CallbackError::Dependency(
-            "agent-management/archive-finished",
-        )),
         "maintenance_report" => Err(CallbackError::Dependency(
             "agent-management/maintenance-report",
         )),

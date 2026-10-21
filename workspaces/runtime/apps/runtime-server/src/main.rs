@@ -448,8 +448,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         })
         .await?;
     let state_root = CanonicalPath::existing(store.root())?;
-    // Free space of the state volume gates new turns and disk-full holds.
-    studio_runtime_services::disk_space::install(state_root.clone().to_path_buf());
+    // One disk gate watches state, worker workspace and build-output filesystems.
+    studio_runtime_services::disk_space::install(
+        state_root.clone().to_path_buf(),
+        studio_runtime_services::disk_space::WorkerStorageConfig::from_environment()?,
+    );
     let state_dir = state_root.to_string_lossy().into_owned();
     let home = env::var_os("HOME")
         .map(PathBuf::from)
