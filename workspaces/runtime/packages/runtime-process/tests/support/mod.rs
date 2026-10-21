@@ -100,13 +100,11 @@ impl SupervisorProcess {
             Path::new(SUPERVISOR).is_file(),
             "Rust supervisor integration test requires the checked-out supervisor script at {SUPERVISOR}"
         );
-        // The Rust retained-child daemon has Linux process identity support.
-        // Keep v1 compatibility tests on the supported Python daemon elsewhere.
-        #[cfg(target_os = "linux")]
+        // The Rust daemon has native process identity on Linux and macOS. A
+        // crate without the built binary and without STUDIO_SUPERVISOR_BINARY
+        // keeps its v1 compatibility tests on the Python daemon.
         let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
             .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into));
-        #[cfg(not(target_os = "linux"))]
-        let binary: Option<std::ffi::OsString> = None;
         let (command, description) = if let Some(binary) = binary {
             (Command::new(binary), "configured supervisor")
         } else {
