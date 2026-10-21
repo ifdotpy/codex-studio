@@ -278,98 +278,65 @@ async fn restart(context: &Context, label: &str) {
         let _result = worker.shutdown().await;
     }
     // A second initialized recovery must replay unresolved callbacks and retain
-    // their Unknown intent without writing a second response or acknowledging it.
+    // their Unknown intent without writing a second response. The request's
+    // cursor settled with its batch, so only its record holds the uncertainty.
     let frames = context.frames.lock().unwrap().clone();
-    let acknowledged = context.acknowledged.lock().unwrap().clone();
+    let record_phases = |cursor: u64| {
+        let store = bridge.store.clone();
+        async move {
+            read_on_pool(store, move |db| {
+                let count = |phase: &str| {
+                    db.query_row(
+                        "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                        [format!(
+                            "account-worker:{}:{phase}",
+                            crate::account_worker::callback_record::operation(
+                                "default", generation, cursor
+                            )
+                        )],
+                        |row| row.get::<_, i64>(0),
+                    )
+                };
+                Ok((count("accepted")?, count("submitted")?))
+            })
+            .await
+            .unwrap()
+        }
+    };
     let mut unresolved_callback = None;
     for ((frame_generation, cursor), frame) in frames {
         if frame_generation != generation
             || !frame["id"].is_string()
             || frame["method"].as_str().is_none()
-            || acknowledged.get(&generation).copied().unwrap_or(0) >= cursor
         {
             continue;
         }
-        let operation = format!("callback:default:{generation}:{cursor}");
-        let submitted_id = format!("account-worker:{operation}:submitted");
-        let written_id = format!("account-worker:{operation}:written");
-        let submitted = submitted_id.clone();
-        let written = written_id.clone();
-        let receipt_state = read_on_pool(bridge.store.clone(), move |db| {
-            let submitted: i64 = db.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                [submitted],
-                |row| row.get(0),
-            )?;
-            let written: i64 = db.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                [written],
-                |row| row.get(0),
-            )?;
-            Ok((submitted, written))
-        })
-        .await
-        .unwrap();
-        if receipt_state == (1, 0) {
-            unresolved_callback = Some((cursor, frame, submitted_id, written_id));
+        if record_phases(cursor).await == (1, 1) {
+            unresolved_callback = Some((cursor, frame));
             break;
         }
     }
     let (mut verification_peer, mut verification) =
-        if let Some((callback_cursor, callback_frame, submitted_id, written_id)) =
-            unresolved_callback
-        {
+        if let Some((callback_cursor, callback_frame)) = unresolved_callback {
             let mut peer = Peer::identity("default", generation, None);
-            let mut worker = peer.worker(bridge.clone()).await;
+            let worker = peer.worker(bridge.clone()).await;
             peer.cursor = callback_cursor - 1;
             let redelivered_cursor = peer.frame(callback_frame).await;
             assert_eq!(
                 redelivered_cursor, callback_cursor,
                 "replay uses the exact callback cursor"
             );
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
-                    .await
-                    .expect("second recovery callback decision deadline");
-            assert!(
-                matches!(result, Err(WorkerError::CallbackUnknown)),
-                "{label}: unresolved callback replay must stay CallbackUnknown, got {result:?}"
-            );
+            worker_barrier(&worker).await;
             assert!(
                 peer.writes.try_recv().is_err(),
                 "{label}: unresolved callback was redelivered"
             );
-            assert!(
-                peer.acks.try_recv().is_err(),
-                "{label}: unresolved callback was acknowledged"
+            assert_eq!(
+                record_phases(callback_cursor).await,
+                (1, 1),
+                "callback intent remains held as Unknown"
             );
-            let submitted = submitted_id.clone();
-            let written = written_id.clone();
-            let receipts = read_on_pool(bridge.store.clone(), move |db| {
-                let submitted: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                    [submitted],
-                    |row| row.get(0),
-                )?;
-                let written: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                    [written],
-                    |row| row.get(0),
-                )?;
-                Ok((submitted, written))
-            })
-            .await
-            .unwrap();
-            assert_eq!(receipts, (1, 0), "callback intent remains held as Unknown");
-            let mut health_peer = Peer::identity("default", generation, None);
-            health_peer.cursor = marker;
-            let health_worker = health_peer.worker(bridge.clone()).await;
-            worker_barrier(&health_worker).await;
-            assert!(
-                health_peer.writes.try_recv().is_err(),
-                "{label}: health recovery resent unresolved callback"
-            );
-            (health_peer, health_worker)
+            (peer, worker)
         } else {
             let mut peer = Peer::identity("default", generation, None);
             peer.cursor = marker;

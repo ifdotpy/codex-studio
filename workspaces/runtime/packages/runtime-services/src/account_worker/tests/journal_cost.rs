@@ -1,5 +1,5 @@
-//! Journal cost against receipt backlog: a provider request that is not yet
-//! settled holds compaction, so later settled receipts accumulate behind it.
+//! Journal cost against receipt backlog: a journal receipt that is not ready
+//! holds compaction, so later settled receipts accumulate behind it.
 use super::*;
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
 
@@ -143,24 +143,26 @@ async fn batch_work(
     (streams, ticks.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// An unanswered provider request keeps the checkpoint below it while later
+/// An unready receipt keeps the checkpoint below it while later
 /// notifications settle. Journal work per batch must not grow with that
-/// backlog, and the backlog must drain once the request settles.
+/// backlog, and the backlog must drain once the receipt is ready.
 #[tokio::test]
 async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
     const BACKLOG: u64 = 4_000;
     const BATCH: u64 = super::JOURNAL_BATCH_MAX_EVENTS as u64;
     let store = running_store().await;
-    let streams = journal(
-        &store,
-        NotificationStreamBuffer::default(),
-        vec![entry(
-            1,
-            json!({"id":"approval","method":"item/commandExecution/requestApproval",
-                "params":{"threadId":"thread","turnId":"turn","itemId":"command"}}),
-        )],
-    )
-    .await;
+    store
+        .transaction_with(|tx| -> Result<(), WorkerError> {
+            store::replace(
+                tx,
+                &store::journal_operation(SCOPE, GENERATION, 1),
+                "settled",
+                json!({"cursor":1,"digest":"d","ready":false,"committed":true}),
+            )
+        })
+        .await
+        .expect("held receipt");
+    let streams = NotificationStreamBuffer::default();
     // The first batch opens the stream; compare two batches that extend it.
     let streams = journal(&store, streams, (2..2 + BATCH).map(delta).collect()).await;
     clear_publications(&store).await;
@@ -196,9 +198,17 @@ async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
     );
     assert_eq!(journal_receipts(&store), (3 * BATCH + BACKLOG + 1) as i64);
 
-    store::callback_settled(&store, SCOPE, GENERATION, 1)
+    store
+        .transaction_with(|tx| -> Result<(), WorkerError> {
+            store::replace(
+                tx,
+                &store::journal_operation(SCOPE, GENERATION, 1),
+                "settled",
+                json!({"cursor":1,"digest":"d","ready":true,"committed":true}),
+            )
+        })
         .await
-        .expect("settle the request");
+        .expect("release the held receipt");
     let mut cursor = next + BATCH;
     while journal_receipts(&store) > 0 {
         streams = journal(&store, streams, vec![delta(cursor)]).await;

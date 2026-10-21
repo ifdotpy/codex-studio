@@ -57,7 +57,7 @@ pub(super) struct SubmissionEvidence {
     pub effect: Option<String>,
 }
 
-fn invalid(id: &str) -> WorkerError {
+pub(super) fn invalid(id: &str) -> WorkerError {
     StoreError::InvalidSyncObject {
         scope: "account_worker".into(),
         id: id.into(),
@@ -1658,6 +1658,19 @@ fn journal_one(
             return Err(invalid(&operation));
         }
         if old["committed"] == true {
+            if old["ready"] != true {
+                // Journaled while an unanswered request held its cursor.
+                super::callback_record::adopt_legacy(
+                    tx,
+                    account,
+                    journal_scope,
+                    expected_vm_actor,
+                    entry,
+                )?;
+                let mut ready = old;
+                ready["ready"] = json!(true);
+                replace(tx, &operation, "settled", ready)?;
+            }
             return Ok(Some((streams.clone(), None)));
         }
     }
@@ -1937,12 +1950,14 @@ fn journal_one(
     if let Some(effect) = &effect {
         persist_effect(tx, account, effect)?;
     }
-    let callback = matches!(&entry.payload, JournalPayload::Frame(frame) if super::callback::response(frame).is_some());
+    // A provider request is accepted with its batch: its record owns the
+    // answer, so the cursor settles without waiting for it.
+    super::callback_record::accept(tx, account, journal_scope, expected_vm_actor, entry)?;
     replace(
         tx,
         &operation,
         "settled",
-        json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
+        json!({"cursor":entry.cursor.0,"digest":digest,"ready":true,"committed":true}),
     )?;
     Ok(Some((next, effect)))
 }
@@ -2123,63 +2138,6 @@ pub(super) async fn vm_bootstrap_settled(
         .await
 }
 
-// Written callback responses can be acknowledged on replay. A Submitted marker
-// without Written is uncertainty, never permission to answer a second time.
-pub(super) async fn callback_admission(
-    store: &RuntimeStore,
-    operation: &str,
-    journal_scope: &str,
-    generation: u64,
-    cursor: u64,
-) -> Result<bool, WorkerError> {
-    let operation = operation.to_owned();
-    let journal_scope = journal_scope.to_owned();
-    store
-        .transaction_with(move |tx| {
-            if cursor <= checkpoint(tx, &journal_scope, generation)? {
-                return Ok(true);
-            }
-            if receipt(tx, &operation, "written")? == Some(json!(true)) {
-                settle_callback_in_transaction(tx, &journal_scope, generation, cursor)?;
-                return Ok(true);
-            }
-            if receipt(tx, &operation, "submitted")?.is_some() {
-                return Err(WorkerError::CallbackUnknown);
-            }
-            save(tx, &operation, "submitted", json!(true))?;
-            Ok(false)
-        })
-        .await
-}
-pub(super) async fn callback_written(
-    store: &RuntimeStore,
-    operation: &str,
-    outcome: WriteOutcome,
-) -> Result<(), WorkerError> {
-    let operation = operation.to_owned();
-    store
-        .transaction_with(move |tx| {
-            if outcome == WriteOutcome::NotSent {
-                tx.execute_cached(
-                    "DELETE FROM runtime_operation_receipts WHERE id=?1",
-                    [receipt_id(&operation, "submitted")],
-                )?;
-                return Ok(());
-            }
-            save(
-                tx,
-                &operation,
-                if outcome == WriteOutcome::Written {
-                    "written"
-                } else {
-                    "unknown"
-                },
-                json!(true),
-            )
-        })
-        .await
-}
-
 // The follow-on effect is part of the transition that owes it. Repeating an
 // effect after a crash is safe: submission checks its durable operation identity.
 pub(super) fn effect_key(account: &str, effect: &Effect) -> Option<String> {
@@ -2338,23 +2296,11 @@ fn compact(
     };
     tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id>=?1 AND id<=?2")?
         .execute(params![prefix, last])?;
-    let mut delete =
-        tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id IN (?1,?2,?3,?4)")?;
+    let mut delete = tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id=?1")?;
     for cursor in covered {
-        let callback = |phase| {
-            receipt_id(
-                &format!("callback:{journal_scope}:{generation}:{cursor}"),
-                phase,
-            )
-        };
         let identity = json!({"providerHandle":ProviderHandle::for_account(journal_scope).as_str(),"generation":generation,"cursor":cursor});
         let signature = studio_runtime_store::sha256_hex(identity.to_string().as_bytes());
-        delete.execute(params![
-            callback("submitted"),
-            callback("written"),
-            callback("unknown"),
-            format!("provider-notification:{signature}"),
-        ])?;
+        delete.execute([format!("provider-notification:{signature}")])?;
     }
     replace(
         tx,
@@ -2382,33 +2328,6 @@ pub(super) fn pad_legacy_receipt_keys(
     )?;
     Ok(())
 }
-pub(super) async fn callback_settled(
-    store: &RuntimeStore,
-    journal_scope: &str,
-    generation: u64,
-    cursor: u64,
-) -> Result<(), WorkerError> {
-    let journal_scope = journal_scope.to_owned();
-    store
-        .transaction_with(move |tx| {
-            settle_callback_in_transaction(tx, &journal_scope, generation, cursor)
-        })
-        .await
-}
-fn settle_callback_in_transaction(
-    tx: &studio_runtime_store::Transaction<'_>,
-    journal_scope: &str,
-    generation: u64,
-    cursor: u64,
-) -> Result<(), WorkerError> {
-    let operation = journal_operation(journal_scope, generation, cursor);
-    if let Some(mut row) = receipt(tx, &operation, "settled")? {
-        row["ready"] = json!(true);
-        replace(tx, &operation, "settled", row)?;
-    }
-    compact(tx, journal_scope, generation)
-}
-
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
@@ -2442,7 +2361,7 @@ pub(super) struct JournalPolicy<'a> {
     faults: &'a mut Vec<agent_fault::AgentFault>,
 }
 /// Digest of one journal entry's payload; a replay must match it.
-fn journal_digest(entry: &JournalEntry, operation: &str) -> Result<String, WorkerError> {
+pub(super) fn journal_digest(entry: &JournalEntry, operation: &str) -> Result<String, WorkerError> {
     Ok(match &entry.payload {
         JournalPayload::Frame(frame) => {
             studio_runtime_store::sha256_hex(&journal_frame_payload(frame, operation)?)

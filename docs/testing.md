@@ -108,6 +108,16 @@ The comprehensive server tier covers watcher readiness, path collection, full-re
 and scoped scanning with a deterministic helper. A native delivery timeout is
 reported as a failed manual check; it is not converted into a skip or a retry.
 
+Provider callback witnesses in the [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
+check the durable callback record of
+[the account worker](../workspaces/runtime/packages/runtime-services/src/account_worker/callback_record.rs):
+its state transitions, restart at every point between record commit, journal
+acknowledgement and answer write (no lost answer, no repeated answer), retirement
+of an ended generation's records, and an unanswered request followed by more
+events than the session's unsettled bound while another turn and a new thread
+complete. The running-handler and queued-answer limits are named constants of
+the account worker; reaching them delays only the start of a handler.
+
 Project preparation witnesses in the [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
 exercise agent execution changes between preparation and a project write, refuse
 structural conflicts, and answer an async question while its lead is idle. The

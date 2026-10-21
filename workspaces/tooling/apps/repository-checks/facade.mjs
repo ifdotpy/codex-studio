@@ -879,6 +879,34 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "provider callback acceptance witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(account_worker::tests::callback_handoff::)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "account_worker::tests::callback_handoff",
+        reason:
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work.",
+      },
+    },
+    {
       item: { name: "project preparation", ecosystem: "cargo" },
       label: "project preparation conflict witnesses",
       commands: [

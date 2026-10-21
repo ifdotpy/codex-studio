@@ -65,6 +65,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     fast.command,
     /migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once/,
   );
+  assert.match(fast.command, /account_worker::tests::callback_handoff::/);
   assert.match(fast.command, /test:unit:fast/);
   assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 3);
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
