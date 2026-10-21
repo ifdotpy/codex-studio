@@ -40,8 +40,13 @@ pub enum CheckReconciliation {
 
 pub enum CheckSubmission {
     Accepted,
-    NotSubmitted { error: String },
+    NotSubmitted {
+        error: String,
+    },
     Unknown,
+    /// The monitor port runs the launch in its own task and records the
+    /// outcome there with [`settle_submission`]. The caller records nothing.
+    Detached,
 }
 
 /// Rule file identity: modification time in Unix nanoseconds, size in bytes, inode number.
@@ -51,6 +56,8 @@ pub type RuleFileFingerprint = (i64, u64, u64);
 /// admission are installed. It MUST revalidate owner and check identity before I/O.
 /// Launch MUST be idempotent for the exact monitor identity and reserve its durable
 /// operation before transport I/O. A duplicate reservation must not send again.
+/// A launch that can wait for its command returns `Detached` and settles later, so
+/// the monitor timer never waits for a rule command.
 /// Reconciliation includes native ticket receipts, not only monitor-row existence.
 pub trait RuleMonitor {
     fn available(&self) -> bool;
@@ -309,15 +316,28 @@ pub async fn submit_check(
     if !current {
         return Ok(false);
     }
-    match monitor.launch(check).await {
-        CheckSubmission::Accepted => {}
+    let submission = monitor.launch(check).await;
+    settle_submission(store, check, &submission, now).await?;
+    Ok(true)
+}
+
+/// Record the outcome of one launch, once. A replay after a lost commit
+/// response changes nothing: the first commit cleared the check's launch.
+pub async fn settle_submission(
+    store: &RuntimeStore,
+    check: &RuleCheck,
+    submission: &CheckSubmission,
+    now: f64,
+) -> Result<(), RulesTickError> {
+    match submission {
+        CheckSubmission::Accepted | CheckSubmission::Detached => {}
         CheckSubmission::NotSubmitted { error } => {
             finish(
                 store,
                 check,
                 CheckResult {
                     code: None,
-                    error: Some(&error),
+                    error: Some(error),
                     cancelled: false,
                     output: "",
                 },
@@ -347,7 +367,7 @@ pub async fn submit_check(
                 .await?;
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 fn launch_intent(snapshot: &RuleSnapshot) -> Result<Option<RuleCheck>, RulesTickError> {
