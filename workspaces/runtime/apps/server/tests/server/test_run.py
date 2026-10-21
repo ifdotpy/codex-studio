@@ -335,7 +335,7 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertTrue(all(path not in RUNNER.EXPENSIVE_SUITES for path, _kind in automated))
         heavy = RUNNER.only_category(RUNNER.inventory(), "heavy")
         self.assertEqual({path for path, _kind in heavy}, set(RUNNER.HEAVY_SUITES))
-        self.assertEqual(len(heavy), 4)
+        self.assertEqual(len(heavy), 5)
         self.assertTrue(all(kind == "heavy" for _path, kind in heavy))
         self.assertFalse(set(RUNNER.HEAVY_SUITES).intersection(RUNNER.AUTOMATED_SUITES))
         self.assertIn("heavy", RUNNER.OPT_IN)
@@ -489,7 +489,8 @@ class ServerSuiteRunner(unittest.TestCase):
             path.relative_to(ROOT).as_posix()
             for path in component_root.rglob("test_*.py")
             if (path.is_file() and not path.is_symlink()
-                and path.relative_to(ROOT).as_posix() not in RUNNER.EXPENSIVE_SUITES)
+                and path.relative_to(ROOT).as_posix() not in RUNNER.EXPENSIVE_SUITES
+                and path.relative_to(ROOT).as_posix() not in RUNNER.HEAVY_SUITES)
         }
         self.assertTrue(expected, "FastAPI package has no colocated component tests")
         self.assertTrue(expected.issubset(paths))

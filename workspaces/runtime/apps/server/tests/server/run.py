@@ -238,6 +238,8 @@ HEAVY_SUITES = {
         ("signed-in server execution flow; measured 38.16 s", 38.16),
     f"{TESTS_REL}/process-supervisor-contract.py":
         ("supervisor replay wait required by contract; measured 36.05 s", 36.05),
+    f"{SOURCE_REL}/studio_api/sync/resources/test_entity_commit_publisher_realtime.py":
+        ("wall-clock publication cadence; fails when a busy machine stretches its pacing", 3.0),
 }
 if set(HEAVY_SUITES).intersection(AUTOMATED_SUITES):
     raise AssertionError("heavy suites must not also be in AUTOMATED_SUITES")
@@ -409,7 +411,9 @@ def inventory():
             if path.is_file() and not path.is_symlink():
                 relative = path.relative_to(ROOT).as_posix()
                 entries[relative] = (
-                    category(path) if relative in EXPENSIVE_SUITES else "component"
+                    category(path)
+                    if relative in EXPENSIVE_SUITES or relative in HEAVY_SUITES
+                    else "component"
                 )
     return sorted(entries.items())
 
