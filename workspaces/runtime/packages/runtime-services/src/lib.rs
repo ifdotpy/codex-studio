@@ -173,6 +173,7 @@ pub mod sync_policy;
 pub mod sync_views;
 pub mod system_reads;
 pub mod tar_gzip;
+pub mod task_gate;
 pub mod task_recovery;
 pub mod task_recovery_store;
 pub mod task_settlement;
@@ -197,6 +198,7 @@ pub mod wakeups;
 pub mod work_assignment_runtime;
 pub mod work_policy;
 pub mod work_write;
+mod worker_capabilities;
 pub mod workspace_cleanup_runtime;
 pub mod workspace_files;
 pub mod workspace_operations;
@@ -304,5 +306,3 @@ mod registration_tests {
     }
 }
 
-mod worker_capabilities;
-pub mod task_gate;
