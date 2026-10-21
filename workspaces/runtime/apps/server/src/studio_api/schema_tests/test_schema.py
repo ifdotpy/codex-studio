@@ -589,6 +589,14 @@ class SchemaContractTests(unittest.TestCase):
         for schema in ("AgentResponse", "BranchResponse"):
             add(f"/components/schemas/{schema}/properties/commandProgress", "property")
             add(f"/components/schemas/{schema}/properties/stall", "property", "@nullable", "@nullableBranch")
+        # Execution nodes report the waiting_on_monitor lifecycle status (#373 14a).
+        for pointer in (
+            "/components/schemas/ExecutionNode/properties/status",
+            "/components/schemas/ExecutionRun/properties/nodes/items/properties/status",
+            "/components/schemas/ExecutionLedger/properties/runs/items/properties/nodes/items/properties/status",
+            "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/nodes/items/properties/status",
+        ):
+            add(pointer, "@anyOf")
 
         # Delivery inputs retain all historical aliases while adding the two
         # Rust-owned moments. Queue/transcript responses emit only canonical
