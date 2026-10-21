@@ -637,14 +637,15 @@ async fn cancel_of_a_running_command_is_admitted_after_its_submission() {
 }
 
 #[tokio::test]
-async fn reattach_and_receipts_require_exact_operation_and_live_owner() {
+async fn reattach_requires_exact_proof_and_cancels_a_stopped_owner() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let op = operation(&case);
     let mut lost = case["before"].clone();
-    lost["status"] = json!("lost");
-    lost["reattachRecovery"] = json!({"status":"running","epoch":2});
+    lost["status"] = json!("running");
+    lost["reattachRecovery"] =
+        json!({"status":"running","epoch":2,"accountKey":"default","startedAt":2000.0});
     let proof = monitor_policy::ReattachProof {
         operation: op.clone(),
         operation_id: format!("monitor:{}", lost["id"].as_str().expect("id")),
@@ -662,7 +663,10 @@ async fn reattach_and_receipts_require_exact_operation_and_live_owner() {
     let mut stopped = case["actor"].clone();
     stopped["autoWake"] = json!(false);
     let stopped = MonitorSnapshot::checked(lost.clone(), stopped).expect("stopped");
-    assert!(monitor_policy::reattach(&stopped, &proof).is_err());
+    let cancelled =
+        monitor_policy::reattach(&stopped, &proof).expect("proved survivor must be cancelled");
+    assert_eq!(cancelled.record["cancelRequested"], true);
+    assert_eq!(cancelled.effects, vec![monitor_policy::Effect::Terminate]);
     let mut actor = case["actor"].clone();
     actor["epoch"] = json!(3);
     let stale = MonitorSnapshot::checked(lost, actor).expect("stale");

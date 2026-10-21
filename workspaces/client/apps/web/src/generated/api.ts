@@ -4726,6 +4726,7 @@ export interface components {
             | "parked"
             | "abandoned"
             | "capacity-retry"
+            | "waiting_on_monitor"
           )
         | null;
       /** @default null */
@@ -5190,7 +5191,8 @@ export interface components {
         | "paused"
         | "parked"
         | "abandoned"
-        | "capacity-retry";
+        | "capacity-retry"
+        | "waiting_on_monitor";
       /**
        * Steerrejectedturnid
        * @default null
@@ -6066,7 +6068,8 @@ export interface components {
       | "paused"
       | "parked"
       | "abandoned"
-      | "capacity-retry";
+      | "capacity-retry"
+      | "waiting_on_monitor";
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
       /**

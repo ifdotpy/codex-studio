@@ -221,6 +221,12 @@
       "candidate": "['archived', 'archiving', 'fallback', 'read_only', 'ready', 'removed']"
     },
     {
+      "pointer": "/components/schemas/AgentRecordResponse/properties/lastCompletedTurnStatus",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
+    },
+    {
       "pointer": "/components/schemas/AgentRecordResponse/properties/startWait/properties/_syncEntities",
       "constraint": "@nullable",
       "baseline": "None",
@@ -243,6 +249,12 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentRecordResponse/properties/status",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
     },
     {
       "pointer": "/components/schemas/AgentRequest/properties/itemId",
@@ -353,6 +365,30 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/AgentResponse/properties/commandProgress",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/stall",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/stall",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/stall",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AgentStall\"}']"
+    },
+    {
       "pointer": "/components/schemas/AgentResponse/properties/startWait",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -369,6 +405,24 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/AgentEntityStartWaitDto\"}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/status",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
+    },
+    {
+      "pointer": "/components/schemas/AgentResponse/properties/turnStatus",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
+    },
+    {
+      "pointer": "/components/schemas/AgentStatus",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
     },
     {
       "pointer": "/components/schemas/AnalyticsItemRecord/properties/command",
@@ -449,6 +503,30 @@
       "candidate": "accepted property"
     },
     {
+      "pointer": "/components/schemas/BranchResponse/properties/commandProgress",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/stall",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/stall",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/stall",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/AgentStall\"}']"
+    },
+    {
       "pointer": "/components/schemas/BranchResponse/properties/startWait",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -465,6 +543,18 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/AgentEntityStartWaitDto\"}']"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/status",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
+    },
+    {
+      "pointer": "/components/schemas/BranchResponse/properties/turnStatus",
+      "constraint": "enum",
+      "baseline": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting']",
+      "candidate": "['abandoned', 'approval', 'blocked', 'capacity-retry', 'completed', 'failed', 'idle', 'interrupted', 'parked', 'paused', 'queued', 'running', 'starting', 'unknown', 'waiting', 'waiting_on_monitor']"
     },
     {
       "pointer": "/components/schemas/CapacityRetryCause",
@@ -519,6 +609,12 @@
       "constraint": "@anyOf",
       "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
       "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/nodes/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\",\"waiting_on_monitor\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
     },
     {
       "pointer": "/components/schemas/DiagnosticsResponse/properties/imageMounts",
@@ -809,10 +905,28 @@
       "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
     },
     {
+      "pointer": "/components/schemas/ExecutionLedger/properties/runs/items/properties/nodes/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\",\"waiting_on_monitor\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionNode/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\",\"waiting_on_monitor\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
       "pointer": "/components/schemas/ExecutionRun/properties/effects/items/properties/status",
       "constraint": "@anyOf",
       "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
       "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionRun/properties/nodes/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"enum\":[\"unknown\",\"idle\",\"queued\",\"starting\",\"running\",\"waiting\",\"approval\",\"completed\",\"interrupted\",\"failed\",\"blocked\",\"paused\",\"parked\",\"abandoned\",\"capacity-retry\",\"waiting_on_monitor\"],\"title\":\"AgentStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
     },
     {
       "pointer": "/components/schemas/IdentityAlert/properties/origin",

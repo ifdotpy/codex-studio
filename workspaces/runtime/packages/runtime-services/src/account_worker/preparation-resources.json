@@ -278,12 +278,35 @@
     {
       "type": "function",
       "name": "orchestration_monitor",
-      "description": "Run a command under this thread's sandbox and wait outside the model. Returns a watch id immediately. At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). Finish your turn while waiting. success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. The thread's approval policy applies; a required approval appears in the canvas.",
+      "description": "Use this tool for every long command, check, and watcher; native provider exec sessions do not wake you. Run a command under this thread's sandbox. Use command to launch once, or monitor_id to observe an existing command without launching it. wait_timeout_ms bounds this call only (default 0, maximum 10000); timeout_ms remains the command execution limit. A wait expiry returns the same active monitor id. Reuse monitor_id for a later wait. At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. Literal output_patterns use OR matching and wake at most once per second, with repeated matches coalesced and counted. wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). Finish your turn while waiting. success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. The thread's approval policy applies; a required approval appears in the canvas.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "command": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "monitor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "wait_timeout_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "output_patterns": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
           },
           "wake_on": {
             "type": "string",
@@ -318,7 +341,7 @@
             "maxLength": 12000
           }
         },
-        "required": ["command"],
+        "required": [],
         "additionalProperties": false
       }
     },

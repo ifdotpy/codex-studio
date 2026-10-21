@@ -714,7 +714,10 @@ impl SchedulerRepository {
         };
         let idle = matches!(
             agent.status,
-            AgentStatus::Completed | AgentStatus::Waiting | AgentStatus::Queued
+            AgentStatus::Completed
+                | AgentStatus::Waiting
+                | AgentStatus::WaitingOnMonitor
+                | AgentStatus::Queued
         );
         if !idle
             || flag("deletedAt")
@@ -1446,6 +1449,33 @@ impl SchedulerRepository {
         Ok(true)
     }
 
+    /// A settled owner with unfinished commands remains visibly waiting. This
+    /// never changes explicit stops or failure holds and never claims input.
+    pub fn wait_for_owned_monitors(
+        transaction: &Transaction<'_>,
+        agent: &mut AgentRecord,
+    ) -> StoreResult<()> {
+        if agent.status != AgentStatus::Completed
+            || agent.extra.get("autoWake") != Some(&Value::Bool(true))
+            || !continuation_allowed(agent)
+        {
+            return Ok(());
+        }
+        let statuses = crate::startup_recovery::ACTIVE_MONITOR_STATUSES
+            .iter()
+            .map(|status| format!("'{status}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let running = transaction.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.epoch')=?2 AND json_extract(record,'$.status') IN ({statuses}))"),
+            (&agent.id.0, agent.epoch), |row| row.get::<_, bool>(0),
+        )?;
+        if running {
+            agent.status = AgentStatus::WaitingOnMonitor;
+        }
+        Ok(())
+    }
+
     /// Apply one terminal provider outcome, ignoring stale attempt or epoch callbacks.
     /// Busy-turn input still open for the turn is decided first, even for a stale
     /// callback: `unapplied_steers` (first input ids the provider proves it never
@@ -1618,6 +1648,9 @@ impl SchedulerRepository {
             } else {
                 AgentStatus::Waiting
             };
+        }
+        if current_attempt {
+            Self::wait_for_owned_monitors(transaction, &mut agent)?;
         }
         if current_attempt {
             parked_after_turn(&mut agent);
@@ -1936,7 +1969,7 @@ fn unresolved_base_sql() -> String {
 }
 // A queued agent whose saved attempt completed has new input but no new claim:
 // its earlier turn is settled, so a new provider generation must not interrupt it.
-const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.submitted'),0)=1 AND json_extract(record,'$.startAttempt.action') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.activeAtReservation'),0)=0 AND json_extract(record,'$.startOutcomeHold') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.responseError'),'')='' AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'')!='unknown' AND COALESCE(json_type(record,'$.startAttempt.turnId'),'')='text' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),'')!='' AND json_extract(record,'$.startAttempt.turnId')=COALESCE(json_extract(record,'$.lastCompletedTurn'),'') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'')='completed'";
+const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','waiting_on_monitor','paused','parked','queued') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.submitted'),0)=1 AND json_extract(record,'$.startAttempt.action') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.activeAtReservation'),0)=0 AND json_extract(record,'$.startOutcomeHold') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.responseError'),'')='' AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'')!='unknown' AND COALESCE(json_type(record,'$.startAttempt.turnId'),'')='text' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),'')!='' AND json_extract(record,'$.startAttempt.turnId')=COALESCE(json_extract(record,'$.lastCompletedTurn'),'') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'')='completed'";
 // An idle agent whose attempt turn is its last finished turn has nothing to
 // recover, also when the attempt was reserved during an active turn
 // (`activeAtReservation`). Python restart recovery never touches an idle agent.
@@ -1944,7 +1977,7 @@ const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') 
 // stop or provider generation must not interrupt it again or replace its error
 // (rehearsal 11, agent 841ebc0e). The startup scan and every disconnect path
 // select through this rule.
-const SETTLED_IDLE_TURN_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked','queued','failed','interrupted') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'),'')!='' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'))=json_extract(record,'$.lastCompletedTurn') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'') IN ('completed','failed','interrupted')";
+const SETTLED_IDLE_TURN_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','waiting_on_monitor','paused','parked','queued','failed','interrupted') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'),'')!='' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),json_extract(record,'$.startAttempt.observedTurnId'))=json_extract(record,'$.lastCompletedTurn') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'') IN ('completed','failed','interrupted')";
 pub(super) fn unresolved_sql() -> String {
     format!(
         "{} AND NOT ({COMPLETED_START_SQL}) AND NOT ({SETTLED_IDLE_TURN_SQL})",

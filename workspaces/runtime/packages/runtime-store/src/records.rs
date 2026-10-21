@@ -141,6 +141,9 @@ macro_rules! stored_string_enum {
         }
 
         impl $name {
+            /// Wire values owned by this enum; generated contracts and parity witnesses consume these.
+            pub const VALUES: &'static [&'static str] = &[$($value,)+];
+
             pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $value,)+
@@ -189,6 +192,7 @@ stored_string_enum!(AgentStatus {
     Starting => "starting",
     Running => "running",
     Waiting => "waiting",
+    WaitingOnMonitor => "waiting_on_monitor",
     Approval => "approval",
     Completed => "completed",
     Interrupted => "interrupted",

@@ -275,7 +275,7 @@ TOOLS = [
          "Use for a decision, not repeated waiting: completion events arrive automatically.",
          {"since_revision": TEXT, "include_finished": {"type": "boolean"},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
-    tool("orchestration_monitor", "Run a command under this thread's sandbox. Use command to launch once, or monitor_id to observe an existing command without launching it. "
+    tool("orchestration_monitor", "Use this tool for every long command, check, and watcher; native provider exec sessions do not wake you. Run a command under this thread's sandbox. Use command to launch once, or monitor_id to observe an existing command without launching it. "
          "wait_timeout_ms bounds this call only (default 0, maximum 10000); timeout_ms remains the command execution limit. "
          "A wait expiry returns the same active monitor id. Reuse monitor_id for a later wait. "
          "At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. "

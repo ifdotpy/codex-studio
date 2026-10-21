@@ -105,11 +105,8 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
     let monitor = MonitorsRepository::get(&connection, monitor_id)
         .expect("read lost monitor")
         .expect("monitor exists");
-    assert_eq!(monitor.value()["status"], "lost");
-    assert_eq!(
-        monitor.value()["error"],
-        "Server restarted. Command outcome unknown; not rerun."
-    );
+    assert_eq!(monitor.value()["status"], "running");
+    assert!(monitor.value()["error"].is_null());
     assert_eq!(monitor.value()["reattachRecovery"]["status"], "running");
     let requests = Table::<RequestRecord>::new(&connection)
         .list()
@@ -125,15 +122,13 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
     );
     assert_eq!(requests["retained"]["status"], "pending");
     assert_eq!(requests["orphan"]["status"], "expired");
-    assert_eq!(
+    assert!(
         QueueEventRepository::get(
             &connection,
             &QueueEventId::from(format!("monitor:{monitor_id}")),
         )
         .expect("read monitor exit")
-        .expect("exit event")
-        .status,
-        "pending"
+        .is_none()
     );
     assert_eq!(
         QueueEventRepository::get(
@@ -263,11 +258,8 @@ async fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     let lost = MonitorsRepository::get(&connection, lost_id)
         .expect("read unreadable-result monitor")
         .expect("unreadable-result monitor exists");
-    assert_eq!(lost.value()["status"], "lost");
-    assert_eq!(
-        lost.value()["error"],
-        "Server restarted. Command outcome unknown; not rerun."
-    );
+    assert_eq!(lost.value()["status"], "running");
+    assert_eq!(lost.value()["reattachRecovery"]["status"], "running");
     assert!(
         corrupt_path.exists(),
         "corrupt receipt is retained for diagnosis"
@@ -328,7 +320,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
         monitor_runtime::recover_on_startup(&store, 3000.0)
             .await
             .expect("idempotent restart");
-        assert_eq!(complete_rows(&store, &id)["monitor"]["status"], "lost");
+        assert_eq!(complete_rows(&store, &id)["monitor"]["status"], "running");
     }
 }
 
@@ -368,7 +360,7 @@ async fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
 }
 
 #[tokio::test]
-async fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
+async fn startup_rule_linked_monitor_stays_active_without_a_monitor_exit_event() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
@@ -390,7 +382,7 @@ async fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
             .expect("read rule monitor")
             .expect("rule monitor exists")
             .value()["status"],
-        "lost"
+        "running"
     );
     assert!(
         QueueEventRepository::get(&connection, &QueueEventId::from(format!("monitor:{id}")))
@@ -422,12 +414,12 @@ async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
             .expect("read remote monitor")
             .expect("remote monitor exists")
             .value()["status"],
-        "lost"
+        "running"
     );
     assert!(
         QueueEventRepository::get(&connection, &QueueEventId::from(format!("monitor:{id}")))
             .expect("read remote monitor exit")
-            .is_some_and(|event| event.status == "stored_only")
+            .is_none()
     );
 }
 
@@ -471,7 +463,7 @@ async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
             .expect("read valid monitor")
             .expect("valid monitor exists")
             .value()["status"],
-        "lost"
+        "running"
     );
     let unexpected: String = connection
         .query_row(

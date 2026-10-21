@@ -584,6 +584,12 @@ class SchemaContractTests(unittest.TestCase):
         def add(pointer: str, *constraints: str) -> None:
             allowed.update((pointer, constraint) for constraint in constraints)
 
+        # Agent views gained derived, read-only progress fields (#373 14b): the
+        # running managed commands and an optional stall of an idle task owner.
+        for schema in ("AgentResponse", "BranchResponse"):
+            add(f"/components/schemas/{schema}/properties/commandProgress", "property")
+            add(f"/components/schemas/{schema}/properties/stall", "property", "@nullable", "@nullableBranch")
+
         # Delivery inputs retain all historical aliases while adding the two
         # Rust-owned moments. Queue/transcript responses emit only canonical
         # moments; the manifest records the exact old and new sets at each use.
@@ -599,6 +605,18 @@ class SchemaContractTests(unittest.TestCase):
             "/components/schemas/TranscriptItemResponse/properties/requestedDelivery",
             "/components/schemas/TranscriptMessageRecord/properties/requestedDelivery",
             "/components/schemas/TranscriptPageResponse/properties/items/items/properties/requestedDelivery",
+        ):
+            add(pointer, "enum")
+
+        # #373: AgentStatus is owned by the runtime-store Rust enum.
+        for pointer in (
+            "/components/schemas/AgentRecordResponse/properties/lastCompletedTurnStatus",
+            "/components/schemas/AgentRecordResponse/properties/status",
+            "/components/schemas/AgentResponse/properties/status",
+            "/components/schemas/AgentResponse/properties/turnStatus",
+            "/components/schemas/AgentStatus",
+            "/components/schemas/BranchResponse/properties/status",
+            "/components/schemas/BranchResponse/properties/turnStatus",
         ):
             add(pointer, "enum")
 
@@ -1366,7 +1384,9 @@ class SchemaContractTests(unittest.TestCase):
     def test_request_schema_audit_has_only_documented_exceptions(self) -> None:
         report = request_schema_audit()
         self.assertEqual(report["findings"], [])
-        self.assertEqual(report["jsonSchemaExtra"], {"uses": 5, "validationUses": 1})
+        # The sixth use declares the empty-list default of AgentEntityDto.commandProgress
+        # so the Python contract matches the Rust-owned schema (#373 14b).
+        self.assertEqual(report["jsonSchemaExtra"], {"uses": 6, "validationUses": 1})
         self.assertEqual(
             report["signedRequestModelRegistration"],
             {"registeredOperations": 4, "expectedOperations": 4},
