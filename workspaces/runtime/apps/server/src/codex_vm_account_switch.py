@@ -150,7 +150,8 @@ def _switch_one(rt: Any, agent: "AgentRecord", target: str, request_id: str) -> 
     from codex_linux_workspaces import client
     from codex_vm_agents import context, flush_turns, request
     flush_turns(rt, agent)
-    handle = 'linux-worker:' + agent['id']
+    from codex_linux_vm import provider_handle
+    handle = provider_handle(agent['id'])
     # Each step is safe to repeat: a stop of a stopped handle and a second copy change nothing.
     # A new ID per attempt copies the turns that the chat ran since an earlier failed attempt.
     key = 'vm-account:' + request_id + ':' + agent['id'] + ':' + uuid.uuid4().hex
