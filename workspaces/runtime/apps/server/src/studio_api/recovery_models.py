@@ -26,7 +26,7 @@ class RecoveryFields(ContractModel):
     submitted: StrictBool | None = None
     activeAtReservation: StrictBool | None = None
     observedTurnId: StrictStr | None = None
-    events: Annotated[list[StrictStr], Field(max_length=32)] | None = None
+    events: list[StrictStr] | None = None
     stage: StrictStr | None = None
     phase: StrictStr | None = None
     executionOutcome: StrictStr | None = None

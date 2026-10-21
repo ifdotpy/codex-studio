@@ -27,7 +27,7 @@ class ClaudeFrozenInput(OpenRecord):
     input: list[JsonValue] = Field(max_length=1024)
     source: dict[str, JsonValue]
     configuration: dict[str, JsonValue]
-    events: list[ClaudeEventSnapshot] = Field(min_length=1, max_length=32)
+    events: list[ClaudeEventSnapshot] = Field(min_length=1)
     transcriptItemId: Identity
     clientUserMessageId: Identity
     textHash: Digest
@@ -40,7 +40,7 @@ class PersistedClaudeAttemptRecord(OpenRecord):
     threadId: Identity | None = None
     connectionId: Identity | None = None
     nativeOperationId: Identity | None = None
-    events: list[Identity] | None = Field(default=None, max_length=32)
+    events: list[Identity] | None = None
     submitted: StrictBool | None = None
     activeAtReservation: StrictBool | None = None
     created: float | None = None
