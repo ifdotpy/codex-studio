@@ -23345,6 +23345,78 @@
             "default": true,
             "title": "Yolo Mode",
             "type": "boolean"
+          },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -38175,6 +38247,78 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ProfileBody",
@@ -38353,6 +38497,78 @@
             ],
             "default": null,
             "title": "Role"
+          },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ProfileMutation",
@@ -38403,6 +38619,78 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
