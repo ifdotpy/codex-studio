@@ -3,6 +3,7 @@
 // of a real Studio backend. Never run from the ordinary test tiers. Headless
 // Chromium only; no window is activated and no operating-system input is sent.
 import assert from "node:assert/strict";
+import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -94,15 +95,6 @@ const AGENT_OWNED_PROCESS_NAMES = ["claude"];
 const JOURNAL_MAX_BYTES = 512 * 1024 * 1024;
 
 let aborted = false;
-let signalCount = 0;
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => {
-    aborted = true;
-    signalCount += 1;
-    process.stderr.write(`Received ${signal}; stopping and cleaning up.\n`);
-    if (signalCount > 2) process.exit(130);
-  });
-}
 const checkAborted = () => assert.ok(!aborted, "Interrupted.");
 
 function mainCheckout() {
@@ -422,7 +414,7 @@ async function resolveRole(api, accounts, profile) {
   };
 }
 
-async function main() {
+async function main({ setCleanup, setRemaining }) {
   const defaults = { project: mainCheckout() };
   const options = parseArgs(process.argv.slice(2), defaults);
   if (options.help) {
@@ -523,6 +515,101 @@ async function main() {
   let runError = null;
   let leadResponseId = null;
   let messageAgentId = null;
+  setRemaining(() => ({
+    evidence: journalPath,
+    leadId: leadId ?? leadResponseId ?? messageAgentId,
+    cleanup: journal.cleanup,
+    agents: [...agents.values()]
+      .filter(
+        (value) =>
+          !value.deleted &&
+          (value.id === (leadId ?? leadResponseId ?? messageAgentId) ||
+            value.rootId === (leadId ?? leadResponseId ?? messageAgentId)),
+      )
+      .map((value) => value.id),
+  }));
+  setCleanup(async () => {
+    // Recover ownership even when measurement or evidence persistence throws.
+    leadId ??= leadResponseId ?? messageAgentId;
+    journal.leadId = leadId;
+    // Audit even when a measurement or evidence write failed. Deletion must
+    // still run when the audit itself fails.
+    journal.result ??= { passed: false, failures: ["runFailed"], checks: {} };
+    try {
+      if (leadId) {
+        journal.audit = await auditRun({
+          origin: options.origin,
+          token: session.token,
+          backendPid,
+          journalUnit: options.journalUnit,
+          since: journal.startedAt,
+          leadId,
+          runTag,
+          workerIds: (tracker?.workers() ?? []).map((row) => row.id),
+          entities: agents,
+          timeline: journal.workerTimeline ?? [],
+          rel: (ms) =>
+            ms === null || promptSentAtMs === null ? null : ms - promptSentAtMs,
+          tracker,
+          throttling: tracker?.throttling(runMs()) ?? { events: 0 },
+          diagnostics: {
+            before: journal.diagnostics.countersBefore,
+            after: journal.diagnostics.countersAfter,
+          },
+        });
+        const kinds = [
+          ...new Set(journal.audit.failures.map((entry) => entry.kind)),
+        ];
+        journal.result.failures.push(...kinds);
+        journal.result.passed &&= kinds.length === 0;
+      }
+    } catch (error) {
+      journal.audit = {
+        failures: [
+          { kind: "auditFailed", error: String(error?.stack ?? error) },
+        ],
+        anomalies: [],
+      };
+      journal.result.passed = false;
+      journal.result.failures.push("auditFailed");
+    }
+    try {
+      // Cleanup runs on success, failure and interrupt.
+      if (options.keep) {
+        journal.cleanup = { state: "skipped (--keep)", leadId };
+        process.stdout.write(
+          `--keep: chat ${leadId} and its agents remain; inspect them in Studio.\n`,
+        );
+      } else if (leadId) {
+        journal.cleanup = await cleanup({
+          api,
+          pull,
+          agents,
+          leadId,
+          runTag,
+          backendPid,
+          baselineProviderPids,
+          baselineLoadedThreads: diagnosticsBefore.loadedThreads,
+        });
+      } else {
+        journal.cleanup = { state: "nothing created" };
+      }
+      await save();
+      const summaryPath = join(runDir, "summary.txt");
+      if (journal.metrics) {
+        await writeFile(summaryPath, summaryText(journal));
+        process.stdout.write(`\n${summaryText(journal)}`);
+      }
+      const cleanupOk =
+        journal.cleanup.state === "verified" ||
+        journal.cleanup.state.startsWith("skipped") ||
+        journal.cleanup.state === "nothing created";
+      process.stdout.write(`evidence: ${journalPath}\n`);
+      if (!journal.result?.passed || !cleanupOk) process.exitCode = 1;
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  });
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
@@ -681,6 +768,7 @@ async function main() {
       () => !document.querySelector('[role="dialog"] [role="alert"]'),
     );
     await configureNewChat(page, dialog, lead, workerRole);
+    checkAborted();
     const startClickAt = performance.now();
     await dialog
       .getByRole("button", { name: "Start chat", exact: true })
@@ -989,32 +1077,6 @@ async function main() {
       : evaluateCriteria(journal.metrics, options.workers);
     if (journal.deadlineReached) journal.result.failures.push("stageDeadline");
     journal.result.passed &&= !journal.deadlineReached;
-    if (leadId) {
-      journal.audit = await auditRun({
-        origin: options.origin,
-        token: session.token,
-        backendPid,
-        journalUnit: options.journalUnit,
-        since: journal.startedAt,
-        leadId,
-        runTag,
-        workerIds: workerRows.map((row) => row.id),
-        entities: agents,
-        timeline: workerTimeline,
-        rel,
-        tracker,
-        throttling,
-        diagnostics: {
-          before: journal.diagnostics.countersBefore,
-          after: journal.diagnostics.countersAfter,
-        },
-      });
-      const kinds = [
-        ...new Set(journal.audit.failures.map((entry) => entry.kind)),
-      ];
-      journal.result.failures.push(...kinds);
-      journal.result.passed &&= kinds.length === 0;
-    }
   } catch (error) {
     journal.result = {
       passed: false,
@@ -1024,40 +1086,6 @@ async function main() {
     runError ??= error;
   }
   await save();
-
-  // Cleanup runs on success, failure and interrupt.
-  if (options.keep) {
-    journal.cleanup = { state: "skipped (--keep)", leadId };
-    process.stdout.write(
-      `--keep: chat ${leadId} and its agents remain; inspect them in Studio.\n`,
-    );
-  } else if (leadId) {
-    journal.cleanup = await cleanup({
-      api,
-      pull,
-      agents,
-      leadId,
-      runTag,
-      backendPid,
-      baselineProviderPids,
-      baselineLoadedThreads: diagnosticsBefore.loadedThreads,
-    });
-  } else {
-    journal.cleanup = { state: "nothing created" };
-  }
-  await browser.close().catch(() => {});
-  await save();
-  const summaryPath = join(runDir, "summary.txt");
-  if (journal.metrics) {
-    await writeFile(summaryPath, summaryText(journal));
-    process.stdout.write(`\n${summaryText(journal)}`);
-  }
-  const cleanupOk =
-    journal.cleanup.state === "verified" ||
-    journal.cleanup.state.startsWith("skipped") ||
-    journal.cleanup.state === "nothing created";
-  process.stdout.write(`evidence: ${journalPath}\n`);
-  if (!journal.result.passed || !cleanupOk) process.exitCode = 1;
 }
 
 // Strict audit before the cleanup deletes the team: transcripts, tool
@@ -1119,11 +1147,11 @@ async function auditRun({
       entities.has(id) ? auditWorkerEntity(entities.get(id)) : [],
     ),
   });
-  const summary = tracker.summary();
+  const summary = tracker?.summary();
   parts.push({
     failures: auditLeadReport(
-      tracker.leadReports().map(rel),
-      rel(summary.lastReplyMs),
+      (tracker?.leadReports() ?? []).map(rel),
+      rel(summary?.lastReplyMs ?? null),
     ),
   });
   parts.push({
@@ -1208,7 +1236,9 @@ async function cleanup({
     );
   const startedAt = performance.now();
   try {
-    await pull();
+    await pull().catch((error) => {
+      state.observationError = String(error?.message ?? error);
+    });
     state.ownedAgents = owned().length;
     // One delete command: the server removes the lead and every descendant. A
     // lost reply is resolved by observation, never by a second command.
@@ -1266,7 +1296,11 @@ async function cleanup({
   return state;
 }
 
-main().catch((error) => {
+runScaleVerifier(main, {
+  onInterrupt() {
+    aborted = true;
+  },
+}).catch((error) => {
   process.stderr.write(`${error?.stack ?? error}\n`);
   process.exitCode = 1;
 });

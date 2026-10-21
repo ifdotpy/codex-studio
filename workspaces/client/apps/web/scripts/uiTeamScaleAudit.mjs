@@ -421,9 +421,13 @@ export async function mapLimited(values, limit, task) {
       results[index] = await task(values[index], index);
     }
   };
-  await Promise.all(
+  // An early rejected lane must not let teardown delete the team while other
+  // transcript reads are still in flight.
+  const lanes = await Promise.allSettled(
     Array.from({ length: Math.min(limit, values.length) }, lane),
   );
+  const failure = lanes.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
   return results;
 }
 

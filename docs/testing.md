@@ -672,6 +672,16 @@ It is a manual, announced live run, outside every test tier. A small run:
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
 lists the options. Evidence goes to a directory outside the checkout.
 
+Both scale verifiers keep their signal handlers active until teardown settles.
+An interrupt requests cancellation; another interrupt during cleanup waits for
+the same teardown. The force-exit policy and signal exit codes are owned by
+[`scaleVerifierTeardown.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierTeardown.mjs).
+A forced exit first reports the evidence path and last known remaining agents;
+that snapshot does not prove the backend has stopped them. A failed audit or
+evidence write still permits the UI verifier's single conversation-delete
+attempt, and in-flight audit reads settle before deletion. Offline signal and
+stub-API coverage runs in the short tooling tier.
+
 Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)

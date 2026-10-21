@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Explicitly selected live provider load verifier. Never run from the ordinary test tiers.
 import assert from "node:assert/strict";
+import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -120,13 +121,6 @@ function killBarrierProcesses() {
     const killTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
     killTimer.unref();
   }
-}
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.once(signal, () => {
-    interruptRequested = true;
-    workloadAbort.abort(new Error(`Received ${signal}; stopping owned work.`));
-    killBarrierProcesses();
-  });
 }
 
 function parseArgs(argv) {
@@ -523,7 +517,7 @@ async function waitForCallbackReadiness(
   return ids.map((id) => ready.get(id));
 }
 
-async function main() {
+async function main({ setRemaining }) {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(`${usage()}\n`);
@@ -578,6 +572,7 @@ async function main() {
         "Evidence belongs to another backend.",
       );
       prior = lockedJournal;
+      setRemaining(() => remainingOwnership(journalPath, prior));
       await resumeCleanup(origin, journalPath, prior);
     } finally {
       await releaseLock();
@@ -650,6 +645,7 @@ async function main() {
         "backend/provider process RSS is host-dependent and not hard-capped by this verifier",
     },
   };
+  setRemaining(() => remainingOwnership(journalPath, journal));
   await saveJournal(journalPath, journal).catch(async (error) => {
     await releaseLock();
     throw error;
@@ -1482,8 +1478,10 @@ async function main() {
     client.setDeadline(cleanupDeadline);
     journal.cleanup.state = "running";
     journal.cleanup.startedAt = new Date().toISOString();
-    await saveJournal(journalPath, journal);
     try {
+      await saveJournal(journalPath, journal).catch((error) => {
+        journal.cleanup.evidenceError = String(error?.message || error);
+      });
       readinessWatch?.close();
       readinessWatch = null;
       if (
@@ -4182,10 +4180,33 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   if (args.includes("--help") || args.includes("-h"))
     process.stdout.write(`${usage()}\n`);
   else
-    main().catch((error) => {
+    runScaleVerifier(main, {
+      onInterrupt(signal) {
+        interruptRequested = true;
+        workloadAbort.abort(
+          new Error(`Received ${signal}; stopping owned work.`),
+        );
+        killBarrierProcesses();
+      },
+    }).catch((error) => {
       process.stderr.write(
         `Live Rust chat scale verifier failed: ${error?.stack || error}\n`,
       );
       process.exitCode = 1;
     });
+}
+
+function remainingOwnership(journalPath, journal) {
+  return {
+    evidence: journalPath,
+    cleanup: journal.cleanup,
+    agents: (journal.ownedAgents || [])
+      .filter(
+        (owner) =>
+          !["verified-deleted", "verified-not-created"].includes(
+            owner.cleanup?.state,
+          ),
+      )
+      .map((owner) => ({ id: owner.id, cleanup: owner.cleanup })),
+  };
 }
