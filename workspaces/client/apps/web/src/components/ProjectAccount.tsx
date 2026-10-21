@@ -112,7 +112,10 @@ export default function ProjectAccount({
           });
         }}
       >
-        <SettingsRow label="Default account">
+        <SettingsRow
+          label="Default account"
+          help="Comes first in its group of the account order. A Claude account starts new chats when one is ready."
+        >
           <AccountTiles
             label="Default account for new chats"
             showLabel={false}
