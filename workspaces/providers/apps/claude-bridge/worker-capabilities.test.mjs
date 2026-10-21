@@ -231,25 +231,33 @@ for (const method of ["thread/start", "thread/resume"]) {
   });
 }
 
-test("null inherits defaults; empty arrays remove built-ins and user MCP servers", async () => {
+test("absent and null inherit defaults; empty arrays remove built-ins and user MCP servers", async () => {
   const bridge = await fixture();
   for (const userMcp of [undefined, false]) {
-    const id = await bridge.start(
+    for (const profile of [
+      undefined,
       {
         allowedTools: null,
         disallowedTools: null,
         mcpServers: null,
         skills: null,
+        maxTurns: null,
       },
-      { userMcp },
-    );
-    assert.equal((await bridge.run(id)).status, "completed");
-    const options = (await bridge.events()).find(
-      (event) => event.session === id && event.kind === "options",
-    ).options;
-    assert.equal(options.tools, undefined);
-    assert.equal(options.strictMcpConfig, userMcp === false ? true : undefined);
-    assert.deepEqual(options.disallowedTools, ["Agent"]);
+    ]) {
+      const id = await bridge.start(profile, { userMcp });
+      assert.equal((await bridge.run(id)).status, "completed");
+      const options = (await bridge.events()).find(
+        (event) => event.session === id && event.kind === "options",
+      ).options;
+      assert.equal(options.tools, undefined);
+      assert.equal(options.allowedTools, undefined);
+      assert.equal(options.hooks, undefined);
+      assert.equal(
+        options.strictMcpConfig,
+        userMcp === false ? true : undefined,
+      );
+      assert.deepEqual(options.disallowedTools, ["Agent"]);
+    }
   }
   const id = await bridge.start({
     allowedTools: [],
