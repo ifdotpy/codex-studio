@@ -31,6 +31,7 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
+import { AgentProgress } from "./agents/AgentProgress";
 import {
   ChatServerLine,
   offlineServerDescription,
@@ -191,6 +192,7 @@ const SidebarRowView = memo(function SidebarRowView({
           {a?.pinned && <Pin size={11} className="chat-pin" />}
           {row.name ?? ""}
         </strong>
+        <AgentProgress agent={row} />
         <ChatServerLine
           provider={a.provider || undefined}
           alias={serverAlias}

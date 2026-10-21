@@ -21,6 +21,7 @@ pub mod agent_lifecycle_runtime;
 pub mod agent_management;
 pub mod agent_management_store;
 pub mod agent_move;
+pub(crate) mod agent_progress;
 pub mod agents_create;
 pub mod analytics;
 pub mod analytics_capture;

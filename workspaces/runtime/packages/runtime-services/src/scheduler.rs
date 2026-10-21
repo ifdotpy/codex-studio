@@ -1240,6 +1240,28 @@ mod child_turn_parent_tests {
     }
 
     #[tokio::test]
+    async fn completed_child_turn_reports_unsubmitted_assignment_once_with_final_text() {
+        let (_directory, store, intent) = seeded("codex").await;
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('task',?1)",
+                [json!({"id":"task","rootId":"lead","owner":"child","status":"running","updated":1}).to_string()])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(finish(&store, &intent, "completed").await);
+        let events = parent_events(&store);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "child:child:turn-1");
+        let payload: serde_json::Value = events[0].2.clone();
+        assert_eq!(payload["result"], "done");
+        let stall: studio_runtime_schema::agent_progress::AgentStall =
+            serde_json::from_value(payload["stall"].clone()).unwrap();
+        assert_eq!(stall.task_id, "task");
+        assert!(stall.since >= 1.0);
+        assert!(finish(&store, &intent, "completed").await);
+        assert_eq!(parent_events(&store).len(), 1);
+    }
+
+    #[tokio::test]
     async fn stopped_turn_pending_input_and_stale_epoch_do_not_notify() {
         let (_directory, store, intent) = seeded("codex").await;
         assert!(finish(&store, &intent, "interrupted").await);

@@ -219,6 +219,7 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
 FAST_SUITES = (
+    f"{SOURCE_REL}/test_codex_records.py",
     f"{TESTS_REL}/server/test_delivery_contract.py",
     f"{TESTS_REL}/question-history-contract.py",
     f"{TESTS_REL}/queued-active-turn-recovery-contract.py",

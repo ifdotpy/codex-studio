@@ -3,6 +3,7 @@ import {
   stubEntityState,
   readFixtureSyncContract,
   test,
+  expect,
   spawnFixture as spawn,
   rustUiFixture,
 } from "../playwright.mjs";
@@ -78,6 +79,14 @@ test("Team panel ui", async ({
       name: "Active worker",
       status: "running",
       inFlight: true,
+      commandProgress: [
+        {
+          monitorId: "fixture-gate",
+          stage: "just test-fast",
+          startedAt: Date.now() / 1000 - 720,
+          lastOutputLine: "Rust checks passed; browser checks running",
+        },
+      ],
       worktree: false,
       error: undefined,
     };
@@ -90,8 +99,24 @@ test("Team panel ui", async ({
       worktree: false,
       error: undefined,
     };
-    snapshot.threads = [lead, member, active, needsYou];
-    snapshot.runtime.agents = [lead, member, active, needsYou];
+    const stalled = {
+      ...member,
+      id: "worker-stalled",
+      name: "Stalled worker",
+      status: "completed",
+      error: undefined,
+      stall: { taskId: "task-14", since: Date.now() / 1000 - 300 },
+    };
+    lead.commandProgress = [
+      {
+        monitorId: "fixture-lead-gate",
+        stage: "Final review",
+        startedAt: Date.now() / 1000 - 60,
+        lastOutputLine: "Reviewing changes",
+      },
+    ];
+    snapshot.threads = [lead, member, active, needsYou, stalled];
+    snapshot.runtime.agents = [lead, member, active, needsYou, stalled];
     snapshot.runtime.requests = [
       { id: "answer", agent: needsYou.id, status: "pending" },
     ];
@@ -155,7 +180,7 @@ test("Team panel ui", async ({
       });
       assert.equal(
         await panel.locator("#worker-search, .team-filters").count(),
-        0,
+        2,
       );
       assert.equal(await panel.locator(".team-overview").count(), 1);
       try {
@@ -188,17 +213,36 @@ test("Team panel ui", async ({
         await panel.locator('[data-team-count="attention"] dd').innerText(),
         "1",
       );
-      assert.deepEqual(
-        await panel.locator(".worker-entry strong").allInnerTexts(),
-        ["Active worker", "Needs you", "Подача уведомления"],
-        "compact panel puts Working first and keeps Need you visible",
+      await expect(panel.locator(".worker-entry strong")).toHaveText([
+        "Active worker",
+        "Needs you",
+        "Подача уведомления",
+        "Stalled worker",
+      ]);
+      assert.equal(
+        await panel.locator('[data-team-count="stalled"] dd').innerText(),
+        "1",
       );
+      const command = panel.locator('[data-monitor="fixture-gate"]');
+      await expect(command).toContainText(/just test-fast · 12m/);
+      await expect(command).toContainText(
+        "Rust checks passed; browser checks running",
+      );
+      await expect(panel.locator(".agent-stall")).toHaveText(
+        "Stalled · task task-14 unsubmitted",
+      );
+      if (width > 760) {
+        await expect(
+          page.locator(
+            `[data-chat="${lead.id}"] [data-monitor="fixture-lead-gate"]`,
+          ),
+        ).toContainText("Final review");
+      }
       assert.equal(
         await panel.locator(".worker-disk, .team-disk-total").count(),
         0,
       );
-      assert.equal(
-        await panel.locator(".worker-error").innerText(),
+      await expect(panel.locator(".worker-error")).toHaveText(
         "Could not prepare the project folder.",
       );
       const card = panel

@@ -36,6 +36,7 @@ import {
 } from "../../types";
 import ChatStatus from "./ChatStatus";
 import TokenRate from "../TokenRate";
+import { AgentProgress, commandWaitLabel } from "./AgentProgress";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 
 function WorkerExcerpt({
@@ -195,42 +196,45 @@ const WorkerCardView = memo(function WorkerCardView({
           /^Command [["']/.test(error)
         ? "The agent stopped with an error."
         : error;
-  const statusDetail =
-    startWaitLabel(agent) ??
-    (indicator?.kind === "answer" ||
-    ["waiting", "parked"].includes(agent.status ?? "") ||
-    (indicator?.kind === "working" && !agent.inFlight)
-      ? indicator?.label || statusLabel(agent.status ?? "")
-      : awaitingAnswer
-        ? "Needs your answer"
-        : agent.status === "starting" && agent.worktreePreparation
-          ? agent.worktreePreparation === "waiting"
-            ? "Waiting to prepare folder"
-            : "Preparing folder"
-          : deferred && agent.status === "approval"
-            ? "Question deferred"
-            : agent.status === "starting" &&
-                (agent.startAttempt?.prepareError ||
-                  agent.startAttempt?.responseError)
-              ? "Waiting for Codex"
-              : [
-                  agent.status === "completed"
-                    ? "Finished"
-                    : agent.status === "failed"
-                      ? diskHeld
-                        ? DISK_FULL_WAIT_LABEL
-                        : "Failed"
-                      : agent.status === "running" && agent.inFlight
-                        ? "Working"
-                        : statusLabel(
-                            agent.status ?? "",
-                            undefined,
-                            agent.parkedEvent ?? undefined,
-                          ),
-                  nativeReleaseLabel(agent),
-                ]
-                  .filter(Boolean)
-                  .join(" · "));
+  const statusDetail = agent.stall
+    ? "Stalled: assigned task not submitted"
+    : ["waiting_on_monitor"].includes(agent.status ?? "")
+      ? commandWaitLabel(agent)
+      : (startWaitLabel(agent) ??
+        (indicator?.kind === "answer" ||
+        ["waiting", "parked"].includes(agent.status ?? "") ||
+        (indicator?.kind === "working" && !agent.inFlight)
+          ? indicator?.label || statusLabel(agent.status ?? "")
+          : awaitingAnswer
+            ? "Needs your answer"
+            : agent.status === "starting" && agent.worktreePreparation
+              ? agent.worktreePreparation === "waiting"
+                ? "Waiting to prepare folder"
+                : "Preparing folder"
+              : deferred && agent.status === "approval"
+                ? "Question deferred"
+                : agent.status === "starting" &&
+                    (agent.startAttempt?.prepareError ||
+                      agent.startAttempt?.responseError)
+                  ? "Waiting for Codex"
+                  : [
+                      agent.status === "completed"
+                        ? "Finished"
+                        : agent.status === "failed"
+                          ? diskHeld
+                            ? DISK_FULL_WAIT_LABEL
+                            : "Failed"
+                          : agent.status === "running" && agent.inFlight
+                            ? "Working"
+                            : statusLabel(
+                                agent.status ?? "",
+                                undefined,
+                                agent.parkedEvent ?? undefined,
+                              ),
+                      nativeReleaseLabel(agent),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")));
   const statusText =
     !awaitingAnswer &&
     ["waiting", "parked", "queued"].includes(agent.status || "")
@@ -252,12 +256,13 @@ const WorkerCardView = memo(function WorkerCardView({
             <span className="worker-name-line">
               <strong>{agent.name}</strong>
               <span
-                className={`worker-state worker-state-${agent.status || "waiting"}`}
+                className={`worker-state worker-state-${agent.stall ? "stalled" : agent.status || "waiting"}`}
                 role="img"
                 aria-label={statusDetail}
                 title={statusDetail}
               >
-                {(agent.status === "failed" && !diskHeld) ||
+                {agent.stall ||
+                (agent.status === "failed" && !diskHeld) ||
                 indicator?.kind === "error" ||
                 awaitingAnswer ? (
                   <CircleAlert size={14} aria-hidden="true" />
@@ -278,6 +283,7 @@ const WorkerCardView = memo(function WorkerCardView({
               />
               <small>{statusText}</small>
             </span>
+            <AgentProgress agent={agent} />
             {agent.environment === "linux" && <small>Linux VM</small>}
             <span className="worker-meta">
               <span className="worker-model-summary" title={meta}>

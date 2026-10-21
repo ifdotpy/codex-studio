@@ -917,7 +917,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "Rust SQL filesystem boundary witnesses",
+      label: "Rust SQL boundary and agent progress witnesses",
       commands: [
         [
           "cargo",
@@ -931,17 +931,19 @@ function fastTierCommands(root) {
             "libtest-json-plus",
             "-p",
             "studio-runtime-services",
+            "-p",
+            "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
+            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(agent_progress_schema_matches_strict_serde_contract)",
           ],
         ],
       ],
       options: {
         selector:
-          "nonempty work submission and unrelated reservation boundary witnesses",
+          "SQL callback boundaries and agent-list progress/turn-result witnesses",
         reason:
-          "Keep filesystem work outside SQLite without rejecting unrelated reservation changes.",
+          "Keep filesystem work outside SQLite and verify typed progress, idle assignments, and one parent result per completed turn.",
       },
     },
     {
