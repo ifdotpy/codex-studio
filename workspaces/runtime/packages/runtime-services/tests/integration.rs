@@ -16,6 +16,7 @@ mod claude_bridge;
 mod claude_controls_actor;
 mod claude_login;
 mod claude_login_actor;
+mod codex_login_completion;
 mod context_repair_corpus;
 mod continuation_corpus;
 mod continuation_recovery;
