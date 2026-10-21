@@ -49,7 +49,9 @@ pub(crate) struct Output {
 
 pub(crate) struct Request<'a> {
     pub(crate) program: &'a OsStr,
-    pub(crate) cwd: &'a OsStr,
+    /// Passed as `-C <directory>` before `args`, which sets a Git working
+    /// directory. `None` runs a program that has no such option.
+    pub(crate) git_directory: Option<&'a OsStr>,
     pub(crate) args: &'a [&'a str],
     pub(crate) environment: &'a [(&'a str, &'a str)],
     pub(crate) input: Option<&'a [u8]>,
@@ -76,7 +78,7 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     studio_runtime_store::debug_assert_outside_sql();
     let Request {
         program,
-        cwd,
+        git_directory,
         args,
         environment,
         input,
@@ -97,9 +99,10 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
             }
         }
     }
+    if let Some(directory) = git_directory {
+        command.arg("-C").arg(directory);
+    }
     command
-        .arg("-C")
-        .arg(cwd)
         .args(args)
         .envs(environment.iter().copied())
         .stdin(if input.is_some() {
@@ -275,7 +278,7 @@ mod tests {
         let missing = root.path().join("missing-program");
         let result = run(Request {
             program: missing.as_os_str(),
-            cwd: OsStr::new("/"),
+            git_directory: None,
             args: &[],
             environment: &[],
             input: None,
@@ -288,6 +291,27 @@ mod tests {
         };
         assert!(detail.starts_with("spawn: "), "{detail}");
         assert!(detail.contains("os error 2"), "{detail}");
+    }
+
+    /// The macOS listener probe runs lsof, which refuses `-C`. A program
+    /// without a Git directory must receive only its own arguments.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_without_a_git_directory_receives_only_its_arguments() {
+        let request = |git_directory| Request {
+            program: OsStr::new("/bin/echo"),
+            git_directory,
+            args: &["one", "-nP"],
+            environment: &[],
+            input: None,
+            stdout_limit: 64,
+            stderr_limit: 64,
+            timeout: Duration::from_secs(5),
+        };
+        let plain = run(request(None)).expect("echo runs");
+        assert_eq!(plain.stdout.bytes, b"one -nP\n");
+        let git = run(request(Some(OsStr::new("/")))).expect("echo runs");
+        assert_eq!(git.stdout.bytes, b"-C / one -nP\n");
     }
 
     #[test]
@@ -314,7 +338,7 @@ mod tests {
             .expect("executable");
         let output = run(Request {
             program: program.as_os_str(),
-            cwd: OsStr::new("/"),
+            git_directory: None,
             args: &[],
             environment: &[],
             input: Some(b"ready\n"),
@@ -370,7 +394,7 @@ mod tests {
         let started = Instant::now();
         let result = run(Request {
             program: program.as_os_str(),
-            cwd: OsStr::new("/"),
+            git_directory: None,
             args: &[],
             environment: &[],
             input: None,

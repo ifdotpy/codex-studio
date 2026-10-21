@@ -209,7 +209,7 @@ pub fn host_listeners() -> Vec<Listener> {
     const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
     let output = crate::bounded_child::run(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("lsof"),
-        cwd: std::ffi::OsStr::new("/"),
+        git_directory: None,
         args: &["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "ptun"],
         environment: &[],
         input: None,
