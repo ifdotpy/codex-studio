@@ -1446,7 +1446,7 @@ async fn provision_image_workspace(
     {
         Ok(workspace) => workspace,
         Err(error) => {
-            let _ = remove_image_workspace(id.to_owned()).await;
+            discard_image_workspace(id.to_owned()).await;
             persist_image_provision_failure(
                 context.store.as_ref(),
                 &id,
@@ -1462,7 +1462,7 @@ async fn provision_image_workspace(
     if workspace.get("path").and_then(Value::as_str).is_none()
         || workspace.get("mount").and_then(Value::as_str).is_none()
     {
-        let _ = remove_image_workspace(id.to_owned()).await;
+        discard_image_workspace(id.to_owned()).await;
         persist_image_provision_failure(
             context.store.as_ref(),
             &id,
@@ -1508,23 +1508,31 @@ async fn provision_image_workspace(
     if let Some(projection) = projection {
         Ok(projection)
     } else {
-        let _ = remove_image_workspace(id.to_owned()).await;
+        discard_image_workspace(id.to_owned()).await;
         Err(OperationError::Create(CreateError::IdentityChanged))
     }
 }
 
+/// Remove the image workspace of a provisioning attempt that will not finish.
+/// The caller returns its own error to the request, so a cleanup failure is
+/// logged with the agent identity instead of replacing that error.
 #[cfg(target_os = "macos")]
-async fn remove_image_workspace(id: String) -> Result<(), OperationError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
+async fn discard_image_workspace(id: String) {
+    let agent = id.clone();
+    let removed = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/agents_create/image_workspace_remove",
         move || {
             crate::image_workspace::remove_workspace(&id, true)
                 .map(|_| ())
-                .map_err(|_| OperationError::Internal)
+                .map_err(|error| error.to_string())
         },
     )
-    .await
-    .map_err(|_| OperationError::Internal)?
+    .await;
+    match removed {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("image workspace cleanup failed for agent {agent}: {error}"),
+        Err(_) => eprintln!("image workspace cleanup task did not run for agent {agent}"),
+    }
 }
 
 pub(crate) async fn persist_image_provision_failure(
