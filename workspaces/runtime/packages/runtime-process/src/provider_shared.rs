@@ -91,8 +91,9 @@ pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, 
 /// The record has no terminator between the environment and the Apple
 /// strings. libSystem clears the first Apple strings during the child's
 /// startup, so the parse is exact for a started child. A read in the first
-/// moments after exec can include Apple strings, and the caller then refuses
-/// the child as unverifiable.
+/// moments after exec can include Apple strings, and a read during an exec
+/// (for example the re-exec of a Homebrew Python launcher) sees a zeroed
+/// record. The reattach caller re-reads until the record settles.
 #[cfg(target_os = "macos")]
 pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
     let raw = studio_runtime_proc_sys::process_arguments(pid, PROCESS_ENVIRONMENT_LIMIT_BYTES)?;

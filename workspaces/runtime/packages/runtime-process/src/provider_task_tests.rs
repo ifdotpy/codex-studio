@@ -875,3 +875,105 @@ async fn single_typed_decode_matches_the_value_detour_for_codex_and_claude_lines
     }
     assert!(actor.response_ids.is_empty());
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn launch_environment() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("HOME".to_owned(), "/home/fixture".to_owned()),
+        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+    ])
+}
+
+/// A reader that returns `records` in order, then the last one again.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn scripted_records(
+    records: Vec<io::Result<BTreeMap<String, String>>>,
+) -> (
+    impl Fn() -> io::Result<BTreeMap<String, String>> + Clone + Send + 'static,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let records = Arc::new(
+        records
+            .into_iter()
+            .map(|record| record.map_err(|error| error.kind()))
+            .collect::<Vec<_>>(),
+    );
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = reads.clone();
+    let read = move || {
+        let index = counter.fetch_add(1, Ordering::SeqCst);
+        records[index.min(records.len() - 1)]
+            .clone()
+            .map_err(io::Error::from)
+    };
+    (read, reads)
+}
+
+/// A just-started child shows a zeroed record during an exec and Apple
+/// strings before libSystem startup. A reattach reads again until the record
+/// equals the accepted launch, instead of refusing a correct child.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn retained_environment_settles_after_a_transient_launch_record() {
+    use std::sync::atomic::Ordering;
+    let clean = launch_environment();
+    let mut with_apple_strings = clean.clone();
+    with_apple_strings.insert("stack_guard".into(), "0x1".into());
+    with_apple_strings.insert("pfz".into(), "0x2".into());
+    let (read, reads) = scripted_records(vec![
+        Err(io::ErrorKind::InvalidData.into()),
+        Ok(with_apple_strings),
+        Ok(clean.clone()),
+    ]);
+    let shutdown = Shutdown::default();
+    let mut stop = shutdown.subscribe();
+    let slots = Arc::new(Semaphore::new(1));
+    let settled = settled_environment(&mut stop, &slots, &clean, Duration::from_secs(5), read)
+        .await
+        .unwrap();
+    assert_eq!(settled, clean);
+    assert_eq!(reads.load(Ordering::SeqCst), 3);
+    assert_eq!(slots.available_permits(), 1);
+}
+
+/// A child whose launch record keeps differing is still refused.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn retained_environment_refuses_a_record_that_never_matches() {
+    use std::sync::atomic::Ordering;
+    let clean = launch_environment();
+    let mut other = clean.clone();
+    other.insert("HOME".into(), "/home/other".into());
+    let (read, reads) = scripted_records(vec![Ok(other)]);
+    let shutdown = Shutdown::default();
+    let mut stop = shutdown.subscribe();
+    let slots = Arc::new(Semaphore::new(1));
+    let result =
+        settled_environment(&mut stop, &slots, &clean, Duration::from_millis(50), read).await;
+    assert!(matches!(result, Err(AdapterError::UnverifiableChild)));
+    assert!(reads.load(Ordering::SeqCst) >= 2);
+    assert_eq!(slots.available_permits(), 1);
+}
+
+/// Shutdown ends the wait between two reads.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn retained_environment_wait_ends_on_shutdown() {
+    let clean = launch_environment();
+    let (read, _reads) = scripted_records(vec![Err(io::ErrorKind::InvalidData.into())]);
+    let shutdown = Shutdown::default();
+    let mut stop = shutdown.subscribe();
+    let slots = Arc::new(Semaphore::new(1));
+    let cancel = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            shutdown.cancel();
+        })
+    };
+    let result =
+        settled_environment(&mut stop, &slots, &clean, Duration::from_secs(60), read).await;
+    assert!(matches!(result, Err(AdapterError::Cancelled)));
+    cancel.await.unwrap();
+}
