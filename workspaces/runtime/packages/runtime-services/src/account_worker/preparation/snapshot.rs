@@ -1255,6 +1255,30 @@ pub(super) fn submission_snapshot(
             created: decode(v["created"].clone(), "complaint/created")?,
         });
     }
+    ensure_context_tables(tx)?;
+    let mut stmt = tx.prepare(
+        "SELECT record FROM runtime_context_manifests WHERE agent=?1 ORDER BY sequence DESC",
+    )?;
+    let delivered_manifests: Vec<turn::ContextManifest> = stmt
+        .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
+        .map(|r| {
+            let r = r?;
+            decode(
+                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
+                "manifest",
+            )
+        })
+        .collect::<Result<Vec<_>, WorkerError>>()?;
+    let epoch = turn::Epoch(
+        text(record, "threadId")?,
+        optional(record, "compactions")?.unwrap_or(0),
+    );
+    let restore = turn::needs_team_restore(&epoch, &delivered_manifests);
+    let team_state = if restore {
+        super::team_restore::snapshot(tx, record)?
+    } else {
+        None
+    };
     let mut workers = Vec::new();
     // Only a lead's turn context (finished-worktree reminder) or a batch carrying
     // child events (team progress line) reads the team.
@@ -1327,20 +1351,6 @@ pub(super) fn submission_snapshot(
             view: v.as_object().ok_or_else(|| invalid("asset"))?.clone(),
         });
     }
-    ensure_context_tables(tx)?;
-    let mut stmt = tx.prepare(
-        "SELECT record FROM runtime_context_manifests WHERE agent=?1 ORDER BY sequence DESC",
-    )?;
-    let delivered_manifests = stmt
-        .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
-        .map(|r| {
-            let r = r?;
-            decode(
-                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
-                "manifest",
-            )
-        })
-        .collect::<Result<Vec<_>, WorkerError>>()?;
     let mut stmt = tx.prepare("SELECT version FROM runtime_context_reminders WHERE agent=?1")?;
     let delivered_reminders = stmt
         .query_map([&intent.agent_id], |r| r.get(0))?
@@ -1392,6 +1402,7 @@ pub(super) fn submission_snapshot(
             plan,
             complaints,
             workers,
+            team_state,
             delivered_reminders,
             assets,
             guidance: turn::GuidanceBundle { role, progress },

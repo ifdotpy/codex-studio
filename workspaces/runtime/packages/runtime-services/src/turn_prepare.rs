@@ -1,8 +1,9 @@
 //! Pure submission compiler. The account worker gathers and revalidates the snapshot,
 //! materializes artifact intents, persists the result, and submits exactly once.
 //! No preparation result is evidence of delivery; only `accept` promotes knowledge.
-//! Synthetic byte budgets are soft: reference-only summaries can exceed their share.
-//! There is no finite total ceiling with unbounded IDs/paths, context, or bypass events.
+//! Studio additions share one hard UTF-8 byte budget. User text and delegated
+//! task text are preserved in full, outside that budget.
+//! Omitted additions remain available through a durable, agent-owned output reference.
 //! The transcript and its input excerpts each have a hard 20,000-character ceiling.
 //! JSON evidence admits at most 64 nested containers, finite floats and i64/u64
 //! integers; unsupported numbers, negative integer zero and invalid structured JSON
@@ -21,7 +22,11 @@ use thiserror::Error;
 const TRANSCRIPT_CHARS: usize = 20_000;
 const RESULT_BYTES: usize = 20_000;
 const EVENT_BYTES: usize = 22_000;
-const BATCH_BYTES: usize = 24_000;
+/// Maximum Studio-authored text in one provider input, including wrappers,
+/// context, receipt clocks, and attachment descriptions. Unit: UTF-8 bytes.
+pub const STUDIO_INPUT_BYTES: usize = 24_000;
+/// Maximum share reserved for the post-compaction roster. Unit: UTF-8 bytes.
+const TEAM_RESTORE_BYTES: usize = 8_000;
 use studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS;
 const RESULT_EXCERPT: usize = 600;
 /// File names retained in a bounded review excerpt; independent of the number
@@ -179,6 +184,9 @@ pub struct PreparationSnapshot {
     pub plan: Option<Plan>,
     pub complaints: Vec<Complaint>,
     pub workers: Vec<Worker>,
+    /// Authoritative store projection, gathered only for post-compaction delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_state: Option<Value>,
     pub delivered_reminders: BTreeSet<String>,
     pub assets: Vec<Asset>,
     pub guidance: GuidanceBundle,
@@ -258,6 +266,10 @@ pub struct PreparedSubmission {
     /// Delivered sequence observed in this epoch; acceptance is a compare-and-set.
     pub base_sequence: u64,
     pub artifact_intents: Vec<ArtifactIntent>,
+    /// Full Studio additions when their provider projection is bounded. The adapter
+    /// writes this through payload_blobs before it commits the output reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub studio_input: Option<String>,
 }
 #[derive(Error, Serialize)]
 #[serde(tag = "kind", content = "artifacts")]
@@ -340,7 +352,26 @@ fn outstanding(s: &PreparationSnapshot) -> Vec<&Complaint> {
         })
         .collect()
 }
-fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), PrepareError> {
+/// Only positive provider receipts consume this epoch's restoration. Rejected or
+/// uncertain submissions retain it for recovery; a new thread is a distinct epoch.
+pub(crate) fn needs_team_restore(epoch: &Epoch, manifests: &[ContextManifest]) -> bool {
+    if epoch.1 == 0 {
+        return false;
+    }
+    let same_thread = manifests
+        .iter()
+        .filter(|m| m.epoch.0 == epoch.0)
+        .collect::<Vec<_>>();
+    if same_thread.is_empty() {
+        // The counter survives a thread replacement. A new thread alone must
+        // not look like another compaction of the previous thread.
+        manifests.iter().all(|m| m.epoch.1 < epoch.1)
+    } else {
+        same_thread.iter().all(|m| m.epoch.1 < epoch.1)
+    }
+}
+
+fn context(s: &PreparationSnapshot) -> Result<(Vec<String>, ContextManifest), PrepareError> {
     let old = s
         .delivered_manifests
         .iter()
@@ -366,6 +397,15 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
     }
     let mut versions = Versions::new();
     let mut blocks = Vec::new();
+    if needs_team_restore(&s.actor.epoch, &s.delivered_manifests)
+        && let Some(state) = &s.team_state
+    {
+        let count = |key: &str| state[key].as_array().map_or(0, Vec::len);
+        blocks.push(format!(
+            "[Studio team state after compaction]\nAuthoritative current state. Do not respawn these workers or rerun these commands. Review pending results. Use orchestration_status and orchestration_task for full lists and details.\nChildren: {}; monitors: {}; open tasks: {}; pending result events: {}.\n{state}",
+            count("children"), count("monitors"), count("tasks"), count("pendingResults")
+        ));
+    }
     for (key, text, prefix) in [
         ("agentMode", &mode, ""),
         (
@@ -446,13 +486,8 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
         .map_or(0, |m| m.sequence)
         .checked_add(1)
         .ok_or(PrepareError::SequenceExhausted)?;
-    let text = if blocks.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n{}", blocks.join("\n\n"))
-    };
     Ok((
-        text,
+        blocks,
         ContextManifest {
             epoch: s.actor.epoch.clone(),
             versions,
@@ -959,7 +994,7 @@ impl TeamProgress {
 fn event_text(
     s: &PreparationSnapshot,
     rows: &[Event],
-) -> Result<(Vec<(String, ProviderInputOrigin)>, Vec<ArtifactIntent>), PrepareError> {
+) -> Result<(Vec<InputPart>, Vec<ArtifactIntent>), PrepareError> {
     let parsed: Vec<_> = rows
         .iter()
         .enumerate()
@@ -981,11 +1016,8 @@ fn event_text(
             }
         }
     }
-    let synthetic = rows
-        .iter()
-        .filter(|r| !matches!(r.kind.as_str(), "user" | "followup"))
-        .count();
-    let limit = EVENT_BYTES.min(BATCH_BYTES / synthetic.max(1));
+    let synthetic = rows.iter().filter(|row| !preserves_task_text(row)).count();
+    let limit = EVENT_BYTES.min(STUDIO_INPUT_BYTES / synthetic.max(1));
     let mut parts = Vec::new();
     let mut artifacts = Vec::new();
     let mut missing = Vec::new();
@@ -1036,20 +1068,29 @@ fn event_text(
                 });
             }
         }
-        if !matches!(
-            row.kind.as_str(),
-            "user" | "followup" | "work_decision" | "radio_turn"
-        ) {
+        let preserved = preserves_task_text(row);
+        if !preserved {
             text = bound_event(row, &text, limit);
         }
-        parts.push((
-            if row.kind == "user" {
+        let origin = event_origin(row);
+        if !parts.is_empty() {
+            parts.push(InputPart::event("\n\n".into(), origin));
+        }
+        if preserved && row.kind == "followup" {
+            parts.push(InputPart::event(
+                "[Orchestration event: followup]\n".into(),
+                origin,
+            ));
+        }
+        parts.push(InputPart {
+            text: if preserved {
                 text
             } else {
                 format!("[Orchestration event: {}]\n{text}", row.kind)
             },
-            event_origin(row),
-        ));
+            injected: !preserved,
+            origin,
+        });
     }
     if !missing.is_empty() {
         return Err(PrepareError::ArtifactsRequired(missing));
@@ -1059,12 +1100,16 @@ fn event_text(
         .any(|r| matches!(r.kind.as_str(), "child_result" | "child_stopped"))
         && let Some(line) = TeamProgress::of(s).line()
     {
-        parts.push((
-            format!("[Team progress]\n{line}"),
-            ProviderInputOrigin::StudioEvent,
-        ));
+        parts.push(InputPart::studio(format!("\n\n[Team progress]\n{line}")));
     }
     Ok((parts, artifacts))
+}
+
+/// A sender-stamped followup is the parent's complete task instruction.
+/// Its Human origin is shared with decisions, but only its body is exempt.
+fn preserves_task_text(event: &Event) -> bool {
+    event.kind == "user"
+        || (event.kind == "followup" && event_origin(event) == ProviderInputOrigin::Human)
 }
 
 fn event_origin(event: &Event) -> ProviderInputOrigin {
@@ -1083,6 +1128,91 @@ fn event_origin(event: &Event) -> ProviderInputOrigin {
     } else {
         ProviderInputOrigin::StudioEvent
     }
+}
+
+#[derive(Clone)]
+struct InputPart {
+    text: String,
+    injected: bool,
+    origin: ProviderInputOrigin,
+}
+impl InputPart {
+    fn studio(text: String) -> Self {
+        Self {
+            text,
+            injected: true,
+            origin: ProviderInputOrigin::StudioEvent,
+        }
+    }
+    fn event(text: String, origin: ProviderInputOrigin) -> Self {
+        Self {
+            text,
+            injected: true,
+            origin,
+        }
+    }
+}
+
+/// The final authority for the aggregate budget, after all per-event projections.
+/// Fixed-size content hashes keep the recovery pointer bounded even with long IDs.
+fn bound_input(parts: &[InputPart]) -> (Vec<InputPart>, Option<String>) {
+    let bytes: usize = parts
+        .iter()
+        .filter(|p| p.injected)
+        .map(|p| p.text.len())
+        .sum();
+    let roster = parts.iter().position(|p| {
+        p.injected
+            && p.text
+                .starts_with("\n\n[Studio team state after compaction]")
+    });
+    if bytes <= STUDIO_INPUT_BYTES
+        && roster.is_none_or(|i| parts[i].text.len() <= TEAM_RESTORE_BYTES)
+    {
+        return (parts.to_vec(), None);
+    }
+    let full: String = parts
+        .iter()
+        .filter(|p| p.injected)
+        .map(|p| p.text.as_str())
+        .collect();
+    let reference = format!("studio-input:{}", sha256_hex(full.as_bytes()));
+    let notice = format!(
+        "\n\n[Studio input truncated] Read the omitted context before acting. outputRef: {reference}. Use orchestration_read with output_ref={reference}.\n"
+    );
+    let mut remaining = STUDIO_INPUT_BYTES - notice.len();
+    let mut shares = vec![0; parts.len()];
+    if let Some(index) = roster {
+        shares[index] = remaining
+            .min(TEAM_RESTORE_BYTES)
+            .min(parts[index].text.len());
+        remaining -= shares[index];
+    }
+    let mut count = parts
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| p.injected && Some(*i) != roster)
+        .count();
+    for (index, part) in parts.iter().enumerate() {
+        if part.injected && Some(index) != roster {
+            shares[index] = part.text.len().min(remaining / count);
+            remaining -= shares[index];
+            count -= 1;
+        }
+    }
+    let mut projected = vec![InputPart::studio(notice)];
+    for (index, part) in parts.iter().enumerate() {
+        projected.push(InputPart {
+            text: if part.injected {
+                byte_prefix(&part.text, shares[index]).into()
+            } else {
+                part.text.clone()
+            },
+            injected: part.injected,
+            origin: part.origin,
+        });
+    }
+    (projected, Some(full))
 }
 
 /// Compile only an admitted, authorized, ordered batch. Those effectful gates belong
@@ -1179,23 +1309,46 @@ pub fn compile(
         }
     }
     let (mut parts, artifact_intents) = event_text(s, rows)?;
-    let mut text = parts
-        .iter()
-        .map(|(text, _)| text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
     let (context, manifest) = context(s)?;
-    text.push_str(&context);
-    if !context.is_empty() {
-        parts.push((context, ProviderInputOrigin::StudioEvent));
+    for block in context {
+        parts.push(InputPart::studio(format!("\n\n{block}")));
     }
-    if text.is_empty() {
-        text = "[Complaint update] No complaints require a response.".into();
-        parts.push((text.clone(), ProviderInputOrigin::StudioEvent));
+    if parts.iter().all(|part| part.text.is_empty()) {
+        parts.push(InputPart::studio(
+            "[Complaint update] No complaints require a response.".into(),
+        ));
     }
+    let original_transcript: String = parts.iter().map(|part| part.text.as_str()).collect();
+    if !clocks.is_empty() {
+        parts.push(InputPart::studio(format!(
+            "\n\n[Time awareness, message receipt time]\n{}",
+            clocks.join("\n")
+        )));
+    }
+    let before_attachments = parts.len();
+    // Text attachment descriptions share this input's budget. Images stay native.
+    for input in &provider_assets {
+        if let ProviderInput::Text { text, origin } = input {
+            parts.push(InputPart::event(
+                format!("\n\n{text}"),
+                origin.unwrap_or(ProviderInputOrigin::StudioEvent),
+            ));
+        }
+    }
+    let (mut projected, studio_input) = bound_input(&parts);
+    if studio_input.is_none() {
+        // Preserve native attachments when the aggregate budget admits them.
+        projected.truncate(before_attachments);
+    }
+    let text: String = projected.iter().map(|part| part.text.as_str()).collect();
+    let transcript_source = if studio_input.is_some() {
+        &text
+    } else {
+        &original_transcript
+    };
     let item_id = format!("{}:{}", s.actor.id, first.id);
-    let transcript_text = chars(&text, TRANSCRIPT_CHARS);
-    let truncated = transcript_text.len() < text.len();
+    let transcript_text = chars(transcript_source, TRANSCRIPT_CHARS);
+    let truncated = transcript_text.len() < transcript_source.len();
     let transcript = TranscriptItem {
         id: item_id.clone(),
         role: "user".into(),
@@ -1206,27 +1359,21 @@ pub fn compile(
         assets: all_assets,
         inputs,
     };
-    let fulltext = truncated.then(|| text.clone());
-    if !clocks.is_empty() {
-        let clock = format!(
-            "\n\n[Time awareness, message receipt time]\n{}",
-            clocks.join("\n")
-        );
-        text.push_str(&clock);
-        parts.push((clock, ProviderInputOrigin::StudioEvent));
-    }
+    let fulltext = truncated.then(|| transcript_source.clone());
     let mut provider_inputs = if attributed {
-        parts
+        projected
             .into_iter()
-            .map(|(text, origin)| ProviderInput::Text {
-                text,
-                origin: Some(origin),
+            .map(|part| ProviderInput::Text {
+                text: part.text,
+                origin: Some(part.origin),
             })
             .collect()
     } else {
         vec![ProviderInput::Text { text, origin: None }]
     };
-    provider_inputs.extend(provider_assets);
+    provider_inputs.extend(provider_assets.into_iter().filter(|input| {
+        studio_input.is_none() || matches!(input, ProviderInput::LocalImage { .. })
+    }));
     let mut metadata_patches = BTreeMap::new();
     for row in rows {
         let mut patch = Map::from_iter([("modelEventProjection".into(), json!(1))]);
@@ -1235,6 +1382,12 @@ pub fn compile(
         }
         if row.id == first.id {
             patch.insert("contextManifest".into(), json!(manifest));
+            if let Some(body) = &studio_input {
+                patch.insert(
+                    "studioInput".into(),
+                    json!({"sha256":sha256_hex(body.as_bytes()),"size":body.len()}),
+                );
+            }
         }
         metadata_patches.insert(row.id.clone(), patch);
     }
@@ -1259,6 +1412,7 @@ pub fn compile(
             .unwrap_or(0),
         manifest,
         artifact_intents,
+        studio_input,
     })
 }
 
@@ -1360,6 +1514,9 @@ mod team_progress_tests {
         assert_eq!(TeamProgress::default().line(), None);
     }
 }
+
+#[cfg(test)]
+mod budget_tests;
 
 #[cfg(test)]
 mod input_origin_tests {

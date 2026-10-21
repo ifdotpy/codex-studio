@@ -1,6 +1,7 @@
 mod pipeline;
 mod receipts;
 mod snapshot;
+mod team_restore;
 use super::*;
 #[cfg(test)]
 pub(super) use pipeline::prepare;

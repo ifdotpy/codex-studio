@@ -98,6 +98,21 @@ async fn compile_with_artifacts(
         }
         Err(e) => return Err(refusal(e.to_string())),
     };
+    if let Some(body) = &compiled.studio_input {
+        let state_root = store.root().to_path_buf();
+        let write = crate::payload_blobs::BlobWrite {
+            sha256: studio_runtime_store::sha256_hex(body.as_bytes()),
+            bytes: body.as_bytes().to_vec(),
+            preview: Value::Null,
+        };
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_studio_input_spill",
+            move || crate::payload_blobs::write_blobs(&state_root, &[write]),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
+        .map_err(|_| refusal("Studio input spill failed".into()))?;
+    }
     Ok((turn_snapshot, events, compiled))
 }
 
@@ -2779,12 +2794,16 @@ mod team_progress_delivery_tests {
                         .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
                 let prepared = turn::compile(&snapshot, &events)
                     .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
-                match &prepared.provider_inputs[0] {
-                    turn::ProviderInput::Text { text, .. } => {
-                        Ok::<String, StoreError>(text.clone())
-                    }
-                    turn::ProviderInput::LocalImage { .. } => panic!("text input expected"),
-                }
+                Ok::<String, StoreError>(
+                    prepared
+                        .provider_inputs
+                        .iter()
+                        .filter_map(|input| match input {
+                            turn::ProviderInput::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect(),
+                )
             })
             .await
             .expect("batch compiles")
@@ -2804,3 +2823,7 @@ mod team_progress_delivery_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "compaction_tests.rs"]
+mod compaction_tests;
