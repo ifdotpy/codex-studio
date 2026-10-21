@@ -26,6 +26,7 @@ from unittest.mock import patch
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+import codex_live_updates
 from codex_live_updates import LiveUpdates
 from codex_source_inventory import source_files
 
@@ -146,9 +147,14 @@ class LiveUpdateRetirementRaceContract(unittest.TestCase):
             fcntl.flock(publisher, fcntl.LOCK_EX)
             self.patch_path.unlink()
             began = time.monotonic()
-            with patch.object(self.manager, "_sources", wraps=self.manager._sources) as sources:
+            with patch.object(self.manager, "_sources", wraps=self.manager._sources) as sources, \
+                    patch("codex_live_updates.flock", wraps=codex_live_updates.flock) as lease:
                 self.manager.tick()
-            self.assertLess(time.monotonic() - began, .5)
+            # The lease request never waits behind the publisher. The wall bound
+            # only catches a bounded retry; a busy machine stays far below it.
+            self.assertTrue(lease.call_args_list)
+            self.assertTrue(all(call.args[1] & codex_live_updates.LOCK_NB for call in lease.call_args_list))
+            self.assertLess(time.monotonic() - began, 5)
             sources.assert_not_called()
             self.assert_receipt(saved)
             self.manifest_path.unlink()

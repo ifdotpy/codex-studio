@@ -31,6 +31,10 @@ fixture_spec = importlib.util.spec_from_file_location("catalog_fixture", SERVER_
 fixture = importlib.util.module_from_spec(fixture_spec)
 fixture_spec.loader.exec_module(fixture)
 
+# A caller that waits for a held catalog would block for HANG_GUARD_SECONDS; a
+# caller that does not wait answers far below this bound, even on a busy machine.
+NO_WAIT_BOUND_SECONDS = 10
+
 CATALOG = {"data": [{"model": "gpt-6-astra", "defaultReasoningEffort": "medium",
                      "supportedReasoningEfforts": [{"reasoningEffort": "medium"}],
                      "serviceTiers": []}], "nextCursor": None}
@@ -85,7 +89,7 @@ class CatalogCacheContract(unittest.TestCase):
         self.assertEqual(len(self.server.requests), 1)
 
     def test_cold_display_returns_pending_without_waiting_and_reuses_late_reply(self):
-        self.cache.wait_seconds = 5
+        self.cache.wait_seconds = HANG_GUARD_SECONDS
         def display():
             return self.cache.read('a', self.server, 'one', lambda: self.current, stale_ok=True)
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -93,7 +97,7 @@ class CatalogCacheContract(unittest.TestCase):
             try:
                 for call in calls:
                     with self.assertRaises(CatalogPending):
-                        call.result(1)
+                        call.result(NO_WAIT_BOUND_SECONDS)
                 self.assertEqual(len(self.server.requests), 1)
             finally:
                 if self.server.requests and not self.server.requests[0].done():
@@ -112,7 +116,8 @@ class CatalogCacheContract(unittest.TestCase):
                     admission.result(.05)
             finally:
                 self.server.requests[0].set_result(CATALOG)
-            self.assertEqual(admission.result(1), CATALOG)
+            # The reply is set; this wait only guards against a hang.
+            self.assertEqual(admission.result(HANG_GUARD_SECONDS), CATALOG)
         self.assertEqual(len(self.server.requests), 1)
 
     def test_expired_catalog_serves_display_at_once_but_not_admission(self):
@@ -228,8 +233,10 @@ class CatalogCacheContract(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             calls = [pool.submit(self.read) for _ in range(8)]
             for call in calls:
+                # Each caller ends after its 0.01 s wait; an unbounded wait never
+                # returns, so this timeout only guards against a hang.
                 with self.assertRaises(CatalogPending):
-                    call.result(1)
+                    call.result(HANG_GUARD_SECONDS)
         self.assertEqual(len(self.server.requests), 1)
 
     def test_blocked_ordered_callback_does_not_delay_native_metadata(self):
@@ -245,12 +252,15 @@ class CatalogCacheContract(unittest.TestCase):
                 # Simulates an ordered dispatcher held by an older notification.
                 self.ordered_callbacks.append((submitted, callback))
         self.server = QueuedServer()
-        self.cache.wait_seconds = .3
+        # The wait outlasts any delay of this thread, so the reply always arrives
+        # inside it. A reader that waits for the held ordered callback blocks for
+        # the whole wait and misses NO_WAIT_BOUND_SECONDS.
+        self.cache.wait_seconds = HANG_GUARD_SECONDS
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             result = pool.submit(self.read)
             self.assertTrue(self.server.requested.wait(HANG_GUARD_SECONDS))
             self.server.requests[0].set_result(CATALOG)
-            self.assertEqual(result.result(1), CATALOG)
+            self.assertEqual(result.result(NO_WAIT_BOUND_SECONDS), CATALOG)
         self.assertEqual(self.server.ordered_callbacks, [])
         self.assertEqual(self.read(), CATALOG)
         self.assertEqual(len(self.server.requests), 1)
@@ -309,13 +319,16 @@ class CatalogRuntimeContract(unittest.TestCase):
             pending = pool.submit(self.runtime.catalog)
             self.assertTrue(self.server.metadata.requested.wait(HANG_GUARD_SECONDS))
             for lock in (self.runtime.lock, self.runtime.start_lock):
-                acquired = lock.acquire(timeout=.03)
+                # The metadata request stays blocked until the test answers it, so a
+                # lock kept through it fails; the wait only absorbs load.
+                acquired = lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                 self.assertTrue(acquired)
                 if acquired:
                     lock.release()
             self.assertEqual(len(read_runtime_state(self.runtime)["agents"]), 1)
+            # The 0.2 s wait ends in CatalogPending; this timeout only guards against a hang.
             with self.assertRaises(CatalogPending):
-                pending.result(1)
+                pending.result(HANG_GUARD_SECONDS)
 
 
 if __name__ == "__main__":

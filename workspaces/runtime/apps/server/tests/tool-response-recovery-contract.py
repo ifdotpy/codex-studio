@@ -29,6 +29,13 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_tool_response_recovery import recover, response_operation_id, tick
 
+# Seconds the test waits for Runtime.lock while a native reply is blocked. A
+# reply that holds the lock keeps it until the test releases the reply.
+LOCK_FREE_SECONDS = 5
+# Seconds a recovery may take while another thread holds the native write lock.
+# A recovery that waits for that lock blocks until the writer's hang guard.
+NO_WRITER_WAIT_SECONDS = 5
+
 
 class SavedResponseRecovery(unittest.TestCase):
     from codex_runtime import Runtime
@@ -253,7 +260,9 @@ class SavedResponseRecovery(unittest.TestCase):
             try:
                 worker.start()
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
-                self.assertTrue(self.lock.acquire(timeout=.15), 'A native wait holds Runtime.lock')
+                # The fixture reply holds a buggy Runtime.lock until the test
+                # releases it, so this wait stays far below that hang guard.
+                self.assertTrue(self.lock.acquire(timeout=LOCK_FREE_SECONDS), 'A native wait holds Runtime.lock')
                 self.lock.release()
                 self.assertFalse(self.start_lock.acquire(blocking=False),
                                  'The exact native handle can change during the write')
@@ -268,17 +277,20 @@ class SavedResponseRecovery(unittest.TestCase):
         def writer():
             with self.servers['default'].write_lock:
                 entered.set()
-                release.wait(2)
+                # The test releases the writer; this wait only guards against a hang.
+                release.wait(HANG_GUARD_SECONDS)
         worker = threading.Thread(target=writer, daemon=True)
         try:
             worker.start()
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             started = time.monotonic()
             self.no_response()
-            self.assertLess(time.monotonic() - started, .15)
+            # A recovery that waits for the busy writer blocks until its hang
+            # guard ends, far above this bound.
+            self.assertLess(time.monotonic() - started, NO_WRITER_WAIT_SECONDS)
         finally:
             release.set()
-            worker.join(2)
+            worker.join(HANG_GUARD_SECONDS)
 
     def test_timer_limits_one_job_per_account_and_retry_time(self):
         workers = []

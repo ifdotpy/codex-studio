@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 from studio_api.models import MAX_SAFE_INTEGER
 
 from test_isolation import isolate_supervisor_environment
@@ -259,7 +260,9 @@ class ProgressLayoutContract(unittest.TestCase):
             start = time.monotonic()
             with self.assertRaises(layout.LayoutConflict):
                 self.record()
-            self.assertLess(time.monotonic() - start, 1)
+            # The save refuses at once. A save that waits for this held lock never
+            # returns, so the suite deadline fails it; this bound only absorbs load.
+            self.assertLess(time.monotonic() - start, HANG_GUARD_SECONDS / 2)
         finally:
             os.close(lock)
         self.assertEqual(len(self.record()["reports"]), 2)
@@ -369,13 +372,15 @@ class ProgressLayoutContract(unittest.TestCase):
         self.record()
         self.path.write_text('A newer revision.\n')
         command = [sys.executable, str(SERVER_SOURCE_ROOT / "codex_progress_layout.py"),
-                   str(self.path), '--wait', '1']
+                   str(self.path), '--wait', '5']
+        # The CLI wait is its 5 s maximum, so a busy machine still records the new
+        # measurement inside it. The CLI ends as soon as it reads that measurement.
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             time.sleep(0.2)
             self.assertIsNone(process.poll())
             self.record(sequence=2)
-            output, errors = process.communicate(timeout=5)
+            output, errors = process.communicate(timeout=HANG_GUARD_SECONDS)
         finally:
             if process.poll() is None:
                 process.kill()

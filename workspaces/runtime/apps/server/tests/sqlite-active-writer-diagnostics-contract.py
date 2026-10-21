@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+# Event waits and joins on HANG_GUARD_SECONDS only guard against a hang.
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -45,7 +47,7 @@ def verify_real_transactions(path):
         # The same connection is present in this frame and its caller.
         state["started"] = db._codex_transaction_started
         ready.set()
-        assert release.wait(3)
+        assert release.wait(HANG_GUARD_SECONDS)
 
     def writer():
         db = None
@@ -56,7 +58,7 @@ def verify_real_transactions(path):
                 db.execute("INSERT INTO events(value) VALUES (?)", (secret,))
                 hold(db)
             committed.set()
-            assert finished.wait(3)
+            assert finished.wait(HANG_GUARD_SECONDS)
         except BaseException as error:
             failures.append(error)
             ready.set()
@@ -72,7 +74,7 @@ def verify_real_transactions(path):
             db.execute("BEGIN")
             db.execute("SELECT count(*) FROM events").fetchone()
             read_ready.set()
-            assert release.wait(3)
+            assert release.wait(HANG_GUARD_SECONDS)
             db.commit()
         except BaseException as error:
             failures.append(error)
@@ -97,10 +99,10 @@ def verify_real_transactions(path):
 
     owner.start()
     try:
-        assert ready.wait(1), "writer did not start"
+        assert ready.wait(HANG_GUARD_SECONDS), "writer did not start"
         assert not failures, failures
         read_owner.start()
-        assert read_ready.wait(1), "reader did not start"
+        assert read_ready.wait(HANG_GUARD_SECONDS), "reader did not start"
         assert not failures, failures
         contender = sqlite3.connect(path, timeout=0.02)
         try:
@@ -118,9 +120,12 @@ def verify_real_transactions(path):
                 patch.object(sys, "_current_frames", unlocked_frames), \
                 patch.object(codex_sqlite.InstrumentedConnection, "execute",
                              side_effect=AssertionError("diagnostics must not execute SQL")):
-            started = time.monotonic()
+            snapshot_started = time.monotonic()
             snapshot = diagnostics()
-            assert time.monotonic() - started < 0.5
+            snapshot_ended = time.monotonic()
+            # Diagnostics run no SQL, so a read that waits for the held writer stays
+            # blocked until the writer's release; half the hang guard absorbs load.
+            assert snapshot_ended - snapshot_started < HANG_GUARD_SECONDS / 2
         assert counter_view(snapshot) == before, "reading diagnostics changed cumulative counters"
         assert set(vars(codex_sqlite)) == globals_before, "diagnostics added module globals"
         encoded = json.dumps(snapshot)
@@ -133,8 +138,12 @@ def verify_real_transactions(path):
         assert len(held) == 1, "the same connection was listed more than once"
         held = held[0]
         assert held["startedAtMonotonic"] == state["started"]
-        assert 20 <= held["durationMs"] < 1000, held
-        assert abs(held["durationMs"] - (time.monotonic() - state["started"]) * 1000) < 50
+        assert 20 <= held["durationMs"], held
+        # The duration is in milliseconds and taken inside the diagnostics call, so
+        # it lies between the clock reads around that call (rounded to 0.001 ms).
+        assert ((snapshot_started - state["started"]) * 1000 - 0.01
+                <= held["durationMs"]
+                <= (snapshot_ended - state["started"]) * 1000 + 0.01), held
         references = [item for item in held["threads"] if item["threadId"] == owner.ident]
         assert len(references) == 1
         reference = references[0]
@@ -150,8 +159,8 @@ def verify_real_transactions(path):
         assert all(entry["site"] != "contract.closed_connection" for entry in entries)
         assert all(item["threadId"] is not None for entry in entries for item in entry["threads"])
         release.set()
-        assert committed.wait(1), "writer did not commit"
-        read_owner.join(timeout=1)
+        assert committed.wait(HANG_GUARD_SECONDS), "writer did not commit"
+        read_owner.join(timeout=HANG_GUARD_SECONDS)
         assert not read_owner.is_alive()
         assert owner.is_alive(), "the writer must retain its connection after commit"
         after = diagnostics()
@@ -164,9 +173,9 @@ def verify_real_transactions(path):
     finally:
         release.set()
         finished.set()
-        owner.join(timeout=2)
+        owner.join(timeout=HANG_GUARD_SECONDS)
         if read_owner.ident is not None:
-            read_owner.join(timeout=2)
+            read_owner.join(timeout=HANG_GUARD_SECONDS)
         assert not owner.is_alive() and not read_owner.is_alive()
 
 
