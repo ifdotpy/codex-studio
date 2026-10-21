@@ -32,7 +32,9 @@ use studio_runtime_process::{
     },
 };
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
-use studio_runtime_schema::shared_values::GUEST_PROVIDER_READ_RETRY_SECONDS;
+use studio_runtime_schema::shared_values::{
+    GUEST_PROVIDER_READ_RETRY_SECONDS, LINUX_VM_PROVIDER_HANDLE_PREFIX,
+};
 use studio_runtime_store::{
     AgentId, AgentRepository, EventWriteRepository, RuntimeStore, StoreError,
 };
@@ -40,7 +42,6 @@ use thiserror::Error;
 
 const START_RECEIPT_PREFIX: &str = "linux-vm-provider-start:";
 const START_REQUEST_ID_MAX_BYTES: usize = 128;
-const PROVIDER_HANDLE_PREFIX: &str = "linux-worker:";
 const PROVIDER_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const EVENT_PAYLOAD_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const EVENT_CHUNK_MAX_BYTES: u64 = 1024 * 1024;
@@ -1007,7 +1008,7 @@ fn start_params(
     }
     Ok(json!({
         "transport":"native",
-        "handle":format!("{PROVIDER_HANDLE_PREFIX}{agent_id}"),
+        "handle":format!("{LINUX_VM_PROVIDER_HANDLE_PREFIX}{agent_id}"),
         "argv":launch.command,
         "cwd":cwd,
         "env":launch.environment,
@@ -1064,7 +1065,7 @@ async fn reserve_start(
             let identity = StartIdentity {
                 agent_id: agent_id.to_owned(),
                 epoch,
-                handle: format!("{PROVIDER_HANDLE_PREFIX}{agent_id}"),
+                handle: format!("{LINUX_VM_PROVIDER_HANDLE_PREFIX}{agent_id}"),
                 request_id,
                 launch_fingerprint: fingerprint.to_owned(),
             };

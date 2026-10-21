@@ -21,6 +21,7 @@ from common import (GuestError, MAX_LINE, PORT, PROTOCOL, atomic_bytes,
                     atomic_json, bounded_lock, connect_db, decode, digest, identifier, integer,
                     number, private_dir, process_identity, receipt, require, save_receipt, forget_receipt)
 from native import Native
+from shared_values_generated import LINUX_VM_PROVIDER_HANDLE_PREFIX
 from upload import Uploads, sha, tree_space, upload_id
 
 READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
@@ -427,7 +428,7 @@ class Service:
             return await forward(request_id, method, params, emit=emit)
         if method in LAYR_METHODS:
             if method in {"line.bind", "line.branch"}:
-                self.layr_agents[params["agentId"]] = {"handle": "linux-worker:" + params["agentId"]}
+                self.layr_agents[params["agentId"]] = {"handle": LINUX_VM_PROVIDER_HANDLE_PREFIX + params["agentId"]}
                 atomic_json(self.layr_path, self.layr_agents)
             return await admin_request(request_id, method, params, emit=emit)
         layr_agent = params.get("agentId") in self.layr_agents

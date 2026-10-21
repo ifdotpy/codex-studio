@@ -50,9 +50,10 @@ def _rpc_id(value: object) -> bool:
 
 def _native_proof(runtime: "Runtime", server: Any, record: Any) -> Any:
     """An absent acceptance receipt permits a response, never operation replay."""
-    from codex_linux_vm import PROVIDER_HANDLE_PREFIX, provider_handle
+    from codex_linux_vm import provider_handle
+    from codex_shared_values import LINUX_VM_PROVIDER_HANDLE_PREFIX
     identity = supervisor_identity(server)
-    if identity is not None and identity['handle'].startswith(PROVIDER_HANDLE_PREFIX):
+    if identity is not None and identity['handle'].startswith(LINUX_VM_PROVIDER_HANDLE_PREFIX):
         if record.get('supervisor') != identity or identity['handle'] != provider_handle(record.get('agent', '')):
             return None
         proxy = server.proc

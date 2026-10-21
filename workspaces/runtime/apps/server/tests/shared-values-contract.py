@@ -19,6 +19,7 @@ from codex_shared_values import (
     ACCOUNT_LIMITS_ERROR_RETRY_SECONDS,
     ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
     ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
+    LINUX_VM_PROVIDER_HANDLE_PREFIX,
     MAX_PROJECT_SECRET_VALUE_BYTES,
     MAX_SYNC_RESOURCE_COUNT,
     MAX_SYNC_RESOURCE_QUERY_BYTES,
@@ -277,6 +278,53 @@ class SharedValuesContract(unittest.TestCase):
         ):
             self.assertIn(name, python_source)
             self.assertIn(name, rust_source)
+
+    def test_linux_vm_provider_handle_prefix_has_one_owner(self):
+        """Owner: LINUX_VM_PROVIDER_HANDLE_PREFIX in runtime-schema/src/shared_values.rs. The VM
+        guest copy is generated; the Python server copy is checked here. Production code builds
+        and checks handles only through the named value, never through the literal."""
+        name, value = "LINUX_VM_PROVIDER_HANDLE_PREFIX", LINUX_VM_PROVIDER_HANDLE_PREFIX
+        self.assertEqual(value, "linux-worker:")
+        runtime = REPOSITORY_ROOT / "workspaces/runtime"
+        owner = runtime / "packages/runtime-schema/src/shared_values.rs"
+        copies = {
+            owner: f'pub const {name}: &str = "{value}";',
+            runtime / "apps/server/src/codex_shared_values.py": f'{name} = "{value}"',
+            runtime / "apps/vm-guest/shared_values_generated.py": f'{name} = "{value}"',
+        }
+        for path, line in copies.items():
+            with self.subTest(copy=path.name):
+                self.assertIn(line, path.read_text(encoding="utf-8").splitlines())
+        consumers = (
+            "packages/runtime-services/src/linux_vm_provider.rs",
+            "packages/runtime-http/src/routes/vm_native_provider.rs",
+            "apps/server/src/codex_linux_vm.py",
+            "apps/server/src/codex_tool_response_recovery.py",
+            "apps/server/src/upgrade-linux-vm-layr.py",
+            "apps/vm-guest/layr_agents.py",
+            "apps/vm-guest/service.py",
+        )
+        for relative in consumers:
+            with self.subTest(consumer=relative):
+                self.assertIn(name, (runtime / relative).read_text(encoding="utf-8"))
+
+        def production(path):
+            parts = set(path.relative_to(runtime).parts)
+            return not ("tests" in parts or path.name.startswith("test_") or path.name == "tests.rs")
+
+        sources = [*(runtime / "apps/server/src").rglob("*.py"), *(runtime / "apps/vm-guest").glob("*.py"),
+                   *(runtime / "packages").glob("*/src/**/*.rs")]
+        literal = []
+        for path in sources:
+            if path in copies or not production(path):
+                continue
+            text = path.read_text(encoding="utf-8")
+            if path.suffix == ".rs":
+                # Rust test modules may use fixture handles.
+                text = text.split("\n#[cfg(test)]", 1)[0]
+            if value in text:
+                literal.append(str(path.relative_to(runtime)))
+        self.assertEqual(literal, [], f"use {name} from {owner.relative_to(REPOSITORY_ROOT)}")
 
 if __name__ == "__main__":
     unittest.main()

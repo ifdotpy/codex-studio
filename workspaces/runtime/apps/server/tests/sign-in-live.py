@@ -19,25 +19,14 @@ Run it alone, as an announced manual run: `just test-sign-in-live`. Each scenari
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import ast
 import os
-import tempfile
 
+from live_isolation import isolate_live_environment, live_state_root
 
-def _isolate():
-    """Keep the throwaway Runtime away from the running Studio: no supervisor routing (the names
-    of `SUPERVISOR_ENV` in test_isolation.py, read without its home guard, because this check
-    uses the real provider sign-ins) and a private image workspace store."""
-    source = ast.parse((Path(__file__).with_name("test_isolation.py")).read_text())
-    names = next(ast.literal_eval(node.value) for node in source.body if isinstance(node, ast.Assign)
-                 and any(getattr(target, "id", None) == "SUPERVISOR_ENV" for target in node.targets))
-    for name in names:
-        os.environ.pop(name, None)
-    os.environ["CODEX_WORKSPACE_STORE"] = tempfile.mkdtemp(prefix="sil-live-store-")
-
-
-_isolate()
+# Keep the throwaway Runtime away from the running Studio.
+isolate_live_environment()
 
 import argparse
 import base64
@@ -232,11 +221,7 @@ def main():
     parser.add_argument("--codex-model", default="")
     parser.add_argument("--claude-model", default="")
     options = parser.parse_args()
-    # A short folder: a macOS Unix socket path has at most 103 bytes.
-    root = Path(tempfile.mkdtemp(prefix="sil-live-", dir="/tmp"))
-    # Every state path of the Runtime and its helpers is this throwaway folder, never the
-    # state of the running Studio (codex_state.state_dir).
-    os.environ["CODEX_AGENTS_STATE_DIR"] = str(root)
+    root = live_state_root("sil-live-")
     print("Evidence:", root, flush=True)
     provider = Provider()
     runtime = Runtime(root)
