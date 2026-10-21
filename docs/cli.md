@@ -212,7 +212,7 @@ codex-steer --wave parser parser-fix "Limit the change to the parser module."
 
 ## Capacity and completion
 
-- A capacity retry continues the same thread with empty input. Its timer belongs to the exact failed turn.
+- A capacity retry queues one follow-up input on the same thread through the ordinary start path, with its timer tied to the exact failed turn.
 - A new turn, a new user task, or a terminal goal cancels the old capacity timer. Do not switch models mid-retry.
 - Budget exhaustion is a hard stop — hence "commit each finished part."
 - A terminal turn with an active goal is not a completed worker. Success = completed goal + completed turn. Read `turn.error` on every `turn/completed`.

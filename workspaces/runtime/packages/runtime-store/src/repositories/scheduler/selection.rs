@@ -2,9 +2,9 @@ use super::*;
 use crate::CachedSql;
 use std::sync::LazyLock;
 
-/// `_v4` indexes the agent columns; the 2026-10-20 column migration dropped
-/// the earlier record-JSON versions with the old table.
-const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v4";
+/// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
+/// migration drops v4 before removing its generated column.
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v5";
 
 /// Owns the agent-only superset of all rows the account wake page may return.
 /// Event existence and invalid-agent hold receipts are checked after this
@@ -13,10 +13,9 @@ const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v4";
 /// column prefix is `a` (`""` or an alias with its dot, such as `"a."`).
 fn account_wake_candidate_predicate(a: &str) -> String {
     format!(
-        "({} OR {} OR {} OR {})",
+        "({} OR {} OR {})",
         account_wake_queued_candidate(a),
         account_wake_steer_candidate(a),
-        account_wake_capacity_candidate(a),
         account_wake_recovery(a)
     )
 }
@@ -48,15 +47,6 @@ fn account_wake_steer_candidate(a: &str) -> String {
          AND COALESCE({a}steer_rejected_turn_id,'')<>{a}turn_id \
          AND COALESCE({a}native_failure_hold,0)=0 \
          AND COALESCE({a}execution_mode,'')<>'vm')"
-    )
-}
-
-fn account_wake_capacity_candidate(a: &str) -> String {
-    format!(
-        "({a}start_attempt_action='capacity' \
-         AND {a}start_attempt_submitted=0 \
-         AND {a}capacity_retry_id={a}start_attempt_capacity_retry_id \
-         AND {a}status='starting')"
     )
 }
 
@@ -125,7 +115,7 @@ fn account_wake_pending(a: &str, held_after: &str) -> String {
          OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
              AND e.epoch=json_extract({a}record,'$.epoch') AND e.status='pending' \
              AND e.kind NOT IN ({dedicated_kinds}))) \
-         OR {} OR {})",
+         OR {})",
         account_wake_queued_candidate(a),
         deliverable_pending(
             "a.id",
@@ -133,7 +123,6 @@ fn account_wake_pending(a: &str, held_after: &str) -> String {
             held_after,
         ),
         account_wake_steer_candidate(a),
-        account_wake_capacity_candidate(a),
         account_wake_native_review(a)
     )
 }
@@ -1785,6 +1774,39 @@ mod account_wake_index_tests {
         transaction
             .commit()
             .expect("candidate-index transaction commits");
+    }
+
+    #[test]
+    fn account_wake_capacity_retry_uses_only_queued_input() {
+        let mut connection = old_schema();
+        put_agent(
+            &connection,
+            "legacy-start",
+            json!({
+                "epoch":1, "status":"starting",
+                "capacityRetry":{"id":"retry"},
+                "startAttempt":{"action":"capacity", "submitted":false, "capacityRetryId":"retry"}
+            }),
+        );
+        put_agent(
+            &connection,
+            "queued-retry",
+            json!({
+                "epoch":1, "status":"queued", "autoWake":true,
+                "capacityRetry":{"id":"retry", "status":"due"}
+            }),
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_events VALUES
+               ('retry-input','queued-retry','input','Continue','pending',1,1,NULL,NULL);",
+            )
+            .expect("follow-up input inserts");
+        install_index(&mut connection);
+        let agents =
+            SchedulerRepository::account_wake_agents_after(&connection, "default", "", 10, 0.0)
+                .expect("ordinary queued retry is selected");
+        assert_eq!(agents, vec![("queued-retry".to_owned(), 1, None)]);
     }
 
     #[test]
