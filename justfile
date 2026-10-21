@@ -19,6 +19,10 @@ build-release-binaries dir="":
 verify-release-binaries dir="":
     @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
 
+[doc("Deliver a commit (default HEAD) to the live server of this Linux host: source snapshot release, `current` link, systemd restart, automatic rollback when unhealthy. The only way to change the live server binary.")]
+deliver-server commit="HEAD":
+    @workspaces/runtime/apps/runtime-server/deliver.sh {{quote(commit)}}
+
 [doc("Native package cycle (signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
 package-native out *flags:
     @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
