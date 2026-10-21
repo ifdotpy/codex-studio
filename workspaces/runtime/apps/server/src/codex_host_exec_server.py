@@ -512,6 +512,8 @@ class HostService:
         require(isinstance(identity, str) and 0 < len(identity) <= 128, "Invalid operation ID")
         for field in ("projectId", "agentId", "linePath"):
             require(isinstance(params.get(field), str) and 0 < len(params[field]) <= 4096, "Missing host command context: " + field)
+        owner = params.get("owner")
+        require(owner is None or (isinstance(owner, str) and 0 < len(owner) <= 128), "Invalid guest owner")
         settings = self.settings(params["projectId"])
         project = self.pool / key(params["projectId"])
         async with self.locks.setdefault(str(project), asyncio.Lock()):
@@ -528,7 +530,8 @@ class HostService:
             if free:
                 slot = free[-1]
             else:
-                require(len(existing) < settings["slots"], "All project slots are leased", "busy")
+                require(len(existing) < settings["slots"],
+                        "All project slots are leased; host_exec action list shows your operations", "busy")
                 slot = next(project / str(index) for index in range(settings["slots"]) if not (project / str(index)).exists())
                 slot.mkdir(mode=0o700)
                 atomic(slot / "slot.json", {"generation": os.urandom(16).hex(), "usedAt": 0})
@@ -544,7 +547,8 @@ class HostService:
                   "slotId": slot.name, "generation": meta["generation"], "state": "leased", "createdAt": time.time(),
                   "slotPath": str(slot / "source"), "derivedData": str(slot / "DerivedData"),
                   "packageCache": str(slot / "packages"), "artifactsPath": str(directory / "artifacts"),
-                  "diskBudget": settings["diskBudget"], "macOnly": settings["macOnly"], "features": FEATURES}
+                  "diskBudget": settings["diskBudget"], "macOnly": settings["macOnly"], "features": FEATURES,
+                  **({"owner": owner} if owner else {})}
             self.save(identity, op)
             atomic(slot / "lease.json", {"operationId": identity})
             return op
@@ -552,6 +556,10 @@ class HostService:
     async def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "acquire":
             return await self.acquire(params)
+        if method == "list":
+            return self.operations(params.get("agentId"))
+        if method == "recover":
+            return self.recover(params.get("owner"))
         identity = params["operationId"]
         op = self.load(identity)
         # The broker sets these fields; the host never accepts a slot path from the caller.
@@ -598,7 +606,9 @@ class HostService:
             require(op["state"] == "leased", "The slot is no longer open for source transfer")
             caches = self.cache_list(params.get("caches", []))
             async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
-                return {"primed": [await self.prime(op, slot, cache) for cache in caches]}
+                primed = [await self.prime(op, slot, cache) for cache in caches]
+                self.refuse_orphan(identity)
+                return {"primed": primed}
         if method == "sync.clone":
             require(op["state"] == "leased", "The slot is no longer open for source transfer")
             return await asyncio.to_thread(self.clone_source, op, slot, params.get("path"), params.get("entry"))
@@ -671,6 +681,7 @@ class HostService:
                 op = self.load(identity)
                 require(op["state"] == "leased", "The command already started", "outcome_unknown")
                 slot = self.slot(op)
+                self.refuse_orphan(identity)
                 require(not conflicts(list(source)), "The source names conflict on macOS", "name_conflict")
                 require(key(json.dumps(source, sort_keys=True)) == params.get("manifestSha256"), "The Mac sources differ from the layr slot", "sync_conflict")
                 if ".git" in caches:
@@ -704,29 +715,119 @@ class HostService:
                 require(op["state"] == "leased" and isinstance(failure, dict),
                         "Only a failed transfer can release an unstarted command")
                 op.update(reason="sync_failed", preRunError=failure)
-            op.update(state="released", collected=bool(params.get("collected")), finishedAt=time.time())
-            self.save(identity, op)
-            # Failed guest staging can stay active after a lost broker response. Never reuse it.
-            generation = os.urandom(16).hex() if failure is not None else op["generation"]
-            atomic(slot / "slot.json", {"generation": generation, "usedAt": time.time()})
-            (slot / "lease.json").unlink()
-            if op["collected"]:
-                shutil.rmtree(self.opdir(identity) / "changes", ignore_errors=True)
-            # A large slot has a large manifest and one entry file per transferred file.
-            (self.opdir(identity) / "held-manifest.json").unlink(missing_ok=True)
-            shutil.rmtree(self.opdir(identity) / "entries", ignore_errors=True)
-            for name in ("held", "changes", "artifacts"):
-                self.pages.pop(identity + "\0" + name, None)
-            self.locks.pop("run\0" + identity, None)
-            pending = self.cloned.pop(str(slot), None)
-            if pending:
-                # Clones of a command that did not start keep their hashes for the next scan.
-                hashes = load_hashes(slot / "hash-cache.json")
-                hashes.update(pending)
-                atomic(slot / "hash-cache.json", hashes)
-            self.evict(slot.parent, self.budget_of(op))
-            return op
+            abandoned = None
+            if params.get("abandon"):
+                # The agent gives up an operation that no guest request owns any more.
+                lock = self.locks.get("run\0" + identity)
+                require(not (op["state"] == "leased" and lock is not None and lock.locked()),
+                        "The command is starting; release it after it exits", "busy")
+                abandoned = "agent_release"
+            return self.release_operation(identity, op, slot, collected=bool(params.get("collected")),
+                                          new_generation=failure is not None, abandoned=abandoned)
         raise HostExecError("invalid_params", "Unknown host method")
+
+    def release_operation(self, identity: str, op: dict[str, Any], slot: Path, *, collected: bool,
+                          new_generation: bool = False, abandoned: str | None = None) -> dict[str, Any]:
+        """Free the Mac slot of a leased or exited operation. Its saved results stay readable
+        unless the guest collected them. An abandoned operation gets a new slot generation: no
+        guest request owns its guest staging, so that staging is never used again."""
+        if abandoned is not None:
+            op["abandoned"] = abandoned
+            new_generation = True
+        op.update(state="released", collected=collected, finishedAt=time.time())
+        self.save(identity, op)
+        # Failed guest staging can stay active after a lost broker response. Never reuse it.
+        generation = os.urandom(16).hex() if new_generation else op["generation"]
+        atomic(slot / "slot.json", {"generation": generation, "usedAt": time.time()})
+        (slot / "lease.json").unlink()
+        if collected:
+            shutil.rmtree(self.opdir(identity) / "changes", ignore_errors=True)
+        # A large slot has a large manifest and one entry file per transferred file.
+        (self.opdir(identity) / "held-manifest.json").unlink(missing_ok=True)
+        shutil.rmtree(self.opdir(identity) / "entries", ignore_errors=True)
+        for name in ("held", "changes", "artifacts"):
+            self.pages.pop(identity + "\0" + name, None)
+        self.locks.pop("run\0" + identity, None)
+        pending = self.cloned.pop(str(slot), None)
+        if pending:
+            # Clones of a command that did not start keep their hashes for the next scan.
+            hashes = load_hashes(slot / "hash-cache.json")
+            hashes.update(pending)
+            atomic(slot / "hash-cache.json", hashes)
+        self.evict(slot.parent, self.budget_of(op))
+        return op
+
+    def refuse_orphan(self, identity: str) -> None:
+        """A command whose guest owner is gone never starts: nobody would collect its result."""
+        op = self.load(identity)
+        if op.get("orphaned") and op["state"] == "leased":
+            self.release_operation(identity, op, self.slot(op), collected=False, abandoned="guest_owner_lost")
+            raise HostExecError("guest_owner_lost", "The guest that sent this command is gone; the command did not start")
+
+    def leases(self) -> list[tuple[str, Path]]:
+        """The operation and the slot of each Mac slot lease."""
+        found = []
+        for project in sorted(self.pool.iterdir()):
+            if not project.is_dir():
+                continue
+            for slot in sorted(project.iterdir()):
+                try:
+                    identity = json.loads((slot / "lease.json").read_text())["operationId"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+                if isinstance(identity, str):
+                    found.append((identity, slot))
+        return found
+
+    def operations(self, agent: Any, limit: int = 50) -> dict[str, Any]:
+        """The newest operations of one agent, with the ones that hold a Mac slot first. The agent
+        finds an operation here when it lost the result that named it."""
+        require(isinstance(agent, str) and agent, "Missing host command context: agentId")
+        leased = {identity for identity, _ in self.leases()}
+        rows: list[dict[str, Any]] = []
+        for path in (self.state / "host-operations").glob("*/status.json"):
+            value: Any
+            try:
+                value = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(value, dict) or value.get("agentId") != agent or not isinstance(value.get("operationId"), str):
+                continue
+            op = self.load(value["operationId"])
+            row: dict[str, Any] = {"operationId": op["operationId"], "leased": op["operationId"] in leased}
+            row.update({field: op[field] for field in ("state", "reason", "exitCode", "createdAt", "startedAt",
+                        "exitedAt", "finishedAt", "slotId", "collected", "abandoned", "orphaned") if field in op})
+            rows.append(row)
+        rows.sort(key=lambda row: (not row["leased"], -float(row.get("createdAt", 0))))
+        return {"operations": rows[:limit], "total": len(rows)}
+
+    def recover(self, owner: Any) -> dict[str, Any]:
+        """A new guest service owns no operation of an earlier one: the guest has one service at a
+        time, and its requests die with its process. Exited operations of an earlier owner free their
+        slots now. A running command keeps its slot until it exits. An unknown outcome of a lost host
+        owner keeps its slot for inspection."""
+        require(isinstance(owner, str) and 0 < len(owner) <= 128, "Invalid guest owner")
+        report: dict[str, list[str]] = {"released": [], "orphaned": [], "kept": []}
+        for identity, slot in self.leases():
+            try:
+                op = self.load(identity)
+            except HostExecError:
+                report["kept"].append(identity)
+                continue
+            if op.get("owner") == owner:
+                continue
+            lock = self.locks.get("run\0" + identity)
+            if op["state"] == "exited" or (op["state"] == "leased" and not (lock is not None and lock.locked())):
+                self.release_operation(identity, op, slot, collected=False, abandoned="guest_owner_lost")
+                report["released"].append(identity)
+            elif op["state"] in {"running", "leased"}:
+                # The command or its start finishes first; then the slot is free (command, refuse_orphan).
+                op["orphaned"] = True
+                self.save(identity, op)
+                report["orphaned"].append(identity)
+            else:
+                report["kept"].append(identity)
+        return report
 
     @staticmethod
     async def terminate(child: asyncio.subprocess.Process) -> None:
@@ -844,10 +945,18 @@ class HostService:
             artifact_manifest = scan(self.opdir(identity) / "artifacts")
             atomic(self.opdir(identity) / "changes.json", changed)
             atomic(self.opdir(identity) / "artifacts.json", artifact_manifest)
+            # A cancel or a guest recovery saved its flag during the command.
+            latest = self.load(identity)
+            op.update({field: latest[field] for field in ("cancelRequested", "orphaned") if latest.get(field)})
             op.update(state="exited", exitCode=code, reason=reason, exitedAt=time.time(), changedPaths=len(changed),
                       artifactFiles=len(artifact_manifest), nameConflicts=conflicts(list(after)))
             self.save(identity, op)
             self.event(identity, {"state": "exited", "exitCode": code, "reason": reason})
+            if op.get("orphaned"):
+                try:
+                    self.release_operation(identity, op, slot, collected=False, abandoned="guest_owner_lost")
+                except (HostExecError, OSError) as exc:
+                    print("host_exec: the slot of " + identity + " stays leased: " + str(exc), file=sys.stderr, flush=True)
         except Exception as exc:
             if child is not None:
                 await self.terminate(child)
@@ -881,7 +990,7 @@ class HostService:
                 require(not self.busy(), "The host_exec service has a running command or request", "busy")
                 self.retiring = True
                 return {"id": identity, "result": {"state": "retiring", "buildId": self.build_id, "pid": os.getpid()}}
-            readonly = method in {"status", "manifest", "attach", "read", "result.manifest"}
+            readonly = method in {"status", "manifest", "attach", "read", "result.manifest", "list"}
             if readonly:
                 self.reading += 1
                 try:

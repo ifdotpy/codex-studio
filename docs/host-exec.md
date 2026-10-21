@@ -32,6 +32,13 @@ Set `after_seq` to the last sequence already read. Use `action: cancel` with
 `operation_id` to stop the command. The timeout applies to the Mac command.
 Source synchronization and collection have separate deadlines.
 
+Use `action: list` to find your operations without an ID, for example after a lost
+result. A lost result names its operation in the error. Use `action: release` with
+`operation_id` to free the slot of a command that exited, or that did not start,
+when no request of the guest runs it. The Mac refuses to release a running command.
+The output of a released command stays readable with `status`. Its changes and
+artifacts stay in the Mac operation folder and do not return to the line.
+
 ## Channel and identities
 
 The native helper uses a Virtualization.framework listener on port 4051. It
@@ -58,6 +65,25 @@ The Mac slot gets a new generation, so failed guest staging is never used again.
 A failure to forget the old guest slot appears in the error. An explicit `sync_conflict` response to the run request also releases both leases
 and changes the slot generation: the server checks the manifest before command startup.
 A lost response to the run request keeps the lease for inspection.
+
+### Guest restarts
+
+The guest service runs each command request in its own process, so a VM crash or a
+guest service restart ends every request of that process. The guest has one service
+process at a time. Each process has a random owner ID, and `acquire` records it in the
+operation. Before its first Mac request, a new process sends `recover` with its owner ID.
+The Mac then handles each leased operation of another owner:
+
+- An exited command or an unstarted command releases its slot at once.
+- A running command keeps its slot. The slot becomes free when the command exits.
+- A command whose run or prime request is in progress never starts. Its slot becomes free.
+- An unknown outcome of a lost Mac owner keeps its slot for inspection.
+
+These releases (and `action: release`) give the slot a new generation, because no guest
+request owns the old guest staging. The saved results stay readable. On 2026-10-20 a
+VM restart left a Chromium slot leased: the run request arrived before the crash, the
+Mac still hashed the slot when the VM stopped and started the command after the restart,
+and no guest request remained to collect and release it.
 
 Keep a command that uses the slot in the `host_exec` command lifetime. Do not detach
 it into a new session and let `host_exec` finish. The next execute synchronizes the
