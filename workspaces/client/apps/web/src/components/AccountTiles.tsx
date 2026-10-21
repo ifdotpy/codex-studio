@@ -3,8 +3,12 @@ import { Check } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { ActionButton } from "./ui/primitives";
 import { useAccountLimits } from "../usage/useAccountLimits";
+import {
+  accountLimits,
+  type AccountLimitsSnapshot,
+} from "../usage/accountUsage";
 import { accountDisplayName, accountTooltip } from "../accountName";
-import { readBuckets } from "./Usage";
+import { formatPercent, readBuckets } from "./Usage";
 import type { Account } from "./Accounts";
 import "./account-tiles.css";
 export function setupAccountName(account?: Account) {
@@ -105,6 +109,8 @@ export function AccountRemainingBar({
     </span>
   );
 }
+/** The remaining share of an account's provider limit, in percent from 0 to
+ * 100: the lowest unexpired window. Null when no window reports a value. */
 export function remainingLimit(
   windows: { remaining: number | null; expired: boolean }[],
 ) {
@@ -112,6 +118,84 @@ export function remainingLimit(
     .filter((window) => !window.expired && window.remaining !== null)
     .map((window) => window.remaining!);
   return values.length ? Math.max(0, Math.min(100, ...values)) : null;
+}
+/** "33% left": the one text form of a remaining limit. */
+export const remainingText = (remaining: number) =>
+  `${formatPercent(remaining)} left`;
+
+type LimitAccount = Pick<Account, "id" | "accountId" | "status">;
+/** What one limits reading of one account shows. A provider limit belongs to
+ * the provider account, so every view of an account reads it through here. */
+export function accountLimitView(
+  account: LimitAccount,
+  limits: AccountLimitsSnapshot | null,
+  now = Date.now() / 1000,
+  signedInOnly = true,
+) {
+  const shown = !signedInOnly || account.status === "ready";
+  const error = limits?.data ? null : limits?.error || null;
+  const buckets = readBuckets(
+    accountLimits(limits, account.id, account.accountId),
+    now,
+  );
+  return {
+    limits,
+    buckets,
+    error,
+    reading: !limits && shown,
+    remaining:
+      !shown || error
+        ? null
+        : remainingLimit(buckets.flatMap((bucket) => bucket.windows)),
+  };
+}
+export type AccountLimitView = ReturnType<typeof accountLimitView>;
+/** The limits of one account on the server of the surrounding scope. With
+ * `read` false it shows the cached reading and sends no request. A signed-out
+ * account's limit shows only where `signedInOnly` is false: a picker still
+ * marks an archived or signed-out account whose limit is used up. */
+export function useAccountLimitView(
+  account: LimitAccount,
+  { read = true, signedInOnly = true } = {},
+) {
+  const limits = useAccountLimits(
+    account.id,
+    account.accountId,
+    read && (!signedInOnly || account.status === "ready"),
+  );
+  return accountLimitView(account, limits, Date.now() / 1000, signedInOnly);
+}
+/** The remaining limit of an account as short text, for account lists. */
+export function AccountRemainingText({ account }: { account: LimitAccount }) {
+  const { remaining } = useAccountLimitView(account);
+  return remaining === null ? null : (
+    <small className="account-remaining" data-exhausted={remaining === 0}>
+      {remainingText(remaining)}
+    </small>
+  );
+}
+/** The name and remaining limit inside an account tile. */
+export function AccountTileLabel({
+  name,
+  remaining,
+  nameClassName = "setup-account-name",
+  children,
+}: {
+  name: string;
+  remaining: number | null;
+  nameClassName?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <span className="setup-account-label">
+      <span className={nameClassName}>
+        {children} {name}
+      </span>
+      {remaining !== null && (
+        <small className="account-remaining">{remainingText(remaining)}</small>
+      )}
+    </span>
+  );
 }
 function AccountTile({
   account,
@@ -126,12 +210,7 @@ function AccountTile({
   onSelect: () => void;
   multiple?: boolean;
 }) {
-  const snapshot = useAccountLimits(account.id, account.accountId);
-  const remaining = remainingLimit(
-    readBuckets(snapshot, Date.now() / 1000).flatMap(
-      (bucket) => bucket.windows,
-    ),
-  );
+  const { remaining } = useAccountLimitView(account, { signedInOnly: false });
   return (
     <Tooltip label={accountTooltip(account)}>
       <ActionButton
@@ -147,10 +226,12 @@ function AccountTile({
         disabled={disabled}
         onClick={onSelect}
       >
-        <span>
-          {multiple && selected && <Check size={13} aria-hidden="true" />}{" "}
-          {setupAccountName(account)}
-        </span>
+        <AccountTileLabel
+          name={setupAccountName(account)}
+          remaining={remaining}
+        >
+          {multiple && selected && <Check size={13} aria-hidden="true" />}
+        </AccountTileLabel>
         {remaining !== null && <AccountRemainingBar remaining={remaining} />}
       </ActionButton>
     </Tooltip>

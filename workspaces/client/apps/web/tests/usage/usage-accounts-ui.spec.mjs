@@ -269,10 +269,18 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       "true",
       "chat account is selected first",
     );
-    const selectedOwnLimit = page.getByText("80% left", { exact: true });
+    // The detail panel and the account tile state the same remaining limit.
+    const accountPanel = page.locator("#usage-account-panel");
+    const selectedOwnLimit = accountPanel.getByText("80% left", {
+      exact: true,
+    });
     await selectedOwnLimit.waitFor();
     assert.equal(await selectedOwnLimit.isVisible(), true);
     assert.equal(await selectedOwnLimit.textContent(), "80% left");
+    assert.equal(
+      await ownTab.locator(".account-remaining").textContent(),
+      "80% left",
+    );
     await ownTab.press("ArrowRight");
     assert.equal(
       await teamTab.getAttribute("aria-selected"),
@@ -282,7 +290,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     await page.waitForFunction(() =>
       window.reloadCalls.some(([key, force]) => key === "team" && !force),
     );
-    const selectedTeamLimit = page.getByText("8% left", { exact: false });
+    const selectedTeamLimit = accountPanel.getByText("8% left", {
+      exact: false,
+    });
     await selectedTeamLimit.waitFor();
     assert.equal(await selectedTeamLimit.isVisible(), true);
     const teamResetCredits = page.getByRole("region", {

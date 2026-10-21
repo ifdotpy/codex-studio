@@ -18,6 +18,7 @@ import TokenRate from "./TokenRate";
 import {
   AccountTilesLayout,
   AccountRemainingBar,
+  AccountTileLabel,
   remainingLimit,
 } from "./AccountTiles";
 import { accountDisplayName } from "../accountName";
@@ -784,9 +785,11 @@ export default function Usage({
                           title={humanAccountLabel(item)}
                           aria-label={`${humanAccountLabel(item)}${item.provider ? `, ${item.provider}` : ""} account limits`}
                         >
-                          <span className="account-limits-tile-name">
-                            {displayAccountName(item)}
-                          </span>
+                          <AccountTileLabel
+                            name={displayAccountName(item)}
+                            nameClassName="account-limits-tile-name"
+                            remaining={remaining}
+                          />
                           {item.key === fallbackKey && (
                             <small className="account-limits-current">
                               Current chat

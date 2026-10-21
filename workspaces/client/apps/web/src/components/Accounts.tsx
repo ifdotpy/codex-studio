@@ -4,7 +4,12 @@ import {
   useServerStorage,
 } from "../servers/ServerServicesContext";
 import { accountDisplayName, accountCanStart } from "../accountName";
-import { ProviderMark, remainingLimit } from "./AccountTiles";
+import {
+  ProviderMark,
+  remainingText,
+  useAccountLimitView,
+  type AccountLimitView,
+} from "./AccountTiles";
 import { ActionButton } from "./ui/primitives";
 import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
@@ -14,8 +19,6 @@ import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { watchResourceReads } from "./watchResourceReads";
-import { useAccountLimits } from "../usage/useAccountLimits";
-import { accountLimits } from "../usage/accountUsage";
 import {
   Button,
   Group,
@@ -56,7 +59,6 @@ import {
   getOrCreateAccountDeleteRequest,
 } from "./accountDeleteRequests";
 import type { ServerCommand } from "../servers/navigation";
-import { readBuckets, formatPercent } from "./Usage";
 import {
   closeMenuFromTriggerOnEscape,
   restoreMenuTriggerFocusAfterClose,
@@ -246,33 +248,33 @@ export function AccountCapacity({
   opened: boolean;
   card?: boolean;
 }) {
-  const limits = useAccountLimits(
-    account.id,
-    account.accountId,
-    opened && account.status === "ready",
-  );
-  const limitsError = limits?.data ? null : limits?.error;
+  const view = useAccountLimitView(account, { read: opened });
   if (account.status !== "ready" && !card) return null;
-  const buckets = readBuckets(
-    accountLimits(limits, account.id, account.accountId),
-    Date.now() / 1000,
-  );
-  const remaining =
-    account.status !== "ready" ||
-    limitsError ||
-    (!limits?.data && limits?.error)
-      ? null
-      : remainingLimit(buckets.flatMap((bucket) => bucket.windows));
+  return <AccountCapacityView account={account} view={view} card={card} />;
+}
+
+/** One reading of an account's provider limits. `note` says where and when
+ * the reading came from when the account has more than one source. */
+export function AccountCapacityView({
+  account,
+  view,
+  card = false,
+  note,
+}: {
+  account: Pick<Account, "status" | "email" | "label">;
+  view: AccountLimitView;
+  card?: boolean;
+  note?: ReactNode;
+}) {
+  const { limits, buckets, remaining, error: limitsError } = view;
   const details = (
     <>
       {!limits && !limitsError && <small>Reading limits…</small>}
-      {(limitsError || (!limits?.data && limits?.error)) && (
+      {limitsError && (
         <ErrorDescription
           className="account-action-error"
           role="status"
-          value={
-            limits?.readError || limitsError || (!limits?.data && limits?.error)
-          }
+          value={limits?.readError || limitsError}
         />
       )}
       {buckets.map((bucket) => (
@@ -287,7 +289,7 @@ export function AccountCapacity({
                     ? "Unknown"
                     : window.expired
                       ? "Reset due"
-                      : `${formatPercent(window.remaining)} left`}
+                      : remainingText(window.remaining)}
                 </strong>
                 {window.reset && (
                   <time
@@ -324,10 +326,10 @@ export function AccountCapacity({
             <span>Remaining limit</span>
             <span>
               {remaining === null
-                ? !limits && !limitsError && account.status === "ready"
+                ? view.reading
                   ? "Reading limits…"
                   : "Unavailable"
-                : `${formatPercent(remaining)} left`}
+                : remainingText(remaining)}
             </span>
           </div>
           <span
@@ -352,8 +354,8 @@ export function AccountCapacity({
               />
             )}
           </span>
-          {account.status !== "ready" ? null : limitsError ||
-            (!limits?.data && limits?.error) ? (
+          {note && <small className="account-limit-note">{note}</small>}
+          {account.status !== "ready" ? null : limitsError ? (
             details
           ) : (
             <details className="account-limit-details">
