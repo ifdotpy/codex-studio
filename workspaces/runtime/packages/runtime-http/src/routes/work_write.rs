@@ -51,7 +51,7 @@ pub(crate) async fn work_action(
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    perform(state, runtime.map(|Extension(runtime)| runtime), body)
+    perform(state, runtime.map(|Extension(runtime)| runtime), body, None)
         .await
         .map(Json)
 }
@@ -88,7 +88,14 @@ impl studio_runtime_services::provider_callbacks::WorkActionPort for ManagedWork
             };
             object.insert("agent".to_owned(), Value::String(actor_id.to_owned()));
             object.insert("id".to_owned(), Value::String(request_id.to_owned()));
-            match perform(self.state.clone(), self.runtime.clone(), body).await {
+            match perform(
+                self.state.clone(),
+                self.runtime.clone(),
+                body,
+                Some(actor_id.to_owned()),
+            )
+            .await
+            {
                 Ok(record) => WorkActionOutcome::Written(record),
                 // Client errors mean no task mutation. Schema refusal receipts and
                 // counters may already be committed; replay uses the same request id.
@@ -109,6 +116,7 @@ pub(crate) async fn perform(
     state: HttpState,
     runtime: Option<Arc<MonitorRuntime>>,
     body: Value,
+    actor_id: Option<String>,
 ) -> Result<Value, ApiError> {
     let agent = body
         .get("agent")
@@ -131,7 +139,7 @@ pub(crate) async fn perform(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_owned);
-    let signature = work_items::work_request_signature(&agent, &body)?;
+    let signature = work_items::work_request_signature(&agent, actor_id.as_deref(), &body)?;
     let mut command = match action {
         "create" => WorkWrite::Create(CreateWork {
             result_schema: body.get("result_schema").cloned(),
@@ -231,7 +239,10 @@ pub(crate) async fn perform(
     if let WorkWrite::Accept(input) = &mut command {
         prepare_vm_accept(&state, &agent, request_id.as_deref(), &signature, input).await?;
     }
-    commit(state, runtime, agent, request_id, signature, command).await
+    commit(
+        state, runtime, agent, actor_id, request_id, signature, command,
+    )
+    .await
 }
 
 #[cfg(unix)]
@@ -435,6 +446,7 @@ async fn commit(
     state: HttpState,
     runtime: Option<Arc<MonitorRuntime>>,
     agent: String,
+    actor_id: Option<String>,
     request_id: Option<String>,
     signature: String,
     command: WorkWrite,
@@ -449,8 +461,18 @@ async fn commit(
     let ((result, checks, rule_now), _) = store
         .transaction_with_post_commit(
             move |tx| -> Result<_, WorkCommitError> {
-                let result =
-                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?;
+                let result = if let Some(actor_id) = actor_id.as_deref() {
+                    work_write::write_action_as_agent(
+                        tx,
+                        &agent,
+                        actor_id,
+                        request_id.as_deref(),
+                        &signature,
+                        command,
+                    )?
+                } else {
+                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?
+                };
                 let mut checks = Vec::new();
                 let mut rule_now = 0.0;
                 if is_submit
@@ -1277,6 +1299,176 @@ mod managed_work_port_tests {
             .await;
         assert!(
             matches!(refused, WorkActionOutcome::Refused(_)),
+            "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_task_caller_cannot_submit_another_owners_task() {
+        let (state, store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({
+                    "action":"create", "title":"Lead task", "owner":"lead"
+                }),
+                "auth-create-owned",
+            )
+            .await,
+        );
+        let task = created["id"].as_str().unwrap().to_owned();
+        let submit = json!({"action":"submit", "task_id":task,
+            "result":"done", "checks":"checked", "revision":"abc1234"});
+        let outcome = port.act("worker", &submit, "auth-spoof-submit").await;
+        assert!(
+            matches!(&outcome, WorkActionOutcome::Refused(message)
+            if message.contains("Only the assigned worker")),
+            "{outcome:?}"
+        );
+        let task_id = task.clone();
+        let unchanged = store
+            .read_async("auth-test/owner", move |tx| {
+                studio_runtime_store::WorkItemsRepository::work_record(tx, &task_id)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unchanged["results"].as_array().unwrap().is_empty());
+        let submitted = written(port.act("lead", &submit, "auth-owner-submit").await);
+        assert_eq!(submitted["results"][0]["agent"], "lead");
+    }
+
+    #[tokio::test]
+    async fn authenticated_task_caller_refuses_worker_review_and_mutation_but_allows_lead() {
+        let (state, store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        for action in ["accept", "reject", "cancel", "update"] {
+            let created = written(
+                port.act(
+                    "lead",
+                    &json!({
+                        "action":"create", "title":"Review task", "owner":"worker"
+                    }),
+                    &format!("auth-create-{action}"),
+                )
+                .await,
+            );
+            let task = created["id"].as_str().unwrap().to_owned();
+            let submitted = if action == "update" {
+                created
+            } else {
+                written(
+                    port.act(
+                        "worker",
+                        &json!({
+                            "action":"submit", "task_id":task, "result":"done",
+                            "checks":"checked", "revision":"abc1234"
+                        }),
+                        &format!("auth-submit-{action}"),
+                    )
+                    .await,
+                )
+            };
+            let args = json!({"action":action,"task_id":task,"result":"reviewed",
+                "reason":"cancelled", "title":"Changed title"});
+            let refused = port
+                .act("worker", &args, &format!("auth-worker-{action}"))
+                .await;
+            assert!(
+                matches!(refused, WorkActionOutcome::Refused(_)),
+                "{action}: {refused:?}"
+            );
+            let task_id = task.clone();
+            let unchanged = store
+                .read_async("auth-test/refusal", move |tx| {
+                    studio_runtime_store::WorkItemsRepository::work_record(tx, &task_id)
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(unchanged["version"], submitted["version"], "{action}");
+            assert_eq!(unchanged["status"], submitted["status"], "{action}");
+            let allowed = written(
+                port.act("lead", &args, &format!("auth-lead-{action}"))
+                    .await,
+            );
+            assert_eq!(
+                allowed["status"],
+                match action {
+                    "accept" => "accepted",
+                    "reject" => "ready",
+                    "cancel" => "cancelled",
+                    _ => "ready",
+                }
+            );
+        }
+        // A worker retains the documented right to cancel a task it created.
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create",
+            "title":"Worker task", "owner":"worker"}),
+                "auth-worker-create",
+            )
+            .await,
+        );
+        let creator_task = created["id"].as_str().unwrap().to_owned();
+        store
+            .transaction(move |tx| {
+                let mut record =
+                    studio_runtime_store::WorkItemsRepository::work_record(tx, &creator_task)?
+                        .unwrap();
+                record["createdBy"] = json!("worker");
+                studio_runtime_store::WorkItemsRepository::update_work(tx, &creator_task, &record)
+            })
+            .await
+            .unwrap();
+        let cancelled = written(
+            port.act(
+                "worker",
+                &json!({"action":"cancel",
+            "task_id":created["id"],"reason":"No longer needed"}),
+                "auth-creator-cancel",
+            )
+            .await,
+        );
+        assert_eq!(cancelled["status"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn authenticated_task_caller_cannot_replay_a_user_accept_receipt() {
+        let (state, _store, _directory) = state().await;
+        let port = managed_work_port(state.clone(), None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create",
+            "title":"User receipt", "owner":"worker"}),
+                "auth-receipt-create",
+            )
+            .await,
+        );
+        let task = &created["id"];
+        written(
+            port.act(
+                "worker",
+                &json!({"action":"submit", "task_id":task,
+            "result":"done", "checks":"checked", "revision":"abc1234"}),
+                "auth-receipt-submit",
+            )
+            .await,
+        );
+        let args = json!({"action":"accept", "task_id":task, "result":"reviewed",
+            "agent":"worker", "id":"auth-user-accept"});
+        let accepted = super::perform(state, None, args.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(accepted["status"], "accepted");
+        let refused = port.act("worker", &args, "auth-user-accept").await;
+        assert!(
+            matches!(&refused, WorkActionOutcome::Refused(message)
+            if message.contains("different content")),
             "{refused:?}"
         );
     }
