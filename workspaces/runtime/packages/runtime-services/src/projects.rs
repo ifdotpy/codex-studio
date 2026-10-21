@@ -1196,3 +1196,64 @@ mod compatibility_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod account_order_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn project_account_order_saves_replays_and_clears_with_revisions() {
+        let folder = tempfile::tempdir().expect("project folder");
+        let path = studio_runtime_store::path_identity::resolve(folder.path())
+            .expect("resolved project folder")
+            .to_string_lossy()
+            .into_owned();
+        let state = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
+        let seeded = path.clone();
+        store
+            .transaction(move |tx| {
+                ProjectsRepository::put_project(
+                    tx,
+                    &json!({"id":seeded,"path":seeded,"name":"P","created":0,"accountKey":"default"}),
+                )
+            })
+            .await
+            .expect("seed project");
+        let save = |groups: Value, revision: u64| {
+            let store = Arc::clone(&store);
+            let path = path.clone();
+            async move {
+                write(
+                    store,
+                    json!({"action":"set_account_groups","path":path,
+                        "account_groups":groups,"expected_revision":revision}),
+                    "default".to_owned(),
+                    Vec::new(),
+                )
+                .await
+            }
+        };
+        let saved = save(json!(["attar", "personal"]), 0).await.expect("save");
+        assert_eq!(saved["accountGroups"], json!(["attar", "personal"]));
+        assert_eq!(saved["accountGroupsRevision"], 1);
+        assert_eq!(
+            saved["accountKey"], "default",
+            "the order keeps the account"
+        );
+        // A lost response retried with the old revision replays without a change.
+        let replay = save(json!(["attar", "personal"]), 0).await.expect("replay");
+        assert_eq!(replay, saved);
+        // Another order with an old revision is a conflict.
+        assert!(matches!(
+            save(json!(["personal"]), 0).await,
+            Err(ProjectsError::Conflict(_))
+        ));
+        for bad in [json!(["Attar"]), json!(["a", "a"]), json!("attar")] {
+            assert!(matches!(save(bad, 1).await, Err(ProjectsError::Invalid(_))));
+        }
+        let cleared = save(json!([]), 1).await.expect("clear");
+        assert!(cleared.get("accountGroups").is_none());
+        assert_eq!(cleared["accountGroupsRevision"], 2);
+    }
+}

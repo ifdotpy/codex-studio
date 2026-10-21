@@ -3512,6 +3512,57 @@ exit 0
     }
 
     #[test]
+    fn account_group_and_default_order_persist_and_reload() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(&path, registry(&fixture.path)).expect("write registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::Ready, Some("a"), Some("chatgpt:a"))),
+        )
+        .expect("open registry");
+        let snapshot = driver
+            .set_group("default", Some("personal"))
+            .expect("set group");
+        assert_eq!(snapshot.accounts[0]["group"], "personal");
+        let order = vec!["personal".to_owned(), "work".to_owned()];
+        let snapshot = driver.set_default_groups(&order).expect("set order");
+        assert_eq!(snapshot.default_account_groups, order);
+        // A repeated request sets the same values.
+        assert_eq!(driver.set_default_groups(&order).expect("repeat"), snapshot);
+        let reopened = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::Ready, Some("a"), Some("chatgpt:a"))),
+        )
+        .expect("reopen persisted registry");
+        let snapshot = reopened.snapshot().expect("snapshot");
+        assert_eq!(snapshot.accounts[0]["group"], "personal");
+        assert_eq!(snapshot.default_account_groups, order);
+        // Invalid names and repeats are refused without a write.
+        for bad in [
+            vec!["Personal".to_owned()],
+            vec!["a".to_owned(), "a".to_owned()],
+        ] {
+            assert!(matches!(
+                reopened.set_default_groups(&bad),
+                Err(AccountDriverError::InvalidAccountOrder(_))
+            ));
+        }
+        assert!(matches!(
+            reopened.set_group("default", Some("no spaces")),
+            Err(AccountDriverError::InvalidAccountOrder(_))
+        ));
+        let cleared = reopened.set_group("default", None).expect("clear group");
+        assert!(cleared.accounts[0].get("group").is_none());
+        let cleared = reopened.set_default_groups(&[]).expect("clear order");
+        assert!(cleared.default_account_groups.is_empty());
+        let persisted = fs::read_to_string(&path).expect("read registry");
+        assert!(!persisted.contains("defaultAccountGroups"));
+    }
+
+    #[test]
     fn changed_identity_is_persisted_and_blocks_admission() {
         let fixture = TestDir::new();
         let path = fixture.path.join("accounts/registry.json");
