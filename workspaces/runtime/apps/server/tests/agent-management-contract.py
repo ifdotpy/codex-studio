@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -743,7 +744,8 @@ finally:
     case.tearDown()
 """
         result = subprocess.run([sys.executable, '-B', '-c', code, str(Path(__file__).resolve())],
-                                capture_output=True, text=True, timeout=5)
+                                # The timeout only guards against a hang of the child check.
+                                capture_output=True, text=True, timeout=HANG_GUARD_SECONDS)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('special Git link kept', result.stdout)
 

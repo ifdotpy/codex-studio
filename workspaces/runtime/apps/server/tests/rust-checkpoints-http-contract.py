@@ -25,6 +25,7 @@ isolate_supervisor_environment()
 from http_backend_harness import (
     BackendProcess, HTTPTransportError, assert_stored_data_unavailable, no_write_snapshot,
 )
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 AGENT_ID = "checkpoints-contract-agent"
@@ -459,7 +460,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 headers=self.headers(),
             )
             try:
-                deadline = time.monotonic() + 5
+                # The capture must reach the hook; this deadline only guards against a hang.
+                deadline = time.monotonic() + HANG_GUARD_SECONDS
                 while not marker.exists() and time.monotonic() < deadline:
                     time.sleep(0.02)
                 self.assertTrue(marker.exists(), "first capture should reach the ref transaction hook")
@@ -494,7 +496,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 self.assertEqual(checkpoint_refs(self.workspace), refs_before_second)
             finally:
                 release.touch()
-            self.assertEqual(first.result(timeout=5).status, 200)
+            # The released capture must finish; this wait only guards against a hang.
+            self.assertEqual(first.result(timeout=HANG_GUARD_SECONDS).status, 200)
         hook.unlink(missing_ok=True)
 
     def test_preview_bounds_large_patch_output(self) -> None:
@@ -803,7 +806,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     "/api/checkpoint",
                     body={"agent": AGENT_ID, "label": "crash window"},
                     headers=self.headers(),
-                    timeout=5,
+                    # The injected crash ends this request; the timeout only guards against a hang.
+                    timeout=HANG_GUARD_SECONDS,
                 )
             except (HTTPTransportError, OSError, TimeoutError):
                 pass
@@ -814,7 +818,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
         process = backend._process
         self.assertIsNotNone(process)
         assert process is not None
-        process.wait(timeout=10)
+        # The injected failure ends the backend; this wait only guards against a hang.
+        process.wait(timeout=HANG_GUARD_SECONDS)
         backend.stop()
         after_refs = checkpoint_refs(self.workspace)
         new_refs = after_refs - before_refs

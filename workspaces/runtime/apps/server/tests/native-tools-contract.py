@@ -544,7 +544,8 @@ class Contract(unittest.TestCase):
         original = self.rt.connect
         def connect(key):
             entered.set()
-            if not release.wait(5):
+            # The test releases the worker; the wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("Test did not release the catalog worker")
             return original(key)
         with patch.object(self.rt, "connect", side_effect=connect):

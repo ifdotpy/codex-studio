@@ -171,10 +171,12 @@ class CheckpointHistoryContract(unittest.TestCase):
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 read_started = time.perf_counter()
                 read = pool.submit(self.runtime.agent, worker["id"])
-                self.assertEqual(read.result(1)["id"], worker["id"])
+                # A restore that holds Runtime.lock blocks this read until the release
+                # below, so half the hang guard only absorbs load and still fails on it.
+                self.assertEqual(read.result(HANG_GUARD_SECONDS / 2)["id"], worker["id"])
                 read_ms = (time.perf_counter() - read_started) * 1000
                 release.set()
-                self.assertEqual(restore.result(5)["status"], "restored")
+                self.assertEqual(restore.result(HANG_GUARD_SECONDS)["status"], "restored")
         self.assertFalse(lock_held_git_ms)
         print(
             "Runtime.lock Git time ms: "

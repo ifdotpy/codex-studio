@@ -159,7 +159,8 @@ class RuntimeWalKeeperContract(unittest.TestCase):
             worker = threading.Thread(target=blocked_step, daemon=True, name='analytics-history-fixture')
             runtime.analytics_history_thread = worker
             worker.start()
-            if not step_started.wait(5):
+            # The worker starts at once; the wait only guards against a hang.
+            if not step_started.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('history worker did not enter its first step')
             raise RuntimeError('history start failed after thread launch')
 

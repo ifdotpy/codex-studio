@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 
@@ -360,7 +361,8 @@ class TerminalsHTTPContract(unittest.TestCase):
             "request_id": "restart-input-receipt",
         }
         endpoint = urlsplit(self.backend.origin)
-        connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=5)
+        # The socket timeout only guards against a hang of the local backend.
+        connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=HANG_GUARD_SECONDS)
         connection.request(
             "POST", "/api/terminals/input", body=json.dumps(input_body),
             headers={**self.headers(), "Content-Type": "application/json"},
@@ -429,9 +431,10 @@ class TerminalsHTTPContract(unittest.TestCase):
         process = self.backend._process
         self.assertIsNotNone(process)
         process.kill()
-        process.wait(timeout=5)
+        # These waits only guard against a hang after the kill.
+        process.wait(timeout=HANG_GUARD_SECONDS)
         if self.backend._reader is not None:
-            self.backend._reader.join(timeout=5)
+            self.backend._reader.join(timeout=HANG_GUARD_SECONDS)
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()

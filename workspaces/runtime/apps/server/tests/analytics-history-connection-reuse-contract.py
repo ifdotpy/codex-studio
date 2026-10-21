@@ -141,7 +141,9 @@ class HistoryConnectionReuse(unittest.TestCase):
             try:
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 for db_path in (self.runtime.db_path, self.runtime.analytics_db_path):
-                    db = sqlite3.connect(db_path, timeout=.1)
+                    # A held writer keeps its lock until the gate is released below, so
+                    # half the hang guard only absorbs load and still fails on that bug.
+                    db = sqlite3.connect(db_path, timeout=HANG_GUARD_SECONDS / 2)
                     try:
                         db.execute('BEGIN IMMEDIATE')
                         db.rollback()

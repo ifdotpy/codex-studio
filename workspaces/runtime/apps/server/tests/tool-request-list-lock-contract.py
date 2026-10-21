@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
+GATED_PROBE_SECONDS = HANG_GUARD_SECONDS / 2
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -90,7 +91,10 @@ class ToolRequestListLockContract(unittest.TestCase):
         thread.start()
         return done, errors, values
 
-    def finished(self, worker, timeout=2, failure=None):
+    # The default wait only guards against a hang. Probes beside a held gate pass
+    # GATED_PROBE_SECONDS: work that waits for the gate stays blocked until the test
+    # releases it, so that bound only absorbs load and still fails on such a wait.
+    def finished(self, worker, timeout=HANG_GUARD_SECONDS, failure=None):
         done, errors, values = worker
         self.assertTrue(done.wait(timeout), 'The fixture operation did not complete')
         if failure:
@@ -128,7 +132,7 @@ class ToolRequestListLockContract(unittest.TestCase):
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 self.finished(self.worker(lambda: self.runtime.send(
-                    self.other['id'], 'Continue', 'payload-read-send'), 'send'), .5)
+                    self.other['id'], 'Continue', 'payload-read-send'), 'send'), GATED_PROBE_SECONDS)
                 self.assertEqual(owned, [False])
             finally:
                 release.set()
@@ -144,7 +148,7 @@ class ToolRequestListLockContract(unittest.TestCase):
     def test_gated_second_payload_does_not_hold_the_main_writer(self):
         _, _, digest, _ = self.pending_pair()
         def writer():
-            db = sqlite3.connect(self.runtime.db_path, timeout=.2)
+            db = sqlite3.connect(self.runtime.db_path, timeout=GATED_PROBE_SECONDS)
             try:
                 db.execute('BEGIN IMMEDIATE')
                 db.rollback()
@@ -154,7 +158,7 @@ class ToolRequestListLockContract(unittest.TestCase):
             listing = self.worker(self.listing)
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
-                self.finished(self.worker(writer, 'writer'), .5)
+                self.finished(self.worker(writer, 'writer'), GATED_PROBE_SECONDS)
             finally:
                 release.set()
             self.finished(listing)

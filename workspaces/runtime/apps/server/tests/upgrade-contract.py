@@ -8,7 +8,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import importlib.util
@@ -215,7 +215,8 @@ class UpgradeContract(unittest.TestCase):
                         self.assertEqual(phase, "complete")
                     origin = f"http://127.0.0.1:{server.server_address[1]}"
                     def get(path):
-                        with urllib.request.urlopen(origin + path, timeout=5) as response:
+                        # The timeout only guards against a hang of the local server.
+                        with urllib.request.urlopen(origin + path, timeout=HANG_GUARD_SECONDS) as response:
                             return json.load(response)
                     state_snapshot = read_test_state(get)
                     self.assertIsNotNone(state_snapshot.value("agent", agent_id))
@@ -249,7 +250,8 @@ class UpgradeContract(unittest.TestCase):
                     self.assertEqual(full_item["text"], baseline_body)
                     diagnostics = get("/api/diagnostics")
                     pruning = diagnostics["migrations"]["entityTombstones"]["pruning"]
-                    deadline = time.monotonic() + 5
+                    # The pruning wait only guards against a hang; its status is checked below.
+                    deadline = time.monotonic() + HANG_GUARD_SECONDS
                     while pruning["status"] not in {"complete", "error"} and time.monotonic() < deadline:
                         threading.Event().wait(0.01)
                         diagnostics = get("/api/diagnostics")

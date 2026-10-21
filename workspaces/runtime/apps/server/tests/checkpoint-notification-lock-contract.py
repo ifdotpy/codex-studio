@@ -6,6 +6,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
+
+# The path gates hold until the test releases them, so a lock, writer or wait that
+# the gated step keeps blocks the whole probe and still fails. The probe bound only
+# absorbs load. Waits on HANG_GUARD_SECONDS only guard against a hang.
+GATED_PROBE_SECONDS = HANG_GUARD_SECONDS / 2
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -85,7 +90,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def drain(self):
         for future in self.jobs:
-            future.result(timeout=3)
+            future.result(timeout=HANG_GUARD_SECONDS)
 
     @contextmanager
     def resolving(self):
@@ -106,7 +111,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
                 yield notice
             finally:
                 release.set()
-                notice.result(timeout=3)
+                notice.result(timeout=HANG_GUARD_SECONDS)
                 self.drain()
 
     def operations(self):
@@ -115,17 +120,17 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def test_blocked_resolve_releases_writer_and_runtime_lock_after_committed_turn(self):
         with self.resolving() as notice:
-            acquired = self.runtime.lock.acquire(blocking=False)
+            acquired = self.runtime.lock.acquire(timeout=GATED_PROBE_SECONDS)
             if acquired:
                 self.runtime.lock.release()
             self.assertTrue(acquired, "Path.resolve must not hold Runtime.lock")
-            with closing(sqlite3.connect(self.runtime.db_path, timeout=0)) as writer, writer:
+            with closing(sqlite3.connect(self.runtime.db_path, timeout=GATED_PROBE_SECONDS)) as writer, writer:
                 writer.execute("INSERT INTO fixture_checkpoint_probe VALUES ('during-resolve')")
                 writer.commit()
                 completion = self.agent["id"] + ":" + self.agent["turnId"]
                 self.assertEqual(writer.execute("SELECT id FROM runtime_completed_turns WHERE id=?",
                                                 (completion,)).fetchone(), (completion,))
-            notice.result(timeout=1)
+            notice.result(timeout=GATED_PROBE_SECONDS)
             receipt = self.runtime.send(self.agent["id"], "A private fixture followup")
             self.assertEqual(self.runtime.delivery_receipt(receipt["id"])["status"], "pending")
         self.assertEqual(self.captures, [(self.agent["id"], "After turn", self.agent["turnId"])])
@@ -136,7 +141,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def test_blocked_resolve_allows_a_second_sqlite_writer(self):
         with self.resolving():
-            with closing(sqlite3.connect(self.runtime.db_path, timeout=0)) as writer, writer:
+            with closing(sqlite3.connect(self.runtime.db_path, timeout=GATED_PROBE_SECONDS)) as writer, writer:
                 writer.execute("INSERT INTO fixture_checkpoint_probe VALUES ('other-writer')")
                 writer.commit()
                 self.assertEqual(writer.execute("SELECT id FROM fixture_checkpoint_probe").fetchall(),
@@ -167,7 +172,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def test_stop_during_resolve_does_not_reserve_checkpoint(self):
         with self.resolving() as notice:
-            notice.result(timeout=1)
+            notice.result(timeout=GATED_PROBE_SECONDS)
             self.runtime.stop(self.agent["id"], False)
         current = self.runtime.agent(self.agent["id"])
         self.assertFalse(current["autoWake"])
@@ -178,7 +183,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def test_resumed_turn_during_resolve_keeps_new_turn_and_inputs(self):
         with self.resolving() as notice:
-            notice.result(timeout=1)
+            notice.result(timeout=GATED_PROBE_SECONDS)
             current = self.update(self.agent, inFlight=True, status="running", turnId="next-turn")
             with self.runtime.lock, self.runtime.db() as db:
                 db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,?,?,?,?,?)",
@@ -195,7 +200,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
                    "epoch": self.agent["epoch"], "accountKey": self.agent["accountKey"],
                    "threadId": self.agent["threadId"], "created": 1}
         with self.resolving() as notice:
-            notice.result(timeout=1)
+            notice.result(timeout=GATED_PROBE_SECONDS)
             self.update(self.agent, status="queued", startAttempt=attempt)
         self.assertEqual(self.runtime.agent(self.agent["id"])["startAttempt"], attempt)
         self.assertEqual(self.captures, [])
@@ -208,7 +213,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
                 self.agent = self.update(original, autoWake=True, status="running", inFlight=True,
                                          turnId="checkpoint-turn-" + next(iter(change)))
                 with self.resolving() as notice:
-                    notice.result(timeout=1)
+                    notice.result(timeout=GATED_PROBE_SECONDS)
                     changed = self.update(self.agent, **change)
                 self.assertEqual(self.captures, [])
                 self.assertEqual(self.operations(), [])
@@ -219,7 +224,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
         operation = {"id": "existing-fork", "kind": "branch", "agent": self.agent["id"],
                      "phase": "provider_pending", "epoch": self.agent["epoch"], "cwd": self.agent["cwd"]}
         with self.resolving() as notice:
-            notice.result(timeout=1)
+            notice.result(timeout=GATED_PROBE_SECONDS)
             with self.runtime.lock, self.runtime.db() as db:
                 current = self.runtime.agent(self.agent["id"], db)
                 current.update(workspaceOperation="branch", workspaceReservationId=operation["id"])
@@ -232,7 +237,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
     def test_monitor_change_during_resolve_rejects_stale_idle_snapshot(self):
         monitor = {"id": "new-monitor", "agent": self.agent["id"], "cwd": self.agent["cwd"], "status": "running"}
         with self.resolving() as notice:
-            notice.result(timeout=1)
+            notice.result(timeout=GATED_PROBE_SECONDS)
             with self.runtime.lock, self.runtime.db() as db:
                 db.execute("INSERT INTO runtime_monitors VALUES (?,?)", (monitor["id"], json.dumps(monitor)))
         self.assertEqual(self.captures, [])
@@ -274,7 +279,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
                 self.runtime.stop(self.agent["id"], False)
             finally:
                 release.set()
-                self.assertIsNone(captured.result(timeout=3))
+                self.assertIsNone(captured.result(timeout=HANG_GUARD_SECONDS))
         self.assertEqual(self.captures, [])
         self.assertEqual(self.operations()[0]["phase"], "failed")
         self.assertFalse(self.runtime.agent(self.agent["id"])["autoWake"])
@@ -339,11 +344,11 @@ class ManualCheckpointLockContract(unittest.TestCase):
                 release.set()
 
     def assert_other_writer_and_runtime_lock(self):
-        with closing(sqlite3.connect(self.runtime.db_path, timeout=0)) as writer, writer:
+        with closing(sqlite3.connect(self.runtime.db_path, timeout=GATED_PROBE_SECONDS)) as writer, writer:
             writer.execute("INSERT INTO fixture_manual_probe VALUES ('other-writer')")
             writer.commit()
             self.assertEqual(writer.execute("SELECT id FROM fixture_manual_probe").fetchall(), [("other-writer",)])
-        acquired = self.runtime.lock.acquire(blocking=False)
+        acquired = self.runtime.lock.acquire(timeout=GATED_PROBE_SECONDS)
         if acquired:
             self.runtime.lock.release()
         self.assertTrue(acquired, "The manual Path.resolve must not hold Runtime.lock")
@@ -353,7 +358,7 @@ class ManualCheckpointLockContract(unittest.TestCase):
             self.assert_other_writer_and_runtime_lock()
             receipt = self.runtime.send(self.agent["id"], "A private fixture followup", "manual-followup")
             self.assertEqual(self.runtime.delivery_receipt(receipt["id"])["status"], "pending")
-        checkpoint = future.result(timeout=3)
+        checkpoint = future.result(timeout=HANG_GUARD_SECONDS)
         self.assertEqual(checkpoint["agent"], self.agent["id"])
         self.assertEqual(checkpoint["tree"], self.git(self.path, "rev-parse", "HEAD^{tree}"))
         self.assertEqual(self.runtime.delivery_receipt("manual-followup")["status"], "pending")
@@ -362,7 +367,7 @@ class ManualCheckpointLockContract(unittest.TestCase):
         data = self.restore_request()
         with self.resolving(self.runtime.restore_checkpoint, self.agent["id"], data) as future:
             self.assert_other_writer_and_runtime_lock()
-        self.assertEqual(future.result(timeout=3), {"status": "restored", "checkpoint": data["checkpoint_id"]})
+        self.assertEqual(future.result(timeout=HANG_GUARD_SECONDS), {"status": "restored", "checkpoint": data["checkpoint_id"]})
         self.assertEqual((self.path / "tracked.txt").read_text(), "base\n")
         self.assertEqual(sum(method == "thread/fork" for method, _ in self.server.calls), 1)
 
@@ -382,7 +387,7 @@ class ManualCheckpointLockContract(unittest.TestCase):
                         else:
                             self.agent_update(self.agent, **change)
                     with self.assertRaisesRegex(ValueError, "Workspace .* changed"):
-                        future.result(timeout=3)
+                        future.result(timeout=HANG_GUARD_SECONDS)
                     current = self.runtime.agent(self.agent["id"])
                     self.assertIsNone(current.get("workspaceOperation"))
                     self.assertEqual(len(self.server.calls), before)
@@ -403,7 +408,7 @@ class ManualCheckpointLockContract(unittest.TestCase):
                     with self.runtime.lock, self.runtime.db() as db:
                         self.runtime.put(db, "monitors", monitor)
                 with self.assertRaisesRegex(ValueError, "Workspace activity changed"):
-                    future.result(timeout=3)
+                    future.result(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNone(self.runtime.agent(self.agent["id"]).get("workspaceOperation"))
                 self.assertEqual(len(self.server.calls), before)
                 with self.runtime.db() as db:
@@ -432,7 +437,7 @@ class ManualCheckpointLockContract(unittest.TestCase):
                 current.update(workspaceOperation="branch", workspaceReservationId=operation["id"])
                 self.runtime.put(db, "agents", current)
         with self.assertRaisesRegex(ValueError, "Workspace activity changed"):
-            future.result(timeout=3)
+            future.result(timeout=HANG_GUARD_SECONDS)
         with self.runtime.db() as db:
             self.assertEqual(self.runtime._workspace_operation(db, operation["id"]), operation)
         self.assertEqual(self.runtime.agent(self.agent["id"])["workspaceReservationId"], operation["id"])

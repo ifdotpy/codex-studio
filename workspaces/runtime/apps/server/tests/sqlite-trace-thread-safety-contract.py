@@ -57,7 +57,8 @@ def mutex_case(root):
     thread = threading.Thread(target=owner, name='contract-sqlite-owner', daemon=True)
     thread.start()
     try:
-        assert ready.wait(1), 'The fixture did not hold the SQLite mutex'
+        # The waits in this child only guard against a hang.
+        assert ready.wait(HANG_GUARD_SECONDS), 'The fixture did not hold the SQLite mutex'
         print('MUTEX_HELD', flush=True)
         active = traces.active_transactions()
         assert len(active) == 1, active
@@ -77,7 +78,7 @@ def mutex_case(root):
         print('WATCHDOG_RETURNED_WITH_MUTEX_HELD', flush=True)
     finally:
         release.set()
-        thread.join(2)
+        thread.join(HANG_GUARD_SECONDS)
     assert not thread.is_alive(), 'The fixture owner did not finish'
     assert not errors, errors
     traces.transaction_watchdog(root)
@@ -95,10 +96,11 @@ class SQLiteTraceThreadSafetyContract(unittest.TestCase):
         self.root = Path(temporary.name)
 
     def test_real_connection_mutex_cannot_block_the_watchdog(self):
+        # A deadlocked child still fails at this hang guard.
         try:
             result = subprocess.run([sys.executable, '-B', str(Path(__file__).resolve()),
                                      '--mutex-child', str(self.root)],
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, text=True, timeout=HANG_GUARD_SECONDS)
         except subprocess.TimeoutExpired as error:
             self.fail('The diagnostic child deadlocked; the parent watchdog terminated it: ' + str(error.stdout))
         self.assertEqual(result.returncode, 0, result.stderr)
