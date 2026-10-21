@@ -725,8 +725,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 let mut result =
                     json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
                 let continuation = if restart {
-                    let continuation = (turn["status"] == "interrupted"
-                        && restart_can_continue(a, turn_id)
+                    let continuation = (restart_can_continue(a, turn)
                         && !uncertain(tx, id, epoch)?)
                     .then(|| restart_continuation(tx, a, turn, turn_id))
                     .transpose()?;
@@ -810,13 +809,23 @@ impl CompletionWriter for LifecycleCompletionWriter {
     }
 }
 
-/// Python `codex_restart_recovery.can_continue`: the exact restart turn is
-/// confirmed interrupted and the worker kept its continuation permission.
-fn restart_can_continue(agent: &Value, turn_id: &str) -> bool {
+// Old Claude mirrors used this error when no native transcript was checked.
+// It is an unknown outcome, even though those mirrors called it interrupted.
+const LEGACY_CLAUDE_RESTART_ERROR: &str =
+    "Claude connection ended. Review the saved transcript before continuing.";
+
+/// The native turn is confirmed interrupted and the worker kept permission.
+/// An uncertain status or a legacy synthetic interruption proves neither.
+fn restart_can_continue(agent: &Value, turn: &Value) -> bool {
     let marker = &agent["restartRecovery"];
-    matches!(marker["stage"].as_str(), Some("pending" | "superseded"))
+    let error = turn["error"]
+        .as_str()
+        .or_else(|| turn["error"]["message"].as_str());
+    turn["status"] == "interrupted"
+        && error != Some(LEGACY_CLAUDE_RESTART_ERROR)
+        && matches!(marker["stage"].as_str(), Some("pending" | "superseded"))
         && marker["autoWake"] == true
-        && marker["turnId"] == turn_id
+        && marker["turnId"] == turn["id"]
         && ["epoch", "accountKey", "threadId"]
             .iter()
             .all(|key| marker[*key] == agent[*key])
