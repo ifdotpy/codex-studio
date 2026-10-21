@@ -223,6 +223,13 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{started}");
+    // Start returns at durable admission, before asynchronous provider setup.
+    // Observe that setup before issuing speech for the independent session.
+    studio_runtime_services::voice::provider::wait_for_start_setup(
+        "voice-start-agent",
+        "start-http",
+    )
+    .await;
 
     let (status, spoken) = post(
         &app,
