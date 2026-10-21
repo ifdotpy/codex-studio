@@ -8,17 +8,25 @@ use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 pub(super) fn authorization_records(
     tx: &Transaction<'_>,
 ) -> Result<AuthorizationRecords, CallbackError> {
+    // The gate reads only resolved paths. This read does no filesystem I/O,
+    // so the resolution is `path_identity::lexical`: an equivalent
+    // spelling, such as a trailing separator, gets the same identity. A path
+    // without such a form stays unresolved, and the gate refuses its record.
     let agents = records::all(tx, "runtime_agents")?;
     let mut paths = BTreeMap::new();
     for actor in &agents {
-        if let Some(path) = actor["cwd"].as_str() {
-            paths.insert(path.into(), path.into());
+        if let Some(path) = actor["cwd"].as_str()
+            && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
+        {
+            paths.insert(path.into(), resolved);
         }
     }
     let projects = records::all(tx, "runtime_projects")?;
     for project in &projects {
-        if let Some(path) = project["path"].as_str() {
-            paths.insert(path.into(), path.into());
+        if let Some(path) = project["path"].as_str()
+            && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
+        {
+            paths.insert(path.into(), resolved);
         }
     }
     Ok(AuthorizationRecords {
@@ -29,14 +37,38 @@ pub(super) fn authorization_records(
             .collect::<Result<_, CallbackError>>()?,
         rooms: BTreeMap::new(),
         complaints: BTreeMap::new(),
-        projects: projects
-            .into_iter()
-            .map(|p| Ok((text(&p, "path")?.to_owned(), p.to_string())))
-            .collect::<Result<_, CallbackError>>()?,
+        projects: projects_by_resolved_path(projects, &paths)?,
         event_meta: BTreeMap::new(),
         events: Vec::new(),
         resolved_paths: paths,
     })
+}
+/// The gate keys a project by its resolved path. When two records name one
+/// directory, the record whose stored path is already that form wins, so a
+/// second spelling never replaces the authority of an exact record.
+fn projects_by_resolved_path(
+    projects: Vec<Value>,
+    paths: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, CallbackError> {
+    let mut exact = BTreeMap::new();
+    let mut respelled = BTreeMap::new();
+    for project in projects {
+        let path = text(&project, "path")?;
+        match paths.get(path) {
+            Some(resolved) if resolved != path => {
+                respelled
+                    .entry(resolved.clone())
+                    .or_insert_with(|| project.to_string());
+            }
+            _ => {
+                exact.insert(path.to_owned(), project.to_string());
+            }
+        }
+    }
+    for (key, project) in respelled {
+        exact.entry(key).or_insert(project);
+    }
+    Ok(exact)
 }
 fn authorize(
     rows: &mut AuthorizationRecords,
@@ -449,6 +481,15 @@ pub(super) fn peers(
             {
                 Ok(()) => true,
                 Err(CallbackError::Invalid(_)) => false,
+                // As for agents, a room that the gate cannot check is not visible.
+                Err(CallbackError::Stored(location)) => {
+                    eprintln!(
+                        "Room {} is not visible to {}: invalid stored authority at {location}",
+                        text(&room, "id")?,
+                        snapshot.context().agent
+                    );
+                    false
+                }
                 Err(error) => return Err(error),
             };
         if visible {
@@ -515,42 +556,69 @@ fn visible_agents(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
 ) -> Result<Vec<Value>, CallbackError> {
-    let actor = snapshot.actor();
     let mut visible = Vec::new();
-    let mut authority = authorization_records(tx)?;
+    let mut authority = None;
     for agent in records::all(tx, "runtime_agents")? {
-        if studio_runtime_store::truthy(agent.get("deletedAt")) {
-            continue;
-        }
-        let mut ids = vec![text(actor, "id")?, text(&agent, "id")?];
-        ids.sort();
-        let room = json!({"id":"peer-check","kind":"private","members":ids});
-        let allowed = if agent["rootId"] == actor["rootId"] {
-            true
-        } else {
-            match authorize(
-                &mut authority,
-                text(&agent, "id")?,
-                text(actor, "id")?,
-                &room,
-            ) {
-                Ok(()) => true,
-                Err(CallbackError::Invalid(_)) => false,
-                Err(error) => return Err(error),
-            }
-        };
-        if allowed {
+        if agent_visible(tx, snapshot, &agent, &mut authority)? {
             visible.push(agent);
         }
     }
     Ok(visible)
 }
 
+/// Whether the caller may see `agent`. An agent of another root is visible
+/// only when the room gate admits a private room with it. A stored record
+/// that the gate cannot check is not visible. That refusal is about one
+/// record, so it must not refuse the caller's whole request. `authority` is
+/// loaded at the first check that needs it.
+fn agent_visible(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    agent: &Value,
+    authority: &mut Option<AuthorizationRecords>,
+) -> Result<bool, CallbackError> {
+    if studio_runtime_store::truthy(agent.get("deletedAt")) {
+        return Ok(false);
+    }
+    let actor = snapshot.actor();
+    if agent["rootId"] == actor["rootId"] {
+        return Ok(true);
+    }
+    let rows = match authority {
+        Some(rows) => rows,
+        None => authority.insert(authorization_records(tx)?),
+    };
+    let mut ids = vec![text(actor, "id")?, text(agent, "id")?];
+    ids.sort();
+    let room = json!({"id":"peer-check","kind":"private","members":ids});
+    match authorize(rows, text(agent, "id")?, text(actor, "id")?, &room) {
+        Ok(()) => Ok(true),
+        Err(CallbackError::Invalid(_)) => Ok(false),
+        Err(CallbackError::Stored(location)) => {
+            eprintln!(
+                "Agent {} is not visible to {}: invalid stored authority at {location}",
+                text(agent, "id")?,
+                text(actor, "id")?
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// An exact full ID is checked alone, so the records of other agents cannot
+/// refuse it. Other text resolves as a unique prefix among visible agents.
 pub(super) fn resolve_agent(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
     supplied: &str,
 ) -> Result<String, CallbackError> {
+    if let Some(agent) = records::get(tx, "runtime_agents", supplied)?
+        && agent["id"] == supplied
+        && agent_visible(tx, snapshot, &agent, &mut None)?
+    {
+        return Ok(supplied.to_owned());
+    }
     resolve_visible_agent_prefix(
         visible_agents(tx, snapshot)?
             .into_iter()

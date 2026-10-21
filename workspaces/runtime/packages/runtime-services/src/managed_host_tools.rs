@@ -173,6 +173,10 @@ pub(crate) enum Error {
         id: String,
         location: String,
     },
+    /// A stored record that a gate could not check, named by its location
+    /// (table key, record ID and field). It names no stored value.
+    #[error("Invalid stored record at {0}")]
+    StoredAt(String),
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error(transparent)]
