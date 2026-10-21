@@ -33,7 +33,7 @@ from studio_api.sync.resources.hub import (
 )
 from studio_api.sync.resources.models import (
     CostsResource,
-    PanelResource,
+    QueueResource,
     ResourceRef,
     SessionCostResource,
     VoiceResource,
@@ -111,7 +111,7 @@ def resource_refs() -> list[ResourceRef]:
         ResourceRef(CostsResource(kind="costs")),
         ResourceRef(SessionCostResource(kind="session-cost", agentId="agent-a")),
         ResourceRef(VoiceResource(kind="voice", agentId="agent-a")),
-        ResourceRef(PanelResource(kind="panel", agentId="agent-a")),
+        ResourceRef(QueueResource(kind="queue", agentId="agent-a")),
     ]
 
 

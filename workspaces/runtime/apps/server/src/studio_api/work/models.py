@@ -388,26 +388,6 @@ class RuleBody(ContractModel):
     activeWorkers: SafeInt | None = None
 
 
-class PanelLayoutBody(ContractModel):
-    agent: StrictStr
-    client: StrictStr
-    sequence: SafeInt
-    renderer: Literal["progress-markdown-v2", "progress-markdown-v1"]
-    revision: StrictStr
-    width: SafeInt | StrictFloat
-    height: SafeInt | StrictFloat
-    contentWidth: SafeInt | StrictFloat
-    contentHeight: SafeInt | StrictFloat
-    fits: StrictBool
-    reason: Literal["overflow", "unsupported"] | None
-    overflowX: SafeInt | StrictFloat | None = None
-    overflowY: SafeInt | StrictFloat | None = None
-    totalLines: SafeInt | None = None
-    visibleLines: SafeInt | None = None
-    lastVisibleLine: StrictStr | None = None
-    lastVisibleHeading: StrictStr | None = None
-
-
 class WorkArchiveRecord(TypedDict, total=False, extra_items=JsonValue):  # type: ignore[call-arg]
     reason: StrictStr
     status: StrictStr
@@ -940,18 +920,6 @@ class ChangesResponse(ResponseModel):
     reportedAt: SafeInt | StrictFloat | None = None
 
 
-class ProgressPanel(ResponseModel):
-    id: StrictStr
-    agent: StrictStr
-    format: Literal["markdown"]
-    markdown: StrictStr
-    path: StrictStr
-    revision: StrictStr | None
-    updated: SafeInt | StrictFloat | None
-    exists: StrictBool
-    error: StrictStr | None
-
-
 class TaskCursor(ContractModel):
     updated: SafeInt | StrictFloat
     id: StrictStr
@@ -990,40 +958,6 @@ class WorkspaceView(ResponseModel):
     tasks: list[WorkspaceTaskRecord] | None = None
     tasksHistoryLimit: SafeInt | None = None
     monitors: list[MonitorEntityDto] | None = None
-
-
-class PanelLayoutReport(ContractModel):
-    client: StrictStr
-    sequence: SafeInt
-    renderer: StrictStr
-    # Older layout feedback may include this redundant value. New reports do
-    # not: their authoritative revision is stored on PanelLayoutResult.
-    revision: StrictStr | None = None
-    sha256: StrictStr | None = None
-    width: SafeInt | StrictFloat | None = None
-    height: SafeInt | StrictFloat | None = None
-    contentWidth: SafeInt | StrictFloat | None = None
-    contentHeight: SafeInt | StrictFloat | None = None
-    overflowX: SafeInt | StrictFloat | None = None
-    overflowY: SafeInt | StrictFloat | None = None
-    totalLines: SafeInt | None = None
-    visibleLines: SafeInt | None = None
-    lastVisibleLine: StrictStr | None = None
-    lastVisibleHeading: StrictStr | None = None
-    fits: StrictBool
-    reason: Literal["overflow", "unsupported"] | None
-    measuredAt: SafeInt | StrictFloat | None = None
-    expiresAt: SafeInt | StrictFloat | None = None
-
-
-class PanelLayoutResult(ResponseModel):
-    version: SafeInt
-    agent: StrictStr
-    revision: StrictStr
-    sha256: StrictStr
-    status: Literal["fits", "does_not_fit", "unmeasured", "empty", "clipped"]
-    updatedAt: SafeInt | StrictFloat | None = None
-    reports: list[PanelLayoutReport]
 
 
 class BrowserForward(ContractModel):

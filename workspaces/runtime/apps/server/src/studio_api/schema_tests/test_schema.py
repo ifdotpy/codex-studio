@@ -567,7 +567,7 @@ class SchemaContractTests(unittest.TestCase):
             {(item["pointer"], item["constraint"]) for item in loosenings},
             self._reviewed_schema_additions(),
             "only reviewed diagnostics, execution-effect statuses, and the "
-            "MultiServerResource, disk space, image cleanup retry, process-control and delivery enum changes may loosen the schema",
+            "MultiServerResource, PanelResource removal, disk space, image cleanup retry, process-control and delivery enum changes may loosen the schema",
         )
 
 
@@ -740,6 +740,11 @@ class SchemaContractTests(unittest.TestCase):
             "/paths/~1api~1sync~1notify/post/requestBody/content/application~1json/schema/properties/resources/items",
         ):
             add(pointer, "@oneOf")
+        # The retired progress panel resource left that union. Its component is
+        # no longer reachable, so the comparison reads its constraints as removed.
+        add("/components/schemas/PanelResource", "type", "additionalProperties", "required")
+        add("/components/schemas/PanelResource/properties/agentId", "type", "minLength")
+        add("/components/schemas/PanelResource/properties/kind", "type", "const")
 
         # A turn that failed because the disk was full waits for free space as a
         # capacity retry with the cause diskFull (codex_disk_space.DISK_FULL_KIND).

@@ -221,43 +221,10 @@ class WorkRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["items"][0]["results"][0], legacy_result)
 
-    def test_panel_layout_route_validates_current_and_legacy_feedback_and_preserves_http_errors(self) -> None:
-        from codex_progress_layout import LayoutConflict
-
-        body = {
-            "agent": "agent-1", "revision": "revision-1", "client": "phone", "sequence": 1,
-            "renderer": "progress-markdown-v1", "width": 320, "height": 150,
-            "contentWidth": 100, "contentHeight": 40, "fits": True, "reason": None,
-        }
-        result = {
-            "version": 1, "agent": "agent-1", "revision": "revision-1",
-            "sha256": "a" * 64, "status": "fits", "reports": [{
-                "client": "phone", "sequence": 1, "renderer": "progress-markdown-v1",
-                "width": 320, "height": 150, "contentWidth": 100, "contentHeight": 40,
-                "fits": True, "reason": None, "measuredAt": 1.0, "expiresAt": 91.0,
-            }],
-        }
-        context = FakeContext()
-        client = make_client(context)
-
-        with patch("codex_progress_layout.record_layout", return_value=result) as record:
-            response = client.post("/api/panel/layout", json=body)
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertNotIn("revision", response.json()["reports"][0])
-        record.assert_called_once()
-
-        legacy = {**result, "reports": [{**result["reports"][0], "revision": "revision-1"}]}
-        with patch("codex_progress_layout.record_layout", return_value=legacy):
-            response = client.post("/api/panel/layout", json=body)
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["reports"][0]["revision"], "revision-1")
-
-        with patch("codex_progress_layout.record_layout", side_effect=LayoutConflict("stale")):
-            stale = client.post("/api/panel/layout", json=body)
-        self.assertEqual(stale.status_code, 409, stale.text)
-
-        invalid = client.post("/api/panel/layout", json={key: value for key, value in body.items() if key != "revision"})
-        self.assertEqual(invalid.status_code, 400, invalid.text)
+    def test_retired_panel_routes_are_not_served(self) -> None:
+        client = make_client(FakeContext())
+        self.assertEqual(client.get("/api/panel?agent=agent-1").status_code, 404)
+        self.assertEqual(client.post("/api/panel/layout", json={"agent": "agent-1"}).status_code, 404)
 
     def test_chat_query_documents_parameters_and_uses_declared_values(self) -> None:
         context = FakeContext()

@@ -64,7 +64,7 @@ class Conversion(unittest.TestCase):
         return self.rt.conversation_settings(key, {'subagent_concurrency': limit,
             'expected_mode_revision': current['agentModeRevision'], 'request_id': str(uuid.uuid4())})
 
-    def test_move_preserves_threads_settings_descendants_board_rooms_and_progress(self):
+    def test_move_preserves_threads_settings_descendants_board_rooms_and_old_progress_file(self):
         self.change(self.a['id'], autoWake=True)
         self.change(self.c['id'], autoWake=True)
         worker = self.rt.create({'name': 'Child', 'prompt': 'Child task', 'role': 'reviewer'}, parent=self.a['id'], defer=True)
@@ -72,7 +72,9 @@ class Conversion(unittest.TestCase):
         grandchild = self.rt.create({'name': 'Grandchild', 'prompt': 'Grandchild task', 'role': 'reviewer'}, parent=worker['id'], defer=True)
         for key in (self.a['id'], worker['id'], grandchild['id']):
             self.change(key, threadId='native-' + key)
-        progress = self.rt.progress_file(self.a)
+        # Studio no longer uses PROGRESS.md, but a file from an older version is user data.
+        progress = self.rt.root / 'progress' / self.a['id'] / 'PROGRESS.md'
+        progress.parent.mkdir(parents=True)
         progress.write_text('The saved progress.\n')
         with self.rt.lock, self.rt.db() as db:
             self.rt.item(db, self.a['id'], 'history', 'assistant', 'The original report', 'Lead')

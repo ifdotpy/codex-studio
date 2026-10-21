@@ -441,21 +441,6 @@ pub(super) async fn production_ports(
     } else {
         None
     };
-    let call = ToolCall::parse(input, context)?;
-    let panel_guidance = if matches!(call.kind, ToolKind::Context) && call.args["topic"] == "panel"
-    {
-        let resources = config.preparation.clone();
-        Some(
-            studio_runtime_store::blocking_pool::spawn_blocking(
-                "runtime-services/callback-panel-guidance",
-                move || services::PanelGuidance::read(resources.as_deref()),
-            )
-            .await
-            .map_err(|_| CallbackError::Unknown)?,
-        )
-    } else {
-        None
-    };
     Ok(services::ProductionPorts::new(
         services::ProductionPortsConfig {
             context: context.clone(),
@@ -464,9 +449,7 @@ pub(super) async fn production_ports(
             event_wake: config.wake,
             monitor_dispatch_wake: config.monitor_dispatch_wake,
             runtime_ports: config.runtime_ports,
-            state_root: store.state_dir().to_path_buf(),
             preparation: config.preparation,
-            panel_guidance,
         },
     ))
 }

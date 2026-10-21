@@ -531,23 +531,3 @@ def dispose(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
     flush_turns(runtime, agent)
     return request(runtime, "agent.release" if agent.get("isLead") else "line.remove", {"agentId": agent["id"]},
                    "layr-remove:" + agent["id"] + ":" + str(agent["epoch"]))
-
-
-def progress_context(runtime: Any, agent: Mapping[str, Any]) -> str:
-    from codex_shared_values import progress_file_limit_label
-
-    if is_vm(agent):
-        path = Path(str(agent.get("layrHome", "/home/studio"))) / ".studio/progress" / agent["id"] / "PROGRESS.md"
-        return (f"Your progress file is {path}. Read and edit this UTF-8 Markdown file with ordinary file tools. "
-                f"Studio displays it above the composer. Keep it at most {progress_file_limit_label()}. "
-                "Update it when the status changes.")
-    from codex_progress import progress_context as native_context
-    return str(native_context(runtime.root, agent["id"]))
-
-
-def read_progress(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
-    if is_vm(agent) and agent.get("layrReady"):
-        return request(runtime, "agent.progress", {"agentId": agent["id"]},
-                       "layr-progress:" + agent["id"], 20)
-    from codex_progress import read_progress as native_read
-    return native_read(runtime.root, agent["id"])

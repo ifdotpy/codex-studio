@@ -1,7 +1,6 @@
 //! Closed local service table. Every entry checks actor authority in the same
 //! transaction as its effects. No HTTP adapters and no user-authored substitutes.
 mod context;
-pub(crate) use context::PanelGuidance;
 pub(crate) mod manage;
 pub(crate) mod messages;
 mod reads;
@@ -24,9 +23,7 @@ pub(crate) struct ProductionPorts {
     event_wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     runtime_ports: super::ManagedToolRuntimePorts,
-    state_root: std::path::PathBuf,
     preparation: Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
-    panel_guidance: Option<PanelGuidance>,
 }
 
 pub(crate) struct ProductionPortsConfig {
@@ -36,9 +33,6 @@ pub(crate) struct ProductionPortsConfig {
     pub(crate) event_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) runtime_ports: super::ManagedToolRuntimePorts,
-    /// The store's state directory, which owns progress files.
-    pub(crate) state_root: std::path::PathBuf,
-    pub(crate) panel_guidance: Option<PanelGuidance>,
     pub(crate) preparation:
         Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
@@ -52,9 +46,7 @@ impl ProductionPorts {
             event_wake: config.event_wake,
             monitor_dispatch_wake: config.monitor_dispatch_wake,
             runtime_ports: config.runtime_ports,
-            state_root: config.state_root,
             preparation: config.preparation,
-            panel_guidance: config.panel_guidance,
         }
     }
 }
@@ -338,14 +330,7 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
             }
             snapshot.record().clone()
         } else {
-            context::topic(
-                tx,
-                actor,
-                topic,
-                &self.state_root,
-                self.preparation.as_deref(),
-                self.panel_guidance.as_ref(),
-            )?
+            context::topic(tx, actor, topic, self.preparation.as_deref())?
         };
         let version = studio_runtime_store::sha256_hex(
             studio_runtime_store::python_json_compact(&content).as_bytes(),

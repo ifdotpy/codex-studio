@@ -57,11 +57,6 @@ install_projection_contract(Runtime)
 import codex_runtime
 import codex_accounts
 import codex_efficiency
-import codex_vm_agents
-
-# Start-request lifecycle snapshots must not read developer-role skill or
-# progress guidance from a live Studio checkout/agent context.
-codex_vm_agents.progress_context = lambda _runtime, _agent: ""
 
 # Match the accepted turn compiler's canonical context-version encoding while
 # validating the original Python payload hashes before normalizing snapshots.
@@ -100,7 +95,7 @@ class QuietRuntime(Runtime):
 
     def model_turn_context(self, db, actor, event_id):
         # Exercise the production metadata writer while keeping fixture guidance
-        # out of captured provider input. The role/progress readers are stubbed
+        # out of captured provider input. The role reader is stubbed
         # above, so this cannot consult the live checkout or agent context. The
         # real start caller may pass a stale in-memory actor; reload the seeded
         # fixture row so Rust and Python compile the same persisted guidance.
@@ -380,10 +375,9 @@ def seed(runtime, case):
             role_version = hashlib.sha256(json.dumps(
                 agent["nativeRoleGuidance"], ensure_ascii=False,
                 separators=(",", ":")).encode()).hexdigest()[:24]
-            progress_version = hashlib.sha256(b'""').hexdigest()[:24]
             agent["preparedContext"] = {
                 "epoch": ["thread", 0],
-                "versions": {"progressFile": progress_version, "roleSkill": role_version},
+                "versions": {"roleSkill": role_version},
             }
         runtime.put(db, "agents", agent)
         runtime.enqueue(db, agent, "user", "input", "event")

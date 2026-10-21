@@ -157,7 +157,6 @@ pub(crate) fn full_tool_catalog(catalog: &CatalogSnapshot) -> Vec<ToolDefinition
 pub struct GuidanceBundle {
     pub instructions: String,
     pub role: String,
-    pub progress: String,
     pub thread_config: Map<String, Value>,
     /// Native Chrome setup of a host Codex thread; `None` for an agent without
     /// one (Claude, VM). Its config overrides are already in `thread_config`.
@@ -177,10 +176,8 @@ pub struct BrowserGuidance {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum WorkspaceReadiness {
-    /// The adapter has verified this optional writable progress directory.
-    Ready {
-        progress_directory: Option<String>,
-    },
+    /// The adapter has prepared the workspace.
+    Ready,
     Pending,
     Image,
     Vm,
@@ -438,15 +435,6 @@ pub fn filter_tool_definitions(
     Ok(result)
 }
 
-fn progress_directory(s: &Snapshot) -> Option<&str> {
-    match &s.workspace {
-        WorkspaceReadiness::Ready { progress_directory } if s.settings.is_lead => {
-            progress_directory.as_deref()
-        }
-        _ => None,
-    }
-}
-
 fn refusal(s: &Snapshot) -> Option<Refusal> {
     if s.actor.thread_id.as_deref() == Some("") {
         return Some(Refusal::EmptyThreadIdentity);
@@ -540,22 +528,10 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         config.insert("review_model".into(), json!(s.settings.model));
     }
     let mut instructions = format!("{}\n{}", s.guidance.instructions, role_text(s));
-    if s.settings.is_lead && !s.guidance.progress.is_empty() {
-        instructions.push_str(&format!("\n{}", s.guidance.progress));
-    }
     instructions.push_str(&format!("\n{}", s.settings.profile_instructions));
     if s.settings.needs_title {
         instructions.push_str(
             "\nBefore the first task, call orchestration_title with a short task title.\n",
-        );
-    }
-    if s.settings.yolo_mode == Some(false)
-        && s.settings.role != Role::Reviewer
-        && let Some(directory) = progress_directory(s)
-    {
-        config.insert(
-            "sandbox_workspace_write.writable_roots".into(),
-            json!([directory]),
         );
     }
     let mut params = Map::new();
@@ -620,20 +596,14 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
     let submitted = developer_instructions.as_str().unwrap_or_default();
     let mut context_versions = Map::new();
     let mut artifacts = Vec::new();
-    for (key, text) in [
-        ("roleSkill", role_text(s)),
-        ("progressFile", s.guidance.progress.as_str()),
-    ] {
-        if !text.is_empty() && submitted.contains(text) {
-            let version = sha256_hex(json!(text).to_string().as_bytes())[..24].to_owned();
-            context_versions.insert(key.into(), json!(version));
-            if key == "roleSkill" {
-                artifacts.push(ArtifactIntent::RememberRole {
-                    version,
-                    text: text.to_owned(),
-                });
-            }
-        }
+    let role = role_text(s);
+    if !role.is_empty() && submitted.contains(role) {
+        let version = sha256_hex(json!(role).to_string().as_bytes())[..24].to_owned();
+        context_versions.insert("roleSkill".into(), json!(version));
+        artifacts.push(ArtifactIntent::RememberRole {
+            version,
+            text: role.to_owned(),
+        });
     }
     params.insert("developerInstructions".into(), developer_instructions);
     let tool_catalog = if method == Method::Start || provider.capabilities().tools_on_every_turn {
@@ -761,11 +731,7 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
         } else if s.settings.role == Role::Reviewer {
             json!({"type":"readOnly"})
         } else {
-            let mut roots = vec![s.actor.cwd.as_str()];
-            if let Some(directory) = progress_directory(s) {
-                roots.push(directory);
-            }
-            json!({"type":"workspaceWrite","writableRoots":roots,"networkAccess":false})
+            json!({"type":"workspaceWrite","writableRoots":[s.actor.cwd],"networkAccess":false})
         };
         params.insert(
             "approvalPolicy".into(),

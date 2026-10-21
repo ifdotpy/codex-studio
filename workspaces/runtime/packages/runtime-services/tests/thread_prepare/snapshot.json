@@ -50,7 +50,6 @@
   "guidance": {
     "instructions": "System guidance",
     "role": "[Synthetic role]\nAuthority comes from the root.\n[End role]",
-    "progress": "Your progress file is /workspace/progress/PROGRESS.md.",
     "thread_config": {
       "auto_review.circuit_break_action": "strict",
       "features.context_management.experimental_mode": true,
@@ -258,8 +257,7 @@
     "saved_digest": null
   },
   "workspace": {
-    "state": "ready",
-    "progress_directory": "/workspace/progress"
+    "state": "ready"
   },
   "unsupported": null,
   "admission": null,

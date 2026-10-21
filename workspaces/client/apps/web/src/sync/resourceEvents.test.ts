@@ -1372,12 +1372,12 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
 
     const transport = await loadTransport();
-    const panel = { kind: "panel", agentId: "agent-one" } as const;
+    const queue = { kind: "queue", agentId: "agent-one" } as const;
     const terminal = { kind: "terminal", terminalId: "terminal-one" } as const;
-    const panelChanges = vi.fn();
+    const queueChanges = vi.fn();
     const terminalChanges = vi.fn();
     const states: string[] = [];
-    const stopPanel = transport.watchResourceChanges(panel, panelChanges);
+    const stopQueue = transport.watchResourceChanges(queue, queueChanges);
     const stopStatus = transport.watchResourceConnection((state) =>
       states.push(state),
     );
@@ -1389,34 +1389,34 @@ describe("shared resource event transport", () => {
       epoch: "epoch-one",
       revision: 1,
       reason: "initial",
-      resources: [panel],
-      resourceVersions: [{ resource: panel, revision: 1 }],
+      resources: [queue],
+      resourceVersions: [{ resource: queue, revision: 1 }],
     });
-    await vi.waitFor(() => expect(panelChanges).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(queueChanges).toHaveBeenCalledTimes(1));
     first.emit("resources", {
       protocol: 3,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
       reason: "change",
-      resources: [panel],
-      resourceVersions: [{ resource: panel, revision: 1 }],
+      resources: [queue],
+      resourceVersions: [{ resource: queue, revision: 1 }],
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(panelChanges).toHaveBeenCalledTimes(1);
+    expect(queueChanges).toHaveBeenCalledTimes(1);
     first.emit("resources", {
       protocol: 3,
       workspaceId,
       epoch: "epoch-one",
       revision: 2,
       reason: "change",
-      resources: [{ kind: "panel", agentId: "another-agent" }],
+      resources: [{ kind: "queue", agentId: "another-agent" }],
       resourceVersions: [
-        { resource: { kind: "panel", agentId: "another-agent" }, revision: 2 },
+        { resource: { kind: "queue", agentId: "another-agent" }, revision: 2 },
       ],
     });
     await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(panelChanges).toHaveBeenCalledTimes(1);
+    expect(queueChanges).toHaveBeenCalledTimes(1);
 
     const stopTerminal = transport.watchResourceChanges(
       terminal,
@@ -1432,7 +1432,7 @@ describe("shared resource event transport", () => {
     expect(terminalChanges).not.toHaveBeenCalled();
 
     stopTerminal();
-    stopPanel();
+    stopQueue();
     stopStatus();
     expect(Source.instances.every((source) => source.closed)).toBe(true);
     expect(syncDatabase).toHaveBeenCalledTimes(1);
@@ -1457,7 +1457,7 @@ describe("shared resource event transport", () => {
 
     const transport = await loadTransport();
     const stop = transport.watchResourceChanges(
-      { kind: "panel", agentId: "agent-one" },
+      { kind: "queue", agentId: "agent-one" },
       vi.fn(),
     );
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
@@ -1846,7 +1846,7 @@ describe("shared resource event transport", () => {
     const transport = await loadTransport();
     const local = { kind: "state" } as const;
     const bulkRefs = Array.from({ length: 129 }, (_, index) => ({
-      kind: "panel" as const,
+      kind: "queue" as const,
       agentId: `inactive-${index}`,
     }));
     const evictedRef = bulkRefs[0]!;
@@ -1944,7 +1944,7 @@ describe("shared resource event transport", () => {
             message.kind === "resource-event" &&
             message.event.resources.some(
               (resource: any) =>
-                resource.kind === "panel" &&
+                resource.kind === "queue" &&
                 resource.agentId === evictedRef.agentId,
             ),
         ),
@@ -1981,7 +1981,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("BroadcastChannel", Channel);
 
     const transport = await loadTransport();
-    const local = { kind: "panel", agentId: "resume-panel" } as const;
+    const local = { kind: "queue", agentId: "resume-queue" } as const;
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges(local, onChange);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
@@ -2115,8 +2115,8 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("BroadcastChannel", Channel);
 
     const transport = await loadTransport();
-    const a = { kind: "panel", agentId: "follower-resume-a" } as const;
-    const b = { kind: "panel", agentId: "follower-resume-b" } as const;
+    const a = { kind: "queue", agentId: "follower-resume-a" } as const;
+    const b = { kind: "queue", agentId: "follower-resume-b" } as const;
     const onA = vi.fn();
     const onB = vi.fn();
     let stopA = transport.watchResourceChanges(a, onA);
@@ -2211,8 +2211,8 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("BroadcastChannel", Channel);
 
     const transport = await loadTransport();
-    const a = { kind: "panel", agentId: "resume-panel-a" } as const;
-    const b = { kind: "panel", agentId: "resume-panel-b" } as const;
+    const a = { kind: "queue", agentId: "resume-queue-a" } as const;
+    const b = { kind: "queue", agentId: "resume-queue-b" } as const;
     const onA = vi.fn();
     const onB = vi.fn();
     let stopA = transport.watchResourceChanges(a, onA);

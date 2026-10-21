@@ -75,7 +75,7 @@
     padding: 16px var(--chat-inset) 8px;
     scrollbar-gutter: auto;
   }
-  #conversation :is(#composer, .agent-panel, .message-queue) {
+  #conversation :is(#composer, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
     max-width: var(--chat-width);
     align-self: center;
@@ -124,7 +124,7 @@
   .workspace {
     --chat-gutter: 14px;
   }
-  #conversation :is(#composer, .agent-panel, .message-queue) {
+  #conversation :is(#composer, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
     max-width: none;
     align-self: center;
@@ -136,10 +136,6 @@
   #conversation #requests {
     padding: 0;
   }
-}
-
-#conversation .agent-panel {
-  margin-top: 8px;
 }
 
 /* Questions stay in transcript order and use their own bounded scroll region. */

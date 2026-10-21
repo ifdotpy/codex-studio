@@ -71,21 +71,6 @@ test("studio settings browser ui", async ({
         !('["codex-studio-preferences-v1","sidebarFontSize"]' in body.fields)
       );
     });
-    await page.route(/\/api\/panel\?/, (route) => {
-      const agent = new URL(route.request().url()).searchParams.get("agent");
-      return route.fulfill({
-        json: {
-          agent,
-          format: "markdown",
-          markdown: "Short progress text for shared-width alignment.",
-          path: "/fixture/PROGRESS.md",
-          revision: "studio-settings-browser-test",
-        },
-      });
-    });
-    await page.route("**/api/panel/layout", (route) =>
-      route.fulfill({ json: {} }),
-    );
     await page.addInitScript((key) => {
       const seedKey = `${key}:invalid-seed-applied`;
       if (sessionStorage.getItem(seedKey)) return;
@@ -95,11 +80,7 @@ test("studio settings browser ui", async ({
     await page.goto(origin);
     await page.locator("#message").waitFor();
     await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
-    await page
-      .locator(
-        '.agent-panel[aria-label="Agent progress"][data-fit="yes"] .agent-panel-current.progress-markdown',
-      )
-      .waitFor();
+    await page.locator("#messages .message-content").first().waitFor();
     assert.equal(
       await page
         .locator("main.workspace")
@@ -138,9 +119,6 @@ test("studio settings browser ui", async ({
         return {
           viewport: rect("#messages"),
           transcript: rect("#messages .message-content"),
-          progress: rect(
-            '.agent-panel[aria-label="Agent progress"][data-fit="yes"]',
-          ),
           composer: rect("#conversation #composer"),
         };
       });
@@ -535,19 +513,12 @@ test("studio settings browser ui", async ({
         return {
           viewport: rect("#messages"),
           transcript: rect("#messages .message-content"),
-          progress: rect(
-            '.agent-panel[aria-label="Agent progress"][data-fit="yes"]',
-          ),
           composer: rect("#conversation #composer"),
         };
       });
       assert.ok(Object.values(bounds).every(Boolean), JSON.stringify(bounds));
       console.log(`shared-width-${expected}%`, JSON.stringify(bounds));
-      for (const item of [
-        bounds.transcript,
-        bounds.progress,
-        bounds.composer,
-      ]) {
+      for (const item of [bounds.transcript, bounds.composer]) {
         assert.ok(
           Math.abs(item.x - bounds.transcript.x) <= 1,
           JSON.stringify(bounds),
@@ -583,22 +554,15 @@ test("studio settings browser ui", async ({
         available: document.querySelector("#conversation").clientWidth,
         viewport: rect("#messages"),
         transcript: rect("#messages .message-content"),
-        progress: rect(
-          '.agent-panel[aria-label="Agent progress"][data-fit="yes"]',
-        ),
         composer: rect("#conversation #composer"),
       };
     });
     console.log("shared-width-mobile", JSON.stringify(mobileBounds));
-    for (const item of [
-      mobileBounds.transcript,
-      mobileBounds.progress,
-      mobileBounds.composer,
-    ]) {
+    for (const item of [mobileBounds.transcript, mobileBounds.composer]) {
       assert.ok(item, JSON.stringify(mobileBounds));
       assert.ok(item.x >= 0 && item.x + item.width <= 390 + 1);
     }
-    for (const item of [mobileBounds.progress, mobileBounds.composer]) {
+    for (const item of [mobileBounds.composer]) {
       assert.ok(Math.abs(item.x - mobileBounds.transcript.x) <= 1);
       assert.ok(Math.abs(item.width - mobileBounds.transcript.width) <= 1);
     }
@@ -613,11 +577,7 @@ test("studio settings browser ui", async ({
     await page.reload();
     await page.locator("#message").waitFor();
     await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
-    await page
-      .locator(
-        '.agent-panel[aria-label="Agent progress"][data-fit="yes"] .agent-panel-current.progress-markdown',
-      )
-      .waitFor();
+    await page.locator("#messages .message-content").first().waitFor();
     const reloadedSettings = await openStudioSettings();
     assert.deepEqual(
       (await reloadedSettings.getByRole("tab").allTextContents()).map((label) =>

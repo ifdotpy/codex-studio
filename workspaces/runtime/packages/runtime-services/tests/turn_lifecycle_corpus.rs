@@ -196,7 +196,7 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                     .map_err(|error| error.to_string())?;
                 std::fs::write(path, content).map_err(|error| error.to_string())?;
             }
-            let mut resources = PreparationResources::bundled_at(
+            let resources = PreparationResources::bundled_at(
                 String::new(),
                 studio_runtime_services::model_catalog::ModelCatalogService::new(),
                 guidance_root.path().to_path_buf(),
@@ -208,10 +208,6 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                 .values()
                 .all(|guidance| guidance.starts_with("fixture ")));
             assert!(resources.skills_root.starts_with(guidance_root.path()));
-            // The request-compilation witness has no progress-file behavior;
-            // keeping this empty prevents even a generated live progress path
-            // from entering the captured provider input.
-            resources.progress_template.clear();
             let prepared=prepare_turn_with_connection_id(Arc::clone(store),&resources,&intent,1,"fixture-connection").await.map_err(|e|e.to_string())?;
             let expected_provider_inputs = prepared.native_request()["params"]["input"].clone();
             if case["transition"] == "submission" {

@@ -40,7 +40,6 @@ from codex_efficiency import EfficiencyMixin, efficiency_tools
 from codex_workspace import WorkspaceMixin, active_monitors, active_task_records
 from codex_rules import RulesMixin, rule_tools
 from codex_questions import QuestionsMixin, async_question_id, is_question, answer_signature, record_answer
-from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
@@ -1621,7 +1620,7 @@ class _RuntimeWalKeeper:
 
 
 
-class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
+class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin):
     search_migration_thread: threading.Thread | None
     search_migration_error: str | None
 
@@ -5979,8 +5978,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("yoloMode") is False:
             sandbox = {"type": "readOnly"}
             if a["role"] != "reviewer":
-                progress = self.progress_file(a) if a.get("isLead") else None
-                roots = [a["cwd"]] + ([str(progress.parent)] if progress else [])
+                roots = [a["cwd"]]
                 if a.get("isLead") and a.get("layrHandoffRoot"):
                     # A VM lead writes the handoff folders of its tasks.
                     roots.append(str(a["layrHandoffRoot"]))
@@ -6263,28 +6261,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return a["yoloMode"]
         return a.get("approvalPolicy") == "never"
 
-    @staticmethod
-    def panel_guidance():
-        guide = REPOSITORY_ROOT / ".agents/skills/codex-workspace/references/panel.md"
-        try:
-            content = guide.read_text(encoding="utf-8").strip()
-        except OSError as error:
-            raise ValueError("Studio panel guidance is missing. Update the installed Studio workspace") from error
-        if not content:
-            raise ValueError("Studio panel guidance is empty. Update the installed Studio workspace")
-        return f"[Studio panel guidance: {guide}]\n{content}"
-
-    def progress_file(self, a):
-        if a.get("executionMode") == "vm":
-            return Path(a["layrHome"]) / ".studio/progress" / a["id"] / "PROGRESS.md"
-        from codex_progress import provision_progress
-        try:
-            return provision_progress(self.root, a["id"])
-        except (OSError, ValueError):
-            # The optional display must not prevent a turn or command. The panel
-            # endpoint reports file errors; do not grant an invalid path access.
-            return None
-
     def new_thread_params(self, a, *, dynamic_tools=True):
         """Build native thread parameters for a managed agent record.
 
@@ -6294,21 +6270,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """
         from codex_session_tools import session_tool_name
         a.setdefault('nativeTeleportTool', session_tool_name(a))
-        progress = self.progress_file(a) if a.get("isLead") else None
         role_text = a.get('nativeRoleGuidance') or self.role_guidance(a)
         a.setdefault('nativeRoleGuidance', role_text)
-        if a.get("isLead"):
-            from codex_vm_agents import progress_context
-            progress_text = progress_context(self, a)
-        else:
-            progress_text = ""
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
             + "\n" + role_text
-            + ("\n" + progress_text if progress_text else "")
             + "\n"
             + a.get("profileInstructions", ""),
         }
@@ -6344,8 +6313,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             params.update(approvalPolicy="on-request", sandbox="read-only" if a["role"] == "reviewer" else "workspace-write")
         elif a["role"] == "reviewer":
             params["sandbox"] = "read-only"
-        if progress and a.get("yoloMode") is False and a["role"] != "reviewer":
-            params["config"]["sandbox_workspace_write.writable_roots"] = [str(progress.parent)]
         if a.get("provider") == "claude":
             params["developerInstructions"] += ("\nThis session uses Claude Code and its native tools. "
                 "The native Agent tool is off. Studio managed agents replace it, and native agent type lists do not apply. "

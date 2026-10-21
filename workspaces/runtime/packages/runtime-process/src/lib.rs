@@ -33,7 +33,7 @@ pub(crate) mod supervisor_identity;
 mod transport;
 
 pub use client::SupervisorClient;
-pub use ports::{ProgressWatch, PtyHost};
+pub use ports::PtyHost;
 pub use protocol::*;
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
 #[cfg(unix)]

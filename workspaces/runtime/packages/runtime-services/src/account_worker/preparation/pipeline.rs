@@ -138,7 +138,6 @@ pub(crate) struct PreparedSteer {
     snapshot: turn::PreparationSnapshot,
     filesystem: FilesystemSnapshot,
     resources: PreparationResources,
-    state_root: PathBuf,
 }
 
 pub(crate) async fn prepare_steer(
@@ -148,30 +147,18 @@ pub(crate) async fn prepare_steer(
     expected_turn: &str,
 ) -> Result<PreparedSteer, WorkerError> {
     let rows = authorization_rows(&store, intent).await?;
-    let capture_store = Arc::clone(&store);
-    let capture_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/steer_authorization_snapshot",
-        move || {
-            FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent, &rows)
-        },
+        move || FilesystemSnapshot::capture_for_authorization(&rows),
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
     let snapshot_resources = resources.clone();
     let snapshot_intent = intent.clone();
     let snapshot_filesystem = filesystem.clone();
-    let state_root = store.root().to_path_buf();
-    let snapshot_root = state_root.clone();
     let (mut snapshot, events) = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let record = steer_preconditions(tx, &snapshot_intent, &snapshot_filesystem)?;
-        submission_snapshot(
-            tx,
-            &snapshot_resources,
-            &record,
-            &snapshot_intent,
-            &snapshot_root,
-        )
+        submission_snapshot(tx, &snapshot_resources, &record, &snapshot_intent)
     })
     .await?;
     snapshot.operation_id = super::super::steer::operation(&intent.account_key, &intent.attempt_id);
@@ -192,7 +179,6 @@ pub(crate) async fn prepare_steer(
         snapshot,
         filesystem,
         resources: resources.clone(),
-        state_root,
     })
 }
 
@@ -229,13 +215,7 @@ pub(crate) fn commit_steer(
     prepared: &PreparedSteer,
 ) -> Result<(), WorkerError> {
     let record = steer_preconditions(tx, intent, &prepared.filesystem)?;
-    let (mut snapshot, events) = submission_snapshot(
-        tx,
-        &prepared.resources,
-        &record,
-        intent,
-        &prepared.state_root,
-    )?;
+    let (mut snapshot, events) = submission_snapshot(tx, &prepared.resources, &record, intent)?;
     snapshot.operation_id = prepared.snapshot.operation_id.clone();
     snapshot.prepared_at = prepared.snapshot.prepared_at;
     snapshot.artifact_paths = prepared.snapshot.artifact_paths.clone();
@@ -255,7 +235,6 @@ fn rejected_notifications(
     resources: &PreparationResources,
     intent: &TurnIntent,
     filesystem: Option<&FilesystemSnapshot>,
-    state_root: &Path,
 ) -> Result<BTreeMap<String, String>, WorkerError> {
     let mut rejected = BTreeMap::new();
     if let Err(error) = selected_inputs_current(tx, intent) {
@@ -302,7 +281,7 @@ fn rejected_notifications(
             single.events.clear();
         }
     }
-    if let Ok((_, events)) = submission_snapshot(tx, resources, &record, intent, state_root) {
+    if let Ok((_, events)) = submission_snapshot(tx, resources, &record, intent) {
         rejected.extend(turn::invalid_notification_evidence(&events));
     }
     Ok(rejected)
@@ -313,10 +292,9 @@ fn refuse_steer_in_transaction(
     resources: &PreparationResources,
     intent: &TurnIntent,
     filesystem: Option<&FilesystemSnapshot>,
-    state_root: &Path,
     reason: &str,
 ) -> Result<bool, WorkerError> {
-    let rejected = rejected_notifications(tx, resources, intent, filesystem, state_root)?;
+    let rejected = rejected_notifications(tx, resources, intent, filesystem)?;
     super::super::steer::preparation_refused(tx, intent, reason, &rejected)
 }
 
@@ -325,10 +303,9 @@ fn refuse_idle_in_transaction(
     resources: &PreparationResources,
     intent: &TurnIntent,
     filesystem: Option<&FilesystemSnapshot>,
-    state_root: &Path,
     reason: &str,
 ) -> Result<bool, WorkerError> {
-    let rejected = rejected_notifications(tx, resources, intent, filesystem, state_root)?;
+    let rejected = rejected_notifications(tx, resources, intent, filesystem)?;
     if rejected.is_empty()
         || !SchedulerRepository::requeue_unsubmitted_attempt(tx, &intent.identity())?
     {
@@ -351,13 +328,9 @@ pub(crate) async fn refuse_idle(
     reason: &str,
 ) -> Result<bool, WorkerError> {
     let rows = authorization_rows(store, intent).await?;
-    let capture_store = Arc::clone(store);
-    let capture_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/idle_refusal_snapshot",
-        move || {
-            FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent, &rows)
-        },
+        move || FilesystemSnapshot::capture_for_authorization(&rows),
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)?
@@ -365,9 +338,8 @@ pub(crate) async fn refuse_idle(
     let resources = resources.clone();
     let intent = intent.clone();
     let reason = reason.to_owned();
-    let root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(store, move |tx| {
-        refuse_idle_in_transaction(tx, &resources, &intent, filesystem.as_ref(), &root, &reason)
+        refuse_idle_in_transaction(tx, &resources, &intent, filesystem.as_ref(), &reason)
     })
     .await
 }
@@ -383,7 +355,6 @@ pub(crate) fn refuse_prepared_idle(
         &guard.resources,
         intent,
         Some(&guard.filesystem),
-        &guard.state_root,
         reason,
     )
 }
@@ -395,13 +366,9 @@ pub(crate) async fn refuse_steer(
     reason: &str,
 ) -> Result<bool, WorkerError> {
     let rows = authorization_rows(&store, intent).await?;
-    let capture_store = Arc::clone(&store);
-    let capture_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/steer_refusal_snapshot",
-        move || {
-            FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent, &rows)
-        },
+        move || FilesystemSnapshot::capture_for_authorization(&rows),
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)?
@@ -409,9 +376,8 @@ pub(crate) async fn refuse_steer(
     let resources = resources.clone();
     let intent = intent.clone();
     let reason = reason.to_owned();
-    let root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
-        refuse_steer_in_transaction(tx, &resources, &intent, filesystem.as_ref(), &root, &reason)
+        refuse_steer_in_transaction(tx, &resources, &intent, filesystem.as_ref(), &reason)
     })
     .await
 }
@@ -427,7 +393,6 @@ pub(crate) fn refuse_prepared_steer(
         &prepared.resources,
         intent,
         Some(&prepared.filesystem),
-        &prepared.state_root,
         reason,
     )
 }
@@ -815,8 +780,6 @@ async fn admit_for_purpose(
     intent: &TurnIntent,
     allow_paused_start: bool,
 ) -> Result<Admission, WorkerError> {
-    let preparation_store = store.clone();
-    let admission_intent = intent.clone();
     let radio_authorized = intent.radio_authorized;
     let rows = authorization_rows(&store, intent).await?;
     let prepared_host = if radio_authorized {
@@ -831,11 +794,7 @@ async fn admit_for_purpose(
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_admission_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture_for_authorization(
-                &preparation_store,
-                &admission_intent,
-                &rows,
-            )?;
+            let filesystem = FilesystemSnapshot::capture_for_authorization(&rows)?;
             if let Some(host) = &prepared_host {
                 host.recheck_paths()
                     .map_err(|error| refusal(error.to_string()))?;
@@ -1020,49 +979,7 @@ async fn workspace_with_vm_action(
         .await
         .map_err(|e| refusal(e.to_string()))?
     {
-        crate::workspace_ready::WorkspaceDecision::Ready { token } => {
-            let record = workspace_agent(&store, &intent.agent_id).await?;
-            let agent_id = intent.agent_id.clone();
-            let root = store.root().to_path_buf();
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/account_worker_workspace_progress",
-                move || {
-                    if record.extra.get("isLead") == Some(&json!(true)) {
-                        if agent_id.is_empty()
-                            || agent_id.len() > 200
-                            || !agent_id
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                        {
-                            return Err(invalid("progress agent"));
-                        }
-                        for path in [root.join("progress"), root.join("progress").join(&agent_id)] {
-                            match std::fs::create_dir(&path) {
-                                Ok(()) => {}
-                                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                                Err(_) => {
-                                    return Err(refusal(
-                                        "workspace-readiness/progress-directory".into(),
-                                    ));
-                                }
-                            }
-                            if CanonicalPath::existing(&path).ok().as_deref()
-                                != Some(path.as_path())
-                                || !path.is_dir()
-                            {
-                                return Err(refusal(
-                                    "workspace-readiness/progress-directory".into(),
-                                ));
-                            }
-                        }
-                    }
-                    Ok::<_, WorkerError>(())
-                },
-            )
-            .await
-            .map_err(|_| WorkerError::TaskFailed)??;
-            Ok(token)
-        }
+        crate::workspace_ready::WorkspaceDecision::Ready { token } => Ok(token),
         crate::workspace_ready::WorkspaceDecision::Refuse(e) => Err(refusal(e.to_string())),
         crate::workspace_ready::WorkspaceDecision::Defer {
             by: crate::workspace_ready::DeferredBy::Actor,
@@ -1306,7 +1223,6 @@ pub(crate) fn accept_review_thread(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
     root: &Path,
-    filesystem: &super::ReviewThreadFilesystem,
     record: &Value,
     prepared: &super::PreparedReviewThread,
     reply: &Value,
@@ -1318,7 +1234,6 @@ pub(crate) fn accept_review_thread(
         record,
         &attempt.snapshot.account.connection_id,
         root,
-        &filesystem.0.thread_inputs,
         None,
     )?;
     align_receipt_cwd(&mut current, &attempt.snapshot, resources);
@@ -1353,14 +1268,6 @@ pub(crate) async fn prepare_monitor_command(
     if agent_id.is_empty() || agent_id.len() > 200 {
         return Err(refusal("monitor-preparation/agent-id-invalid".into()));
     }
-    let snapshot_store = Arc::clone(&store);
-    let snapshot_agent_id = agent_id.to_owned();
-    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_monitor_snapshot",
-        move || FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent_id),
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
     let observed = workspace_agent(&store, agent_id).await?.value();
     validate_monitor_actor(&observed, epoch)?;
     let image_temp = if observed["imageWorkspace"] == true
@@ -1396,7 +1303,6 @@ pub(crate) async fn prepare_monitor_command(
             &current,
             connection,
             &state_root,
-            &filesystem.thread_inputs,
             None,
         )?;
         let thread_id = snapshot
@@ -1406,17 +1312,11 @@ pub(crate) async fn prepare_monitor_command(
             .filter(|id| !id.is_empty())
             .ok_or_else(|| refusal("monitor-preparation/thread-required".into()))?
             .to_owned();
-        let progress_directory = match &snapshot.workspace {
-            thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
-            _ => None,
-        };
         let settings = monitor_command_settings(
             &current,
             &snapshot.actor.cwd,
             snapshot.settings.role,
-            snapshot.settings.is_lead,
             snapshot.settings.yolo_mode,
-            progress_directory,
             image_temp.as_deref(),
         )?;
         Ok(super::PreparedMonitorCommand {
@@ -1492,9 +1392,7 @@ fn monitor_command_settings(
     record: &Value,
     cwd: &str,
     role: thread::Role,
-    is_lead: bool,
     yolo_mode: Option<bool>,
-    progress_directory: Option<String>,
     image_temp: Option<&str>,
 ) -> Result<Value, WorkerError> {
     let permissions = if record["imageWorkspace"] == true && record["imageWorkspaceReady"] != true {
@@ -1518,11 +1416,7 @@ fn monitor_command_settings(
                 json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}})
             }
             Some(false) => {
-                let mut roots = vec![Value::String(cwd.into())];
-                if is_lead && let Some(progress) = progress_directory {
-                    roots.push(Value::String(progress));
-                }
-                json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":roots,"networkAccess":false}})
+                json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false}})
             }
             None => json!({}),
         }
@@ -1678,18 +1572,10 @@ async fn prepare_native_snapshot(
     } else {
         None
     };
-    let filesystem_store = Arc::clone(&store);
-    let filesystem_intent = intent.clone();
     let rows = authorization_rows(&store, &intent).await?;
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_native_snapshot_filesystem",
-        move || {
-            FilesystemSnapshot::capture_for_authorization(
-                &filesystem_store,
-                &filesystem_intent,
-                &rows,
-            )
-        },
+        move || FilesystemSnapshot::capture_for_authorization(&rows),
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
@@ -1725,7 +1611,6 @@ async fn prepare_native_snapshot(
             &frozen,
             &generation,
             &state_root,
-            &filesystem.thread_inputs,
             transfer_owner.as_deref(),
         )
     })
@@ -1758,14 +1643,6 @@ pub(crate) async fn prepare_safety_retry(
     {
         return Err(refusal("safety-retry/agent-changed".into()));
     }
-    let filesystem_store = Arc::clone(&store);
-    let filesystem_agent_id = request.agent_id.clone();
-    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_safety_retry_filesystem",
-        move || FilesystemSnapshot::capture(&filesystem_store, &filesystem_agent_id),
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
     let connection_id = record
         .get("startAttempt")
         .and_then(|value| value.get("connectionId"))
@@ -1789,7 +1666,6 @@ pub(crate) async fn prepare_safety_retry(
             &current,
             &connection_id,
             &state_root,
-            &filesystem.thread_inputs,
             None,
         )
     })
@@ -1876,11 +1752,9 @@ pub(crate) async fn prepare_ready(
     loaded: Option<thread::LoadedIdentity>,
 ) -> Result<RequestPreparation, WorkerError> {
     let mut method = method;
-    // Workspace provisioning can update stored agent/project paths as well as
-    // create the progress directory. Capture all filesystem observations after
-    // that work, before the transaction rechecks the current records.
-    let snapshot_store = Arc::clone(&store);
-    let snapshot_intent = intent.clone();
+    // Workspace provisioning can update stored agent/project paths. Capture
+    // all filesystem observations after that work, before the transaction
+    // rechecks the current records.
     let radio_authorized = intent.radio_authorized;
     let rows = authorization_rows(&store, intent).await?;
     let prepared_host = if radio_authorized {
@@ -1895,11 +1769,7 @@ pub(crate) async fn prepare_ready(
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_ready_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture_for_authorization(
-                &snapshot_store,
-                &snapshot_intent,
-                &rows,
-            )?;
+            let filesystem = FilesystemSnapshot::capture_for_authorization(&rows)?;
             if let Some(host) = &prepared_host {
                 host.recheck_paths()
                     .map_err(|error| refusal(error.to_string()))?;
@@ -1961,19 +1831,12 @@ pub(crate) async fn prepare_ready(
                     &frozen,
                     &generation,
                     &state_root,
-                    &filesystem.thread_inputs,
                     None,
                 )
             })?;
             let (turn_snapshot, events) =
                 stage("turn_preparation.ready.submission_snapshot", || {
-                    submission_snapshot(
-                        tx,
-                        &resources_for_snapshot,
-                        &frozen,
-                        &intent_for_snapshot,
-                        &state_root,
-                    )
+                    submission_snapshot(tx, &resources_for_snapshot, &frozen, &intent_for_snapshot)
                 })?;
             let mut prepared_intent = intent_for_snapshot.clone();
             prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
@@ -2154,13 +2017,7 @@ pub(crate) fn commit(
     if let (Some(baseline), Some(compiled)) = (&guard.compiler_snapshot, &context.compiled) {
         let (mut current_submission, current_events) =
             stage("turn_submission.commit.submission_snapshot", || {
-                submission_snapshot(
-                    tx,
-                    &guard.resources,
-                    &current,
-                    &context.intent,
-                    &guard.state_root,
-                )
+                submission_snapshot(tx, &guard.resources, &current, &context.intent)
             })?;
         // Recompile with the exact operation, clock and verified artifact paths.
         // The compiler's manifest and output record the effective dependencies;
@@ -2194,7 +2051,6 @@ pub(crate) fn commit(
             &current,
             &guard.thread.account.connection_id,
             &guard.state_root,
-            &guard.filesystem.thread_inputs,
             None,
         )
     })?;
@@ -2453,7 +2309,6 @@ mod daybreak_tests {
             guidance: thread::GuidanceBundle {
                 instructions: String::new(),
                 role: String::new(),
-                progress: String::new(),
                 thread_config: serde_json::Map::new(),
                 browser: None,
             },
@@ -2463,9 +2318,7 @@ mod daybreak_tests {
                 saved_thread_id: Some("thread".into()),
                 saved_digest: None,
             },
-            workspace: thread::WorkspaceReadiness::Ready {
-                progress_directory: None,
-            },
+            workspace: thread::WorkspaceReadiness::Ready,
             unsupported: None,
             admission: None,
             pending: None,
@@ -2550,9 +2403,7 @@ mod daybreak_tests {
             &json!({"sandbox":"workspace-write"}),
             "/workspace",
             thread::Role::Implementer,
-            false,
             Some(true),
-            None,
             None,
         );
         assert_eq!(
@@ -2566,8 +2417,6 @@ mod daybreak_tests {
             &json!({"sandbox":"workspace-write","profile":{"id":"strict"}}),
             "/workspace",
             thread::Role::Implementer,
-            false,
-            None,
             None,
             None,
         );
@@ -2577,9 +2426,7 @@ mod daybreak_tests {
             &json!({"sandbox":"workspace-write"}),
             "/workspace",
             thread::Role::Reviewer,
-            false,
             Some(false),
-            None,
             None,
         );
         assert_eq!(
@@ -2593,9 +2440,7 @@ mod daybreak_tests {
             &json!({"executionMode":"vm","role":"reviewer","sandbox":"danger-full-access"}),
             "/workspace",
             thread::Role::Reviewer,
-            false,
             Some(true),
-            None,
             None,
         );
         assert_eq!(
@@ -2870,15 +2715,13 @@ mod team_progress_delivery_tests {
             crate::model_catalog::ModelCatalogService::new(),
         )
         .expect("bundled resources");
-        let state_root = directory.path().to_path_buf();
         store
             .transaction_with(move |tx| {
                 let record = AgentRepository::get(tx, &"lead".into())?
                     .expect("lead exists")
                     .value();
-                let (snapshot, events) =
-                    submission_snapshot(tx, &resources, &record, &intent, &state_root)
-                        .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
+                let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)
+                    .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
                 let prepared = turn::compile(&snapshot, &events)
                     .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
                 match &prepared.provider_inputs[0] {

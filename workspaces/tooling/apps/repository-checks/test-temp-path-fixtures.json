@@ -61,11 +61,6 @@
     "\"file://localhost/tmp/a.md#L4-L8\",",
     "json!({\"path\":\"/tmp/a.md\",\"line\":4}),"
   ],
-  "workspaces/client/packages/client-core/src/progress.rs": [
-    "crate::backend::tests::reply(&mut stream,r#\"{\"agent\":\"one\",\"format\":\"markdown\",\"markdown\":\"Saved 🦀\",\"path\":\"/tmp/PROGRESS.md\",\"revision\":\"r1\"}\"#).await;",
-    "params: json!({\"stateDir\":\"/tmp/state\",\"agentId\":\"one\"}),",
-    "let result=store.dispatch(Request{id:\"cache\".into(),method:\"progress.cache_put\".into(),params:json!({\"scope\":scope,\"value\":{\"scope\":scope,\"markdown\":\"x\".repeat(6000),\"path\":\"/tmp/PROGRESS.md\",\"revision\":null}})});"
-  ],
   "workspaces/client/packages/client-core/src/vault_keys.rs": [
     "let file = script(\"project_1\", \"/tmp/a'b/tool\").unwrap();",
     "\"#!/bin/sh\\nrm -f \\\"$0\\\"\\nexec '/tmp/a'\\\\''b/tool' keys --project 'project_1' --clear\\n\""
@@ -262,9 +257,6 @@
   ],
   "workspaces/runtime/packages/runtime-services/src/account_worker/tests.rs": [
     "\"/var/tmp\".into(),"
-  ],
-  "workspaces/runtime/packages/runtime-services/src/progress_panel.rs": [
-    "let root = std::path::Path::new(\"/tmp/example\");"
   ],
   "workspaces/runtime/packages/runtime-services/src/provider_session_task/tests.rs": [
     "\"/var/tmp\".into(),",

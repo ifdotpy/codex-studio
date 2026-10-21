@@ -6,9 +6,8 @@ import asyncio
 import anyio
 import json
 import logging
-import sqlite3
-from collections.abc import AsyncIterator, Sequence
-from typing import TYPE_CHECKING, Any, ContextManager, Literal, NotRequired, Protocol, TypedDict, cast
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.sse import format_sse_event
@@ -50,7 +49,6 @@ from studio_api.sync.resources.models import (
     DraftsResource,
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
-    PanelResource,
     ResourceRef,
     ResourceTokenRatesEvent,
     TokenRateSnapshot,
@@ -106,33 +104,6 @@ class SyncStoreContract(Protocol):
     def generation(self) -> int: ...
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]: ...
     def draft_sequence(self) -> int: ...
-
-
-class PanelAgentValidator(Protocol):
-    def db(self) -> ContextManager[sqlite3.Connection]: ...
-    def checked_actor(self, db: sqlite3.Connection, agent_id: str) -> object: ...
-
-
-def _active_panel_agents(runtime: PanelAgentValidator, resources: Sequence[ResourceRef]) -> frozenset[str]:
-    """Validate panel identities before a native watcher can create their directory."""
-    agents = {
-        resource.root.agentId
-        for resource in resources
-        if isinstance(resource.root, PanelResource)
-    }
-    active: set[str] = set()
-    if not agents:
-        return frozenset()
-    with runtime.db() as db:
-        for agent_id in agents:
-            try:
-                runtime.checked_actor(db, agent_id)
-            except ValueError:
-                # Keep stale refs in the baseline so the client's targeted read
-                # can observe the normal not-found result; simply don't watch them.
-                continue
-            active.add(agent_id)
-    return frozenset(active)
 
 
 def _sync_store(context: ApiContext) -> SyncStoreContract:
@@ -378,35 +349,16 @@ def create_router(context: ApiContext) -> APIRouter:
                 )
 
             try:
-                runtime = context.runtime
-                panel_agent_ids = frozenset(
-                    resource.root.agentId
-                    for resource in resources
-                    if isinstance(resource.root, PanelResource)
-                )
-                if panel_agent_ids and runtime is None:
-                    _LOGGER.error(
-                        "Sync resource stream unavailable: panel resources requested without a runtime"
-                    )
-                    return context.send(
-                        request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
-                    )
-                active_panel_agents = (
-                    await run_in_threadpool(_active_panel_agents, runtime, resources)
-                    if runtime is not None and panel_agent_ids else None
-                )
                 with anyio.CancelScope(shield=True):
                     subscription = await run_in_threadpool(
                         context.resource_hub().subscribe,
                         resources,
                         loop=asyncio.get_running_loop(),
                         reconnect=last_event_id is not None,
-                        progress_agent_ids=active_panel_agents,
                     )
             except (OSError, RuntimeError, ValueError):
                 _LOGGER.exception(
-                    "Sync resource stream unavailable while resolving panel activity "
-                    "or subscribing to the resource hub"
+                    "Sync resource stream unavailable while subscribing to the resource hub"
                 )
                 return context.send(
                     request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503

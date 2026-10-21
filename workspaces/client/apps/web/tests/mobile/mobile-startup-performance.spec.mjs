@@ -1065,21 +1065,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
         measurements.coldUsableChatListMs < 18000,
         `Cold chat list exceeds 18 seconds: ${measurements.coldUsableChatListMs} ms`,
       );
-    const cancelledRequestErrors = useWebKit
-      ? errors.filter((error) =>
-          failedRequests.some(
-            (request) =>
-              request.error === "cancelled" &&
-              request.url.startsWith("/api/panel?") &&
-              error.includes(request.url),
-          ),
-        )
-      : [];
-    measurements.cancelledPanelErrorsOnReload = cancelledRequestErrors;
-    assert.deepEqual(
-      errors.filter((error) => !cancelledRequestErrors.includes(error)),
-      [],
-    );
+    assert.deepEqual(errors, []);
 
     const waitUntil = async (predicate, argument, label, timeout = 30000) => {
       try {

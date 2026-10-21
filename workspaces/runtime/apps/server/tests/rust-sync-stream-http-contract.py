@@ -264,7 +264,7 @@ class SyncStreamHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_changed_preference_write_advances_the_stream(self) -> None:
         path = self.stream_path(
             schema=self.backend.schema_hash,
-            resources=[{"kind": "panel", "agentId": self.agent_id}],
+            resources=[{"kind": "queue", "agentId": self.agent_id}],
         )
         with self.open_stream(path) as response:
             self.assertEqual(read_event(response)["event"], "api-schema")
@@ -289,30 +289,16 @@ class SyncStreamHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(event["data"]["reason"], "change")
             self.assertGreater(int(event["id"]), int(initial["id"]))
 
-    def test_panel_progress_file_change_advances_the_stream(self) -> None:
-        progress = self.backend.state / "progress" / self.agent_id / "PROGRESS.md"
-        progress.parent.mkdir(parents=True, exist_ok=True)
-        progress.write_text("Initial panel progress.\n", encoding="utf-8")
-        replacement = progress.with_suffix(".next")
-        replacement.write_text("Updated panel progress with a changed length.\n", encoding="utf-8")
-        path = self.stream_path(
-            schema=self.backend.schema_hash,
-            resources=[{"kind": "panel", "agentId": self.agent_id}],
+    def test_retired_panel_resource_is_an_invalid_subscription(self) -> None:
+        retired = self.backend.request(
+            "GET",
+            self.stream_path(
+                schema=self.backend.schema_hash,
+                resources=[{"kind": "panel", "agentId": self.agent_id}],
+            ),
+            headers=self.headers(),
         )
-        with self.open_stream(path) as response:
-            self.assertEqual(read_event(response)["event"], "api-schema")
-            initial = self.next_resource_event(response)
-            # The initial frame proves the watcher is attached. Publish one file
-            # revision: write_text here exposes truncation and then content, so
-            # two notifications can legitimately coalesce into an overflow.
-            replacement.replace(progress)
-            event = self.next_resource_event(response)
-            self.assertEqual(event["data"]["reason"], "change")
-            self.assertGreater(int(event["id"]), int(initial["id"]))
-            self.assertEqual(
-                event["data"]["resources"],
-                [{"kind": "panel", "agentId": self.agent_id}],
-            )
+        self.assertEqual(retired.status, 400, retired.body[:1000])
 
     @unittest.skipUnless(
         os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from pathlib import Path
 import tempfile
 import unittest
@@ -25,7 +24,6 @@ from studio_api.sync.resources.models import (
     CostsResource,
     LimitsResource,
     MultiServerResource,
-    PanelResource,
     QueueResource,
     ResourceRef,
     ResourceTokenRatesEvent,
@@ -35,57 +33,8 @@ from studio_api.sync.resources.models import (
 )
 
 
-def panel(agent_id: str) -> ResourceRef:
-    return ResourceRef(PanelResource(kind="panel", agentId=agent_id))
-
-
-class Watchdog:
-    def __init__(self, callback_immediately: bool = False) -> None:
-        self.callback_immediately = callback_immediately
-        self.attached: list[str] = []
-        self.detached: list[str] = []
-        self.callbacks: dict[str, Callable[[], None]] = {}
-
-    def subscribe(self, agent_id: str, on_change: Callable[[], None]) -> Callable[[], None]:
-        self.attached.append(agent_id)
-        self.callbacks[agent_id] = on_change
-        if self.callback_immediately:
-            on_change()
-
-        def detach() -> None:
-            self.detached.append(agent_id)
-
-        return detach
-
-
-class CrossThreadWatchdog:
-    """Model native callbacks that can run concurrently with attach/detach."""
-
-    def __init__(self) -> None:
-        self.callback: Callable[[], None] | None = None
-
-    @staticmethod
-    def _run_callback(callback: Callable[[], None]) -> None:
-        import threading
-
-        completed = threading.Event()
-        thread = threading.Thread(target=lambda: (callback(), completed.set()), daemon=True)
-        thread.start()
-        if not completed.wait(HANG_GUARD_SECONDS):
-            raise AssertionError("hub lock was held while entering watchdog lifecycle")
-        thread.join(timeout=HANG_GUARD_SECONDS)
-        if thread.is_alive():
-            raise AssertionError("watchdog callback thread did not finish")
-
-    def subscribe(self, agent_id: str, on_change: Callable[[], None]) -> Callable[[], None]:
-        self.callback = on_change
-        self._run_callback(on_change)
-
-        def detach() -> None:
-            assert self.callback is not None
-            self._run_callback(self.callback)
-
-        return detach
+def queue(agent_id: str) -> ResourceRef:
+    return ResourceRef(QueueResource(kind="queue", agentId=agent_id))
 
 
 class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
@@ -133,9 +82,9 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
     async def test_state_entity_sequence_is_independent_and_commit_bursts_coalesce(self) -> None:
         loop = asyncio.get_running_loop()
         state = ResourceRef(StateResource(kind="state"))
-        watched_panel = panel("agent-state-test")
+        watched_queue = queue("agent-state-test")
         hub = ResourceHub("workspace-state", entity_sequence=4)
-        subscription = hub.subscribe([state, watched_panel], loop=loop)
+        subscription = hub.subscribe([state, watched_queue], loop=loop)
         initial = {
             resource.root.kind: version.revision
             for resource, version in zip(
@@ -145,9 +94,9 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
             )
         }
         self.assertEqual(initial["state"], 4)
-        self.assertEqual(initial["panel"], 0)
+        self.assertEqual(initial["queue"], 0)
 
-        hub.publish(watched_panel)
+        hub.publish(watched_queue)
         typed = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(typed)
         assert typed is not None
@@ -155,7 +104,7 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
             resource.root.kind: version.revision
             for resource, version in zip(typed.resources, typed.resourceVersions, strict=True)
         }
-        self.assertEqual(typed_versions["panel"], 1)
+        self.assertEqual(typed_versions["queue"], 1)
 
         hub.publish_entity_sequence(5, [5])
         hub.publish_entity_sequence(6, [6])
@@ -257,71 +206,41 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
     async def test_atomic_baseline_and_change_coalescing(self) -> None:
         loop = asyncio.get_running_loop()
         hub = ResourceHub("workspace-a")
-        subscription = hub.subscribe([panel("agent-a")], loop=loop)
+        subscription = hub.subscribe([queue("agent-a")], loop=loop)
         self.assertEqual(subscription.initial.reason, "initial")
         self.assertEqual(subscription.initial.revision, 0)
-        hub.publish(panel("agent-a"))
-        hub.publish(panel("agent-a"))
+        hub.publish(queue("agent-a"))
+        hub.publish(queue("agent-a"))
         event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert event is not None
         self.assertEqual(event.reason, "change")
         self.assertEqual(event.revision, 2)
-        self.assertEqual(event.resources, [panel("agent-a")])
+        self.assertEqual(event.resources, [queue("agent-a")])
         self.assertIsNone(await subscription.next_event(timeout=0.01))
         self.assertEqual(subscription.heartbeat().revision, 2)
         subscription.close()
 
-    async def test_progress_watch_is_refcounted_and_baselines_immediate_callback(self) -> None:
+    async def test_hub_close_closes_all_live_subscriptions_idempotently(self) -> None:
         loop = asyncio.get_running_loop()
-        watchdog = Watchdog(callback_immediately=True)
-        hub = ResourceHub("workspace-a", watchdog)
-        first = hub.subscribe([panel("agent-a")], loop=loop)
-        second = hub.subscribe([panel("agent-a")], loop=loop)
-        self.assertEqual(watchdog.attached, ["agent-a", "agent-a"])
-        self.assertEqual(first.initial.revision, 1)
-        self.assertEqual(second.initial.revision, 2)
-        changed = await first.next_event(timeout=HANG_GUARD_SECONDS)
-        self.assertIsNotNone(changed)
-        self.assertEqual(changed.revision, 2)
-        self.assertIsNone(await second.next_event(timeout=0.01))
-        first.close()
-        self.assertEqual(watchdog.detached, ["agent-a"])
-        second.close()
-        self.assertEqual(watchdog.detached, ["agent-a", "agent-a"])
-
-    async def test_watchdog_attach_and_detach_never_run_under_hub_lock(self) -> None:
-        loop = asyncio.get_running_loop()
-        watchdog = CrossThreadWatchdog()
-        hub = ResourceHub("workspace-a", watchdog)
-        subscription = hub.subscribe([panel("agent-a")], loop=loop)
-        self.assertEqual(subscription.initial.revision, 1)
-        self.assertIsNone(await subscription.next_event(timeout=0.01))
-        subscription.close()
-
-    async def test_hub_close_detaches_all_live_subscriptions_idempotently(self) -> None:
-        loop = asyncio.get_running_loop()
-        watchdog = Watchdog()
-        hub = ResourceHub("workspace-a", watchdog)
-        first = hub.subscribe([panel("agent-a")], loop=loop)
-        second = hub.subscribe([panel("agent-a")], loop=loop)
+        hub = ResourceHub("workspace-a")
+        first = hub.subscribe([queue("agent-a")], loop=loop)
+        second = hub.subscribe([queue("agent-a")], loop=loop)
         hub.close()
         hub.close()
         first.close()
         second.close()
-        self.assertEqual(watchdog.detached, ["agent-a", "agent-a"])
-
-    async def test_publish_after_loop_close_detaches_orphaned_subscription(self) -> None:
-        stale_loop = asyncio.new_event_loop()
-        watchdog = Watchdog()
-        hub = ResourceHub("workspace-a", watchdog)
-        hub.subscribe([panel("agent-a")], loop=stale_loop)
-        stale_loop.close()
-        hub.publish(panel("agent-a"))
         self.assertEqual(len(hub._subscriptions), 0)
-        self.assertEqual(watchdog.detached, ["agent-a"])
+
+    async def test_publish_after_loop_close_closes_orphaned_subscription(self) -> None:
+        stale_loop = asyncio.new_event_loop()
+        hub = ResourceHub("workspace-a")
+        hub.subscribe([queue("agent-a")], loop=stale_loop)
+        stale_loop.close()
+        hub.publish(queue("agent-a"))
+        self.assertEqual(len(hub._subscriptions), 0)
         hub.close()
-        self.assertEqual(watchdog.detached, ["agent-a"])
+        self.assertEqual(len(hub._orphaned_subscriptions), 0)
 
     async def test_overflow_reconciles_full_subscription(self) -> None:
         loop = asyncio.get_running_loop()
@@ -344,19 +263,19 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
     async def test_registry_publication_is_safe_without_and_with_a_hub(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             hub = ResourceHub("workspace-a")
-            publish_resources(directory, panel("agent-a"))
+            publish_resources(directory, queue("agent-a"))
             register_resource_hub(directory, hub)
             self.assertEqual(hub.publish_many(()), 0)
-            self.assertEqual(publish_resources(directory, panel("agent-a")), None)
+            self.assertEqual(publish_resources(directory, queue("agent-a")), None)
             unregister_resource_hub(directory, hub)
-            publish_resources(Path(directory), panel("agent-a"))
+            publish_resources(Path(directory), queue("agent-a"))
             self.assertEqual(hub.publish_many(()), 1)
 
     async def test_token_rate_changes_are_typed_coalesced_and_deduplicated(self) -> None:
         loop = asyncio.get_running_loop()
         snapshot = TokenRateSnapshot(rates={}, teams={})
         hub = ResourceHub("workspace-a", token_rates=snapshot)
-        subscription = hub.subscribe([panel("agent-a")], loop=loop)
+        subscription = hub.subscribe([queue("agent-a")], loop=loop)
         self.assertEqual(subscription.initial_token_rates.rates, {})
         changed = TokenRateSnapshot(
             rates={"agent-a": TokenRateValue(

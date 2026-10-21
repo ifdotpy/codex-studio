@@ -30,7 +30,6 @@ from codex_efficiency import EfficiencyMixin, remember_context_manifest
 import codex_efficiency as efficiency
 from codex_workspace import WorkspaceMixin
 from codex_time import message_clock, append_message_clocks
-import codex_vm_agents
 
 TOKENS = {}
 ORIGINAL_DIGEST = efficiency.digest
@@ -189,7 +188,7 @@ def merge(target, patch):
 def snapshot():
     return dict(actor=dict(id="lead",root_id="lead",epoch=["thread",0],is_lead=True,forked_from=None,prepared_context=None,delivered_mode=None),
                 root=dict(concurrency=32,mode_revision=0),delivered_manifests=[],plan=None,complaints=[],workers=[],delivered_reminders=[],assets=[],
-                guidance=dict(role="[Studio role skill: fixture]\nSource: fixture\nComplete assigned work.\n[End Studio role skill]",progress="Update the fixture progress file when facts change."),
+                guidance=dict(role="[Studio role skill: fixture]\nSource: fixture\nComplete assigned work.\n[End Studio role skill]"),
                 artifact_paths={},prepared_at=1790000000.125,operation_id="operation")
 
 
@@ -263,7 +262,6 @@ class Host(EfficiencyMixin):
     checked_actor = Runtime.checked_actor
     def named_agents(self,db,keys): return {k:self.agents[k] for k in keys if k in self.agents}
     def role_guidance(self,a): return self.s["guidance"]["role"]
-    def progress_file(self,a): pass
     def role_update(self,previous,text):
         projected = super().role_update(previous,text)
         assert projected == text or projected.startswith("[Studio role skill update:")
@@ -310,7 +308,7 @@ def run(case, root):
     prior=merge(copy.deepcopy(s),case.get("prior",{}))
     host=Host(root,prior)
     db=host.connection
-    with patch.object(efficiency,"digest",digest), patch.object(codex_vm_agents,"progress_context",lambda host,a:host.s["guidance"]["progress"]):
+    with patch.object(efficiency,"digest",digest):
         if "prior" in case:
             host.model_turn_context(db,host.actor,"previous")
             old=json.loads(db.execute("SELECT record FROM runtime_event_meta WHERE id='previous'").fetchone()[0])["contextManifest"]
@@ -318,7 +316,7 @@ def run(case, root):
                 host.seed_manifest(old)
                 s["delivered_manifests"].append(old)
             if case.get("developer"):
-                s["actor"]["prepared_context"]={"epoch":old["epoch"],"versions":{k:v for k,v in old["versions"].items() if k in ("roleSkill","progressFile")}}
+                s["actor"]["prepared_context"]={"epoch":old["epoch"],"versions":{k:v for k,v in old["versions"].items() if k=="roleSkill"}}
             if case.get("deliveredMode"):
                 s["actor"]["delivered_mode"]={"epoch":old["epoch"],"version":old["versions"]["agentMode"]}
             if case.get("reminderDelivered"):
@@ -424,6 +422,8 @@ def run(case, root):
                 assert prior["guidance"][key] != s["guidance"][key]
                 assert s["guidance"][key] in context and context, "changed guidance must be sent"
 
+            if "expectProgressNotice" in case:
+                assert ("[Studio progress file retired]" in context) == case["expectProgressNotice"], "progress-file notice"
             if case.get("expectRoleDiff"): assert host.role_was_diff, "fixture must reach real Python diff branch"
             if not text:
                 text="[Complaint update] No complaints require a response."

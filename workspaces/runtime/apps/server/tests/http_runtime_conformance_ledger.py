@@ -388,9 +388,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/messages/receipts"): {
         "primary": {"query": {"agent": "$agent", "ids": "[]"}, "expected": "2xx", "assert_no_write": True},
     },
-    ("GET", "/api/panel"): {
-        "primary": {"query": {"agent": "$agent"}},
-    },
     ("GET", "/api/questions"): {
         "primary": {"query": {"agent": "$agent"}},
     },
@@ -631,18 +628,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         # A fabricated pending card without a live retained session is not a
         # meaningful HTTP success probe. The fake provider callback contract is
         # covered at its owner by callback_runtime's durable delete test.
-    },
-    ("POST", "/api/panel/layout"): {
-        "primary": {"body": {
-            "agent": "$agent", "client": "desktop", "sequence": 1,
-            "renderer": "progress-markdown-v2",
-            "revision": "$layoutRevision", "width": 300,
-            "height": 100, "contentWidth": 200, "contentHeight": 50,
-            "overflowX": 0, "overflowY": 0, "totalLines": 1,
-            "visibleLines": 1, "lastVisibleLine": "# HTTP ledger probe",
-            "lastVisibleHeading": "# HTTP ledger probe",
-            "fits": True, "reason": None,
-        }},
     },
     ("POST", "/api/plan"): {
         "primary": {"body": {"agent": "$agent"}},
@@ -1406,9 +1391,6 @@ try:
     monitor_log = Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"
     monitor_log.parent.mkdir(parents=True, exist_ok=True)
     monitor_log.write_bytes(b"probe log!\\n")
-    progress = Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "progress" / {agent_id!r} / "PROGRESS.md"
-    progress.parent.mkdir(parents=True, exist_ok=True)
-    progress.write_text("# HTTP ledger probe\\n", encoding="utf-8")
     canvas = Canvas(runtime.root)
     canvas.runtime = runtime
     canvas.create_chat("HTTP ledger probe chat", [{agent_id!r}], {chat_id!r})
@@ -1444,14 +1426,6 @@ finally:
         check=True,
         timeout=30,
     )
-    progress_metadata = (
-        backend.state / "progress" / agent_id / "PROGRESS.md"
-    ).stat()
-    layout_revision = (
-        f"{progress_metadata.st_dev}:{progress_metadata.st_ino}:"
-        f"{progress_metadata.st_mtime_ns}:{progress_metadata.st_ctime_ns}:"
-        f"{progress_metadata.st_size}"
-    )
     terminal_identifiers = json.loads(
         (backend.state / f"{prefix}probe-identifiers.json").read_text(encoding="utf-8")
     )
@@ -1483,7 +1457,6 @@ finally:
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
-        "layoutRevision": layout_revision,
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
         "claudeAccount": f"{prefix}claude-ledger",

@@ -15,7 +15,6 @@ MAX_PROJECT_SECRET_VALUE_BYTES = 16 * 1024
 PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS = 30
 # Bounded deadline for one skills/extraRoots/set call that registers the Chrome skill.
 BROWSER_SKILL_TIMEOUT_SECONDS = 20
-MAX_PROGRESS_FILE_BYTES = 128 * 1024
 MAX_WORKSPACE_PREVIEW_BYTES = 20 * 1024 * 1024
 TRANSCRIPT_MAX_TOMBSTONES = 512
 MAX_SYNC_RESOURCE_QUERY_BYTES = 65_536
@@ -33,9 +32,11 @@ MAX_SUPERVISOR_FRAME_BYTES = 32 * 1024 * 1024
 SUPERVISOR_JOURNAL_EPOCH_FIELD = "journalEpoch"
 # supervisor_state key of the random identity created with each supervisor journal.
 SUPERVISOR_JOURNAL_ID_KEY = "journalId"
-PROGRESS_LAYOUT_FRESH_SECONDS = 90
-PROGRESS_LAYOUT_MAX_CLIENTS = 32
-PROGRESS_LAYOUT_MAX_BYTES = 65_536
+# Studio no longer reads or shows a per-agent PROGRESS.md file. orchestration_context
+# topic=panel returns this text, and a lead that received the former progress file guidance
+# gets it once in its turn context.
+PROGRESS_FILE_RETIRED_NOTICE = ("Studio no longer reads or shows PROGRESS.md. Do not create or update "
+                                "a progress file for Studio. Report status in the chat.")
 
 # In-place VM guest updates (docs/linux-vm-workspaces.md, "Guest updates"). Provisioning writes
 # the Mac's update key (root only) and the record of the parts that only provisioning installs;
@@ -139,14 +140,6 @@ def project_secret_value_limit_label() -> str:
     kib, remainder = divmod(MAX_PROJECT_SECRET_VALUE_BYTES, 1024)
     if remainder:
         return f"{MAX_PROJECT_SECRET_VALUE_BYTES} bytes"
-    return f"{kib} KiB"
-
-
-def progress_file_limit_label() -> str:
-    """Return the display label derived from the progress-file byte cap."""
-    kib, remainder = divmod(MAX_PROGRESS_FILE_BYTES, 1024)
-    if remainder:
-        return f"{MAX_PROGRESS_FILE_BYTES} bytes"
     return f"{kib} KiB"
 
 

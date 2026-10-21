@@ -471,7 +471,7 @@ for the current conversation and manage its project, model, and permissions.
 
 Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.
-Agent progress stays visible above it. An orange **Warnings** icon appears in the
+An orange **Warnings** icon appears in the
 header when the current account or chat has notices. It opens their full details
 in a dialog; errors that block work remain visible in the conversation.
 On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
@@ -535,7 +535,7 @@ the destination lead. The destination's plan and worker defaults stay in use.
 The destination's concurrency, agent limit, and token limit apply to the moved tree.
 The converted chat pauses. Its watches pause and require an explicit resume.
 Worker watches and saved command and monitor records keep their agent identities.
-Progress files keep their paths and contents. The next turn receives the new role.
+The next turn receives the new role.
 
 The source leaves its peer team. A team with fewer than two members dissolves.
 Saved peer rooms remain available to the user. Former peers lose agent access.

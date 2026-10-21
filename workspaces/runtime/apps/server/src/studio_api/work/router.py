@@ -7,7 +7,7 @@ from codex_delivery import DeliveryMoment
 import sqlite3
 import time
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Callable, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import StrictStr, TypeAdapter, ValidationError
@@ -48,7 +48,6 @@ from .models import (
     MessageReceipts,
     MutationReceipt,
     OrganizationBody,
-    PanelLayoutBody,
     PlanBody,
     PlanView,
     ProfileBody,
@@ -56,7 +55,6 @@ from .models import (
     ProfileMutation,
     QuestionBody,
     QuestionDeferBody,
-    ProgressPanel,
     QueueBody,
     QueueView,
     ReceiptQuery,
@@ -79,7 +77,6 @@ from .models import (
     WorkspaceTaskFeed,
     WorkspaceQuery,
     WorkspaceView,
-    PanelLayoutResult,
     QuestionHistory,
     ToolRequestList,
 )
@@ -105,7 +102,6 @@ class WorkRuntime(Protocol):
     def user_delivery_receipts(self, agent: str | None, ids: list[str]) -> dict[str, JsonValue]: ...
     def changes(self, agent: str | None, *, scope: Literal["chat"] | None = None) -> object: ...
     def plan_action(self, agent: str | None, body: Body | None = None) -> object: ...
-    def get_panel(self, agent: str | None) -> object: ...
     def profiles(self, body: Body | None = None) -> object: ...
     def rules(self, body: Body | None = None) -> object: ...
     def task_detail(self, task_id: str) -> object: ...
@@ -258,11 +254,6 @@ def create_router(context: ApiContext) -> APIRouter:
         values = body_data(body)
         return context.send(request, _runtime(context).plan_action(body.agent, values))
 
-    @router.get("/api/panel", response_model=ProgressPanel, responses=api_read_responses(errors=(400,)))
-    def panel(request: Request, documented: AgentQuery = Depends()) -> Response:
-        query = documented
-        return context.send(request, _runtime(context).get_panel(query.agent))
-
     @router.get("/api/profiles", response_model=ProfileList, responses=api_read_responses(errors=(400,)))
     def profiles(request: Request) -> Response:
         return context.send(request, _runtime(context).profiles())
@@ -314,17 +305,6 @@ def create_router(context: ApiContext) -> APIRouter:
                  responses=api_write_responses(errors=(400,)))
     def organization(request: Request, body: OrganizationBody) -> Response:
         return context.send(request, _runtime(context).chat_organization(body.id, body_data(body)))
-
-    @router.post("/api/panel/layout", response_model=PanelLayoutResult,
-                 responses=api_write_responses(errors=(400, 409)))
-    def save_panel_layout(request: Request, body: PanelLayoutBody) -> Response:
-        from codex_progress_layout import LayoutConflict, record_layout
-
-        try:
-            layout_writer = cast(Callable[[WorkRuntime, Body], object], record_layout)
-            return context.send(request, layout_writer(_runtime(context), body_data(body)))
-        except LayoutConflict as error:
-            return context.send(request, {"error": str(error)}, status=409)
 
     @router.post("/api/messages", response_model=MessageReceipt, responses=api_write_responses(errors=(400,)))
     def post_message(request: Request, body: ManagedMessageBody) -> Response:

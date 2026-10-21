@@ -20,19 +20,16 @@ use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{
     ChangeSnapshot, MAX_SAFE_REVISION, SYNC_FRAME_MIN_INTERVAL,
 };
-use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
 use studio_runtime_services::resource_notify::{
     ResourceChanges, ResourceNotifications, ResourceNotifyError,
 };
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
-use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocumentsRepository};
+use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
 use super::extractors::{ApiHeaders, QueryParams};
-#[cfg(windows)]
-use super::manifest::Dependency;
 use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -65,22 +62,12 @@ pub(crate) async fn notify_resources(
     )?))
 }
 
-#[cfg(windows)]
-static WINDOWS_STREAM_DEPENDENCIES: &[Dependency] =
-    &[Dependency::new("resource-policy/windows-file-identity")];
-
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![get("/api/sync/stream", stream_status(), sync_stream)])
-}
-
-#[cfg(windows)]
-fn stream_status() -> OperationStatus {
-    OperationStatus::partial(WINDOWS_STREAM_DEPENDENCIES)
-}
-
-#[cfg(not(windows))]
-fn stream_status() -> OperationStatus {
-    OperationStatus::Implemented
+    RouteGroup::new(vec![get(
+        "/api/sync/stream",
+        OperationStatus::Implemented,
+        sync_stream,
+    )])
 }
 
 async fn sync_stream(
@@ -134,22 +121,6 @@ async fn sync_stream(
     let change_hub = Arc::clone(&state.sync_changes);
     let mut changes = change_hub.subscribe();
     changes.borrow_and_update();
-    let progress_agents = match active_panel_agents(Arc::clone(&store), &resources).await {
-        Ok(agents) => agents,
-        Err(error) => return error.into_response(),
-    };
-    let progress_watch =
-        match watch_progress_files(store.root(), &progress_agents, (*change_hub).clone()) {
-            Ok(watch) => watch,
-            Err(_) => {
-                return ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Resource stream is unavailable; reconnect to retry.",
-                )
-                .into_response();
-            }
-        };
-
     let initial_entity_sequence = match read_entity_sequence(Some(store.clone()), &resources).await
     {
         Ok(sequence) => sequence,
@@ -194,46 +165,12 @@ async fn sync_stream(
         consecutive_token_frames: 0,
         next_token_frame_at: None,
         next_resources_frame_at: None,
-        _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
     event_response(stream::unfold(stream_state, next_frame))
-}
-
-async fn active_panel_agents(
-    store: Arc<RuntimeStore>,
-    resources: &[Value],
-) -> Result<Vec<String>, ApiError> {
-    let agents = resources
-        .iter()
-        .filter(|resource| resource.get("kind").and_then(Value::as_str) == Some("panel"))
-        .filter_map(|resource| resource.get("agentId").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if agents.is_empty() {
-        return Ok(Vec::new());
-    }
-    store
-        .read_async("runtime-http/routes/sync_stream", move |connection| {
-            let mut active = Vec::new();
-            for id in agents {
-                let agent = AgentRepository::get(connection, &AgentId::from(id.as_str()))
-                    .map_err(|_| ApiError::internal())?;
-                if agent.is_some_and(|agent| {
-                    !agent
-                        .extra
-                        .get("deletedAt")
-                        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
-                }) {
-                    active.push(id);
-                }
-            }
-            Ok(active)
-        })
-        .await
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
@@ -306,7 +243,6 @@ struct ResourceStream {
     next_token_frame_at: Option<Instant>,
     /// Earliest instant of the next resources frame, from `SYNC_FRAME_MIN_INTERVAL`.
     next_resources_frame_at: Option<Instant>,
-    _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
 
@@ -661,7 +597,7 @@ mod tests {
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
-            resources: vec![json!({"kind": "panel", "agentId": "agent-a"})],
+            resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             store: None,
             changes,
@@ -670,7 +606,6 @@ mod tests {
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
-            _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
                 Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -713,7 +648,6 @@ mod tests {
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
-            _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
                 Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -826,7 +760,6 @@ mod tests {
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
-            _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(15),
                 Duration::from_secs(15),
@@ -959,11 +892,11 @@ mod tests {
         use std::path::Path;
         use std::process::{Command, Stdio};
         let cases = json!([
-            {"resources":[{"kind":"accounts"},{"kind":"panel","agentId":"agent"}],"steps":[
+            {"resources":[{"kind":"accounts"},{"kind":"queue","agentId":"agent"}],"steps":[
                 {"op":"notify","resources":[{"kind":"models"}]},{"op":"consume"},
                 {"op":"rates","body":test_rates(1)},{"op":"consume"},
                 {"op":"notify","resources":[{"kind":"accounts"}]},{"op":"consume"},
-                {"op":"notify","resources":[{"kind":"panel","agentId":"agent"}]},
+                {"op":"notify","resources":[{"kind":"queue","agentId":"agent"}]},
                 {"op":"rates","body":test_rates(2)},{"op":"consume"},{"op":"consume"},{"op":"consume"}
             ]},
             {"resources":[{"kind":"accounts"}],"steps":[
@@ -1062,7 +995,6 @@ mod tests {
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
-            _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
                 Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -1078,8 +1010,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "sync_stream",
         routes: Some(routes),
-        dependencies: &[
-        "resource-policy/windows-file-identity",
-        ],
+        dependencies: &[],
     }
 }

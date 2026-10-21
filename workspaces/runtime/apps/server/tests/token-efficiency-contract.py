@@ -19,7 +19,8 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('efficiency_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_efficiency import EfficiencyMixin, packed, remember_context_manifest
+from codex_efficiency import EfficiencyMixin, digest, packed, remember_context_manifest
+from codex_shared_values import PROGRESS_FILE_RETIRED_NOTICE
 from codex_payloads import resolve_result, state_root
 
 
@@ -432,8 +433,56 @@ class EfficiencyContract(unittest.TestCase):
         self.assertEqual(on_demand['content']['steps'][0]['step'], 'Changed plan')
         params = self.runtime.new_thread_params(self.runtime.agent(lead['id']))
         self.assertNotIn('[Studio panel guidance:', params['developerInstructions'])
-        self.assertIn(str(self.runtime.progress_file(lead)), params['developerInstructions'])
-        self.assertIn('clipped', self.runtime.model_context(lead['id'], {'topic': 'panel'})['content'])
+        self.assertNotIn('PROGRESS.md', params['developerInstructions'])
+
+    def test_progress_file_is_retired_with_one_notice_for_leads_that_knew_it(self):
+        lead = self.lead(); worker = self.worker(lead)
+        params = self.runtime.new_thread_params({**self.runtime.agent(lead['id']), 'yoloMode': False})
+        self.assertNotIn('PROGRESS.md', params['developerInstructions'])
+        self.assertNotIn('sandbox_workspace_write.writable_roots', params['config'])
+        self.assertNotIn('progressFile', self.runtime.preparation_context_versions(lead, params))
+        roots = self.runtime.turn_permissions({**lead, 'yoloMode': False})['sandboxPolicy']['writableRoots']
+        self.assertEqual(roots, [lead['cwd']])
+        self.assertFalse((self.runtime.root / 'progress').exists())
+
+        panel = self.runtime.model_context(lead['id'], {'topic': 'panel'})
+        self.assertEqual(panel['content'], PROGRESS_FILE_RETIRED_NOTICE)
+        self.assertEqual(self.runtime.model_context(lead['id'], {'topic': 'background'})['content'], {
+            'monitor': 'Use orchestration_monitor for commands needing a result. Every command exit wakes you '
+                       'regardless of wake_on. Quiet monitors wake after 1800 seconds by default; set '
+                       'stall_timeout_seconds to 0 to disable stall wakes.',
+            'polling': 'Let a monitor or a script report changed facts. Do not poll unchanged status through model calls.'})
+        for topic in ('panel', 'background'):
+            with self.subTest(topic=topic), self.assertRaisesRegex(ValueError, 'Unknown context topic'):
+                self.runtime.model_context(worker['id'], {'topic': topic})
+
+        block = '[Studio progress file retired]\n' + PROGRESS_FILE_RETIRED_NOTICE
+        retired = digest(PROGRESS_FILE_RETIRED_NOTICE)
+        def context(event, actor_id, known):
+            with self.runtime.lock, self.runtime.db() as db:
+                actor = self.runtime.agent(actor_id, db)
+                actor.pop('preparedContext', None)
+                if known is not None:
+                    actor['preparedContext'] = {'epoch': [actor.get('threadId'), actor.get('compactions', 0)],
+                                                'versions': {'progressFile': known}}
+                self.runtime.enqueue(db, actor, 'user', 'Continue', event)
+                text = self.runtime.model_turn_context(db, actor, event)
+                versions = json.loads(db.execute('SELECT record FROM runtime_event_meta WHERE id=?',
+                                                 (event,)).fetchone()[0])['contextManifest']['versions']
+                return text, versions
+        text, versions = context('old-lead', lead['id'], 'old-progress-guidance-version')
+        self.assertEqual(text.count(block), 1)
+        self.assertLess(text.index(block), text.index('[Studio role skill'))
+        self.assertEqual(versions['progressFile'], retired)
+        text, versions = context('notified-lead', lead['id'], retired)
+        self.assertNotIn('[Studio progress file', text)
+        self.assertEqual(versions['progressFile'], retired)
+        text, versions = context('new-lead', lead['id'], None)
+        self.assertNotIn('[Studio progress file', text)
+        self.assertNotIn('progressFile', versions)
+        text, versions = context('old-worker', worker['id'], 'old-progress-guidance-version')
+        self.assertNotIn('[Studio progress file', text)
+        self.assertNotIn('progressFile', versions)
 
     def test_context_uses_delivery_order_when_urgent_events_overtake_progress(self):
         lead = self.lead(); worker = self.worker(lead)
