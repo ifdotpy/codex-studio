@@ -171,6 +171,7 @@ class VmAgents(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='vm-agents-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.project = self.root / 'source'
         self.project.mkdir()
@@ -194,13 +195,34 @@ class VmAgents(unittest.TestCase):
             except ImportError:
                 tool = ModuleType('codex_host_exec')
                 tool.tool_definition = lambda: {'name': 'host_exec', 'description': 'fixture', 'inputSchema': {'type': 'object'}}
+        # run_tool starts a detached service even when the guest stream is a
+        # fixture. Own that process as soon as it is created, including failures.
+        factory = subprocess.Popen
+        def spawn_host_service(*args, **kwargs):
+            child = factory(*args, **kwargs)
+            if any(Path(str(argument)).name == 'codex_host_exec_server.py' for argument in args[0]):
+                self.addCleanup(self.stop_host_service, child)
+            return child
+        if hasattr(tool, 'subprocess'):
+            patch.object(tool.subprocess, 'Popen', side_effect=spawn_host_service).start()
         self.host_tool = tool
         patch.dict(sys.modules, {'codex_host_exec': tool}).start()
 
     def tearDown(self):
         self.runtime.close()
         self.guest.close()
-        self.temp.cleanup()
+
+    @staticmethod
+    def stop_host_service(child):
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+        else:
+            child.wait()
 
     def lead(self):
         return self.runtime.new_lead({'cwd': str(self.project), 'workspaceMode': 'layr'})
