@@ -201,7 +201,33 @@ fn python_thread_preparation_corpus() {
             }
             Outcome::Start(a) | Outcome::Resume(a) => {
                 equal(name, "method", &json!(a.method), &expected["outcome"]);
-                equal(name, "params", &json!(a.params), &expected["params"]);
+                let mut expected_params = expected["params"].clone();
+                if s.account.provider == studio_runtime_providers::ProviderKind::Claude
+                    && s.settings.role == Role::Reviewer
+                {
+                    // B2-1 makes Claude reviewers read-only even with inherited
+                    // bypass settings. Python retains its yolo-derived policy.
+                    // Assert the Rust contract; compare every other oracle field.
+                    for (field, required) in
+                        [("approvalPolicy", "on-request"), ("sandbox", "read-only")]
+                    {
+                        equal(
+                            name,
+                            &format!("params.{field}"),
+                            &a.params[field],
+                            &json!(required),
+                        );
+                        expected_params[field] = json!(required);
+                    }
+                    equal(
+                        name,
+                        "params.claude.permissionMode",
+                        &a.params["claude"]["permissionMode"],
+                        &json!("plan"),
+                    );
+                    expected_params["claude"]["permissionMode"] = json!("plan");
+                }
+                equal(name, "params", &json!(a.params), &expected_params);
                 equal(
                     name,
                     "context_versions",
