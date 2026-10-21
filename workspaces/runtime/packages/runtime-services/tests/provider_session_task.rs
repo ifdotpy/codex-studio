@@ -1680,3 +1680,63 @@ async fn recovered_lightweight_request_does_not_reserve_serialized_thread() {
     written(write(&mut peer).await);
     session.checked_shutdown().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let control = session.control.clone();
+    // An unread event consumer keeps a journal prefix unconsumed.
+    for cursor in 1..=(LANE_CAPACITY * 2 + 1) as u64 {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    let barrier = tokio::spawn({
+        let control = control.clone();
+        async move { control.journal_barrier().await }
+    });
+    let held = tokio::spawn({
+        let control = control.clone();
+        async move { control.prepare(spec(7, 1000)).await }
+    });
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!barrier.is_finished());
+    assert!(!held.is_finished(), "a new request is held by the barrier");
+
+    let answer = control
+        .prepare_frame(
+            OperationId("callback:9".into()),
+            &reply(RequestId::Number(9)),
+        )
+        .unwrap();
+    control.submit_frame(answer).await.unwrap();
+    let interrupt = control
+        .prepare(RequestSpec {
+            id: RequestId::Number(8),
+            operation_id: OperationId("request:8".into()),
+            method: Method::TurnInterrupt,
+            params: json!({"threadId":"t","turnId":"u"}),
+            thread_id: Some("t".into()),
+            lightweight: true,
+            timeout_ms: 1000,
+        })
+        .await
+        .unwrap();
+    control.submit(interrupt).await.unwrap();
+    written(write(&mut peer).await);
+    assert!(!barrier.is_finished() && !held.is_finished());
+
+    // Consuming the journal prefix completes the barrier and releases the request.
+    while !(barrier.is_finished() && held.is_finished()) {
+        session.events.recv().await.unwrap();
+        tokio::task::yield_now().await;
+    }
+    barrier.await.unwrap().unwrap();
+    held.await.unwrap().unwrap();
+    written(write(&mut peer).await);
+    session.checked_shutdown().await;
+}
