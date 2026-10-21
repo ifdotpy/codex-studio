@@ -15,6 +15,8 @@ mod late_thread_reply;
 mod many_agents;
 mod native_review;
 mod orphan_thread_receipt;
+#[cfg(unix)]
+mod provider_started_turn;
 mod publication_drain;
 mod publication_off_path;
 mod retained;

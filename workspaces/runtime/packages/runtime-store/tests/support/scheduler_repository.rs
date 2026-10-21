@@ -412,13 +412,47 @@ fn child_results_share_a_turn_only_on_the_preparation_path() {
         selected_event("w2", "child_result", "{}"),
         selected_event("monitor", "monitor", "{}"),
     ];
-    let ids = |child_results| {
-        select_turn_batch(&events, &BTreeMap::new(), events.len(), child_results)
+    let ids = |preparation| {
+        select_turn_batch(&events, &BTreeMap::new(), events.len(), preparation)
             .iter()
             .map(|event| event.id.0.clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(ids(true), ["w1", "user", "w2"]);
+    assert_eq!(ids(true), ["w1", "user", "w2", "monitor"]);
+    assert!(ids(false).is_empty());
+}
+
+/// Messages that queued during a long turn reach the next turn together, in
+/// queue order. One turn each made a worker act on an old decision before it
+/// read the newer one (Lumina trackwork-parity, 20 October 2026: after a
+/// 32-minute turn, twelve queued messages took twelve turns over 6 minutes).
+#[test]
+fn queued_orchestration_messages_share_one_turn_on_the_preparation_path() {
+    let events = vec![
+        selected_event("complaint-response", "complaint_response", "{}"),
+        selected_event("rule", "rule", "{}"),
+        selected_event("old-decision", "followup", "push with 600 s"),
+        selected_event("message", "agent_message", "{}"),
+        selected_event("new-decision", "followup", "push with 360 s"),
+        selected_event("radio", "radio_turn", "{}"),
+        selected_event("after-radio", "followup", "later"),
+    ];
+    let ids = |preparation| {
+        select_turn_batch(&events, &BTreeMap::new(), events.len(), preparation)
+            .iter()
+            .map(|event| event.id.0.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(true),
+        [
+            "complaint-response",
+            "rule",
+            "old-decision",
+            "message",
+            "new-decision"
+        ]
+    );
     assert!(ids(false).is_empty());
 }
 
