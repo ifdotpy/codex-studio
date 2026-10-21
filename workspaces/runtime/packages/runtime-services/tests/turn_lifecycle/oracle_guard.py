@@ -34,10 +34,15 @@ def _validate_provider_home_isolation():
         assert_isolated_path(os.environ[variable], variable)
 
 
+def _forms(root):
+    # Resolved paths are physical (macOS /var is /private/var): block both forms.
+    return {Path(os.path.abspath(root)), Path(os.path.realpath(root))}
+
+
 class OracleGuard:
     def __init__(self, *, block_processes=False, allow_loopback=False):
         real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-        self.forbidden = {real_home / name for name in (".codex", ".claude")}
+        self.forbidden = set().union(*(_forms(real_home / name) for name in (".codex", ".claude")))
         self.block_processes = block_processes
         self.allow_loopback = allow_loopback
         self.stat, self.lstat = os.stat, os.lstat
@@ -91,7 +96,8 @@ class OracleGuard:
             forbidden = root / "synthetic-provider-home"
             alias = root / "alias"
             alias.symlink_to(forbidden, target_is_directory=True)
-            self.forbidden.add(forbidden)
+            synthetic = _forms(forbidden)
+            self.forbidden |= synthetic
             try:
                 # A sibling sharing the name prefix is outside the forbidden tree.
                 self.reject_lexical(root / "synthetic-provider-home-neighbor" / "test")
@@ -112,7 +118,7 @@ class OracleGuard:
                         else:
                             raise AssertionError("synthetic provider-home guard failed")
             finally:
-                self.forbidden.remove(forbidden)
+                self.forbidden -= synthetic
         if self.allow_loopback:
             class LoopbackSocket:
                 family = socket.AF_INET
@@ -157,13 +163,13 @@ def install_guard(*, block_processes=False, allow_loopback=False):
     # Retain the TemporaryDirectory for the full lifetime of this oracle.
     global _ISOLATED_ORACLE_ENV
     _ISOLATED_ORACLE_ENV = isolated
-    # Initialize the runtime guard's physical forbidden roots before the oracle
-    # rejects even metadata resolution beneath those roots. Later imports reuse it.
-    install_home_guard()
+    # Resolve both guards' physical forbidden roots before either guard rejects
+    # metadata resolution beneath those roots. Later imports reuse the home guard.
     guard = OracleGuard(
         block_processes=block_processes,
         allow_loopback=allow_loopback,
     )
+    install_home_guard()
     # Executable discovery must not probe provider homes in the inherited PATH.
     os.environ["PATH"] = os.pathsep.join(
         entry for entry in os.environ.get("PATH", "").split(os.pathsep)
