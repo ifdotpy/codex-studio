@@ -1022,6 +1022,34 @@ fn event_text(
     Ok((parts.join("\n\n"), artifacts))
 }
 
+/// The model text of one queued event that reaches a running turn by
+/// `turn/steer`: user text as written, any other event in the same
+/// `[Orchestration event: kind]` form and byte bound as at a turn start.
+pub(crate) fn busy_turn_event_text(id: &str, kind: &str, text: &str) -> String {
+    if kind == "user" {
+        return text.to_owned();
+    }
+    let row = Event {
+        id: id.to_owned(),
+        kind: kind.to_owned(),
+        text: text.to_owned(),
+        created: 0.0,
+        metadata: EventMetadata {
+            assets: Vec::new(),
+            accepted_at: None,
+            extra: Map::new(),
+        },
+        preserve_progress: true,
+        preserve_complaint: true,
+    };
+    let text = if matches!(kind, "followup" | "work_decision" | "radio_turn") {
+        row.text.clone()
+    } else {
+        bound_event(&row, &row.text, EVENT_BYTES)
+    };
+    format!("[Orchestration event: {kind}]\n{text}")
+}
+
 /// Compile only an admitted, authorized, ordered batch. Those effectful gates belong
 /// to the caller; compilation does not grant permission to submit.
 pub fn compile(

@@ -320,17 +320,25 @@ fn authorization_records(
     db: &rusqlite::Connection,
     intent: &TurnIntent,
 ) -> Result<crate::submit_gates::AuthorizationRecords, WorkerError> {
-    let events = authorization_events(intent);
+    event_authorization_records(db, &intent.agent_id, authorization_events(intent))
+}
+
+/// [`authorization_records`] of `events` for their recipient `agent_id`.
+pub(in crate::account_worker) fn event_authorization_records(
+    db: &rusqlite::Connection,
+    agent_id: &str,
+    events: Vec<crate::submit_gates::StoredEvent>,
+) -> Result<crate::submit_gates::AuthorizationRecords, WorkerError> {
     let meta_ids = crate::submit_gates::followup_event_ids(&events)
         .map(str::to_owned)
         .collect();
     let event_meta = records_by_ids(db, "runtime_event_meta", &meta_ids)?;
     let mut scope =
-        crate::submit_gates::AuthorizationScope::of_events(&intent.agent_id, &events, &event_meta);
+        crate::submit_gates::AuthorizationScope::of_events(agent_id, &events, &event_meta);
     let rooms = records_by_ids(db, "runtime_rooms", &scope.rooms)?;
     scope.add_private_members(&rooms);
     Ok(crate::submit_gates::AuthorizationRecords {
-        recipient_id: intent.agent_id.clone(),
+        recipient_id: agent_id.to_owned(),
         agents: records_by_ids(db, "runtime_agents", &scope.agents)?,
         projects: records(db, "runtime_projects")?,
         resolved_paths: BTreeMap::new(),
@@ -355,6 +363,48 @@ pub(super) async fn authorization_rows(
         .await
 }
 
+/// The resolved paths that one authorization decision over `rows` reads:
+/// every agent cwd and project path. Run it before SQL; a VM cwd gets a
+/// stable guest identity instead of a host resolution.
+pub(in crate::account_worker) fn authorization_paths(
+    rows: &crate::submit_gates::AuthorizationRecords,
+) -> Result<BTreeMap<String, String>, WorkerError> {
+    let mut resolved_paths = BTreeMap::new();
+    for (rows, key) in [(&rows.agents, "cwd"), (&rows.projects, "path")] {
+        for raw in rows.values() {
+            let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
+            if key == "cwd" && record.get("executionMode").and_then(Value::as_str) == Some("vm") {
+                // VM cwd is guest-owned. Give authorization a stable,
+                // normalized host-shaped identity without resolving it on
+                // the host or treating it as a filesystem location.
+                if let Some(path) = record
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|p| !p.is_empty())
+                {
+                    let agent_id = record
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| invalid("vm-agent-id"))?;
+                    let identity = vm_guest_identity(agent_id, path);
+                    resolved_paths.insert(path.to_owned(), identity);
+                }
+                continue;
+            }
+            if let Some(path) = record
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty())
+            {
+                let resolved = crate::projects::resolve_nonstrict(Path::new(path))
+                    .map_err(|_| invalid(key))?;
+                resolved_paths.insert(path.into(), resolved.to_string_lossy().into_owned());
+            }
+        }
+    }
+    Ok(resolved_paths)
+}
+
 /// Filesystem observations are captured on the preparation executor, before SQL.
 /// Authorization still validates current stored owners in its writer transaction.
 #[derive(Clone)]
@@ -376,40 +426,7 @@ impl FilesystemSnapshot {
         intent: &TurnIntent,
         rows: &crate::submit_gates::AuthorizationRecords,
     ) -> Result<Self, WorkerError> {
-        let mut resolved_paths = BTreeMap::new();
-        for (rows, key) in [(&rows.agents, "cwd"), (&rows.projects, "path")] {
-            for raw in rows.values() {
-                let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
-                if key == "cwd" && record.get("executionMode").and_then(Value::as_str) == Some("vm")
-                {
-                    // VM cwd is guest-owned. Give authorization a stable,
-                    // normalized host-shaped identity without resolving it on
-                    // the host or treating it as a filesystem location.
-                    if let Some(path) = record
-                        .get(key)
-                        .and_then(Value::as_str)
-                        .filter(|p| !p.is_empty())
-                    {
-                        let agent_id = record
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| invalid("vm-agent-id"))?;
-                        let identity = vm_guest_identity(agent_id, path);
-                        resolved_paths.insert(path.to_owned(), identity);
-                    }
-                    continue;
-                }
-                if let Some(path) = record
-                    .get(key)
-                    .and_then(Value::as_str)
-                    .filter(|p| !p.is_empty())
-                {
-                    let resolved = crate::projects::resolve_nonstrict(Path::new(path))
-                        .map_err(|_| invalid(key))?;
-                    resolved_paths.insert(path.into(), resolved.to_string_lossy().into_owned());
-                }
-            }
-        }
+        let resolved_paths = authorization_paths(rows)?;
         let mut snapshot = Self::capture(store, &intent.agent_id)?;
         snapshot.resolved_paths = resolved_paths;
         Ok(snapshot)
