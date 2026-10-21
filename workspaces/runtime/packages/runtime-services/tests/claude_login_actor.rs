@@ -633,6 +633,25 @@ async fn legacy_reauth_resolves_free_lease_or_explicit_exact_cancel() {
     }
 }
 
+#[tokio::test]
+async fn system_profile_reauth_is_refused_without_launch() {
+    use studio_runtime_services::claude_login::LoginError;
+    let f = Fixture::new();
+    let metadata = studio_runtime_services::account_driver::claude::auth_metadata_from_output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#, true);
+    f.accounts
+        .discover_claude_verified(&f.directory, &metadata)
+        .expect("system profile");
+    let s = f.open().await;
+    assert!(matches!(
+        s.start(ID.into(), Some("claude-local".into()), None, None)
+            .await,
+        Err(LoginError::SystemProfile)
+    ));
+    assert!(f.receipts.load().expect("receipts").is_empty());
+    assert!(f.launcher.receiver.lock().await.try_recv().is_err());
+    s.shutdown().await.expect("shutdown");
+}
+
 #[cfg(unix)]
 #[path = "claude_runtime/login_failures.rs"]
 mod failures;
