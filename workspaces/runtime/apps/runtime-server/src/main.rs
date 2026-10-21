@@ -753,13 +753,13 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&federation_wake),
     );
     let continuation_scheduler_wake = state.continuation_wake_handle();
-    let monitor_port = Arc::new(monitor_port::RetainedMonitorPort::new(
+    let monitor_port = monitor_port::RetainedMonitorPort::new(
         Arc::clone(&store),
         state
             .account_session
             .clone()
             .ok_or("account session runtime is unavailable")?,
-    ));
+    );
     let monitor_port_trait: Arc<dyn studio_runtime_services::monitor_runtime_wiring::MonitorPort> =
         monitor_port.clone();
     let monitor_runtime = Arc::new(

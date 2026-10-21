@@ -1041,6 +1041,7 @@ fn next_deadline_in(
                 END AS deadline
                 FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
                 WHERE json_extract(m.record,'$.status')='running'
+                  AND COALESCE(json_extract(m.record,'$.cancelRequested'),0)=0
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
                   AND json_extract(a.record,'$.epoch')=COALESCE(json_extract(m.record,'$.epoch'),json_extract(m.record,'$.operation.epoch'))

@@ -551,7 +551,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
 }
 
 #[tokio::test]
-async fn launch_admission_serializes_cancel_before_native_submission_completes() {
+async fn cancel_of_a_running_command_is_admitted_after_its_submission() {
     use std::sync::{Arc, Mutex};
     use studio_runtime_services::monitor_driver::{self, MonitorNative, Submission};
     use tokio::sync::Notify;
@@ -570,11 +570,13 @@ async fn launch_admission_serializes_cancel_before_native_submission_completes()
                 let monitor_policy::Effect::Native { method, .. } = effect else {
                     panic!("native effect")
                 };
+                // The first poll hands the write to the transport.
+                self.sent.lock().expect("sent").push((*method).into());
                 if *method == "command/exec" {
+                    // command/exec answers only when the process exits.
                     self.entered.notify_one();
                     self.release.notified().await;
                 }
-                self.sent.lock().expect("sent").push((*method).into());
                 Submission::Written
             })
         }
@@ -619,19 +621,18 @@ async fn launch_admission_serializes_cancel_before_native_submission_completes()
         .await
     });
     port.entered.notified().await; // The running intent committed, command/exec is unresolved.
-    let refused = monitor_driver::cancel(&store, port.as_ref(), &id, None, 2001.0).await;
-    let before = record(&store, &id);
-    port.release.notify_one();
-    start.await.expect("start task").expect("start");
-    assert!(refused.is_err());
-    assert_ne!(before["cancelRequested"], json!(true));
-    monitor_driver::cancel(&store, port.as_ref(), &id, None, 2002.0)
+    // 2026-10-20: a cancel of a running command was refused until the command
+    // exited, because start held the native sequence for the whole reply.
+    monitor_driver::cancel(&store, port.as_ref(), &id, None, 2001.0)
         .await
-        .expect("resolved cancel");
+        .expect("cancel of a running command is admitted");
+    assert_eq!(record(&store, &id)["cancelRequested"], json!(true));
     assert_eq!(
         *port.sent.lock().expect("sent"),
         vec!["command/exec", "command/exec/terminate"]
     );
+    port.release.notify_one();
+    start.await.expect("start task").expect("start");
 }
 
 #[tokio::test]
@@ -668,4 +669,75 @@ async fn reattach_and_receipts_require_exact_operation_and_live_owner() {
     let mut wrong = proof;
     wrong.operation_id = "monitor:foreign".into();
     assert!(monitor_policy::reattach(&snapshot, &wrong).is_err());
+}
+
+/// 2026-10-20: every command that redirected its output (for example
+/// `gh run watch ... > log 2>&1`) stayed "running" after it exited, because
+/// its exit receipt needed a queue that only an output delta creates.
+#[tokio::test]
+async fn exit_of_a_command_without_output_is_queued_and_delivered() {
+    use studio_runtime_services::monitor_event_queue;
+    use studio_runtime_services::monitor_runtime_wiring::MonitorEvent;
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    assert!(case["before"].get("streamQueue").is_none());
+    let store = fixtures::store(root.path(), "silent-exit").await;
+    fixtures::seed(&store, &case).await;
+    let id = case["before"]["id"].as_str().expect("id");
+    let cursor = format!("provider-result:monitor:{id}");
+    monitor_event_queue::enqueue_exit(
+        &store,
+        id,
+        &operation(&case),
+        &cursor,
+        Some(0),
+        None,
+        2001.0,
+    )
+    .await
+    .expect("exit receipt of a silent command is queued");
+    let delivery = monitor_event_queue::next(&store)
+        .await
+        .expect("queue read")
+        .expect("queued exit");
+    assert_eq!(delivery.id, id);
+    assert_eq!(delivery.cursor, cursor);
+    assert!(matches!(
+        delivery.event,
+        MonitorEvent::Exit {
+            code: Some(0),
+            error: None,
+            ..
+        }
+    ));
+}
+
+/// 2026-10-20: a cancelled command whose exit was late sent a stall notice
+/// that woke its finished owner.
+#[test]
+fn a_cancelled_command_sends_no_stall_notice() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let mut quiet = case["before"].clone();
+    quiet["stallTimeoutSeconds"] = json!(60);
+    quiet["activityGeneration"] = json!(1);
+    quiet["stallWakeGeneration"] = json!(0);
+    let stalled = |record: Value| {
+        let snapshot =
+            MonitorSnapshot::checked(record, case["actor"].clone()).expect("monitor snapshot");
+        monitor_policy::tick(&snapshot, 5000.0)
+            .expect("tick")
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, monitor_policy::Effect::StallEvent { .. }))
+    };
+    assert!(
+        stalled(quiet.clone()),
+        "a quiet command sends its stall notice"
+    );
+    quiet["cancelRequested"] = json!(true);
+    assert!(
+        !stalled(quiet),
+        "a cancelled command waits only for its exit"
+    );
 }

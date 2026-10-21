@@ -147,6 +147,21 @@ pub fn enqueue_output_with_scope_in_transaction(
     Ok(true)
 }
 
+/// Return the monitor's durable event queue. A command that never wrote output
+/// has no queue yet; its first probe or exit receipt creates it, as the first
+/// output delta does. Any other stored shape is refused.
+fn stream_queue(record: &mut Value) -> Result<&mut Vec<Value>, MonitorError> {
+    if record.get("streamQueue").is_none() {
+        record["streamQueue"] = json!([]);
+    }
+    record
+        .get_mut("streamQueue")
+        .and_then(Value::as_array_mut)
+        .ok_or(MonitorError::InvalidDeliveryIdentity(
+            "monitor output queue",
+        ))
+}
+
 /// Return the first durable per-monitor event in stable monitor/cursor order.
 pub async fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
     let row = store
@@ -274,12 +289,7 @@ pub async fn enqueue_probe(
             if value["streamAckCursor"].as_str() == Some(&cursor) {
                 return Ok(());
             }
-            let queue = value
-                .get_mut("streamQueue")
-                .and_then(Value::as_array_mut)
-                .ok_or(MonitorError::InvalidDeliveryIdentity(
-                    "monitor output queue",
-                ))?;
+            let queue = stream_queue(&mut value)?;
             if let Some(existing) = queue.iter().find(|item| item["cursor"] == cursor) {
                 if existing["kind"] == "probe"
                     && existing["generation"] == generation
@@ -356,12 +366,7 @@ pub async fn enqueue_exit(
             if value["streamAckCursor"].as_str() == Some(cursor.as_str()) {
                 return Ok(());
             }
-            let queue = value
-                .get_mut("streamQueue")
-                .and_then(Value::as_array_mut)
-                .ok_or(MonitorError::InvalidDeliveryIdentity(
-                    "monitor output queue",
-                ))?;
+            let queue = stream_queue(&mut value)?;
             if let Some(existing) = queue.iter().find(|item| item["cursor"] == cursor) {
                 if existing["kind"] == "exit"
                     && existing["code"] == code.map_or(Value::Null, |v| json!(v))
