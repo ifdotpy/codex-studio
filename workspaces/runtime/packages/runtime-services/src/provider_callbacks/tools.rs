@@ -744,6 +744,10 @@ fn execute_once(
             tx.execute_batch("RELEASE callback_service")?;
             (tool_result(staged.value, true), staged.signals)
         }
+        Err(CallbackError::InvalidResultSchema(message)) => {
+            tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
+            (tool_result(json!(message), false), Vec::new())
+        }
         Err(CallbackError::Invalid(message)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
             (tool_result(json!(message), false), Vec::new())

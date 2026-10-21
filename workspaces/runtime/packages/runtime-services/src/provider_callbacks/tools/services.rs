@@ -659,6 +659,7 @@ impl From<event_write::EventWriteError> for CallbackError {
     fn from(error: event_write::EventWriteError) -> Self {
         use event_write::EventWriteError as E;
         match error {
+            E::InvalidResultSchema(message) => Self::InvalidResultSchema(message),
             E::Store(error) => Self::Store(error),
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
             E::WorkerAssignmentUnavailable => Self::Dependency("worker-driver/work-assignment"),

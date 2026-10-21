@@ -378,6 +378,7 @@ fn expect_number(document: &Value, pointer: &str, expected: i64) -> Result<(), S
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     check_delivery_parity(openapi)?;
+    crate::task_results::check_schema_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
     expect_number(
         openapi,

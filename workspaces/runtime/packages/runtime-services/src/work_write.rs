@@ -863,6 +863,7 @@ pub struct CreateWork {
     pub owner: Option<String>,
     pub status: Option<String>,
     pub dependencies: Vec<String>,
+    pub result_schema: Option<Value>,
 }
 
 pub enum WorkActorWrite {
@@ -879,6 +880,7 @@ pub enum WorkMutation {
         owner: Option<Option<String>>,
         status: Option<String>,
         dependencies: Option<Vec<String>>,
+        result_schema: Option<Value>,
     },
     Reject {
         task_id: String,
@@ -896,7 +898,7 @@ pub enum WorkMutation {
 pub struct SubmitWork {
     pub task_id: String,
     pub version: Option<i64>,
-    pub result: String,
+    pub result: Value,
     pub checks: String,
     pub revision: String,
     pub files: Vec<String>,
@@ -1066,7 +1068,15 @@ pub async fn prepare_vm_submission(
         if !blocked_by(&work, &dependency_statuses(tx, &work)?).is_empty() {
             return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
         }
-        text(&input.result, false)?;
+        let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
+        let owner = event_write::checked_agent(tx, owner_id)?;
+        // Invalid results reach submit's durable refusal before any VM operation.
+        if result_refusal(tx, &work, &owner, &input)?.is_some() {
+            return Ok(VmSubmissionPreparation::NotVm);
+        }
+        if work.get("resultSchema").is_none() {
+            text(input.result.as_str().ok_or(Error::InvalidRequest("Supply result as text when the task has no result_schema"))?, false)?;
+        }
         text(&input.checks, false)?;
         let revision = python_bounded_text(&input.revision, 200)?;
         if input.files.len() > 50 || input.files.iter().any(|path| path.chars().count() > 4096) {
@@ -1573,7 +1583,9 @@ fn write_internal(
         )?
     {
         return Ok(WorkWriteResult {
-            artifact: if matches!(&command, WorkWrite::Submit(_)) {
+            artifact: if matches!(&command, WorkWrite::Submit(_))
+                && record.get("submissionRefusal").is_none()
+            {
                 let WorkWrite::Submit(input) = &command else {
                     return Err(WorkWriteError::Event(Error::InvalidRequest(
                         "Invalid request",
@@ -2050,7 +2062,23 @@ fn decide_submit(
         .ok_or_else(|| invalid("runtime_work", id))?;
     let submitter_id = submitter.id.0.as_str();
     let path = result_path(&input.state_dir, id, &result_id)?;
-    let result_text = python_bounded_text(&input.result, 32000)?;
+    let structured = record
+        .get("resultSchema")
+        .map(|schema| {
+            studio_runtime_schema::task_results::validate_result(schema, &input.result)
+                .map_err(|_| Error::InvalidRequest("Result does not match result_schema"))
+        })
+        .transpose()?;
+    let result_text = if let Some(value) = &structured {
+        value.to_string()
+    } else {
+        python_bounded_text(
+            input.result.as_str().ok_or(Error::InvalidRequest(
+                "Supply result as text when the task has no result_schema",
+            ))?,
+            32000,
+        )?
+    };
     let checks_text = python_bounded_text(&input.checks, 32000)?;
     let revision_text = python_bounded_text(&input.revision, 200)?;
     let mut result = json!({
@@ -2063,6 +2091,9 @@ fn decide_submit(
         "created": now,
         "resultFile": path.to_string_lossy(),
     });
+    if let Some(value) = structured {
+        result["result"] = value;
+    }
     if let Some(evidence) = &input.vm_evidence {
         let normalized_revision = python_bounded_text(&input.revision, 200)?;
         if evidence["layrStateId"] != normalized_revision
@@ -2244,6 +2275,9 @@ fn create(
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, Error> {
+    if let Some(schema) = &input.result_schema {
+        studio_runtime_schema::task_results::compile(schema).map_err(Error::InvalidResultSchema)?;
+    }
     let title = text(&input.title, false)?;
     let description = text(&input.description, true)?;
     let status = input.status.as_deref().unwrap_or("ready");
@@ -2265,12 +2299,15 @@ fn create(
     let id = work_id(event_write::unix_time()?);
     let dependencies = unique(input.dependencies);
     validate_dependencies(tx, &agent.root_id.0, &id, &dependencies)?;
-    let work = json!({
+    let mut work = json!({
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
         "owner": owner, "dependencies": dependencies, "status": status,
         "created": event_write::unix_time()?, "updated": event_write::unix_time()?, "version": 1,
         "results": [], "decisions": [], "createdBy": actor_id,
     });
+    if let Some(schema) = input.result_schema {
+        work["resultSchema"] = schema;
+    }
     let view = single_view(tx, &work)?;
     if !WorkItemsRepository::put_work(tx, &id, &work)? {
         return Err(Error::Conflict("Work item already exists"));
@@ -2338,6 +2375,7 @@ fn mutate(
             owner: requested_owner,
             status: requested_status,
             dependencies,
+            result_schema,
             ..
         } => {
             if status == "accepted" {
@@ -2349,6 +2387,11 @@ fn mutate(
                 return Err(Error::InvalidRequest(
                     "Work under review cannot be reassigned; reject its result before editing",
                 ));
+            }
+            if let Some(schema) = result_schema {
+                studio_runtime_schema::task_results::compile(&schema)
+                    .map_err(Error::InvalidResultSchema)?;
+                work["resultSchema"] = schema;
             }
             if let Some(title) = title {
                 work["title"] = json!(text(&title, false)?);
@@ -2554,6 +2597,27 @@ fn submit(
     if submitter.root_id != agent.root_id {
         return Err(invalid("runtime_agents", submitter_id).into());
     }
+    if !matches!(
+        work["status"].as_str(),
+        Some("running" | "ready" | "blocked" | "review")
+    ) {
+        return Err(Error::InvalidRequest("This result is already accepted").into());
+    }
+    if !blocked_by(&work, &dependency_statuses(tx, &work)?).is_empty() {
+        return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
+    }
+    if let Some((counter_id, failed, errors)) = result_refusal(tx, &work, &submitter, &input)? {
+        return refuse_result(
+            tx,
+            &work,
+            &submitter,
+            &counter_id,
+            failed,
+            errors,
+            request_id,
+            signature,
+        );
+    }
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
     if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
         let Some(request_id) = input.vm_evidence_request_id.as_deref() else {
@@ -2625,6 +2689,102 @@ fn submit(
         record,
         event_inserted,
         artifact: Some(artifact),
+    })
+}
+
+/// Counter identity includes the task version, worker epoch and provider attempt.
+/// A lead update or a new provider attempt permits another bounded set of tries.
+fn result_refusal(
+    tx: &Transaction<'_>,
+    work: &Value,
+    owner: &AgentRecord,
+    input: &SubmitWork,
+) -> Result<Option<(String, u64, Vec<Value>)>, WorkWriteError> {
+    use studio_runtime_schema::task_results::{
+        MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT, validate_result,
+    };
+    let Some(schema) = work.get("resultSchema") else {
+        return Ok(None);
+    };
+    let attempt = WorkItemsRepository::submission_identity(tx, owner)?;
+    let identity = json!([
+        work["id"],
+        work["version"],
+        owner.id.0,
+        owner.epoch,
+        attempt
+    ]);
+    let counter_id = format!(
+        "work-result-failures:{}",
+        studio_runtime_store::sha256_hex(identity.to_string().as_bytes())
+    );
+    let failed = EventWriteRepository::receipt(tx, &counter_id)?
+        .map(|receipt| {
+            serde_json::from_str::<Value>(&receipt.result)
+                .map_err(|_| invalid("runtime_operation_receipts", &counter_id))
+        })
+        .transpose()?
+        .map(|value| {
+            value["failed"]
+                .as_u64()
+                .ok_or_else(|| invalid("runtime_operation_receipts", &counter_id))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let errors = if failed >= MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT {
+        vec![
+            json!({"path":"", "message":"Result submission limit reached for this attempt. Ask the lead to update the task before retrying."}),
+        ]
+    } else {
+        match validate_result(schema, &input.result) {
+            Ok(_) => return Ok(None),
+            Err(errors) => errors,
+        }
+    };
+    Ok(Some((counter_id, failed, errors)))
+}
+
+/// Persist refusal accounting and its receipt, but never mutate the task.
+/// Returning an outcome lets the caller commit the counter before reporting refusal.
+#[allow(clippy::too_many_arguments)]
+fn refuse_result(
+    tx: &Transaction<'_>,
+    work: &Value,
+    owner: &AgentRecord,
+    counter_id: &str,
+    failed: u64,
+    errors: Vec<Value>,
+    request_id: Option<&str>,
+    signature: &str,
+) -> Result<WorkWriteResult, WorkWriteError> {
+    use studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT;
+    let next = failed
+        .saturating_add(1)
+        .min(MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT);
+    tx.execute(
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+        rusqlite::params![counter_id, "work-result-failures-v1", json!({"failed":next}).to_string()],
+    ).map_err(studio_runtime_store::StoreError::from)?;
+    let refusal = json!({"message":"Result does not satisfy the task result contract", "errors":errors,
+        "failedSubmits":next,"limit":MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT,
+        "retryAllowed":next < MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT});
+    let mut event_inserted = false;
+    if failed < MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT
+        && next == MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT
+    {
+        let lead = root_agent(tx, owner)?;
+        event_inserted = event_write::enqueue_recovery_event(tx, &lead,
+            format!("{counter_id}:limit"), "work_result_invalid",
+            json!({"task":work["id"],"owner":owner.id.0,"version":work["version"],"refusal":refusal}).to_string(),
+            event_write::unix_time()?)?;
+    }
+    let mut record = work.clone();
+    record["submissionRefusal"] = refusal;
+    event_write::save_receipt(tx, request_id, signature, &record)?;
+    Ok(WorkWriteResult {
+        record,
+        event_inserted,
+        artifact: None,
     })
 }
 
@@ -2727,11 +2887,7 @@ fn accept(
                 input.task_id
             ),
             "work_ready",
-            json!({
-                "task":dependent["id"],"title":dependent["title"],
-                "description":dependent.get("description").cloned().unwrap_or_else(|| json!(""))
-            })
-            .to_string(),
+            assignment_payload(&dependent).to_string(),
             now,
         )?;
     }
@@ -2948,6 +3104,20 @@ fn check_owner(
     Ok(())
 }
 
+fn assignment_payload(work: &Value) -> Value {
+    let mut payload = json!({
+        "task":work["id"],
+        "title":work["title"],
+        "description":work.get("description").cloned().unwrap_or_else(|| json!(""))
+    });
+    if let Some(schema) = work.get("resultSchema") {
+        payload["resultSchema"] = schema.clone();
+        payload["resultInstructions"] =
+            json!(studio_runtime_schema::task_results::assignment_text(work));
+    }
+    payload
+}
+
 fn queue_assignment(
     tx: &Transaction<'_>,
     recipient: &AgentRecord,
@@ -2959,7 +3129,7 @@ fn queue_assignment(
     let version = work["version"]
         .as_i64()
         .ok_or_else(|| invalid("runtime_work", id))?;
-    let title = work["title"]
+    work["title"]
         .as_str()
         .ok_or_else(|| invalid("runtime_work", id))?;
     let updated = work["updated"]
@@ -2970,12 +3140,7 @@ fn queue_assignment(
         recipient,
         format!("work-ready:{id}:assignment:{version}"),
         "work_ready",
-        json!({
-            "task":id,
-            "title":title,
-            "description":work.get("description").cloned().unwrap_or_else(|| json!(""))
-        })
-        .to_string(),
+        assignment_payload(work).to_string(),
         updated,
     )
 }
@@ -3268,7 +3433,7 @@ mod actor_tests {
             WorkWrite::Submit(SubmitWork {
                 task_id: "task".to_owned(),
                 version: Some(1),
-                result: "result".to_owned(),
+                result: "result".into(),
                 checks: "checks".to_owned(),
                 revision: "abc1234".to_owned(),
                 files: vec![],
@@ -3743,6 +3908,7 @@ mod actor_tests {
             None,
             "create-assigned-work",
             WorkActorWrite::Create(CreateWork {
+                result_schema: None,
                 actor_id: "lead".to_owned(),
                 title: "Assigned task".to_owned(),
                 description: "Do the task".to_owned(),
@@ -3781,6 +3947,7 @@ mod actor_tests {
             None,
             "reassign-ready-work",
             WorkActorWrite::Mutate(WorkMutation::Update {
+                result_schema: None,
                 task_id: "reassign".to_owned(),
                 version: Some(2),
                 title: None,
@@ -3879,7 +4046,7 @@ mod actor_tests {
             WorkWrite::Submit(super::SubmitWork {
                 task_id: "vm-owner-race".to_owned(),
                 version: None,
-                result: "result".to_owned(),
+                result: "result".into(),
                 checks: "checks".to_owned(),
                 revision: "state-1".to_owned(),
                 files: vec![],
@@ -3936,6 +4103,7 @@ mod actor_tests {
             None,
             "create-with-worker-selected",
             WorkWrite::Create(CreateWork {
+                result_schema: None,
                 actor_id: "lead".to_owned(),
                 title: "must be refused".to_owned(),
                 description: String::new(),
@@ -3970,6 +4138,7 @@ mod actor_tests {
             None,
             "worker-assignment-update",
             WorkActorWrite::Mutate(WorkMutation::Update {
+                result_schema: None,
                 task_id: "unauthorized-update".to_owned(),
                 version: Some(2),
                 title: None,
@@ -4342,7 +4511,7 @@ mod actor_tests {
             WorkWrite::Submit(super::SubmitWork {
                 task_id: "submit".to_owned(),
                 version: Some(2),
-                result: "done".to_owned(),
+                result: "done".into(),
                 checks: "checked".to_owned(),
                 revision: "abc1234".to_owned(),
                 files: vec![],
@@ -4387,7 +4556,7 @@ mod actor_tests {
             WorkWrite::Submit(super::SubmitWork {
                 task_id: "lead-submit".to_owned(),
                 version: Some(2),
-                result: "done".to_owned(),
+                result: "done".into(),
                 checks: "checked".to_owned(),
                 revision: "abc1234".to_owned(),
                 files: vec![],

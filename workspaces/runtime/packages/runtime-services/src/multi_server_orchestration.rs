@@ -1078,6 +1078,7 @@ async fn receive_remote_input(
                 | "child_stopped"
                 | "agent_message"
                 | "work_review"
+                | "work_result_invalid"
         )
     {
         return Err(refused(400, "invalid_request", "Invalid remote input"));
@@ -1284,6 +1285,9 @@ fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessErro
     use crate::provider_callbacks::CallbackError as Callback;
     match error {
         Callback::Store(error) => AccessError::Store(error),
+        Callback::InvalidResultSchema(_) => {
+            refused(400, "invalid_result_schema", "Invalid result_schema")
+        }
         Callback::Invalid(message) => refused(400, "message_refused", message),
         Callback::Dependency(message) => refused(501, "orchestration_dependency", message),
         Callback::Conflict => refused(
@@ -1632,7 +1636,11 @@ impl RuntimeOrchestrationEffects {
             || event_text.len() > 12000
             || !matches!(
                 kind,
-                "child_result" | "child_stopped" | "agent_message" | "work_review"
+                "child_result"
+                    | "child_stopped"
+                    | "agent_message"
+                    | "work_review"
+                    | "work_result_invalid"
             )
         {
             return Err(refused(

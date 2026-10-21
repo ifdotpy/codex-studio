@@ -26161,11 +26161,13 @@ export interface components {
        * @default null
        */
       reason?: string | null;
-      /**
-       * Result
-       * @default null
-       */
-      result?: string | null;
+      result?: components["schemas"]["JsonValue"];
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      result_schema?:
+        | {
+            [key: string]: unknown;
+          }
+        | boolean;
       /**
        * Revision
        * @default null
@@ -26545,6 +26547,7 @@ export interface components {
       files: string[];
       /** Id */
       id: string;
+      result?: components["schemas"]["JsonValue"];
       /**
        * Resultfile
        * @default null
@@ -26580,6 +26583,7 @@ export interface components {
       layrProjectId?: string;
       /** Layrstateid */
       layrStateId?: string;
+      result?: components["schemas"]["JsonValue"];
       /** Resultfile */
       resultFile?: string;
       /** Revision */
@@ -26633,6 +26637,7 @@ export interface components {
        * @default null
        */
       layrStateId?: string;
+      result?: components["schemas"]["JsonValue"];
       /**
        * Resultfile
        * @default null
