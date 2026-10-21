@@ -172,7 +172,8 @@ class RelayRouteTests(unittest.TestCase):
             self.assertEqual(first.json(), {"requestId": request_id, "accepted": True})
             self.assertEqual(replay.json(), first.json())
 
-            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            # This wait only guards against a hang; the notification is already accepted.
+            event = loop.run_until_complete(subscription.next_event(timeout=HANG_GUARD_SECONDS))
             self.assertIsNotNone(event)
             assert event is not None
             self.assertEqual(event.resources, [resource])
