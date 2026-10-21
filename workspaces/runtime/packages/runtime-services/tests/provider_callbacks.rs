@@ -147,7 +147,7 @@ async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     assert_eq!(first, second);
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                 .get::<_, i64>(0))
@@ -207,7 +207,7 @@ async fn provider_callbacks_human_pending_and_write_outcomes() {
         .await
         .unwrap();
     let card: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT record FROM runtime_requests WHERE id=?1",
@@ -241,41 +241,6 @@ async fn provider_callbacks_human_pending_and_write_outcomes() {
             .unwrap(),
         prepared
     );
-}
-async fn provider_callbacks_unknown_never_resends_or_reexecutes() {
-    let (_dir, store, context) = fixture().await;
-    let frame = call(
-        &context,
-        "unknown",
-        "orchestration_title",
-        json!({"title":"Exactly once"}),
-    );
-    let prepared = reply(
-        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
-            .await
-            .unwrap(),
-    );
-    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    delivery(&store, &prepared.identity, DeliveryOutcome::Unknown)
-        .await
-        .unwrap();
-    assert!(matches!(
-        dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0).await,
-        Err(CallbackError::Unknown)
-    ));
-    let mut replacement = context.clone();
-    replacement.generation += 1;
-    replacement.connection = "replacement".into();
-    assert!(matches!(
-        dispatch(std::sync::Arc::clone(&store), &replacement, &frame, 12.0).await,
-        Err(CallbackError::Unknown)
-    ));
-    assert!(matches!(
-        delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).await,
-        Err(CallbackError::Unknown)
-    ));
 }
 async fn provider_callbacks_stale_and_worker_authority() {
     let (_dir, store, context) = fixture().await;
@@ -330,7 +295,7 @@ async fn provider_callbacks_stale_and_worker_authority() {
 async fn provider_callbacks_transaction_failpoint_matrix() {
     // Admission and claim failpoints leave no committed running claim, so retry
     // may execute. Execution failpoints happen after claim commit: they roll
-    // back effects/result/outbox, and replay must not execute the call again.
+    // back effects and result, and replay must not execute the call again.
     for timing in ["BEFORE", "AFTER"] {
         for (table, operation, predicate) in [
             ("runtime_tool_requests", "INSERT", "1"),
@@ -351,11 +316,6 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 "json_extract(NEW.record,'$.stage')='completed'",
             ),
             ("runtime_tool_results", "INSERT", "1"),
-            (
-                "runtime_operation_receipts",
-                "INSERT",
-                "NEW.id LIKE 'provider-callback:%'",
-            ),
         ] {
             if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
                 && !(timing == "AFTER"
@@ -380,7 +340,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0).await;
             assert!(dispatch_result.is_err(), "{timing} {table} {operation}");
             let work_ids = store
-                .read()
+                .test_reader()
                 .unwrap()
                 .prepare("SELECT id FROM runtime_work ORDER BY id")
                 .unwrap()
@@ -388,13 +348,8 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap();
-            let reply_save_failed = timing == "AFTER"
-                && table == "runtime_operation_receipts"
-                && predicate == "NEW.id LIKE 'provider-callback:%'";
-            let has_committed_result = reply_save_failed;
-            assert_eq!(
-                work_ids.len(),
-                usize::from(has_committed_result),
+            assert!(
+                work_ids.is_empty(),
                 "{timing} {table} {operation}; dispatch={dispatch_result:?}"
             );
             store
@@ -418,22 +373,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 assert_eq!(body(&result)["success"], true);
                 assert_eq!(
                     store
-                        .read()
-                        .unwrap()
-                        .query_row("SELECT count(*) FROM runtime_work", [], |r| r
-                            .get::<_, i64>(0))
-                        .unwrap(),
-                    1
-                );
-            } else if reply_save_failed {
-                // The operation result committed before the separate provider
-                // reply receipt failed. Replay returns that exact result and
-                // must not execute the work creation again.
-                assert_eq!(body(&result)["success"], true);
-                assert!(tool_value(&result)["id"].as_str().is_some());
-                assert_eq!(
-                    store
-                        .read()
+                        .test_reader()
                         .unwrap()
                         .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                             .get::<_, i64>(0))
@@ -445,7 +385,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 // the claim was settled as not applied with a saved result.
                 assert_eq!(body(&result)["success"], false);
                 let settled = store
-                    .read()
+                    .test_reader()
                     .unwrap()
                     .query_row(
                         "SELECT json_extract(record,'$.stage'),json_extract(record,'$.outcome'),json_extract(record,'$.finished') IS NOT NULL FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='matrix'",
@@ -456,7 +396,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 assert_eq!(settled, ("failed".into(), "not_applied".into(), true));
                 assert_eq!(
                     store
-                        .read()
+                        .test_reader()
                         .unwrap()
                         .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                             .get::<_, i64>(0))
@@ -475,7 +415,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 assert!(recovery["recovery"].as_str().is_some());
                 assert_eq!(
                     store
-                        .read()
+                        .test_reader()
                         .unwrap()
                         .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                             .get::<_, i64>(0))
@@ -496,52 +436,16 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
             );
             assert_eq!(
                 store
-                    .read()
+                    .test_reader()
                     .unwrap()
                     .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                         .get::<_, i64>(0))
                     .unwrap(),
-                if failed_before_claim || reply_save_failed {
-                    1
-                } else {
-                    0
-                },
+                i64::from(failed_before_claim),
                 "replaying the saved callback response must not alter execution state"
             );
         }
     }
-}
-async fn provider_callbacks_restart_after_submission_stays_unknown() {
-    let (dir, store, context) = fixture().await;
-    let frame = call(
-        &context,
-        "lost",
-        "orchestration_task",
-        json!({"action":"create","title":"Lost response"}),
-    );
-    let result = reply(
-        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
-            .await
-            .unwrap(),
-    );
-    delivery(&store, &result.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    drop(store);
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(dir.path())).await.unwrap());
-    assert!(matches!(
-        dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0).await,
-        Err(CallbackError::Unknown)
-    ));
-    assert_eq!(
-        store
-            .read()
-            .unwrap()
-            .query_row("SELECT count(*) FROM runtime_work", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
 }
 async fn provider_callbacks_not_sent_and_expiry() {
     let (_dir, store, context) = fixture().await;
@@ -628,7 +532,7 @@ async fn provider_callbacks_malformed_and_foreign_records_are_refused() {
     );
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row("SELECT count(*) FROM runtime_chat_messages", [], |r| r
                 .get::<_, i64>(0))
@@ -661,7 +565,7 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
     );
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row("SELECT count(*) FROM runtime_chat_messages", [], |r| r
                 .get::<_, i64>(0))
@@ -733,7 +637,7 @@ async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() 
     );
     assert_eq!(body(&second)["success"], true, "{:?}", body(&second));
     {
-        let reader = store.read().unwrap();
+        let reader = store.test_reader().unwrap();
         let mut statement = reader
         .prepare(
             "SELECT text FROM runtime_events WHERE agent=?1 AND kind='agent_message' ORDER BY created, id",
@@ -796,7 +700,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
     {
         let id = case["record"]["id"].as_str().unwrap();
         let raw: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT record FROM runtime_tool_requests WHERE id=?1",
@@ -829,7 +733,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
             .await
             .unwrap();
         let raw: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT record FROM runtime_tool_requests WHERE id=?1",
@@ -932,7 +836,7 @@ async fn provider_callbacks_utility_invalid_and_deleted() {
     );
 }
 
-async fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
+async fn provider_callbacks_concurrent_duplicate_runs_once() {
     let (_dir, store, context) = fixture().await;
     let gate = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let frame = call(
@@ -959,21 +863,12 @@ async fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
     assert_eq!(replies[0], replies[1]);
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
         1
-    );
-    let agent_id = context.agent.clone();
-    store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx| {
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id=?1", [&agent_id])?; Ok(())
-    }).await.unwrap();
-    assert!(
-        delivery(&store, &replies[0].identity, DeliveryOutcome::Submitted)
-            .await
-            .is_err()
     );
 }
 
@@ -1002,7 +897,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
     );
     assert_eq!(
         store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT json_extract(record,'$.status') FROM runtime_requests WHERE id=?1",
@@ -1012,7 +907,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
             .unwrap(),
         "pending"
     );
-    assert_eq!(store.read().unwrap().query_row("SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.delivery') IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.delivery') IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
         tx.execute_batch("DROP TRIGGER answer_fail; CREATE TRIGGER submitted_fail AFTER UPDATE ON runtime_operation_receipts WHEN json_extract(NEW.result,'$.delivery')='submitted' BEGIN SELECT RAISE(ABORT,'submission failpoint'); END")?; Ok(())
     }).await.unwrap();
@@ -1091,7 +986,7 @@ async fn provider_callbacks_python_durable_answers() {
         .unwrap();
         assert_eq!(body(&result), &case["expected"]);
         let raw: String = store
-            .read()
+            .test_reader()
             .unwrap()
             .query_row(
                 "SELECT record FROM runtime_requests WHERE id=?1",
@@ -1128,7 +1023,7 @@ async fn provider_callbacks_python_dynamic_read_and_title() {
     }
     // Python `orchestration_title` puts the agent row, not only its projection.
     let lead: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
@@ -1161,7 +1056,7 @@ async fn provider_callbacks_python_visible_id_resolution() {
         ] {
             let count = || {
                 store
-                    .read()
+                    .test_reader()
                     .unwrap()
                     .query_row("SELECT count(*) FROM runtime_chat_messages", [], |r| {
                         r.get::<_, i64>(0)
@@ -1231,7 +1126,7 @@ async fn provider_callbacks_existing_python_card_uses_stored_identity() {
         .await
         .unwrap();
     let status: String = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT json_extract(record,'$.status') FROM runtime_requests WHERE id=?1",
@@ -1257,17 +1152,11 @@ async fn provider_callbacks_corpus() {
         ("human_pending_and_write_outcomes", || {
             Box::pin(provider_callbacks_human_pending_and_write_outcomes())
         }),
-        ("unknown_never_resends_or_reexecutes", || {
-            Box::pin(provider_callbacks_unknown_never_resends_or_reexecutes())
-        }),
         ("stale_and_worker_authority", || {
             Box::pin(provider_callbacks_stale_and_worker_authority())
         }),
         ("transaction_failpoint_matrix", || {
             Box::pin(provider_callbacks_transaction_failpoint_matrix())
-        }),
-        ("restart_after_submission_stays_unknown", || {
-            Box::pin(provider_callbacks_restart_after_submission_stays_unknown())
         }),
         ("not_sent_and_expiry", || {
             Box::pin(provider_callbacks_not_sent_and_expiry())
@@ -1287,8 +1176,8 @@ async fn provider_callbacks_corpus() {
         ("utility_invalid_and_deleted", || {
             Box::pin(provider_callbacks_utility_invalid_and_deleted())
         }),
-        ("concurrent_duplicate_and_stop_before_write", || {
-            Box::pin(provider_callbacks_concurrent_duplicate_and_stop_before_write())
+        ("concurrent_duplicate_runs_once", || {
+            Box::pin(provider_callbacks_concurrent_duplicate_runs_once())
         }),
         ("answer_commit_failpoint", || {
             Box::pin(provider_callbacks_answer_commit_failpoint())

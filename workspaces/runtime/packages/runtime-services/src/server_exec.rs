@@ -349,19 +349,23 @@ impl ServerExec {
 
     /// Python `_record`: the record of a command that this principal and actor own.
     async fn record(&self, principal: &str, actor: &str, key: &str) -> Result<Value, ExecError> {
-        let store = Arc::clone(&self.store);
         let key_for_read = key.to_owned();
-        let row: Option<(String, String, String)> =
-            store.read_transaction_with_error(move |tx| -> Result<_, ExecError> {
-                use rusqlite::OptionalExtension;
-                Ok(tx
-                    .query_row(
-                        "SELECT owner,actor,record FROM runtime_server_exec WHERE id=?1",
-                        [&key_for_read],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()?)
-            })?;
+        let row: Option<(String, String, String)> = self
+            .store
+            .read_async(
+                "runtime-services/server_exec",
+                move |tx| -> Result<_, ExecError> {
+                    use rusqlite::OptionalExtension;
+                    Ok(tx
+                        .query_row(
+                            "SELECT owner,actor,record FROM runtime_server_exec WHERE id=?1",
+                            [&key_for_read],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        )
+                        .optional()?)
+                },
+            )
+            .await?;
         match row {
             Some((owner, saved_actor, record)) if owner == principal && saved_actor == actor => {
                 serde_json::from_str(&record)
@@ -431,9 +435,9 @@ impl ServerExec {
     /// final snapshot settles the record; otherwise the command's marked
     /// processes stop and the outcome stays unknown.
     async fn restore(&self) {
-        let store = Arc::clone(&self.store);
-        let rows: Vec<(String, String, String, String)> = match store.read_transaction_with_error(
-            |tx| -> Result<_, ExecError> {
+        let rows: Vec<(String, String, String, String)> = match self
+            .store
+            .read_async("runtime-services/server_exec", |tx| -> Result<_, ExecError> {
                 let mut statement = tx.prepare(
                     "SELECT id,owner,actor,record FROM runtime_server_exec WHERE json_extract(record,'$.status') IN ('starting','running')",
                 )?;
@@ -441,8 +445,9 @@ impl ServerExec {
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
-            },
-        ) {
+            })
+            .await
+        {
             Ok(rows) => rows,
             Err(error) => {
                 eprintln!("server command restore failed: {error}");

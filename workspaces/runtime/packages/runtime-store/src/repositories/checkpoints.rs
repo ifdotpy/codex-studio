@@ -879,8 +879,8 @@ fn read_live_or_reserved_agents(
         return Ok(Vec::new());
     }
     let mut statement = connection.prepare_cached(
-        "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL \
-         OR json_extract(record,'$.workspaceOperation') IS NOT NULL ORDER BY rowid",
+        "SELECT id,record FROM runtime_agents WHERE deleted_at IS NULL \
+         OR workspace_operation IS NOT NULL ORDER BY rowid",
     )?;
     let rows = statement.query_map([], read_stored_row)?;
     collect_records(connection, rows, "runtime_agents")

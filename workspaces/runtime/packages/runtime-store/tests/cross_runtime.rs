@@ -350,7 +350,9 @@ async fn python_fixture_records_are_readable_and_writable_in_rust() {
     let store = RuntimeStore::open(Some(&root))
         .await
         .expect("cross-runtime test operation succeeds");
-    let reader = store.read().expect("cross-runtime test operation succeeds");
+    let reader = store
+        .test_reader()
+        .expect("cross-runtime test operation succeeds");
     let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
@@ -466,7 +468,9 @@ async fn python_fixture_records_are_readable_and_writable_in_rust() {
     store
         .verify_schema()
         .expect("cross-runtime test operation succeeds");
-    let reader = store.read().expect("cross-runtime test operation succeeds");
+    let reader = store
+        .test_reader()
+        .expect("cross-runtime test operation succeeds");
     let rust_numeric_rows = {
         let mut statement = reader
             .prepare("SELECT seq,payload,hash,deleted FROM sync_entities WHERE collection='event' AND id LIKE 'numeric-created-%' ORDER BY id")
@@ -577,7 +581,7 @@ async fn python_fixture_records_are_readable_and_writable_in_rust() {
         .await
         .expect("cross-runtime test operation succeeds");
     let read_back = reopened
-        .read()
+        .test_reader()
         .expect("cross-runtime test operation succeeds");
     let work = Table::<WorkItemRecord>::new(&read_back)
         .get(&TaskId::from("cross-work"))
@@ -748,7 +752,7 @@ async fn python_feature_initialized_state_round_trips_through_rust() {
         })
         .await
         .expect("Rust writes supported records");
-    let reader = store.read().expect("Rust reads its updated records");
+    let reader = store.test_reader().expect("Rust reads its updated records");
     let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
         .expect("updated agent read succeeds")
         .expect("updated agent remains present");
@@ -777,7 +781,7 @@ async fn rust_bootstrap_matches_python_feature_table_catalog() {
         .await
         .expect("Rust prepares missing feature tables");
     let auto_pair: i64 = store
-        .read()
+        .test_reader()
         .expect("Rust feature state opens")
         .query_row(
             "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
@@ -949,8 +953,6 @@ fn feature_catalog(path: &Path) -> Vec<(String, String, String, String)> {
         "runtime_native_limit_refreshes",
         "runtime_native_sweeps",
         "runtime_supervisor_cursor",
-        "runtime_agent_sweep_busy",
-        "runtime_agent_sweep_cleanup",
         "runtime_native_action_receipts",
         "runtime_safety_retries",
         "runtime_context_terminal_receipts",
@@ -1161,7 +1163,7 @@ async fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_d
         })
         .await
         .expect("second database sees its own identity");
-    let reader = first.read().expect("reader opens");
+    let reader = first.test_reader().expect("reader opens");
     let tx = reader
         .unchecked_transaction()
         .expect("read transaction begins");

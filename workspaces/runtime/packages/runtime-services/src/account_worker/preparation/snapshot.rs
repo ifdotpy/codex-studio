@@ -341,6 +341,20 @@ fn authorization_records(
     })
 }
 
+/// Read the rows whose paths [`FilesystemSnapshot::capture_for_authorization`] resolves.
+pub(super) async fn authorization_rows(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+) -> Result<crate::submit_gates::AuthorizationRecords, WorkerError> {
+    let intent = intent.clone();
+    store
+        .read_async(
+            "runtime-services/account_worker_authorization_rows",
+            move |tx| authorization_records(tx, &intent),
+        )
+        .await
+}
+
 /// Filesystem observations are captured on the preparation executor, before SQL.
 /// Authorization still validates current stored owners in its writer transaction.
 #[derive(Clone)]
@@ -356,13 +370,12 @@ pub(super) struct ThreadFilesystemInputs {
 impl FilesystemSnapshot {
     /// Capture the observations of one admission: the resolved paths of the
     /// rows its authorization decision reads, and the progress directory.
+    /// `rows` come from [`authorization_rows`].
     pub fn capture_for_authorization(
         store: &RuntimeStore,
         intent: &TurnIntent,
+        rows: &crate::submit_gates::AuthorizationRecords,
     ) -> Result<Self, WorkerError> {
-        let db = store.read()?;
-        let rows = authorization_records(&db, intent)?;
-        drop(db);
         let mut resolved_paths = BTreeMap::new();
         for (rows, key) in [(&rows.agents, "cwd"), (&rows.projects, "path")] {
             for raw in rows.values() {

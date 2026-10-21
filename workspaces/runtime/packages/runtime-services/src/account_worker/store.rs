@@ -1,6 +1,7 @@
 //! Account database operations. Transaction callbacks stay synchronous and are
 //! submitted to RuntimeStore's bounded writer actor.
 use super::*;
+use crate::continuation_runtime::CapacityStartOutcome;
 use crate::diagnostics::measure_runtime_stage as stage;
 use crate::notification_dispatch::{
     NotificationEffects, NotificationPublicationBatch, PreparedSubmission,
@@ -239,7 +240,7 @@ pub(super) async fn recover(
         // receipt-pending hold and let the next generation interrupt the
         // finished agent again. Openness is read before reconciliation, which
         // can continue an interrupted turn and so close its receipt.
-        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
+        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE a.account_key=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
         let ids = statement
             .query_map(
                 params![
@@ -543,34 +544,37 @@ pub(super) async fn claim(
 ) -> Result<Option<TurnIntent>, WorkerError> {
     let account = account.to_owned();
     let agent = agent.to_owned();
-    let read_store = store.clone();
     let read_agent = agent.clone();
-    let (snapshot, prepared) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_claim_read",
-        move || {
-            let snapshot =
-                AgentRepository::get(&*read_store.read()?, &AgentId::from(read_agent.as_str()))?;
-            let has_radio_turn = read_store.read()?.query_row_cached(
+    let (snapshot, has_radio_turn) = store
+        .read_async("runtime-services/account_worker_claim_read", move |tx| {
+            let snapshot = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?;
+            let has_radio_turn = tx.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
                  AND status='pending' AND kind='radio_turn')",
                 rusqlite::params![read_agent.as_str(), epoch],
                 |row| row.get::<_, bool>(0),
             )?;
-            let prepared = if has_radio_turn {
-                let prepared = crate::host_project_runtime::PreparedHost::load(&read_store)
-                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            Ok::<_, WorkerError>((snapshot, has_radio_turn))
+        })
+        .await?;
+    let prepared = if has_radio_turn {
+        let prepared = crate::host_project_runtime::PreparedHost::load(&store)
+            .await
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_claim_host",
+            move || {
                 prepared
                     .recheck_paths()
                     .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                Some(prepared)
-            } else {
-                None
-            };
-            Ok::<_, WorkerError>((snapshot, prepared))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+                Ok::<_, WorkerError>(Some(prepared))
+            },
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??
+    } else {
+        None
+    };
     if snapshot.as_ref().is_none_or(|record| {
         record.epoch != epoch
             || account_key(record) != account.as_str()
@@ -1154,6 +1158,11 @@ fn settle_outcome(
                 Method::TurnStart => match body {
                     ResponseBody::Result(value) => {
                         if let Some(turn) = value["turn"]["id"].as_str().filter(|s| !s.is_empty()) {
+                            stage_capacity_start(
+                                tx,
+                                i,
+                                CapacityStartOutcome::Accepted { turn_id: turn },
+                            )?;
                             if SchedulerRepository::settle_started_provider(
                                 tx,
                                 &i.agent_id,
@@ -1174,6 +1183,14 @@ fn settle_outcome(
                             }
                             preparation::accept_turn(tx, &context, &ticket, turn)?;
                         } else {
+                            stage_capacity_start(
+                                tx,
+                                i,
+                                CapacityStartOutcome::Failed {
+                                    reason: "The provider reply named no turn. The turn outcome is unknown.",
+                                    unknown: true,
+                                },
+                            )?;
                             SchedulerRepository::settle_start_outcome(
                                 tx,
                                 &i.identity(),
@@ -1188,6 +1205,14 @@ fn settle_outcome(
                             // Hold new starts for the recheck interval.
                             crate::disk_space::observe_full();
                         }
+                        stage_capacity_start(
+                            tx,
+                            i,
+                            CapacityStartOutcome::Failed {
+                                reason: "The provider rejected the turn start.",
+                                unknown: false,
+                            },
+                        )?;
                         SchedulerRepository::settle_start_rejected_provider(
                             tx,
                             &i.agent_id,
@@ -1358,40 +1383,34 @@ pub(super) async fn journal_batch(
                 if frame.method.as_str() == "turn/completed"
         )
     });
-    let read_store = Arc::clone(&store);
     let account_for_read = account.to_owned();
-    let (publication, limits_observation) = crate::diagnostics::measure_runtime_stage_async(
-        "journal.snapshot",
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker_journal_snapshot",
-            move || {
-                let publication =
-                    crate::notification_dispatch::PublicationContext::load(&read_store)?.with_native_source(native_source);
-                let limits_observation = if needs_limits {
-                    let reader = read_store.read()?;
-                    let limits = studio_runtime_store::account_state::limits_snapshots(&reader)?
-                        .snapshots
-                        .into_iter()
-                        .find(|(key, _)| key == &account_for_read)
-                        .map(|(_, limits)| limits)
-                        .unwrap_or_else(|| {
-                            json!({"accountKey":account_for_read,"at":null,"error":null,"data":null,"stale":true})
-                        });
-                    Some(
-                        crate::usage_resume::LimitsObservation::from_record(limits, None)
-                            .map_err(|error| {
-                                WorkerError::PreparationRefused(error.to_string())
-                            })?,
-                    )
-                } else {
-                    None
-                };
-                Ok::<_, WorkerError>((publication, limits_observation))
-            },
-        ),
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+    let (publication, limits_observation) =
+        crate::diagnostics::measure_runtime_stage_async("journal.snapshot", async {
+            let publication = crate::notification_dispatch::PublicationContext::load(&store)?
+                .with_native_source(native_source);
+            let limits_observation = if needs_limits {
+                Some(
+                    store
+                        .read_async("runtime-services/account_worker_journal_snapshot", move |tx| {
+                            let limits = studio_runtime_store::account_state::limits_snapshots(tx)?
+                                .snapshots
+                                .into_iter()
+                                .find(|(key, _)| key == &account_for_read)
+                                .map(|(_, limits)| limits)
+                                .unwrap_or_else(|| {
+                                    json!({"accountKey":account_for_read,"at":null,"error":null,"data":null,"stale":true})
+                                });
+                            crate::usage_resume::LimitsObservation::from_record(limits, None)
+                                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+                        })
+                        .await?,
+                )
+            } else {
+                None
+            };
+            Ok::<_, WorkerError>((publication, limits_observation))
+        })
+        .await?;
     let account = account.to_owned();
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
@@ -1790,6 +1809,9 @@ fn journal_one(
                                 now(),
                                 false,
                             )?;
+                            if let Some(turn) = turn {
+                                next.settle_turn(journal_scope, thread, turn);
+                            }
                             effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
                         }
                     }
@@ -2311,59 +2333,7 @@ fn settle_callback_in_transaction(
         row["ready"] = json!(true);
         replace(tx, &operation, "settled", row)?;
     }
-    // Every caller holds this cursor's written callback proof.
-    let callback = callback_operation(journal_scope, generation, cursor);
-    if let Some(reply) = receipt(tx, &callback, CALLBACK_REPLY_PHASE)? {
-        let key = reply.as_str().ok_or_else(|| invalid(&callback))?;
-        crate::provider_callbacks::delete_worker_written_reply(tx, key)
-            .map_err(|error| callback_store_error(error, &callback))?;
-        delete_receipt(tx, &callback, CALLBACK_REPLY_PHASE)?;
-    }
     compact(tx, journal_scope, generation)
-}
-
-/// The receipt phase that names the provider callback reply answering a
-/// callback cursor (value: that reply's receipt key).
-const CALLBACK_REPLY_PHASE: &str = "reply";
-
-fn callback_operation(journal_scope: &str, generation: u64, cursor: u64) -> String {
-    format!("callback:{journal_scope}:{generation}:{cursor}")
-}
-
-fn callback_store_error(
-    error: crate::provider_callbacks::CallbackError,
-    operation: &str,
-) -> WorkerError {
-    match error {
-        crate::provider_callbacks::CallbackError::Store(error) => error.into(),
-        _ => invalid(operation),
-    }
-}
-
-/// Link a managed tool reply to the callback cursor that writes it, so the
-/// written proof of that cursor deletes the reply. A cursor that already has
-/// its proof deletes the reply at once; the worker then only acknowledges it.
-pub(super) async fn link_callback_reply(
-    store: &RuntimeStore,
-    journal_scope: &str,
-    generation: u64,
-    cursor: u64,
-    reply_key: String,
-) -> Result<(), WorkerError> {
-    let journal_scope = journal_scope.to_owned();
-    store
-        .transaction_with(move |tx| {
-            let callback = callback_operation(&journal_scope, generation, cursor);
-            if cursor <= checkpoint(tx, &journal_scope, generation)?
-                || receipt(tx, &callback, "written")? == Some(json!(true))
-            {
-                crate::provider_callbacks::delete_worker_written_reply(tx, &reply_key)
-                    .map_err(|error| callback_store_error(error, &callback))?;
-                return Ok(());
-            }
-            replace(tx, &callback, CALLBACK_REPLY_PHASE, json!(reply_key))
-        })
-        .await
 }
 
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
@@ -2705,13 +2675,10 @@ pub(super) async fn deliver_publications(
     mut after_publish: impl FnMut() -> Result<(), WorkerError> + Send,
 ) -> Result<PublicationPass, WorkerError> {
     let prefix = format!("account-worker:notification-publication:{account}:");
-    let read_store = Arc::clone(&store);
     let page = PUBLICATION_DRAIN_LIMIT + skip.len();
     let skip = skip.into_iter().collect::<BTreeSet<_>>();
-    let pending = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_publication_read",
-        move || {
-            let connection = read_store.read()?;
+    let pending = store
+        .read_async("runtime-services/account_worker_publication_read", move |connection| {
             let mut statement = connection.prepare(
                 "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT ?3",
             )?;
@@ -2727,10 +2694,8 @@ pub(super) async fn deliver_publications(
                     .take(PUBLICATION_DRAIN_LIMIT)
                     .collect::<Vec<_>>(),
             )
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+        })
+        .await?;
     let full = pending.len() == PUBLICATION_DRAIN_LIMIT;
     let mut delivered = Vec::with_capacity(pending.len());
     let mut failure = None;
@@ -2762,6 +2727,23 @@ pub(super) fn delete_delivered_publications(
         delete.execute(params![id, result])?;
     }
     Ok(())
+}
+
+/// Settle a capacity retry's record with the outcome of the `turn/start` that
+/// carried its follow-up input; other starts stage nothing.
+pub(super) fn stage_capacity_start(
+    tx: &studio_runtime_store::Transaction<'_>,
+    intent: &crate::scheduler::TurnIntent,
+    outcome: CapacityStartOutcome<'_>,
+) -> Result<(), StoreError> {
+    crate::continuation_runtime::stage_capacity_start(
+        tx,
+        &intent.agent_id,
+        intent.events.iter().map(|event| event.id.as_str()),
+        outcome,
+        now(),
+    )
+    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
 }
 
 /// One pass that deletes its delivered prefix in its own transaction.

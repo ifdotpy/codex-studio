@@ -121,23 +121,17 @@ impl Credentials {
         created: f64,
     ) -> Result<RemoteIdentity, CredentialError> {
         validate_federation_label(label)?;
-        let store_for_read = Arc::clone(&store);
-        let exists = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/federation_credentials",
-            move || {
-                store_for_read.read_transaction(|connection| {
-                    connection
+        let exists = store
+            .read_async("runtime-services/federation_credentials", |connection| {
+                connection
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
                         [],
                         |row| row.get::<_, bool>(0),
                     )
                     .map_err(StoreError::from)
-                })
-            },
-        )
-        .await
-        .map_err(|_| CredentialError::Storage)??;
+            })
+            .await?;
         if exists {
             return load_federation_identity(&store).await;
         }
@@ -405,13 +399,12 @@ impl Credentials {
     ) -> Result<(), CredentialError> {
         // File access stays outside store transactions; the writer rechecks
         // the journal before marking each recovery complete.
-        let store_for_read = Arc::clone(&store);
-        let pending = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/federation_credentials",
-            move || store_for_read.read_transaction_with_error(Journal::pending_names),
-        )
-        .await
-        .map_err(|_| CredentialError::Storage)??;
+        let pending = store
+            .read_async(
+                "runtime-services/federation_credentials",
+                Journal::pending_names,
+            )
+            .await?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -539,14 +532,9 @@ impl Drop for TestWriteGateRelease {
 async fn load_federation_identity(
     store: &Arc<RuntimeStore>,
 ) -> Result<RemoteIdentity, CredentialError> {
-    let store_for_read = Arc::clone(store);
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/federation_credentials",
-        move || remote_transport::load_federation_identity(&store_for_read),
-    )
-    .await
-    .map_err(|_| CredentialError::Storage)?
-    .map_err(CredentialError::Identity)
+    remote_transport::load_federation_identity(store)
+        .await
+        .map_err(CredentialError::Identity)
 }
 
 fn public_identity(identity: &StoredMultiServerIdentity, origin: Option<&str>) -> Value {

@@ -39,7 +39,7 @@ async fn record_of(state: &State, id: &str) -> Value {
     state
         .bridge
         .run(move |store| async move {
-            let raw: String = store.read()?.query_row(
+            let raw: String = store.test_reader()?.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
                 [id],
                 |r| r.get(0),
@@ -213,7 +213,7 @@ async fn poisoned_durable_effect_is_parked_once_and_does_not_end_the_worker() {
         state
             .bridge
             .run(|store| async move {
-                Ok(store.read()?.query_row(
+                Ok(store.test_reader()?.query_row(
                     "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:default:%'",
                     [],
                     |row| row.get::<_, i64>(0),
@@ -300,7 +300,7 @@ async fn publications(state: &State) -> Vec<String> {
     state
         .bridge
         .run(|store| async move {
-            let reader = store.read()?;
+            let reader = store.test_reader()?;
             let mut statement = reader.prepare(
                 "SELECT id FROM runtime_operation_receipts \
                  WHERE id LIKE 'account-worker:notification-publication:default:%' ORDER BY id",
@@ -513,8 +513,10 @@ async fn corrupt_notification_metadata_is_quarantined_and_other_agents_keep_work
     state
         .bridge
         .run(|store| async move {
+ store.read_async("test/account_worker_agent_isolation/corrupt_notification_metadata_is_quarantined_and_other_agents_keep_working", move |db| {
+
             for index in 0..3 {
-                let row: (String, String) = store.read()?.query_row(
+                let row: (String, String) = db.query_row(
                     "SELECT status,error FROM runtime_events WHERE id=?1",
                     [format!("corrupt-meta-{index}")],
                     |row| Ok((row.get(0)?, row.get(1)?)),
@@ -523,7 +525,9 @@ async fn corrupt_notification_metadata_is_quarantined_and_other_agents_keep_work
                 assert!(row.1.contains("runtime_event_meta"));
             }
             Ok(())
-        })
+
+ }).await
+})
         .await
         .unwrap();
     let second = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;

@@ -225,13 +225,9 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_native_limit_refreshes (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL, epoch TEXT);
-            CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default')) WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' AND (json_extract(record,'$.contextRepair.phase') IN ('preparing','submitted','unknown','ready') OR COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!='');
-            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context ON runtime_agents(
-                COALESCE(json_extract(record,'$.accountKey'),'default'),
-                json_extract(record,'$.startAttempt.connectionGeneration'),
-                json_extract(record,'$.threadId'), json_extract(record,'$.turnId'))
-                WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.autoWake')=1;
-            CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup ON runtime_agents(json_extract(record,'$.contextRepair.sourceCleanup.accountKey'),json_extract(record,'$.contextRepair.sourceCleanup.threadId')) WHERE json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted');
+            CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy_v2 ON runtime_agents(account_key) WHERE provider='codex' AND (context_repair_phase IN ('preparing','submitted','unknown','ready') OR COALESCE(native_tool_refresh_id,'')!='');
+            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context_v2 ON runtime_agents(account_key,start_attempt_connection_generation,thread_id,turn_id) WHERE status='running' AND auto_wake=1;
+            CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup_v2 ON runtime_agents(source_cleanup_account_key,source_cleanup_thread_id) WHERE source_cleanup_phase IN ('planned','submitted');
             CREATE TABLE IF NOT EXISTS runtime_process_actions (id TEXT PRIMARY KEY, signature TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_native_action_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL, outcome TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -405,12 +401,12 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("in-memory database opens");
         let transaction = connection.transaction().expect("transaction opens");
         transaction
-            .execute_batch(
+            .execute_batch(&crate::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
-            )
+            ))
             .expect("core tables precede feature schema bootstrap");
         transaction
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())

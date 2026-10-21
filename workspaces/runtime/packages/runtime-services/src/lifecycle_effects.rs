@@ -1315,6 +1315,8 @@ pub(crate) fn notify_parent_of_turn(
 /// covers and that settles `completed` still reports to the parent.
 /// Deliberate divergence: Python's `parent_event` stays silent once autoWake is
 /// false, so the parent of such a child never learned its result.
+/// A failed turn reports through [`notify_parent_of_failed_turn`] once its
+/// retry decision is staged.
 fn notify_parent_of_settled_turn(
     tx: &Transaction<'_>,
     agent: &AgentRecord,
@@ -1322,10 +1324,9 @@ fn notify_parent_of_settled_turn(
     at: f64,
 ) -> studio_runtime_store::StoreResult<()> {
     let agent_id = agent.id.0.as_str();
-    let Some(parent_id) = agent.extra.get("parentId").and_then(Value::as_str) else {
+    if !agent.extra.get("parentId").is_some_and(Value::is_string) {
         return Ok(());
-    };
-    let flag = |key: &str| studio_runtime_store::truthy(agent.extra.get(key));
+    }
     let stopped = matches!(
         agent.status,
         AgentStatus::Failed | AgentStatus::Interrupted | AgentStatus::Paused
@@ -1336,18 +1337,79 @@ fn notify_parent_of_settled_turn(
     let disconnected_completion = agent.status == AgentStatus::Completed
         && value.pointer("/disconnectRecovery/turnId") == Some(&json!(turn_id))
         && value.pointer("/disconnectRecovery/autoWake") == Some(&json!(true));
-    if !(flag("autoWake") || disconnected_completion)
-        || flag("deletedAt")
-        || flag("agentArchive")
-        || flag("executionMove")
+    if !(studio_runtime_store::truthy(agent.extra.get("autoWake")) || disconnected_completion)
         || stopped
         || safety_retry
         || agent.status == AgentStatus::Waiting
-        || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(agent.epoch)
+        || !reports_turns(agent)
         || SchedulerRepository::has_pending_continuation_event(tx, agent_id, agent.epoch)?
     {
         return Ok(());
     }
+    enqueue_turn_result(tx, agent, &value, turn_id, at)
+}
+
+/// Report a failed child turn to its parent, once, after the settling
+/// transaction staged its retry decision.
+///
+/// A capacity retry or usage resume that is scheduled or starting for this
+/// turn answers later: its retried turn settles under its own
+/// `child:{id}:{turn}` id, and a retry that ends without a turn tells the
+/// parent through its hold notice. Otherwise the parent gets a `failed`
+/// `child_result` with the error under the turn-completion id, so a replay is
+/// a no-op. A failed turn holds the child (`nativeFailureHold`), so pending
+/// input does not continue it.
+pub(crate) fn notify_parent_of_failed_turn(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
+        return Ok(());
+    };
+    let retrying = |key: &str| {
+        agent.extra.get(key).is_some_and(|retry| {
+            retry.get("turnId") == Some(&json!(turn_id))
+                && matches!(
+                    retry.get("status").and_then(Value::as_str),
+                    Some("scheduled" | "starting" | "started")
+                )
+        })
+    };
+    if agent.status != AgentStatus::Failed
+        || !agent.extra.get("parentId").is_some_and(Value::is_string)
+        || agent.extra.get("lastCompletedTurn") != Some(&json!(turn_id))
+        || !studio_runtime_store::truthy(agent.extra.get("autoWake"))
+        || !reports_turns(&agent)
+        || retrying("capacityRetry")
+        || retrying("usageResume")
+    {
+        return Ok(());
+    }
+    enqueue_turn_result(tx, &agent, &agent.value(), turn_id, at)
+}
+
+/// A live child of the current turn epoch: not deleted, archived or moving.
+fn reports_turns(agent: &AgentRecord) -> bool {
+    let flag = |key: &str| studio_runtime_store::truthy(agent.extra.get(key));
+    !flag("deletedAt")
+        && !flag("agentArchive")
+        && !flag("executionMove")
+        && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(agent.epoch)
+}
+
+/// Queue the `child_result` of one settled turn under `child:{id}:{turn}`.
+fn enqueue_turn_result(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+    value: &Value,
+    turn_id: &str,
+    at: f64,
+) -> studio_runtime_store::StoreResult<()> {
+    let Some(parent_id) = agent.extra.get("parentId").and_then(Value::as_str) else {
+        return Ok(());
+    };
     let Some(parent) = AgentRepository::get(tx, &AgentId::from(parent_id))? else {
         return Ok(());
     };
@@ -1356,18 +1418,24 @@ fn notify_parent_of_settled_turn(
         .get("error")
         .filter(|error| studio_runtime_store::truthy(Some(error)))
     {
-        Some(error) => json!(error.to_string()),
+        Some(error) => json!(
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .or(error.as_str())
+                .map_or_else(|| error.to_string(), str::to_owned)
+        ),
         None => agent
             .extra
             .get("lastAnswer")
             .cloned()
             .unwrap_or(json!("No final text returned")),
     };
-    let payload = child_result_payload(&value, json!(agent.status), result);
+    let payload = child_result_payload(value, json!(agent.status), result);
     event_write::enqueue_recovery_event(
         tx,
         &parent,
-        format!("child:{agent_id}:{turn_id}"),
+        format!("child:{}:{turn_id}", agent.id.0),
         "child_result",
         payload.to_string(),
         at,

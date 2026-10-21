@@ -115,10 +115,14 @@ pub struct TerminalCreate<'a> {
     pub submitted_request: &'a Value,
 }
 
-pub fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
-    let connection = store.read()?;
+pub async fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
+    let records = store
+        .read_async("runtime-services/terminal_driver", |connection| {
+            TerminalsRepository::list(connection)
+        })
+        .await?;
     let mut items = Vec::new();
-    for record in TerminalsRepository::list(&connection)? {
+    for record in records {
         if record.get("status").and_then(Value::as_str) != Some("closed") {
             let mut value = record.value().clone();
             hide_process_identity(&mut value);
@@ -139,12 +143,17 @@ pub fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
     Ok(json!({"items": items}))
 }
 
-pub fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value, TerminalError> {
+pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value, TerminalError> {
     if offset < 0 {
         return Err(TerminalError::InvalidCursor);
     }
-    let connection = store.read()?;
-    let row = TerminalsRepository::get(&connection, id)?.ok_or(TerminalError::UnknownTerminal)?;
+    let id = id.to_owned();
+    let row = store
+        .read_async("runtime-services/terminal_driver", move |connection| {
+            TerminalsRepository::get(connection, &id)
+        })
+        .await?
+        .ok_or(TerminalError::UnknownTerminal)?;
     let record = row.record;
     let start = row.offset;
     let end = start + row.output.chars().count() as i64;
@@ -1351,7 +1360,12 @@ mod tests {
         assert_eq!(decoded.len(), INPUT_LIMIT);
 
         let before = TerminalsRepository::receipt(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             "input-limit-too-large",
         )
         .expect("receipt read");
@@ -1361,7 +1375,12 @@ mod tests {
             Err(TerminalError::InvalidRequest)
         ));
         let after = TerminalsRepository::receipt(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             "input-limit-too-large",
         )
         .expect("receipt reread");
@@ -1388,7 +1407,12 @@ mod tests {
             .await
             .expect("deduplicate event");
         let mut stored = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("terminal row")
@@ -1418,7 +1442,9 @@ mod tests {
             })
             .await
             .expect("exit");
-        let visible = output(state.store.as_ref().expect("store"), &id, 0).expect("output");
+        let visible = output(state.store.as_ref().expect("store"), &id, 0)
+            .await
+            .expect("output");
         assert_eq!(visible["text"], "�");
         assert_eq!(visible["offset"], 1);
         assert_eq!(visible["status"], "exited");
@@ -1530,7 +1556,7 @@ mod tests {
                 .expect("orphan identity lock"),
             vec![serde_json::json!({"pid":2345,"session":2345,"start_time_ticks":98765})]
         );
-        let row = TerminalsRepository::get(&store.read().expect("read"), id)
+        let row = TerminalsRepository::get(&store.test_reader().expect("read"), id)
             .expect("terminal row")
             .expect("terminal exists");
         assert_eq!(
@@ -1556,7 +1582,9 @@ mod tests {
             })
             .await
             .expect("large output");
-        let current = output(state.store.as_ref().expect("store"), &id, 0).expect("current output");
+        let current = output(state.store.as_ref().expect("store"), &id, 0)
+            .await
+            .expect("current output");
         assert_eq!(
             current["text"].as_str().expect("text").chars().count(),
             OUTPUT_LIMIT
@@ -1606,7 +1634,12 @@ mod tests {
             driver.session.requests.lock().expect("requests").is_empty(),
             "reservation failure must happen before process/spawn"
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert_eq!(
             TerminalsRepository::list(&connection).expect("list"),
             Vec::new()
@@ -1641,7 +1674,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert!(
             TerminalsRepository::list(&connection)
                 .expect("list")
@@ -1685,7 +1723,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert_eq!(
             TerminalsRepository::list(&connection).expect("list").len(),
             1
@@ -1727,7 +1770,12 @@ mod tests {
                 .is_err()
         );
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -1750,7 +1798,12 @@ mod tests {
         };
         assert!(driver.settle_outcome(outcome).await.is_err());
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -1762,7 +1815,12 @@ mod tests {
         assert!(row.record.get("error").is_none());
         assert!(
             TerminalsRepository::receipt(
-                &state.store.as_ref().expect("store").read().expect("read"),
+                &state
+                    .store
+                    .as_ref()
+                    .expect("store")
+                    .test_reader()
+                    .expect("read"),
                 "create:request",
             )
             .expect("receipt")
@@ -1805,7 +1863,12 @@ mod tests {
                 .iter()
                 .all(|(_, method, _)| method != "process/writeStdin")
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert_eq!(
             TerminalsRepository::receipt(&connection, "input-failpoint").expect("receipt"),
             None
@@ -1882,7 +1945,12 @@ mod tests {
                 .count(),
             sent
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         for request_id in ["input-unknown", "input-settlement"] {
             let receipt = TerminalsRepository::receipt(&connection, request_id)
                 .expect("receipt")
@@ -1952,7 +2020,12 @@ mod tests {
             .to_owned();
         let saved_identity = serde_json::json!({"pid":7,"process_group":7,"session":7,"start_time_ticks":11,"boot_id":"boot"});
         let mut seeded = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -1992,7 +2065,12 @@ mod tests {
                 .all(|(_, method, _)| method != "process/kill")
         );
         let failed_close = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -2011,7 +2089,12 @@ mod tests {
             .expect("install restart fail point");
         assert!(driver.reconcile_after_restart().await.is_err());
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -2062,7 +2145,12 @@ mod tests {
                 .is_err()
         );
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -2118,7 +2206,12 @@ mod tests {
             .await
             .expect("record unresolved child");
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("row")
@@ -2166,7 +2259,7 @@ mod tests {
             .store
             .as_ref()
             .expect("store")
-            .read()
+            .test_reader()
             .expect("read")
             .query_row(
                 "SELECT COUNT(*) FROM user_terminal_output WHERE terminal=?1",
@@ -2206,7 +2299,12 @@ mod tests {
                     .is_err(),
                 "injected {trigger} failure must abort exit transaction"
             );
-            let connection = state.store.as_ref().expect("store").read().expect("read");
+            let connection = state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read");
             let row = TerminalsRepository::get(&connection, &id)
                 .expect("row")
                 .expect("terminal");
@@ -2309,7 +2407,12 @@ mod tests {
                 .len(),
             2
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         for id in [&first, &second] {
             let row = TerminalsRepository::get(&connection, id)
                 .expect("row")
@@ -2350,7 +2453,12 @@ mod tests {
             .await
             .expect("unavailable identity is retained without signaling");
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("terminal row")
@@ -2429,7 +2537,12 @@ mod tests {
                 .len(),
             2
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         for id in [&first, &second] {
             let row = TerminalsRepository::get(&connection, id)
                 .expect("row")
@@ -2470,12 +2583,19 @@ mod tests {
                 .await
                 .is_err()
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         let cursor = TerminalsRepository::event_cursor(&connection, &id).expect("cursor");
         drop(connection);
         assert_eq!(cursor, None);
         assert_eq!(
-            output(state.store.as_ref().expect("store"), &id, 0).expect("output")["text"],
+            output(state.store.as_ref().expect("store"), &id, 0)
+                .await
+                .expect("output")["text"],
             ""
         );
 
@@ -2488,10 +2608,17 @@ mod tests {
             .await
             .expect("replay after transaction rollback");
         assert_eq!(
-            output(state.store.as_ref().expect("store"), &id, 0).expect("committed output")["text"],
+            output(state.store.as_ref().expect("store"), &id, 0)
+                .await
+                .expect("committed output")["text"],
             "atomic"
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert_eq!(
             TerminalsRepository::event_cursor(&connection, &id).expect("cursor"),
             Some(1)
@@ -2507,7 +2634,12 @@ mod tests {
         let id = created["id"].as_str().expect("terminal id").to_owned();
         assert_eq!(created["status"], "running");
         let mut seeded = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("terminal row")
@@ -2531,7 +2663,12 @@ mod tests {
         assert_eq!(renamed["title"], "Shell");
         assert_eq!(renamed["id"], id);
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("renamed row")
@@ -2565,7 +2702,12 @@ mod tests {
             request.2["deltaBase64"],
             base64::engine::general_purpose::STANDARD.encode("hi🙂")
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert_eq!(
             TerminalsRepository::receipt(&connection, "actions-input")
                 .expect("receipt")
@@ -2599,7 +2741,12 @@ mod tests {
             .expect("close");
         assert_eq!(closed["status"], "closed");
         let row = TerminalsRepository::get(
-            &state.store.as_ref().expect("store").read().expect("read"),
+            &state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_reader()
+                .expect("read"),
             &id,
         )
         .expect("closed row")
@@ -2685,7 +2832,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 Value::Array(rows)
             }
-            let connection = store.read().expect("read action corpus rows");
+            let connection = store.test_reader().expect("read action corpus rows");
             serde_json::json!({
                 "user_terminals":rows(&connection,"user_terminals"),
                 "user_terminal_receipts":rows(&connection,"user_terminal_receipts"),
@@ -2882,7 +3029,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let connection = state.store.as_ref().expect("store").read().expect("read");
+        let connection = state
+            .store
+            .as_ref()
+            .expect("store")
+            .test_reader()
+            .expect("read");
         assert_eq!(
             TerminalsRepository::archive_start(&connection, bad).expect("archive query"),
             None
@@ -2948,8 +3100,9 @@ mod tests {
             .reconcile_after_restart()
             .await
             .expect("restart reconciliation");
-        let persisted =
-            output(state.store.as_ref().expect("store"), id, 0).expect("persisted result");
+        let persisted = output(state.store.as_ref().expect("store"), id, 0)
+            .await
+            .expect("persisted result");
         assert_eq!(persisted["status"], "exited");
         assert_eq!(
             persisted["error"],
@@ -3004,7 +3157,7 @@ mod tests {
         };
         entered.wait();
         let store = state.store.as_ref().expect("store");
-        let row = TerminalsRepository::get(&store.read().expect("read"), &id)
+        let row = TerminalsRepository::get(&store.test_reader().expect("read"), &id)
             .expect("row")
             .expect("terminal");
         let mut record = row.record;

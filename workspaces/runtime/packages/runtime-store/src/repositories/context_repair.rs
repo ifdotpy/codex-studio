@@ -56,6 +56,15 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 pub struct ContextRepairRepository;
+
+fn capture_bytes(used: &mut usize, value: &Value, maximum_bytes: usize) -> StoreResult<()> {
+    *used = used
+        .checked_add(serde_json::to_vec(value)?.len())
+        .filter(|total| *total <= maximum_bytes)
+        .ok_or(StoreError::RecordContract("context capture byte bound"))?;
+    Ok(())
+}
+
 impl ContextRepairRepository {
     pub fn agent(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
         Ok(AgentRepository::get(db, &AgentId::from(id))?.map(|a| a.value()))
@@ -63,13 +72,15 @@ impl ContextRepairRepository {
     pub fn capture(
         db: &Connection,
         id: &str,
-        limit: usize,
+        maximum_bytes: usize,
     ) -> StoreResult<Option<(Value, Vec<Value>)>> {
         let Some(agent) = Self::agent(db, id)? else {
             return Ok(None);
         };
-        let mut query = db.prepare_cached("SELECT e.id,e.agent,e.epoch,e.kind,CASE WHEN length(CAST(e.text AS BLOB))<=65536 THEN e.text ELSE NULL END,e.status,e.created,e.turn_id,e.error,CASE WHEN length(CAST(m.record AS BLOB))<=65536 THEN m.record WHEN m.record IS NULL THEN NULL ELSE 'invalid-oversize' END FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.epoch=?2 AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id LIMIT ?3")?;
-        let rows = query.query_map(params![id, agent["epoch"].as_i64(), i64::try_from(limit).map_err(|_| StoreError::RecordContract("capture bound"))?], |row| {
+        let mut used_bytes = 0;
+        capture_bytes(&mut used_bytes, &agent, maximum_bytes)?;
+        let mut query = db.prepare_cached("SELECT e.id,e.agent,e.epoch,e.kind,CASE WHEN length(CAST(e.text AS BLOB))<=65536 THEN e.text ELSE NULL END,e.status,e.created,e.turn_id,e.error,CASE WHEN length(CAST(m.record AS BLOB))<=65536 THEN m.record WHEN m.record IS NULL THEN NULL ELSE 'invalid-oversize' END FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.epoch=?2 AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id")?;
+        let rows = query.query_map(params![id, agent["epoch"].as_i64()], |row| {
             Ok((json!({"id": row.get::<_,String>(0)?, "agent": row.get::<_,String>(1)?, "epoch": row.get::<_,i64>(2)?, "kind": row.get::<_,String>(3)?, "text": row.get::<_,String>(4)?, "status": row.get::<_,String>(5)?, "created": row.get::<_,f64>(6)?, "turn_id": row.get::<_,Option<String>>(7)?, "error": row.get::<_,Option<String>>(8)?}), row.get::<_,Option<String>>(9)?))
         })?;
         let mut events = Vec::new();
@@ -79,6 +90,7 @@ impl ContextRepairRepository {
                 .map(|text| serde_json::from_str(&text))
                 .transpose()?
                 .unwrap_or(Value::Null);
+            capture_bytes(&mut used_bytes, &event, maximum_bytes)?;
             events.push(event);
         }
         Ok(Some((agent, events)))
@@ -100,25 +112,35 @@ impl ContextRepairRepository {
         tx.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=?1 AND agent=?2 AND epoch=?3 AND status IN ('reserved','dispatching','uncertain')", params![id,agent,epoch])?;
         Ok(())
     }
-    pub fn pending(db: &Connection, agent: &Value) -> StoreResult<Option<Vec<Value>>> {
-        let Some(ids) = agent["startAttempt"]["events"]
-            .as_array()
-            .filter(|ids| ids.len() <= 32)
-        else {
+    pub fn pending(
+        db: &Connection,
+        agent: &Value,
+        maximum_bytes: usize,
+    ) -> StoreResult<Option<Vec<Value>>> {
+        let Some(ids) = agent["startAttempt"]["events"].as_array() else {
             return Ok(None);
         };
         let mut result = Vec::new();
+        let mut used_bytes = 0;
         for id in ids {
             let row: Option<String> = db.query_row("SELECT json_object('id',id,'agent',agent,'kind',kind,'text',text,'status',status,'created',created,'epoch',epoch,'turn_id',turn_id,'error',error) FROM runtime_events WHERE id=?1 AND agent=?2 AND epoch=?3 AND status='pending' AND turn_id IS NULL AND length(CAST(text AS BLOB))<=65536", params![id.as_str(),agent["id"].as_str(),agent["epoch"].as_i64()], |row| row.get(0)).optional()?;
             let Some(row) = row else {
                 return Ok(None);
             };
-            result.push(serde_json::from_str(&row)?);
+            let row = serde_json::from_str(&row)?;
+            capture_bytes(&mut used_bytes, &row, maximum_bytes)?;
+            result.push(row);
         }
         Ok(Some(result))
     }
-    pub fn batches(db: &Connection, agent: &Value, events: &[Value]) -> StoreResult<Vec<Value>> {
+    pub fn batches(
+        db: &Connection,
+        agent: &Value,
+        events: &[Value],
+        maximum_bytes: usize,
+    ) -> StoreResult<Vec<Value>> {
         let mut result = Vec::new();
+        let mut used_bytes = 0;
         let mut seen = std::collections::BTreeSet::new();
         for event in events {
             let Some(key) = event["metadata"]["transcriptItemId"].as_str() else {
@@ -132,14 +154,12 @@ impl ContextRepairRepository {
                 continue;
             };
             let item: Value = serde_json::from_str(&record)?;
-            let Some(inputs) = item["inputs"]
-                .as_array()
-                .filter(|inputs| inputs.len() <= 32)
-            else {
+            let Some(inputs) = item["inputs"].as_array() else {
                 continue;
             };
             let fulltext: Option<String> = db.query_row("SELECT body FROM runtime_item_fulltext WHERE id=?1 AND length(CAST(body AS BLOB))<=65536", [key], |row| row.get(0)).optional()?;
             let mut members = Vec::new();
+            let mut member_bytes = 0;
             for input in inputs {
                 let Some(id) = input["id"].as_str() else {
                     continue;
@@ -148,10 +168,13 @@ impl ContextRepairRepository {
                 if let Some((row, meta)) = member {
                     let mut row: Value = serde_json::from_str(&row)?;
                     row["metadata"] = serde_json::from_str(&meta)?;
+                    capture_bytes(&mut member_bytes, &row, maximum_bytes)?;
                     members.push(row);
                 }
             }
-            result.push(json!({"item":item,"row":{"id":key,"agent":agent["id"],"created":created,"record":record},"fulltext":fulltext,"members":members}));
+            let batch = json!({"item":item,"row":{"id":key,"agent":agent["id"],"created":created,"record":record},"fulltext":fulltext,"members":members});
+            capture_bytes(&mut used_bytes, &batch, maximum_bytes)?;
+            result.push(batch);
         }
         Ok(result)
     }

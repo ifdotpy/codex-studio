@@ -215,12 +215,28 @@ impl RecoveryCursor {
         self.agents_ended && self.tasks_ended
     }
 }
-pub fn load_recovery_jobs(
+pub async fn load_recovery_jobs(
     store: &RuntimeStore,
     account: &str,
     cursor: &mut RecoveryCursor,
 ) -> Result<Vec<RecoveryJob>, RecoveryError> {
-    let db = store.read()?;
+    let account = account.to_owned();
+    let mut page_cursor = std::mem::take(cursor);
+    let (jobs, updated_cursor) = store
+        .read_async("runtime-services/restart_recovery_scan", move |db| {
+            let jobs = load_recovery_jobs_in(db, &account, &mut page_cursor);
+            Ok::<_, RecoveryError>((jobs, page_cursor))
+        })
+        .await?;
+    *cursor = updated_cursor;
+    jobs
+}
+
+fn load_recovery_jobs_in(
+    db: &rusqlite::Connection,
+    account: &str,
+    cursor: &mut RecoveryCursor,
+) -> Result<Vec<RecoveryJob>, RecoveryError> {
     let mut jobs = Vec::new();
     let task_page = cursor.task_page;
     // A located row refusal must not pin either table's disposable scan state.
@@ -234,7 +250,7 @@ pub fn load_recovery_jobs(
         return Ok(jobs);
     }
     if task_page {
-        let mut stmt=db.prepare_cached("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
+        let mut stmt=db.prepare_cached("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE a.account_key=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.tasks, MAX_SCAN_JOBS as i64],
@@ -255,9 +271,8 @@ pub fn load_recovery_jobs(
                 serde_json::from_str(&task).map_err(|_| invalid_record("runtime_tasks", &id))?;
             let mut agent: Value = serde_json::from_str(&agent)
                 .map_err(|_| invalid_record("runtime_agents", &agent_id))?;
-            studio_runtime_store::agent_volatile::merge(&db, &agent_id, &mut agent)?;
-            let (aliases, receipts) =
-                crate::task_recovery_store::receipt_state(&db, &agent, &task)?;
+            studio_runtime_store::agent_volatile::merge(db, &agent_id, &mut agent)?;
+            let (aliases, receipts) = crate::task_recovery_store::receipt_state(db, &agent, &task)?;
             let snapshot = TaskRecoverySnapshot::from_stored_records(
                 &agent_id, &id, agent, task, aliases, receipts,
             )?;
@@ -271,7 +286,7 @@ pub fn load_recovery_jobs(
             cursor.tasks_ended = true;
         }
     } else {
-        let mut stmt=db.prepare_cached("SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
+        let mut stmt=db.prepare_cached("SELECT id,record FROM runtime_agents WHERE account_key=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.agents, MAX_SCAN_JOBS as i64],
@@ -283,7 +298,7 @@ pub fn load_recovery_jobs(
             cursor.agents = id.clone();
             let mut record: Value =
                 serde_json::from_str(&raw).map_err(|_| invalid_record("runtime_agents", &id))?;
-            studio_runtime_store::agent_volatile::merge(&db, &id, &mut record)?;
+            studio_runtime_store::agent_volatile::merge(db, &id, &mut record)?;
             let snapshot = RecoverySnapshot::from_record(record)
                 .map_err(|_| invalid_record("runtime_agents", &id))?;
             let e = snapshot.eligibility();

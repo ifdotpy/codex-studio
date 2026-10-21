@@ -217,7 +217,9 @@ pub trait Clock: Send + Sync + 'static {
 
 /// Durable preferences and native-notice writes used by the monitor.
 pub trait ProviderVersionStore: Send + Sync + 'static {
-    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError>;
+    fn upstream_enabled(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, ProviderVersionsError>> + Send + '_>>;
     fn persist_warnings<'a>(
         &'a self,
         observed_accounts: &'a [String],
@@ -232,26 +234,39 @@ pub fn runtime_provider_version_store(store: Arc<RuntimeStore>) -> Arc<dyn Provi
     Arc::new(SyncProviderVersionStore(store))
 }
 
+fn upstream_enabled_from_payload(payload: Option<String>) -> Result<bool, ProviderVersionsError> {
+    let Some(payload) = payload else {
+        return Ok(true);
+    };
+    let value = serde_json::from_str::<Value>(&payload)
+        .map_err(|_| ProviderVersionsError::PreferenceRead)?;
+    let fields = value
+        .pointer("/value/fields")
+        .and_then(Value::as_object)
+        .ok_or(ProviderVersionsError::PreferenceRead)?;
+    if fields
+        .get(PROVIDER_UPDATE_PREFERENCE_KEY)
+        .is_some_and(|field| field.get("value").and_then(Value::as_bool).is_none())
+    {
+        return Err(ProviderVersionsError::PreferenceRead);
+    }
+    Ok(provider_updates_enabled_from_fields(fields))
+}
+
 impl ProviderVersionStore for SyncProviderVersionStore {
-    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
-        let connection = self.0.read()?;
-        let payload = SyncDocumentsRepository::preference_payload(&connection, "user")?;
-        let Some(payload) = payload else {
-            return Ok(true);
-        };
-        let value = serde_json::from_str::<Value>(&payload)
-            .map_err(|_| ProviderVersionsError::PreferenceRead)?;
-        let fields = value
-            .pointer("/value/fields")
-            .and_then(Value::as_object)
-            .ok_or(ProviderVersionsError::PreferenceRead)?;
-        if fields
-            .get(PROVIDER_UPDATE_PREFERENCE_KEY)
-            .is_some_and(|field| field.get("value").and_then(Value::as_bool).is_none())
-        {
-            return Err(ProviderVersionsError::PreferenceRead);
-        }
-        Ok(provider_updates_enabled_from_fields(fields))
+    fn upstream_enabled(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, ProviderVersionsError>> + Send + '_>> {
+        Box::pin(async move {
+            let payload = self
+                .0
+                .read_async(
+                    "runtime-services/provider_versions/preference-read",
+                    |connection| SyncDocumentsRepository::preference_payload(connection, "user"),
+                )
+                .await?;
+            upstream_enabled_from_payload(payload)
+        })
     }
 
     fn persist_warnings<'a>(
@@ -818,15 +833,9 @@ impl ProviderVersionMonitor {
             .lock()
             .map(|state| state.upstream_enabled)
             .unwrap_or(false);
-        let store = Arc::clone(&self.store);
-        let preference_result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/provider_versions/preference-read",
-            move || store.upstream_enabled(),
-        )
-        .await;
-        let (upstream_enabled, preference_known) = match preference_result {
-            Ok(Ok(enabled)) => (enabled, true),
-            Ok(Err(_)) | Err(_) => {
+        let (upstream_enabled, preference_known) = match self.store.upstream_enabled().await {
+            Ok(enabled) => (enabled, true),
+            Err(_) => {
                 outcome.retry = true;
                 (prior_upstream_enabled, false)
             }

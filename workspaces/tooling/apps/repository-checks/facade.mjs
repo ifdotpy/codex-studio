@@ -829,7 +829,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
-      label: "Rust state schema parity",
+      label: "Rust state migration witness",
       commands: [
         [
           "cargo",
@@ -843,17 +843,16 @@ function fastTierCommands(root) {
             "libtest-json-plus",
             "-p",
             "studio-runtime-store",
-            "--test",
-            "fresh_state",
-            "rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration",
+            "--lib",
+            "agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
           ],
         ],
       ],
       options: {
         selector:
-          "runtime-store fresh_state::rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration",
+          "runtime-store agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
         reason:
-          "Check the existing Rust and Python fresh-state schema parity witness.",
+          "Check that a pre-2026-10-20 state migrates to the agent columns once.",
       },
     },
     {

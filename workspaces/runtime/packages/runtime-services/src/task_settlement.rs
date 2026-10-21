@@ -211,7 +211,7 @@ pub fn absent_command_checks(
          JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') \
          WHERE json_extract(t.record,'$.status')='running' \
          AND json_extract(t.record,'$.kind')='command' \
-         AND COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 ORDER BY 1",
+         AND a.account_key=?1 ORDER BY 1",
     )?;
     let agents = statement
         .query_map([account], |row| row.get::<_, String>(0))?
@@ -450,7 +450,7 @@ mod tests {
 
     fn stored(store: &RuntimeStore, id: &str) -> Value {
         let raw: String = store
-            .read()
+            .test_reader()
             .expect("read")
             .query_row(
                 "SELECT record FROM runtime_tasks WHERE id=?1",
@@ -462,7 +462,7 @@ mod tests {
     }
 
     fn checks(store: &RuntimeStore) -> Vec<CommandCheck> {
-        absent_command_checks(&store.read().expect("read"), "default").expect("checks")
+        absent_command_checks(&store.test_reader().expect("read"), "default").expect("checks")
     }
 
     /// Live 2026-10-20: completed chats kept a running command of a turn that

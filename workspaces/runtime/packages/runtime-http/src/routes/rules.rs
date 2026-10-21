@@ -30,16 +30,12 @@ pub(crate) async fn list(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::RuleList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let records = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/rules",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let (rules, agents) = RulesRepository::list(&connection).map_err(store_api_error)?;
+    let records = store
+        .read_async("runtime-http/routes/rules", move |connection| {
+            let (rules, agents) = RulesRepository::list(connection).map_err(store_api_error)?;
             rules::visible_rules(rules, agents).map_err(rules_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
 
     let output = records
         .into_iter()
@@ -78,44 +74,39 @@ async fn update(
     let prepare_rule_id = rule_id.clone();
     let prepare_action = action.clone();
     let prepare_body = body.clone();
-    let (prepared_agent, prepared_old, prepared_path, prepared_fingerprint) =
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/rules",
-            move || {
-                let connection = prepare_store.read().map_err(store_api_error)?;
-                let agent = RulesRepository::agent(&connection, &prepare_agent_id)
-                    .map_err(store_api_error)?
-                    .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-                let agent_value = agent.value();
-                validate_agent(agent.id().as_ref(), &agent_value)?;
-                let old =
-                    RulesRepository::get(&connection, &prepare_rule_id).map_err(store_api_error)?;
-                let old_value = old.as_ref().map(|old| old.value().clone());
-                let path = if prepare_action == "resume"
-                    && old_value.as_ref().and_then(|value| string(value, "kind")) == Some("file")
-                {
-                    old_value
-                        .as_ref()
-                        .and_then(|value| string(value, "path"))
-                        .map(str::to_owned)
-                } else if !matches!(prepare_action.as_str(), "delete" | "pause" | "resume")
-                    && string(&prepare_body, "kind") == Some("file")
-                {
-                    Some(resolve_workspace_path(
-                        &agent_value,
-                        string(&prepare_body, "path").unwrap_or(""),
-                    )?)
-                } else {
-                    None
-                };
-                let fingerprint = path
-                    .as_deref()
-                    .and_then(|path| file_fingerprint(Path::new(path)));
-                Ok::<_, ApiError>((agent_value, old_value, path, fingerprint))
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+    let (prepared_agent, prepared_old, prepared_path, prepared_fingerprint) = prepare_store
+        .read_async("runtime-http/routes/rules", move |connection| {
+            let agent = RulesRepository::agent(connection, &prepare_agent_id)
+                .map_err(store_api_error)?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
+            let agent_value = agent.value();
+            validate_agent(agent.id().as_ref(), &agent_value)?;
+            let old =
+                RulesRepository::get(connection, &prepare_rule_id).map_err(store_api_error)?;
+            let old_value = old.as_ref().map(|old| old.value().clone());
+            let path = if prepare_action == "resume"
+                && old_value.as_ref().and_then(|value| string(value, "kind")) == Some("file")
+            {
+                old_value
+                    .as_ref()
+                    .and_then(|value| string(value, "path"))
+                    .map(str::to_owned)
+            } else if !matches!(prepare_action.as_str(), "delete" | "pause" | "resume")
+                && string(&prepare_body, "kind") == Some("file")
+            {
+                Some(resolve_workspace_path(
+                    &agent_value,
+                    string(&prepare_body, "path").unwrap_or(""),
+                )?)
+            } else {
+                None
+            };
+            let fingerprint = path
+                .as_deref()
+                .and_then(|path| file_fingerprint(Path::new(path)));
+            Ok::<_, ApiError>((agent_value, old_value, path, fingerprint))
+        })
+        .await?;
     let (result, cancel_ids) = store
         .transaction_with(move |transaction| {
             let agent = RulesRepository::agent(transaction, &agent_id)
@@ -363,12 +354,6 @@ fn store_api_error(error: StoreError) -> ApiError {
             ApiError::invalid_stored(&scope, &id)
         }
         _ => ApiError::internal(),
-    }
-}
-
-impl From<StoreError> for ApiError {
-    fn from(error: StoreError) -> Self {
-        store_api_error(error)
     }
 }
 

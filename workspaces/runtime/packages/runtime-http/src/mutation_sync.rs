@@ -48,17 +48,11 @@ pub(crate) async fn envelope(
         return next.run(request).await;
     };
     let cursor = if should_sample(&request) {
-        let cursor_store = store.clone();
-        let cursor = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/mutation_sync",
-            move || cursor_store.read_transaction(sample_entity_cursor),
+        cursor_after_read(
+            store
+                .read_async("runtime-http/mutation_sync", sample_entity_cursor)
+                .await,
         )
-        .await;
-        match cursor {
-            Ok(Ok(cursor)) => cursor_after_read(Ok(cursor)),
-            Ok(Err(error)) => cursor_after_read(Err(error.to_string())),
-            Err(error) => cursor_after_read(Err(error.to_string())),
-        }
     } else {
         None
     };
@@ -103,20 +97,14 @@ async fn envelope_response(
         return original_response(parts, bytes);
     }
 
-    let delta_store = store;
-    let delta = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/mutation_sync",
-        move || delta_store.read_transaction(|snapshot| read_entity_delta(snapshot, after)),
-    )
-    .await;
-    let delta = match delta {
-        Ok(Ok(delta)) => delta,
-        Ok(Err(error)) => {
-            return response_on_delta_error(parts, bytes, "ranged entity read", error);
-        }
-        Err(error) => {
-            return response_on_delta_error(parts, bytes, "ranged entity read task", error);
-        }
+    let delta = match store
+        .read_async("runtime-http/mutation_sync", move |snapshot| {
+            read_entity_delta(snapshot, after)
+        })
+        .await
+    {
+        Ok(delta) => delta,
+        Err(error) => return response_on_delta_error(parts, bytes, "ranged entity read", error),
     };
     if delta
         .rows
@@ -177,7 +165,9 @@ async fn buffer_response(
     }
 }
 
-fn cursor_after_read(result: Result<i64, String>) -> Option<EntityCursor> {
+fn cursor_after_read(
+    result: Result<i64, studio_runtime_store::StoreError>,
+) -> Option<EntityCursor> {
     match result {
         Ok(cursor) if cursor <= MAX_SAFE_ENTITY_SEQUENCE => Some(EntityCursor(cursor)),
         Ok(cursor) => {
@@ -460,7 +450,7 @@ mod tests {
             .uri("/mutation")
             .body(Body::empty())
             .expect("request builds");
-        let cursor = cursor_after_read(Err("simulated cursor read failure".to_owned()));
+        let cursor = cursor_after_read(Err(studio_runtime_store::StoreError::ReadTaskFailed));
         let (response, cursor) = dispatch_with_cursor(request, cursor, |request| async move {
             assert!(request.extensions().get::<EntityCursor>().is_none());
             Response::builder()

@@ -15,6 +15,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
+/// Sanity bound on remembered finished streams (count). A turn's keys are dropped
+/// when it settles, so only a turn that never settles can reach this; the oldest
+/// key is then evicted first.
 const MAX_CLOSED_STREAMS: usize = 8_192;
 /// Best-effort stream statistics staged in one journal batch. Matches Python's
 /// 64-capture analytics queue; complete analytics notifications are not counted.
@@ -795,56 +798,84 @@ impl NotificationStreamBuffer {
         Some((text, count, params))
     }
 
-    pub(super) fn close(&mut self, key: &StreamKey) {
-        let pending_removed = self
-            .indexes
-            .entries
-            .get(key)
-            .map(|index| {
-                self.entries[*index]
-                    .pending
-                    .len()
-                    .max(usize::from(self.entries[*index].count > 0))
-            })
-            .unwrap_or_default();
-        if let Some(index) = self.indexes.analytics.get(key).copied() {
+    /// Drop the open stream, capture and sample of `key` without touching the
+    /// other keys' indexes more than the removal itself requires.
+    fn forget(&mut self, key: &StreamKey) {
+        let indexes = Arc::make_mut(&mut self.indexes);
+        if let Some(index) = indexes.entries.remove(key) {
+            let removed = self.entries.remove(index);
+            let pending = removed.pending.len().max(usize::from(removed.count > 0));
+            self.pending_bytes = self.pending_bytes.saturating_sub(pending);
+            for later in indexes.entries.values_mut().filter(|later| **later > index) {
+                *later -= 1;
+            }
+        }
+        if let Some(index) = indexes.analytics.remove(key) {
             let removed = self.analytics.remove(index).into_owned();
             self.analytics_bytes = self.analytics_bytes.saturating_sub(removed.retained_bytes);
+            for later in indexes
+                .analytics
+                .values_mut()
+                .filter(|later| **later > index)
+            {
+                *later -= 1;
+            }
         }
-        self.analytics_skipped
-            .retain(|sample_key| **sample_key != *key);
-        self.entries.retain(|entry| &entry.key != key);
-        self.pending_bytes = self.pending_bytes.saturating_sub(pending_removed);
-        if !self.indexes.closed.contains(key) {
+        if indexes.analytics_skipped.remove(key) {
+            self.analytics_skipped
+                .retain(|sample_key| **sample_key != *key);
+        }
+    }
+
+    /// Finish the stream: later deltas for `key` are dropped until its turn settles.
+    pub(super) fn close(&mut self, key: &StreamKey) {
+        self.forget(key);
+        let indexes = Arc::make_mut(&mut self.indexes);
+        if indexes.closed.insert(key.clone()) {
             self.closed.push(Shared::new(key.clone()));
         }
         if self.closed.len() > MAX_CLOSED_STREAMS {
-            self.closed.remove(0);
+            let evicted = self.closed.remove(0);
+            indexes.closed.remove(&*evicted);
         }
-        self.rebuild_indexes();
     }
 
     pub(super) fn discard(&mut self, key: &StreamKey) {
-        let pending_removed = self
-            .indexes
-            .entries
-            .get(key)
-            .map(|index| {
-                self.entries[*index]
-                    .pending
-                    .len()
-                    .max(usize::from(self.entries[*index].count > 0))
-            })
-            .unwrap_or_default();
-        if let Some(index) = self.indexes.analytics.get(key).copied() {
-            let removed = self.analytics.remove(index).into_owned();
-            self.analytics_bytes = self.analytics_bytes.saturating_sub(removed.retained_bytes);
+        self.forget(key);
+    }
+
+    /// The turn ended: its finished streams no longer need a closed key, because
+    /// dispatch drops a delta of a turn that is not in progress by the turn alone.
+    /// Keys without a turn settle with any turn of their thread.
+    pub(crate) fn settle_turn(&mut self, account: &str, thread: &str, turn: &str) {
+        self.retain_closed(|key| {
+            !(key.account == account
+                && key.thread == thread
+                && key.turn.as_deref().is_none_or(|key_turn| key_turn == turn))
+        });
+    }
+
+    /// Keep only the closed keys `keep` accepts; it runs once per key.
+    pub(super) fn retain_closed(&mut self, mut keep: impl FnMut(&StreamKey) -> bool) {
+        let mut dropped = Vec::new();
+        self.closed.retain(|key| {
+            let kept = keep(key);
+            if !kept {
+                dropped.push(StreamKey::clone(key));
+            }
+            kept
+        });
+        if !dropped.is_empty() {
+            let indexes = Arc::make_mut(&mut self.indexes);
+            for key in &dropped {
+                indexes.closed.remove(key);
+            }
         }
-        self.analytics_skipped
-            .retain(|sample_key| **sample_key != *key);
-        self.entries.retain(|entry| &entry.key != key);
-        self.pending_bytes = self.pending_bytes.saturating_sub(pending_removed);
-        self.rebuild_indexes();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn closed_len(&self) -> usize {
+        self.closed.len()
     }
 }
 
@@ -886,6 +917,54 @@ mod tests {
         assert!(matches!(
             streams.enqueue_delta(key, "still alive", &Value::Null),
             EnqueueResult::Buffered
+        ));
+    }
+
+    fn turn_key(turn: usize, item: usize) -> StreamKey {
+        StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 1,
+            thread: "thread".into(),
+            turn: Some(format!("turn-{turn}")),
+            item: format!("item-{item}"),
+            method: "item/agentMessage/delta".into(),
+        }
+    }
+
+    #[test]
+    fn closed_keys_stay_bounded_by_the_turn_in_progress_over_many_turns() {
+        let mut streams = NotificationStreamBuffer::default();
+        for turn in 0..1_000 {
+            for item in 0..3 {
+                let key = turn_key(turn, item);
+                streams.enqueue_delta(key.clone(), "x", &Value::Null);
+                streams.close(&key);
+            }
+            assert_eq!(streams.closed.len(), 3);
+            streams.settle_turn("default", "thread", &format!("turn-{turn}"));
+            assert!(streams.closed.is_empty());
+            assert!(streams.indexes.closed.is_empty());
+        }
+    }
+
+    #[test]
+    fn closing_keeps_the_other_open_streams_addressable() {
+        let mut streams = NotificationStreamBuffer::default();
+        for item in 0..3 {
+            streams.enqueue_delta(turn_key(0, item), "a", &Value::Null);
+        }
+        streams.close(&turn_key(0, 0));
+        streams.discard(&turn_key(0, 1));
+        assert!(matches!(
+            streams.enqueue_delta(turn_key(0, 2), "b", &Value::Null),
+            EnqueueResult::Buffered
+        ));
+        assert_eq!(streams.entries.len(), 1);
+        assert_eq!(streams.entries[0].pending, "ab");
+        assert!(matches!(
+            streams.enqueue_delta(turn_key(0, 0), "late", &Value::Null),
+            EnqueueResult::Closed
         ));
     }
 

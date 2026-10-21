@@ -148,16 +148,19 @@ pub fn enqueue_output_with_scope_in_transaction(
 }
 
 /// Return the first durable per-monitor event in stable monitor/cursor order.
-pub fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
-    let connection = store.read()?;
-    let row = connection
-        .query_row_cached(
-            "SELECT id,record FROM runtime_monitors WHERE json_array_length(record,'$.streamQueue')>0 ORDER BY id LIMIT 1",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()
-        .map_err(StoreError::from)?;
+pub async fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
+    let row = store
+        .read_async("runtime-services/monitor_event_queue", |connection| {
+            connection
+                .query_row_cached(
+                    "SELECT id,record FROM runtime_monitors WHERE json_array_length(record,'$.streamQueue')>0 ORDER BY id LIMIT 1",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(StoreError::from)
+        })
+        .await?;
     let Some((id, encoded)) = row else {
         return Ok(None);
     };

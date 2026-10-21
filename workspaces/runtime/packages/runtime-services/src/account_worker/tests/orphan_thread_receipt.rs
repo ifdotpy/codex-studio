@@ -7,7 +7,7 @@ async fn unresolved_thread_receipts(state: &State) -> Vec<String> {
     state
         .bridge
         .run(|store| async move {
-            let connection = store.read()?;
+            let connection = store.test_reader()?;
             let mut statement = connection.prepare(
                 "SELECT r.id FROM runtime_operation_receipts r WHERE r.id GLOB 'account-worker:account:default:*:thread/*:submitted' \
                  AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved')",

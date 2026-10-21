@@ -167,7 +167,7 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
     let reader = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/tests/analytics_history_checkpoint",
         move || {
-            reader_store.read_transaction(|tx| {
+            reader_store.test_read_transaction(|tx| {
                 Ok(
                     tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
                         r.get::<_, String>(0)
@@ -555,7 +555,7 @@ async fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
         "replay must not rewrite budget rows"
     );
     let (rows, tokens) = store
-        .read_transaction(|tx| {
+        .test_read_transaction(|tx| {
             Ok((
                 tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |r| {
                     r.get::<_, i64>(0)
@@ -616,7 +616,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     );
     let read_budget = || {
         store
-            .read_transaction(|tx| {
+            .test_read_transaction(|tx| {
                 Ok((
                     tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
                         row.get::<_, i64>(0)
@@ -737,7 +737,7 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
 
     let read_budget = || {
         store
-            .read_transaction(|tx| {
+            .test_read_transaction(|tx| {
                 Ok((
                     tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
                         row.get::<_, i64>(0)

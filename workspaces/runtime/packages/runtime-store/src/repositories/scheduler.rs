@@ -150,7 +150,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("memory database opens");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
+                &crate::agent_columns::fixture_sql("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
                  CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
                  CREATE TABLE runtime_execution_inputs(run TEXT,event TEXT,PRIMARY KEY(run,event));
                  CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
@@ -164,7 +164,7 @@ mod tests {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER);",
+                 CREATE TABLE sync_versions(seq INTEGER);"),
             )
             .expect("scheduler tables create");
         connection

@@ -198,30 +198,24 @@ async fn load_agent(
     store: Arc<RuntimeStore>,
     id: String,
 ) -> Result<(Value, Option<Value>), ApiError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/claude_controls",
-        move || {
-            let loaded = store
-                .read_transaction(|tx| {
-                    let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
-                        return Ok(None);
-                    };
-                    let value = agent.value();
-                    let operation = value
-                        .get("workspaceReservationId")
-                        .and_then(Value::as_str)
-                        .filter(|id| id.starts_with("claude-control:"))
-                        .map(|id| WorkspaceOperationsRepository::operation(tx, id))
-                        .transpose()?
-                        .flatten();
-                    Ok(Some((value, operation)))
-                })
-                .map_err(|_| ApiError::internal())?;
-            loaded.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    let loaded = store
+        .read_async("runtime-http/routes/claude_controls", move |tx| {
+            let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+                return Ok(None);
+            };
+            let value = agent.value();
+            let operation = value
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                .filter(|id| id.starts_with("claude-control:"))
+                .map(|id| WorkspaceOperationsRepository::operation(tx, id))
+                .transpose()?
+                .flatten();
+            Ok::<_, studio_runtime_store::StoreError>(Some((value, operation)))
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
+    loaded.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))
 }
 
 async fn command(state: HttpState, body: Value) -> Result<Json<Value>, ApiError> {

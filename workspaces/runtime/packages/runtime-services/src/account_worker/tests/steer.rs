@@ -95,7 +95,7 @@ async fn input(state: &State) -> (String, Option<String>, Option<String>) {
     state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT status,turn_id,error FROM runtime_events WHERE id=?1",
                 [INPUT],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -110,7 +110,7 @@ async fn transcript(state: &State) -> i64 {
     state
         .bridge
         .run(move |store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT COUNT(*) FROM runtime_items WHERE id=?1 AND json_extract(record,'$.role')='user'",
                 [id],
                 |r| r.get::<_, i64>(0),
@@ -304,7 +304,7 @@ async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
         .bridge
         .run(move |store| async move {
             store::recover(&store, "default", Generation(2), true).await?;
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT json_extract(result,'$.stage') FROM runtime_operation_receipts \
                  WHERE signature='claude-steer'",
                 [],
@@ -389,10 +389,13 @@ async fn mixed_inputs(state: &State) {
 async fn mixed_statuses(state: &State) -> Vec<(String, String)> {
     let agent = state.agent.clone();
     state.bridge.run(move |store| async move {
-        let db=store.read()?;
+ store.read_async("test/account_worker_steer/mixed_statuses", move |db| {
+
         let mut statement=db.prepare("SELECT id,status FROM runtime_events WHERE agent=?1 AND id<>'annotation:input' ORDER BY created,rowid")?;
         Ok(statement.query_map([agent], |row| Ok((row.get(0)?,row.get(1)?)))?.collect::<Result<Vec<_>,_>>()?)
-    }).await.unwrap()
+
+ }).await
+}).await.unwrap()
 }
 
 per_provider!(mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits);
@@ -468,7 +471,8 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
     let transcript = state
         .bridge
         .run(move |store| async move {
-            let db = store.read()?;
+ store.read_async("test/account_worker_steer/mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits", move |db| {
+
             let raw: String = db.query_row(
                 "SELECT record FROM runtime_items WHERE id=?1",
                 [format!("{agent}:available")],
@@ -498,7 +502,9 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
                 |r| r.get(0),
             )?;
             Ok(count)
-        })
+
+ }).await
+})
         .await
         .unwrap();
     assert_eq!(transcript, 1);
@@ -569,13 +575,16 @@ async fn one_thousand_small_events_share_one_compiled_busy_submission() {
         "item":{"id":"small-0000","type":"userMessage","clientId":"small-0000","delivery":"steer","content":request["params"]["input"]}}})).await;
     let agent = state.agent.clone();
     state.bridge.run(move |store| async move {
-        let db=store.read()?;
+ store.read_async("test/account_worker_steer/one_thousand_small_events_share_one_compiled_busy_submission", move |db| {
+
         let delivered:i64=db.query_row("SELECT count(*) FROM runtime_events WHERE agent=?1 AND status='delivered' AND id<>'annotation:input'",[&agent],|r|r.get(0))?;
         assert_eq!(delivered,1000);
         let count:i64=db.query_row("SELECT json_array_length(record,'$.inputs') FROM runtime_items WHERE id=?1",[format!("{agent}:small-0000")],|r|r.get(0))?;
         assert_eq!(count,1000);
         Ok(())
-    }).await.unwrap();
+
+ }).await
+}).await.unwrap();
     no_write(&mut peer).await;
     worker.shutdown().await.unwrap();
 }
@@ -597,14 +606,18 @@ async fn one_thousand_small_events_share_one_idle_turn_submission() {
     state
         .bridge
         .run(move |store| async move {
-            let count: i64 = store.read()?.query_row(
+ store.read_async("test/account_worker_steer/one_thousand_small_events_share_one_idle_turn_submission", move |db| {
+
+            let count: i64 = db.query_row(
                 "SELECT count(*) FROM runtime_events WHERE agent=?1 AND status='delivered'",
                 [agent],
                 |r| r.get(0),
             )?;
             assert_eq!(count, 1000);
             Ok(())
-        })
+
+ }).await
+})
         .await
         .unwrap();
     no_write(&mut peer).await;
@@ -650,11 +663,14 @@ async fn assert_safe_user_batch(state: &State, request: &Value) {
         );
     }
     state.bridge.run(|store| async move {
-        let db=store.read()?;
+ store.read_async("test/account_worker_steer/assert_safe_user_batch", move |db| {
+
         let errors:i64=db.query_row("SELECT count(*) FROM runtime_events WHERE id IN ('message','followup') AND status='failed' AND error IS NOT NULL",[],|r|r.get(0))?;
         assert_eq!(errors,2,"unauthorized notifications have visible queue errors");
         Ok(())
-    }).await.unwrap();
+
+ }).await
+}).await.unwrap();
     assert_eq!(
         input(state).await.0,
         "dispatching",
@@ -686,7 +702,9 @@ async fn malformed_notification_evidence_fails_visibly_without_stranding_user_in
     state
         .bridge
         .run(|store| async move {
-            let row: (String, String) = store.read()?.query_row(
+ store.read_async("test/account_worker_steer/malformed_notification_evidence_fails_visibly_without_stranding_user_input", move |db| {
+
+            let row: (String, String) = db.query_row(
                 "SELECT status,error FROM runtime_events WHERE id='review'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -699,7 +717,9 @@ async fn malformed_notification_evidence_fails_visibly_without_stranding_user_in
                 )
             );
             Ok(())
-        })
+
+ }).await
+})
         .await
         .unwrap();
     worker.shutdown().await.unwrap();
@@ -726,7 +746,9 @@ async fn acknowledged_mixed_input_uses_frozen_authority_after_sender_moves() {
     state
         .bridge
         .run(move |store| async move {
-            let raw: String = store.read()?.query_row(
+ store.read_async("test/account_worker_steer/acknowledged_mixed_input_uses_frozen_authority_after_sender_moves", move |db| {
+
+            let raw: String = db.query_row(
                 "SELECT record FROM runtime_items WHERE id=?1",
                 [format!("{agent}:available")],
                 |r| r.get(0),
@@ -740,7 +762,9 @@ async fn acknowledged_mixed_input_uses_frozen_authority_after_sender_moves() {
                     .contains("[Orchestration event: agent_message]")
             );
             Ok(())
-        })
+
+ }).await
+})
         .await
         .unwrap();
     no_write(&mut peer).await;
@@ -786,7 +810,9 @@ async fn oversized_user_input_remains_intact_with_visible_transport_error() {
     state
         .bridge
         .run(move |store| async move {
-            let row: (String, String, i64) = store.read()?.query_row(
+ store.read_async("test/account_worker_steer/oversized_user_input_remains_intact_with_visible_transport_error", move |db| {
+
+            let row: (String, String, i64) = db.query_row(
                 "SELECT status,error,length(CAST(text AS BLOB)) FROM runtime_events WHERE id=?1",
                 [INPUT],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -802,7 +828,9 @@ async fn oversized_user_input_remains_intact_with_visible_transport_error() {
                 "no user bytes were dropped to fit transport"
             );
             Ok(())
-        })
+
+ }).await
+})
         .await
         .unwrap();
     assert_eq!(state.record().await["status"], "running");

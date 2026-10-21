@@ -155,7 +155,7 @@ pub(super) async fn record_of(state: &State, agent: &str) -> Value {
     state
         .bridge
         .run(move |store| async move {
-            let raw: String = store.read()?.query_row(
+            let raw: String = store.test_reader()?.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
                 [agent],
                 |row| row.get(0),
@@ -399,7 +399,7 @@ async fn retired_claude_auth_probe_wait_becomes_a_held_start_once() {
     let remaining = state
         .bridge
         .run(|store| async move {
-            Ok(store.read()?.query_row(
+            Ok(store.test_reader()?.query_row(
                 "SELECT COUNT(*) FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='auth_probe_wait'",
                 [],
                 |row| row.get::<_, i64>(0),

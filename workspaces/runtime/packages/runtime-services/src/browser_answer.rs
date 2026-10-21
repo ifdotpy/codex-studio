@@ -57,8 +57,12 @@ pub struct BrowserAnswerContext<V> {
     pub http_providers: std::collections::BTreeSet<String>,
 }
 
-pub fn is_host_source(store: &RuntimeStore, id: &str) -> Result<bool, BrowserAnswerError> {
-    let raw = store.read_transaction_with_error(|tx| QuestionsWriteRepository::request(tx, id))?;
+pub async fn is_host_source(store: &RuntimeStore, id: String) -> Result<bool, BrowserAnswerError> {
+    let raw = store
+        .read_async("runtime-services/browser_answer", move |tx| {
+            QuestionsWriteRepository::request(tx, &id)
+        })
+        .await?;
     let Some(raw) = raw else {
         return Ok(false);
     };
@@ -912,10 +916,12 @@ mod tests {
         assert_eq!(call_ids.len(), 1);
         let request_id = "browser-answer:0123456789abcdef0123456789abcdef:approve";
         assert_eq!(call_ids[0].1, request_id);
+        let request_id = id.to_owned();
         let row = store
-            .read_transaction_with_error(|tx| {
-                studio_runtime_store::QuestionsWriteRepository::request(tx, &id)
+            .read_async("runtime-services/tests/browser_answer", move |tx| {
+                studio_runtime_store::QuestionsWriteRepository::request(tx, &request_id)
             })
+            .await
             .expect("request state reads")
             .expect("request exists");
         let row: Value = serde_json::from_str(&row).expect("request JSON");

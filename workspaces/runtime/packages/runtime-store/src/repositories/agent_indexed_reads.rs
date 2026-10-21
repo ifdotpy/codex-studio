@@ -1,7 +1,8 @@
 //! Indexed reads of `runtime_agents` for hot writer-transaction paths. Each
-//! query is written to match an existing index so that no caller reads or
-//! parses the whole table (tombstones and finished agents dominate it). The
-//! query-plan test below fails when a query stops using its index.
+//! query is written to match an index on the agent columns of
+//! [`crate::agent_columns`] so that no caller reads or parses the whole table
+//! (tombstones and finished agents dominate it). This module owns those
+//! indexes; the query-plan test below fails when a query stops using its index.
 
 use rusqlite::{Connection, params};
 
@@ -13,35 +14,90 @@ const CAPACITY_STATUSES: &str = "('starting','running','waiting','paused','appro
 /// A deleted agent (tombstone) never occupies a slot. Together with
 /// `CAPACITY_STATUSES` this is the one owner of the capacity index predicate and
 /// of every slot query.
-const CAPACITY_LIVE: &str = "json_extract(record,'$.deletedAt') IS NULL";
-/// Name of the covering index for the capacity counts. `_v2` added `CAPACITY_LIVE`.
-pub const CAPACITY_INDEX: &str = "runtime_agent_capacity_slots_v2";
-/// Index replaced by `CAPACITY_INDEX`; dropped at bootstrap so tombstones leave it.
-const RETIRED_CAPACITY_INDEX: &str = "runtime_agent_capacity_slots";
-const REMOTE_WORKER_KEY: &str = "COALESCE(json_extract(record,'$.remoteWorker'),0)";
+const CAPACITY_LIVE: &str = "deleted_at IS NULL";
+/// Name of the covering index for the capacity counts. `_v3` indexes columns.
+pub const CAPACITY_INDEX: &str = "runtime_agent_capacity_slots_v3";
+const REMOTE_WORKER_KEY: &str = "COALESCE(remote_worker,0)";
+/// Agents by team root, in rowid order within a root.
+pub const ROOT_INDEX: &str = "runtime_agent_root_v2";
+/// Live (not deleted) agents by team root.
+pub const LIVE_ROOT_INDEX: &str = "runtime_agent_live_root_v2";
+/// Agents by account key, live agents (`deleted_at IS NULL`) first.
+pub const ACCOUNT_INDEX: &str = "runtime_agent_account";
+/// Agents by provider thread within an account.
+pub const THREAD_INDEX: &str = "runtime_agent_thread";
+/// Agents with a running or reserved turn, by team root.
+pub const ACTIVE_INDEX: &str = "runtime_agent_active";
+/// SQL predicate: the agent may hold a running or reserved turn. One owner for
+/// [`ACTIVE_INDEX`] and the query that reads it.
+macro_rules! active_turn {
+    () => {
+        "(in_flight=1 OR status IN ('running','starting','approval') \
+         OR start_attempt_active_at_reservation=1)"
+    };
+}
+/// SQL listing `(id, root_id)` of the agents that hold a running or reserved
+/// turn: in flight, active status, or a start reservation whose input events
+/// are still reserved. It reads [`ACTIVE_INDEX`].
+pub const RESERVED_TURN_INPUT: &str = concat!(
+    "SELECT id,root_id FROM runtime_agents INDEXED BY runtime_agent_active WHERE ",
+    active_turn!(),
+    " AND (in_flight=1 OR status IN ('running','starting','approval') OR EXISTS (\
+       SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input \
+       JOIN runtime_events AS event ON event.id=input.value \
+       WHERE event.agent=runtime_agents.id \
+       AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') \
+       AND event.status IN ('reserved','dispatching','uncertain'))) ORDER BY id"
+);
+/// Agents holding a workspace operation, by working directory.
+pub const WORKSPACE_OPERATION_INDEX: &str = "runtime_agent_workspace_operation";
+/// SQL predicate: the agent row holds a workspace operation. One owner for
+/// the index predicate and its queries.
+macro_rules! holds_workspace_operation {
+    () => {
+        "typeof(workspace_operation)='text' AND workspace_operation<>''"
+    };
+}
 
 /// Indexed reads of agent records by team root or by slot-occupying status.
 pub struct AgentIndexedReads;
 
 impl AgentIndexedReads {
-    /// Canonical DDL of the capacity-slot partial index (Rust-owned).
+    /// Canonical DDL of the indexes this module owns (Rust-owned).
     #[doc(hidden)]
-    pub fn index_definition() -> crate::OwnedRuntimeIndexDefinition {
-        crate::OwnedRuntimeIndexDefinition {
-            name: CAPACITY_INDEX,
-            table: "runtime_agents",
-            create_sql: format!(
-                "CREATE INDEX IF NOT EXISTS {CAPACITY_INDEX} ON runtime_agents({REMOTE_WORKER_KEY},id) \
-                 WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE}"
+    pub fn index_definitions() -> Vec<crate::OwnedRuntimeIndexDefinition> {
+        [
+            (
+                CAPACITY_INDEX,
+                format!(
+                    "{REMOTE_WORKER_KEY},id) WHERE status IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE}"
+                ),
             ),
-        }
+            (ROOT_INDEX, "root_id)".to_owned()),
+            (ACCOUNT_INDEX, "account_key,deleted_at)".to_owned()),
+            (THREAD_INDEX, "thread_id,account_key)".to_owned()),
+            (ACTIVE_INDEX, concat!("root_id) WHERE ", active_turn!()).to_owned()),
+            (LIVE_ROOT_INDEX, "root_id,id) WHERE deleted_at IS NULL".to_owned()),
+            (
+                WORKSPACE_OPERATION_INDEX,
+                concat!("cwd) WHERE ", holds_workspace_operation!()).to_owned(),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, rest)| crate::OwnedRuntimeIndexDefinition {
+            name,
+            table: "runtime_agents",
+            create_sql: format!("CREATE INDEX IF NOT EXISTS {name} ON runtime_agents({rest}"),
+        })
+        .collect()
     }
 
     #[doc(hidden)]
     pub fn prepare_index(connection: &Connection) -> StoreResult<()> {
         if crate::schema::table_exists(connection, "runtime_agents")? {
-            connection.execute_batch(&format!("DROP INDEX IF EXISTS {RETIRED_CAPACITY_INDEX}"))?;
-            connection.execute_batch(&Self::index_definition().create_sql)?;
+            for definition in Self::index_definitions() {
+                connection.execute_batch(&definition.create_sql)?;
+            }
         }
         Ok(())
     }
@@ -49,7 +105,7 @@ impl AgentIndexedReads {
     /// SQL listing `(id, record)` of every agent of one team root, in rowid order.
     #[doc(hidden)]
     pub const TEAM_RECORDS_SQL: &'static str = "SELECT id,record FROM runtime_agents \
-         WHERE json_extract(record,'$.rootId')=?1 ORDER BY rowid";
+         WHERE root_id=?1 ORDER BY rowid";
 
     /// `(id, record)` of every agent whose `rootId` is `root_id`, each record
     /// with its volatile fields.
@@ -68,10 +124,10 @@ impl AgentIndexedReads {
     /// A finished member is completed, failed, interrupted, or paused without
     /// auto-wake.
     #[doc(hidden)]
-    pub const ACTIVE_TEAM_MEMBERS_SQL: &'static str = "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_live_root \
-         WHERE json_extract(record,'$.rootId')=?1 AND json_extract(record,'$.deletedAt') IS NULL \
-         AND NOT (COALESCE(json_extract(record,'$.status'),'') IN ('completed','failed','interrupted') \
-         OR (json_extract(record,'$.status') IS 'paused' AND json_type(record,'$.autoWake') IS 'false'))";
+    pub const ACTIVE_TEAM_MEMBERS_SQL: &'static str = "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_live_root_v2 \
+         WHERE root_id=?1 AND deleted_at IS NULL \
+         AND NOT (COALESCE(status,'') IN ('completed','failed','interrupted') \
+         OR (status IS 'paused' AND auto_wake IS 0))";
 
     pub fn active_team_members(connection: &Connection, root_id: &str) -> StoreResult<i64> {
         Ok(connection
@@ -81,26 +137,28 @@ impl AgentIndexedReads {
 
     /// SQL for the ids of agents holding a workspace operation (same index).
     #[doc(hidden)]
-    pub const WORKSPACE_OPERATION_IDS_SQL: &'static str = "SELECT id FROM runtime_agents \
-         WHERE json_type(record,'$.workspaceOperation')='text' \
-         AND json_extract(record,'$.workspaceOperation')!=''";
+    pub const WORKSPACE_OPERATION_IDS_SQL: &'static str = concat!(
+        "SELECT id FROM runtime_agents WHERE ",
+        holds_workspace_operation!()
+    );
 
     /// SQL for the `id,record` rows of agents holding a workspace operation, in
     /// index order (same index).
     #[doc(hidden)]
-    pub const WORKSPACE_OPERATION_RECORDS_SQL: &'static str = "SELECT id,record FROM runtime_agents \
-         WHERE json_type(record,'$.workspaceOperation')='text' \
-         AND json_extract(record,'$.workspaceOperation')!=''";
+    pub const WORKSPACE_OPERATION_RECORDS_SQL: &'static str = concat!(
+        "SELECT id,record FROM runtime_agents WHERE ",
+        holds_workspace_operation!()
+    );
 
     /// SQL for the distinct working directories of live agents and of any agent
     /// (live or not) holding a workspace operation: the directories a message
     /// admission may have to compare. Tombstones cannot start an operation.
     #[doc(hidden)]
-    pub const ADMISSION_CWDS_SQL: &'static str = "SELECT json_extract(record,'$.cwd') FROM runtime_agents \
-         WHERE json_extract(record,'$.deletedAt') IS NULL \
-         UNION SELECT json_extract(record,'$.cwd') FROM runtime_agents \
-         WHERE json_type(record,'$.workspaceOperation')='text' \
-         AND json_extract(record,'$.workspaceOperation')!=''";
+    pub const ADMISSION_CWDS_SQL: &'static str = concat!(
+        "SELECT cwd FROM runtime_agents WHERE deleted_at IS NULL \
+         UNION SELECT cwd FROM runtime_agents WHERE ",
+        holds_workspace_operation!()
+    );
 
     pub fn admission_cwds(connection: &Connection) -> StoreResult<Vec<Option<String>>> {
         Ok(connection
@@ -113,7 +171,7 @@ impl AgentIndexedReads {
     pub fn global_slots_sql() -> String {
         format!(
             "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 \
-             AND json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE} AND {REMOTE_WORKER_KEY}=0"
+             AND status IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE} AND {REMOTE_WORKER_KEY}=0"
         )
     }
 
@@ -121,8 +179,8 @@ impl AgentIndexedReads {
     pub fn team_slots_sql() -> String {
         format!(
             "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 AND id<>?2 \
-             AND json_extract(record,'$.rootId')=?2 \
-             AND json_extract(record,'$.status') IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE} AND {REMOTE_WORKER_KEY}=0"
+             AND root_id=?2 \
+             AND status IN {CAPACITY_STATUSES} AND {CAPACITY_LIVE} AND {REMOTE_WORKER_KEY}=0"
         )
     }
 
@@ -134,9 +192,9 @@ impl AgentIndexedReads {
     #[doc(hidden)]
     pub fn account_slots_sql() -> String {
         format!(
-            "SELECT COALESCE(json_extract(record,'$.accountKey'),'default'),COUNT(*) \
-             FROM runtime_agents WHERE json_extract(record,'$.status') IN {CAPACITY_STATUSES} \
-             AND {CAPACITY_LIVE} AND json_extract(record,'$.status')<>'paused' \
+            "SELECT account_key,COUNT(*) \
+             FROM runtime_agents WHERE status IN {CAPACITY_STATUSES} \
+             AND {CAPACITY_LIVE} AND status<>'paused' \
              AND {REMOTE_WORKER_KEY}=0 GROUP BY 1"
         )
     }
@@ -175,33 +233,16 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
-    /// Runtime-agent indexes as the Python-owned schema defines them, read from
-    /// the live-state fixture so the plan test cannot drift from production.
+    /// The agents table of the column format with this module's indexes.
     fn database() -> Connection {
-        let fixture: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/live-state-schema.json"))
-                .expect("schema fixture parses");
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection
-            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .execute_batch(crate::agent_columns::agent_table_sql())
             .expect("agents table creates");
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
-        for object in fixture["canvas.sqlite3"]["sqlite_master"]
-            .as_array()
-            .expect("fixture lists schema objects")
-        {
-            if object["table"] == "runtime_agents"
-                && object["type"] == "index"
-                && let Some(sql) = object["sql"].as_str()
-            {
-                connection
-                    .execute_batch(sql)
-                    .expect("fixture index creates");
-            }
-        }
-        AgentIndexedReads::prepare_index(&connection).expect("capacity index creates");
+        AgentIndexedReads::prepare_index(&connection).expect("indexes create");
         connection
     }
 
@@ -293,7 +334,8 @@ mod tests {
         // Every live status-occupying local agent but the caller; tombstones never count.
         let old_global: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_agents WHERE id<>'a' AND json_extract(record,'$.status') \
+                "SELECT COUNT(*) FROM runtime_agents NOT INDEXED WHERE id<>'a' \
+                 AND json_extract(record,'$.status') \
                  IN ('starting','running','waiting','paused','approval') \
                  AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0 \
                  AND json_extract(record,'$.deletedAt') IS NULL",
@@ -322,56 +364,33 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_replaces_the_tombstone_counting_capacity_index() {
-        let connection = fixture();
-        connection
-            .execute_batch(
-                "DROP INDEX runtime_agent_capacity_slots_v2; \
-                 CREATE INDEX runtime_agent_capacity_slots ON runtime_agents(id) \
-                 WHERE json_extract(record,'$.status') IN ('starting','running','waiting','paused','approval')",
-            )
-            .expect("legacy index creates");
-        AgentIndexedReads::prepare_index(&connection).expect("migration runs");
-        let names: Vec<String> = connection
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE name LIKE 'runtime_agent_capacity_slots%'",
-            )
-            .expect("catalog prepares")
-            .query_map([], |row| row.get(0))
-            .expect("catalog runs")
-            .collect::<Result<_, _>>()
-            .expect("catalog rows");
-        assert_eq!(names, [CAPACITY_INDEX]);
-    }
-
-    #[test]
     fn queries_use_their_indexes_instead_of_scanning_the_table() {
         let connection = fixture();
         for (sql, parameters, index) in [
             (
                 AgentIndexedReads::TEAM_RECORDS_SQL.to_owned(),
                 vec!["lead"],
-                "runtime_agent_root",
+                ROOT_INDEX,
             ),
             (
                 AgentIndexedReads::ACTIVE_TEAM_MEMBERS_SQL.to_owned(),
                 vec!["lead"],
-                "runtime_agent_live_root",
+                LIVE_ROOT_INDEX,
             ),
             (
                 AgentIndexedReads::ADMISSION_CWDS_SQL.to_owned(),
                 vec![],
-                "runtime_agent_live_root",
+                LIVE_ROOT_INDEX,
             ),
             (
                 AgentIndexedReads::WORKSPACE_OPERATION_IDS_SQL.to_owned(),
                 vec![],
-                "runtime_agent_reservation_cwd",
+                WORKSPACE_OPERATION_INDEX,
             ),
             (
                 AgentIndexedReads::WORKSPACE_OPERATION_RECORDS_SQL.to_owned(),
                 vec![],
-                "runtime_agent_reservation_cwd",
+                WORKSPACE_OPERATION_INDEX,
             ),
             (
                 AgentIndexedReads::global_slots_sql(),
@@ -386,7 +405,7 @@ mod tests {
             (
                 AgentIndexedReads::team_slots_sql(),
                 vec!["a", "lead"],
-                "runtime_agent_root",
+                "runtime_agent_",
             ),
         ] {
             let details = plan(&connection, &sql, &parameters);

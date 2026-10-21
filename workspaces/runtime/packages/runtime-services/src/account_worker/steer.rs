@@ -260,8 +260,8 @@ pub(super) fn acknowledge(
         return Ok(None);
     }
     let mut statement = tx.prepare_cached(
-        "SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?1 \
-         AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 LIMIT 2",
+        "SELECT id FROM runtime_agents WHERE thread_id=?1 \
+         AND account_key=?2 LIMIT 2",
     )?;
     let agents = statement
         .query_map(rusqlite::params![thread, account], |row| {

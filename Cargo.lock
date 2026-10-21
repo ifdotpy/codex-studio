@@ -5578,7 +5578,6 @@ name = "studio-runtime-store"
 version = "0.1.0"
 dependencies = [
  "data-encoding",
- "futures-executor",
  "inventory",
  "rusqlite",
  "serde",
@@ -5586,6 +5585,7 @@ dependencies = [
  "sha2 0.11.0",
  "studio-runtime-providers",
  "studio-runtime-schema",
+ "studio-runtime-store",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

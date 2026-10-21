@@ -492,7 +492,9 @@ mod tests {
             )
             .expect("projection fixture creates");
         connection
-            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .execute_batch(&crate::agent_columns::fixture_sql(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+            ))
             .expect("runtime agent fixture creates");
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())

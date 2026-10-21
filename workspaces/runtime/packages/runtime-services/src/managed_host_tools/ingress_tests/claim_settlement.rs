@@ -110,7 +110,7 @@ impl crate::provider_callbacks::RuntimeInterruptPort for UnusedInterrupt {
     }
 }
 
-fn ports_for(
+async fn ports_for(
     store: &Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &Frame,
@@ -123,9 +123,10 @@ fn ports_for(
         creation,
         Arc::new(tokio::sync::Notify::new()),
     )
+    .await
 }
 
-fn ports_with_wake(
+async fn ports_with_wake(
     store: &Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &Frame,
@@ -154,12 +155,13 @@ fn ports_with_wake(
                 preparation: None,
             },
         )
+        .await
         .unwrap(),
     )
 }
 
 fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
-    studio_runtime_store::system_reads::all(&store.read().unwrap(), "runtime_tool_requests")
+    studio_runtime_store::system_reads::all(&store.test_reader().unwrap(), "runtime_tool_requests")
         .unwrap()
         .into_iter()
         .find(|row| row["callId"] == call_id)
@@ -167,8 +169,12 @@ fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
 }
 
 fn saved_result(store: &RuntimeStore, id: &str) -> Option<Value> {
-    studio_runtime_store::system_reads::get(&store.read().unwrap(), "runtime_tool_results", id)
-        .unwrap()
+    studio_runtime_store::system_reads::get(
+        &store.test_reader().unwrap(),
+        "runtime_tool_results",
+        id,
+    )
+    .unwrap()
 }
 
 fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty: Option<&str>) {
@@ -201,7 +207,7 @@ async fn replay_returns_saved_result(
         context,
         frame,
         40.0,
-        ports_for(store, context, frame, creation),
+        ports_for(store, context, frame, creation).await,
     )
     .await
     .unwrap();
@@ -247,7 +253,7 @@ async fn proven_pre_write_refusals_settle_not_applied() {
             &context,
             &frame,
             20.0,
-            ports_for(&store, &context, &frame, &creation),
+            ports_for(&store, &context, &frame, &creation).await,
         )
         .await
         .unwrap();
@@ -273,7 +279,7 @@ async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {
         &context,
         &frame,
         20.0,
-        ports_for(&store, &context, &frame, &creation),
+        ports_for(&store, &context, &frame, &creation).await,
     )
     .await
     .unwrap();
@@ -309,7 +315,7 @@ async fn possible_effects_settle_unknown_and_never_redispatch() {
             &context,
             &frame,
             20.0,
-            ports_for(&store, &context, &frame, &creation),
+            ports_for(&store, &context, &frame, &creation).await,
         )
         .await;
         assert!(first.is_err(), "{call_id}: the caller still sees the error");
@@ -348,6 +354,7 @@ async fn rolled_back_local_execution_settles_not_applied() {
             &frame,
             Arc::new(tokio::sync::Notify::new()),
         )
+        .await
         .unwrap(),
     );
     let first =
@@ -380,7 +387,7 @@ async fn dropped_dispatch_settles_unknown() {
         "orchestration_spawn",
         json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
-    let ports = ports_for(&store, &context, &frame, &creation);
+    let ports = ports_for(&store, &context, &frame, &creation).await;
     let entered = creation.entered.notified();
     let task = tokio::spawn({
         let store = Arc::clone(&store);
@@ -417,7 +424,7 @@ async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {
     // Seed the live symptom: a claimed spawn whose process died mid-dispatch
     // (no runtime to run the guard), plus a reserved row never claimed.
     let running = {
-        let ports = ports_for(&store, &context, &frame, &creation);
+        let ports = ports_for(&store, &context, &frame, &creation).await;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -502,7 +509,7 @@ async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {
     );
     assert_eq!(queued["finished"], 30.0);
     let blocking: i64 = restarted
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.stage') IN ('queued','running')",
@@ -527,7 +534,7 @@ async fn connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_out
         json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let wake = Arc::new(tokio::sync::Notify::new());
-    let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake));
+    let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake)).await;
     let entered = creation.entered.notified();
     let task = tokio::spawn({
         let store = Arc::clone(&store);
@@ -600,7 +607,7 @@ async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {
         json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     // Seed a running claim whose dispatcher is gone without its drop guard.
-    let ports = ports_for(&store, &context, &frame, &creation);
+    let ports = ports_for(&store, &context, &frame, &creation).await;
     let entered = creation.entered.notified();
     let dispatch = dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports);
     tokio::select! {
@@ -668,7 +675,7 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
         json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let wake = Arc::new(tokio::sync::Notify::new());
-    let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake));
+    let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake)).await;
     let entered = creation.entered.notified();
     let task = tokio::spawn({
         let store = Arc::clone(&store);

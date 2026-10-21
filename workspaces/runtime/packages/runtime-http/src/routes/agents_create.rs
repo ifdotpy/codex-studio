@@ -1138,6 +1138,60 @@ struct AgentCatalogWaitRequest<'a> {
     require_model_match: bool,
 }
 
+/// Account and model defaults a new child inherits from its stored parent and root.
+#[derive(Default)]
+struct StoredParentDefaults {
+    parent_account: Option<String>,
+    selected_account: Option<String>,
+    root_model: Option<String>,
+    worker_model: Option<String>,
+    excluded: std::collections::HashSet<String>,
+}
+
+/// Read the parent's defaults; `None` when the parent is not stored.
+fn stored_parent_defaults(
+    connection: &studio_runtime_store::Connection,
+    parent_id: &str,
+    ignore_stored_worker_account: bool,
+) -> studio_runtime_store::StoreResult<Option<StoredParentDefaults>> {
+    let Some(parent) =
+        studio_runtime_store::system_reads::get(connection, "runtime_agents", parent_id)?
+    else {
+        return Ok(None);
+    };
+    let mut defaults = StoredParentDefaults {
+        parent_account: parent
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        ..StoredParentDefaults::default()
+    };
+    if let Some(root_id) = parent.get("rootId").and_then(Value::as_str) {
+        let root = studio_runtime_store::system_reads::get(connection, "runtime_agents", root_id)?
+            .unwrap_or(parent);
+        if !ignore_stored_worker_account {
+            defaults.selected_account = root
+                .pointer("/workerDefaults/accountKey")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            defaults.worker_model = root
+                .pointer("/workerDefaults/model")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        defaults.root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
+        defaults.excluded.extend(
+            root.get("excludedAccountKeys")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned),
+        );
+    }
+    Ok(Some(defaults))
+}
+
 async fn wait_for_agent_catalog(
     state: &HttpState,
     request: AgentCatalogWaitRequest<'_>,
@@ -1163,61 +1217,34 @@ async fn wait_for_agent_catalog(
     let preferred_parent_account = request.preferred_parent_account.map(str::to_owned);
     let ignore_stored_worker_account = request.ignore_stored_worker_account;
     let require_model_match = request.require_model_match;
-    let candidate_data = tokio::time::timeout_at(
-        deadline,
+    let candidate_data = tokio::time::timeout_at(deadline, async move {
+        let stored = match parent_id {
+            Some(parent_id) => {
+                let store = store.ok_or(())?;
+                store
+                    .read_async("runtime-http/routes/agents_create", move |tx| {
+                        stored_parent_defaults(tx, &parent_id, ignore_stored_worker_account)
+                    })
+                    .await
+                    .map_err(|_| ())?
+                    .ok_or(())?
+            }
+            None => StoredParentDefaults {
+                parent_account: preferred_parent_account,
+                ..StoredParentDefaults::default()
+            },
+        };
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/agents_create",
             move || {
                 let snapshot = driver.listing_snapshot().map_err(|_| ())?;
-                let mut parent_account = preferred_parent_account;
-                let mut selected_account = None;
-                let mut root_model = None;
-                let mut worker_model = None;
-                let mut excluded = std::collections::HashSet::new();
-                if let Some(parent_id) = parent_id.as_deref() {
-                    let connection = store.as_deref().ok_or(())?.read().map_err(|_| ())?;
-                    let parent = studio_runtime_store::system_reads::get(
-                        &connection,
-                        "runtime_agents",
-                        parent_id,
-                    )
-                    .map_err(|_| ())?
-                    .ok_or(())?;
-                    parent_account = parent
-                        .get("accountKey")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
-                    if let Some(root_id) = parent.get("rootId").and_then(Value::as_str) {
-                        let root = studio_runtime_store::system_reads::get(
-                            &connection,
-                            "runtime_agents",
-                            root_id,
-                        )
-                        .map_err(|_| ())?
-                        .unwrap_or(parent);
-                        if !ignore_stored_worker_account {
-                            selected_account = root
-                                .pointer("/workerDefaults/accountKey")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                        }
-                        root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
-                        if !ignore_stored_worker_account {
-                            worker_model = root
-                                .pointer("/workerDefaults/model")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                        }
-                        excluded.extend(
-                            root.get("excludedAccountKeys")
-                                .and_then(Value::as_array)
-                                .into_iter()
-                                .flatten()
-                                .filter_map(Value::as_str)
-                                .map(str::to_owned),
-                        );
-                    }
-                }
+                let StoredParentDefaults {
+                    parent_account,
+                    selected_account,
+                    root_model,
+                    worker_model,
+                    excluded,
+                } = stored;
                 let explicit_account = requested_account.is_some();
                 let explicit = requested_account;
                 let model = requested_model
@@ -1262,11 +1289,12 @@ async fn wait_for_agent_catalog(
                 );
                 Ok::<_, ()>((accounts, model, explicit_account))
             },
-        ),
-    )
+        )
+        .await
+        .map_err(|_| ())?
+    })
     .await
     .map_err(|_| operation_error(OperationError::Unavailable("provider-session/model-list")))?
-    .map_err(|_| ApiError::internal())?
     .map_err(|_| ApiError::internal())?;
     let (accounts, expected_model, explicit_account) = candidate_data;
     if accounts.is_empty() {
@@ -1591,33 +1619,30 @@ async fn finish_title_request(
             }
         }
     }
-    let read_store = store.clone();
     let read_agent = agent_id.clone();
-    let account_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/rename-agent",
-        move || {
-            let connection = read_store.read().map_err(|_| ApiError::internal())?;
-            let agent =
-                studio_runtime_store::WorkspaceViewsRepository::agent(&connection, &read_agent)
-                    .map_err(|_| ApiError::internal())?
+    let account_snapshot = store
+        .read_async(
+            "runtime-http/routes/agents_create/rename-agent",
+            move |tx| {
+                let agent = studio_runtime_store::WorkspaceViewsRepository::agent(tx, &read_agent)?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))?;
-            let record = agent.value();
-            Ok::<_, ApiError>((
-                record
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
-                    .to_owned(),
-                studio_runtime_providers::ProviderKind::of_record(&record)
-                    .map_err(|_| ApiError::internal())?
-                    .key()
-                    .to_owned(),
-            ))
-        },
-    )
-    .await;
+                let record = agent.value();
+                Ok::<_, ApiError>((
+                    record
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        .to_owned(),
+                    studio_runtime_providers::ProviderKind::of_record(&record)
+                        .map_err(|_| ApiError::internal())?
+                        .key()
+                        .to_owned(),
+                ))
+            },
+        )
+        .await;
     let (account, provider_name) = match account_snapshot {
-        Ok(Ok(snapshot)) => snapshot,
+        Ok(snapshot) => snapshot,
         _ => {
             settle_failure(store, agent_id, request_id).await;
             return;
@@ -1898,7 +1923,7 @@ mod title_http_tests {
                 tokio::pin!(next);
                 next.as_mut().enable();
                 let record = store
-                    .read()
+                    .test_reader()
                     .expect("read generated title")
                     .query_row(
                         "SELECT record FROM runtime_agents WHERE id='title-http-agent'",

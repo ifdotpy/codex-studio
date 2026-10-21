@@ -190,7 +190,7 @@ async fn seeded_store(agent: &str) -> (tempfile::TempDir, Arc<studio_runtime_sto
 }
 
 fn card(store: &studio_runtime_store::RuntimeStore) -> Value {
-    let connection = store.read().expect("test step");
+    let connection = store.test_reader().expect("test step");
     let raw: String = connection
         .query_row("SELECT record FROM runtime_requests", [], |row| row.get(0))
         .expect("test step");

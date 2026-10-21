@@ -24,19 +24,19 @@ async fn accounts(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let account_driver = state.account_driver.clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::internal())?
+        .as_secs_f64();
+    let waiting = store
+        .read_async("runtime-http/routes/catalog", move |tx| {
+            studio_runtime_store::account_state::authentication_recovery_account_keys(tx, now)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
     let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/catalog",
         move || {
-            let connection = store.read().map_err(|_| ())?;
-            let waiting =
-                studio_runtime_store::account_state::authentication_recovery_account_keys(
-                    &connection,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| ())?
-                        .as_secs_f64(),
-                )
-                .map_err(|_| ())?;
             let mut snapshot = match account_driver {
                 Some(driver) => driver.listing_snapshot().map_err(|_| ())?,
                 None => account_policy.accounts(),

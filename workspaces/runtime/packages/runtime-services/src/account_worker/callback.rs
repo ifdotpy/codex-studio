@@ -13,12 +13,6 @@ pub(super) struct ManagedResponseDependencies {
     pub wake: Arc<Notify>,
     pub monitor_dispatch_wake: Arc<Notify>,
     pub managed_runtime: Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>,
-    /// The journal position whose callback write answers this tool call.
-    pub journal: CallbackJournal,
-}
-pub(super) struct CallbackJournal {
-    pub scope: String,
-    pub cursor: u64,
 }
 pub fn dispatch(_request: &Frame) -> CallbackDecision {
     CallbackDecision::Unsupported
@@ -153,35 +147,18 @@ pub(super) async fn managed_response(
             "Managed tool callback has no turn identity",
         ));
     };
-    let store_for_context = Arc::clone(store);
-    let account_for_context = account.to_owned();
-    let actor_for_context = emitting_actor.map(str::to_owned);
-    let thread_for_context = thread.to_owned();
-    let turn_for_context = turn.to_owned();
-    let context = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_callback_context",
-        move || {
-            callback_context(
-                &store_for_context,
-                &account_for_context,
-                generation,
-                actor_for_context.as_deref(),
-                &thread_for_context,
-                &turn_for_context,
-            )
-        },
-    )
-    .await
-    .ok();
+    let context = callback_context(store, account, generation, emitting_actor, thread, turn).await;
     let body = match context {
-        Some(Ok(Some(context))) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
+        Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
             store,
             &context,
             frame,
             dependencies.wake,
             dependencies.monitor_dispatch_wake,
             dependencies.managed_runtime.as_deref(),
-        ) {
+        )
+        .await
+        {
             Ok(ports) => match crate::provider_callbacks::dispatch_with_managed_tools(
                 Arc::clone(store),
                 &context,
@@ -191,27 +168,7 @@ pub(super) async fn managed_response(
             )
             .await
             {
-                Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => {
-                    let key = crate::provider_callbacks::reply_key(&reply.identity);
-                    let journal = &dependencies.journal;
-                    // The answer still goes out without the link. Its prepared
-                    // row then waits for the settled-turn sweep.
-                    if let Err(error) = super::store::link_callback_reply(
-                        store,
-                        &journal.scope,
-                        generation,
-                        journal.cursor,
-                        key,
-                    )
-                    .await
-                    {
-                        eprintln!(
-                            "managed tool reply was not linked to its callback; account={account} generation={generation} cursor={}: {error}",
-                            journal.cursor
-                        );
-                    }
-                    reply.body
-                }
+                Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => reply.body,
                 Ok(
                     crate::provider_callbacks::CallbackDecision::Pending(_)
                     | crate::provider_callbacks::CallbackDecision::Settled(_),
@@ -223,13 +180,12 @@ pub(super) async fn managed_response(
             },
             Err(error) => tool_call_failure_body(&error.to_string()),
         },
-        Some(Ok(None)) => tool_call_failure_body(
+        Ok(None) => tool_call_failure_body(
             "Managed tool callback has no unique active turn for this account generation",
         ),
-        Some(Err(error)) => tool_call_failure_body(&format!(
+        Err(error) => tool_call_failure_body(&format!(
             "Managed tool callback context is unavailable: {error}"
         )),
-        None => tool_call_failure_body("Managed tool callback context read failed"),
     };
     Some(Frame::Response {
         id: request.id.clone(),
@@ -278,27 +234,9 @@ pub(super) async fn wait_for_managed_catalog(
     else {
         return Ok(());
     };
-    let context_store = Arc::clone(store);
-    let account = account.to_owned();
-    let emitting_actor = emitting_actor.map(str::to_owned);
-    let thread = thread.to_owned();
-    let turn = turn.to_owned();
-    let Some(context) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_callback_context",
-        move || {
-            callback_context(
-                &context_store,
-                &account,
-                generation,
-                emitting_actor.as_deref(),
-                &thread,
-                &turn,
-            )
-        },
-    )
-    .await
-    .map_err(|_| "Managed tool callback context is unavailable")?
-    .map_err(|_| "Managed tool callback context is unavailable")?
+    let Some(context) = callback_context(store, account, generation, emitting_actor, thread, turn)
+        .await
+        .map_err(|_| "Managed tool callback context is unavailable")?
     else {
         return Ok(());
     };
@@ -309,16 +247,12 @@ pub(super) async fn wait_for_managed_catalog(
 }
 
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
-WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1
-  AND json_extract(record,'$.startAttempt.connectionGeneration')=?2
-  AND json_extract(record,'$.threadId')=?3
-  AND json_extract(record,'$.turnId')=?4
-  AND json_extract(record,'$.status')='running'
-  AND json_extract(record,'$.autoWake')=1
+WHERE account_key=?1 AND start_attempt_connection_generation=?2
+  AND thread_id=?3 AND turn_id=?4 AND status='running' AND auto_wake=1
   AND (?5 IS NULL OR id=?5)
 LIMIT 2";
 
-fn callback_context(
+async fn callback_context(
     store: &RuntimeStore,
     account: &str,
     generation: u64,
@@ -326,11 +260,34 @@ fn callback_context(
     thread: &str,
     turn: &str,
 ) -> Result<Option<crate::provider_callbacks::CallbackContext>, studio_runtime_store::StoreError> {
-    let connection = store.read()?;
+    let (account, emitting_actor) = (account.to_owned(), emitting_actor.map(str::to_owned));
+    let (thread, turn) = (thread.to_owned(), turn.to_owned());
+    store
+        .read_async("runtime-services/account_callback_context", move |db| {
+            callback_context_in(
+                db,
+                &account,
+                generation,
+                emitting_actor.as_deref(),
+                &thread,
+                &turn,
+            )
+        })
+        .await
+}
+
+fn callback_context_in(
+    db: &rusqlite::Connection,
+    account: &str,
+    generation: u64,
+    emitting_actor: Option<&str>,
+    thread: &str,
+    turn: &str,
+) -> Result<Option<crate::provider_callbacks::CallbackContext>, studio_runtime_store::StoreError> {
     let Ok(generation_value) = i64::try_from(generation) else {
         return Ok(None);
     };
-    let mut statement = connection.prepare_cached(CALLBACK_CONTEXT_QUERY)?;
+    let mut statement = db.prepare_cached(CALLBACK_CONTEXT_QUERY)?;
     let candidates = statement
         .query_map(
             rusqlite::params![account, generation_value, thread, turn, emitting_actor],
@@ -425,7 +382,7 @@ mod tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("runtime store");
-        let connection = store.read().expect("read connection");
+        let connection = store.test_reader().expect("read connection");
         let details = {
             let mut plan = connection
                 .prepare(&format!("EXPLAIN QUERY PLAN {CALLBACK_CONTEXT_QUERY}"))
@@ -447,7 +404,7 @@ mod tests {
         assert!(
             details
                 .iter()
-                .any(|detail| detail.contains("runtime_agent_callback_context")),
+                .any(|detail| detail.contains("runtime_agent_callback_context_v2")),
             "callback lookup must use its selective index: {details:?}"
         );
         drop(connection);
@@ -473,6 +430,7 @@ mod tests {
             .expect("callback agents write");
         assert!(
             callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
+                .await
                 .expect("callback lookup")
                 .is_none(),
             "LIMIT 2 must preserve ambiguous-context rejection"
@@ -485,16 +443,19 @@ mod tests {
             .await
             .expect("remove ambiguous agent");
         let context = callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
+            .await
             .expect("callback lookup")
             .expect("one matching context");
         assert_eq!(context.agent, "agent-a");
         assert!(
             callback_context(&store, "account-b", 7, None, "thread-a", "turn-a")
+                .await
                 .expect("account-scoped lookup")
                 .is_none()
         );
         assert!(
             callback_context(&store, "account-a", 8, None, "thread-a", "turn-a")
+                .await
                 .expect("generation-scoped lookup")
                 .is_none()
         );

@@ -401,9 +401,9 @@ impl StartGate {
             .read_async("runtime-services/account_start_gate", move |db| {
                 let mut statement = db.prepare_cached(
                     "SELECT id FROM runtime_agents \
-                     WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
-                       AND json_extract(record,'$.inFlight')=1 \
-                       AND json_extract(record,'$.deletedAt') IS NULL",
+                     WHERE account_key=?1 \
+                       AND in_flight=1 \
+                       AND deleted_at IS NULL",
                 )?;
                 let rows = statement
                     .query_map([account], |row| row.get::<_, String>(0))?
@@ -438,8 +438,8 @@ impl StartGate {
             .read_async("runtime-services/account_start_gate", move |db| {
                 let mut statement = db.prepare_cached(
                     "SELECT 1 FROM runtime_agents WHERE id=?1 \
-                       AND json_extract(record,'$.inFlight')=1 \
-                       AND json_extract(record,'$.deletedAt') IS NULL",
+                       AND in_flight=1 \
+                       AND deleted_at IS NULL",
                 )?;
                 let mut settled = Vec::new();
                 for agent in claimed {

@@ -52,7 +52,7 @@ fn fixture() -> tempfile::TempDir {
 }
 fn operation(store: &RuntimeStore) -> Value {
     serde_json::from_str(
-        &AccountTransferRepository::get(&store.read().expect("read"), OPERATION)
+        &AccountTransferRepository::get(&store.test_reader().expect("read"), OPERATION)
             .expect("get")
             .expect("Python operation"),
     )

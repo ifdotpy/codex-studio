@@ -26,7 +26,7 @@ where
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_crash_matrix_read",
         move || {
-            let connection = store.read()?;
+            let connection = store.test_reader()?;
             operation(&connection)
         },
     )

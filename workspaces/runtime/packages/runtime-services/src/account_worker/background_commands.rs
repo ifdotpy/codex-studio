@@ -26,16 +26,12 @@ pub(super) async fn check_account(
     scope: &ConnectionScope,
     session: &RetainedSessionPort,
 ) -> usize {
-    let read_store = Arc::clone(&store);
     let read_account = account.to_owned();
-    let Ok(Ok(checks)) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/background_command_checks",
-        move || {
-            let connection = read_store.read()?;
-            task_settlement::absent_command_checks(&connection, &read_account)
-        },
-    )
-    .await
+    let Ok(checks) = store
+        .read_async("runtime-services/background_command_checks", move |tx| {
+            task_settlement::absent_command_checks(tx, &read_account)
+        })
+        .await
     else {
         return 0;
     };

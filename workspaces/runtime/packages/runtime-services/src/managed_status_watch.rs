@@ -169,12 +169,15 @@ pub async fn model_directory(
     {
         return Err(StatusError::InvalidArguments);
     }
-    let (root_id, inputs) = store.read_transaction_with_error(|connection| {
-        let actor = checked_actor(connection, actor_id, actor_epoch)?;
-        let root_id = actor.root_id.0;
-        let inputs = status_path_inputs(connection, &root_id)?;
-        Ok::<_, StatusError>((root_id, inputs))
-    })?;
+    let read_actor = actor_id.to_owned();
+    let (root_id, inputs) = store
+        .read_async("runtime-services/managed_status_watch", move |connection| {
+            let actor = checked_actor(connection, &read_actor, actor_epoch)?;
+            let root_id = actor.root_id.0;
+            let inputs = status_path_inputs(connection, &root_id)?;
+            Ok::<_, StatusError>((root_id, inputs))
+        })
+        .await?;
     let resolved = inputs
         .iter()
         .map(|input| {
@@ -401,9 +404,8 @@ fn checked_actor(
 
 fn team_agents(connection: &Connection, root: &str) -> Result<Vec<AgentRecord>, StatusError> {
     let mut statement = connection.prepare(
-        "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 \
-         AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,'')) \
-         ORDER BY rowid",
+        "SELECT id FROM runtime_agents WHERE root_id=?1 \
+         AND (deleted_at IS NULL OR deleted_at IN (0,'')) ORDER BY rowid",
     )?;
     let ids = statement
         .query_map([root], |row| row.get::<_, String>(0))?
@@ -555,17 +557,7 @@ fn capacity_snapshot(
 }
 
 fn dispatch_active_slots(connection: &Connection) -> Result<Vec<Value>, StatusError> {
-    let mut statement = connection.prepare(
-        "SELECT id,json_extract(record,'$.rootId') FROM runtime_agents \
-         WHERE json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval') \
-         UNION ALL SELECT id,json_extract(record,'$.rootId') FROM runtime_agents \
-         WHERE json_extract(record,'$.startAttempt.activeAtReservation')=1 AND EXISTS (\
-           SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input \
-           JOIN runtime_events AS event ON event.id=input.value \
-           WHERE event.agent=runtime_agents.id \
-           AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') \
-           AND event.status IN ('reserved','dispatching','uncertain'))",
-    )?;
+    let mut statement = connection.prepare(studio_runtime_store::RESERVED_TURN_INPUT)?;
     let rows = statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
@@ -583,12 +575,11 @@ fn status_path_inputs(
     root_id: &str,
 ) -> Result<Vec<StatusPathInput>, StatusError> {
     let mut statement = connection.prepare(
-        "SELECT id,json_extract(record,'$.cwd'), \
-         COALESCE((json_type(record,'$.workspaceOperation')='text' AND json_extract(record,'$.workspaceOperation')!=''),0) \
-         FROM runtime_agents WHERE \
-         (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,'')) AND \
-         ((json_type(record,'$.workspaceOperation')='text' AND json_extract(record,'$.workspaceOperation')!='') OR \
-          (json_extract(record,'$.rootId')=?1 AND json_extract(record,'$.status')='queued')) ORDER BY id",
+        "SELECT id,cwd, \
+         COALESCE((typeof(workspace_operation)='text' AND workspace_operation<>''),0) \
+         FROM runtime_agents WHERE (deleted_at IS NULL OR deleted_at IN (0,'')) AND \
+         ((typeof(workspace_operation)='text' AND workspace_operation<>'') OR \
+          (root_id=?1 AND status='queued')) ORDER BY id",
     )?;
     let rows = statement
         .query_map([root_id], |row| {
@@ -852,30 +843,33 @@ pub async fn rules(
         return Err(RulesServiceError::Invalid("rule"));
     }
     if action == "list" || data.is_none() {
-        let value = store.read_transaction_with_error(|connection| {
-            let actor =
-                checked_actor(connection, actor_id, actor_epoch).map_err(status_to_rules)?;
-            let root = actor.root_id.0;
-            let (rules, agents) = RulesRepository::list(connection)?;
-            let live = agents
-                .into_iter()
-                .map(|agent| (agent.id.0, !truthy(agent.extra.get("deletedAt"))))
-                .collect::<BTreeMap<_, _>>();
-            let visible = rules
-                .into_iter()
-                .filter(|rule| {
-                    rule.get("rootId").and_then(Value::as_str) == Some(root.as_str())
-                        && rule
-                            .get("agent")
-                            .and_then(Value::as_str)
-                            .and_then(|id| live.get(id))
-                            .copied()
-                            .unwrap_or(false)
-                })
-                .map(|rule| rule.value().clone())
-                .collect::<Vec<_>>();
-            Ok::<_, RulesServiceError>(json!({"rules": visible}))
-        })?;
+        let read_actor = actor_id.to_owned();
+        let value = store
+            .read_async("runtime-services/managed_status_watch", move |connection| {
+                let actor =
+                    checked_actor(connection, &read_actor, actor_epoch).map_err(status_to_rules)?;
+                let root = actor.root_id.0;
+                let (rules, agents) = RulesRepository::list(connection)?;
+                let live = agents
+                    .into_iter()
+                    .map(|agent| (agent.id.0, !truthy(agent.extra.get("deletedAt"))))
+                    .collect::<BTreeMap<_, _>>();
+                let visible = rules
+                    .into_iter()
+                    .filter(|rule| {
+                        rule.get("rootId").and_then(Value::as_str) == Some(root.as_str())
+                            && rule
+                                .get("agent")
+                                .and_then(Value::as_str)
+                                .and_then(|id| live.get(id))
+                                .copied()
+                                .unwrap_or(false)
+                    })
+                    .map(|rule| rule.value().clone())
+                    .collect::<Vec<_>>();
+                Ok::<_, RulesServiceError>(json!({"rules": visible}))
+            })
+            .await?;
         return Ok(RulesActionResult {
             value,
             cancel_monitor_ids: Vec::new(),
@@ -896,14 +890,18 @@ pub async fn rules(
         Some(id) => id.to_owned(),
         None => stable_rule_id(request_id)?,
     };
-    let (prepared_actor, old_before, saved_receipt) =
-        store.read_transaction_with_error(|connection| {
+    let (read_actor, read_receipt_id) = (actor_id.to_owned(), receipt_id.clone());
+    let (read_signature, read_key) = (signature.clone(), key.clone());
+    let (prepared_actor, old_before, saved_receipt) = store
+        .read_async("runtime-services/managed_status_watch", move |connection| {
             let actor =
-                checked_actor(connection, actor_id, actor_epoch).map_err(status_to_rules)?;
-            let saved_receipt = read_rules_receipt(connection, &receipt_id, &signature)?;
-            let old = RulesRepository::get(connection, &key)?.map(|record| record.value().clone());
+                checked_actor(connection, &read_actor, actor_epoch).map_err(status_to_rules)?;
+            let saved_receipt = read_rules_receipt(connection, &read_receipt_id, &read_signature)?;
+            let old =
+                RulesRepository::get(connection, &read_key)?.map(|record| record.value().clone());
             Ok::<_, RulesServiceError>((actor, old, saved_receipt))
-        })?;
+        })
+        .await?;
     if let Some(saved_receipt) = saved_receipt {
         return Ok(saved_receipt);
     }
@@ -1495,7 +1493,7 @@ mod tests {
             .is_err()
         );
         let persisted_after_mismatch = RulesRepository::get(
-            &store.read().expect("read saved rule after conflict"),
+            &store.test_reader().expect("read saved rule after conflict"),
             "rule-fixed",
         )
         .expect("read rule row")
@@ -1531,7 +1529,7 @@ mod tests {
 
         assert_eq!(paused.cancel_monitor_ids, ["watch-monitor"]);
         store
-            .read()
+            .test_reader()
             .expect("read rule sync projection")
             .query_row(
                 "SELECT payload FROM sync_entities WHERE collection='rule' AND id='rule-fixed'",
@@ -1555,7 +1553,7 @@ mod tests {
                 .is_err()
         );
         let count: i64 = store
-            .read()
+            .test_reader()
             .expect("read state")
             .query_row("SELECT COUNT(*) FROM runtime_model_status", [], |row| {
                 row.get(0)
@@ -1584,7 +1582,7 @@ mod tests {
             .await
             .expect("seed revision history and pruning failpoint");
         let before = {
-            let connection = store.read().expect("read old revisions");
+            let connection = store.test_reader().expect("read old revisions");
             let mut statement = connection
                 .prepare("SELECT revision,at,record FROM runtime_model_status WHERE agent='lead' ORDER BY revision")
                 .expect("prepare old revision query");
@@ -1606,7 +1604,7 @@ mod tests {
                 .is_err()
         );
         let after = {
-            let connection = store.read().expect("read revisions after rollback");
+            let connection = store.test_reader().expect("read revisions after rollback");
             let mut statement = connection
                 .prepare("SELECT revision,at,record FROM runtime_model_status WHERE agent='lead' ORDER BY revision")
                 .expect("prepare revision query");
@@ -1675,7 +1673,7 @@ mod tests {
         .expect("pause rule");
         assert_eq!(pause.value["status"], "paused");
         assert_eq!(pause.cancel_monitor_ids, ["watch-monitor"]);
-        let stored = RulesRepository::get(&store.read().expect("read state"), &id)
+        let stored = RulesRepository::get(&store.test_reader().expect("read state"), &id)
             .expect("read rule")
             .expect("rule exists");
         assert_eq!(stored.get("status"), Some(&json!("paused")));
@@ -1710,7 +1708,7 @@ mod tests {
             .is_err()
         );
         let rule: i64 = store
-            .read()
+            .test_reader()
             .expect("read state")
             .query_row("SELECT COUNT(*) FROM runtime_rules", [], |row| row.get(0))
             .expect("count rules");
@@ -1740,7 +1738,7 @@ mod tests {
             .is_err()
         );
         let rule: i64 = store
-            .read()
+            .test_reader()
             .expect("read state")
             .query_row("SELECT COUNT(*) FROM runtime_rules", [], |row| row.get(0))
             .expect("count rules after rollback");
@@ -1770,7 +1768,7 @@ mod tests {
             .is_err()
         );
         let (rule_count, sync_count): (i64, i64) = {
-            let connection = store.read().expect("read failed commit state");
+            let connection = store.test_reader().expect("read failed commit state");
             (
                 connection
                     .query_row("SELECT COUNT(*) FROM runtime_rules", [], |row| row.get(0))

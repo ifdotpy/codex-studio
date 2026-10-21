@@ -69,17 +69,19 @@ pub enum FederationAction {
 
 /// Check the local feature gate before parsing signed federation headers.
 /// Python's FederationService.route performs this check before reading those headers.
-pub fn ensure_enabled(store: &RuntimeStore) -> Result<()> {
-    let enabled = store.read_transaction(|tx| {
-        let enabled = tx
-            .query_row(
-                "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()?;
-        Ok::<_, StoreError>(enabled.unwrap_or(false))
-    })?;
+pub async fn ensure_enabled(store: &RuntimeStore) -> Result<()> {
+    let enabled = store
+        .read_async("runtime-services/federation_effects", |tx| {
+            let enabled = tx
+                .query_row(
+                    "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .optional()?;
+            Ok::<_, StoreError>(enabled.unwrap_or(false))
+        })
+        .await?;
     if !enabled {
         return Err(Error::Forbidden("federation is disabled"));
     }
@@ -149,13 +151,7 @@ pub async fn handle(
     if matches!(request.action, FederationAction::Pair) {
         return handle_pair(Arc::clone(&store), request, observed, &body, now).await;
     }
-    let store_for_identity = Arc::clone(&store);
-    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/federation_effects",
-        move || transport::load_federation_identity(&store_for_identity),
-    )
-    .await
-    .map_err(|_| Error::Unavailable("federation/local-identity"))??;
+    let identity = transport::load_federation_identity(&store).await?;
     let identity = Arc::new(identity);
     let action = request.action;
     let peer_id = request.peer_id.to_owned();
@@ -199,13 +195,7 @@ async fn handle_pair(
     now: f64,
 ) -> Result<Value> {
     core::validate("PairRequest", body, "body")?;
-    let store_for_identity = Arc::clone(&store);
-    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/federation_effects",
-        move || transport::load_federation_identity(&store_for_identity),
-    )
-    .await
-    .map_err(|_| Error::Unavailable("federation/local-identity"))??;
+    let identity = transport::load_federation_identity(&store).await?;
     let invite_id = body["inviteId"]
         .as_str()
         .ok_or(Error::Invalid("inviteId"))?;
@@ -498,13 +488,7 @@ pub(crate) fn outbound(item: &Value, identity: &RemoteIdentity, now: i64) -> Res
 
 pub async fn pull(store: Arc<RuntimeStore>, peer: &str, body: &Value, now: f64) -> Result<Value> {
     core::validate("PullRequest", body, "body")?;
-    let store_for_identity = Arc::clone(&store);
-    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/federation_effects",
-        move || transport::load_federation_identity(&store_for_identity),
-    )
-    .await
-    .map_err(|_| Error::Unavailable("federation/local-identity"))??;
+    let identity = transport::load_federation_identity(&store).await?;
     let peer = peer.to_owned();
     let body = body.clone();
     let identity = Arc::new(identity);

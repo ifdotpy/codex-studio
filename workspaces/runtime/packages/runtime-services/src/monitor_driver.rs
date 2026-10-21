@@ -282,8 +282,21 @@ pub async fn cancel_checked(
 }
 
 /// Select persisted cancellation intents whose transport receipt allows progress.
-pub fn pending_cancel_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>, MonitorError> {
-    let connection = store.read()?;
+pub async fn pending_cancel_ids(
+    store: &RuntimeStore,
+    now: f64,
+) -> Result<Vec<String>, MonitorError> {
+    store
+        .read_async("runtime-services/monitor_driver", move |connection| {
+            pending_cancel_ids_in(connection, now)
+        })
+        .await
+}
+
+fn pending_cancel_ids_in(
+    connection: &rusqlite::Connection,
+    now: f64,
+) -> Result<Vec<String>, MonitorError> {
     let mut statement = connection
         .prepare(
             "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.cancelRequested')=1 AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)<=?1 ORDER BY id LIMIT 64",
@@ -299,8 +312,15 @@ pub fn pending_cancel_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>,
 
 /// Starting monitors without a committed native operation are durable launch intents.
 /// Rule checks have their own scheduler and are excluded here.
-pub fn pending_start_ids(store: &RuntimeStore) -> Result<Vec<String>, MonitorError> {
-    let connection = store.read()?;
+pub async fn pending_start_ids(store: &RuntimeStore) -> Result<Vec<String>, MonitorError> {
+    store
+        .read_async("runtime-services/monitor_driver", |connection| {
+            pending_start_ids_in(connection)
+        })
+        .await
+}
+
+fn pending_start_ids_in(connection: &rusqlite::Connection) -> Result<Vec<String>, MonitorError> {
     let mut statement = connection
         .prepare(
             "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='starting' AND json_extract(record,'$.operation') IS NULL AND json_extract(record,'$.ruleId') IS NULL ORDER BY json_extract(record,'$.created'),id LIMIT 64",

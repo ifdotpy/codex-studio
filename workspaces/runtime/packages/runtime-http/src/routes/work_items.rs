@@ -119,22 +119,16 @@ where
 {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_items",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
-                .map_err(ApiError::stored)?;
-            let agent =
-                agent.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
+    store
+        .read_async("runtime-http/routes/work_items", move |connection| {
+            let agent = AgentRepository::get(connection, &AgentId::from(id.as_str()))?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
             if !super::queue_read::is_live(&agent) {
                 return Err(ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"));
             }
-            read(&connection, &agent, &validators)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+            read(connection, &agent, &validators)
+        })
+        .await
 }
 
 fn stored_values(

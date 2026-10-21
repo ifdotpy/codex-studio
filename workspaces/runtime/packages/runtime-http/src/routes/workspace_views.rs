@@ -40,46 +40,46 @@ async fn changes(
     let agent = query.nonempty_str("agent").map(str::to_owned);
     let scope = query.nonempty_str("scope").map(str::to_owned);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/workspace_views",
-        move || {
-            if scope.as_deref().is_some_and(|scope| scope != "chat") {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "Unknown changes scope",
-                ));
-            }
-            let mut connection = store.read().map_err(|_| ApiError::internal())?;
-            let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
-            let actor_id = agent.as_deref().ok_or_else(invalid_request)?;
-            let actor = WorkspaceViewsRepository::agent(&transaction, actor_id)
-                .map_err(ApiError::stored)?
+    if scope.as_deref().is_some_and(|scope| scope != "chat") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Unknown changes scope",
+        ));
+    }
+    let actor_id = agent.ok_or_else(invalid_request)?;
+    let chat = scope.is_some();
+    // Reported changes come from the transcript; Git changes run after the read.
+    let read = store
+        .read_async("runtime-http/routes/workspace_views", move |transaction| {
+            let actor = WorkspaceViewsRepository::agent(transaction, &actor_id)?
                 .ok_or_else(invalid_request)?;
             let actor = actor.value().clone();
             if deleted(&actor) {
                 return Err(invalid_request());
             }
-            if actor.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
-                && scope.as_deref() != Some("chat")
-            {
+            if actor.get("imageWorkspace").and_then(Value::as_bool) == Some(true) && !chat {
                 let reason = "Studio Git tools are unavailable for image workspaces";
-                let value = json!({"files":[],"patch":"","git":false,"error":reason});
-                transaction.commit().map_err(|_| ApiError::internal())?;
-                return Ok(value);
+                return Ok(Ok(
+                    json!({"files":[],"patch":"","git":false,"error":reason}),
+                ));
             }
-            let result = if scope.as_deref() == Some("chat") {
-                reported_changes(&transaction, actor_id)?
-            } else {
-                let context = WorkspaceContext::from_agent(&actor, actor_id)
-                    .map_err(|_| invalid_stored("runtime_agents", actor_id))?;
-                git_changes(&context.cwd)?
-            };
-            transaction.commit().map_err(|_| ApiError::internal())?;
-            Ok::<Value, ApiError>(result)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+            if chat {
+                return reported_changes(transaction, &actor_id).map(Ok);
+            }
+            let context = WorkspaceContext::from_agent(&actor, &actor_id)
+                .map_err(|_| invalid_stored("runtime_agents", &actor_id))?;
+            Ok(Err(context.cwd))
+        })
+        .await?;
+    let value = match read {
+        Ok(value) => value,
+        Err(cwd) => studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/workspace_views",
+            move || git_changes(&cwd),
+        )
+        .await
+        .map_err(|_| ApiError::internal())??,
+    };
     Ok(Json(super::generated_json::<
         crate::generated::ChangesResponse,
     >(value)?))

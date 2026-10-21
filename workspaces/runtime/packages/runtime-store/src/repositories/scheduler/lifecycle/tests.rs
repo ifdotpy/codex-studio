@@ -10,12 +10,14 @@ const ACCOUNT: &str = "acct";
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
     connection
+        .execute_batch(crate::agent_columns::agent_table_sql())
+        .expect("agents table creates");
+    connection
         .execute_batch(
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
              CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
              CREATE TABLE runtime_execution_inputs(run TEXT,event TEXT,PRIMARY KEY(run,event));
              CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
-             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
              CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);

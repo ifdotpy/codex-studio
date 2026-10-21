@@ -146,11 +146,14 @@ pub(crate) async fn prepare_steer(
     intent: &TurnIntent,
     expected_turn: &str,
 ) -> Result<PreparedSteer, WorkerError> {
+    let rows = authorization_rows(&store, intent).await?;
     let capture_store = Arc::clone(&store);
     let capture_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/steer_authorization_snapshot",
-        move || FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent),
+        move || {
+            FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent, &rows)
+        },
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
@@ -346,11 +349,14 @@ pub(crate) async fn refuse_idle(
     intent: &TurnIntent,
     reason: &str,
 ) -> Result<bool, WorkerError> {
+    let rows = authorization_rows(store, intent).await?;
     let capture_store = Arc::clone(store);
     let capture_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/idle_refusal_snapshot",
-        move || FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent),
+        move || {
+            FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent, &rows)
+        },
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)?
@@ -387,11 +393,14 @@ pub(crate) async fn refuse_steer(
     intent: &TurnIntent,
     reason: &str,
 ) -> Result<bool, WorkerError> {
+    let rows = authorization_rows(&store, intent).await?;
     let capture_store = Arc::clone(&store);
     let capture_intent = intent.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/steer_refusal_snapshot",
-        move || FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent),
+        move || {
+            FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent, &rows)
+        },
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)?
@@ -530,15 +539,12 @@ fn preconditions_for_purpose(
     prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
-    let capacity_retry = record["startAttempt"]["action"] == "capacity"
-        && record["startAttempt"]["capacityRetryId"] == record["capacityRetry"]["id"]
-        && intent.attempt_id.starts_with("capacity:");
     if record["epoch"] != intent.epoch
         || (!allow_paused_start
             && (record["startAttempt"]["id"] != intent.attempt_id
                 || record["startAttempt"]["submitted"] != false
                 || record["autoWake"] != true))
-        || (record["nativeFailureHold"] == true && !capacity_retry)
+        || record["nativeFailureHold"] == true
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
     {
@@ -753,23 +759,28 @@ async fn admit_for_purpose(
     let preparation_store = store.clone();
     let admission_intent = intent.clone();
     let radio_authorized = intent.radio_authorized;
+    let rows = authorization_rows(&store, intent).await?;
+    let prepared_host = if radio_authorized {
+        Some(
+            crate::host_project_runtime::PreparedHost::load(&store)
+                .await
+                .map_err(|error| refusal(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_admission_snapshot",
         move || {
             let filesystem = FilesystemSnapshot::capture_for_authorization(
                 &preparation_store,
                 &admission_intent,
+                &rows,
             )?;
-            let prepared_host = if radio_authorized {
-                let prepared = crate::host_project_runtime::PreparedHost::load(&preparation_store)
+            if let Some(host) = &prepared_host {
+                host.recheck_paths()
                     .map_err(|error| refusal(error.to_string()))?;
-                prepared
-                    .recheck_paths()
-                    .map_err(|error| refusal(error.to_string()))?;
-                Some(prepared)
-            } else {
-                None
-            };
+            }
             Ok::<_, WorkerError>((filesystem, prepared_host))
         },
     )
@@ -819,24 +830,42 @@ pub(crate) async fn workspace(
     workspace_with_vm_action(store, resources, intent, false).await
 }
 
+/// The stored agent of a turn being prepared; a missing row is invalid.
+async fn workspace_agent(
+    store: &RuntimeStore,
+    agent_id: &str,
+) -> Result<studio_runtime_store::AgentRecord, WorkerError> {
+    let agent_id = agent_id.to_owned();
+    store
+        .read_async(
+            "runtime-services/account_worker_workspace_agent",
+            move |tx| {
+                AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .ok_or_else(|| invalid(&agent_id))
+            },
+        )
+        .await
+}
+
+/// The stored agent as JSON; a missing row is an invalid "agent".
+async fn stored_agent_value(store: &RuntimeStore, agent_id: &str) -> Result<Value, WorkerError> {
+    let agent_id = AgentId::from(agent_id);
+    store
+        .read_async("runtime-services/account_worker_agent", move |tx| {
+            AgentRepository::get(tx, &agent_id)?
+                .map(|record| record.value())
+                .ok_or_else(|| invalid("agent"))
+        })
+        .await
+}
+
 async fn workspace_with_vm_action(
     store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     allow_vm_native_action: bool,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
-    let read_store = Arc::clone(&store);
-    let agent_id = intent.agent_id.clone();
-    let record = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_workspace_agent",
-        move || {
-            let read = read_store.read()?;
-            AgentRepository::get(&read, &AgentId::from(agent_id.as_str()))?
-                .ok_or_else(|| invalid(&agent_id))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+    let record = workspace_agent(&store, &intent.agent_id).await?;
     if record.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
         if record.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
             let start_attempt = record.extra.get("startAttempt").unwrap_or(&Value::Null);
@@ -895,18 +924,7 @@ async fn workspace_with_vm_action(
                 error => refusal(error.to_string()),
             })?;
         }
-        let read_store = Arc::clone(&store);
-        let agent_id = intent.agent_id.clone();
-        let ready = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker_workspace_agent",
-            move || {
-                let connection = read_store.read()?;
-                AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))?
-                    .ok_or_else(|| invalid(&agent_id))
-            },
-        )
-        .await
-        .map_err(|_| WorkerError::TaskFailed)??;
+        let ready = workspace_agent(&store, &intent.agent_id).await?;
         if ready.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
             return Err(WorkerError::PreparationAwaitsAgent(
                 "workspace-readiness/vm-not-ready".into(),
@@ -940,17 +958,12 @@ async fn workspace_with_vm_action(
         .map_err(|e| refusal(e.to_string()))?
     {
         crate::workspace_ready::WorkspaceDecision::Ready { token } => {
-            let read_store = Arc::clone(&store);
+            let record = workspace_agent(&store, &intent.agent_id).await?;
             let agent_id = intent.agent_id.clone();
             let root = store.root().to_path_buf();
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/account_worker_workspace_progress",
                 move || {
-                    let record = AgentRepository::get(
-                        &*read_store.read()?,
-                        &AgentId::from(agent_id.as_str()),
-                    )?
-                    .ok_or_else(|| invalid(&agent_id))?;
                     if record.extra.get("isLead") == Some(&json!(true)) {
                         if agent_id.is_empty()
                             || agent_id.len() > 200
@@ -1275,21 +1288,13 @@ pub(crate) async fn prepare_monitor_command(
     }
     let snapshot_store = Arc::clone(&store);
     let snapshot_agent_id = agent_id.to_owned();
-    let (filesystem, observed) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_monitor_snapshot",
-        move || {
-            let filesystem = FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent_id)?;
-            let observed = AgentRepository::get(
-                &*snapshot_store.read()?,
-                &AgentId::from(snapshot_agent_id.as_str()),
-            )?
-            .ok_or_else(|| invalid(snapshot_agent_id.as_str()))?
-            .value();
-            Ok::<_, WorkerError>((filesystem, observed))
-        },
+        move || FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent_id),
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
+    let observed = workspace_agent(&store, agent_id).await?.value();
     validate_monitor_actor(&observed, epoch)?;
     let image_temp = if observed["imageWorkspace"] == true
         && observed["imageWorkspaceReady"] != true
@@ -1555,18 +1560,7 @@ async fn prepare_native_snapshot(
     allow_paused_start: bool,
     account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
-    let read_store = Arc::clone(&store);
-    let read_agent_id = agent_id.to_owned();
-    let record = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_native_snapshot_agent",
-        move || {
-            AgentRepository::get(&*read_store.read()?, &AgentId::from(read_agent_id.as_str()))?
-                .map(|record| record.value())
-                .ok_or_else(|| invalid("agent"))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+    let record = stored_agent_value(&store, agent_id).await?;
     let intent = TurnIntent {
         agent_id: agent_id.into(),
         epoch: decode(record["epoch"].clone(), "agent/epoch")?,
@@ -1621,10 +1615,15 @@ async fn prepare_native_snapshot(
     };
     let filesystem_store = Arc::clone(&store);
     let filesystem_intent = intent.clone();
+    let rows = authorization_rows(&store, &intent).await?;
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_native_snapshot_filesystem",
         move || {
-            FilesystemSnapshot::capture_for_authorization(&filesystem_store, &filesystem_intent)
+            FilesystemSnapshot::capture_for_authorization(
+                &filesystem_store,
+                &filesystem_intent,
+                &rows,
+            )
         },
     )
     .await
@@ -1685,18 +1684,7 @@ pub(crate) async fn prepare_safety_retry(
     {
         return Err(refusal("safety-retry/identity-invalid".into()));
     }
-    let read_store = Arc::clone(&store);
-    let agent_id = request.agent_id.clone();
-    let record = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_safety_retry_agent",
-        move || {
-            AgentRepository::get(&*read_store.read()?, &AgentId::from(agent_id.as_str()))?
-                .map(|record| record.value())
-                .ok_or_else(|| invalid("agent"))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+    let record = stored_agent_value(&store, &request.agent_id).await?;
     if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
         || record
             .get("deletedAt")
@@ -1828,20 +1816,28 @@ pub(crate) async fn prepare_ready(
     let snapshot_store = Arc::clone(&store);
     let snapshot_intent = intent.clone();
     let radio_authorized = intent.radio_authorized;
+    let rows = authorization_rows(&store, intent).await?;
+    let prepared_host = if radio_authorized {
+        Some(
+            crate::host_project_runtime::PreparedHost::load(&store)
+                .await
+                .map_err(|error| refusal(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_ready_snapshot",
         move || {
-            let filesystem =
-                FilesystemSnapshot::capture_for_authorization(&snapshot_store, &snapshot_intent)?;
-            let prepared_host = if radio_authorized {
-                let host = crate::host_project_runtime::PreparedHost::load(&snapshot_store)
-                    .map_err(|error| refusal(error.to_string()))?;
+            let filesystem = FilesystemSnapshot::capture_for_authorization(
+                &snapshot_store,
+                &snapshot_intent,
+                &rows,
+            )?;
+            if let Some(host) = &prepared_host {
                 host.recheck_paths()
                     .map_err(|error| refusal(error.to_string()))?;
-                Some(host)
-            } else {
-                None
-            };
+            }
             Ok::<_, WorkerError>((filesystem, prepared_host))
         },
     )

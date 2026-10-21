@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use studio_runtime_store::sha256_hex;
 
-/// Most user events one frozen Claude start may carry.
-const MAX_BATCH: usize = 32;
 const RECEIPT_FIELDS: &[&str] = &[
     "id",
     "epoch",
@@ -131,9 +129,6 @@ pub fn capture_input(
         .map(|event| decode(event, "events"))
         .collect::<Result<_, _>>()?;
     let first = events.first().ok_or_else(|| invalid("events"))?;
-    if events.len() > MAX_BATCH {
-        return Err(invalid("events"));
-    }
     let mut configuration: Map<String, Value> = decode(params, "params")?;
     let input: Vec<Value> = decode(
         &configuration
@@ -150,4 +145,43 @@ pub fn capture_input(
         "configuration":configuration,"events":events.iter().map(EventRecord::snapshot).collect::<Vec<_>>(),
         "transcriptItemId":format!("{}:{}",actor.id,first.id),"textHash":sha256_hex(text.as_bytes())}),
     )
+}
+
+#[cfg(test)]
+mod unbounded_batch_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_batch_capture_keeps_all_thousand_exact_inputs() {
+        let events: Vec<_> = (0..1000)
+            .map(|index| {
+                json!({
+                    "id":format!("event-{index}"),"agent":"agent","epoch":1,"kind":"user",
+                    "text":format!("message {index}"),"created":index as f64,"status":"reserved",
+                    "turn_id":null,"error":null,"metadata":{}
+                })
+            })
+            .collect();
+        let params = json!({"input":[{"type":"text","text":"prepared batch"}],"clientUserMessageId":"event-0","model":"fixture"});
+        let frozen = capture_input(&json!({"id":"agent"}), &events, &params, "prepared batch")
+            .expect("batch capture");
+        let saved = frozen["events"].as_array().expect("saved events");
+        assert_eq!(saved.len(), events.len());
+        for (source, saved) in events.iter().zip(saved) {
+            assert_eq!(saved["id"], source["id"]);
+            assert_eq!(
+                saved["textHash"],
+                json!(sha256_hex(
+                    source["text"].as_str().expect("text").as_bytes()
+                ))
+            );
+        }
+        assert_eq!(frozen["input"], params["input"]);
+        assert!(capture_input(&json!({"id":"agent"}), &[], &params, "prepared batch").is_err());
+        let mut invalid = events;
+        invalid[999]["status"] = json!("unknown");
+        assert!(
+            capture_input(&json!({"id":"agent"}), &invalid, &params, "prepared batch").is_err()
+        );
+    }
 }

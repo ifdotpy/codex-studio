@@ -95,12 +95,7 @@ async fn recovery_required(
     agent_id: String,
     reason: String,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    let current = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/workspace_ready_git",
-        move || actor(&snapshot(&store, &agent_id)?),
-    )
-    .await
-    .map_err(|_| WorkspaceError::Worker)??;
+    let current = actor(&snapshot(&store, agent_id).await?)?;
     Ok(recovery(
         current.workspace_reservation_id,
         current.cwd,
@@ -113,14 +108,7 @@ async fn prepare_attempt(
     agent_id: String,
     timeout: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    let read_store = Arc::clone(&store);
-    let initial_agent_id = agent_id.clone();
-    let initial = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/workspace_ready_git",
-        move || snapshot(&read_store, &initial_agent_id),
-    )
-    .await
-    .map_err(|_| WorkspaceError::Worker)??;
+    let initial = snapshot(&store, agent_id.clone()).await?;
     let actor = actor(&initial)?;
     // VM paths are guest paths, so they cannot enter Git canonicalization. The
     // native-action owner binds the line; this token admits only the persisted
@@ -240,14 +228,14 @@ async fn prepare_attempt(
             by: crate::workspace_ready::DeferredBy::Actor,
         });
     }
-    let observe_store = Arc::clone(&store);
+    let journal = provision_journal(&store, provision_id(&actor)).await?;
     let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
             // The Git budget starts with the first Git command. Time spent
             // waiting for a blocking thread or a SQLite reader is not Git time.
             let deadline = Instant::now() + timeout;
-            observe(&observe_store, initial, &Git { deadline }).map(|context| (context, deadline))
+            observe(initial, journal, &Git { deadline }).map(|context| (context, deadline))
         },
     )
     .await
@@ -265,15 +253,21 @@ async fn prepare_attempt(
         });
     };
     // Another worker may have completed while this caller waited for the common repository.
-    let observe_store = Arc::clone(&store);
     let observe_agent_id = agent_id.clone();
+    let (snapshot, journal) = store
+        .read_async("runtime-services/workspace_ready_git", move |connection| {
+            let snapshot = reservation_snapshot(connection, &observe_agent_id)?;
+            let id = provision_id(&self::actor(&snapshot)?);
+            let journal = WorkspaceReadyRepository::journal(connection, &id)?;
+            Ok::<_, WorkspaceError>((snapshot, journal))
+        })
+        .await?;
     let context = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
-            let snapshot = snapshot(&observe_store, &observe_agent_id)?;
             observe(
-                &observe_store,
                 snapshot,
+                journal,
                 &Git {
                     deadline: git_deadline,
                 },
@@ -448,9 +442,36 @@ impl Context {
         )
     }
 }
-fn snapshot(store: &RuntimeStore, id: &str) -> Result<WorkspaceSnapshot, WorkspaceError> {
-    CheckpointsRepository::reservation_snapshot(&*store.read()?, id)?
+async fn snapshot(store: &RuntimeStore, id: String) -> Result<WorkspaceSnapshot, WorkspaceError> {
+    store
+        .read_async("runtime-services/workspace_ready_git", move |connection| {
+            reservation_snapshot(connection, &id)
+        })
+        .await
+}
+
+fn reservation_snapshot(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<WorkspaceSnapshot, WorkspaceError> {
+    CheckpointsRepository::reservation_snapshot(connection, id)?
         .ok_or(WorkspaceError::InvalidRecord)
+}
+
+/// The workspace operation journal key of one actor epoch's provisioning.
+fn provision_id(actor: &WorkspaceActor) -> String {
+    format!("provision:{}:{}", actor.id, actor.epoch)
+}
+
+async fn provision_journal(
+    store: &RuntimeStore,
+    id: String,
+) -> Result<Option<Value>, WorkspaceError> {
+    Ok(store
+        .read_async("runtime-services/workspace_ready_git", move |connection| {
+            WorkspaceReadyRepository::journal(connection, &id)
+        })
+        .await?)
 }
 fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError> {
     let actor: WorkspaceActor = serde_json::from_value(snapshot.agent.record.clone())
@@ -461,8 +482,8 @@ fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError>
     Ok(actor)
 }
 fn observe(
-    store: &RuntimeStore,
     snapshot: WorkspaceSnapshot,
+    journal: Option<Value>,
     git: &Git,
 ) -> Result<Context, WorkspaceError> {
     let actor = actor(&snapshot)?;
@@ -508,7 +529,7 @@ fn observe(
     ) {
         return Err(WorkspaceError::InvalidRecord);
     }
-    let id = format!("provision:{}:{}", context.actor.id, context.actor.epoch);
+    let id = provision_id(&context.actor);
     let repository = canonical(git.run(cwd, &["rev-parse", "--show-toplevel"])?.trim())?;
     let common_dir = git.common(&repository)?;
     let relative = cwd
@@ -517,7 +538,6 @@ fn observe(
     let destination = repository
         .join(".worktrees/codex-agents")
         .join(&context.actor.id);
-    let journal = WorkspaceReadyRepository::journal(&*store.read()?, &id)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())

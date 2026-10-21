@@ -244,14 +244,6 @@ pub(super) async fn dispatch_with_ports(
     if matches!(call.kind, ToolKind::Unknown) {
         return Ok(CallbackDecision::Unsupported);
     }
-    let identity = ReplyIdentity::new(context, &input.id);
-    let input_for_replay = input.clone();
-    if let Some(decision) = store
-        .transaction_with(move |tx| storage::saved_decision(tx, &identity, &input_for_replay))
-        .await?
-    {
-        return Ok(decision);
-    }
     // The complete call identity and arguments commit before a service can act.
     let context_for_admission = context.clone();
     let call_for_admission = call.clone();
@@ -299,7 +291,6 @@ pub(super) async fn dispatch_with_ports(
         })
         .await?;
     enum DispatchState {
-        Existing(CallbackDecision),
         Result(Value),
         Claimed,
         Retry,
@@ -308,51 +299,44 @@ pub(super) async fn dispatch_with_ports(
     // durable intent boundary: any later dispatcher work is associated with
     // this exact tool request and its complete argument signature.
     let context_for_claim = context.clone();
-    let input_for_claim = input.clone();
     let call_for_claim = call.clone();
-    let state = store.transaction_with(move |tx| {
-        let context = &context_for_claim;
-        let input = &input_for_claim;
-        let call = &call_for_claim;
-        let snapshot = storage::snapshot(tx, context)?;
-        snapshot.active()?;
-        let identity = ReplyIdentity::new(context, &input.id);
-        if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
-            return Ok(DispatchState::Existing(decision));
-        }
-        let uncertain: i64 = tx.query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.toolRequest')=?1 AND json_extract(result,'$.delivery') IN ('submitted','unknown')",
-            [&call.id], |row| row.get(0))?;
-        if uncertain != 0 { return Err(CallbackError::Unknown); }
-        let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
-            .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-        if record["agent"] != context.agent
-            || record["epoch"].as_u64() != Some(context.epoch)
-            || record["accountKey"] != context.account
-            || record["threadId"] != context.thread
-            || record["signature"] != call.signature {
-            return Err(CallbackError::Stale);
-        }
-        let cached = records::get(tx, "runtime_tool_results", &call.id)?
-            .or_else(|| record.get("result").filter(|v| v.is_object()).cloned());
-        if let Some(saved) = cached {
-            return Ok(DispatchState::Result(saved));
-        }
-        if record["connectionId"] != context.connection
-            || record.pointer("/supervisor/generation").and_then(Value::as_u64) != Some(context.generation) {
-            return Err(CallbackError::Stale);
-        }
-        if admission::claim(&mut record, now)? {
-            put(tx, &record)?;
-            Ok(DispatchState::Claimed)
-        } else {
-            Ok(DispatchState::Retry)
-        }
-    }).await?;
-    let state = match state {
-        DispatchState::Existing(decision) => return Ok(decision),
-        other => other,
-    };
+    let state = store
+        .transaction_with(move |tx| {
+            let context = &context_for_claim;
+            let call = &call_for_claim;
+            let snapshot = storage::snapshot(tx, context)?;
+            snapshot.active()?;
+            let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
+                .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+            if record["agent"] != context.agent
+                || record["epoch"].as_u64() != Some(context.epoch)
+                || record["accountKey"] != context.account
+                || record["threadId"] != context.thread
+                || record["signature"] != call.signature
+            {
+                return Err(CallbackError::Stale);
+            }
+            let cached = records::get(tx, "runtime_tool_results", &call.id)?
+                .or_else(|| record.get("result").filter(|v| v.is_object()).cloned());
+            if let Some(saved) = cached {
+                return Ok(DispatchState::Result(saved));
+            }
+            if record["connectionId"] != context.connection
+                || record
+                    .pointer("/supervisor/generation")
+                    .and_then(Value::as_u64)
+                    != Some(context.generation)
+            {
+                return Err(CallbackError::Stale);
+            }
+            if admission::claim(&mut record, now)? {
+                put(tx, &record)?;
+                Ok(DispatchState::Claimed)
+            } else {
+                Ok(DispatchState::Retry)
+            }
+        })
+        .await?;
     // Dispatch starts only after the claim transaction above has committed. The
     // service transaction below either records the local result and its durable
     // effects together, or leaves the claim as an inspectable unknown receipt.
@@ -408,69 +392,49 @@ pub(super) async fn dispatch_with_ports(
                 settled?
             }
         }
-        DispatchState::Existing(_) => unreachable!("handled above"),
     };
-    let context_for_reply = context.clone();
-    let input_for_reply = input.clone();
-    let call_for_reply = call.clone();
-    let result_for_reply = result.clone();
-    let signals_for_reply = signals.clone();
-    let (decision, signals) = store
+    // The tool's effect has committed. From here nothing may report failure:
+    // the model would retry a command that already ran. A lost wake only
+    // delays its owners; their own recovery observes the durable intents.
+    if !signals.is_empty() && ports.release(&signals).is_err() {
+        eprintln!("Could not wake owners of managed tool request {}", call.id);
+    }
+    // The durable tool result is the only copy of the answer: a replay of this
+    // request rebuilds the same reply from it, so no reply row is kept.
+    let call_id = call.id.clone();
+    let outcome = store
         .transaction_with(move |tx| {
-            let context = &context_for_reply;
-            let input = &input_for_reply;
-            let call = &call_for_reply;
-            let result = &result_for_reply;
-            let identity = ReplyIdentity::new(context, &input.id);
-            if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
-                return Ok((decision, Vec::new()));
-            }
-            let record = records::get(tx, "runtime_tool_requests", &call.id)?
-                .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-            let projected = super::project_tool_result(result, &call.id, &record["outcome"])?;
-            let reply = Reply::new(identity, ResponseBody::Result(projected))?;
-            Ok::<_, CallbackError>((CallbackDecision::Answer(reply), signals_for_reply))
+            records::get(tx, "runtime_tool_requests", &call_id)?
+                .map(|record| record["outcome"].clone())
+                .ok_or(CallbackError::Invalid("Unknown tool receipt"))
         })
         .await?;
-    if !signals.is_empty() {
-        ports
-            .release(&signals)
-            .map_err(|_| CallbackError::Unknown)?;
-    }
-    // The callback reply is committed only after the post-commit dispatcher has
-    // observed the durable intents and completed its wake/reconciliation step.
-    // If the process exits in this gap, the tool result and request receipt above
-    // remain authoritative; replay reconstructs the same reply without executing
-    // the operation again.
-    if let CallbackDecision::Answer(reply) = &decision {
-        let input_for_save = input.clone();
-        let reply_for_save = reply.clone();
-        let call_id = call.id.clone();
-        store
-            .transaction_with(move |tx| {
-                storage::save_reply(tx, &input_for_save, &reply_for_save)?;
-                let key = reply_for_save.identity.key();
-                let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
-                outbox["toolRequest"] = json!(call_id);
-                storage::update(tx, &key, &outbox)?;
-                Ok::<_, CallbackError>(())
-            })
-            .await?;
-    }
-    Ok(decision)
+    let projected = super::project_tool_result(&result, &call.id, &outcome)?;
+    // Every replay rebuilds the identical reply: its attempt is the tool request.
+    let mut identity = ReplyIdentity::new(context, &input.id);
+    identity.attempt = call.id;
+    Ok(CallbackDecision::Answer(Reply {
+        identity,
+        body: ResponseBody::Result(projected),
+    }))
 }
 
-pub(super) fn production_ports(
+pub(super) async fn production_ports(
     store: &RuntimeStore,
     context: &CallbackContext,
     input: &Input,
     config: crate::provider_callbacks::ManagedToolPortsConfig,
 ) -> Result<services::ProductionPorts, CallbackError> {
-    let reader = store.read()?;
-    let admission = crate::message_admission::PreparedAdmission::load(&reader, &context.agent)
-        .map_err(CallbackError::from)?;
-    let room_directory = if input.params["tool"] == "orchestration_search" {
-        Some(crate::sync_entity_context::RoomDirectory::prepare(&reader)?)
+    let agent = context.agent.clone();
+    let search = input.params["tool"] == "orchestration_search";
+    let admission = store
+        .read_async("runtime-services/provider_callbacks/tools", move |reader| {
+            crate::message_admission::PreparedAdmission::load(reader, &agent)
+                .map_err(CallbackError::from)
+        })
+        .await?;
+    let room_directory = if search {
+        Some(crate::sync_entity_context::RoomDirectory::read_and_prepare(store).await?)
     } else {
         None
     };

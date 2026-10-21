@@ -76,7 +76,7 @@ async fn put_agent(store: &RuntimeStore, record: Value) {
 }
 
 fn stored(store: &RuntimeStore, id: &str) -> Value {
-    AgentRepository::get(&store.read().expect("read"), &AgentId::from(id))
+    AgentRepository::get(&store.test_reader().expect("read"), &AgentId::from(id))
         .expect("agent reads")
         .expect("agent exists")
         .value()
@@ -84,7 +84,7 @@ fn stored(store: &RuntimeStore, id: &str) -> Value {
 
 /// `(id, kind, text)` of every queued event for `agent`, in id order.
 fn events(store: &RuntimeStore, agent: &str) -> Vec<(String, String, String)> {
-    let db = store.read().expect("read");
+    let db = store.test_reader().expect("read");
     let mut statement = db
         .prepare("SELECT id,kind,text FROM runtime_events WHERE agent=?1 ORDER BY id")
         .expect("event query");
@@ -189,7 +189,10 @@ async fn a_read_only_agent_gets_its_copy_once_the_base_is_ready() {
         ),
     )
     .await;
-    assert_eq!(read_only_agents(&store).expect("scan"), vec!["reader"]);
+    assert_eq!(
+        read_only_agents(&store.test_reader().expect("test reader")).expect("scan"),
+        vec!["reader"]
+    );
     let steps = Steps {
         base: base_after_one_check,
         create: create_copy,
@@ -226,7 +229,11 @@ async fn a_read_only_agent_gets_its_copy_once_the_base_is_ready() {
         "[Studio image workspace ready] Path: {}. This is a copy of /source/project taken at ",
         cwd.display()
     )));
-    assert!(read_only_agents(&store).expect("scan").is_empty());
+    assert!(
+        read_only_agents(&store.test_reader().expect("test reader"))
+            .expect("scan")
+            .is_empty()
+    );
     assert_eq!(
         complete(&store, "reader", steps).await.expect("repeat"),
         Completion::Superseded,
@@ -380,7 +387,10 @@ async fn startup_resume_selects_only_live_read_only_image_agents() {
         ),
     )
     .await;
-    assert_eq!(read_only_agents(&store).expect("scan"), vec!["a-read-only"]);
+    assert_eq!(
+        read_only_agents(&store.test_reader().expect("test reader")).expect("scan"),
+        vec!["a-read-only"]
+    );
 }
 
 fn ready_copy(_: &Path, agent_id: &str) -> Result<Value, ImageWorkspaceError> {

@@ -81,7 +81,7 @@ async fn drain(root: &Path, crash_after_publish: bool) {
     let mut sink = Connection::open(root.join("p06-sink.sqlite3")).expect("test invariant");
     sink.execute_batch("CREATE TABLE IF NOT EXISTS applied(position INTEGER PRIMARY KEY AUTOINCREMENT,sequence INTEGER,ordinal INTEGER,payload TEXT,UNIQUE(sequence,ordinal));").expect("test invariant");
     let batches: Vec<NotificationPublicationBatch> = {
-        let read = store.read().expect("test invariant");
+        let read = store.test_reader().expect("test invariant");
         read.prepare("SELECT payload FROM p06_journal WHERE ack=0 ORDER BY sequence")
             .expect("test invariant")
             .query_map([], |row| row.get::<_, String>(0))
@@ -150,7 +150,7 @@ async fn wave7_p06_commit_publication_restart_preserves_order() {
     }).await.expect("test invariant");
     let first = &case["steps"][0]["frame"];
     assert!(journal(&store, first, 1, true).await.is_err());
-    assert_eq!(store.read().expect("test invariant").query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'",[],|r|r.get::<_,i64>(0)).expect("test invariant"),0,"journal staging failure must roll receipt back");
+    assert_eq!(store.test_reader().expect("test invariant").query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'",[],|r|r.get::<_,i64>(0)).expect("test invariant"),0,"journal staging failure must roll receipt back");
     for (index, step) in case["steps"]
         .as_array()
         .expect("test invariant")
@@ -162,7 +162,7 @@ async fn wave7_p06_commit_publication_restart_preserves_order() {
             .expect("test invariant");
     }
     let order: Vec<i64> = store
-        .read()
+        .test_reader()
         .expect("test invariant")
         .prepare("SELECT sequence FROM p06_journal ORDER BY id")
         .expect("test invariant")
@@ -196,7 +196,7 @@ async fn wave7_p06_commit_publication_restart_preserves_order() {
         .expect("test invariant");
     assert_eq!(
         reopened
-            .read()
+            .test_reader()
             .expect("test invariant")
             .query_row("SELECT sum(ack) FROM p06_journal", [], |r| r
                 .get::<_, i64>(0))

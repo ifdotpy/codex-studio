@@ -21,17 +21,17 @@ const ACTIVE_SOURCE_CLEANUP_PHASES: &str = "'planned','submitted'";
 /// agent has a turn, input, request, monitor, or operation in progress.
 fn agent_in_use(connection: &Connection) -> StoreResult<String> {
     let mut checks = vec![
-        format!("COALESCE(json_extract(record,'$.status'),'') IN ({ACTIVE_AGENT_STATUSES})"),
-        "COALESCE(json_extract(record,'$.inFlight'),0)!=0".to_owned(),
-        "COALESCE(json_extract(record,'$.turnId'),'')!=''".to_owned(),
+        format!("COALESCE(status,'') IN ({ACTIVE_AGENT_STATUSES})"),
+        "COALESCE(in_flight,0)!=0".to_owned(),
+        "COALESCE(turn_id,'')!=''".to_owned(),
         format!(
             "COALESCE(json_array_length({}),0)>0",
             crate::agent_volatile::field_sql("runtime_agents", "activeTools")
         ),
-        "json_extract(record,'$.workspaceOperation') IS NOT NULL".to_owned(),
+        "workspace_operation IS NOT NULL".to_owned(),
         "COALESCE(json_extract(record,'$.accountTransferId'),'')!=''".to_owned(),
-        "COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!=''".to_owned(),
-        format!("json_extract(record,'$.contextRepair.phase') IN ({ACTIVE_CONTEXT_REPAIR_PHASES})"),
+        "COALESCE(native_tool_refresh_id,'')!=''".to_owned(),
+        format!("context_repair_phase IN ({ACTIVE_CONTEXT_REPAIR_PHASES})"),
         format!("({})", unresolved_sql()),
         format!(
             "EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=runtime_agents.id \
@@ -98,7 +98,7 @@ const SETTLED_WORK_STATUSES: &str = "'accepted','cancelled'";
 /// the ordinary idle timer.
 fn finished_worker_sql(connection: &Connection) -> StoreResult<String> {
     let mut predicate = "COALESCE(json_extract(record,'$.isLead'),0)=0 \
-         AND COALESCE(json_extract(record,'$.status'),'')!='waiting'"
+         AND COALESCE(status,'')!='waiting'"
         .to_owned();
     if table_exists(connection, "runtime_work")? {
         predicate.push_str(&format!(
@@ -110,9 +110,8 @@ fn finished_worker_sql(connection: &Connection) -> StoreResult<String> {
     Ok(predicate)
 }
 
-const ACCOUNT_AGENT_SQL: &str = "SELECT 1 FROM runtime_agents WHERE \
-     COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
-     AND json_extract(record,'$.deletedAt') IS NULL";
+const ACCOUNT_AGENT_SQL: &str =
+    "SELECT 1 FROM runtime_agents WHERE account_key=?1 AND deleted_at IS NULL";
 
 impl SchedulerRepository {
     /// Read the durable status of known loaded threads and the account in one
@@ -134,12 +133,10 @@ impl SchedulerRepository {
         let account_in_use = format!("({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} AND ({in_use})))");
         let thread_in_use = format!(
             "({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} \
-               AND json_extract(record,'$.threadId')=c.thread_id AND ({in_use})) \
+               AND thread_id=c.thread_id AND ({in_use})) \
              OR EXISTS(SELECT 1 FROM runtime_agents WHERE \
-               json_extract(record,'$.contextRepair.sourceCleanup.phase') \
-                 IN ({ACTIVE_SOURCE_CLEANUP_PHASES}) \
-               AND json_extract(record,'$.contextRepair.sourceCleanup.accountKey')=?1 \
-               AND json_extract(record,'$.contextRepair.sourceCleanup.threadId')=c.thread_id))"
+               source_cleanup_phase IN ({ACTIVE_SOURCE_CLEANUP_PHASES}) \
+               AND source_cleanup_account_key=?1 AND source_cleanup_thread_id=c.thread_id))"
         );
         let sql = format!(
             "WITH candidates(thread_id) AS (SELECT value FROM json_each(?2)), \
@@ -205,9 +202,8 @@ impl SchedulerRepository {
         let finished = finished_worker_sql(connection)?;
         let mut statement = connection.prepare_cached(&format!(
             "SELECT c.value FROM json_each(?2) c WHERE NOT EXISTS(SELECT 1 FROM runtime_agents \
-             WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
-             AND json_extract(record,'$.deletedAt') IS NULL AND NOT ({finished}) \
-             AND json_extract(record,'$.threadId')=c.value)"
+             WHERE account_key=?1 AND deleted_at IS NULL AND NOT ({finished}) \
+             AND thread_id=c.value)"
         ))?;
         let rows = statement.query_map([account, &encoded_threads], |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -227,15 +223,14 @@ impl SchedulerRepository {
         let in_use = agent_in_use(connection)?;
         Ok(exists(
             connection,
-            &format!("{ACCOUNT_AGENT_SQL} AND json_extract(record,'$.threadId')=?2 AND ({in_use})"),
+            &format!("{ACCOUNT_AGENT_SQL} AND thread_id=?2 AND ({in_use})"),
             &[account, thread],
         )? || exists(
             connection,
             &format!(
                 "SELECT 1 FROM runtime_agents WHERE \
-                 json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ({ACTIVE_SOURCE_CLEANUP_PHASES}) \
-                 AND json_extract(record,'$.contextRepair.sourceCleanup.accountKey')=?1 \
-                 AND json_extract(record,'$.contextRepair.sourceCleanup.threadId')=?2"
+                 source_cleanup_phase IN ({ACTIVE_SOURCE_CLEANUP_PHASES}) \
+                 AND source_cleanup_account_key=?1 AND source_cleanup_thread_id=?2"
             ),
             &[account, thread],
         )?)
@@ -266,9 +261,11 @@ mod tests {
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
+            .execute_batch(crate::agent_columns::agent_table_sql())
+            .expect("agents table creates");
+        connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-                 CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, kind TEXT, text TEXT,
+                "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, kind TEXT, text TEXT,
                    status TEXT, created REAL, epoch INTEGER, turn_id TEXT, error TEXT);
                  CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL);

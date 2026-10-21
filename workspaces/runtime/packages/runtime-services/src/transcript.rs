@@ -116,17 +116,11 @@ pub async fn pull_scope(
     let now = crate::transcript_runtime::observed_at()?;
     let read_scope = scope.clone();
     let read_agent = agent.clone();
-    let read_store = Arc::clone(&store);
-    let cached = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/transcript_scope",
-        move || {
-            read_store.read_transaction_with_error(|transaction| {
-                pull_scope_cached_in(transaction, &read_scope, &read_agent, after)
-            })
-        },
-    )
-    .await
-    .map_err(|_| TranscriptError::Store)?;
+    let cached = store
+        .read_async("runtime-services/transcript_scope", move |transaction| {
+            pull_scope_cached_in(transaction, &read_scope, &read_agent, after)
+        })
+        .await;
     match cached {
         Ok(Some(result)) => return Ok(result),
         Ok(None) | Err(TranscriptError::ReadOnlyRepair) => {}
@@ -287,43 +281,66 @@ fn validate_cached_payload(scope: &str, payload: &Value) -> Result<(), Transcrip
     Ok(())
 }
 
-pub fn item(store: &RuntimeStore, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
-    let connection = store.read().map_err(|_| TranscriptError::Store)?;
+pub async fn item(
+    store: &RuntimeStore,
+    agent: String,
+    identity: String,
+) -> Result<Value, TranscriptError> {
+    store
+        .read_async("runtime-services/transcript", move |connection| {
+            item_in(connection, &agent, &identity)
+        })
+        .await
+}
+
+fn item_in(connection: &Connection, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
     let actor =
-        TranscriptRepository::agent(&connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
+        TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
     if truthy(actor.get("deletedAt")) {
         return Err(TranscriptError::DeletedConversation);
     }
-    let row = TranscriptRepository::resolve_item(&connection, agent, identity)?
+    let row = TranscriptRepository::resolve_item(connection, agent, identity)?
         .ok_or(TranscriptError::UnknownMessage)?;
     validate_parent(&row)?;
     if let Some(inputs) = stored_inputs(&row.record, &row.id)?.filter(|inputs| !inputs.is_empty()) {
         for (index, input) in inputs.iter().enumerate() {
             let candidate = hydrate_input(&row, input, index, agent, Some(identity), |id| {
-                Ok(TranscriptRepository::event_text(&connection, agent, id)?)
+                Ok(TranscriptRepository::event_text(connection, agent, id)?)
             })?;
             if let Some(candidate) = candidate {
                 return Ok(candidate);
             }
         }
     }
-    let full = TranscriptRepository::full_text(&connection, &row)?;
+    let full = TranscriptRepository::full_text(connection, &row)?;
     parent_projection(&row, agent, full, |id| {
-        Ok(TranscriptRepository::event_text(&connection, agent, id)?)
+        Ok(TranscriptRepository::event_text(connection, agent, id)?)
     })
 }
 
-pub fn search(
+pub async fn search(
     store: &RuntimeStore,
+    agent: String,
+    query: String,
+    limit: i64,
+) -> Result<Value, TranscriptError> {
+    store
+        .read_async("runtime-services/transcript", move |connection| {
+            search_in(connection, &agent, &query, limit)
+        })
+        .await
+}
+
+fn search_in(
+    connection: &Connection,
     agent: &str,
     query: &str,
     limit: i64,
 ) -> Result<Value, TranscriptError> {
     let query = query.trim();
     let limit = limit.clamp(1, 500) as usize;
-    let connection = store.read().map_err(|_| TranscriptError::Store)?;
     let actor =
-        TranscriptRepository::agent(&connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
+        TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
     if truthy(actor.get("deletedAt")) {
         return Err(TranscriptError::DeletedConversation);
     }
@@ -331,13 +348,13 @@ pub fn search(
         return Ok(json!({"results": [], "truncated": false}));
     }
     let mut results = Vec::new();
-    for row in TranscriptRepository::items_for_agent(&connection, agent)? {
+    for row in TranscriptRepository::items_for_agent(connection, agent)? {
         let candidates = if let Some(inputs) = stored_inputs(&row.record, &row.id)? {
             let mut candidates = Vec::with_capacity(inputs.len());
             for (index, input) in inputs.iter().enumerate() {
                 let input_id = optional_string(input, "id", "runtime_items", &row.id)?;
                 let Some(mut candidate) = hydrate_input(&row, input, index, agent, None, |id| {
-                    Ok(TranscriptRepository::event_text(&connection, agent, id)?)
+                    Ok(TranscriptRepository::event_text(connection, agent, id)?)
                 })?
                 else {
                     continue;
@@ -348,9 +365,9 @@ pub fn search(
             }
             candidates
         } else {
-            let full = TranscriptRepository::full_text(&connection, &row)?;
+            let full = TranscriptRepository::full_text(connection, &row)?;
             vec![parent_projection(&row, agent, full, |id| {
-                Ok(TranscriptRepository::event_text(&connection, agent, id)?)
+                Ok(TranscriptRepository::event_text(connection, agent, id)?)
             })?]
         };
         for candidate in candidates {
@@ -386,20 +403,30 @@ pub fn search(
     Ok(json!({"results": results, "truncated": false}))
 }
 
-pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, TranscriptError> {
-    let mut reader = store.read()?;
-    let directory = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let connection = reader.transaction()?;
-    if !directory.matches(&connection)? {
+pub async fn search_item(store: &RuntimeStore, identity: String) -> Result<Value, TranscriptError> {
+    let directory = crate::sync_entity_context::RoomDirectory::read_and_prepare(store).await?;
+    store
+        .read_async("runtime-services/transcript", move |connection| {
+            search_item_in(connection, &directory, &identity)
+        })
+        .await
+}
+
+fn search_item_in(
+    connection: &Connection,
+    directory: &crate::sync_entity_context::RoomDirectory,
+    identity: &str,
+) -> Result<Value, TranscriptError> {
+    if !directory.matches(connection)? {
         return Err(TranscriptError::SnapshotChanged);
     }
-    if let Some(row) = TranscriptRepository::item_any_agent(&connection, identity)? {
-        let actor = TranscriptRepository::agent(&connection, &row.agent)?
+    if let Some(row) = TranscriptRepository::item_any_agent(connection, identity)? {
+        let actor = TranscriptRepository::agent(connection, &row.agent)?
             .ok_or(TranscriptError::SearchResultUnavailable)?;
         if truthy(actor.get("deletedAt")) || truthy(row.record.get("afterRestore")) {
             return Err(TranscriptError::SearchResultUnavailable);
         }
-        let text = searchable_text(&connection, &row)?;
+        let text = searchable_text(connection, &row)?;
         let mut result = row
             .record
             .as_object()
@@ -420,9 +447,9 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
         .optional()
         .map_err(|_| TranscriptError::Store)?
     {
-        let room_record = studio_runtime_store::system_reads::get(&connection, "runtime_rooms", &room)?
+        let room_record = studio_runtime_store::system_reads::get(connection, "runtime_rooms", &room)?
             .ok_or(TranscriptError::ChatUnavailable)?;
-        if room_view(&connection, &directory, &room_record)?.is_none() {
+        if room_view(connection, directory, &room_record)?.is_none() {
             return Err(TranscriptError::ChatUnavailable);
         }
         serde_json::from_str::<Value>(&deliveries)
@@ -432,18 +459,18 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
             "agent":sender,"kind":"room"}));
     }
 
-    let result = if let Some(row) = Table::<WorkItemRecord>::new(&connection)
+    let result = if let Some(row) = Table::<WorkItemRecord>::new(connection)
         .get(&TaskId::from(identity))
         .map_err(|_| TranscriptError::Store)?
     {
         Some((row.value().clone(), "work"))
-    } else if let Some(row) = Table::<PlanRecord>::new(&connection)
+    } else if let Some(row) = Table::<PlanRecord>::new(connection)
         .get(&AgentId::from(identity))
         .map_err(|_| TranscriptError::Store)?
     {
         Some((row.value().clone(), "plan"))
     } else {
-        Table::<ComplaintRecord>::new(&connection)
+        Table::<ComplaintRecord>::new(connection)
             .get(&String::from(identity))
             .map_err(|_| TranscriptError::Store)?
             .map(|row| (row.value().clone(), "complaint"))
@@ -459,7 +486,7 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| invalid_stored("runtime_search", identity))?;
-    TranscriptRepository::agent(&connection, &owner)?
+    TranscriptRepository::agent(connection, &owner)?
         .filter(|actor| !truthy(actor.get("deletedAt")))
         .ok_or(TranscriptError::SearchResultUnavailable)?;
     let text = if let Some(text) = record
@@ -505,16 +532,24 @@ fn room_view(
     Ok(crate::sync_views::room_entity_view(room, &context))
 }
 
-pub fn search_work(
+pub async fn search_work(
     store: &RuntimeStore,
-    query: &str,
-    agent_filter: Option<&str>,
+    query: String,
+    agent_filter: Option<String>,
     limit: i64,
 ) -> Result<Value, TranscriptError> {
-    let reader = store.read()?;
-    let directory = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let connection = reader.unchecked_transaction()?;
-    search_work_in_transaction(&connection, &directory, query, agent_filter, limit)
+    let directory = crate::sync_entity_context::RoomDirectory::read_and_prepare(store).await?;
+    store
+        .read_async("runtime-services/transcript", move |connection| {
+            search_work_in_transaction(
+                connection,
+                &directory,
+                &query,
+                agent_filter.as_deref(),
+                limit,
+            )
+        })
+        .await
 }
 
 /// Transaction-aware search for callback dispatch. The room directory is
@@ -1129,7 +1164,7 @@ mod tests {
         assert!(pulled["checkpoint"]["seq"].as_i64().expect("checkpoint") > prior_checkpoint);
 
         let sync_state = || {
-            let connection = store.read().expect("reader");
+            let connection = store.test_reader().expect("reader");
             let mut statement = connection
                 .prepare("SELECT id,seq,hash,payload,deleted FROM sync_entities WHERE collection='transcript:agent' ORDER BY id")
                 .expect("sync ledger snapshot query");

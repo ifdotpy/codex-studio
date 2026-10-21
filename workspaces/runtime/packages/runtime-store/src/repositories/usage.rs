@@ -375,9 +375,9 @@ mod tests {
 
     fn database(extra: Value) -> Connection {
         let connection = Connection::open_in_memory().expect("sqlite");
-        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+        connection.execute_batch(&crate::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE runtime_capacity_retries(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL);
-            CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL);").expect("tables");
+            CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL);")).expect("tables");
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");

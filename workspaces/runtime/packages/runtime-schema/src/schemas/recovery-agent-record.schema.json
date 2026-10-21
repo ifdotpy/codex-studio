@@ -144,7 +144,6 @@
               "items": {
                 "type": "string"
               },
-              "maxItems": 32,
               "type": "array"
             },
             {

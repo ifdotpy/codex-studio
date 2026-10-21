@@ -87,7 +87,7 @@ mod tests {
             })
             .await
             .expect("seed corpus");
-        let connection = store.read().expect("reader");
+        let connection = store.test_reader().expect("reader");
         let family = QuestionsReadsRepository::agent_family(&connection, "c1").expect("family");
         let family_ids = family
             .iter()
@@ -113,8 +113,8 @@ mod tests {
         assert_eq!(indexed, scanned);
         for (sql, index) in [
             (
-                "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1",
-                "runtime_agent_root",
+                "SELECT id,record FROM runtime_agents WHERE root_id=?1",
+                crate::repositories::agent_indexed_reads::ROOT_INDEX,
             ),
             (
                 "SELECT id,record FROM runtime_requests WHERE json_extract(record,'$.agent') IN (?1,?2)",
@@ -154,14 +154,14 @@ mod tests {
     fn reads_validated_records_and_preserves_request_property_order() {
         let db = Connection::open_in_memory().expect("memory SQLite opens");
         db.execute_batch(
-            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            &crate::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_checkpoints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_agents VALUES('a','{\"id\":\"a\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\"}');
              INSERT INTO runtime_requests VALUES('q','{\"id\":\"q\",\"agent\":\"a\",\"method\":\"mcpServer/elicitation/request\",\"status\":\"pending\",\"params\":{\"mode\":\"form\",\"requestedSchema\":{\"properties\":{\"password\":{},\"color\":{}}}}}');
              INSERT INTO runtime_complaints VALUES('c','{\"id\":\"c\",\"leadId\":\"a\",\"author\":\"user\",\"text\":\"Review\",\"status\":\"open\",\"created\":1}');
-             INSERT INTO runtime_checkpoints VALUES('p','{\"id\":\"p\",\"agent\":\"a\",\"created\":1,\"items\":[\"hidden\"]}');",
+             INSERT INTO runtime_checkpoints VALUES('p','{\"id\":\"p\",\"agent\":\"a\",\"created\":1,\"items\":[\"hidden\"]}');"),
         )
         .expect("families create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())

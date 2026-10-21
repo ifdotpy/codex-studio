@@ -1,96 +1,81 @@
 use super::*;
 use crate::CachedSql;
+use std::sync::LazyLock;
 
-const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v3";
-/// Earlier index names: the first lacked busy steer candidates, and `_v2`
-/// limited them to Claude turns.
-const RETIRED_ACCOUNT_WAKE_INDEXES: [&str; 2] = [
-    "runtime_agent_account_wake_candidates",
-    "runtime_agent_account_wake_candidates_v2",
-];
+/// `_v4` indexes the agent columns; the 2026-10-20 column migration dropped
+/// the earlier record-JSON versions with the old table.
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v4";
 
 /// Owns the agent-only superset of all rows the account wake page may return.
 /// Event existence and invalid-agent hold receipts are checked after this
 /// indexed candidate selection because SQLite partial indexes cannot use them.
-fn account_wake_candidate_predicate(record: &str) -> String {
+/// Each predicate reads the agent columns of the `runtime_agents` row whose
+/// column prefix is `a` (`""` or an alias with its dot, such as `"a."`).
+fn account_wake_candidate_predicate(a: &str) -> String {
     format!(
         "({} OR {} OR {} OR {})",
-        account_wake_queued_candidate(record),
-        account_wake_steer_candidate(record),
-        account_wake_capacity_candidate(record),
-        account_wake_recovery(record)
+        account_wake_queued_candidate(a),
+        account_wake_steer_candidate(a),
+        account_wake_capacity_candidate(a),
+        account_wake_recovery(a)
     )
 }
 
-fn account_wake_index_eligibility(record: &str) -> String {
+fn account_wake_index_eligibility(a: &str) -> String {
     format!(
-        "CASE WHEN json_valid({record}) THEN ( \
-           json_extract({record},'$.deletedAt') IS NULL \
-           AND COALESCE(json_extract({record},'$.remoteWorker'),0)=0 \
-           AND COALESCE(json_extract({record},'$.remoteAnchor'),0)=0 \
-           AND {} ) ELSE 0 END",
-        account_wake_candidate_predicate(record)
+        "{a}deleted_at IS NULL \
+         AND COALESCE({a}remote_worker,0)=0 \
+         AND COALESCE({a}remote_anchor,0)=0 \
+         AND {}",
+        account_wake_candidate_predicate(a)
     )
 }
 
-fn account_wake_queued_candidate(record: &str) -> String {
+fn account_wake_queued_candidate(a: &str) -> String {
     format!(
-        "(json_extract({record},'$.status')='queued' \
-         AND json_extract({record},'$.autoWake')=1 \
-         AND COALESCE(json_extract({record},'$.inFlight'),0)=0 \
-         AND COALESCE(json_extract({record},'$.nativeFailureHold'),0)=0)"
+        "({a}status='queued' AND {a}auto_wake=1 \
+         AND COALESCE({a}in_flight,0)=0 \
+         AND COALESCE({a}native_failure_hold,0)=0)"
     )
 }
 
 /// A running turn that may receive queued user input by `turn/steer`.
 /// `SchedulerRepository::claim_steer` owns the exact eligibility check.
-fn account_wake_steer_candidate(record: &str) -> String {
+fn account_wake_steer_candidate(a: &str) -> String {
     format!(
-        "(json_extract({record},'$.status')='running' \
-         AND json_extract({record},'$.autoWake')=1 \
-         AND json_extract({record},'$.inFlight')=1 \
-         AND json_type({record},'$.turnId')='text' \
-         AND COALESCE(json_extract({record},'$.steerRejectedTurnId'),'')<>json_extract({record},'$.turnId') \
-         AND COALESCE(json_extract({record},'$.nativeFailureHold'),0)=0 \
-         AND COALESCE(json_extract({record},'$.executionMode'),'')<>'vm')"
+        "({a}status='running' AND {a}auto_wake=1 AND {a}in_flight=1 \
+         AND {a}turn_id IS NOT NULL \
+         AND COALESCE({a}steer_rejected_turn_id,'')<>{a}turn_id \
+         AND COALESCE({a}native_failure_hold,0)=0 \
+         AND COALESCE({a}execution_mode,'')<>'vm')"
     )
 }
 
-fn account_wake_capacity_candidate(record: &str) -> String {
+fn account_wake_capacity_candidate(a: &str) -> String {
     format!(
-        "(json_extract({record},'$.startAttempt.action')='capacity' \
-         AND json_extract({record},'$.startAttempt.submitted')=0 \
-         AND json_extract({record},'$.capacityRetry.id')= \
-             json_extract({record},'$.startAttempt.capacityRetryId') \
-         AND json_extract({record},'$.status')='starting')"
+        "({a}start_attempt_action='capacity' \
+         AND {a}start_attempt_submitted=0 \
+         AND {a}capacity_retry_id={a}start_attempt_capacity_retry_id \
+         AND {a}status='starting')"
     )
 }
 
 /// Index over pending child results by creation time, for the release deadline.
 const CHILD_RESULT_PENDING_INDEX: &str = "runtime_event_child_result_pending";
 /// Index over agents by parent, for the active-sibling check.
-const AGENT_PARENT_INDEX: &str = "runtime_agent_valid_parent";
-
-/// The indexed parent key of an agent record; malformed JSON has no parent.
-fn agent_parent_key(record: &str) -> String {
-    format!("CASE WHEN json_valid({record}) THEN json_extract({record},'$.parentId') END")
-}
+const AGENT_PARENT_INDEX: &str = "runtime_agent_parent_v2";
 
 /// SQL predicate: the pending event aliased `event` is a `child_result` that
 /// still waits for an active sibling child of the same parent. `held_after`
 /// binds the Unix time before which results are no longer held (now minus the
 /// effective hold), so the comparison stays on the indexed `created` column.
-/// The unary `+` drops the column's text affinity so the parent expression
-/// index can seek on the correlated agent id.
+/// The unary `+` drops the column's text affinity so the parent index can seek
+/// on the correlated agent id.
 fn child_result_held(event: &str, held_after: &str) -> String {
     format!(
         "({event}.kind='child_result' AND {event}.created>{held_after} \
-         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE {}=+{event}.agent \
-           AND CASE WHEN json_valid(c.record) THEN ( \
-             json_extract(c.record,'$.deletedAt') IS NULL \
-             AND json_extract(c.record,'$.status') IN ('queued','starting','running')) \
-           ELSE 0 END))",
-        agent_parent_key("c.record")
+         AND EXISTS(SELECT 1 FROM runtime_agents c WHERE c.parent_id=+{event}.agent \
+           AND c.deleted_at IS NULL AND c.status IN ('queued','starting','running')))"
     )
 }
 
@@ -122,14 +107,14 @@ fn deliverable_pending(agent: &str, epoch: &str, held_after: &str) -> String {
 
 /// A queued native review child whose first turn is its stored review. Python
 /// `codex_agent_review.claim` starts it without a queued input event.
-fn account_wake_native_review(record: &str) -> String {
+fn account_wake_native_review(a: &str) -> String {
     format!(
-        "({} AND json_extract({record},'$.nativeReview.status')='pending')",
-        account_wake_queued_candidate(record)
+        "({} AND json_extract({a}record,'$.nativeReview.status')='pending')",
+        account_wake_queued_candidate(a)
     )
 }
 
-fn account_wake_pending(record: &str, held_after: &str) -> String {
+fn account_wake_pending(a: &str, held_after: &str) -> String {
     let dedicated_kinds = DEDICATED_TURN_EVENT_KINDS
         .iter()
         .map(|kind| format!("'{kind}'"))
@@ -138,44 +123,41 @@ fn account_wake_pending(record: &str, held_after: &str) -> String {
     format!(
         "(({} AND {}) \
          OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
-             AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending' \
+             AND e.epoch=json_extract({a}record,'$.epoch') AND e.status='pending' \
              AND e.kind NOT IN ({dedicated_kinds}))) \
          OR {} OR {})",
-        account_wake_queued_candidate(record),
+        account_wake_queued_candidate(a),
         deliverable_pending(
             "a.id",
-            &format!("json_extract({record},'$.epoch')"),
+            &format!("json_extract({a}record,'$.epoch')"),
             held_after,
         ),
-        account_wake_steer_candidate(record),
-        account_wake_capacity_candidate(record),
-        account_wake_native_review(record)
+        account_wake_steer_candidate(a),
+        account_wake_capacity_candidate(a),
+        account_wake_native_review(a)
     )
 }
 
-fn account_wake_recovery(record: &str) -> String {
+fn account_wake_recovery(a: &str) -> String {
     format!(
-        "((COALESCE(json_extract({record},'$.provider'),'codex')='codex' \
-           AND json_extract({record},'$.startAttempt.submitted')=1 \
-           AND json_extract({record},'$.startAttempt.connectionGeneration') IS NOT NULL \
-           AND json_extract({record},'$.status') IN \
-               ('starting','running','waiting','paused','interrupted')) \
-         OR (json_type({record},'$.disconnectRecovery')='object' AND ( \
-           COALESCE(json_extract({record},'$.status'),'') \
-               NOT IN ('completed','waiting','paused','parked') \
-           OR json_extract({record},'$.disconnectRecovery.stage') IS NOT NULL)) \
-         OR (json_type({record},'$.restartRecovery')='object' AND ( \
-           COALESCE(json_extract({record},'$.status'),'') \
-               NOT IN ('completed','waiting','paused','parked') \
-           OR COALESCE(json_extract({record},'$.restartRecovery.stage'),'') \
+        "(({a}provider='codex' \
+           AND {a}start_attempt_submitted=1 \
+           AND {a}start_attempt_connection_generation IS NOT NULL \
+           AND {a}status IN ('starting','running','waiting','paused','interrupted')) \
+         OR ({a}has_disconnect_recovery=1 AND ( \
+           COALESCE({a}status,'') NOT IN ('completed','waiting','paused','parked') \
+           OR {a}disconnect_recovery_stage IS NOT NULL)) \
+         OR ({a}has_restart_recovery=1 AND ( \
+           COALESCE({a}status,'') NOT IN ('completed','waiting','paused','parked') \
+           OR COALESCE({a}restart_recovery_stage,'') \
                NOT IN ('finished','continued','reattached','input_restored'))))"
     )
 }
 
-fn account_wake_target_filter(record: &str, held_after: &str) -> String {
-    let eligibility = account_wake_index_eligibility(record);
-    let pending = account_wake_pending(record, held_after);
-    let recovery = account_wake_recovery(record);
+fn account_wake_target_filter(a: &str, held_after: &str) -> String {
+    let eligibility = account_wake_index_eligibility(a);
+    let pending = account_wake_pending(a, held_after);
+    let recovery = account_wake_recovery(a);
     format!(
         "{eligibility} \
          AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h \
@@ -185,19 +167,28 @@ fn account_wake_target_filter(record: &str, held_after: &str) -> String {
 }
 
 fn account_wake_invalid_target_query() -> String {
-    let target_filter = account_wake_target_filter("a.record", "?3");
+    let target_filter = account_wake_target_filter("a.", "?3");
     format!(
         "SELECT a.id FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
          WHERE {target_filter} \
-           AND (COALESCE(json_extract(a.record,'$.accountKey'),'default')='' \
-             OR json_type(a.record,'$.accountKey') NOT IN ('null','text')) LIMIT 1"
+           AND (a.account_key='' OR json_type(a.record,'$.accountKey') NOT IN ('null','text')) LIMIT 1"
     )
 }
 
+/// The wake and hold queries, built once per process (they read no setting).
+static ACCOUNT_WAKE_INVALID_TARGET_SQL: LazyLock<String> =
+    LazyLock::new(account_wake_invalid_target_query);
+static ACCOUNT_WAKE_ACCOUNTS_SQL: LazyLock<String> = LazyLock::new(account_wake_accounts_query);
+static ACCOUNT_WAKE_ACCOUNT_TARGET_SQL: LazyLock<String> =
+    LazyLock::new(account_wake_account_target_query);
+static ACCOUNT_WAKE_PENDING_AGENTS_SQL: LazyLock<String> =
+    LazyLock::new(account_wake_pending_agents_query);
+static CHILD_RESULT_RELEASE_SQL: LazyLock<String> = LazyLock::new(child_result_release_query);
+
 fn validate_account_wake_targets(connection: &Connection, held_after: f64) -> StoreResult<()> {
     if let Some(id) = connection
-        .query_row(
-            &account_wake_invalid_target_query(),
+        .query_row_cached(
+            &ACCOUNT_WAKE_INVALID_TARGET_SQL,
             rusqlite::params![
                 crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
                 crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
@@ -216,8 +207,8 @@ fn validate_account_wake_targets(connection: &Connection, held_after: f64) -> St
 }
 
 fn account_wake_accounts_query() -> String {
-    let target_filter = account_wake_target_filter("a.record", "?5");
-    let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
+    let target_filter = account_wake_target_filter("a.", "?5");
+    let account = "a.account_key";
     format!(
         "SELECT DISTINCT {account} FROM runtime_agents AS a \
          INDEXED BY {ACCOUNT_WAKE_INDEX} WHERE {target_filter} \
@@ -226,8 +217,8 @@ fn account_wake_accounts_query() -> String {
 }
 
 fn account_wake_account_target_query() -> String {
-    let target_filter = account_wake_target_filter("a.record", "?4");
-    let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
+    let target_filter = account_wake_target_filter("a.", "?4");
+    let account = "a.account_key";
     format!(
         "SELECT 1 FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
          WHERE {target_filter} AND {account}=?3 LIMIT 1"
@@ -235,9 +226,9 @@ fn account_wake_account_target_query() -> String {
 }
 
 fn account_wake_pending_agents_query() -> String {
-    let pending = account_wake_pending("a.record", "?6");
-    let eligibility = account_wake_index_eligibility("a.record");
-    let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
+    let pending = account_wake_pending("a.", "?6");
+    let eligibility = account_wake_index_eligibility("a.");
+    let account = "a.account_key";
     format!(
         "SELECT a.id,json_extract(a.record,'$.epoch'),json_extract(a.record,'$.workspaceMode') \
          FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
@@ -253,9 +244,6 @@ impl SchedulerRepository {
     /// deliberately contains only agent-record predicates; pending-event and
     /// invalid-agent-hold receipt checks remain in the consuming queries.
     pub(crate) fn prepare_account_wake_index(transaction: &Transaction<'_>) -> StoreResult<()> {
-        for retired in RETIRED_ACCOUNT_WAKE_INDEXES {
-            transaction.execute_batch(&format!("DROP INDEX IF EXISTS {retired}"))?;
-        }
         transaction.execute_batch(&Self::account_wake_index_definition().create_sql)?;
         Ok(())
     }
@@ -263,14 +251,13 @@ impl SchedulerRepository {
     /// Canonical DDL for the repository-owned account wake candidate index.
     #[doc(hidden)]
     pub fn account_wake_index_definition() -> crate::OwnedRuntimeIndexDefinition {
-        let eligibility = account_wake_index_eligibility("record");
+        let eligibility = account_wake_index_eligibility("");
         crate::OwnedRuntimeIndexDefinition {
             name: ACCOUNT_WAKE_INDEX,
             table: "runtime_agents",
             create_sql: format!(
                 "CREATE INDEX IF NOT EXISTS {ACCOUNT_WAKE_INDEX} \
-                 ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default'),id) \
-                 WHERE {eligibility}"
+                 ON runtime_agents(account_key,id) WHERE {eligibility}"
             ),
         }
     }
@@ -289,7 +276,7 @@ impl SchedulerRepository {
         let held_after = child_result_held_after(connection, now)?;
         validate_account_wake_targets(connection, held_after)?;
 
-        let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
+        let mut account_statement = connection.prepare_cached(&ACCOUNT_WAKE_ACCOUNTS_SQL)?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
             account_statement
                 .query_map(
@@ -310,7 +297,7 @@ impl SchedulerRepository {
         }
         drop(account_statement);
 
-        let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let mut agent_statement = connection.prepare_cached(&ACCOUNT_WAKE_PENDING_AGENTS_SQL)?;
         let mut result = BTreeMap::new();
         for account in selected_accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
@@ -350,9 +337,8 @@ impl SchedulerRepository {
     ) -> StoreResult<AccountWakePage> {
         let held_after = child_result_held_after(connection, now)?;
         validate_account_wake_targets(connection, held_after)?;
-        let mut target_statement =
-            connection.prepare_cached(&account_wake_account_target_query())?;
-        let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let mut target_statement = connection.prepare_cached(&ACCOUNT_WAKE_ACCOUNT_TARGET_SQL)?;
+        let mut agent_statement = connection.prepare_cached(&ACCOUNT_WAKE_PENDING_AGENTS_SQL)?;
         let mut result = BTreeMap::new();
         for account in accounts {
             let has_target = target_statement.exists(rusqlite::params![
@@ -396,7 +382,7 @@ impl SchedulerRepository {
         let held_after = child_result_held_after(connection, now)?;
         validate_account_wake_targets(connection, held_after)?;
 
-        let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
+        let mut account_statement = connection.prepare_cached(&ACCOUNT_WAKE_ACCOUNTS_SQL)?;
         let accounts = account_statement
             .query_map(
                 rusqlite::params![
@@ -411,7 +397,7 @@ impl SchedulerRepository {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(account_statement);
 
-        let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let mut agent_statement = connection.prepare_cached(&ACCOUNT_WAKE_PENDING_AGENTS_SQL)?;
         let mut result = BTreeMap::new();
         for account in accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
@@ -452,7 +438,7 @@ impl SchedulerRepository {
     ) -> StoreResult<Vec<(String, i64, Option<String>)>> {
         let held_after = child_result_held_after(connection, now)?;
         validate_account_wake_targets(connection, held_after)?;
-        let mut statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let mut statement = connection.prepare_cached(&ACCOUNT_WAKE_PENDING_AGENTS_SQL)?;
         let rows = statement
             .query_map(
                 rusqlite::params![
@@ -473,8 +459,8 @@ impl SchedulerRepository {
     /// for its siblings, so a scheduler can wake without a new commit.
     pub fn child_result_release_at(connection: &Connection, now: f64) -> StoreResult<Option<f64>> {
         let hold = crate::OrchestrationSettingsRepository::child_result_coalesce(connection)?;
-        let earliest: Option<f64> = connection.query_row(
-            &child_result_release_query(),
+        let earliest: Option<f64> = connection.query_row_cached(
+            &CHILD_RESULT_RELEASE_SQL,
             [now - hold.as_secs_f64()],
             |row| row.get(0),
         )?;
@@ -507,8 +493,7 @@ impl SchedulerRepository {
                 name: AGENT_PARENT_INDEX,
                 table: "runtime_agents",
                 create_sql: format!(
-                    "CREATE INDEX IF NOT EXISTS {AGENT_PARENT_INDEX} ON runtime_agents({})",
-                    agent_parent_key("record")
+                    "CREATE INDEX IF NOT EXISTS {AGENT_PARENT_INDEX} ON runtime_agents(parent_id)"
                 ),
             },
         ]
@@ -529,12 +514,11 @@ impl SchedulerRepository {
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
         let mut statement = connection.prepare_cached(
             "SELECT a.id,json_extract(a.record,'$.epoch') FROM runtime_agents a \
-             WHERE json_extract(a.record,'$.status')='queued' \
-             AND json_extract(a.record,'$.autoWake')=1 \
-             AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0 \
-             AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0 \
-             AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0 \
-             AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0 \
+             WHERE a.status='queued' AND a.auto_wake=1 \
+             AND COALESCE(a.in_flight,0)=0 \
+             AND COALESCE(a.native_failure_hold,0)=0 \
+             AND COALESCE(a.remote_worker,0)=0 \
+             AND COALESCE(a.remote_anchor,0)=0 \
              AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
                         AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending') \
              ORDER BY a.rowid",
@@ -1764,9 +1748,11 @@ mod account_wake_index_tests {
     fn old_schema() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
+            .execute_batch(crate::agent_columns::agent_table_sql())
+            .expect("agents table creates");
+        connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_events(
+                "CREATE TABLE runtime_events(
                    id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,
                    status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,
                    turn_id TEXT,error TEXT);
@@ -1851,13 +1837,6 @@ mod account_wake_index_tests {
                    ('event-zzz','zzz','user','input','pending',2,2,NULL,NULL);",
             )
             .expect("pending events insert");
-        connection
-            .execute_batch(
-                "CREATE INDEX runtime_agent_live_root ON runtime_agents(id)
-                   WHERE json_extract(record,'$.deletedAt') IS NULL;",
-            )
-            .expect("legacy live-agent index creates before upgrade");
-
         install_index(&mut connection);
 
         let page = SchedulerRepository::account_wake_page(
@@ -2053,7 +2032,7 @@ mod account_wake_index_tests {
     }
 
     #[test]
-    fn account_wake_index_query_uses_candidate_index_and_guards_invalid_json() {
+    fn account_wake_index_query_uses_candidate_index_and_rejects_invalid_json() {
         let mut connection = old_schema();
         put_agent(
             &connection,
@@ -2067,13 +2046,7 @@ mod account_wake_index_tests {
                 "INSERT INTO runtime_agents(id,record) VALUES('malformed','{bad json')",
                 [],
             )
-            .expect("malformed record fixture inserts");
-        connection
-            .execute_batch(
-                "CREATE INDEX runtime_agent_live_root ON runtime_agents(id)
-                   WHERE json_valid(record) AND json_extract(record,'$.deletedAt') IS NULL;",
-            )
-            .expect("guarded legacy live-agent index creates");
+            .expect_err("the agent columns reject a malformed record");
         install_index(&mut connection);
 
         let index_exists = connection
@@ -2109,14 +2082,10 @@ mod account_wake_index_tests {
             .expect("query plan rows load")
             .join(" ");
         assert!(details.contains(ACCOUNT_WAKE_INDEX), "{details}");
-        assert!(
-            !details.contains("SCAN a USING INDEX runtime_agent_live_root"),
-            "{details}"
-        );
 
         let page =
             SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 4, 4, 0.0)
-                .expect("guarded candidate selection skips malformed JSON");
+                .expect("candidate selection reads the columns");
         assert_eq!(page.keys().cloned().collect::<Vec<_>>(), vec!["default"]);
     }
 
@@ -2147,7 +2116,7 @@ mod account_wake_index_tests {
             "{release}"
         );
         assert!(
-            release.contains(&format!("{} (<expr>=?)", super::AGENT_PARENT_INDEX)),
+            release.contains(&format!("{} (parent_id=?)", super::AGENT_PARENT_INDEX)),
             "{release}"
         );
         assert!(!release.contains("SCAN"), "{release}");
@@ -2155,8 +2124,8 @@ mod account_wake_index_tests {
 
     #[test]
     fn account_wake_index_predicate_keeps_invalid_agent_receipt_exclusion_outside_index() {
-        let predicate = account_wake_index_eligibility("record");
-        assert!(predicate.starts_with("CASE WHEN json_valid(record) THEN"));
+        let predicate = account_wake_index_eligibility("");
+        assert!(!predicate.contains("record"), "{predicate}");
         assert!(!predicate.contains("runtime_operation_receipts"));
         assert!(!predicate.contains("runtime_events"));
     }

@@ -112,7 +112,7 @@ async fn lead_child_results(state: &State) -> Vec<String> {
     state
         .bridge
         .run(|store| async move {
-            let connection = store.read()?;
+            let connection = store.test_reader()?;
             let mut statement = connection.prepare(
                 "SELECT text FROM runtime_events WHERE agent='review-lead' AND kind='child_result' ORDER BY id",
             )?;

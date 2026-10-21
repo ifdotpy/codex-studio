@@ -59,7 +59,6 @@ impl HistoricalBatch {
             return Ok(None);
         };
         if inputs.is_empty()
-            || inputs.len() > 32
             || inputs[0]["id"] != primary
             || item["role"] != "user"
             || truthy(item.get("assets"))

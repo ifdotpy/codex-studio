@@ -192,7 +192,9 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
             columns = list(db.execute('PRAGMA table_info("' + table + '")'))
             keys = [row[1] for row in sorted(columns, key=lambda r:r[5]) if row[5]]
             order = "created,rowid" if table in ordered_tables else "rowid"
-            for row in db.execute('SELECT * FROM "' + table + '" ORDER BY ' + order):
+            # Declared columns only: generated agent columns derive from the record.
+            selected = ",".join('"' + row[1] + '"' for row in columns)
+            for row in db.execute('SELECT ' + selected + ' FROM "' + table + '" ORDER BY ' + order):
                 record = dict(row)
                 if table == "sync_entities":
                     assert record["hash"] == hashlib.sha256(record["payload"].encode()).hexdigest(), "invalid sync hash"

@@ -548,7 +548,7 @@ pub(super) async fn dispatch(
             };
             match result {
                 Ok(result) => child_creation_result(result),
-                Err(error) => child_creation_refusal(store_ref, tool, request_id, error)?,
+                Err(error) => child_creation_refusal(store_ref, tool, request_id, error).await?,
             }
         }
         "orchestration_interrupt" => {
@@ -597,7 +597,7 @@ pub(super) async fn dispatch(
                 return Ok(Some(not_sent(Error::Invalid("Missing monitor_id"))));
             };
             let input = args.clone();
-            if let Err(error) = authorize_monitor_input(store_ref, actor, monitor_id) {
+            if let Err(error) = authorize_monitor_input(store_ref, actor, monitor_id).await {
                 return refused_before_write(error);
             }
             match port
@@ -612,7 +612,7 @@ pub(super) async fn dispatch(
                 .await
             {
                 Ok(value) => written(value, Vec::new()),
-                Err(error) => match input_attempt(store_ref, monitor_id, request_id) {
+                Err(error) => match input_attempt(store_ref, monitor_id, request_id).await {
                     Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
                     Ok(None) => not_sent(error),
                     Err(_) => unknown_input(),
@@ -683,37 +683,43 @@ async fn lifecycle_management(
         return Ok(not_sent(Error::Unavailable("multi-server/worker-call")));
     }
     let actor_value = actor.record().value();
-    let checked = store.read_transaction_with_error(|tx| {
-        let args = super::services::manage::resolved_args(tx, &actor_value, args)
-            .map_err(callback_refusal)?;
-        let (action, unassign_work) =
-            super::services::manage::checked_action(&args).map_err(callback_refusal)?;
-        let target = args["agent_id"]
-            .as_str()
-            .filter(|id| {
-                studio_runtime_store::system_reads::get(tx, "runtime_agents", id)
-                    .is_ok_and(|agent| agent.is_some())
-            })
-            .ok_or(Error::Invalid("Unknown managed agent"))?
-            .to_owned();
-        let actor_id = actor.record().id.0.clone();
-        let epoch = actor.record().epoch;
-        Ok::<_, Error>(if action == "archive" {
-            crate::agent_management::Action::Archive {
-                actor: actor_id,
-                epoch,
-                target,
-                reason: args["reason"].as_str().unwrap_or_default().to_owned(),
-                unassign_work,
-            }
-        } else {
-            crate::agent_management::Action::Restore {
-                actor: actor_id,
-                epoch,
-                target,
-            }
-        })
-    });
+    let actor_id = actor.record().id.0.clone();
+    let epoch = actor.record().epoch;
+    let args = args.clone();
+    let checked = store
+        .read_async(
+            "runtime-services/provider_callbacks/runtime_dispatch",
+            move |tx| {
+                let args = super::services::manage::resolved_args(tx, &actor_value, &args)
+                    .map_err(callback_refusal)?;
+                let (action, unassign_work) =
+                    super::services::manage::checked_action(&args).map_err(callback_refusal)?;
+                let target = args["agent_id"]
+                    .as_str()
+                    .filter(|id| {
+                        studio_runtime_store::system_reads::get(tx, "runtime_agents", id)
+                            .is_ok_and(|agent| agent.is_some())
+                    })
+                    .ok_or(Error::Invalid("Unknown managed agent"))?
+                    .to_owned();
+                Ok::<_, Error>(if action == "archive" {
+                    crate::agent_management::Action::Archive {
+                        actor: actor_id,
+                        epoch,
+                        target,
+                        reason: args["reason"].as_str().unwrap_or_default().to_owned(),
+                        unassign_work,
+                    }
+                } else {
+                    crate::agent_management::Action::Restore {
+                        actor: actor_id,
+                        epoch,
+                        target,
+                    }
+                })
+            },
+        )
+        .await;
     let action = match checked {
         Ok(action) => action,
         Err(error @ (Error::Store(_) | Error::Sqlite(_) | Error::Work(_))) => return Err(error),
@@ -791,33 +797,45 @@ async fn speak(
     }
 }
 
-fn input_attempt(
+async fn input_attempt(
     store: &RuntimeStore,
     monitor_id: &str,
     request_id: &str,
 ) -> Result<Option<Value>, Error> {
+    let (monitor_id, request_id) = (monitor_id.to_owned(), request_id.to_owned());
     store
-        .read_transaction_with_error(|connection| {
-            let record = studio_runtime_store::MonitorsRepository::get(connection, monitor_id)?;
-            Ok(record.and_then(|record| {
-                let value = record.value();
-                [&value["lastInputAttempt"], &value["inputAttempt"]]
-                    .into_iter()
-                    .any(|receipt| receipt.get("id").and_then(Value::as_str) == Some(request_id))
-                    .then(|| value.clone())
-            }))
-        })
+        .read_async(
+            "runtime-services/provider_callbacks/runtime_dispatch",
+            move |connection| {
+                let record =
+                    studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
+                Ok(record.and_then(|record| {
+                    let value = record.value();
+                    [&value["lastInputAttempt"], &value["inputAttempt"]]
+                        .into_iter()
+                        .any(|receipt| {
+                            receipt.get("id").and_then(Value::as_str) == Some(request_id.as_str())
+                        })
+                        .then(|| value.clone())
+                }))
+            },
+        )
+        .await
         .map_err(Error::Store)
 }
 
-pub(crate) fn authorize_monitor_input(
+pub(crate) async fn authorize_monitor_input(
     store: &RuntimeStore,
     caller: &Actor,
     monitor_id: &str,
 ) -> Result<(), Error> {
-    store.read_transaction_with_error(|tx| {
-        authorize_monitor_input_in_transaction(tx, caller, monitor_id)
-    })
+    let (caller, monitor_id) = (caller.clone(), monitor_id.to_owned());
+    store
+        .read_async(
+            "runtime-services/provider_callbacks/runtime_dispatch",
+            move |tx| authorize_monitor_input_in_transaction(tx, &caller, &monitor_id),
+        )
+        .await
 }
 
 pub(crate) fn authorize_monitor_input_in_transaction(
@@ -905,7 +923,7 @@ fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Err
 /// transaction; image provisioning is the only work after that commit. A
 /// non-store refusal therefore proves no effect when the first deterministic
 /// child row is absent. Review creation has no work after its commit.
-fn child_creation_refusal(
+async fn child_creation_refusal(
     store: &RuntimeStore,
     tool: &str,
     request_id: &str,
@@ -915,12 +933,15 @@ fn child_creation_refusal(
         return Err(error);
     }
     if tool == "orchestration_spawn" {
-        let first = crate::managed_child_create::child_id(request_id, 0);
-        let read = store.read()?;
-        let committed = studio_runtime_store::AgentRepository::get(
-            &read,
-            &studio_runtime_store::AgentId::from(first.as_str()),
-        )?;
+        let first = studio_runtime_store::AgentId::from(crate::managed_child_create::child_id(
+            request_id, 0,
+        ));
+        let committed = store
+            .read_async(
+                "runtime-services/provider_callbacks/runtime_dispatch",
+                move |read| studio_runtime_store::AgentRepository::get(read, &first),
+            )
+            .await?;
         if committed.is_some() {
             return Err(error);
         }

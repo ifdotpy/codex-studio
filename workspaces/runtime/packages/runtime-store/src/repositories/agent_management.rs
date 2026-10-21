@@ -21,7 +21,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
 }
 
 /// Parent of every agent as `(id, parentId)` in rowid order, without parsing
-/// whole records. The expression matches the `runtime_agent_valid_parent` index.
+/// whole records. It reads the `parent_id` column (`runtime_agent_parent_v2` index).
 /// A malformed record has no parent; its own read fails later if it is in scope.
 pub fn read_agent_topology(connection: &Connection) -> StoreResult<Vec<(String, Option<String>)>> {
     let exists: bool = connection.query_row(
@@ -33,7 +33,7 @@ pub fn read_agent_topology(connection: &Connection) -> StoreResult<Vec<(String, 
         return Ok(Vec::new());
     }
     let mut statement = connection.prepare_cached(
-        "SELECT id,CASE WHEN json_valid(record) THEN json_extract(record,'$.parentId') END \
+        "SELECT id,parent_id \
          FROM runtime_agents ORDER BY rowid",
     )?;
     Ok(statement
@@ -242,7 +242,7 @@ pub fn write(transaction: &Transaction<'_>, table: &str, record: &Value) -> Stor
 }
 
 /// SQL predicate over `runtime_agents.record` selecting soft-deleted agents. Single owner.
-pub const DELETED_AGENT_SQL: &str = "(json_extract(record,'$.deletedAt') IS NOT NULL AND json_extract(record,'$.deletedAt') NOT IN (0,''))";
+pub const DELETED_AGENT_SQL: &str = "(deleted_at IS NOT NULL AND deleted_at NOT IN (0,''))";
 
 const ABANDONED_INPUT_ERROR: &str = "Agent deleted; delivery outcome unknown";
 
@@ -357,7 +357,7 @@ mod tests {
     fn scoped_snapshot_skips_agent_rows_and_uses_owner_index() {
         let connection = Connection::open_in_memory().expect("in-memory database");
         connection
-            .execute_batch(
+            .execute_batch(&crate::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE INDEX runtime_task_agent ON runtime_tasks(json_extract(record,'$.agent'));
@@ -372,7 +372,7 @@ mod tests {
                     ('root-second','{\"id\":\"root-second\",\"agent\":\"root\"}');
                  INSERT INTO runtime_events VALUES
                     ('child-event','child','pending',1),('other-event','unrelated','pending',1);",
-            )
+            ))
             .expect("fixture schema and records");
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())

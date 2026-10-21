@@ -421,7 +421,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     .await;
     assert_eq!(status, StatusCode::OK, "{response}");
     assert_eq!(response["status"], "answered");
-    let request = Table::<RequestRecord>::new(&store.read().expect("read request"))
+    let request = Table::<RequestRecord>::new(&store.test_reader().expect("read request"))
         .get(&request_id)
         .expect("get monitor approval")
         .expect("monitor approval");
@@ -456,7 +456,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     assert_eq!(recovered["status"], "answered");
     assert_eq!(recovered["replayed"], true);
     let receipt: (String, Option<String>) = store
-        .read()
+        .test_reader()
         .expect("read recovered receipt")
         .query_row(
             "SELECT status,result FROM voice_approvals WHERE id=?1",
@@ -525,7 +525,7 @@ async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes
     )
     .await;
     let (saved_state, count): (String, i64) = store
-        .read()
+        .test_reader()
         .expect("read accepted session")
         .query_row(
             "SELECT state,(SELECT COUNT(*) FROM voice_sessions WHERE id='no-port-start' AND agent='voice-start-agent') FROM voice_sessions WHERE id='no-port-start' AND agent='voice-start-agent'",
@@ -548,7 +548,7 @@ async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes
 }
 
 fn voice_row_counts(store: &RuntimeStore) -> Vec<i64> {
-    let connection = store.read().expect("read voice row counts");
+    let connection = store.test_reader().expect("read voice row counts");
     ["voice_sessions", "voice_speech_requests", "voice_approvals"]
         .iter()
         .map(|table| {
@@ -562,7 +562,7 @@ fn voice_row_counts(store: &RuntimeStore) -> Vec<i64> {
 }
 
 fn database_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
-    let connection = store.read().expect("read database snapshot");
+    let connection = store.test_reader().expect("read database snapshot");
     let tables = {
         let mut statement = connection
             .prepare(

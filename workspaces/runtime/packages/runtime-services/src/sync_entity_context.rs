@@ -57,8 +57,8 @@ pub(crate) fn agent_view_contexts(
     for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let mut statement = transaction.prepare(&format!(
-            "SELECT DISTINCT json_extract(record,'$.parentId') FROM runtime_agents \
-             WHERE json_extract(record,'$.parentId') IN ({placeholders})"
+            "SELECT DISTINCT parent_id FROM runtime_agents \
+             WHERE parent_id IN ({placeholders})"
         ))?;
         parent_ids.extend(
             statement
@@ -232,11 +232,16 @@ pub(crate) fn agent_view_context(
         && !exists_for_agent(transaction, "runtime_events", "agent", id)?
         && !exists_for_agent(transaction, "runtime_items", "agent", id)?
         && !transaction.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=?1)",
+            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE parent_id=?1)",
             [id],
             |row| row.get::<_, bool>(0),
         )?
-        && !exists_for_agent(transaction, "runtime_monitors", "json_extract(record,'$.agent')", id)?;
+        && !exists_for_agent(
+            transaction,
+            "runtime_monitors",
+            "json_extract(record,'$.agent')",
+            id,
+        )?;
     let mut latest: Option<(f64, String)> = None;
     let mut statement = transaction.prepare_cached(
         "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
@@ -291,6 +296,31 @@ fn exists_for_agent(
     Ok(transaction.query_row(&sql, [agent_id], |row| row.get(0))?)
 }
 
+/// Schema-valid agent and project rows a sync [`RoomDirectory`] is resolved from.
+pub struct RoomSources {
+    agents: Vec<Value>,
+    projects: Vec<Value>,
+}
+
+impl RoomSources {
+    /// Read the checked rows in a short snapshot; resolve them after the read ends.
+    pub fn read(connection: &Connection) -> StoreResult<Self> {
+        Ok(Self {
+            agents: records::all(connection, "runtime_agents")?,
+            projects: records::all(connection, "runtime_projects")?,
+        })
+    }
+
+    /// Read the rows like [`Self::read`], skipping malformed records as the
+    /// Python sync projection owner does.
+    pub fn read_for_sync(connection: &Connection) -> StoreResult<Self> {
+        Ok(Self {
+            agents: crate::sync_policy::projection_values(connection, "runtime_agents")?,
+            projects: crate::sync_policy::projection_values(connection, "runtime_projects")?,
+        })
+    }
+}
+
 /// Schema-validated snapshot; only the database loader can construct its contents.
 pub struct RoomDirectory {
     agents: Arc<Vec<Value>>,
@@ -305,34 +335,25 @@ impl RoomDirectory {
             records::all(tx, "runtime_projects")?,
         )
     }
-    /// Read checked database snapshots, then resolve paths with no transaction held.
-    pub fn prepare(connection: &Connection) -> Result<Self, studio_runtime_store::StoreError> {
-        if !connection.is_autocommit() {
-            return Err(records::invalid(
-                "runtime_projects",
-                "room-path-preparation-in-transaction",
-            ));
-        }
-        Self::resolve(
-            records::all(connection, "runtime_agents")?,
-            records::all(connection, "runtime_projects")?,
-        )
+    /// Resolve paths from rows read by [`RoomSources`]. Resolution touches the
+    /// filesystem, so run it after that read has ended; check the result with
+    /// [`Self::matches`] in the transaction that uses it.
+    pub fn prepare(sources: RoomSources) -> StoreResult<Self> {
+        Self::resolve(sources.agents, sources.projects)
     }
-    /// Build sync context from schema-valid rows, skipping malformed records
-    /// as the Python sync projection owner does.
-    pub fn prepare_for_sync(
-        connection: &Connection,
-    ) -> Result<Self, studio_runtime_store::StoreError> {
-        if !connection.is_autocommit() {
-            return Err(records::invalid(
-                "runtime_projects",
-                "room-path-preparation-in-transaction",
-            ));
-        }
-        Self::resolve(
-            crate::sync_policy::projection_values(connection, "runtime_agents")?,
-            crate::sync_policy::projection_values(connection, "runtime_projects")?,
+    /// Read [`RoomSources`] from `store`, then resolve them on the blocking pool.
+    pub async fn read_and_prepare(store: &studio_runtime_store::RuntimeStore) -> StoreResult<Self> {
+        let sources = store
+            .read_async("runtime-services/sync_entity_context", |tx| {
+                RoomSources::read(tx)
+            })
+            .await?;
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/sync_entity_context",
+            move || Self::prepare(sources),
         )
+        .await
+        .map_err(|_| studio_runtime_store::StoreError::ReadTaskFailed)?
     }
     fn resolve(agents: Vec<Value>, projects: Vec<Value>) -> StoreResult<Self> {
         let mut peers = Vec::new();
@@ -399,7 +420,7 @@ impl RoomDirectory {
         )
     }
     /// Build the live-agent sync context inside a writer transaction, skipping
-    /// malformed rows like `prepare_for_sync`. Only agent liveness changes take
+    /// malformed rows like `RoomSources::read_for_sync`. Only agent liveness changes take
     /// this path, so path resolution under the writer stays rare.
     pub(crate) fn load_live_for_sync(tx: &Connection) -> StoreResult<Self> {
         Self::resolve(
@@ -476,10 +497,10 @@ impl RoomDirectory {
 mod room_preparation_tests {
     use super::*;
     #[test]
-    fn paths_are_prepared_without_transaction_and_snapshot_is_rechecked() {
+    fn paths_are_prepared_after_the_read_and_snapshot_is_rechecked() {
         let root = tempfile::tempdir().expect("isolated state");
         let mut connection = Connection::open_in_memory().expect("database");
-        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);").expect("tables");
+        connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);")).expect("tables");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
@@ -489,14 +510,12 @@ mod room_preparation_tests {
                 [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
             )
             .expect("project");
-        let prepared = RoomDirectory::prepare(&connection).expect("prepare outside transaction");
+        let prepared =
+            RoomDirectory::prepare(RoomSources::read(&connection).expect("read room sources"))
+                .expect("prepare after the read");
         connection.execute("UPDATE runtime_projects SET record=json_set(record,'$.name','after') WHERE id='project'", []).expect("project edit between prepare and transaction");
         let tx = connection.transaction().expect("read transaction");
         assert!(!prepared.matches(&tx).expect("check database preconditions"));
-        assert!(
-            RoomDirectory::prepare(&tx).is_err(),
-            "filesystem preparation inside a transaction must refuse"
-        );
     }
 
     #[test]
@@ -514,9 +533,11 @@ mod room_preparation_tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
 
-        assert!(RoomDirectory::prepare(&connection).is_err());
-        let prepared = RoomDirectory::prepare_for_sync(&connection)
-            .expect("sync context skips malformed source rows");
+        assert!(RoomSources::read(&connection).is_err());
+        let prepared = RoomDirectory::prepare(
+            RoomSources::read_for_sync(&connection).expect("sync sources read"),
+        )
+        .expect("sync context skips malformed source rows");
         assert!(prepared.agents.is_empty());
         assert!(prepared.projects.is_empty());
         let tx = connection.transaction().expect("sync transaction");
@@ -560,14 +581,14 @@ mod room_preparation_tests {
         const AGENT_COUNT: usize = 2_000;
         let mut connection = Connection::open_in_memory().expect("database");
         connection
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
                  CREATE INDEX runtime_item_agent ON runtime_items(agent);",
-            )
+            ))
             .expect("context tables");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -656,14 +677,14 @@ mod room_preparation_tests {
         let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(
                      json_extract(record,'$.agent'),json_extract(record,'$.status'));
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
                  INSERT INTO runtime_monitors VALUES
-                     ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');",
+                     ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');"),
             )
             .expect("context fixture");
         connection

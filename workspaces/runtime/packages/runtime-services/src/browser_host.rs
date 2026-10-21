@@ -317,7 +317,10 @@ pub struct ChatContext {
 
 /// Finds the chat of a session hint (`codex_browser_host.chat`).
 pub trait ChatLookup: Send + Sync {
-    fn chat(&self, session: &str) -> Option<ChatContext>;
+    fn chat<'a>(
+        &'a self,
+        session: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>>;
 }
 
 /// The chat lookup of a runtime store: a native, not deleted chat whose ID or native
@@ -341,17 +344,28 @@ fn user_name() -> String {
 }
 
 impl ChatLookup for StoreChats {
-    fn chat(&self, session: &str) -> Option<ChatContext> {
-        let connection = self.store.read().ok()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT record FROM runtime_agents WHERE id=?1 OR json_extract(record,'$.threadId')=?1 LIMIT 2",
-            )
-            .ok()?;
-        let rows: Vec<String> = statement
-            .query_map([session], |row| row.get(0))
-            .ok()?
-            .collect::<Result<_, _>>()
+    fn chat<'a>(
+        &'a self,
+        session: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>> {
+        Box::pin(self.chat_record(session.to_owned()))
+    }
+}
+
+impl StoreChats {
+    async fn chat_record(&self, session: String) -> Option<ChatContext> {
+        let rows: Vec<String> = self
+            .store
+            .read_async("runtime-services/browser_host", move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT record FROM runtime_agents WHERE id=?1 OR thread_id=?1 LIMIT 2",
+                )?;
+                let rows = statement
+                    .query_map([&session], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                Ok::<_, studio_runtime_store::StoreError>(rows)
+            })
+            .await
             .ok()?;
         let [raw] = rows.as_slice() else {
             return None;
@@ -585,18 +599,7 @@ impl HostBridge {
         session: &Value,
     ) -> Result<Value, BridgeError> {
         let agent = canonical_session(session)?;
-        let chats = Arc::clone(&self.chats);
-        let lookup = agent.clone();
-        let context = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/browser_host",
-            move || chats.chat(&lookup),
-        )
-        .await
-        .map_err(|_| BridgeError {
-            code: "unknown_agent",
-            message: "Studio does not know the chat in LAYR_SESSION".into(),
-        })?
-        .ok_or_else(|| BridgeError {
+        let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
             code: "unknown_agent",
             message: "Studio does not know the chat in LAYR_SESSION".into(),
         })?;

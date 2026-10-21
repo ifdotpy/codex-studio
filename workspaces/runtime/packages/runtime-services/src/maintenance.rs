@@ -182,7 +182,7 @@ mod tests {
     fn seed(connection: &Connection) {
         connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(
                     id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
@@ -203,7 +203,7 @@ mod tests {
                  WHEN OLD.record IS NOT NEW.record
                  BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; END;
                  CREATE TRIGGER runtime_agent_record_generation_delete AFTER DELETE ON runtime_agents
-                 BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; END;",
+                 BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; END;"),
             )
             .expect("fixture schema creates");
         connection
@@ -441,10 +441,10 @@ mod tests {
     fn missing_optional_room_table_is_a_noop() {
         let mut connection = Connection::open_in_memory().expect("memory database opens");
         connection
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT,kind TEXT,status TEXT,error TEXT);",
-            )
+            ))
             .expect("minimal fixture schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())

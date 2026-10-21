@@ -134,7 +134,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
             1
         );
         let agent = AgentRepository::get(
-            &store.read().expect("valid fixture"),
+            &store.test_reader().expect("valid fixture"),
             &AgentId("agent".into()),
         )
         .expect("valid fixture")
@@ -150,7 +150,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
             }
         );
         let item: String = store
-            .read()
+            .test_reader()
             .expect("valid fixture")
             .query_row("SELECT record FROM runtime_items WHERE id='two'", [], |r| {
                 r.get(0)
@@ -318,7 +318,7 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
                 "{step}/{after}"
             );
             let agent = AgentRepository::get(
-                &store.read().expect("valid fixture"),
+                &store.test_reader().expect("valid fixture"),
                 &AgentId("agent".into()),
             )
             .expect("valid fixture")

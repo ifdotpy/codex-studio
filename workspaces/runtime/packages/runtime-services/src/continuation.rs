@@ -191,9 +191,6 @@ pub enum Effect {
         transition: &'static str,
         reason: String,
     },
-    CapacityStart {
-        attempt: Value,
-    },
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Decision {

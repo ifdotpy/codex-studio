@@ -65,7 +65,7 @@ pub async fn seed(store: &RuntimeStore, case: &Value) {
 }
 
 pub fn events(store: &RuntimeStore) -> Value {
-    let connection = store.read().expect("monitor fixture");
+    let connection = store.test_reader().expect("monitor fixture");
     let mut query = connection.prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("monitor fixture");
     let rows = query.query_map([], |r| Ok(serde_json::json!({
         "id":r.get::<_, String>(0)?, "agent":r.get::<_, String>(1)?, "kind":r.get::<_, String>(2)?,

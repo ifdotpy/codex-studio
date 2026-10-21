@@ -383,23 +383,15 @@ impl RetainedMonitorPort {
     }
 
     async fn launch_rule_check(&self, check: &RuleCheck) -> Result<CheckSubmission, String> {
-        let store = Arc::clone(&self.store);
-        let agent_id = check.agent_id.clone();
-        let actor = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/rule-monitor-owner-read",
-            move || -> Result<_, String> {
-                let db = store.read().map_err(|error| error.to_string())?;
-                studio_runtime_store::AgentRepository::get(
-                    &db,
-                    &studio_runtime_store::AgentId::from(agent_id.as_str()),
-                )
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "Rule agent is unavailable".to_owned())
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+        let agent_id = studio_runtime_store::AgentId::from(check.agent_id.as_str());
+        let actor = self
+            .store
+            .read_async("runtime-server/rule-monitor-owner-read", move |db| {
+                studio_runtime_store::AgentRepository::get(db, &agent_id)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Rule agent is unavailable".to_owned())?;
         let actor_value = serde_json::to_value(&actor).map_err(|error| error.to_string())?;
         let approved = actor_value["yoloMode"] == true
             || actor_value["approvalPolicy"].as_str() == Some("never");
@@ -818,23 +810,22 @@ impl RuleMonitor for RetainedMonitorPort {
         monitor_id: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
         Box::pin(async move {
-            let store = Arc::clone(&self.store);
             let monitor_id_owned = monitor_id.to_owned();
-            let agent = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/rule-monitor-cancel-read",
-                move || -> Result<Option<String>, RulesTickError> {
-                    let record = store.read()?;
-                    let Some(monitor) = MonitorsRepository::get(&record, &monitor_id_owned)? else {
-                        return Ok(None);
-                    };
-                    let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
-                        return Err(RulesTickError::MonitorUnavailable);
-                    };
-                    Ok(Some(agent.to_owned()))
-                },
-            )
-            .await
-            .map_err(|_| RulesTickError::MonitorUnavailable)??;
+            let agent = self
+                .store
+                .read_async(
+                    "runtime-server/rule-monitor-cancel-read",
+                    move |db| -> Result<Option<String>, RulesTickError> {
+                        let Some(monitor) = MonitorsRepository::get(db, &monitor_id_owned)? else {
+                            return Ok(None);
+                        };
+                        let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
+                            return Err(RulesTickError::MonitorUnavailable);
+                        };
+                        Ok(Some(agent.to_owned()))
+                    },
+                )
+                .await?;
             let Some(agent) = agent else {
                 return Ok(());
             };
@@ -889,7 +880,7 @@ impl MonitorPort for RetainedMonitorPort {
     fn next<'a>(
         &'a self,
     ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>> {
-        Box::pin(async move { monitor_event_queue::next(&self.store) })
+        Box::pin(async move { monitor_event_queue::next(&self.store).await })
     }
 
     fn acknowledge<'a>(

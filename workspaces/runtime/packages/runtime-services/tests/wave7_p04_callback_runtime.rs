@@ -67,7 +67,7 @@ async fn retirement_requires_checkpoint_and_preserves_http_replay_and_unknown_pr
     assert_eq!(checkpoint(&store, &context, 0).await, 0);
     assert_eq!(checkpoint(&store, &context, 1).await, 1);
     assert_eq!(checkpoint(&store, &context, 1).await, 0);
-    let raw:String=store.read().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
+    let raw:String=store.test_reader().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
     assert!(!raw.contains("secret-payload"));
     assert!(matches!(
         dispatch(Arc::clone(&store), &context, &frame, 21.0)
@@ -224,7 +224,7 @@ async fn binding_after_http_commit_still_retires_payload_and_preserves_attempt()
 }
 
 #[tokio::test]
-async fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect() {
+async fn tool_replay_rebuilds_the_same_reply_without_reexecuting_effect() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let (_root, store, context) = fixture().await;
     let frame = Frame::Request(RequestFrame {
@@ -241,26 +241,26 @@ async fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect()
     else {
         panic!("answer")
     };
-    delivery(&store, &first.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    delivery(&store, &first.identity, DeliveryOutcome::NotSent)
-        .await
-        .unwrap();
     let CallbackDecision::Answer(second) = dispatch(Arc::clone(&store), &context, &frame, 11.0)
         .await
         .unwrap()
     else {
         panic!("answer")
     };
-    assert_eq!(first.body, second.body);
-    assert_ne!(first.identity.attempt, second.identity.attempt);
-    assert!(matches!(
-        delivery(&store, &first.identity, DeliveryOutcome::Written).await,
-        Err(CallbackError::Stale)
-    ));
+    // The durable tool result is the only copy of the answer.
+    assert_eq!(first, second, "a replay rebuilds the identical reply");
+    let replies: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(replies, 0, "a tool call keeps no reply row");
     let count: i64 = store
-        .read()
+        .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_tool_results WHERE id='thread-0:rotate'",
@@ -321,7 +321,7 @@ async fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff
     }
 }
 fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let mut tables=connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
     tables
         .query_map([], |r| r.get::<_, String>(0))
@@ -384,7 +384,7 @@ async fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approva
         )
         .await
         .unwrap();
-        let raw:String=store.read().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
+        let raw:String=store.test_reader().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
         assert!(!raw.contains("resolved-secret"));
         assert_eq!(stored(&store, &id)["status"], "resolved");
         assert!(prepared_replies(&store, &context).await.unwrap().is_empty());

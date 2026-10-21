@@ -40,7 +40,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /boundaries-check/);
   assert.match(
     fast.command,
-    /rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration/,
+    /migration_2026_10_20_columns_round_trips_an_old_state_once/,
   );
   assert.match(fast.command, /test:unit:fast/);
   assert.doesNotMatch(

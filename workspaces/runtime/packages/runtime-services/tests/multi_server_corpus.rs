@@ -153,7 +153,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
         2,
         "lost response causes one exact replay"
     );
-    let connection = restarted.read().expect("reopened store reads");
+    let connection = restarted.test_reader().expect("reopened store reads");
     let state: String = connection
         .query_row(
             "SELECT state FROM runtime_server_outbox WHERE id='stable-message-1'",
@@ -240,7 +240,7 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
         .await
         .expect("cached receipt replays");
     assert_eq!(receipt, lost_reply);
-    let connection = restarted.read().expect("event rows");
+    let connection = restarted.test_reader().expect("event rows");
     let count: i64 = connection
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='stable-event-test'",
@@ -489,7 +489,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
         .await
         .expect("stable move-send replays its saved receipt");
     assert_eq!(receipt, replay);
-    let connection = store.read().expect("event rows");
+    let connection = store.test_reader().expect("event rows");
     let count: i64 = connection
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='stable-move-send' AND agent='local-child' AND kind='followup' AND text='continue this task'",
@@ -645,7 +645,7 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
         replay,
         ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
     );
-    let reader = store.read().expect("read replayed worker");
+    let reader = store.test_reader().expect("read replayed worker");
     let current = AgentRepository::get(&reader, &AgentId::from("remote-worker"))
         .expect("worker row")
         .expect("worker");
@@ -791,7 +791,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         .expect("stable request id")
         .to_owned();
     let retry_at: f64 = store
-        .read()
+        .test_reader()
         .expect("read queued stop")
         .query_row(
             "SELECT next_at FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
@@ -855,7 +855,7 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
         .execute("peer-server", &request("child-result-1", "done"))
         .await
         .expect("linked child result");
-    let connection = store.read().expect("stored result");
+    let connection = store.test_reader().expect("stored result");
     let proxy = AgentRepository::get(&connection, &AgentId::from("result-child"))
         .unwrap()
         .unwrap();
@@ -1014,7 +1014,7 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
                 "ValueError"
             }
         );
-        let connection = store.read().expect("saved request remains readable");
+        let connection = store.test_reader().expect("saved request remains readable");
         let saved: String = connection
             .query_row(
                 "SELECT record FROM runtime_requests WHERE id=?1",
@@ -1053,7 +1053,7 @@ async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
         })
         .await
         .expect("Rust owner transaction queues event");
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let raw: String = connection.query_row(
         "SELECT json_object('id',id,'server',server,'body',body,'state',state,'attempts',attempts,'next_at',next_at,'created_at',created_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1",
         [request_id], |row| row.get(0),
@@ -1133,7 +1133,7 @@ fn exec_driver(
 
 /// One SQL row as JSON, with stored JSON text columns parsed for comparison.
 fn exec_row(store: &RuntimeStore, sql: &str, key: &str) -> Option<Value> {
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let raw: Option<String> =
         rusqlite::OptionalExtension::optional(connection.query_row(sql, [key], |row| row.get(0)))
             .unwrap();
@@ -1424,7 +1424,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         assert_eq!(outcome.to_value(key), case["result"], "{name}");
     }
     let event = &data["event"];
-    let connection = store.read().unwrap();
+    let connection = store.test_reader().unwrap();
     let rows: Vec<(String, String, String, String)> = connection
         .prepare("SELECT id,agent,kind,text FROM runtime_events WHERE id LIKE 'exec-exit-%'")
         .unwrap()
@@ -1778,7 +1778,7 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
             .expect("first apply after rollback");
         assert_eq!(result["paired"], true);
         let status: String = reopened
-            .read()
+            .test_reader()
             .expect("read")
             .query_row(
                 "SELECT json_extract(record,'$.status') FROM runtime_access_invites WHERE id=?1",
@@ -1795,7 +1795,7 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
                 .expect("recover pairing result"),
             result
         );
-        let audit:i64=reopened.read().expect("read").query_row("SELECT count(*) FROM runtime_access_audit WHERE client='new-client' AND action='pair'",[],|r|r.get(0)).expect("audit");
+        let audit:i64=reopened.test_reader().expect("read").query_row("SELECT count(*) FROM runtime_access_audit WHERE client='new-client' AND action='pair'",[],|r|r.get(0)).expect("audit");
         assert_eq!(audit, 1, "pairing applied once");
         assert!(
             boundary()
@@ -1873,7 +1873,7 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let state: String = store
-        .read()
+        .test_reader()
         .expect("read receipt")
         .query_row(
             "SELECT state FROM runtime_server_inbox WHERE id='uncertain-input'",
@@ -1896,7 +1896,7 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
         "unknown input is never retried"
     );
     let state: String = store
-        .read()
+        .test_reader()
         .expect("read receipt")
         .query_row(
             "SELECT state FROM runtime_server_inbox WHERE id='uncertain-input'",
@@ -2353,7 +2353,7 @@ async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
         if matches!(state, "pending" | "complete") {
             assert_eq!(replay.expect("recovered receipt"), result);
             let saved: String = store
-                .read()
+                .test_reader()
                 .expect("read")
                 .query_row(
                     "SELECT status FROM runtime_access_receipts WHERE client='new-client'",
@@ -2485,7 +2485,7 @@ async fn queried_status_crosses_service_dispatch() {
         .expect("dispatch by path after checking full signed target");
     assert_eq!(result, data["identity"]);
     let stored: String = store
-        .read()
+        .test_reader()
         .expect("read")
         .query_row(
             "SELECT record FROM runtime_access_clients WHERE id='peer-server'",

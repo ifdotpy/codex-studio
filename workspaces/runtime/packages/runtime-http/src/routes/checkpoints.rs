@@ -55,11 +55,12 @@ pub(crate) async fn preview(
     ApiJson(body): ApiJson<crate::generated::CheckpointPreviewRequest>,
 ) -> Result<Json<crate::generated::CheckpointPreviewResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
+        .await
+        .map_err(map_error)?;
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/checkpoints",
         move || {
-            let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
-                .map_err(map_error)?;
             let value = checkpoints::preview(&store, context).map_err(map_error)?;
             super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
         },
@@ -87,6 +88,12 @@ pub(crate) async fn restore(
         .account_session
         .clone()
         .ok_or_else(|| ApiError::dependency(THREAD_FORK_DEPENDENCY))?;
+    let snapshot = checkpoints::capture_context(&store, &body.agent)
+        .await
+        .map_err(map_error)?;
+    let context = checkpoints::preview_context(&store, &body.agent, &checkpoint_id)
+        .await
+        .map_err(map_error)?;
     let (snapshot, checkpoint, operation_id, signature, current_tree) =
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/checkpoints",
@@ -95,12 +102,10 @@ pub(crate) async fn restore(
                 let agent_id = body.agent.clone();
                 let expected_tree = body.expected_tree.clone();
                 move || {
-                    let snapshot = checkpoints::capture_context(&store, &agent_id).map_err(map_error)?;
                     checkpoints::ensure_agent_available(&snapshot.agent).map_err(map_error)?;
                     if snapshot.agent.record.get("worktreeReady").and_then(Value::as_bool) != Some(true) {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Restore is available only in an isolated worker worktree"));
                     }
-                    let context = checkpoints::preview_context(&store, &agent_id, &checkpoint_id).map_err(map_error)?;
                     if context.checkpoint.record.get("agent").and_then(Value::as_str) != Some(agent_id.as_str()) {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Checkpoint belongs to another agent"));
                     }

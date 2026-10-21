@@ -79,22 +79,6 @@ pub fn accepted_revision_is_on_local_main(repository: &str, revision: &str) -> b
     run_git(&["merge-base", "--is-ancestor", &submitted, &main]).is_some()
 }
 
-async fn read_in_blocking<T, F>(store: Arc<RuntimeStore>, read: F) -> Result<T, WorkWriteError>
-where
-    T: Send + 'static,
-    F: FnOnce(&Connection) -> Result<T, WorkWriteError> + Send + 'static,
-{
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/work_write",
-        move || {
-            let connection = store.read()?;
-            read(&connection)
-        },
-    )
-    .await
-    .map_err(|_| WorkWriteError::PreparationWorker)?
-}
-
 /// Identify repositories whose accepted-result main check needs remote transport.
 pub fn repository_has_origin(repository: &str) -> bool {
     use std::ffi::OsStr;
@@ -128,22 +112,24 @@ pub async fn accepted_archive_tick(
     now: f64,
 ) -> Result<usize, WorkWriteError> {
     reviewer_archive_tick(Arc::clone(&store), now).await?;
-    let due = read_in_blocking(Arc::clone(&store), move |connection| {
-        accepted_archive_due_records(connection, now)
-    })
-    .await?;
+    let due = store
+        .read_async("runtime-services/work_write", move |connection| {
+            accepted_archive_due_records(connection, now)
+        })
+        .await?;
     let mut handled = 0;
     for (task_id, encoded_intent) in due {
         let intent: Value = serde_json::from_str(&encoded_intent)
             .map_err(studio_runtime_store::StoreError::from)?;
         let task_id_for_read = task_id.clone();
-        let Some(encoded_work) = read_in_blocking(Arc::clone(&store), move |connection| {
-            Ok(WorkItemsRepository::work_record(
-                connection,
-                &task_id_for_read,
-            )?)
-        })
-        .await?
+        let Some(encoded_work) = store
+            .read_async("runtime-services/work_write", move |connection| {
+                Ok::<_, WorkWriteError>(WorkItemsRepository::work_record(
+                    connection,
+                    &task_id_for_read,
+                )?)
+            })
+            .await?
         else {
             continue;
         };
@@ -234,18 +220,19 @@ pub async fn accepted_archive_tick(
         let intent_for_preflight = intent.clone();
         let owner_for_preflight = owner_id.clone();
         let root_for_preflight = root_id.clone();
-        let preflight = read_in_blocking(Arc::clone(&store), move |connection| {
-            accepted_archive_preflight(
-                connection,
-                &task_for_preflight,
-                &work_for_preflight,
-                &intent_for_preflight,
-                &owner_for_preflight,
-                &root_for_preflight,
-                dispatch_actor_epoch,
-            )
-        })
-        .await?;
+        let preflight = store
+            .read_async("runtime-services/work_write", move |connection| {
+                accepted_archive_preflight(
+                    connection,
+                    &task_for_preflight,
+                    &work_for_preflight,
+                    &intent_for_preflight,
+                    &owner_for_preflight,
+                    &root_for_preflight,
+                    dispatch_actor_epoch,
+                )
+            })
+            .await?;
         let outcome = match preflight {
             Some(value) => Ok(value),
             None if prior_status == "unknown" => Ok(json!({
@@ -408,10 +395,11 @@ async fn reviewer_archive_tick(store: Arc<RuntimeStore>, now: f64) -> Result<(),
         })
         .await?;
 
-    let due = read_in_blocking(Arc::clone(&store), move |connection| {
-        Ok(ReviewerArchiveRepository::due_retries(connection, now)?)
-    })
-    .await?;
+    let due = store
+        .read_async("runtime-services/work_write", move |connection| {
+            Ok::<_, WorkWriteError>(ReviewerArchiveRepository::due_retries(connection, now)?)
+        })
+        .await?;
 
     for (child_id, encoded) in due {
         let record: Value =
@@ -434,41 +422,44 @@ async fn reviewer_archive_tick(store: Arc<RuntimeStore>, now: f64) -> Result<(),
         let event_id_for_read = event_id.to_owned();
         let parent_id_for_read = parent_id.to_owned();
         let child_id_for_read = child_id.clone();
-        let event_matches = read_in_blocking(Arc::clone(&store), move |connection| {
-            let event: Option<(String, String)> = connection
-                .query_row(
-                    "SELECT agent,text FROM runtime_events \
+        let event_matches = store
+            .read_async("runtime-services/work_write", move |connection| {
+                let event: Option<(String, String)> = connection
+                    .query_row(
+                        "SELECT agent,text FROM runtime_events \
                      WHERE id=?1 AND kind='child_result' AND status='delivered'",
-                    [event_id_for_read],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(studio_runtime_store::StoreError::from)?;
-            Ok(event.is_some_and(|(event_parent, text)| {
-                event_parent == parent_id_for_read
-                    && serde_json::from_str::<Value>(&text)
-                        .ok()
-                        .and_then(|payload| {
-                            payload
-                                .get("agent_id")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        .as_deref()
-                        == Some(child_id_for_read.as_str())
-            }))
-        })
-        .await?;
+                        [event_id_for_read],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                Ok::<_, WorkWriteError>(event.is_some_and(|(event_parent, text)| {
+                    event_parent == parent_id_for_read
+                        && serde_json::from_str::<Value>(&text)
+                            .ok()
+                            .and_then(|payload| {
+                                payload
+                                    .get("agent_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .as_deref()
+                            == Some(child_id_for_read.as_str())
+                }))
+            })
+            .await?;
         if !event_matches {
             continue;
         }
 
-        let actor_epoch = {
-            let connection = store.read()?;
-            AgentRepository::get(&connection, &AgentId::from(root_id))?
-                .map(|agent| agent.epoch)
-                .unwrap_or_default()
-        };
+        let epoch_root = AgentId::from(root_id);
+        let actor_epoch = store
+            .read_async("runtime-services/work_write", move |connection| {
+                AgentRepository::get(connection, &epoch_root)
+            })
+            .await?
+            .map(|agent| agent.epoch)
+            .unwrap_or_default();
         let outcome = crate::agent_management_store::execute(
             Arc::clone(&store),
             &crate::agent_management::Action::Archive {
@@ -627,7 +618,7 @@ async fn retry_refused_reviewer_archives(store: &Arc<RuntimeStore>) -> Result<()
 
 /// Find the next durable archive retry deadline. New reviewer candidates are
 /// discovered on startup and after commits; only persisted retries need a timer.
-pub fn next_archive_retry_at(
+pub async fn next_archive_retry_at(
     store: &RuntimeStore,
     now: f64,
     accepted_batch_full: bool,
@@ -635,20 +626,24 @@ pub fn next_archive_retry_at(
     if accepted_batch_full {
         return Ok(Some(now));
     }
-    Ok(store.read_transaction(|connection| {
-        let accepted: Option<f64> = connection.query_row(
-            "SELECT MIN(CAST(json_extract(result,'$.nextAttemptAt') AS REAL)) \
+    store
+        .read_async("runtime-services/work_write", move |connection| {
+            let accepted: Option<f64> = connection
+                .query_row(
+                    "SELECT MIN(CAST(json_extract(result,'$.nextAttemptAt') AS REAL)) \
              FROM runtime_operation_receipts \
              WHERE signature='accepted-archive-v1' \
                AND json_extract(result,'$.status') IN ('pending','retryable','unknown') \
                AND json_type(result,'$.nextAttemptAt') IN ('integer','real') \
                AND CAST(json_extract(result,'$.nextAttemptAt') AS REAL)>?1",
-            [now],
-            |row| row.get(0),
-        )?;
-        let reviewer = ReviewerArchiveRepository::next_retry_at(connection, now)?;
-        Ok(accepted.into_iter().chain(reviewer).reduce(f64::min))
-    })?)
+                    [now],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let reviewer = ReviewerArchiveRepository::next_retry_at(connection, now)?;
+            Ok::<_, WorkWriteError>(accepted.into_iter().chain(reviewer).reduce(f64::min))
+        })
+        .await
 }
 
 /// Persist uncertainty before the synchronous accept route attempts an archive
@@ -1372,22 +1367,34 @@ pub enum WorkWriteError {
 }
 
 /// Read and validate an idempotency receipt before an external VM side effect.
-pub fn read_work_receipt(
+pub async fn read_work_receipt(
     store: &RuntimeStore,
-    agent_id: &str,
-    request_id: Option<&str>,
-    signature: &str,
+    agent_id: String,
+    request_id: Option<String>,
+    signature: String,
 ) -> Result<Option<Value>, WorkWriteError> {
     let Some(request_id) = request_id.filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
-    let connection = store.read()?;
-    let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))?
+    store
+        .read_async("runtime-services/work_write", move |connection| {
+            work_receipt_in(connection, &agent_id, &request_id, &signature)
+        })
+        .await
+}
+
+fn work_receipt_in(
+    connection: &Connection,
+    agent_id: &str,
+    request_id: &str,
+    signature: &str,
+) -> Result<Option<Value>, WorkWriteError> {
+    let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
         .ok_or(Error::InvalidRequest("Invalid request"))?;
     if agent.id.0 != agent_id || event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
-    let Some(receipt) = EventWriteRepository::receipt(&connection, request_id)? else {
+    let Some(receipt) = EventWriteRepository::receipt(connection, request_id)? else {
         return Ok(None);
     };
     if receipt.signature != signature {
@@ -1406,7 +1413,7 @@ pub fn read_work_receipt(
     if value.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
-    WorkItemsRepository::validate_work(&connection, id, &value).map_err(WorkWriteError::Store)?;
+    WorkItemsRepository::validate_work(connection, id, &value).map_err(WorkWriteError::Store)?;
     Ok(Some(value))
 }
 
@@ -3128,12 +3135,12 @@ mod actor_tests {
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection.execute_batch(
-            "CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
-             CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
+             CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);"),
         ).expect("work tables create");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -3233,7 +3240,9 @@ mod actor_tests {
                 .expect("runtime store"),
         );
         assert_eq!(
-            next_archive_retry_at(&store, 100.0, false).expect("empty deadline query"),
+            next_archive_retry_at(&store, 100.0, false)
+                .await
+                .expect("empty deadline query"),
             None
         );
         store
@@ -3249,11 +3258,15 @@ mod actor_tests {
             .await
             .expect("archive receipts commit");
         assert_eq!(
-            next_archive_retry_at(&store, 100.0, false).expect("deadline query"),
+            next_archive_retry_at(&store, 100.0, false)
+                .await
+                .expect("deadline query"),
             Some(142.0)
         );
         assert_eq!(
-            next_archive_retry_at(&store, 100.0, true).expect("full batch deadline"),
+            next_archive_retry_at(&store, 100.0, true)
+                .await
+                .expect("full batch deadline"),
             Some(100.0)
         );
     }
@@ -3340,7 +3353,7 @@ mod actor_tests {
             1
         );
 
-        let connection = store.read().expect("read tick result");
+        let connection = store.test_reader().expect("read tick result");
         let encoded_receipt: String = connection
             .query_row(
                 "SELECT result FROM runtime_operation_receipts WHERE id=?1",
@@ -3403,7 +3416,7 @@ mod actor_tests {
     }
 
     fn reviewer_record(store: &RuntimeStore) -> Value {
-        let connection = store.read().expect("runtime store reads");
+        let connection = store.test_reader().expect("runtime store reads");
         AgentRepository::get(&connection, &AgentId::from("child"))
             .expect("reviewer record loads")
             .expect("reviewer exists")
@@ -4240,10 +4253,10 @@ mod release_tests {
     fn service_releases_failed_worker_claim_and_emits_recovery_event() {
         let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection.execute_batch(
-            "CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
-             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);"),
         ).expect("service tables create");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())

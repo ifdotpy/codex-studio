@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAX_EVENTS: usize = 32;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct WaitEvent {
     pub id: String,
@@ -164,8 +163,7 @@ fn action_identity(agent: &Value, attempt: &Value) -> bool {
 }
 fn event_ids(attempt: &Value) -> Option<Vec<String>> {
     let ids: Vec<String> = serde_json::from_value(attempt.get("events")?.clone()).ok()?;
-    (ids.len() <= MAX_EVENTS && ids.iter().collect::<BTreeSet<_>>().len() == ids.len())
-        .then_some(ids)
+    (ids.iter().collect::<BTreeSet<_>>().len() == ids.len()).then_some(ids)
 }
 fn event<'a>(snapshot: &'a WaitSnapshot, id: &str, pending_only: bool) -> Option<&'a WaitEvent> {
     snapshot.events.get(id).filter(|row| {
@@ -212,7 +210,7 @@ pub fn defer(
         && (!ids.is_empty()
             || !matches!(
                 attempt.get("action").and_then(Value::as_str),
-                Some("compact" | "review" | "capacity")
+                Some("compact" | "review")
             )))
         || (!action && ids.is_empty())
         || (action && !action_identity(a, attempt))
@@ -339,4 +337,83 @@ pub fn claim(snapshot: &WaitSnapshot, now: f64) -> Result<WaitDecision, BudgetEr
         retired_action,
         job,
     })
+}
+
+#[cfg(test)]
+mod unbounded_batch_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_batch_budget_wait_resumes_a_thousand_exact_inputs() {
+        let ids: Vec<_> = (0..1000).map(|index| format!("event-{index}")).collect();
+        let rows: Vec<_> = ids
+            .iter()
+            .map(|id| json!({"id":id,"agent":"agent","epoch":1,"status":"reserved","turn_id":null}))
+            .collect();
+        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+            "autoWake":true,"status":"starting","inFlight":true,"startAttempt":{"id":"attempt","epoch":1,
+            "accountKey":"default","threadId":"thread","submitted":false,"events":ids}});
+        let denial = AdmissionDenial {
+            message: "budget reached".into(),
+            receipt: json!({"tokenBudget":{},"reached":true,
+            "agentId":"agent","attemptId":"attempt","accountKey":"default","epoch":1,"threadId":"thread"}),
+        };
+        let snapshot = WaitSnapshot::from_records(&agent, &rows, false).expect("snapshot");
+        let deferred = defer(&snapshot, "attempt", &denial, false, 1.0).expect("defer");
+        let pending: Vec<_> = deferred
+            .events
+            .iter()
+            .map(|row| serde_json::to_value(row).expect("event"))
+            .collect();
+        assert_eq!(pending.len(), ids.len());
+        let queued = deferred.agent.expect("deferred agent");
+        let resumed = claim(
+            &WaitSnapshot::from_records(&queued, &pending, false).expect("wait snapshot"),
+            2.0,
+        )
+        .expect("resume");
+        assert_eq!(
+            resumed
+                .events
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            resumed.job.expect("resume job")["attempt"]["events"],
+            json!(ids)
+        );
+        let mut duplicate = agent.clone();
+        duplicate["startAttempt"]["events"]
+            .as_array_mut()
+            .expect("ids")
+            .push(json!("event-0"));
+        assert!(
+            defer(
+                &WaitSnapshot::from_records(&duplicate, &rows, false).expect("duplicate snapshot"),
+                "attempt",
+                &denial,
+                false,
+                1.0
+            )
+            .expect("refuse duplicate")
+            .agent
+            .is_none()
+        );
+        let mut foreign = rows;
+        foreign[999]["epoch"] = json!(2);
+        assert!(
+            defer(
+                &WaitSnapshot::from_records(&agent, &foreign, false).expect("foreign snapshot"),
+                "attempt",
+                &denial,
+                false,
+                1.0
+            )
+            .expect("refuse foreign input")
+            .agent
+            .is_none()
+        );
+    }
 }

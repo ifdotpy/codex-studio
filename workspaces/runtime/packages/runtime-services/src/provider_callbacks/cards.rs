@@ -526,20 +526,23 @@ fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContex
 /// Read the exact session identity needed by a pending native delete before
 /// the durable answer intent is prepared. The lifecycle transaction rechecks
 /// the card after this query; delivery still owns races after preflight.
-pub fn pending_native_delete_context(
+pub async fn pending_native_delete_context(
     store: &RuntimeStore,
     id: &str,
 ) -> Result<Option<CallbackContext>, CallbackError> {
-    store.read_transaction_with_error(|tx| {
-        let card = records::get(tx, "runtime_requests", id)?
-            .ok_or(CallbackError::Invalid("Unknown question"))?;
-        let method = card["method"].as_str().unwrap_or_default();
-        if card["status"] == "pending" && method != "agent/asyncQuestion" {
-            provider_context(tx, &card).map(Some)
-        } else {
-            Ok(None)
-        }
-    })
+    let id = id.to_owned();
+    store
+        .read_async("runtime-services/provider_callbacks/cards", move |tx| {
+            let card = records::get(tx, "runtime_requests", &id)?
+                .ok_or(CallbackError::Invalid("Unknown question"))?;
+            let method = card["method"].as_str().unwrap_or_default();
+            if card["status"] == "pending" && method != "agent/asyncQuestion" {
+                provider_context(tx, &card).map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .await
 }
 
 pub async fn prepare_user_answer(

@@ -209,6 +209,10 @@ with patch.object(codex_accounts, "codex_home", lambda: Path(os.environ["CODEX_H
                 from codex_sync_entities import register_functions
                 with sqlite3.connect(Path(command["configure"]) / "canvas.sqlite3") as db:
                     register_functions(db)
+                    # Python's writer names this index; Rust states since
+                    # 2026-10-20 index agent columns instead.
+                    db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_live_root ON runtime_agents("
+                               "json_extract(record,'$.rootId'),id) WHERE json_extract(record,'$.deletedAt') IS NULL")
                     configure(runtime, db, command["case"])
                 result = {}
             elif command.get("snapshot"):

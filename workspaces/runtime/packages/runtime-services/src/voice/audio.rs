@@ -45,14 +45,22 @@ pub async fn save_audio(
     let chunk_id = chunk_id.to_owned();
     let encoded_audio = encoded_audio.to_owned();
     let mime = mime.to_owned();
+    let read_agent = agent_id.clone();
+    let read_session = session_id.clone();
+    let session = store
+        .read_async("runtime-services/voice/audio", move |connection| {
+            super::checked_agent(connection, &read_agent)?;
+            Ok::<_, VoiceAudioError>(VoiceRepository::session_exists(
+                connection,
+                &read_agent,
+                &read_session,
+            )?)
+        })
+        .await?;
+    // File validation and writes run after the read is released.
     let input = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/voice/audio",
         move || {
-            let connection = store_for_preparation.read()?;
-            super::checked_agent(&connection, &agent_id)?;
-            let session = VoiceRepository::session_exists(&connection, &agent_id, &session_id)?;
-            drop(connection);
-
             let request = policy::AudioChunkRequest {
                 agent: studio_runtime_store::AgentId::from(agent_id.as_str()),
                 session_id: policy::SessionId::parse(session_id.clone())?,

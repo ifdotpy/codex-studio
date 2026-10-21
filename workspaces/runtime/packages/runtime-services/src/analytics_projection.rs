@@ -372,7 +372,7 @@ mod tests {
 
     fn log_rows(store: &RuntimeStore) -> i64 {
         store
-            .read()
+            .test_reader()
             .expect("reader")
             .query_row(
                 "SELECT count(*) FROM runtime_analytics_projection",

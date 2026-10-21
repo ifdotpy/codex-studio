@@ -40,7 +40,7 @@ impl BudgetRepository {
             .ok_or_else(|| StoreError::SchemaMismatch("budget agent is missing".into()))
     }
     pub fn team(db: &Connection, root: &str) -> StoreResult<Vec<Value>> {
-        let mut statement=db.prepare_cached("SELECT id FROM runtime_agents WHERE coalesce(nullif(json_extract(record,'$.rootId'),''),id)=?1 ORDER BY id")?;
+        let mut statement=db.prepare_cached("SELECT id FROM runtime_agents WHERE root_id=?1 OR (COALESCE(root_id,'')='' AND id=?1) ORDER BY id")?;
         let ids = statement
             .query_map([root], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;

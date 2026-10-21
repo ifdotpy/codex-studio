@@ -29,21 +29,20 @@ const models = modelsFile
 // Turns whose input contains this text never complete.
 const holdPrompt = process.env.FAKE_CODEX_HOLD_PROMPT;
 let turnCount = 0;
+let threadCount = 0;
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 
-function startTurn(threadId) {
-  const turnId = `fixture-turn-${++turnCount}`;
+function startTurn(threadId, turnId) {
   send({
     method: "turn/started",
     params: { threadId, turn: { id: turnId, status: "inProgress" } },
   });
-  return turnId;
 }
 
-function completeTurn(threadId) {
-  const turnId = startTurn(threadId);
-  const itemId = `fixture-item-${turnCount}`;
+function completeTurn(threadId, turnId) {
+  startTurn(threadId, turnId);
+  const itemId = `${turnId}-item`;
   const text = "Fixture reply";
   send({
     method: "item/started",
@@ -74,7 +73,7 @@ function completeTurn(threadId) {
 function result(method, params) {
   switch (method) {
     case "thread/start":
-      return { thread: { id: `fixture-thread-${Date.now()}-${turnCount}` } };
+      return { thread: { id: `fixture-thread-${++threadCount}` } };
     case "thread/resume":
       return { thread: { id: params.threadId } };
     case "model/list":
@@ -89,12 +88,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.id === undefined) return;
   const { method, params = {} } = request;
   if (method === "turn/start") {
-    const turnId = `fixture-turn-${turnCount + 1}`;
+    // The id is fixed here: concurrent turns must report the id this reply names.
+    const turnId = `fixture-turn-${++turnCount}`;
     send({ id: request.id, result: { turn: { id: turnId } } });
     // A held turn stays in flight, as a long-running model turn would.
     if (holdPrompt && JSON.stringify(params.input).includes(holdPrompt))
-      startTurn(params.threadId);
-    else setImmediate(() => completeTurn(params.threadId));
+      startTurn(params.threadId, turnId);
+    else setImmediate(() => completeTurn(params.threadId, turnId));
     return;
   }
   send({ id: request.id, result: result(method, params) });

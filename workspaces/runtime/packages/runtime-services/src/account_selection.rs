@@ -130,7 +130,12 @@ pub async fn select(
     let checked_directory = match &directory {
         Some(directory) => directory.clone(),
         None => {
-            let raw = AccountTransferRepository::agent(&*store.read()?, id)?
+            let id = id.to_owned();
+            let raw = store
+                .read_async("runtime-services/account_selection", move |tx| {
+                    AccountTransferRepository::agent(tx, &id)
+                })
+                .await?
                 .ok_or(TransferError::Refused("Unknown managed agent"))?;
             SelectionSnapshot::read(&raw)?.agent["cwd"]
                 .as_str()

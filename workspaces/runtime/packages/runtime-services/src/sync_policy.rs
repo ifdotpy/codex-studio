@@ -35,7 +35,7 @@ const TASK_RETIRE_BATCH: usize = 100;
 pub const TASK_WINDOW_HISTORY_ROWS: usize = 100;
 /// Restricts a task query to tasks of live (not deleted) agents.
 const LIVE_TASK_AGENT: &str = "json_extract(t.record,'$.agent') IN \
-     (SELECT id FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL)";
+     (SELECT id FROM runtime_agents WHERE deleted_at IS NULL)";
 /// Newest runtime events the renderer event window keeps. Unit: rows. The
 /// runtime_events triggers in runtime-store's sync_schema.sql use the same
 /// bound; a parity test below checks every `LIMIT` there.
@@ -116,6 +116,15 @@ impl ProjectVaultSnapshot {
     /// Capture filesystem views for valid stored projects while ignoring
     /// malformed rows, matching Python's sync projection reader.
     pub fn capture_for_sync(state_dir: &Path, connection: &Connection) -> StoreResult<Self> {
+        Ok(Self::capture(
+            state_dir,
+            &Self::stored_projects(connection)?,
+        ))
+    }
+
+    /// Valid stored projects for [`Self::capture`], read in a short snapshot so
+    /// the filesystem capture can run after the read ends.
+    pub fn stored_projects(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
         let mut statement =
             connection.prepare_cached("SELECT id,record FROM runtime_projects ORDER BY rowid")?;
         let rows = statement.query_map([], |row| {
@@ -128,7 +137,7 @@ impl ProjectVaultSnapshot {
                 projects.push((id, serde_json::from_str(&raw)?));
             }
         }
-        Ok(Self::capture(state_dir, &projects))
+        Ok(projects)
     }
 
     /// Read each project's cached vault record. Lifecycle conflict recovery may
@@ -819,17 +828,16 @@ pub(crate) fn projection_values(connection: &Connection, table: &str) -> StoreRe
         .collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Valid stored agent rows without `deletedAt`, in rowid order, skipping
-/// malformed rows like `projection_records`. The `runtime_agent_live_root`
-/// partial index serves the predicate, so tombstones are not read.
+/// Stored agent rows without `deletedAt`, in rowid order (the agent columns
+/// refuse malformed JSON at write). The `runtime_agent_live_root_v2` partial
+/// index serves the predicate, so tombstones are not read.
 pub(crate) fn live_agent_records(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
     if !table_exists(connection, "runtime_agents")? {
         return Ok(Vec::new());
     }
     let mut statement = connection.prepare_cached(
-        "SELECT id,record FROM runtime_agents \
-         WHERE json_valid(record) AND json_extract(record,'$.deletedAt') IS NULL \
-         ORDER BY rowid",
+        "SELECT id,record FROM runtime_agents INDEXED BY runtime_agent_live_root_v2 \
+         WHERE deleted_at IS NULL ORDER BY rowid",
     )?;
     let rows = statement
         .query_map([], |row| {
@@ -1033,7 +1041,7 @@ pub(crate) fn maintain_task_window_after_write(
         && let Some(projected) = project_persisted_record("task", task)
         && transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1 \
-             AND json_extract(record,'$.deletedAt') IS NULL)",
+             AND deleted_at IS NULL)",
             [agent_id],
             |row| row.get::<_, bool>(0),
         )?
@@ -2073,7 +2081,7 @@ mod tests {
     {
         let mut connection = Connection::open_in_memory().expect("database");
         connection
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE sync_entities(
@@ -2086,8 +2094,8 @@ mod tests {
                  INSERT INTO runtime_agents VALUES
                      ('active','{\"id\":\"active\",\"deletedAt\":null}'),
                      ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}'),
-                     ('broken','{');",
-            )
+                     ('broken','[\"not an agent object\"]');",
+            ))
             .expect("projection fixture");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -2252,7 +2260,7 @@ mod tests {
     fn indexed_monitor_window_matches_python_tie_boundary_and_filters_owner_after_selection() {
         let mut connection = Connection::open_in_memory().expect("database");
         connection
-            .execute_batch(
+            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE INDEX runtime_monitor_status ON runtime_monitors(
                      json_extract(record,'$.status'),json_extract(record,'$.created'));
@@ -2266,8 +2274,9 @@ mod tests {
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
                      ('active','{\"id\":\"active\",\"deletedAt\":null}'),
-                     ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}');",
-            )
+                     ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}'),
+                     ('broken','[\"not an agent object\"]');",
+            ))
             .expect("indexed projection fixture");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -3063,7 +3072,7 @@ mod tests {
             2,
             "a rolled-back malformed stored preference does not wake"
         );
-        let payload = store.read().expect("preference reader");
+        let payload = store.test_reader().expect("preference reader");
         assert_eq!(
             SyncDocumentsRepository::preference_payload(&payload, "user")
                 .expect("stored payload query"),

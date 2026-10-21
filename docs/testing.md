@@ -26,7 +26,8 @@ selection is owned by `FAST_SUITES` in the
 selection guard lives beside that runner. The witnesses cover request retry
 identity, uncertain outcomes, permission-aware recovery, reset-request replay
 against a fake provider, move-target resume parameters built before the agent
-record is saved, and Python/Rust fresh-state schema parity. The reset
+record is saved, and the one-time migration of an older state to the agent
+columns of 2026-10-20. The reset
 fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
 and real credit redemption require separate evidence. The web package owns selected
 API and verifier unit witnesses and type-check scripts, while the tooling package owns
@@ -71,7 +72,7 @@ without maintaining a second suite inventory.
 
 | Tier or purpose          | What it runs                                                                                                                                                                          | Just command                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Short local safety tier  | Selected fixture-backed server witnesses, Rust/Python schema parity, API unit and type checks, tooling and shared contract guards                                                     | `just test-fast`                           |
+| Short local safety tier  | Selected fixture-backed server witnesses, the Rust state migration witness, API unit and type checks, tooling and shared contract guards                                              | `just test-fast`                           |
 | Comprehensive local tier | Previous broad default server run, bridge, Rust nextest, web type and unit checks, tooling tests, browser smoke                                                                       | `just test-comprehensive`                  |
 | Hosted CI comprehensive  | Server shards, Rust partitions, broad non-Rust checks, and browser smoke                                                                                                              | Existing parallel workflow                 |
 | Browser smoke            | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke, transcript scroll position during a stream | `just test-browser-smoke`                  |

@@ -119,25 +119,18 @@ pub(super) async fn post_message(
     let admission_store = Arc::clone(&store);
     let admission_room = body.room.clone();
     let admission_override = message_admission.clone();
-    let (federated_room, remote_worker, prepared) =
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/messages",
-            move || {
-                let federated_room = admission_store
-                    .read_transaction(|connection| {
-                        connection
-                            .query_row(
-                                "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
-                                [&admission_room],
-                                |row| row.get::<_, bool>(0),
-                            )
-                            .map_err(studio_runtime_store::StoreError::from)
-                    })
+    let (federated_room, remote_worker, prepared) = store
+        .read_async("runtime-http/routes/messages", move |connection| {
+                let federated_room = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
+                        [&admission_room],
+                        |row| row.get::<_, bool>(0),
+                    )
                     .map_err(|_| ApiError::internal())?;
                 if federated_room {
                     return Ok::<_, ApiError>((true, false, None));
                 }
-                let connection = admission_store.read().map_err(|_| ApiError::internal())?;
                 let remote_worker: bool = connection
                     .query_row(
                         "SELECT json_type(record,'$.remoteWorker') IS NOT NULL FROM runtime_agents WHERE id=?1",
@@ -151,7 +144,7 @@ pub(super) async fn post_message(
                     if admission_override.is_some() {
                         Box::new(
                             studio_runtime_services::message_admission::PreparedAdmission::load(
-                                &connection,
+                                connection,
                                 &admission_room,
                             )
                             .map_err(coordination_error)?,
@@ -159,21 +152,26 @@ pub(super) async fn post_message(
                     } else {
                         Box::new(
                             studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                                Arc::clone(&admission_store),
-                                &connection,
+                                admission_store,
+                                connection,
                                 &admission_room,
                             )
                             .map_err(coordination_error)?,
                         )
                     };
-                drop(connection);
-                #[cfg(test)]
-                ingress_tests::support::after_preparation(&admission_room);
                 Ok((false, remote_worker, Some(prepared)))
-            },
+        })
+        .await?;
+    #[cfg(test)]
+    {
+        let room = body.room.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/messages/test-gate",
+            move || ingress_tests::support::after_preparation(&room),
         )
         .await
-        .map_err(|_| ApiError::internal())??;
+        .map_err(|_| ApiError::internal())?;
+    }
     if federated_room {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

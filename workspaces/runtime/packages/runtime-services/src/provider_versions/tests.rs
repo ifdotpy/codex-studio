@@ -61,8 +61,10 @@ impl ActiveProviderConnections for MutableConnections {
 struct DisabledStore;
 
 impl ProviderVersionStore for DisabledStore {
-    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
-        Ok(false)
+    fn upstream_enabled(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, ProviderVersionsError>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(false)))
     }
 
     fn persist_warnings<'a>(
@@ -81,13 +83,17 @@ struct RecoveringStore {
 }
 
 impl ProviderVersionStore for RecoveringStore {
-    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
+    fn upstream_enabled(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, ProviderVersionsError>> + Send + '_>> {
         self.reads.fetch_add(1, AtomicOrdering::SeqCst);
-        if self.unavailable.load(AtomicOrdering::SeqCst) {
-            Err(ProviderVersionsError::PreferenceRead)
-        } else {
-            Ok(true)
-        }
+        Box::pin(std::future::ready(
+            if self.unavailable.load(AtomicOrdering::SeqCst) {
+                Err(ProviderVersionsError::PreferenceRead)
+            } else {
+                Ok(true)
+            },
+        ))
     }
 
     fn persist_warnings<'a>(
@@ -115,8 +121,10 @@ impl Drop for DropObservedStore {
 }
 
 impl ProviderVersionStore for DropObservedStore {
-    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
-        Ok(false)
+    fn upstream_enabled(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, ProviderVersionsError>> + Send + '_>> {
+        Box::pin(std::future::ready(Ok(false)))
     }
 
     fn persist_warnings<'a>(
@@ -482,7 +490,7 @@ async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
         })
     };
     let read_notice_state = || {
-        let connection = store.read().expect("read notice state");
+        let connection = store.test_reader().expect("read notice state");
         let raw: Option<(i64, String)> = connection
             .query_row(
                 "SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
@@ -609,7 +617,7 @@ async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
         .await
         .expect("restart replay");
     assert_eq!(
-        restarted.read().expect("read after restart").query_row(
+        restarted.test_reader().expect("read after restart").query_row(
             "SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [],
             |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?)),
         ).expect("replayed row"),
@@ -628,7 +636,7 @@ async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
         )
         .await
         .expect("changed content under same id");
-    let changed_row: (i64, String) = restarted.read().expect("read changed state").query_row(
+    let changed_row: (i64, String) = restarted.test_reader().expect("read changed state").query_row(
         "SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [],
         |row| Ok((row.get(0)?,row.get(1)?)),
     ).expect("changed workspace row");
@@ -689,7 +697,7 @@ async fn preference_read_error_fails_closed_without_an_upstream_request() {
     let store = runtime_provider_version_store(runtime);
     assert!(
         matches!(
-            store.upstream_enabled(),
+            store.upstream_enabled().await,
             Err(ProviderVersionsError::Store(_))
         ),
         "preference storage errors remain typed"

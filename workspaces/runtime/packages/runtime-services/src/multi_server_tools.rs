@@ -193,13 +193,9 @@ impl ServerTools {
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> Result<T, Step> + Send + 'static,
     ) -> Result<T, Step> {
-        let store = Arc::clone(&self.store);
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/multi_server_tools",
-            move || store.read_transaction_with_error(operation),
-        )
-        .await
-        .map_err(|_| Step::Store(StoreError::WriterPoisoned))?
+        self.store
+            .read_async("runtime-services/multi_server_tools", operation)
+            .await
     }
 
     async fn local_server(&self) -> Result<String, Step> {

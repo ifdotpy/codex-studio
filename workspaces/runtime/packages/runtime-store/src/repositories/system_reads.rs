@@ -85,15 +85,15 @@ pub fn all(connection: &Connection, table: &'static str) -> StoreResult<Vec<Valu
 }
 
 /// Schema-checked agents that are not deleted, in rowid order. A live agent
-/// has no `deletedAt`; the `runtime_agent_live_root` partial index serves the
+/// has no `deletedAt`; the `runtime_agent_live_root_v2` partial index serves the
 /// predicate, so tombstones are neither read nor parsed.
 pub fn live_agents(connection: &Connection) -> StoreResult<Vec<Value>> {
     if !exists(connection, "runtime_agents")? {
         return Ok(Vec::new());
     }
     let mut statement = connection.prepare_cached(
-        "SELECT id,record FROM runtime_agents \
-         WHERE json_extract(record,'$.deletedAt') IS NULL ORDER BY rowid",
+        "SELECT id,record FROM runtime_agents INDEXED BY runtime_agent_live_root_v2 \
+         WHERE deleted_at IS NULL ORDER BY rowid",
     )?;
     statement
         .query_map([], |row| {

@@ -22,12 +22,10 @@ async fn recover(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let id = body.id;
     let lookup_id = id.clone();
-    let account = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/recovery",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
+    let account = store
+        .read_async("runtime-http/routes/recovery", move |connection| {
             let agent = studio_runtime_store::AgentRepository::get(
-                &connection,
+                connection,
                 &studio_runtime_store::AgentId::from(lookup_id.as_str()),
             )
             .map_err(|_| ApiError::internal())?
@@ -40,10 +38,8 @@ async fn recover(
                     .unwrap_or("default")
                     .to_owned(),
             )
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     let port = state
         .account_session
         .clone()

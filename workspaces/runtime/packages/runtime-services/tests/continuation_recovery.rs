@@ -72,7 +72,7 @@ async fn seeded(kind: &str) -> tempfile::TempDir {
     dir
 }
 fn read(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let mut statement = db
         .prepare("SELECT record FROM runtime_usage_resumes WHERE id='resume'")
         .expect("statement");
@@ -211,7 +211,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
     let after = read(&store);
     assert_eq!(after["record"]["status"], "cancelled");
     assert_eq!(after["agent"]["usageResume"]["status"], "cancelled");
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let parent_event: i64 = db
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='hold:resume:task-changed' AND kind='child_result'",
@@ -243,7 +243,7 @@ async fn foreign_followup_identity_refuses_and_rolls_back() {
 
 type WakeState = (Vec<(String, String, String)>, Vec<(String, String)>);
 fn wake_state(store: &RuntimeStore) -> WakeState {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let mut events = db
         .prepare("SELECT id,status,text FROM runtime_events ORDER BY id")
         .expect("events");
@@ -328,7 +328,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
         .await
         .expect("seeded state");
     let agent: String = store
-        .read()
+        .test_reader()
         .expect("reader")
         .query_row("SELECT record FROM runtime_agents WHERE id='a'", [], |r| {
             r.get(0)
@@ -341,7 +341,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
         // Expression indexes reject corrupt JSON on insertion. An unindexed isolated table
         // lets the repository exercise its read diagnostic for already-corrupt stored bytes.
         let db = studio_runtime_store::Connection::open_in_memory().expect("isolated row fixture");
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_usage_resumes(id TEXT,agent TEXT,record TEXT); CREATE TABLE runtime_capacity_retries(id TEXT,agent TEXT,record TEXT);").expect("tables");
+        db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_usage_resumes(id TEXT,agent TEXT,record TEXT); CREATE TABLE runtime_capacity_retries(id TEXT,agent TEXT,record TEXT);")).expect("tables");
         db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [&agent])
@@ -362,7 +362,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
 }
 
 fn capacity_state(store: &RuntimeStore) -> Value {
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let record: String = db
         .query_row(
             "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
@@ -380,30 +380,26 @@ fn capacity_state(store: &RuntimeStore) -> Value {
         .expect("events");
     json!({"record":serde_json::from_str::<Value>(&record).expect("record JSON"),"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events})
 }
-struct FixtureAdmission;
-impl continuation_driver::CapacityAdmission for FixtureAdmission {
-    fn check(
-        &mut self,
-        tx: &studio_runtime_store::Transaction<'_>,
-        snapshot: &studio_runtime_services::continuation::Snapshot,
-        attempt: &Value,
-    ) -> Result<()> {
-        assert_eq!(snapshot.agent_id(), "a");
-        assert_eq!(attempt["capacityRetryId"], "retry");
-        let status:String=tx.query_row("SELECT json_extract(record,'$.status') FROM runtime_capacity_retries WHERE id='retry'",[],|r|r.get(0)).expect("fresh admission read");
-        assert_eq!(status, "scheduled");
-        Ok(())
-    }
-}
+/// A claim queues the retry's follow-up input with its record and agent in one
+/// transaction: every boundary before commit leaves the state untouched, and a
+/// replay after commit queues nothing more.
 #[tokio::test]
-async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends() {
+async fn capacity_claim_commits_record_agent_and_followup_together() {
     use studio_runtime_services::capacity_retry::{self, Action};
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
+    let claim = |s: &studio_runtime_services::continuation::Snapshot| {
+        capacity_retry::transition(
+            s,
+            Action::Claim {
+                settings: &json!({}),
+                automatic: true,
+            },
+            1000.0,
+        )
+    };
     for boundary in [
         Boundary::BeforeSnapshot,
         Boundary::AfterSnapshot,
-        Boundary::BeforeCapacityAdmission,
-        Boundary::AfterCapacityAdmission,
         Boundary::BeforeRecord,
         Boundary::AfterRecord,
         Boundary::BeforeEffect,
@@ -416,7 +412,7 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
         if !full
             && !matches!(
                 boundary,
-                Boundary::AfterRecord | Boundary::AfterAgent | Boundary::AfterCommit
+                Boundary::AfterRecord | Boundary::AfterEffect | Boundary::AfterCommit
             )
         {
             continue;
@@ -424,49 +420,14 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
         let root = seeded("capacity").await;
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = capacity_state(&store);
-        // The default adapter still refuses absent admission without persisting a claim.
-        assert!(matches!(
-            continuation_driver::drive(
-                &store,
-                "a",
-                ContinuationTable::Capacity,
-                Some("retry"),
-                1000.0,
-                |s| capacity_retry::transition(
-                    s,
-                    Action::Claim {
-                        settings: &json!({}),
-                        automatic: true,
-                    },
-                    1000.0
-                )
-            )
-            .await,
-            Err(ContinuationError::Unavailable(
-                "turn-driver/capacity-admission"
-            ))
-        ));
-        assert_eq!(capacity_state(&store), before);
-        let result = continuation_driver::drive_with_hooks(
+        let result = continuation_driver::drive_with_fault(
             &store,
-            continuation_driver::ContinuationTarget {
-                agent: "a",
-                table: ContinuationTable::Capacity,
-                record: Some("retry"),
-            },
+            "a",
+            ContinuationTable::Capacity,
+            Some("retry"),
             1000.0,
-            |s| {
-                capacity_retry::transition(
-                    s,
-                    Action::Claim {
-                        settings: &json!({}),
-                        automatic: true,
-                    },
-                    1000.0,
-                )
-            },
+            claim,
             StopAt(boundary),
-            FixtureAdmission,
         )
         .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
@@ -477,26 +438,13 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("restart");
-        let committed = continuation_driver::drive_with_hooks(
+        let committed = continuation_driver::drive(
             &store,
-            continuation_driver::ContinuationTarget {
-                agent: "a",
-                table: ContinuationTable::Capacity,
-                record: Some("retry"),
-            },
+            "a",
+            ContinuationTable::Capacity,
+            Some("retry"),
             1000.0,
-            |s| {
-                capacity_retry::transition(
-                    s,
-                    Action::Claim {
-                        settings: &json!({}),
-                        automatic: true,
-                    },
-                    1000.0,
-                )
-            },
-            continuation_driver::NoFault,
-            FixtureAdmission,
+            claim,
         )
         .await
         .expect("retry discovers commit");
@@ -507,44 +455,24 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
         let after = capacity_state(&store);
         assert_eq!(after["record"]["status"], "starting");
         assert_eq!(after["agent"]["capacityRetry"], after["record"]);
-        assert_eq!(after["agent"]["startAttempt"]["submitted"], false);
-        assert_eq!(after["events"], before["events"]);
+        assert_eq!(after["agent"]["status"], "queued");
+        assert_eq!(after["agent"].get("nativeFailureHold"), None);
+        assert_eq!(
+            after["events"],
+            json!(before["events"].as_i64().expect("events") + 1)
+        );
         let replay = continuation_driver::drive(
             &store,
             "a",
             ContinuationTable::Capacity,
             Some("retry"),
             1000.0,
-            |s| {
-                capacity_retry::transition(
-                    s,
-                    Action::Claim {
-                        settings: &json!({}),
-                        automatic: true,
-                    },
-                    1000.0,
-                )
-            },
+            claim,
         )
         .await
         .expect("claim replay");
         assert!(replay.effects.is_empty());
         assert_eq!(capacity_state(&store), after);
-        let recovered = continuation_driver::drive(
-            &store,
-            "a",
-            ContinuationTable::Capacity,
-            Some("retry"),
-            1000.0,
-            |s| capacity_retry::transition(s, Action::Restart, 1000.0),
-        )
-        .await
-        .expect("unsent recovery");
-        assert!(!recovered.effects.iter().any(|e| matches!(
-            e,
-            studio_runtime_services::continuation::Effect::CapacityStart { .. }
-        )));
-        assert_eq!(capacity_state(&store)["record"]["status"], "cancelled");
     }
 }
 
@@ -569,10 +497,7 @@ async fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_h
                 tx, "a", "retry", 1000.0, true,
             )
             .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
-            assert!(!stage.effects().iter().any(|effect| matches!(
-                effect,
-                studio_runtime_services::continuation::Effect::CapacityStart { .. }
-            )));
+            assert!(!followup(stage.effects()));
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
@@ -595,11 +520,12 @@ async fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_h
 const MIB: u64 = 1024 * 1024;
 const INCIDENT: &str = "ENOSPC: no space left on device, rename '/state/sessions/55f43293.meta.json.7c1e.tmp' -> '/state/sessions/55f43293.meta.json'";
 
-fn capacity_start(effects: &[studio_runtime_services::continuation::Effect]) -> bool {
+/// Whether a staged capacity decision queued the retry's follow-up input.
+fn followup(effects: &[studio_runtime_services::continuation::Effect]) -> bool {
     effects.iter().any(|effect| {
         matches!(
             effect,
-            studio_runtime_services::continuation::Effect::CapacityStart { .. }
+            studio_runtime_services::continuation::Effect::Followup { .. }
         )
     })
 }
@@ -626,7 +552,7 @@ async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
         .await
         .expect("disk-full wait");
     assert!(
-        !capacity_start(staged.effects()),
+        !followup(staged.effects()),
         "no turn starts while the disk is full"
     );
     let held = capacity_state(&store);
@@ -688,7 +614,7 @@ async fn a_disk_full_turn_failure_creates_a_free_space_retry() {
         .await
         .expect("disk-full failure stages a continuation");
     assert!(staged.changed());
-    let db = store.read().expect("reader");
+    let db = store.test_reader().expect("reader");
     let agent: Value = db
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='a'",

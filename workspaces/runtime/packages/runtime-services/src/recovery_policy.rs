@@ -10,7 +10,6 @@ use studio_runtime_store::{
 
 static NULL_VALUE: Value = Value::Null;
 
-pub const MAX_EVENTS: usize = 32;
 pub const UNKNOWN_START_HOLD_SECONDS: f64 = 600.0;
 const SUPERVISOR_UNKNOWN: &str =
     "Cannot verify the existing supervisor child; native outcome remains unknown";
@@ -163,7 +162,6 @@ fn attempt_matches(a: &Value, t: &Value) -> bool {
 fn events_valid(t: &Value) -> bool {
     t["events"].as_array().is_some_and(|events| {
         !events.is_empty()
-            && events.len() <= MAX_EVENTS
             && events
                 .iter()
                 .all(|e| e.as_str().is_some_and(|s| !s.is_empty()))
@@ -467,6 +465,40 @@ pub fn native_operations_settled(turn: &Value) -> bool {
                 _ => true,
             })
         })
+}
+
+#[cfg(test)]
+mod unbounded_batch_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_batch_eligibility_keeps_identity_checks_above_the_former_cap() {
+        for count in [1, 1000] {
+            let ids: Vec<_> = (0..count).map(|index| format!("event-{index}")).collect();
+            let mut agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
+                "threadId":"thread","status":"interrupted","inFlight":false,"autoWake":false,
+                "error":PROVIDER_DISCONNECTED_TURN_ERROR,"disconnectRecovery":{"autoWake":true,
+                    "epoch":1,"accountKey":"default","threadId":"thread",
+                    "startAttempt":{"id":"attempt","epoch":1,"accountKey":"default","threadId":"thread","submitted":false,"events":ids}}});
+            let eligible = |record: Value| {
+                RecoverySnapshot::from_record(record)
+                    .expect("recovery record")
+                    .eligibility()
+                    .disconnected_preparation
+            };
+            assert!(eligible(agent.clone()));
+            agent["disconnectRecovery"]["startAttempt"]["events"]
+                .as_array_mut()
+                .expect("ids")
+                .push(json!("event-0"));
+            assert!(
+                !eligible(agent.clone()),
+                "duplicate identity must remain blocked"
+            );
+            agent["disconnectRecovery"]["startAttempt"]["events"] = json!([]);
+            assert!(!eligible(agent), "empty input must remain blocked");
+        }
+    }
 }
 
 #[cfg(test)]

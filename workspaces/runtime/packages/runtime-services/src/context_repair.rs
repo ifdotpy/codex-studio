@@ -22,7 +22,6 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-pub const MAX_INPUTS: usize = 32;
 pub const MAX_TURNS: usize = 1600;
 pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 const WAIT_PREFIX: &str = "Context repair waits for a confirmed input receipt: ";
@@ -292,12 +291,10 @@ impl RecoverySnapshot {
         pending: Option<Vec<Value>>,
     ) -> Result<Self, RepairError> {
         validate_agent(&agent)?;
-        if raw_batches.len() > MAX_INPUTS
-            || events.len() > MAX_INPUTS
-            || serde_json::to_vec(&(&agent, &events, &pending))
-                .map_err(|_| RepairError::Invalid("capture"))?
-                .len()
-                > MAX_CAPTURE_BYTES
+        if serde_json::to_vec(&(&agent, &events, &pending, &raw_batches))
+            .map_err(|_| RepairError::Invalid("capture"))?
+            .len()
+            > MAX_CAPTURE_BYTES
         {
             return Err(RepairError::Invalid("capture.bounds"));
         }
@@ -343,14 +340,13 @@ impl RecoverySnapshot {
             rows.push(row);
         }
         if let Some(pending) = &pending
-            && (pending.len() > MAX_INPUTS
-                || pending.iter().any(|row| {
-                    !row.is_object()
-                        || row["agent"] != agent["id"]
-                        || row["epoch"] != agent["epoch"]
-                        || row["status"] != "pending"
-                        || !row["turn_id"].is_null()
-                }))
+            && pending.iter().any(|row| {
+                !row.is_object()
+                    || row["agent"] != agent["id"]
+                    || row["epoch"] != agent["epoch"]
+                    || row["status"] != "pending"
+                    || !row["turn_id"].is_null()
+            })
         {
             return Err(RepairError::Invalid("pending"));
         }
@@ -497,7 +493,7 @@ fn validate_agent(agent: &Value) -> Result<(), RepairError> {
             return Err(RepairError::Invalid("agent.startAttempt"));
         }
         if let Some(ids) = attempt.get("events") {
-            let Some(ids) = ids.as_array().filter(|ids| ids.len() <= MAX_INPUTS) else {
+            let Some(ids) = ids.as_array() else {
                 return Err(RepairError::Invalid("agent.startAttempt.events"));
             };
             let mut unique = BTreeSet::new();
@@ -559,7 +555,6 @@ impl NativeHistory {
         operations: Vec<Value>,
     ) -> Result<Self, RepairError> {
         if thread_id.is_empty()
-            || operations.len() > MAX_INPUTS * 65
             || turns.len() > MAX_TURNS
             || serde_json::to_vec(&(&turns, &operations))
                 .map_err(|_| RepairError::Invalid("history"))?
@@ -841,10 +836,10 @@ pub fn capture(
             "runtime_completed_turns",
         ],
     )?;
-    let (agent, events) = ContextRepairRepository::capture(tx, agent, MAX_INPUTS + 1)?
+    let (agent, events) = ContextRepairRepository::capture(tx, agent, MAX_CAPTURE_BYTES)?
         .ok_or(RepairError::MissingAgent)?;
-    let batches = ContextRepairRepository::batches(tx, &agent, &events)?;
-    let pending = ContextRepairRepository::pending(tx, &agent)?;
+    let batches = ContextRepairRepository::batches(tx, &agent, &events, MAX_CAPTURE_BYTES)?;
+    let pending = ContextRepairRepository::pending(tx, &agent, MAX_CAPTURE_BYTES)?;
     RecoverySnapshot::from_records(agent, events, connection, batches, pending)
 }
 
@@ -1078,16 +1073,13 @@ pub async fn repair_idle_with_broker(
     broker: &dyn AccountSessionPort,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    let read_store = std::sync::Arc::clone(&store);
     let read_id = id.to_owned();
-    let previous_operation = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/context_repair",
-        move || {
+    let previous_operation = store
+        .read_async("runtime-services/context_repair", move |db| {
             Ok::<_, RepairError>(
-                read_store
-                    .read()
+                ContextRepairRepository::agent(db, &read_id)
                     .ok()
-                    .and_then(|db| ContextRepairRepository::agent(&db, &read_id).ok().flatten())
+                    .flatten()
                     .and_then(|agent| {
                         agent
                             .pointer("/contextRepair/id")
@@ -1095,10 +1087,10 @@ pub async fn repair_idle_with_broker(
                             .map(str::to_owned)
                     }),
             )
-        },
-    )
-    .await
-    .map_err(|_| RepairError::Worker)??;
+        })
+        .await
+        .ok()
+        .flatten();
     let result = repair_idle_with_broker_inner(
         std::sync::Arc::clone(&store),
         id,
@@ -1150,17 +1142,12 @@ async fn repair_idle_with_broker_inner(
     broker: &dyn AccountSessionPort,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    let stage_store = std::sync::Arc::clone(&store);
     let stage_id = id.to_owned();
-    let initial = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/context_repair",
-        move || {
-            let initial_db = stage_store.read()?;
-            ContextRepairRepository::agent(&initial_db, &stage_id)?.ok_or(RepairError::MissingAgent)
-        },
-    )
-    .await
-    .map_err(|_| RepairError::Worker)??;
+    let initial = store
+        .read_async("runtime-services/context_repair", move |db| {
+            ContextRepairRepository::agent(db, &stage_id)?.ok_or(RepairError::MissingAgent)
+        })
+        .await?;
     let initial_account = string_default(&initial, "accountKey", "default")?.to_owned();
     let scope_before = if crate::provider_adapter::native_history(&initial)
         && initial["threadId"]
@@ -1173,25 +1160,29 @@ async fn repair_idle_with_broker_inner(
     } else {
         None
     };
-    let receipt_store = std::sync::Arc::clone(&store);
-    let receipt_id = id.to_owned();
-    let receipt_agent = initial.clone();
-    let receipt_account = initial_account.clone();
-    let tool_receipt_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/context_repair",
-        move || {
-            if crate::provider_adapter::native_history(&receipt_agent)
-                && receipt_agent["threadId"]
-                    .as_str()
-                    .is_some_and(|thread| !thread.is_empty())
-                && !(receipt_agent["environment"] == "linux"
-                    && studio_runtime_store::truthy(receipt_agent.get("imageWorkspaceReady")))
-            {
-                let initial_db = receipt_store.read()?;
+    let tool_receipt_snapshot = if crate::provider_adapter::native_history(&initial)
+        && initial["threadId"]
+            .as_str()
+            .is_some_and(|thread| !thread.is_empty())
+        && !(initial["environment"] == "linux"
+            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+    {
+        let receipt_id = id.to_owned();
+        let rows = store
+            .read_async("runtime-services/context_repair", move |db| {
+                crate::provider_callbacks::read_context_tool_receipt_rows(db, &receipt_id)
+                    .map_err(|_| RepairError::ReceiptHold)
+            })
+            .await?;
+        let receipt_store = std::sync::Arc::clone(&store);
+        let receipt_agent = initial.clone();
+        let receipt_account = initial_account.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/context_repair",
+            move || {
                 crate::provider_callbacks::prepare_unresolved_context_tool_receipts(
-                    &initial_db,
+                    rows,
                     receipt_store.state_dir(),
-                    &receipt_id,
                     &receipt_account,
                     receipt_agent["threadId"]
                         .as_str()
@@ -1202,13 +1193,13 @@ async fn repair_idle_with_broker_inner(
                         .unwrap_or_default(),
                 )
                 .map_err(|_| RepairError::ReceiptHold)
-            } else {
-                Ok(crate::provider_callbacks::ContextToolReceiptSnapshot::empty())
-            }
-        },
-    )
-    .await
-    .map_err(|_| RepairError::Worker)??;
+            },
+        )
+        .await
+        .map_err(|_| RepairError::Worker)??
+    } else {
+        crate::provider_callbacks::ContextToolReceiptSnapshot::empty()
+    };
     let transaction_agent_id = id.to_owned();
     let transaction_source_id = transaction_agent_id.clone();
     let (agent, events, tool_receipts, historical_inputs, scope, operation_id) = store.transaction_with(move |tx| {
@@ -1890,6 +1881,145 @@ fn item_read_suffix(turn: &str, page_index: usize) -> String {
 }
 
 #[cfg(test)]
+mod unbounded_batch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn recovery_batch_pending_and_legacy_receipts_keep_a_thousand_members() {
+        let directory = tempfile::tempdir().expect("disposable state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let ids: Vec<_> = (0..1000).map(|index| format!("e{index}")).collect();
+        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+            "provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,
+            "startAttempt":{"id":"attempt","events":ids,"submitted":false}});
+        let source = store.transaction_with(move |tx| -> Result<_,RepairError> {
+            ContextRepairRepository::put_agent(tx,&agent)?;
+            let mut inputs = Vec::new();
+            for id in agent["startAttempt"]["events"].as_array().expect("fixture ids") {
+                tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id,error) VALUES (?1,'agent',1,'user','hi','pending',1.0,NULL,NULL)",[id.as_str().expect("fixture id")])?;
+                let metadata = json!({"transcriptItemId":"agent:e0","modelEventProjection":1,"contextManifest":{"epoch":["thread",0],"sequence":1,"versions":{}}});
+                tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2)",rusqlite::params![id.as_str(),metadata.to_string()])?;
+                inputs.push(json!({"id":id,"text":"hi","at":1.0,"kind":"user"}));
+            }
+            let pending = ContextRepairRepository::pending(tx,&agent,MAX_CAPTURE_BYTES)?.expect("all pending identities");
+            assert_eq!(pending.len(),1000);
+            assert_eq!(pending.iter().map(|row|row["id"].clone()).collect::<Vec<_>>(),agent["startAttempt"]["events"].as_array().expect("ids").clone());
+            assert!(ContextRepairRepository::pending(tx,&agent,1).is_err(),"byte bound stays enforced");
+            tx.execute("UPDATE runtime_events SET status='uncertain' WHERE agent='agent'",[])?;
+            let item = json!({"id":"agent:e0","role":"user","text":"batch","inputs":inputs,"assets":[]});
+            tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES ('agent:e0','agent',1.0,?1)",[item.to_string()])?;
+            let events = vec![json!({"metadata":{"transcriptItemId":"agent:e0"}})];
+            let mut batches = ContextRepairRepository::batches(tx,&agent,&events,MAX_CAPTURE_BYTES)?;
+            assert_eq!(batches.len(),1);
+            assert!(ContextRepairRepository::batches(tx,&agent,&events,1).is_err(),"history byte bound stays enforced");
+            Ok((agent,batches.remove(0)))
+        }).await.expect("capture pending and legacy inputs");
+        let batch = HistoricalBatch::from_records(&source.0, &source.1)
+            .expect("valid source")
+            .expect("all batch members");
+        let turns = vec![
+            json!({"id":"turn","startOutcome":"accepted","clientUserMessageId":"e0",
+            "items":[{"id":"native-item","type":"userMessage","clientId":"e0","content":batch.params()["input"]}]}),
+        ];
+        let mut operations = vec![
+            json!({"handle":"account:default","operation_id":"turn:agent:e0:attempt:00000000-0000-4000-8000-000000000001",
+            "digest":batch.digest(),"native_id":1,"accepted":2.0}),
+        ];
+        let accepted = batch.accepted(&turns, &operations, "account:default");
+        assert_eq!(accepted.len(), ids.len());
+        assert!(
+            ids.iter()
+                .all(|id| accepted.get(id).is_some_and(|turn| turn == "turn"))
+        );
+        operations[0]["digest"] = json!("different-input");
+        assert!(
+            batch
+                .accepted(&turns, &operations, "account:default")
+                .is_empty(),
+            "exact receipt digest is still required"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_batch_capture_reconciles_a_thousand_exact_native_receipts() {
+        let directory = tempfile::tempdir().expect("disposable state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let connection = ConnectionIdentity {
+            account_key: "default".into(),
+            connection_id: "connection".into(),
+            generation: 1,
+        };
+        let mut ids: Vec<_> = (0..1000).map(|index| format!("event-{index}")).collect();
+        ids.sort();
+        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+            "provider":"codex","status":"waiting","inFlight":false,"autoWake":true,"contextRepairWait":{},
+            "startAttempt":{"id":"attempt","events":ids,"submitted":true},
+            "restartRecovery":{"stage":"held","autoWake":true,"epoch":1,"accountKey":"default","threadId":"thread",
+                "startAttempt":{"id":"attempt","events":ids,"submitted":true}}});
+        let capture_connection = connection.clone();
+        let captured = store.transaction_with(move |tx| -> Result<_, RepairError> {
+            ContextRepairRepository::put_agent(tx,&agent)?;
+            for id in agent["startAttempt"]["events"].as_array().expect("fixture ids") {
+                tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id,error) VALUES (?1,'agent',1,'user','hello','uncertain',1.0,NULL,NULL)",[id.as_str().expect("fixture id")])?;
+            }
+            capture(tx,"agent",capture_connection)
+        }).await.expect("capture complete batch");
+        assert_eq!(
+            captured.event_ids(),
+            ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        let turns:Vec<_> = ids.iter().map(|id| json!({"id":format!("turn-{id}"),"clientUserMessageId":id,"startOutcome":"accepted","items":[]})).collect();
+        let history = NativeHistory::from_records(
+            connection.clone(),
+            "thread".into(),
+            turns.clone(),
+            Some("idle".into()),
+            vec![],
+        )
+        .expect("history");
+        let decisions = decide(&captured, &history);
+        assert_eq!(
+            decisions,
+            ids.iter()
+                .map(|id| InputDecision::Delivered {
+                    id: id.clone(),
+                    turn_id: format!("turn-{id}")
+                })
+                .collect::<Vec<_>>()
+        );
+        let mut ambiguous = turns;
+        ambiguous.push(json!({"id":"another-turn","clientUserMessageId":"event-999","items":[]}));
+        let history = NativeHistory::from_records(
+            connection,
+            "thread".into(),
+            ambiguous,
+            Some("idle".into()),
+            vec![],
+        )
+        .expect("ambiguous history");
+        assert!(
+            matches!(decide(&captured,&history).last(),Some(InputDecision::Waiting{id,..}) if id=="event-999")
+        );
+        let mut oversized = captured.raw_events.clone();
+        oversized[0]["text"] = json!("x".repeat(MAX_CAPTURE_BYTES));
+        assert!(
+            RecoverySnapshot::from_records(
+                captured.raw_agent.clone(),
+                oversized,
+                captured.connection.clone(),
+                vec![],
+                None
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
 mod item_read_identity_tests {
     use super::item_read_suffix;
 
@@ -2055,7 +2185,7 @@ fn ensure_local_idle(tx: &Transaction<'_>, agent: &Value) -> Result<(), RepairEr
     Ok(())
 }
 fn verified_repair_events(tx: &Transaction<'_>, agent: &Value) -> Result<Vec<Value>, RepairError> {
-    let mut statement=tx.prepare("SELECT e.id,e.kind,e.text,e.turn_id,m.record FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.status='delivered' AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') AND ((length(CAST(e.text AS BLOB))>3000 AND coalesce(json_extract(m.record,'$.modelEventProjection'),0)!=1) OR json_extract(m.record,'$.contextManifest.versions.roleSkill') IS NOT NULL) ORDER BY e.created,e.id LIMIT 33")?;
+    let mut statement=tx.prepare("SELECT e.id,e.kind,e.text,e.turn_id,m.record FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.status='delivered' AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') AND ((length(CAST(e.text AS BLOB))>3000 AND coalesce(json_extract(m.record,'$.modelEventProjection'),0)!=1) OR json_extract(m.record,'$.contextManifest.versions.roleSkill') IS NOT NULL) ORDER BY e.created,e.id")?;
     let rows = statement.query_map([agent["id"].as_str()], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -2096,9 +2226,6 @@ fn verified_repair_events(tx: &Transaction<'_>, agent: &Value) -> Result<Vec<Val
                 "roleVersion":version,"prefix":format!("[Orchestration event: {kind}]\n{text}")}));
         }
     }
-    if events.len() > MAX_INPUTS {
-        return Err(RepairError::ReceiptHold);
-    }
     Ok(events)
 }
 fn repair_receipt(receipt: &crate::context_repair_files::HistoryRewriteReceipt) -> Value {
@@ -2132,7 +2259,6 @@ impl HistoryRewrite {
         terminal: String,
     ) -> Result<Self, RepairError> {
         if records.len() > MAX_TURNS
-            || events.len() > MAX_INPUTS
             || serde_json::to_vec(&(&records, &events))
                 .map_err(|_| RepairError::Invalid("rewrite"))?
                 .len()

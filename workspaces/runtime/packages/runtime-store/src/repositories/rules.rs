@@ -121,11 +121,11 @@ mod tests {
     fn rule_repository_reads_only_declared_tables_in_python_row_order() {
         let db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
-            "CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            &crate::agent_columns::fixture_sql("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"kind\":\"interval\"}');
              INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"kind\":\"interval\"}');
-             INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');",
+             INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
         )
         .expect("declared tables create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())

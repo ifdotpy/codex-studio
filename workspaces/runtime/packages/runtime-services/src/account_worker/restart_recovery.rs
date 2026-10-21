@@ -89,7 +89,7 @@ async fn reconcile_first_pass(
     let mut recovered = Vec::new();
     let mut recovered_streams = None;
     while !cursor.swept() {
-        let jobs = load_recovery_jobs_blocking(Arc::clone(&store), account, &mut cursor).await?;
+        let jobs = load_recovery_jobs(&store, account, &mut cursor).await?;
         for job in jobs {
             // Python's connection recovery service reconciles each restart turn
             // automatically from native history (`codex_connection_recovery.tick`).
@@ -284,26 +284,6 @@ async fn claim_automatic_restart_check(
     .await
 }
 
-async fn load_recovery_jobs_blocking(
-    store: Arc<RuntimeStore>,
-    account: &str,
-    cursor: &mut RecoveryCursor,
-) -> Result<Vec<RecoveryJob>, RecoveryError> {
-    let account = account.to_owned();
-    let mut page_cursor = std::mem::take(cursor);
-    let (jobs, updated_cursor) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/restart_recovery_scan",
-        move || {
-            let jobs = load_recovery_jobs(&store, &account, &mut page_cursor)?;
-            Ok::<_, RecoveryError>((jobs, page_cursor))
-        },
-    )
-    .await
-    .map_err(|_| RecoveryError::CommitFailed)??;
-    *cursor = updated_cursor;
-    Ok(jobs)
-}
-
 #[derive(Default)]
 pub(super) struct RestartInputCompletion {}
 impl CompletionWriter for RestartInputCompletion {
@@ -441,7 +421,12 @@ impl CompletionWriter for RestartInputCompletion {
             if !settled {
                 return Err(RecoveryError::CommitFailed);
             }
-            crate::lifecycle_effects::notify_parent_of_turn(tx, agent_id, turn_id, unix_seconds())?;
+            // A restart reconciliation stages no retry, so a failed turn reports now.
+            let settled_at = unix_seconds();
+            crate::lifecycle_effects::notify_parent_of_turn(tx, agent_id, turn_id, settled_at)?;
+            crate::lifecycle_effects::notify_parent_of_failed_turn(
+                tx, agent_id, turn_id, settled_at,
+            )?;
             let Some(settled_agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
                 return Err(RecoveryError::CommitFailed);
             };

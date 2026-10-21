@@ -19,21 +19,19 @@ pub const ACTIVE_AGENT_STATUSES: [&str; 3] = ["running", "starting", "approval"]
 const MONITOR_INDEX: &str = "runtime_monitor_startup_active";
 const REQUEST_INDEX: &str = "runtime_request_startup_unsettled";
 const TOOL_REQUEST_INDEX: &str = "runtime_tool_request_startup_unsettled";
-const CLEANUP_INTENT_INDEX: &str = "runtime_agent_cleanup_intent";
-const DELETED_UNSETTLED_INDEX: &str = "runtime_agent_deleted_unsettled";
+const CLEANUP_INTENT_INDEX: &str = "runtime_agent_cleanup_intent_v2";
+const DELETED_UNSETTLED_INDEX: &str = "runtime_agent_deleted_unsettled_v2";
 
-/// SQL: the stored value at `path` is neither absent, null, false nor zero.
+/// SQL: agent column `column` is neither absent, null, false nor zero.
 /// A superset of the Rust `truthy` test (an empty string or container passes),
 /// so selections through it are refined by the exact Rust test.
-fn nonfalsy(path: &str) -> String {
-    format!("COALESCE(json_extract(record,'{path}'),0)!=0")
+fn nonfalsy(column: &str) -> String {
+    format!("COALESCE({column},0)!=0")
 }
 
 /// SQL predicate: an agent record carries a workspace cleanup intent object.
 fn cleanup_intent_predicate() -> String {
-    "CASE WHEN json_valid(record) THEN json_type(record,'$.workspaceCleanupIntent')='object' \
-     ELSE 0 END"
-        .to_owned()
+    "has_workspace_cleanup_intent=1".to_owned()
 }
 
 /// SQL predicate: a deleted agent that may still hold an active turn, the
@@ -45,12 +43,11 @@ fn deleted_unsettled_predicate() -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "CASE WHEN json_valid(record) THEN ({} AND ({} OR {} OR {} OR \
-         json_extract(record,'$.status') IN ({statuses}))) ELSE 0 END",
-        nonfalsy("$.deletedAt"),
-        nonfalsy("$.inFlight"),
-        nonfalsy("$.turnId"),
-        nonfalsy("$.startAttempt.activeAtReservation"),
+        "{} AND ({} OR {} OR {} OR status IN ({statuses}))",
+        nonfalsy("deleted_at"),
+        nonfalsy("in_flight"),
+        nonfalsy("turn_id"),
+        nonfalsy("start_attempt_active_at_reservation"),
     )
 }
 
@@ -186,7 +183,7 @@ pub(crate) fn unsettled_tool_request_predicate() -> String {
 /// Per-account count of unsettled tool requests; its scan must stay on the partial index.
 fn tool_request_counts_sql() -> String {
     format!(
-        "SELECT COALESCE(json_extract(a.record,'$.accountKey'),'default'), COUNT(*) \
+        "SELECT a.account_key, COUNT(*) \
          FROM (SELECT json_extract(record,'$.agent') AS agent FROM {} WHERE {}) u \
          JOIN runtime_agents a ON a.id=u.agent GROUP BY 1",
         TOOL_REQUESTS.table,
@@ -304,9 +301,11 @@ mod tests {
     fn tool_request_counts_use_the_partial_index_and_match_the_per_account_join() {
         let connection = database();
         connection
+            .execute_batch(crate::agent_columns::agent_table_sql())
+            .expect("agents table");
+        connection
             .execute_batch(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_agents VALUES
+                "INSERT INTO runtime_agents VALUES
                    ('a1','{\"accountKey\":\"acc1\"}'),('a2','{\"accountKey\":\"acc2\"}'),
                    ('a3','{}');
                  INSERT INTO runtime_tool_requests VALUES
@@ -444,15 +443,15 @@ mod tests {
     fn agent_selections_read_only_their_partial_index_and_exact_rows() {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection
-            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .execute_batch(crate::agent_columns::agent_table_sql())
             .expect("table");
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         StartupRecoveryRepository::prepare_indexes(&connection).expect("indexes");
         for (selection, index) in [
-            (&super::CLEANUP_INTENTS, "runtime_agent_cleanup_intent"),
-            (&super::DELETED_UNSETTLED, "runtime_agent_deleted_unsettled"),
+            (&super::CLEANUP_INTENTS, super::CLEANUP_INTENT_INDEX),
+            (&super::DELETED_UNSETTLED, super::DELETED_UNSETTLED_INDEX),
         ] {
             let plan = connection
                 .prepare(&format!(
@@ -484,7 +483,6 @@ mod tests {
                 r#"{"deletedAt":5,"inFlight":false,"turnId":null,"status":"idle"}"#,
             ),
             ("g-live", r#"{"status":"running"}"#),
-            ("h-malformed", "{"),
         ] {
             connection
                 .execute("INSERT INTO runtime_agents VALUES(?1,?2)", [id, record])

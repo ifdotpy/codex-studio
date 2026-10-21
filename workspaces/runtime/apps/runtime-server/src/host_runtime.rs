@@ -599,33 +599,25 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 first,
             )
             .await?;
-            let (credential_path, credential_document, active_actors) =
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/vm-claude-refresh",
-                    move || {
-                        let path = credential_path;
-                        let document = credential_document;
-                        let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
-                        let mut active = Vec::new();
-                        for actor in actors_for_resolution {
-                            if !studio_runtime_services::linux_vm_provider::vm_actor_matches(
-                                &connection,
-                                &actor.agent_id,
-                                actor.epoch,
-                                &actor.account_key,
-                                Some("claude"),
-                            )
-                            .map_err(|_| WorkerError::TaskFailed)?
-                            {
-                                continue;
-                            }
+            let active_actors = store
+                .read_async("runtime-server/vm-claude-refresh", move |connection| {
+                    let mut active = Vec::new();
+                    for actor in actors_for_resolution {
+                        if studio_runtime_services::linux_vm_provider::vm_actor_matches(
+                            connection,
+                            &actor.agent_id,
+                            actor.epoch,
+                            &actor.account_key,
+                            Some("claude"),
+                        )
+                        .map_err(|_| WorkerError::TaskFailed)?
+                        {
                             active.push(actor);
                         }
-                        Ok::<_, WorkerError>((path, document, active))
-                    },
-                )
-                .await
-                .map_err(|_| WorkerError::TaskFailed)??;
+                    }
+                    Ok::<_, WorkerError>(active)
+                })
+                .await?;
             let mut profile_copy_failed = false;
             for actor in active_actors {
                 match validate_vm_actor_scope(
@@ -683,22 +675,20 @@ async fn validate_vm_actor_scope(
     >,
     request: &studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
 ) -> Result<(), WorkerError> {
+    if !account_session
+        .as_deref()
+        .and_then(|session| session.current_scope(&request.account_key))
+        .is_some_and(|scope| scope.generation == request.generation)
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-agent/account-generation-changed".into(),
+        ));
+    }
     let request = request.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/vm-actor-fence",
-        move || {
-            if !account_session
-                .as_deref()
-                .and_then(|session| session.current_scope(&request.account_key))
-                .is_some_and(|scope| scope.generation == request.generation)
-            {
-                return Err(WorkerError::PreparationRefused(
-                    "vm-agent/account-generation-changed".into(),
-                ));
-            }
-            let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
-            if !studio_runtime_services::linux_vm_provider::vm_actor_matches(
-                &connection,
+    store
+        .read_async("runtime-server/vm-actor-fence", move |connection| {
+            if studio_runtime_services::linux_vm_provider::vm_actor_matches(
+                connection,
                 &request.agent_id,
                 request.epoch,
                 &request.account_key,
@@ -706,15 +696,14 @@ async fn validate_vm_actor_scope(
             )
             .map_err(|_| WorkerError::TaskFailed)?
             {
-                return Err(WorkerError::PreparationRefused(
+                Ok(())
+            } else {
+                Err(WorkerError::PreparationRefused(
                     "vm-agent/identity-changed".into(),
-                ));
+                ))
             }
-            Ok(())
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)?
+        })
+        .await
 }
 
 /// This follows Python's `codex_linux_workspaces.py:83-104`: provider comes
@@ -1130,22 +1119,18 @@ async fn refresh_vm_codex_token(
         let actor_id = actor_id.to_owned();
         let account_key = account_key.to_owned();
         async move {
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/vm-actor-refresh-fence",
-                move || {
-                    let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
+            store
+                .read_async("runtime-server/vm-actor-refresh-fence", move |connection| {
                     studio_runtime_services::linux_vm_provider::vm_actor_matches(
-                        &connection,
+                        connection,
                         &actor_id,
                         actor_epoch,
                         &account_key,
                         Some("codex"),
                     )
                     .map_err(|_| WorkerError::TaskFailed)
-                },
-            )
-            .await
-            .map_err(|_| WorkerError::TaskFailed)?
+                })
+                .await
         }
     };
     if !scope_is_current() || !actor_is_current().await? {
