@@ -107,6 +107,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/accounts/default-groups": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Account Default Groups */
+    post: operations["account_default_groups_api_accounts_default_groups_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/accounts/delete": {
     parameters: {
       query?: never;
@@ -152,6 +169,23 @@ export interface paths {
     put?: never;
     /** Account Discover */
     post: operations["account_discover_api_accounts_discover_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/accounts/group": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Account Group */
+    post: operations["account_group_api_accounts_group_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2801,6 +2835,12 @@ export interface components {
        * @default null
        */
       error?: null | string;
+      /**
+       * Group
+       * @description The account's group in account orders (see AccountGroupRequest).
+       * @default null
+       */
+      group?: null | string;
       /** Home */
       home: string;
       /** Id */
@@ -2951,6 +2991,16 @@ export interface components {
      * @description The legacy discover operation accepts an empty JSON object or no body.
      */
     AccountDiscoverRequest: Record<string, never>;
+    /**
+     * AccountGroupRequest
+     * @description Set one account's group, or clear it with null. Repeating a request sets the same value.
+     */
+    AccountGroupRequest: {
+      /** Account Key */
+      account_key: string;
+      /** Group */
+      group: null | string;
+    };
     /** AccountHistoryRecordResponse */
     AccountHistoryRecordResponse: {
       /**
@@ -3177,6 +3227,11 @@ export interface components {
       accounts: components["schemas"]["Account"][];
       /** Archivedaccounts */
       archivedAccounts: components["schemas"]["Account"][];
+      /**
+       * Defaultaccountgroups
+       * @description The default account order: group names that projects without their own order prefer, first to last.
+       */
+      defaultAccountGroups: string[];
       /** Defaultaccountkey */
       defaultAccountKey: string;
       /** Logins */
@@ -11634,6 +11689,14 @@ export interface components {
        */
       share_status?: boolean;
     };
+    /**
+     * DefaultAccountGroupsRequest
+     * @description Replace the default account order of projects without their own order. An empty list removes it. Repeating a request sets the same value.
+     */
+    DefaultAccountGroupsRequest: {
+      /** Groups */
+      groups: string[];
+    };
     /** DeleteAccountRequest */
     DeleteAccountRequest: {
       /** Account Key */
@@ -16498,6 +16561,16 @@ export interface components {
        */
       _syncEntitiesAfter?: number | null;
       /**
+       * Accountgroups
+       * @default null
+       */
+      accountGroups?: string[] | null;
+      /**
+       * Accountgroupsrevision
+       * @default null
+       */
+      accountGroupsRevision?: number | null;
+      /**
        * Accountkey
        * @default null
        */
@@ -17643,6 +17716,16 @@ export interface components {
      */
     Project: {
       /**
+       * Accountgroups
+       * @default null
+       */
+      accountGroups?: string[] | null;
+      /**
+       * Accountgroupsrevision
+       * @default null
+       */
+      accountGroupsRevision?: number | null;
+      /**
        * Accountkey
        * @default null
        */
@@ -17760,6 +17843,10 @@ export interface components {
     };
     /** ProjectEntityDto */
     ProjectEntityDto: {
+      /** Accountgroups */
+      accountGroups?: string[] | null;
+      /** Accountgroupsrevision */
+      accountGroupsRevision?: number | null;
       /** Accountkey */
       accountKey?: null | string;
       /** Accountkeys */
@@ -17977,6 +18064,16 @@ export interface components {
        * @default null
        */
       _syncEntitiesAfter?: number | null;
+      /**
+       * Accountgroups
+       * @default null
+       */
+      accountGroups?: string[] | null;
+      /**
+       * Accountgroupsrevision
+       * @default null
+       */
+      accountGroupsRevision?: number | null;
       /**
        * Accountkey
        * @default null
@@ -18215,6 +18312,11 @@ export interface components {
     /** ProjectWriteRequest */
     ProjectWriteRequest: {
       /**
+       * Account Groups
+       * @default null
+       */
+      account_groups?: string[] | null;
+      /**
        * Account Key
        * @default null
        */
@@ -18240,6 +18342,7 @@ export interface components {
             | "add_folder"
             | "rename_folder"
             | "remove_folder"
+            | "set_account_groups"
           )
         | null;
       /**
@@ -27955,6 +28058,71 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  account_default_groups_api_accounts_default_groups_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DefaultAccountGroupsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccountsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   account_delete_api_accounts_delete_post: {
     parameters: {
       query?: never;
@@ -28095,6 +28263,71 @@ export interface operations {
     requestBody?: {
       content: {
         "application/json": components["schemas"]["AccountDiscoverRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccountsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  account_group_api_accounts_group_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AccountGroupRequest"];
       };
     };
     responses: {

@@ -492,6 +492,9 @@ pub async fn write(
     if action == "set_worker_environment" {
         return set_worker_environment(store, body, default_account, known_accounts).await;
     }
+    if action == "set_account_groups" {
+        return set_account_groups(store, body, default_account, known_accounts).await;
+    }
     if action == "reorder" {
         return reorder(&store, body).await;
     }
@@ -924,6 +927,82 @@ async fn set_worker_environment(
             let mut project = project;
             project["workerEnvironment"] = json!(environment);
             project["workerEnvironmentRevision"] = json!(current + 1);
+            ProjectsRepository::put_project(tx, &project)?;
+            Ok(project)
+        })
+        .await
+}
+
+/// Save the project's account order (`account_groups`, see
+/// [`crate::account_preference`]). An empty list removes the project's own order,
+/// so the default order applies. The order never limits the accounts of the project.
+async fn set_account_groups(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    known_accounts: Vec<Value>,
+) -> Result<Value, ProjectsError> {
+    use crate::account_preference::{
+        PROJECT_GROUPS_FIELD, PROJECT_GROUPS_REVISION_FIELD, validate_groups,
+    };
+    let groups = body
+        .get("account_groups")
+        .and_then(Value::as_array)
+        .ok_or(ProjectsError::Invalid("account order is invalid"))?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(ProjectsError::Invalid("account order is invalid"))?;
+    validate_groups(&groups).map_err(ProjectsError::Invalid)?;
+    let path_value = body.get("path").cloned();
+    let expected = body
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .ok_or(ProjectsError::Invalid("account order revision is invalid"))?;
+    let (prepared, path) = prepare_path(store.clone(), path_value, true).await?;
+    store
+        .transaction_with(move |tx| -> Result<Value, ProjectsError> {
+            prepared.recheck(tx)?;
+            let mut project = load_project(tx, &path)?;
+            if path.starts_with("project:") && project.is_none() {
+                return Err(ProjectsError::Invalid("select an existing project"));
+            }
+            let current = revision_of(project.as_ref(), PROJECT_GROUPS_REVISION_FIELD, &path)?;
+            let stored = project
+                .as_ref()
+                .map(|row| crate::account_preference::groups_of(row.get(PROJECT_GROUPS_FIELD)))
+                .unwrap_or_default();
+            if project.is_some()
+                && stored == groups
+                && (expected == current || expected.saturating_add(1) == current)
+            {
+                return Ok(project.unwrap_or(Value::Null));
+            }
+            if current != expected {
+                return Err(ProjectsError::Conflict(
+                    "Account order changed. Reload it before saving",
+                ));
+            }
+            if project.is_none() {
+                let account = project_account(&prepared, tx, &path, &default_account)?;
+                project = Some(new_project(
+                    &prepared,
+                    &path,
+                    &project_name(None, &path)?,
+                    &account,
+                    &known_accounts,
+                )?);
+            }
+            let mut project = project.ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            let object = project
+                .as_object_mut()
+                .ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            if groups.is_empty() {
+                object.remove(PROJECT_GROUPS_FIELD);
+            } else {
+                object.insert(PROJECT_GROUPS_FIELD.to_owned(), json!(groups));
+            }
+            object.insert(PROJECT_GROUPS_REVISION_FIELD.to_owned(), json!(current + 1));
             ProjectsRepository::put_project(tx, &project)?;
             Ok(project)
         })

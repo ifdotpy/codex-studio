@@ -138,6 +138,8 @@ export function sidebarSnapshot(
         "accountKey",
         "accountKeys",
         "accountRevision",
+        "accountGroups",
+        "accountGroupsRevision",
         "created",
         "updated",
         "layrReadiness",

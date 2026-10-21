@@ -808,6 +808,8 @@ pub enum AccountDriverError {
     SignInRequired,
     #[error("This account was deleted")]
     DeletedAccount,
+    #[error("{0}")]
+    InvalidAccountOrder(&'static str),
     #[error("This name request id has different content")]
     NameRequestConflict,
     #[error("This delete request id has different content")]
@@ -1908,6 +1910,72 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .entry("nameReceipts")
                 .or_insert_with(|| Value::Object(Default::default()));
             updated["nameReceipts"][&request_id] = content;
+            self.persist(&mut state, updated)?;
+        }
+        drop(state);
+        self.snapshot()
+    }
+
+    /// Set or clear (`None`) the group of `account`. A repeated request sets the
+    /// same value. See [`crate::account_preference`].
+    pub fn set_group(
+        &self,
+        account: &str,
+        group: Option<&str>,
+    ) -> Result<AccountsSnapshot, AccountDriverError> {
+        if let Some(group) = group {
+            crate::account_preference::validate_groups(&[group.to_owned()])
+                .map_err(AccountDriverError::InvalidAccountOrder)?;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut updated = state.value.clone();
+        let row = registry_account_mut(&mut updated, account)?;
+        if row.get("deleted") == Some(&Value::Bool(true)) {
+            return Err(AccountDriverError::DeletedAccount);
+        }
+        let field = crate::account_preference::ACCOUNT_GROUP_FIELD;
+        match (group, row.as_object_mut()) {
+            (Some(group), Some(object)) => {
+                object.insert(field.to_owned(), Value::String(group.to_owned()));
+            }
+            (None, Some(object)) => {
+                object.remove(field);
+            }
+            (_, None) => return Err(AccountDriverError::InvalidRegistry),
+        }
+        if updated != state.value {
+            self.persist(&mut state, updated)?;
+        }
+        drop(state);
+        self.snapshot()
+    }
+
+    /// Replace the default account order of projects without their own order.
+    /// An empty list removes it. A repeated request sets the same value.
+    pub fn set_default_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<AccountsSnapshot, AccountDriverError> {
+        crate::account_preference::validate_groups(groups)
+            .map_err(AccountDriverError::InvalidAccountOrder)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut updated = state.value.clone();
+        let field = crate::account_preference::DEFAULT_GROUPS_FIELD;
+        let Some(root) = updated.as_object_mut() else {
+            return Err(AccountDriverError::InvalidRegistry);
+        };
+        if groups.is_empty() {
+            root.remove(field);
+        } else {
+            root.insert(field.to_owned(), serde_json::json!(groups));
+        }
+        if updated != state.value {
             self.persist(&mut state, updated)?;
         }
         drop(state);

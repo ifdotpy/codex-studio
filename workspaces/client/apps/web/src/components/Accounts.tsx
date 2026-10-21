@@ -15,6 +15,7 @@ import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
 import AccountStartThrottle from "./AccountStartThrottle";
+import AccountGroup from "./AccountGroup";
 import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
@@ -75,6 +76,7 @@ export function useAccounts(stateDir?: string) {
     accounts: [],
     archivedAccounts: [],
     defaultAccountKey: "default",
+    defaultAccountGroups: [],
     logins: [],
     supportsDelete: true,
     supportsDisconnect: true,
@@ -1225,6 +1227,12 @@ export default function Accounts({
                             )}
                             {!account.disconnected && (
                               <AccountStartThrottle
+                                account={account}
+                                onSaved={state.setData}
+                              />
+                            )}
+                            {!account.disconnected && (
+                              <AccountGroup
                                 account={account}
                                 onSaved={state.setData}
                               />
