@@ -1694,29 +1694,29 @@ async function startSession(s, active, p) {
           );
         } else if (m.subtype?.startsWith("task_")) {
           const id = m.task_id || m.uuid;
-          const task = { ...active.tasks.get(id), ...m };
+          const task = { ...active.tasks.get(id), ...m, ...m.patch };
           const command = foregroundCommandUpdate(active, task, m);
           if (command && turn) turnEvent(s, turn, "item/started", command);
-          if (
-            m.subtype === "task_notification" ||
-            ["completed", "failed", "killed"].includes(m.status)
-          )
-            active.tasks.delete(id);
+          // A terminal patch can arrive before the notification's final output.
+          const terminal =
+            m.subtype === "task_notification" &&
+            ["completed", "failed", "killed", "stopped"].includes(m.status);
+          if (terminal) active.tasks.delete(id);
           else active.tasks.set(id, task);
           const taskTurn = turn || s.turns.at(-1);
-          if (taskTurn)
-            finishItem(s, taskTurn, {
+          if (taskTurn) {
+            const item = {
               id: "task:" + id,
               type: "mcpToolCall",
               server: "claude",
-              tool: m.task_type || "Background task",
-              status:
-                m.subtype === "task_notification"
-                  ? m.status === "failed"
-                    ? "failed"
-                    : "completed"
-                  : "inProgress",
-              arguments: { description: m.description || task.description },
+              tool: task.task_type || "Background task",
+              status: terminal
+                ? m.status === "completed"
+                  ? "completed"
+                  : "failed"
+                : "inProgress",
+              ...(task.output_file ? { outputFile: task.output_file } : {}),
+              arguments: { description: task.description },
               result: {
                 content: [
                   {
@@ -1730,7 +1730,17 @@ async function startSession(s, active, p) {
                   },
                 ],
               },
-            });
+            };
+            if (terminal) finishItem(s, taskTurn, item);
+            else {
+              const index = taskTurn.items.findIndex(
+                (old) => old.id === item.id,
+              );
+              if (index < 0) taskTurn.items.push(item);
+              else taskTurn.items[index] = item;
+              turnEvent(s, taskTurn, "item/started", item);
+            }
+          }
           persistLater(s, active);
         } else if (
           turn &&
