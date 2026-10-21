@@ -32,7 +32,16 @@ use studio_runtime_store::{
     CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot, path_identity,
 };
 
+/// Git budget of one preparation phase, in wall time. The unlocked observation,
+/// the effect under the repository lock, the adoption check after a failed
+/// effect and the publication check each start their own budget with their
+/// first Git command. Waiting for the repository lock is not Git time.
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long one preparation waits for its repository lock, in wall time, before
+/// its turn defers and the scheduler retries it. Children of one repository
+/// provision one at a time, and one provisioning of a large repository takes
+/// about 2 to 8 seconds, so a burst of about fifteen children fits.
+const REPOSITORY_QUEUE_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 static REPOSITORY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
@@ -66,12 +75,23 @@ pub async fn prepare(
     prepare_with_timeout(store, agent_id, GIT_TIMEOUT).await
 }
 
+/// `timeout` is the Git budget of each phase; see [`GIT_TIMEOUT`].
 pub async fn prepare_with_timeout(
     store: Arc<RuntimeStore>,
     agent_id: String,
     timeout: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    match prepare_attempt(Arc::clone(&store), agent_id.clone(), timeout).await {
+    prepare_with_budget(store, agent_id, timeout, REPOSITORY_QUEUE_TIMEOUT).await
+}
+
+/// `queue` bounds the wait for the repository lock; see [`REPOSITORY_QUEUE_TIMEOUT`].
+pub(crate) async fn prepare_with_budget(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
+    timeout: Duration,
+    queue: Duration,
+) -> Result<WorkspaceDecision, WorkspaceError> {
+    match prepare_attempt(Arc::clone(&store), agent_id.clone(), timeout, queue).await {
         Err(WorkspaceError::Deadline(step)) => {
             recovery_required(
                 store,
@@ -148,6 +168,7 @@ async fn prepare_attempt(
     store: Arc<RuntimeStore>,
     agent_id: String,
     timeout: Duration,
+    queue: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(&store, agent_id.clone()).await?;
     let actor = actor(&initial)?;
@@ -270,13 +291,18 @@ async fn prepare_attempt(
         });
     }
     let journal = provision_journal(&store, provision_id(&actor)).await?;
-    let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let context = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
             // The Git budget starts with the first Git command. Time spent
             // waiting for a blocking thread or a SQLite reader is not Git time.
-            let deadline = Instant::now() + timeout;
-            observe(initial, journal, &Git { deadline }).map(|context| (context, deadline))
+            observe(
+                initial,
+                journal,
+                &Git {
+                    deadline: Instant::now() + timeout,
+                },
+            )
         },
     )
     .await
@@ -285,10 +311,9 @@ async fn prepare_attempt(
         return Ok(context.decide());
     };
     let lock = repository_lock(&plan.identity.common_dir)?;
-    // Overlapping preparations of one repository queue on its lock within the
-    // Git deadline; only a lock still held at the deadline defers the turn.
-    let lock_deadline = tokio::time::Instant::from_std(git_deadline);
-    let Ok(_guard) = tokio::time::timeout_at(lock_deadline, lock.lock()).await else {
+    // Children of one repository queue on its lock while each sibling runs its
+    // own bounded Git phase. Only a lock still held after `queue` defers the turn.
+    let Ok(_guard) = tokio::time::timeout(queue, lock.lock()).await else {
         return Ok(WorkspaceDecision::Defer {
             by: crate::workspace_ready::DeferredBy::Workspace,
         });
@@ -303,16 +328,12 @@ async fn prepare_attempt(
             Ok::<_, WorkspaceError>((snapshot, journal))
         })
         .await?;
-    let context = studio_runtime_process::blocking_pool::spawn_blocking(
+    let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
-            observe(
-                snapshot,
-                journal,
-                &Git {
-                    deadline: git_deadline,
-                },
-            )
+            // The locked phase starts its own Git budget.
+            let deadline = Instant::now() + timeout;
+            observe(snapshot, journal, &Git { deadline }).map(|context| (context, deadline))
         },
     )
     .await
@@ -320,7 +341,7 @@ async fn prepare_attempt(
     let WorkspaceDecision::Provision(plan) = context.decide() else {
         return Ok(context.decide());
     };
-    provision(store, context, plan, git_deadline).await
+    provision(store, context, plan, git_deadline, timeout).await
 }
 
 /// The turn directory of an image agent: its mounted `repo` plus the saved
@@ -339,11 +360,13 @@ pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
     WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
 }
 
+/// `deadline` bounds the effect; `budget` is the Git budget of each later phase.
 async fn provision(
     store: Arc<RuntimeStore>,
     context: Context,
     plan: crate::workspace_ready::WorktreePlan,
     deadline: Instant,
+    budget: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let expected_paths = context
         .snapshot
@@ -379,28 +402,27 @@ async fn provision(
     let effect = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
-            let git = Git { deadline };
-            if effect_kind == ProvisionEffect::Create {
-                git.create(&effect_plan)?;
-            }
-            let observed = git.worktree(&effect_plan)?;
-            let decision = decide_workspace(
-                &effect_context.actor,
-                &effect_context.snapshot.agent.record,
-                effect_context.cwd.as_deref(),
-                &[],
-                Some(&effect_plan),
-                true,
-                &observed,
-            );
-            if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
-                || !confined(&effect_plan)
-            {
-                return Err(WorkspaceError::Git(
-                    "the created worktree does not match its provisioning plan".into(),
-                ));
-            }
-            Ok::<_, WorkspaceError>(git.checkpoint(&effect_plan).map_err(|error| error.to_string()))
+            establish(
+                &Git { deadline },
+                effect_kind,
+                &effect_plan,
+                &effect_context,
+            )
+            .or_else(|error| {
+                // A Git step can fail or run out of time after `git worktree add`
+                // finished on disk. One fresh observation adopts only a complete,
+                // clean and confined worktree; anything else keeps the first error.
+                let git = Git {
+                    deadline: Instant::now() + budget,
+                };
+                establish(
+                    &git,
+                    ProvisionEffect::Publish,
+                    &effect_plan,
+                    &effect_context,
+                )
+                .map_err(|_| error)
+            })
         },
     )
     .await
@@ -422,7 +444,38 @@ async fn provision(
             ));
         }
     };
-    publish_verified(store, identity.clone(), checkpoint, deadline).await
+    publish_verified(store, identity.clone(), checkpoint, budget).await
+}
+
+/// Run the `effect` of `plan`, confirm the worktree it leaves, and record its
+/// first checkpoint. A checkpoint failure is not a provisioning failure.
+fn establish(
+    git: &Git,
+    effect: ProvisionEffect,
+    plan: &ProvisionIdentity,
+    context: &Context,
+) -> Result<Result<Value, String>, WorkspaceError> {
+    if effect == ProvisionEffect::Create {
+        git.create(plan)?;
+    }
+    let observed = git.worktree(plan)?;
+    let decision = decide_workspace(
+        &context.actor,
+        &context.snapshot.agent.record,
+        context.cwd.as_deref(),
+        &[],
+        Some(plan),
+        true,
+        &observed,
+    );
+    if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
+        || !confined(plan)
+    {
+        return Err(WorkspaceError::Git(
+            "the created worktree does not match its provisioning plan".into(),
+        ));
+    }
+    Ok(git.checkpoint(plan).map_err(|error| error.to_string()))
 }
 
 fn confined(identity: &ProvisionIdentity) -> bool {
@@ -441,7 +494,7 @@ async fn publish_verified(
     store: Arc<RuntimeStore>,
     identity: ProvisionIdentity,
     checkpoint: Result<Value, String>,
-    deadline: Instant,
+    budget: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let read_agent = identity.agent.clone();
     let stored_cwd = store
@@ -456,7 +509,10 @@ async fn publish_verified(
     let (observed, confined, observed_cwd) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
-            let git = Git { deadline };
+            // Publication checks Git with its own budget.
+            let git = Git {
+                deadline: Instant::now() + budget,
+            };
             let cwd = stored_cwd.map(|cwd| {
                 let resolved = path_identity::resolve(&cwd)
                     .map(CanonicalPath::into_path_buf)
