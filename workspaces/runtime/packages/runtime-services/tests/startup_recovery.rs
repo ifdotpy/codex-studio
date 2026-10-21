@@ -1,5 +1,4 @@
-#[path = "monitors/fixtures.rs"]
-mod fixtures;
+use crate::monitor_fixtures as fixtures;
 
 use serde_json::{Value, json};
 use studio_runtime_services::{

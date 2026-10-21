@@ -1,7 +1,6 @@
 //! Actual HTTP middleware and generated DTOs with an injected retained reply port.
 #![allow(clippy::unwrap_used)]
-#[path = "../../runtime-services/tests/wave7_p04_callback/fixture.rs"]
-mod fixture;
+use crate::callback_fixtures as fixture;
 use axum::{
     body::{Body, to_bytes},
     extract::ConnectInfo,

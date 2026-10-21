@@ -1,9 +1,8 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 #[path = "../src/account_registry.rs"]
-mod account_registry;
-#[path = "../../../packages/runtime-services/tests/support/prepared_python.rs"]
-mod prepared_python;
+pub(crate) mod account_registry;
+use crate::prepared_python_support as prepared_python;
 
 use account_registry::{
     AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
@@ -1640,10 +1639,10 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
 
 #[path = "../src/host_runtime.rs"]
 #[allow(dead_code)]
-mod host_runtime;
+pub(crate) mod host_runtime;
 #[path = "../src/provider_ports.rs"]
 #[allow(dead_code)]
-mod provider_ports;
+pub(crate) mod provider_ports;
 #[cfg(target_os = "linux")]
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
@@ -2558,7 +2557,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "host_start_reattaches_python_launch_and_delivers_http_input",
+                "wave7_p01_registry::host_start_reattaches_python_launch_and_delivers_http_input",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_HOST_CHILD", "1")
@@ -2948,7 +2947,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         let child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "rust_direct_claude_launch_runs_the_scripted_bridge_turn",
+                "wave7_p01_registry::rust_direct_claude_launch_runs_the_scripted_bridge_turn",
                 "--nocapture",
             ])
             .env("STUDIO_W8_CLAUDE_CHILD", "1")
@@ -3306,7 +3305,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "direct_launch_mode_completes_http_turn_and_reaps_child",
+                "wave7_p01_registry::direct_launch_mode_completes_http_turn_and_reaps_child",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_DIRECT_CHILD", "1")
@@ -3489,7 +3488,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "direct_generation_and_journal_identity_survive_backend_restart",
+                "wave7_p01_registry::direct_generation_and_journal_identity_survive_backend_restart",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_DIRECT_RESTART_CHILD", "1")
@@ -3646,7 +3645,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "direct_child_crash_holds_written_turn_without_resending_after_relaunch",
+                "wave7_p01_registry::direct_child_crash_holds_written_turn_without_resending_after_relaunch",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_DIRECT_CRASH_CHILD", "1")
@@ -3800,7 +3799,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "direct_child_crash_before_turn_write_retries_queued_input_once",
+                "wave7_p01_registry::direct_child_crash_before_turn_write_retries_queued_input_once",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_DIRECT_NOT_SENT_CHILD", "1")

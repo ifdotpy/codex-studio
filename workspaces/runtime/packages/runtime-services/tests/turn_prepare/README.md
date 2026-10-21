@@ -120,7 +120,7 @@ set `RUSTUP_HOME`, `CARGO_HOME`, `COREPACK_HOME`, and the equipped read-only
 and a system/Cargo-only `PATH`, and leave `CODEX_BIN` unset.
 
 ```sh
-cargo nextest run -p studio-runtime-services --test turn_prepare_corpus
+cargo nextest run -p studio-runtime-services --test integration -E 'test(/^turn_prepare_corpus::/)'
 just test-rust-runtime-corpora
 just test-rust-runtime-corpora-mutations --only TP1,TP2,TP3,TP4,TP5,TP6,TP7,TP8,TP9,TP10,TP11,TP12,TP13,TP14,TP15,TP16,TP17,TP18,TP19,TP20,TP21,TP22,TP23,TP24,TP25,TP26,TP27,TP28,TP29,TP30,TP31,TP32,TP33,TP34,TP35,TP36,TP37,TP38,TP39,TP40,TP41,TP42,TP43,TP44,TP45,TP46,TP47,TP48,TP49,TP50,TP51,TP52,TP53,TP54 --full
 ```

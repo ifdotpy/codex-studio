@@ -5,8 +5,7 @@ use serde_json::Value;
 use studio_runtime_services::terminal_driver::{history_output, listing, output};
 use studio_runtime_store::{RuntimeStore, TerminalsRepository};
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 #[allow(clippy::disallowed_methods)]
 fn run_python_oracle(root: &Path, full: bool) -> Value {

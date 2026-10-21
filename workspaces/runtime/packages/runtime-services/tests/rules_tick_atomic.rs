@@ -1,6 +1,4 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::prepared_python_support;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -685,7 +683,8 @@ impl RuleMonitor for DurableMonitor<'_> {
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
 async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
-    const CASE: &str = "committed_launch_intent_survives_process_exit_before_monitor_launch";
+    const CASE: &str =
+        "rules_tick_atomic::committed_launch_intent_survives_process_exit_before_monitor_launch";
     if let Some(path) = std::env::var_os("RULES_CRASH_BEFORE_LAUNCH") {
         let store = RuntimeStore::open(Some(std::path::Path::new(&path)))
             .await

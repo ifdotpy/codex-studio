@@ -1,6 +1,4 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::prepared_python_support;
 
 use serde_json::{Value, json};
 use std::sync::Arc;

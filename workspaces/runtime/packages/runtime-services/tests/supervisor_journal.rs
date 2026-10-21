@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_providers::supervisor_v1::{

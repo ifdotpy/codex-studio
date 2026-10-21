@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
 use studio_runtime_services::claude_input_recovery::runtime::freeze_start;
 

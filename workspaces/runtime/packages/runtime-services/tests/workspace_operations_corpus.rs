@@ -10,8 +10,7 @@ use studio_runtime_store::{
     AgentRecord, AgentRepository, CaptureKind, CheckpointsRepository, RuntimeStore,
 };
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 fn temporary() -> tempfile::TempDir {
     let parent = std::env::temp_dir().join("cs-rust-workspace-operations/fixtures");

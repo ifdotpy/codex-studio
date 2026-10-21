@@ -5,6 +5,7 @@ import {
   affectedPlan,
   boundaryFindings,
   commandFor,
+  discover,
   execute,
   executeRecipe,
   evaluatePlaywrightReport,
@@ -28,6 +29,8 @@ import {
   utimesSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
+  existsSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -63,6 +66,15 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once/,
   );
   assert.match(fast.command, /test:unit:fast/);
+  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 3);
+  assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
+  assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
+  assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
+  assert.match(fast.command, /test\(\/\^monitor_wake_guarantees::\/\)/);
+  assert.match(fast.command, /test\(monitor_completion_\)/);
+  assert.match(fast.command, /test\(reattached_exit_\)/);
+  assert.match(fast.command, /not binary\(integration\)/);
+  assert.doesNotMatch(fast.command, /binary\((?:sql_callback_guard|monitor_)/);
   assert.doesNotMatch(
     fast.command,
     /test:browser:smoke|--workspace|test-server-load|mutations/,
@@ -93,6 +105,42 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     comprehensive.command,
     /test-server-load|runtime_load|mutations/,
   );
+});
+
+test("consolidated Rust targets register every integration test file once", () => {
+  const consolidated = discover(process.cwd()).filter(
+    (item) =>
+      item.ecosystem === "cargo" &&
+      existsSync(
+        path.join(path.dirname(item.manifest), "tests/integration.rs"),
+      ),
+  );
+  assert.ok(consolidated.length > 0);
+  for (const item of consolidated) {
+    const crate = path.dirname(item.manifest);
+    const manifest = readFileSync(item.manifest, "utf8");
+    assert.match(manifest, /^autotests = false$/m, item.name);
+    assert.match(
+      manifest,
+      /\[\[test\]\]\s+name = "integration"\s+path = "tests\/integration.rs"/,
+      item.name,
+    );
+    const facade = readFileSync(
+      path.join(crate, "tests/integration.rs"),
+      "utf8",
+    );
+    const modules = [...facade.matchAll(/^mod (\w+);$/gm)]
+      .map((match) => `${match[1]}.rs`)
+      .sort();
+    const files = readdirSync(path.join(crate, "tests"))
+      .filter((name) => name.endsWith(".rs") && name !== "integration.rs")
+      .sort();
+    assert.deepEqual(
+      modules,
+      files,
+      `${item.name}: register each test file in tests/integration.rs`,
+    );
+  }
 });
 
 test("unsafe Rust is limited to the purpose-listed modules", () => {

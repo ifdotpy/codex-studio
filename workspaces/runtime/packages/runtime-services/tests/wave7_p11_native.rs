@@ -1,3 +1,4 @@
+use crate::prepared_python_support as prepared_python;
 use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::OnceLock};
@@ -9,8 +10,6 @@ use studio_runtime_services::{
     native_actions::*,
     native_review::{self, ReviewPlan},
 };
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
 
 #[allow(clippy::disallowed_methods)]
 fn corpus() -> &'static Value {

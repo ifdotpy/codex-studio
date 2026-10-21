@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 use serde_json::Value;
 use std::{path::Path, process::Command};
 use studio_runtime_services::recovery_policy::{RecoverySnapshot, native_operations_settled};

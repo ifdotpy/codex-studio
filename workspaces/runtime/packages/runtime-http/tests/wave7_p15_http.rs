@@ -1,9 +1,5 @@
-#[path = "../../runtime-services/tests/wave7_p15_support/fixtures.rs"]
-mod fixtures;
-#[path = "../../runtime-services/tests/support/prepared_python.rs"]
-mod prepared_python_support;
-#[path = "../../runtime-services/tests/wave7_p15_support/mod.rs"]
-mod support;
+use crate::monitor_runtime_fixtures as fixtures;
+use crate::monitor_runtime_support as support;
 use axum::{
     Extension,
     body::{Body, to_bytes},

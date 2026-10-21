@@ -1,6 +1,5 @@
 //! Complete differential reader outputs from a Python notification replay, after restart.
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::Arc};
 use studio_runtime_services::{

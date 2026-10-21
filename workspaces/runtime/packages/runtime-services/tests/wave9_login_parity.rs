@@ -1,7 +1,5 @@
-#[path = "claude_runtime/login_fixture.rs"]
-mod claude_fixture;
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::login_fixtures as claude_fixture;
+use crate::prepared_python_support as python_test_support;
 
 use claude_fixture::{Fixture as ClaudeFixture, Script};
 use serde_json::{Value, json};

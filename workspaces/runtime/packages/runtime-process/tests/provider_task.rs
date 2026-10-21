@@ -1,15 +1,15 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
+use crate::process_support as support;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use studio_runtime_process::{provider_seam::*, provider_task::SupervisorProviderTaskFactory, *};
 use studio_runtime_providers::{DecodedJournalPayload, Frame, RequestId, decode_journal_entry};
+use support::*;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
-mod support;
-use support::*;
 
 struct Peer {
     commands: BufReader<UnixStream>,

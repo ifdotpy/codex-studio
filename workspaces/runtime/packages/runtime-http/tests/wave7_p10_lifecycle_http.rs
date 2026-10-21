@@ -1,8 +1,5 @@
-#[path = "../../runtime-services/tests/wave7_p15_support/fixtures.rs"]
 #[allow(dead_code, unused_imports)]
-mod fixtures;
-#[path = "../../runtime-services/tests/support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::monitor_runtime_fixtures as fixtures;
 
 use axum::{
     Extension,

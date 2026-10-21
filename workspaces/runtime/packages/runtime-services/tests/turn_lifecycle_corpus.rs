@@ -7,8 +7,7 @@
 //! scenario 16 (new_thread_freezes_settings_and_accepts_context); independent artifact
 //! creation is covered by scenario 17 (child_result_materializes_before_submission).
 //! SessionControl's actual wire/ACK and restart behavior remain worker tests.
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
 use std::fs;

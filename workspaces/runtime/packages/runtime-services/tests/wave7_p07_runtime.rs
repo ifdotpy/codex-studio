@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 use futures_util::FutureExt;
 use serde_json::{Value, json};
 use std::{

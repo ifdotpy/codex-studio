@@ -1,5 +1,6 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
+use crate::process_support as support;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -10,7 +11,6 @@ use std::{
 use studio_runtime_process::{
     EventCursor, EventKind, OperationId, OperationStatusRequest, SupervisorHandle, WriteRequest,
 };
-mod support;
 use support::*;
 
 #[test]

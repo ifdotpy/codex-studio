@@ -181,7 +181,7 @@ async fn wave7_p06_commit_publication_restart_preserves_order() {
     let child = Command::new(std::env::current_exe().expect("test invariant"))
         .args([
             "--exact",
-            "publication::wave7_p06_commit_publication_restart_preserves_order",
+            "notification_dispatch_corpus::publication::wave7_p06_commit_publication_restart_preserves_order",
             "--nocapture",
         ])
         .env("P06_PUBLICATION_CHILD", &rust)

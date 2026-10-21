@@ -1,6 +1,5 @@
 //! Both sides start from a committed Python-written database, never a Rust snapshot.
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -1283,7 +1282,7 @@ async fn corpus(full: bool, runtime_effects: bool) {
             let child = Command::new(std::env::current_exe().expect("test executable"))
                 .args([
                     "--exact",
-                    "python_written_notification_corpus",
+                    "notification_dispatch_corpus::python_written_notification_corpus",
                     "--nocapture",
                 ])
                 .env("NOTIFICATION_REPLAY_CHILD", fixture)

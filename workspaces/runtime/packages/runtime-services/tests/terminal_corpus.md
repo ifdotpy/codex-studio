@@ -6,7 +6,7 @@ Python `TerminalManager` read, paging, dimensions, restart, and publication
 functions. The Python manager writes the SQLite state first. Rust opens those
 same files and compares complete return values and all five terminal tables.
 Run fast cases with `cargo nextest run -p studio-runtime-services -E
-binary(terminal_corpus)`; add `STUDIO_RUNTIME_CORPUS_FULL=1` for the >1 MiB
+test(/^terminal_corpus::/)`; add `STUDIO_RUNTIME_CORPUS_FULL=1` for the >1 MiB
 history case.
 
 ## Corpus cases

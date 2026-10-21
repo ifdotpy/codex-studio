@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod python_support;
+use crate::prepared_python_support as python_support;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command, sync::OnceLock};

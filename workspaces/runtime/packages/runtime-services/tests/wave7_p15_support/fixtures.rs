@@ -1,6 +1,5 @@
 //! Reuse monitor seeds from either test crate; the oracle lives in services.
-#[path = "../monitors/fixtures.rs"]
-mod base;
+use crate::monitor_fixtures as base;
 pub use base::{events, seed, store, tempdir};
 
 #[allow(clippy::disallowed_methods)]

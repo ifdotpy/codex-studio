@@ -714,8 +714,7 @@ async fn exited_generation_entries_do_not_hold_back_the_initialize_reply() {
 }
 
 #[cfg(unix)]
-#[path = "../../runtime-process/tests/support/mod.rs"]
-mod support;
+use crate::process_support as support;
 
 #[cfg(target_os = "linux")]
 #[tokio::test]

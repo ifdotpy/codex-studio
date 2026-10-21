@@ -281,7 +281,7 @@ The producer test uses Python `AccountStore` writes and the real
 `Runtime.store_rate_limits` → `codex_sync_entities.patch`/`put`/`project` path
 inside a disposable root and SQLite database. It does not start a provider or
 make a network request. Run it with
-`cargo nextest run -p studio-runtime-services --test account_policy_differential`.
+`cargo nextest run -p studio-runtime-services --test integration -E 'test(/^account_policy_differential::/)'`.
 
 ### Account driver process boundary
 
@@ -593,11 +593,11 @@ HTTP cancellation currently supports terminal and prelaunch local monitors;
 running cancellation and input remain partial. A scripted transport or harmless
 local child test is not evidence of a live provider run.
 
-Targeted checks are `cargo nextest run -p studio-runtime-services --test monitor_corpus
---test monitor_recovery` and the `rust-monitors-http-contract.py` suite against
+Targeted checks are `cargo nextest run -p studio-runtime-services --test integration
+-E 'test(/^monitor_(corpus|recovery)::/)'` and the `rust-monitors-http-contract.py` suite against
 both backends. The differential oracle imports real Python writers behind the
 shared provider-home/process guard. `STUDIO_RUNTIME_CORPUS_FULL=1` includes the
 complete store-boundary matrix. Its mutation manifest is
 [`tests/monitors/mutations.json`](tests/monitors/mutations.json), consumed by the
 shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
-`--filter 'binary(/monitor_(corpus|recovery)/)'`.
+`--filter 'test(/^monitor_(corpus|recovery)::/)'`.

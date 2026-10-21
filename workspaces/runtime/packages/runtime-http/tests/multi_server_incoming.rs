@@ -1,9 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-#[path = "../../runtime-services/tests/multi_server/common.rs"]
-mod common;
-#[path = "../../runtime-services/tests/support/prepared_python.rs"]
-pub(crate) mod prepared_python_support;
+use crate::multi_server_fixtures as common;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};

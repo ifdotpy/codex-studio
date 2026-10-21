@@ -1,5 +1,4 @@
-#[path = "claude_runtime/login_fixture.rs"]
-mod fixture;
+use crate::login_fixtures as fixture;
 use fixture::*;
 use std::sync::atomic::Ordering;
 use studio_runtime_services::claude_login::ports::LoginReceipts;

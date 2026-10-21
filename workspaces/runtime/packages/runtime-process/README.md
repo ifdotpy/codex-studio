@@ -268,7 +268,7 @@ or status-channel closure. This adapter requires Unix process groups.
 
 The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.
-Run `cargo nextest run -p studio-runtime-process --test provider_stdio` for
+Run `cargo nextest run -p studio-runtime-process --test integration -E 'test(/^provider_stdio::/)'` for
 cancellation, deadline, caller-drop, and process-group cleanup checks.
 
 ## Owned local pipe children

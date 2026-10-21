@@ -253,6 +253,15 @@ lets a named case stay within one file. Cargo uses the positional case as a
 nextest test-name filter; `--name <pattern>` intersects another nextest
 test-name substring filter. Runner options after `--` remain available (for
 example, `just test studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`).
+The runtime services, HTTP, process, store, and server crates each link one
+`integration` test target. Their `tests/integration.rs` facades register the
+behavior files under `tests/`; add each new file as a module there. Tooling checks
+that every behavior file is registered exactly once. Select a module with
+`cargo nextest run -p studio-runtime-services --test integration -E 'test(/^monitor_recovery::/)'`
+or `cargo test -p studio-runtime-services --test integration monitor_recovery::`.
+Nextest still runs each test in its own process. Library tests keep their existing
+names and `--lib` selector.
+
 Cargo target selectors such as `--test compatibility` are routed to Cargo, for
 example `just test studio-diagnostics '' -- --test compatibility`. The server
 uses its runner's `--filter` suite selector. `just test-plan` prints the

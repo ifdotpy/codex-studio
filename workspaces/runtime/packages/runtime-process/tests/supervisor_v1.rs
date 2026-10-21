@@ -7,6 +7,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::process_support as support;
 use serde_json::{Value, json};
 use studio_runtime_process::{
     AckRequest, AdminCloseHandleRequest, BackendId, BackendIdentity, CursorRequest, EventCursor,
@@ -14,7 +15,6 @@ use studio_runtime_process::{
     OperationStatusRequest, RetireCommandRequest, SupervisorClient, SupervisorError,
     SupervisorHandle, WriteRequest,
 };
-mod support;
 use support::*;
 
 struct DropOpenResponse {

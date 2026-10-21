@@ -1,5 +1,4 @@
-#[path = "analytics_capture/common.rs"]
-mod common;
+use crate::analytics_fixtures as common;
 use common::{actual, analytics, seed_state_blocking, tables};
 use rusqlite::Connection;
 use serde_json::{Value, json};

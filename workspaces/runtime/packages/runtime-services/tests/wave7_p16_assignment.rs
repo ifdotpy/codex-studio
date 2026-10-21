@@ -3,8 +3,7 @@ use serde_json::{Value, json};
 use studio_runtime_services::work_assignment_runtime::assign_in_transaction;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, WorkItemsRepository};
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("memory SQLite opens");

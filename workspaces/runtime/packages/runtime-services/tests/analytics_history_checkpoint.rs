@@ -1,7 +1,6 @@
+use crate::analytics_fixtures as common;
 use serde_json::{Value, json};
 use std::fs;
-#[path = "analytics_capture/common.rs"]
-mod common;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;

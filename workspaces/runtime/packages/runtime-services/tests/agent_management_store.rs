@@ -1,5 +1,4 @@
-#[path = "support/projections.rs"]
-mod projections;
+use crate::projection_fixtures as projections;
 use projections::full_rebuild;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};

@@ -2082,14 +2082,15 @@ mod install_root_tests {
         const CHILD_MARKER: &str = "CODEX_RUNTIME_NO_PYTHON_TEST_CHILD";
         if std::env::var_os(CHILD_MARKER).is_none() {
             let empty_path = tempfile::tempdir().expect("empty PATH fixture creates");
+            let module = module_path!()
+                .split_once("::")
+                .expect("test module belongs to a crate")
+                .1;
+            let test = format!("{module}::rust_server_serves_session_and_accounts_without_python");
             let mut command =
                 tokio::process::Command::new(std::env::current_exe().expect("test executable"));
             command
-                .args([
-                    "--exact",
-                    "host_runtime::install_root_tests::rust_server_serves_session_and_accounts_without_python",
-                    "--nocapture",
-                ])
+                .args(["--exact", &test, "--nocapture"])
                 .env(CHILD_MARKER, "1")
                 .env("PATH", empty_path.path())
                 .env_remove("CODEX_AGENTS_PYTHON")

@@ -1,7 +1,6 @@
 //! Review regressions: lifecycle races and actual queue/receipt restart boundaries.
 #![allow(clippy::unwrap_used)]
-#[path = "wave7_p04_callback/fixture.rs"]
-mod fixture;
+use crate::callback_fixtures as fixture;
 use fixture::*;
 use serde_json::json;
 use std::sync::{Arc, mpsc};

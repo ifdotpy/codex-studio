@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::fs;

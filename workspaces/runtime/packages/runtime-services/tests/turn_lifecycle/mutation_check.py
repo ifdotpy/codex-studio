@@ -39,8 +39,8 @@ def main():
             # copy2 can make pristine sources older than the mutant artifact.
             shutil.copy(source, destination)
     tables = ["turn_lifecycle", "turn_prepare", "thread_prepare", "submit_gates", "workspace_ready"]
-    filters = {name: "binary(" + name + "_corpus)" for name in tables}
-    filters["turn_lifecycle"] = "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/) | test(account_worker::tests) | test(malformed_stored_agent_and_item_shapes_are_named_without_content_leaks)"
+    filters = {name: "test(/^" + name + "_corpus::/)" for name in tables}
+    filters["turn_lifecycle"] = "test(/^(turn_lifecycle|notification_dispatch)_corpus::/) | test(account_worker::tests) | test(malformed_stored_agent_and_item_shapes_are_named_without_content_leaks)"
     filters["submit_gates"] += " | test(submit_gates::tests) | test(admission_never_exposes_cold_stale_pending_failed_or_foreign_catalogs)"
     filters["workspace_ready"] = "test(workspace_ready) | test(workspace_gate)"
     manifests = [args.manifest] if args.manifest else [Path(__file__).parent.parent / name / "mutations.json" for name in tables]
@@ -74,8 +74,8 @@ def main():
                        CARGO_BUILD_JOBS="4", CARGO_INCREMENTAL="0",
                        CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
-    targets = {name: ["--test", name + "_corpus"] for name in tables}
-    targets["turn_lifecycle"] = ["--lib", "--test", "turn_lifecycle_corpus", "--test", "notification_dispatch_corpus"]
+    targets = {name: ["--test", "integration"] for name in tables}
+    targets["turn_lifecycle"] = ["--lib", "--test", "integration"]
     targets["submit_gates"].append("--lib")
     targets["workspace_ready"] = ["--lib"]
     results = []

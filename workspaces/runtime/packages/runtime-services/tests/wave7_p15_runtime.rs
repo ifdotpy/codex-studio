@@ -1,9 +1,6 @@
 //! P15 uses Python-written records and the real Python oracle via the canonical fixture.
-#[path = "wave7_p15_support/fixtures.rs"]
-mod fixtures;
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::monitor_runtime_fixtures as fixtures;
+use crate::prepared_python_support;
 
 use base64::Engine;
 use serde_json::{Value, json};
@@ -27,8 +24,7 @@ use studio_runtime_store::{
 };
 use tokio::sync::Notify;
 
-#[path = "wave7_p15_support/mod.rs"]
-mod support;
+use crate::monitor_runtime_support as support;
 use support::Port;
 fn record(store: &RuntimeStore, id: &str) -> Value {
     MonitorsRepository::get(&store.test_reader().expect("read"), id)

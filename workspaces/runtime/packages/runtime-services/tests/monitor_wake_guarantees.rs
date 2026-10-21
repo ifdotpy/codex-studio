@@ -1,6 +1,5 @@
 //! Every decided command outcome has one durable owner wake, across restarts.
-#[path = "monitors/fixtures.rs"]
-mod fixtures;
+use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     monitor_policy::{Operation, ReattachProof},

@@ -1,5 +1,4 @@
-#[path = "../../runtime-services/tests/support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::prepared_python_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
