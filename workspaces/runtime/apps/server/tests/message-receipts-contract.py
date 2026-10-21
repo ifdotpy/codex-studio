@@ -12,6 +12,8 @@ import unittest
 spec = importlib.util.spec_from_file_location('receipt_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 
 

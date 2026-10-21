@@ -15,6 +15,8 @@ spec = importlib.util.spec_from_file_location('roster_contract',
     Path(__file__).with_name('scheduler-roster-cache-cpu-contract.py'))
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 
 

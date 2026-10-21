@@ -25,6 +25,7 @@ isolate_supervisor_environment()
 from http_backend_harness import (
     BackendProcess, HTTPTransportError, assert_stored_data_unavailable, no_write_snapshot,
 )
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 
 
