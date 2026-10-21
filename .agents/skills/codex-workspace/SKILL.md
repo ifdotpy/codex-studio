@@ -39,7 +39,8 @@ before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
 Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-Mac servers default to `layr`. Linux servers support `worktree` only.
+A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
+`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
 
 | Chat mode  | Environment                         | Worker workspace |
 | ---------- | ----------------------------------- | ---------------- |

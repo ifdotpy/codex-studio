@@ -605,6 +605,30 @@ class VmAgents(unittest.TestCase):
             internal = self.runtime.new_lead({'id': str(uuid.uuid4()), 'cwd': str(self.project), 'reuse_empty': False})
             self.assertEqual((internal['workspaceMode'], internal['executionMode']), ('worktree', 'native'))
 
+    def test_a_task_agent_without_a_workspace_mode_runs_on_the_host_on_macos(self):
+        # POST /api/agents without workspaceMode must not select the VM (the Rust runtime and
+        # the request schema default agree). A fresh state has no VM helper, so a layr default
+        # failed every such agent with "The Linux VM helper is unavailable".
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from studio_api.context import ApiContext
+        from studio_api.agents.router import create_router
+        context = ApiContext.for_schema()
+        context.canvas.runtime = self.runtime
+        app = FastAPI()
+        app.include_router(create_router(context))
+        with patch('codex_vm_agents.platform.system', return_value='Darwin'), TestClient(app) as client:
+            response = client.post('/api/agents', json={
+                'id': str(uuid.uuid4()), 'name': 'Task', 'cwd': str(self.project), 'prompt': 'Reply OK'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual((response.json()['workspaceMode'], response.json()['executionMode']),
+                             ('worktree', 'native'))
+            explicit = client.post('/api/agents', json={
+                'id': str(uuid.uuid4()), 'name': 'Task', 'cwd': str(self.project), 'prompt': 'Reply OK',
+                'workspaceMode': 'layr'})
+            self.assertEqual(explicit.status_code, 200, explicit.text)
+            self.assertEqual((explicit.json()['workspaceMode'], explicit.json()['executionMode']), ('layr', 'vm'))
+
     def test_a_task_of_a_layr_lead_gets_a_handoff_folder(self):
         lead = prepare(self.runtime, self.lead())
         worker = prepare(self.runtime, self.worker(lead))
@@ -767,10 +791,10 @@ class VmAgents(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'chat server'):
                 self.runtime.spawn_agents(lead, args, 'vm-remote-rejected')
         with patch('codex_vm_agents.platform.system', return_value='Linux'):
-            self.assertEqual(workspace_mode({}, creation=True), 'worktree')
+            self.assertEqual(workspace_mode({}, lead=True), 'worktree')
             for mode in ('layr', 'image'):
                 with self.assertRaises(ValueError):
-                    workspace_mode({'workspaceMode': mode}, creation=True)
+                    workspace_mode({'workspaceMode': mode}, lead=True)
 
     def test_existing_lead_worker_codex_claude_instructions_keep_exact_bytes(self):
         # Execute the original constructor, not a second copy of the new code.
