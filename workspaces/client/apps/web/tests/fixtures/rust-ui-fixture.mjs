@@ -206,7 +206,7 @@ export async function startRustBackend(
     .filter((entry) => !existsSync(join(entry, "codex")))
     .join(delimiter);
   const diagDir = join(
-    tmpdir(),
+    process.env.RUNNER_TEMP ?? tmpdir(),
     "codex-playwright-radiag",
     "playwright-output",
   );
