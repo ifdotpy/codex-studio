@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import SERVER_SOURCE_ROOT, VM_GUEST_ROOT  # noqa: E402
+from server_test_waits import HANG_GUARD_SECONDS  # noqa: E402
 from codex_host_exec import ServiceError, _service_call, ensure_service, service_build_id  # noqa: E402
 
 # A service from before build hashes: it answers health with the protocol only.
@@ -92,7 +93,7 @@ class Bootstrap(unittest.TestCase):
         return _service_call(self.state, self.token, method, params)
 
     def wait_health(self):
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + HANG_GUARD_SECONDS  # Only guards against a hang.
         while time.monotonic() < deadline:
             try:
                 return self.call("health")
@@ -134,7 +135,7 @@ class Bootstrap(unittest.TestCase):
                 # The process group holds the command children of a legacy fixture too.
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(child.pid, signal.SIGKILL)
-                child.wait(timeout=5)
+                child.wait(timeout=HANG_GUARD_SECONDS)  # A killed group exits; only a hang guard.
             self.log.close()
             self.temp.cleanup()
 
@@ -155,7 +156,8 @@ class Bootstrap(unittest.TestCase):
         new = self.call("health")
         self.assertEqual(new["buildId"], service_build_id())
         self.assertNotEqual(new["pid"], self.health["pid"])
-        self.assertEqual(self.child.wait(timeout=5), 0)
+        # The child waits in this test only guard against a hang.
+        self.assertEqual(self.child.wait(timeout=HANG_GUARD_SECONDS), 0)
         self.assertEqual(lease.read_bytes(), before_lease)
         self.assertEqual((self.state / "host-exec-token").read_bytes(), token)
         # The saved receipt answers the exact retry; the operation keeps its lease.
@@ -194,13 +196,13 @@ class Bootstrap(unittest.TestCase):
     def test_idle_service_without_build_identity_is_replaced(self):
         self.start_legacy()
         self.assertEqual(self.ensure(), "")
-        self.assertEqual(self.child.wait(timeout=5), -signal.SIGTERM)
+        self.assertEqual(self.child.wait(timeout=HANG_GUARD_SECONDS), -signal.SIGTERM)
         self.assertEqual(self.call("health")["buildId"], service_build_id())
 
     @unittest.skipUnless(sys.platform == "darwin", "LOCAL_PEERPID is a macOS socket option")
     def test_service_without_build_identity_keeps_its_running_command(self):
         self.start_legacy("codex_host_exec_server.py", "--command")
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS  # Only guards against a hang.
         while not subprocess.run(["pgrep", "-P", str(self.child.pid)], capture_output=True).stdout:
             self.assertLess(time.monotonic(), deadline)
             time.sleep(0.02)

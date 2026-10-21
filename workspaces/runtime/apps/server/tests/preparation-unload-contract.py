@@ -53,7 +53,8 @@ class PreparationUnload(f.ContextWait):
 
         def notification(_):
             received.set()
-            if not release.wait(3):
+            # The test releases the notification; the wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 return
             self.runtime.notification({'method':'thread/status/changed',
                 'params':{'threadId':self.tid,'status':{'type':'notLoaded'}}},

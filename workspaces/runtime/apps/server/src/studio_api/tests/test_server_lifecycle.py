@@ -57,7 +57,10 @@ class ServerLifecycleTests(unittest.TestCase):
                 server.server.config.timeout_graceful_shutdown = 0.05
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
-                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                # The socket timeout only guards against a hang of the local server.
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_port, timeout=HANG_GUARD_SECONDS,
+                )
                 log_stream = io.StringIO()
                 log_handler = logging.StreamHandler(log_stream)
                 uvicorn_logger = logging.getLogger("uvicorn.error")
@@ -140,7 +143,8 @@ for _ in range(3000):
     for worker in workers: worker.start()
     barrier.wait()
     shutdown.set()
-    for worker in workers: worker.join(timeout=1)
+    # A missed notification never wakes the loop; the join only absorbs load.
+    for worker in workers: worker.join(timeout=10)
     assert not any(worker.is_alive() for worker in workers), 'a loop missed shutdown notification'
     assert not failures, failures
 assert registry_lock.acquisitions == 9000, registry_lock.acquisitions
@@ -150,7 +154,8 @@ print('3000 two-loop registration races passed')
             [sys.executable, "-B", "-c", script],
             capture_output=True,
             text=True,
-            timeout=60,
+            # The 3000 rounds only need a hang guard; a busy machine runs them slowly.
+            timeout=3 * HANG_GUARD_SECONDS,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("3000 two-loop registration races passed", result.stdout)

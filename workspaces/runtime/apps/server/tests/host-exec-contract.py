@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import SERVER_TESTS_ROOT, VM_GUEST_ROOT  # noqa: E402
-from server_test_waits import wait_for_condition  # noqa: E402
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition  # noqa: E402
 
 sys.path.insert(0, str(VM_GUEST_ROOT))
 import codex_host_exec_server
@@ -146,7 +146,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.host.close()
         self.temp.cleanup()
 
-    async def execute(self, operation, script, timeout=5, agent="agent"):
+    # The default command timeout only guards against a hang; timeout tests pass their own.
+    async def execute(self, operation, script, timeout=HANG_GUARD_SECONDS, agent="agent"):
         cwd = self.slots.agents.contexts[agent]["path"]
         return await self.guest.handle(operation, {"agentId": agent, "operationId": operation,
             "argv": [sys.executable, "-c", script], "cwd": cwd, "timeoutSeconds": timeout}, self.emit)
@@ -487,7 +488,9 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((self.host.slot(op) / "lease.json").exists())
 
     async def test_timeout_collects_completed_edits(self):
-        result = await self.execute("timeout", 'import time,pathlib;pathlib.Path("edit").write_text("before timeout");time.sleep(20)', timeout=0.1)
+        # The child must write its edit before the host deadline fires. Python can need
+        # more than 0.1 s to start on a busy machine, so the deadline leaves it 2 s.
+        result = await self.execute("timeout", 'import time,pathlib;pathlib.Path("edit").write_text("before timeout");time.sleep(20)', timeout=2)
         self.assertEqual(result["reason"], "timeout")
         self.assertTrue(result["collected"])
         self.assertEqual((self.line / "edit").read_text(), "before timeout")

@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 isolate_supervisor_environment()
@@ -75,7 +76,8 @@ class MissingThreadContract(unittest.TestCase):
             self.unload('thread/closed')
             native.set_result({'thread': {'id': self.thread}})
             with self.assertRaisesRegex(ValueError, 'earlier agent state'):
-                completion.result(timeout=3)
+                # The wait only guards against a hang; the rejection is already due.
+                completion.result(timeout=HANG_GUARD_SECONDS)
         self.assertNotIn(self.key, self.runtime.loaded)
         self.runtime.prepare(self.runtime.agent(self.key))
         self.assertIn(self.key, self.runtime.loaded)

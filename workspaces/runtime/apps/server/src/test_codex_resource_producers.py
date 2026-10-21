@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
 
+# Every wait for an expected event or step only guards against a hang.
 from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 
@@ -127,7 +128,7 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                 refresh_session_cost(root)
                 publish_voice(root)
 
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(
@@ -199,14 +200,14 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                     codex_session_costs, "_publish_session_cost", side_effect=publish
                 ):
                     self.assertTrue(reader._start_refresh("lead", "lead"))
-                    self.assertTrue(await asyncio.to_thread(compute_started.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(compute_started.wait, HANG_GUARD_SECONDS))
                     self.assertFalse(reader._start_refresh("worker-a", "lead"))
                     release_compute.set()
-                    self.assertTrue(await asyncio.to_thread(both_published.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(both_published.wait, HANG_GUARD_SECONDS))
 
                 received: set[str] = set()
                 while received != {"lead", "worker-a"}:
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     assert event is not None
                     received.update(
                         resource.root.agentId
@@ -273,22 +274,22 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                     codex_session_costs, "_publish_session_cost", side_effect=publish
                 ):
                     self.assertTrue(reader._start_refresh("agent-a", "root-a"))
-                    self.assertTrue(await asyncio.to_thread(first_started.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(first_started.wait, HANG_GUARD_SECONDS))
                     self.assertTrue(reader._start_refresh("agent-b", "root-b"))
                     self.assertEqual(reader.active_refresh_root, "root-a")
                     self.assertEqual(list(reader.refresh_queue), ["root-b"])
                     self.assertEqual(reader.refreshing, {"root-a", "root-b"})
 
                     release_first.set()
-                    self.assertTrue(await asyncio.to_thread(second_started.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(second_started.wait, HANG_GUARD_SECONDS))
                     self.assertEqual(reader.active_refresh_root, "root-b")
                     self.assertEqual(list(reader.refresh_queue), [])
                     release_second.set()
-                    self.assertTrue(await asyncio.to_thread(both_published.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(both_published.wait, HANG_GUARD_SECONDS))
 
                 received: set[str] = set()
                 while received != {"agent-a", "agent-b"}:
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     assert event is not None
                     received.update(
                         resource.root.agentId

@@ -12,6 +12,9 @@ import unittest
 spec = importlib.util.spec_from_file_location('receipt_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 class MessageReceiptsContract(unittest.TestCase):
@@ -32,8 +35,11 @@ class MessageReceiptsContract(unittest.TestCase):
             before = self.receipt_state(db)
         self.assertFalse(any(item['text'] == 'sso done' for item in self.runtime.transcript(agent)['items']))
         with self.runtime.lock, ThreadPoolExecutor(1) as pool:
-            # Reads cannot wait for the unrelated scheduler lock.
-            result = pool.submit(self.runtime.user_delivery_receipts, agent, ['sso', 'unknown']).result(timeout=1)
+            # Reads cannot wait for the unrelated scheduler lock. The lock stays
+            # held for the whole wait, so a read that needs it never returns; the
+            # timeout only guards against that hang.
+            result = pool.submit(self.runtime.user_delivery_receipts, agent, ['sso', 'unknown']).result(
+                timeout=HANG_GUARD_SECONDS)
         self.assertEqual(result, {'agent': agent, 'items': [
             {'id': 'sso', 'status': 'delivered', 'error': None, 'materialized': False}]})
         with self.runtime.db() as db:

@@ -105,7 +105,9 @@ class HistoryLockOrder(unittest.TestCase):
                 self.assertTrue(self.runtime.lock.acquire(timeout=HANG_GUARD_SECONDS),
                                 'History writer admission must leave runtime state accessible')
                 self.runtime.lock.release()
-                analytics = sqlite3.connect(self.runtime.analytics_db_path, timeout=.05)
+                # The history step stays blocked until release, so a writer kept through
+                # it fails; the busy timeout only absorbs load.
+                analytics = sqlite3.connect(self.runtime.analytics_db_path, timeout=HANG_GUARD_SECONDS / 2)
                 try:
                     analytics.execute('BEGIN IMMEDIATE')
                 finally:
@@ -120,7 +122,7 @@ class HistoryLockOrder(unittest.TestCase):
             main.rollback()
             main.close()
             if worker.ident is not None:
-                worker.join(3)
+                worker.join(HANG_GUARD_SECONDS)  # Only guards against a hang.
         budget, rows, usage, checkpoint = self.usage()
         self.assertEqual(captures, ['rollout', 'rollout'])
         self.assertEqual(budget['spent'], 100)

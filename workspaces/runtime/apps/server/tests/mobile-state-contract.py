@@ -143,7 +143,8 @@ class MobileStateHttpContract(unittest.TestCase):
     def request(self, path, headers=None):
         request = urllib.request.Request(self.url + path, headers=headers or {})
         try:
-            response = urllib.request.urlopen(request, timeout=5)
+            # Each request must answer; the timeout only guards against a hang.
+            response = urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS)
         except urllib.error.HTTPError as error:
             response = error
         with response:

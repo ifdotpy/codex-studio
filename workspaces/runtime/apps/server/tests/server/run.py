@@ -83,6 +83,9 @@ RUNTIME_SLICED_SUITES = frozenset({
 })
 DEFAULT_TIMEOUT_SECONDS = 120
 EXPENSIVE_TIMEOUT_SECONDS = 900
+# Seconds the suite process-group supervisor may take to exit after it reported
+# the suite status. It only guards against a hang; a busy machine can delay exit.
+SUPERVISOR_EXIT_HANG_GUARD_SECONDS = 60.0
 TEST_TMP_ROOT = Path(os.environ.get(
     "CODEX_SERVER_TEST_TMP_ROOT", Path.home() / ".cache" / "cs" / "st",
 )).expanduser()
@@ -238,6 +241,12 @@ HEAVY_SUITES = {
         ("signed-in server execution flow; measured 38.16 s", 38.16),
     f"{TESTS_REL}/process-supervisor-contract.py":
         ("supervisor replay wait required by contract; measured 36.05 s", 36.05),
+    f"{SOURCE_REL}/studio_api/sync/resources/test_entity_commit_publisher_realtime.py":
+        ("wall-clock publication cadence; fails when a busy machine stretches its pacing", 3.0),
+    f"{SOURCE_REL}/studio_api/sync/resources/test_entity_commit_publisher_index_realtime.py":
+        ("wall-clock checkpoint scan bound; fails when a busy machine stretches one query; measured 7.50 s", 7.50),
+    f"{SOURCE_REL}/test_codex_peer_link_realtime.py":
+        ("wall-clock peer link transfer bound of 5 s; not measured, it needs studio-peer-link", 5.0),
 }
 if set(HEAVY_SUITES).intersection(AUTOMATED_SUITES):
     raise AssertionError("heavy suites must not also be in AUTOMATED_SUITES")
@@ -409,7 +418,9 @@ def inventory():
             if path.is_file() and not path.is_symlink():
                 relative = path.relative_to(ROOT).as_posix()
                 entries[relative] = (
-                    category(path) if relative in EXPENSIVE_SUITES else "component"
+                    category(path)
+                    if relative in EXPENSIVE_SUITES or relative in HEAVY_SUITES
+                    else "component"
                 )
     return sorted(entries.items())
 
@@ -790,7 +801,7 @@ def _run_process_with_group_supervisor(command, cwd, timeout, environment):
             terminate_group()
             return finish(None, "suite process-group supervisor exited without status")
         returncode = int(payload.decode("ascii"))
-        process.wait(timeout=5)
+        process.wait(timeout=SUPERVISOR_EXIT_HANG_GUARD_SECONDS)
         return finish(returncode, None)
     except BaseException:
         terminate_group()

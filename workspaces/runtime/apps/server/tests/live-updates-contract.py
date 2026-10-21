@@ -21,7 +21,6 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
-import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -128,9 +127,12 @@ class LiveUpdatesContract(unittest.TestCase):
         self.manifest()
         with (self.scripts / ".studio-update.lock").open("a+b") as publisher:
             fcntl.flock(publisher, fcntl.LOCK_EX)
-            began = time.monotonic()
-            self.manager.tick()
-            self.assertLess(time.monotonic() - began, 0.5)
+            # A tick that waits behind the publisher stays blocked until this lock is
+            # released, so the join bound only absorbs load and still fails on that bug.
+            tick = threading.Thread(target=self.manager.tick, daemon=True)
+            tick.start()
+            tick.join(HANG_GUARD_SECONDS / 2)
+            self.assertFalse(tick.is_alive(), "the tick waited for the publisher lock")
             self.assertEqual(self.manager.status()["status"], "waiting")
             self.assertEqual(self.runtime.attempts, 0)
         self.manifest(id="published-2")
@@ -287,9 +289,14 @@ class LiveUpdatesContract(unittest.TestCase):
                 lambda: self.manager.status()["status"] == "applying",
                 "update application start",
             )
-            began = time.monotonic()
-            self.assertEqual(self.manager.status()["status"], "applying")
-            self.assertLess(time.monotonic() - began, 0.1)
+            # Read the status from another thread: a status that needs Runtime.lock or
+            # waits for the applying thread stays blocked until this lock is released.
+            statuses = []
+            reader = threading.Thread(target=lambda: statuses.append(self.manager.status()), daemon=True)
+            reader.start()
+            reader.join(HANG_GUARD_SECONDS / 2)
+            self.assertFalse(reader.is_alive(), "the status read waited for Runtime.lock")
+            self.assertEqual(statuses[0]["status"], "applying")
             self.assertFalse(self.runtime.closed)
             self.assertEqual(self.runtime.mutations, 0)
         wait_for_condition(

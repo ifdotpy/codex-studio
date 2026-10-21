@@ -649,7 +649,8 @@ class ConnectionRecoveryContract(unittest.TestCase):
                 data=json.dumps(body).encode() if body is not None else None,
                 headers={'Content-Type': 'application/json', **(headers or {})})
             try:
-                with urllib.request.urlopen(request, timeout=5) as response:
+                # The timeout only guards against a hang of the local server.
+                with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
                     return response.status, json.loads(response.read())
             except urllib.error.HTTPError as error:
                 try:
@@ -689,7 +690,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
             self.assertNotIn('lastContextRepairCheck', entity)
         finally:
             server.shutdown()
-            thread.join(5)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
             server.server_close()
 

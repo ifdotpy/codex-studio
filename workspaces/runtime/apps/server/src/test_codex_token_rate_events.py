@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
 
+# Every wait for an expected event or step only guards against a hang.
 from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 
@@ -47,7 +48,7 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
                          "inFlight": True, "turnId": "turn-a"}
                 rates.observe(agent, "turn/started", {"turnId": "turn-a"},
                               "account-a", "connection-a", 100.0)
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsInstance(event, ResourceTokenRatesEvent)
                 assert isinstance(event, ResourceTokenRatesEvent)
                 self.assertEqual(event.rates["agent-a"].turnId, "turn-a")
@@ -120,21 +121,21 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
             try:
                 with patch.object(resource_hub, "publish_token_rates", side_effect=delayed_publisher):
                     first.start()
-                    self.assertTrue(await asyncio.to_thread(first_publish_entered.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(first_publish_entered.wait, HANG_GUARD_SECONDS))
                     second.start()
-                    self.assertTrue(await asyncio.to_thread(second_mutation_ready.wait, 1))
+                    self.assertTrue(await asyncio.to_thread(second_mutation_ready.wait, HANG_GUARD_SECONDS))
                     self.assertTrue(rates.lock.acquire(blocking=False))
                     rates.lock.release()
                     release_first_publish.set()
-                    await asyncio.to_thread(first.join, 2)
-                    await asyncio.to_thread(second.join, 2)
+                    await asyncio.to_thread(first.join, HANG_GUARD_SECONDS)
+                    await asyncio.to_thread(second.join, HANG_GUARD_SECONDS)
                     self.assertTrue(
                         await asyncio.to_thread(second_publish_done.wait, HANG_GUARD_SECONDS),
                         "coalesced publication did not publish the newer snapshot",
                     )
                 self.assertEqual(published_outputs, [0, 10])
                 self.assertEqual(lock_free, [True, True])
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsInstance(event, ResourceTokenRatesEvent)
                 assert isinstance(event, ResourceTokenRatesEvent)
                 self.assertEqual(event.rates["agent-a"].outputTokens, 10)

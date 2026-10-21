@@ -61,7 +61,8 @@ class RecoveryServer(fixture.FakeServer):
             self.calls.append((method, params))
             self.read_entered.set()
             if self.read_gate:
-                assert self.read_gate.wait(3)
+                # The test opens the gate; this wait only guards against a hang.
+                assert self.read_gate.wait(HANG_GUARD_SECONDS)
             if self.read_error:
                 raise self.read_error
             result = dict(self.native)
@@ -700,7 +701,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.connection_ids['default'] = 'replacement'
         future = self.runtime.prepare_locked(self.runtime.agent(self.key))
         self.assertIsInstance(future, concurrent.futures.Future)
-        future.result(timeout=3)
+        future.result(timeout=HANG_GUARD_SECONDS)  # Only guards against a hang.
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/resume']), 1)
         self.assertEqual(self.runtime.preparations[self.key]['connectionId'], 'replacement')
 
@@ -772,7 +773,9 @@ class TurnRecoveryContract(unittest.TestCase):
             self.queue_turn_recovery([self.a], force_id=self.key)
             self.queue_turn_recovery([self.a], force_id=self.key)
         self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS))
-        self.assertTrue(self.runtime.lock.acquire(timeout=.2))
+        # A probe that holds Runtime.lock keeps it until the gate opens, so a
+        # few seconds separate it from a busy machine.
+        self.assertTrue(self.runtime.lock.acquire(timeout=5))
         self.runtime.lock.release()
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/read']), 1)
         self.server.read_gate.set()

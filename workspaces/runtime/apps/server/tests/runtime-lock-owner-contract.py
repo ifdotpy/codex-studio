@@ -51,12 +51,13 @@ class RuntimeLockOwnerContract(unittest.TestCase):
         runtime = Runtime.__new__(Runtime)
         runtime.lock = lock
         ready, release = threading.Event(), threading.Event()
-        namespace = {'runtime': runtime, 'ready': ready, 'release': release}
+        namespace = {'runtime': runtime, 'ready': ready, 'release': release,
+                     'HANG_GUARD_SECONDS': HANG_GUARD_SECONDS}
         exec(compile('''def hold_runtime_lock():
     with runtime.lock:
         with runtime.lock:
             ready.set()
-            release.wait(2)
+            release.wait(HANG_GUARD_SECONDS)
 ''', 'codex_lock_owner_fixture.py', 'exec'), namespace)
         thread = threading.Thread(target=namespace['hold_runtime_lock'])
         thread.start()
