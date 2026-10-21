@@ -187,12 +187,18 @@ function freePort() {
     const probe = createServer();
     probe.once("error", reject);
     probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address();
+      const { port } = /** @type {import("node:net").AddressInfo} */ (
+        probe.address()
+      );
       probe.close(() => resolvePort(port));
     });
   });
 }
 
+/**
+ * @param {string} stateDir
+ * @param {{ modelsFile?: string, scriptFile?: string, controlDirectory?: string }} [options]
+ */
 export async function startRustBackend(
   stateDir,
   { modelsFile, scriptFile, controlDirectory } = {},
