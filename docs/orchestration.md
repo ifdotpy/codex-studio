@@ -380,6 +380,16 @@ that exact batch only while its agent, account, connection and settings still ma
 Steer, Compact and Review also retain unknown outcomes after response timeouts.
 Late acknowledgements cannot resume a stopped agent or replace a newer turn.
 
+### Provider session lifetime
+
+1. The stdio child owner waits for process exit independently of stdin writes
+   and stdout journal delivery, including when either lane is blocked.
+2. Exit uses the existing bounded process-group cleanup and reap path, then
+   closes attachment status so the account session settles once.
+3. Known receipts and queued journal entries remain evidence; outstanding
+   requests keep their existing unknown or not-sent outcomes and are not resent.
+4. The account registry can start a new provider generation after session loss.
+
 ### Idle provider sessions
 
 Orchestration settings control [idle session unloading](../workspaces/runtime/packages/runtime-store/src/repositories/orchestration_settings.rs).

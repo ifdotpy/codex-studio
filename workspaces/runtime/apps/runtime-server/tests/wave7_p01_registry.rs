@@ -3638,14 +3638,14 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch() {
+async fn direct_child_sigkill_settles_unknown_without_resend() {
     use std::os::unix::fs::PermissionsExt;
     use tower::ServiceExt;
     if std::env::var_os("STUDIO_W7_P01_DIRECT_CRASH_CHILD").is_none() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "wave7_p01_registry::direct_child_crash_holds_written_turn_without_resending_after_relaunch",
+                "wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_DIRECT_CRASH_CHILD", "1")
@@ -3663,7 +3663,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
         return;
     }
     let fixture = Fixture::new().await;
-    std::fs::write(fixture._root.path().join("crash-first-turn"), "1").unwrap();
+    std::fs::write(fixture._root.path().join("hang-first-turn"), "1").unwrap();
     let launch_observer =
         tokio::net::UnixListener::bind(fixture._root.path().join("launch.sock")).unwrap();
     let turn_observer =
@@ -3726,7 +3726,20 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
     let crash = read_direct_report(&turn_observer).await;
     assert_eq!(crash["count"], 1);
     assert_eq!(crash["request"]["method"], "turn/start");
+    let killed_pid = crash["pid"].as_u64().unwrap();
+    assert!(
+        tokio::process::Command::new("kill")
+            .args(["-KILL", &killed_pid.to_string()])
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
     let second_launch = read_direct_report(&launch_observer).await;
+    assert!(
+        !std::path::Path::new(&format!("/proc/{killed_pid}")).exists(),
+        "the unresponsive provider is reaped before its replacement starts"
+    );
     assert_eq!(
         second_launch["count"], 2,
         "registry replaces crashed provider"
