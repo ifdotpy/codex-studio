@@ -24,8 +24,6 @@ class GuestClient(Protocol):
                timeout: float = 60) -> Iterator[dict[str, Any]]: ...
 
 
-# The host_exec tool actions; the guest broker implements each (vm-guest/host_exec.py).
-ACTIONS = ("execute", "status", "cancel", "list", "release")
 # Environment names of the Mac command (docs/host-exec.md); the Mac service sets them.
 ENV_DERIVED_DATA = "HOST_EXEC_DERIVED_DATA"
 ENV_PACKAGE_CACHE = "HOST_EXEC_PACKAGE_CACHE"
@@ -34,6 +32,8 @@ ENV_ARTIFACTS = "HOST_EXEC_ARTIFACTS"
 ENV_STATE = "HOST_EXEC_STATE"
 # The git tree ID of that state: what `layr rev-parse <state>^{tree}` prints, 40 hex digits.
 ENV_TREE = "HOST_EXEC_TREE"
+# The host_exec tool actions; the guest broker implements each (vm-guest/host_exec.py).
+ACTIONS = ("execute", "status", "cancel", "list", "release")
 
 
 def tool_definition() -> dict[str, Any]:
