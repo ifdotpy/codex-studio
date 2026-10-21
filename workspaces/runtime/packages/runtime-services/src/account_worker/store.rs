@@ -1427,6 +1427,7 @@ pub(super) async fn journal_batch(
         let mut parked = Vec::new();
         let mut deferred = Vec::new();
         let mut deferred_agent = None;
+        let mut refused = Vec::new();
         let mut outbox = PublicationOutbox::default();
         let mut entries = entries.into_iter();
         while let Some(entry) = entries.next() {
@@ -1439,6 +1440,7 @@ pub(super) async fn journal_batch(
                     .map(|(actor, epoch)| (actor.as_str(), *epoch)),
             };
             let mut subject = None;
+            let faults_before = faults.len();
             let applied = crate::diagnostics::measure_runtime_stage(stage, || {
                 agent_fault::isolate(
                     tx,
@@ -1466,7 +1468,18 @@ pub(super) async fn journal_batch(
                     // The worker settles the parked entry below.
                     || Ok(()),
                 )
-            })?;
+            });
+            let applied = match applied {
+                // Backpressure, not a data fault: the entry's savepoint rolled
+                // back, so it and every later entry wait in journal order.
+                Err(error) if stream_capacity_refused(&error) => {
+                    faults.truncate(faults_before);
+                    refused.push(entry);
+                    refused.extend(entries);
+                    break;
+                }
+                applied => applied?,
+            };
             match applied {
                 Ok(Some((updated, effect))) => {
                     next = updated;
@@ -1517,11 +1530,24 @@ pub(super) async fn journal_batch(
             parked,
             deferred,
             deferred_agent,
+            refused,
             settled,
             faults,
         })
     })
     .await
+}
+
+/// A monitor's durable output queue had no room for an output delta (see
+/// `monitor_event_queue`). Its consumer frees room, so the entry is journaled
+/// again later instead of ending the worker.
+fn stream_capacity_refused(error: &WorkerError) -> bool {
+    matches!(
+        error,
+        WorkerError::Notification(
+            crate::notification_dispatch::NotificationDispatchError::StreamCapacity
+        )
+    )
 }
 
 /// Settle a journal entry whose application was rolled back for its agent.
@@ -2341,6 +2367,10 @@ pub(super) struct JournalBatch {
     pub deferred: Vec<JournalEntry>,
     /// The agent of the first deferred entry, an unbound turn completion.
     pub deferred_agent: Option<String>,
+    /// The entry that a full monitor output queue refused, and every entry
+    /// after it, in journal order. None of them is applied or settled; the
+    /// worker journals them again after the queue drains.
+    pub refused: Vec<JournalEntry>,
     pub settled: Option<SettledOutcome>,
     /// Agent-scoped failures this transaction rolled back.
     pub faults: Vec<agent_fault::AgentFault>,

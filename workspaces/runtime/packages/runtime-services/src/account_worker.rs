@@ -68,6 +68,10 @@ const IDLE_STATE_OBSERVED_TABLES: [ObservedTable; 6] = [
 const JOURNAL_BATCH_MAX_EVENTS: usize = 32;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+/// Wall time before the worker journals again the entries that a full monitor
+/// output queue refused. The queue consumer frees room independently of the
+/// worker; provider events wait in the session meanwhile.
+const STREAM_CAPACITY_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
 // A worker can be finishing a serialized provider operation when shutdown is
 // requested. Keep shutdown bounded while allowing ordinary host contention to
 // clear before reporting an unconfirmed stop.
@@ -720,6 +724,8 @@ pub async fn start_account_worker_with_publication_sink(
             .then(|| tokio::time::Instant::now() + STREAM_CADENCE),
         streams,
         deferred: VecDeque::new(),
+        capacity_blocked: VecDeque::new(),
+        capacity_retry_at: None,
         reported_faults: BTreeSet::new(),
         vm_notification_waiters: BTreeMap::new(),
         callbacks: BTreeMap::new(),
@@ -905,6 +911,12 @@ struct Worker {
     /// Journal entries that wait for a reply to bind them, with their VM
     /// source and the agent an unbound completion belongs to.
     deferred: VecDeque<(JournalEntry, Option<VmActorIdentity>, Option<String>)>,
+    /// Journal entries that a full monitor output queue refused, and every
+    /// entry that arrived after them, in journal order. While it is not empty
+    /// the worker reads no provider event, so the journal order holds.
+    capacity_blocked: VecDeque<CapacityBlocked>,
+    /// When `capacity_blocked` is journaled again.
+    capacity_retry_at: Option<tokio::time::Instant>,
     /// Agents whose isolated data fault this worker already logged.
     reported_faults: BTreeSet<String>,
     vm_notification_waiters:
@@ -931,6 +943,15 @@ struct VmActorIdentity {
     actor_id: String,
     epoch: i64,
     incarnation: u64,
+}
+
+/// One journal entry that waits for monitor output queue room, with the
+/// arguments of the journal call that refused it.
+struct CapacityBlocked {
+    entry: JournalEntry,
+    source: Option<VmActorIdentity>,
+    settle: bool,
+    park_unbound: bool,
 }
 
 enum VmForwardedMessage {
@@ -960,6 +981,7 @@ enum ServeSignal {
     IdleStateChanged(Result<(), watch::error::RecvError>),
     IdleSnapshot(Result<idle_unload::IdleSnapshotResult, tokio::task::JoinError>),
     IdleSettingChanged(Result<(), watch::error::RecvError>),
+    CapacityRetry,
 }
 
 struct ActorProviderSession {
@@ -1340,8 +1362,10 @@ impl Worker {
             _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() && self.publication_drain.is_none() => ServeSignal::PublicationRetry,
             done = async { match self.publication_drain.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.publication_drain.is_some() => ServeSignal::PublicationDrained(done),
             _ = tokio::time::sleep_until(self.vm_credential_refresh_at.unwrap_or_else(tokio::time::Instant::now)), if self.vm_credential_refresh_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::VmCredentialRefresh,
-            event = self.events.recv() => ServeSignal::Event(event),
-            vm_event = self.vm_events.recv() => ServeSignal::VmEvent(vm_event),
+            _ = tokio::time::sleep_until(self.capacity_retry_at.unwrap_or_else(tokio::time::Instant::now)), if self.capacity_retry_at.is_some() => ServeSignal::CapacityRetry,
+            // Refused entries keep their journal position: read nothing behind them.
+            event = self.events.recv(), if self.capacity_blocked.is_empty() => ServeSignal::Event(event),
+            vm_event = self.vm_events.recv(), if self.capacity_blocked.is_empty() => ServeSignal::VmEvent(vm_event),
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
             callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
             changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
@@ -1422,6 +1446,10 @@ impl Worker {
                 let _ = self.idle_setting_changes.borrow_and_update();
                 self.idle_setting_changed(tokio::time::Instant::now())
                     .await?;
+            }
+            ServeSignal::CapacityRetry => {
+                self.capacity_retry_at = None;
+                self.journal_capacity_blocked().await?;
             }
         }
         Ok(true)
@@ -2668,6 +2696,16 @@ impl Worker {
         if self.browser_skill_roots.as_ref() == Some(&roots) {
             return Ok(());
         }
+        #[cfg(test)]
+        if self
+            .bridge
+            .faults
+            .hold_browser_skill
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.bridge.faults.browser_skill_held.notify_one();
+            self.bridge.faults.release_browser_skill.notified().await;
+        }
         self.browser_skill_roots = None;
         let operation = format!(
             "browser-skill:{}:{}",
@@ -2675,20 +2713,29 @@ impl Worker {
             uuid::Uuid::new_v4()
         );
         let timeout = crate::browser::BROWSER_SKILL_TIMEOUT;
+        let control = self.control.clone();
+        // The session admits a preparation only after it hands its held journal
+        // frame to this worker, so keep reading events while it waits. Awaiting
+        // it directly waited on this worker itself once 16 events were unread.
         let prepared = self
-            .control
-            .prepare(RequestSpec {
-                id: RequestId::String(operation.clone()),
-                operation_id: OperationId(operation.clone()),
-                method: Method::SkillsExtraRootsSet,
-                params: json!({ "extraRoots": roots }),
-                thread_id: None,
-                lightweight: false,
-                timeout_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
-            })
+            .pump_until(tokio::time::timeout(
+                timeout,
+                control.prepare(RequestSpec {
+                    id: RequestId::String(operation.clone()),
+                    operation_id: OperationId(operation.clone()),
+                    method: Method::SkillsExtraRootsSet,
+                    params: json!({ "extraRoots": roots }),
+                    thread_id: None,
+                    lightweight: false,
+                    timeout_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+                }),
+            ))
             .await;
         let outcome = match prepared {
-            Ok(prepared) => {
+            Err(error) => Err(error),
+            // Not prepared in time: not confirmed, sent again with the next request.
+            Ok(Err(_) | Ok(Err(_))) => Ok(None),
+            Ok(Ok(Ok(prepared))) => {
                 let (reply, response) = tokio::sync::oneshot::channel();
                 self.request_waiters.insert(operation.clone(), reply);
                 let control = self.control.clone();
@@ -2703,7 +2750,6 @@ impl Worker {
                 self.request_waiters.remove(&operation);
                 outcome
             }
-            Err(_unavailable) => Ok(None),
         };
         match outcome {
             Ok(Some(RequestOutcome::Reply {
@@ -3181,6 +3227,15 @@ impl Worker {
                 .as_ref()
                 .is_none_or(|source| source.actor_id != actor_id)
         });
+        self.capacity_blocked.retain(|blocked| {
+            blocked
+                .source
+                .as_ref()
+                .is_none_or(|source| source.actor_id != actor_id)
+        });
+        if self.capacity_blocked.is_empty() {
+            self.capacity_retry_at = None;
+        }
     }
 
     fn has_active_claude_vm_sessions(&self) -> bool {
@@ -3283,12 +3338,26 @@ impl Worker {
     /// `park_unbound` settles an unbound turn completion instead of deferring it.
     async fn journal_batch_with(
         &mut self,
-        entries: Vec<JournalEntry>,
+        mut entries: Vec<JournalEntry>,
         source: Option<&VmActorIdentity>,
         settle: bool,
         outcome: Option<Box<(store::OutcomeStep, Option<RequestId>)>>,
         park_unbound: bool,
     ) -> Result<bool, WorkerError> {
+        // Entries behind a refused one wait behind it; a reply's outcome
+        // still settles now.
+        if !self.capacity_blocked.is_empty() && !entries.is_empty() {
+            self.capacity_blocked
+                .extend(entries.drain(..).map(|entry| CapacityBlocked {
+                    entry,
+                    source: source.cloned(),
+                    settle,
+                    park_unbound,
+                }));
+            if outcome.is_none() {
+                return Ok(false);
+            }
+        }
         let (outcome, outcome_id) = outcome.map(|merged| *merged).unzip();
         let outcome = outcome.map(Box::new);
         #[cfg(test)]
@@ -3351,6 +3420,7 @@ impl Worker {
             parked,
             deferred,
             deferred_agent,
+            refused,
             settled,
             faults,
         } = committed?;
@@ -3367,6 +3437,19 @@ impl Worker {
                 .into_iter()
                 .map(|entry| (entry, source.cloned(), deferred_agent.take())),
         );
+        let had_refused = !refused.is_empty();
+        if had_refused {
+            self.capacity_blocked
+                .extend(refused.into_iter().map(|entry| CapacityBlocked {
+                    entry,
+                    source: source.cloned(),
+                    settle,
+                    park_unbound,
+                }));
+            self.capacity_retry_at = Some(tokio::time::Instant::now() + STREAM_CAPACITY_RETRY);
+            // The consumer frees the room the refused output delta needs.
+            self.bridge.monitor_dispatch_wake().notify_one();
+        }
         #[cfg(test)]
         self.bridge
             .faults
@@ -3418,7 +3501,63 @@ impl Worker {
                 }
             }
         }
-        Ok(committed_any && !had_deferred)
+        Ok(committed_any && !had_deferred && !had_refused)
+    }
+    /// Journal again, in order, the entries a full monitor output queue
+    /// refused. An entry refused again keeps its place ahead of the rest and
+    /// re-arms the retry; provider events stay unread until the queue clears.
+    async fn journal_capacity_blocked(&mut self) -> Result<(), WorkerError> {
+        let mut queue = std::mem::take(&mut self.capacity_blocked);
+        while let Some(CapacityBlocked {
+            entry,
+            source,
+            settle,
+            park_unbound,
+        }) = queue.pop_front()
+        {
+            let mut entries = vec![entry];
+            while entries.len() < JOURNAL_BATCH_MAX_EVENTS
+                && queue.front().is_some_and(|next| {
+                    next.source == source
+                        && next.settle == settle
+                        && next.park_unbound == park_unbound
+                })
+            {
+                if let Some(next) = queue.pop_front() {
+                    entries.push(next.entry);
+                }
+            }
+            // A retired VM actor's entries are dropped, as `retry_deferred` does.
+            if let Some(source) = source.as_ref()
+                && !self
+                    .vm_sessions
+                    .get(&source.actor_id)
+                    .is_some_and(|session| {
+                        session.epoch == source.epoch && session.incarnation == source.incarnation
+                    })
+            {
+                continue;
+            }
+            match self
+                .journal_batch_with(entries, source.as_ref(), settle, None, park_unbound)
+                .await
+            {
+                Err(WorkerError::StaleVmActor) => {
+                    if let Some(source) = source.as_ref() {
+                        self.retire_vm_actor_if_current(source);
+                    }
+                }
+                result => {
+                    result?;
+                }
+            }
+            if !self.capacity_blocked.is_empty() {
+                self.capacity_blocked.extend(queue);
+                return Ok(());
+            }
+        }
+        self.retry_deferred(true, false).await?;
+        self.complete_retained().await
     }
     /// Report a drained batch's committed cursors to their session in one
     /// round trip, in journal order, after the batch's commit.

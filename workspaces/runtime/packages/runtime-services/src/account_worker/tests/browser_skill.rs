@@ -115,3 +115,43 @@ async fn thread_requests_register_the_chrome_skill_until_one_reply_confirms_it()
     browser_turn(&mut peer, &homes, "turn-3").await;
     worker.shutdown().await.unwrap();
 }
+
+/// Bounds a wait that a self-waiting worker never ends; unit: wall time.
+const PROGRESS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Provider notifications sent while the worker is held: more than the
+/// session's 16-slot event lane, so the session holds an undelivered event.
+const FRAMES_PAST_THE_EVENT_LANE: u64 = 18;
+
+/// The session admits a preparation only after it hands its held event to
+/// the worker. The skill registration must keep reading events while it
+/// waits; awaiting the preparation directly made the worker wait on itself.
+#[tokio::test]
+async fn skill_registration_reads_provider_events_while_it_waits_for_admission() {
+    let homes = crate::browser::browser_homes();
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = ready_worker(&peer, &state, &homes).await;
+    let faults = state.bridge.faults.clone();
+    faults
+        .hold_browser_skill
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    state.wake(&worker).await;
+    tokio::time::timeout(PROGRESS_DEADLINE, faults.browser_skill_held.notified())
+        .await
+        .expect("the worker reaches the skill registration");
+    let mut last = 0;
+    for index in 0..FRAMES_PAST_THE_EVENT_LANE {
+        last = peer
+            .frame(json!({"method":"test/barrier","params":{"index":index}}))
+            .await;
+    }
+    faults.release_browser_skill.notify_one();
+    // The registration is admitted, which needs the held event read first.
+    // A self-waiting worker sends no registration: the thread request comes
+    // first after the preparation times out. The reply's contiguous ACK
+    // also covers every held event.
+    skill_roots(&mut peer, &homes, Some(json!({}))).await;
+    assert!(peer.cursor > last, "the reply follows the held events");
+    browser_turn(&mut peer, &homes, "turn-1").await;
+    worker.shutdown().await.unwrap();
+}
