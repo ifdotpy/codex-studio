@@ -245,10 +245,14 @@ class FreshAccount(f.PreAdmission):
     def test_fresh_read_timeout_uses_the_same_deadline(self):
         self.accounts({}, NORMAL)
         (self.root / '.refresh-hang').touch()
-        began = time.monotonic()
         self.turn('fixture input', 'fresh-read-timeout')
-        self.assert_rejected(self.completed())
-        self.assertLess(time.monotonic() - began, 1.8)
+        completed = self.completed()
+        self.assert_rejected(completed)
+        # The bridge measures its own preparation time, so process start and
+        # request round trips on a busy machine do not count. A second deadline
+        # for the fresh read would make it at least twice the budget.
+        self.assertLess(completed['error']['data']['claudePreparationElapsedMs'],
+                        2 * self.preparation_timeout_ms - 100)
         self.assertEqual(self.refreshes(), ['fresh'])
 
     def test_stop_during_fresh_read_never_admits_late_valid_proof(self):
