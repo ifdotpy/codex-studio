@@ -31,7 +31,11 @@ async fn check_input_origin(provider: studio_runtime_providers::ProviderKind, mi
         if mixed {
             let human = input
                 .iter()
-                .find(|item| item["text"] == "Please inspect the report")
+                .find(|item| {
+                    item["text"]
+                        .as_str()
+                        .is_some_and(|text| text.trim_start() == "Please inspect the report")
+                })
                 .unwrap();
             assert_eq!(human["inputOrigin"], "human");
         } else {

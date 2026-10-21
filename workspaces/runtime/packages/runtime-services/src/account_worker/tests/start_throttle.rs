@@ -160,7 +160,17 @@ async fn throttled_starts_wait_and_each_starts_once() {
         } else {
             second.as_str()
         };
-        assert_eq!(input.to_string().matches(id).count(), 1, "{input}");
+        assert_eq!(
+            input
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["text"].as_str())
+                .map(|text| text.matches(id).count())
+                .sum::<usize>(),
+            1,
+            "{input}"
+        );
         waiting.retain(|agent| *agent != second);
         assert!(peer.writes.try_recv().is_err(), "a start exceeded the cap");
         // A larger cap starts the last waiting input at once.

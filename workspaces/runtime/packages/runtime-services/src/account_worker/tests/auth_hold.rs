@@ -242,7 +242,13 @@ async fn starts_once(
 ) {
     let start = start(state, peer, worker, agent).await;
     assert_eq!(
-        start["params"]["input"].to_string().matches(input).count(),
+        start["params"]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .map(|text| text.matches(input).count())
+            .sum::<usize>(),
         1,
         "{start}"
     );

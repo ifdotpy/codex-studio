@@ -414,8 +414,16 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
     assert_eq!(request["params"]["expectedTurnId"], "turn");
     let inputs = request["params"]["input"].as_array().unwrap();
     if provider == "claude" {
+        assert_eq!(
+            inputs.len(),
+            3,
+            "reports, task instructions, then Studio context"
+        );
+        assert_eq!(inputs[0]["inputOrigin"], "studio_event");
+        assert_eq!(inputs[1]["inputOrigin"], "human");
+        assert_eq!(inputs[2]["inputOrigin"], "studio_event");
         for item in inputs {
-            let text = item["text"].as_str().unwrap();
+            let text = item["text"].as_str().unwrap().trim_start();
             // This fixture stamps senderId on its followup. It retains task
             // authority, as do work decisions and the actual user message.
             let expected_origin = if text == TEXT
@@ -579,12 +587,49 @@ async fn thousand_inputs(state: &State) {
         store.transaction_with(move |tx| {
             tx.execute("UPDATE runtime_events SET created=1000 WHERE agent=?1 AND kind='user'",[&agent])?;
             for i in 0..999 {
-                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'work_decision','x','pending',?3,?4)",
-                    rusqlite::params![format!("small-{i:04}"),agent,i as f64,epoch])?;
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'work_decision',?3,'pending',?4,?5)",
+                    rusqlite::params![format!("small-{i:04}"),agent,format!("decision-{i:04}"),i as f64,epoch])?;
             }
             Ok::<_,WorkerError>(())
         }).await
     }).await.unwrap();
+}
+
+/// Overflow remains readable before acknowledgement can mark any event delivered.
+async fn assert_thousand_events_readable(state: &State, text: &str) {
+    assert!(text.len().saturating_sub(TEXT.len()) <= crate::turn_prepare::STUDIO_INPUT_BYTES);
+    let metadata = state
+        .bridge
+        .run(|store| async move {
+            Ok(store
+                .read_async("test/steer/spill", |db| {
+                    db.query_row(
+                        "SELECT record FROM runtime_event_meta WHERE id='small-0000'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(StoreError::from)
+                })
+                .await?)
+        })
+        .await
+        .unwrap();
+    let metadata: Value = serde_json::from_str(&metadata).unwrap();
+    let blob = &metadata["studioInput"];
+    let reference = format!("studio-input:{}", blob["sha256"].as_str().unwrap());
+    assert!(text.contains(&reference));
+    let bytes = crate::payload_blobs::load_blob(state.bridge.store.root(), blob).unwrap();
+    let full = String::from_utf8(bytes).unwrap();
+    assert_eq!(
+        full.matches("[Orchestration event: work_decision]").count(),
+        999
+    );
+    for i in 0..999 {
+        assert!(
+            full.contains(&format!("decision-{i:04}")),
+            "missing event {i}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -594,10 +639,7 @@ async fn one_thousand_small_events_share_one_compiled_busy_submission() {
     let request = steer(&state, &mut peer, &worker).await;
     assert_eq!(request["params"]["clientUserMessageId"], "small-0000");
     let text = request["params"]["input"][0]["text"].as_str().unwrap();
-    assert_eq!(
-        text.matches("[Orchestration event: work_decision]").count(),
-        999
-    );
+    assert_thousand_events_readable(&state, text).await;
     assert!(text.contains(TEXT));
     frame(&mut peer,json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn",
         "item":{"id":"small-0000","type":"userMessage","clientId":"small-0000","delivery":"steer","content":request["params"]["input"]}}})).await;
@@ -625,10 +667,7 @@ async fn one_thousand_small_events_share_one_idle_turn_submission() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let turn = state.start(&mut peer, &worker).await;
     let text = turn["params"]["input"][0]["text"].as_str().unwrap();
-    assert_eq!(
-        text.matches("[Orchestration event: work_decision]").count(),
-        999
-    );
+    assert_thousand_events_readable(&state, text).await;
     peer.accepted(&turn).await;
     let agent = state.agent.clone();
     state
