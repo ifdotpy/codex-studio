@@ -87,6 +87,12 @@ pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, 
 
 /// Read a retained child's launch environment from `KERN_PROCARGS2`, as the
 /// Python supervisor's `process_launch_environment` does on macOS.
+///
+/// The record has no terminator between the environment and the Apple
+/// strings. libSystem clears the first Apple strings during the child's
+/// startup, so the parse is exact for a started child. A read in the first
+/// moments after exec can include Apple strings, and the caller then refuses
+/// the child as unverifiable.
 #[cfg(target_os = "macos")]
 pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
     let raw = studio_runtime_proc_sys::process_arguments(pid, PROCESS_ENVIRONMENT_LIMIT_BYTES)?;
@@ -434,14 +440,19 @@ mod macos_environment_tests {
         assert!(procargs_environment(&truncated).is_err());
     }
 
-    /// Child half of the test below: block until the parent kills it.
+    /// Child half of the test below: report that its startup has finished,
+    /// then block until the parent kills it.
     #[test]
     #[ignore = "runs only as the child of live_child_environment_is_read_exactly"]
     fn environment_probe_child() {
         if std::env::var_os("STUDIO_TEST_A").is_some() {
+            std::io::Write::write_all(&mut std::io::stdout(), PROBE_READY).unwrap();
             std::io::Read::read(&mut std::io::stdin(), &mut [0]).unwrap();
         }
     }
+
+    /// The line that the probe child writes after its startup.
+    const PROBE_READY: &[u8] = b"environment-probe-ready\n";
 
     #[test]
     fn live_child_environment_is_read_exactly() {
@@ -458,9 +469,19 @@ mod macos_environment_tests {
             .env("STUDIO_TEST_A", "1")
             .env("STUDIO_TEST_B", "two words=and equals")
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .spawn()
             .unwrap();
+        // A retained child has finished its startup. Before that, the record
+        // can hold Apple strings directly after the environment with no empty
+        // string between them; libSystem clears the first ones during startup.
+        let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = Vec::new();
+        while line != PROBE_READY {
+            line.clear();
+            let count = std::io::BufRead::read_until(&mut stdout, b'\n', &mut line).unwrap();
+            assert_ne!(count, 0, "the probe child exited before it was ready");
+        }
         let read = read_process_environment(child.id());
         child.kill().unwrap();
         child.wait().unwrap();

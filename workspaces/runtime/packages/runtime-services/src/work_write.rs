@@ -46,7 +46,7 @@ pub fn accepted_revision_is_on_local_main(repository: &str, revision: &str) -> b
     let run_git = |args: &[&str]| {
         crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
             program: OsStr::new("git"),
-            cwd: OsStr::new(repository),
+            git_directory: Some(OsStr::new(repository)),
             args,
             environment: &[],
             input: None,
@@ -86,7 +86,7 @@ pub fn repository_has_origin(repository: &str) -> bool {
 
     crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: OsStr::new("git"),
-        cwd: OsStr::new(repository),
+        git_directory: Some(OsStr::new(repository)),
         args: &["remote"],
         environment: &[],
         input: None,

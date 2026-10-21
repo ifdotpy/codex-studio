@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -185,7 +184,6 @@ async fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
 async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
     use std::os::unix::fs::MetadataExt;
 
-    // A short name keeps the socket path under the macOS 104-byte limit.
     let state = temporary_state("rsup");
     let journal = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&state)
         .expect("supervisor journal opens first");
@@ -300,25 +298,15 @@ async fn supervisor_files_do_not_hide_partial_or_foreign_state() {
     }
 }
 
+/// A random suffix keeps parallel test processes apart. The short prefix keeps
+/// `supervisor.sock` under the macOS 104-byte socket path limit, also below a
+/// long per-user TMPDIR such as /var/folders/<id>/T.
 fn temporary_state(name: &str) -> PathBuf {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-    let root = std::env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let path = root.join(format!(
-        "studio-fresh-state-{name}-{}-{}-{}",
-        std::process::id(),
-        NEXT_ID.fetch_add(1, Ordering::Relaxed),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock is after epoch")
-            .as_nanos()
-    ));
-    if path.exists() {
-        fs::remove_dir_all(&path).expect("stale temporary state directory removes");
-    }
-    fs::create_dir_all(&path).expect("temporary state directory creates");
-    path
+    tempfile::Builder::new()
+        .prefix(&format!("sfs-{name}-"))
+        .tempdir()
+        .expect("temporary state directory creates")
+        .keep()
 }
 
 fn cleanup(path: PathBuf) {

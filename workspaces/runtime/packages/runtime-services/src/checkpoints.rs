@@ -921,7 +921,7 @@ fn git_with_output_limit(
 ) -> Result<(Vec<u8>, bool), CheckpointsError> {
     let output = bounded_child::run(bounded_child::Request {
         program: std::ffi::OsStr::new("git"),
-        cwd: std::ffi::OsStr::new(cwd),
+        git_directory: Some(std::ffi::OsStr::new(cwd)),
         args,
         environment,
         input,

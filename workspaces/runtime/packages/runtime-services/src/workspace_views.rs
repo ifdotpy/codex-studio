@@ -178,7 +178,7 @@ fn run_git_program_timeout(
 ) -> Result<PipeOutput, GitError> {
     bounded_child::run(bounded_child::Request {
         program: program.as_ref(),
-        cwd: std::ffi::OsStr::new(cwd),
+        git_directory: Some(std::ffi::OsStr::new(cwd)),
         args,
         environment: &[],
         input: None,
