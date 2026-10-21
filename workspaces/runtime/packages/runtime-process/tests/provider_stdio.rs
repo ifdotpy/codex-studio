@@ -80,7 +80,7 @@ async fn killed_provider_is_reaped_with_full_journal_and_unobserved_write() {
             tokio::task::yield_now().await;
         }
         let owned_pid = rustix::process::Pid::from_raw(child_pid as i32).expect("owned pid");
-        rustix::process::kill_process(owned_pid, rustix::process::Signal::Kill)
+        rustix::process::kill_process(owned_pid, rustix::process::Signal::KILL)
             .expect("kill fixture");
         // Do not consume the journal or acknowledge the write. Only the owner
         // observing wait() can close status and finish this attachment.
