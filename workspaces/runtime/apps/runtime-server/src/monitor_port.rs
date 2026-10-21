@@ -41,6 +41,9 @@ const MAX_MONITOR_TIMEOUT_WITH_GRACE_MS: u64 = 86_460_000;
 /// Wait after a managed start that could not reach the provider before the
 /// monitor timer offers the same durable start again. Unit: seconds.
 const MONITOR_START_RETRY_SECONDS: u64 = 5;
+/// Wait after the outcome of a detached rule check launch could not be
+/// recorded before its task records the same outcome again. Unit: seconds.
+const RULE_CHECK_SETTLE_RETRY_SECONDS: u64 = 5;
 /// Codex app-server refuses `command/exec/terminate` with this text when no
 /// command with the process ID runs. Owner: the provider protocol.
 const NO_ACTIVE_COMMAND_EXEC: &str = "no active command/exec for process id";
@@ -55,22 +58,24 @@ pub(crate) struct RetainedMonitorPort {
     input_replies: Mutex<BTreeMap<String, InputReply>>,
     /// Monitor IDs whose managed start runs in its own task.
     starts: Mutex<BTreeSet<String>>,
+    /// Monitor IDs whose rule check launch runs in its own task.
+    rule_checks: Arc<Mutex<BTreeSet<String>>>,
     /// Process IDs whose command/exec reply, the exit receipt, this process
     /// still waits for.
     execs: Arc<Mutex<BTreeSet<String>>>,
     this: Weak<Self>,
 }
 
-/// Removes a process ID from the waiting command/exec replies when its
-/// request future ends in any way.
-struct ExecReply {
-    execs: Arc<Mutex<BTreeSet<String>>>,
+/// Removes an ID from its in-flight set when the owning future ends in any
+/// way: a waiting command/exec reply, or a detached rule check launch.
+struct InFlightId {
+    set: Arc<Mutex<BTreeSet<String>>>,
     id: String,
 }
 
-impl Drop for ExecReply {
+impl Drop for InFlightId {
     fn drop(&mut self) {
-        lock(&self.execs).remove(&self.id);
+        lock(&self.set).remove(&self.id);
     }
 }
 
@@ -89,6 +94,7 @@ impl RetainedMonitorPort {
             dispatch_wake: RwLock::new(None),
             input_replies: Mutex::new(BTreeMap::new()),
             starts: Mutex::new(BTreeSet::new()),
+            rule_checks: Arc::new(Mutex::new(BTreeSet::new())),
             execs: Arc::new(Mutex::new(BTreeSet::new())),
             this: this.clone(),
         })
@@ -131,6 +137,65 @@ impl RetainedMonitorPort {
             }
         });
         Ok(())
+    }
+
+    /// Run one rule check launch in its own task and record its outcome there,
+    /// once. command/exec answers only when the process exits, so the monitor
+    /// timer and event callers must not wait for it. While the task runs,
+    /// reconciliation reports the check as submitted, so rule recovery cannot
+    /// settle a launch that is still in progress.
+    fn detach_rule_check<F>(
+        &self,
+        check: &RuleCheck,
+        launch: impl FnOnce(Arc<Self>, RuleCheck) -> F,
+    ) -> CheckSubmission
+    where
+        F: std::future::Future<Output = CheckSubmission> + Send + 'static,
+    {
+        let Some(port) = self.this.upgrade() else {
+            return CheckSubmission::NotSubmitted {
+                error: "The monitor port is unavailable".into(),
+            };
+        };
+        if !lock(&self.rule_checks).insert(check.monitor_id.clone()) {
+            return CheckSubmission::Detached;
+        }
+        // Removes the ID when the task ends in any way, also when it is aborted.
+        let in_flight = InFlightId {
+            set: Arc::clone(&self.rule_checks),
+            id: check.monitor_id.clone(),
+        };
+        let launched = launch(Arc::clone(&port), check.clone());
+        let check = check.clone();
+        tokio::spawn(async move {
+            let _in_flight = in_flight;
+            let submission = launched.await;
+            loop {
+                let settled = match studio_runtime_services::event_write::unix_time() {
+                    Ok(now) => studio_runtime_services::rules_tick::settle_submission(
+                        &port.store,
+                        &check,
+                        &submission,
+                        now,
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
+                    Err(_) => Err("System clock unavailable".to_owned()),
+                };
+                match settled {
+                    Ok(()) => break,
+                    Err(error) => {
+                        eprintln!(
+                            "rule check {} outcome was not recorded: {error}",
+                            check.monitor_id
+                        );
+                        tokio::time::sleep(Duration::from_secs(RULE_CHECK_SETTLE_RETRY_SECONDS))
+                            .await;
+                    }
+                }
+            }
+        });
+        CheckSubmission::Detached
     }
 
     /// Map a written terminate request. While this process waits for the
@@ -636,6 +701,10 @@ impl RetainedMonitorPort {
     }
 
     async fn reconcile_rule_check(&self, check: &RuleCheck) -> CheckReconciliation {
+        // A detached launch task owns this identity and records its outcome.
+        if lock(&self.rule_checks).contains(&check.monitor_id) {
+            return CheckReconciliation::Submitted;
+        }
         let monitor_id = check.monitor_id.clone();
         let loaded: Result<Option<(Value, MonitorSnapshot)>, MonitorError> = self
             .store
@@ -822,8 +891,8 @@ impl MonitorNative for RetainedMonitorPort {
             let _exec_reply =
                 (method == Method::CommandExec && !process_id.is_empty()).then(|| {
                     lock(&self.execs).insert(process_id.clone());
-                    ExecReply {
-                        execs: Arc::clone(&self.execs),
+                    InFlightId {
+                        set: Arc::clone(&self.execs),
                         id: process_id.clone(),
                     }
                 });
@@ -936,13 +1005,15 @@ impl RuleMonitor for RetainedMonitorPort {
         check: &'a RuleCheck,
     ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
         Box::pin(async move {
-            match self.launch_rule_check(check).await {
-                Ok(submission) => submission,
-                Err(error) => match self.fail_unsubmitted_rule_check(check, &error).await {
-                    Some(true) | None => CheckSubmission::NotSubmitted { error },
-                    Some(false) => CheckSubmission::Unknown,
-                },
-            }
+            self.detach_rule_check(check, |port, check| async move {
+                match port.launch_rule_check(&check).await {
+                    Ok(submission) => submission,
+                    Err(error) => match port.fail_unsubmitted_rule_check(&check, &error).await {
+                        Some(true) | None => CheckSubmission::NotSubmitted { error },
+                        Some(false) => CheckSubmission::Unknown,
+                    },
+                }
+            })
         })
     }
     fn reconcile<'a>(
@@ -1632,5 +1703,124 @@ mod tests {
         let expected = studio_runtime_services::monitor_output::log_root(root.path())
             .join(format!("{}.log", check.monitor_id));
         assert_eq!(monitor["log"].as_str(), expected.to_str());
+    }
+
+    async fn seed_in_flight_rule(store: &RuntimeStore, root: &Path) -> RuleCheck {
+        let cwd = root.to_string_lossy().into_owned();
+        let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
+            "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
+        let mut rule = json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,
+            "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
+            "path":null,"event":"worker_completed","command":"sleep 3600","text":"Report.",
+            "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
+            "fingerprint":null,"lastAt":1.0,"lastExitCode":null,"error":null,
+            "lastOutput":"","lastFinished":1.0});
+        let check = RuleSnapshot::from_records(rule.clone(), owner.clone())
+            .expect("rule snapshot")
+            .check();
+        rule["launchIntent"] = serde_json::to_value(&check).expect("launch intent");
+        store
+            .transaction_with(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                RulesRepository::put(tx, &RuleRecord::from_value(rule)?)?;
+                Ok::<(), studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed rule and owner");
+        check
+    }
+
+    async fn saved_rule(store: &RuntimeStore) -> Value {
+        store
+            .read_async("test", |db| RulesRepository::get(db, "rule"))
+            .await
+            .expect("read rule")
+            .expect("rule")
+            .value()
+            .clone()
+    }
+
+    async fn settled_rule(store: &RuntimeStore) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let rule = saved_rule(store).await;
+            if rule["inFlight"] != true || Instant::now() >= deadline {
+                return rule;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 2026-10-21: a rule check ran inside the monitor timer, and command/exec
+    /// answers only when the command exits, so one long rule command held all
+    /// other monitor work. The launch now runs in its own task, which records
+    /// the outcome once.
+    #[tokio::test]
+    async fn a_rule_check_launch_runs_in_its_own_task_and_settles_once() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let check = seed_in_flight_rule(&store, root.path()).await;
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let submission = port.detach_rule_check(&check, |_, _| async move {
+            released.await.expect("release");
+            CheckSubmission::NotSubmitted {
+                error: "The command was not started".into(),
+            }
+        });
+        assert!(matches!(submission, CheckSubmission::Detached));
+        // The same identity in flight is not launched again.
+        let duplicate = port.detach_rule_check(&check, |_, _| async move {
+            panic!("a rule check in flight was launched again")
+        });
+        assert!(matches!(duplicate, CheckSubmission::Detached));
+        // Recovery cannot settle a launch that its task still owns.
+        assert_eq!(
+            port.reconcile_rule_check(&check).await,
+            CheckReconciliation::Submitted
+        );
+        assert_eq!(saved_rule(&store).await["inFlight"], true);
+
+        release.send(()).expect("launch task waits");
+        let settled = settled_rule(&store).await;
+        assert_eq!(settled["inFlight"], false);
+        assert_eq!(settled["error"], "The command was not started");
+        assert!(lock(&port.rule_checks).is_empty());
+        assert_eq!(
+            port.reconcile_rule_check(&check).await,
+            CheckReconciliation::Unknown
+        );
+        // A replay of the recorded outcome changes nothing.
+        studio_runtime_services::rules_tick::settle_submission(
+            &store,
+            &check,
+            &CheckSubmission::NotSubmitted {
+                error: "replayed".into(),
+            },
+            3.0,
+        )
+        .await
+        .expect("replay");
+        assert_eq!(saved_rule(&store).await, settled);
+    }
+
+    /// The production launch returns before its preparation and command, and
+    /// its task records a refusal as the check result.
+    #[tokio::test]
+    async fn a_refused_rule_check_launch_is_recorded_by_its_task() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let check = seed_in_flight_rule(&store, root.path()).await;
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+        let submission = tokio::time::timeout(Duration::from_secs(1), port.launch(&check))
+            .await
+            .expect("the timer does not wait for the launch");
+        assert!(matches!(submission, CheckSubmission::Detached));
+        let settled = settled_rule(&store).await;
+        assert_eq!(settled["inFlight"], false);
+        assert_eq!(
+            settled["error"],
+            "account-worker/monitor-preparation is unavailable"
+        );
     }
 }

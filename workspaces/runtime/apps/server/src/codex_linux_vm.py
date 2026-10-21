@@ -42,6 +42,32 @@ _INITRD_URL = 'https://cloud-images.ubuntu.com/releases/noble/release-20260926/u
 _INITRD_SHA256 = 'f77f65eccd619be537e44a7bb2664048e27f20fc8c8e7d4eeb5cf63d0c8cd213'
 _MAX_FRAME = 2 * 1024 * 1024
 GUEST_REQUEST_ID_MAX_CHARS = 128
+# Guest native provider handle of one agent: this prefix, then the agent ID.
+# Host owner of the format; the Rust runtime mirrors it as PROVIDER_HANDLE_PREFIX
+# in linux_vm_provider.rs, and the guest checks it in vm-guest/layr_agents.py.
+PROVIDER_HANDLE_PREFIX = 'linux-worker:'
+
+
+def provider_handle(agent_id: str) -> str:
+    return PROVIDER_HANDLE_PREFIX + agent_id
+
+
+def _canonical_uuid(value: str) -> bool:
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def is_agent_provider_handle(handle: str) -> bool:
+    """A native handle of one Studio agent, whose ID is a canonical UUID."""
+    return (handle.startswith(PROVIDER_HANDLE_PREFIX)
+            and _canonical_uuid(handle[len(PROVIDER_HANDLE_PREFIX):]))
+
+
+def is_legacy_provider_handle(handle: str) -> bool:
+    """A provider directory without native.json is listed under its UUID name."""
+    return _canonical_uuid(handle)
 
 
 class LinuxVMError(RuntimeError):

@@ -299,6 +299,8 @@ impl RuntimeStore {
             })
             .map_err(E::from)?;
         drop(waiter_registration);
+        self.writer_admissions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let wait = waiting.map_or(std::time::Duration::ZERO, |start| start.elapsed());
         if diagnostics_enabled {
             crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterAdmission {

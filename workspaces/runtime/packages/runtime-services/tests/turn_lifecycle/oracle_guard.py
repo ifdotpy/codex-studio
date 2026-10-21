@@ -134,7 +134,19 @@ class OracleGuard:
         print("guard refused synthetic provider-home content and metadata access")
 
 
+_INSTALLED_GUARD = None
+
+
 def install_guard(*, block_processes=False, allow_loopback=False):
+    # One guard per process, like install_home_guard. An oracle that loads
+    # another oracle module installs twice; a second guard would resolve the
+    # real provider homes through the first guard's patched os.lstat and be
+    # refused. The stricter request wins.
+    global _INSTALLED_GUARD
+    if _INSTALLED_GUARD is not None:
+        _INSTALLED_GUARD.block_processes |= block_processes
+        _INSTALLED_GUARD.allow_loopback &= allow_loopback
+        return _INSTALLED_GUARD
     # Give every oracle process private provider homes and scratch space even
     # when the CI parent intentionally supplies no application environment.
     # Keep nested HTTP fixture sockets within the macOS AF_UNIX path limit.
@@ -180,4 +192,5 @@ def install_guard(*, block_processes=False, allow_loopback=False):
     # CPython emits no audit event for these metadata calls.
     os.stat = lambda path, *a, **kw: guard.metadata(guard.stat, path, *a, **kw)
     os.lstat = lambda path, *a, **kw: guard.metadata(guard.lstat, path, *a, **kw)
+    _INSTALLED_GUARD = guard
     return guard
