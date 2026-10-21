@@ -131,6 +131,11 @@ fn capability_profile_wire_presence_preserves_unrestricted_threads() {
     for thread_id in [Value::Null, json!("saved-thread")] {
         let mut value = baseline();
         value["account"]["provider"] = json!("claude");
+        if thread_id.is_string() {
+            value["catalog"]["source"] = json!("legacy");
+            value["catalog"]["saved_thread_id"] = thread_id.clone();
+            value["catalog"]["saved_digest"] = json!("saved digest");
+        }
         value["actor"]["thread_id"] = thread_id;
         let unrestricted = attempt(plan(&snapshot(&value), "attempt", "ticket"));
         assert!(!unrestricted.params.contains_key("capabilityProfile"));
