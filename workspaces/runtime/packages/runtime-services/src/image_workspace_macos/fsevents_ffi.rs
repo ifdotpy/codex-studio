@@ -207,10 +207,9 @@ unsafe extern "C-unwind" fn collect_fsevents(
     if flags
         .iter()
         .any(|value| value & kFSEventStreamEventFlagHistoryDone != 0)
+        && let Ok(mut done) = collector.history_done.lock()
     {
-        if let Ok(mut done) = collector.history_done.lock() {
-            *done = true;
-            collector.ready.notify_all();
-        }
+        *done = true;
+        collector.ready.notify_all();
     }
 }

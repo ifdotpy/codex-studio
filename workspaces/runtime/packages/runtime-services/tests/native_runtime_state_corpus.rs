@@ -80,11 +80,13 @@ fn rust_reads_the_complete_status_record_written_by_python() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../../apps/server/src");
     let script = manifest.join("tests/native_runtime_state_oracle.py");
-    let root = TempDir::new().expect("isolated Python state root");
+    let temp = TempDir::new().expect("isolated Python state root");
+    // The store refuses a root under any link, such as the macOS `/var`.
+    let root = studio_runtime_store::path_identity::resolve(temp.path()).expect("resolved root");
     let output = Command::new(prepared_python::prepared_python(&source))
         .arg(&script)
         .arg(&source)
-        .arg(root.path())
+        .arg(&root)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()
         .expect("run Python state writer");
@@ -96,7 +98,7 @@ fn rust_reads_the_complete_status_record_written_by_python() {
     let expected: Value = serde_json::from_slice(&output.stdout).expect("Python oracle JSON");
     for (name, record) in expected.as_object().expect("oracle object") {
         let runtime = studio_runtime_services::native_runtime::NativeRuntime::new(
-            root.path().join(name),
+            root.join(name),
             Arc::new(NoProbe),
         )
         .expect("exclusive corpus runtime");
@@ -107,13 +109,13 @@ fn rust_reads_the_complete_status_record_written_by_python() {
         assert_eq!(actual.record(), record, "complete Python state case {name}");
     }
 
-    let state_root = root.path().join("rotation");
+    let state_root = root.join("rotation");
     let native_runtime = studio_runtime_services::native_runtime::NativeRuntime::new(
         &state_root,
         Arc::new(FixtureProbe),
     )
     .expect("exclusive rotation runtime");
-    let candidate = root.path().join("candidate");
+    let candidate = root.join("candidate");
     fs::create_dir(&candidate).expect("candidate directory");
     let executable = candidate.join("codex");
     fs::write(&executable, "version=1.2.3\nfixture only\n").expect("harmless executable fixture");

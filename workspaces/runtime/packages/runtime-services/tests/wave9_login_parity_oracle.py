@@ -132,7 +132,8 @@ def claude_case(root, adding):
 
 
 with tempfile.TemporaryDirectory(prefix="wave9-login-parity-") as temporary:
-    root = Path(temporary)
+    # The resolved root, so that paths stored as written and resolved match.
+    root = Path(temporary).resolve()
     for name in ("codex", "claude-add", "claude-start"):
         (root / name).mkdir()
     codex = codex_case(root / "codex")

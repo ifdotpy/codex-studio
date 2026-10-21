@@ -290,14 +290,16 @@ with an eight-second timeout. `process-wrap` places the command in a POSIX
 process group, so timeout and output-limit termination cover its child
 processes as well. Windows retains direct-child termination and is outside this
 Rust cutover. The command's output is parsed in memory and is never logged.
-On macOS, Rust currently reports the named reason
-`macos-passive-auth-unavailable` and leaves the previous account status
-unchanged when that status is ready. Python can read passive Keychain
-authentication through its Security.framework helper; this slice does not add
-platform APIs or a new dependency to reproduce that behavior. When the stored
-status is not ready, Rust runs the native `claude auth status --json` once
-(through the same cache), as Python does after its passive reader. A stale
-error, for example from one torn read, then cannot outlive a valid login.
+Every host, macOS included, reads the Claude status with the native
+`claude auth status --json` through the shared auth cache. Python reads
+passive Keychain authentication through its Security.framework helper; Rust
+adds no platform API for it. The Claude Code CLI reads its own Keychain entry
+without a dialog, as the Python fallback after a Keychain refusal relies on.
+The cache probes again only after a credential file change or an invalidation.
+A ready status therefore does not outlive a sign-out or an account change that
+rewrites `.credentials.json` or `.claude.json`, and a stale error, for example
+from one torn read, cannot outlive a valid login. A change in the Keychain alone
+is seen after the next provider auth error invalidates the cached status.
 
 ## Provider session task
 

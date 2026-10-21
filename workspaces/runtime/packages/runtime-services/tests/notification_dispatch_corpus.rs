@@ -1178,6 +1178,10 @@ async fn corpus(full: bool, runtime_effects: bool) {
     let scratch = std::env::var_os("NOTIFICATION_CORPUS_STATE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
+    // Rust and Python resolve some stored paths and keep others as written; a
+    // resolved root (the macOS temporary folder is under `/var`) gives both one form.
+    let scratch =
+        studio_runtime_store::path_identity::resolve(&scratch).expect("resolved corpus root");
     let root = State(scratch.join(format!(
         "notification-corpus-{}-{}",
         std::process::id(),

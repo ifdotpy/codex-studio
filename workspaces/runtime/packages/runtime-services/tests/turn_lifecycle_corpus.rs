@@ -584,7 +584,11 @@ async fn python_written_turn_lifecycle_corpus() {
         cases.retain(|c| c["id"].as_str().is_some_and(|id| id.contains(&filter)));
     }
     assert!(!cases.is_empty(), "case filter matched nothing");
-    let root = State(std::env::temp_dir().join(format!("turn-corpus-{}", std::process::id())));
+    // Rust and Python resolve some stored paths and keep others as written; a
+    // resolved root (the macOS temporary folder is under `/var`) gives both one form.
+    let scratch = studio_runtime_store::path_identity::resolve(&std::env::temp_dir())
+        .expect("resolved temporary folder");
+    let root = State(scratch.join(format!("turn-corpus-{}", std::process::id())));
     fs::create_dir(&root.0).expect("unique corpus state");
     let mut oracle = Oracle::new(&root.0);
     let registry: Value = serde_json::from_str(include_str!("turn_lifecycle/deviations.json"))

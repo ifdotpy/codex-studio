@@ -332,8 +332,11 @@ fn make_git_project(root: &Path) {
 #[test]
 fn lifecycle_writes_state_rows_through_failure_retry_archive_and_plain_folder_refusal() {
     let fixture = tempfile::tempdir().expect("fixture");
-    let root = fixture.path().join("project");
-    let rust_store = fixture.path().join("rust-store");
+    // The lifecycle keys and records a repository by its canonical root; the
+    // macOS temporary folder is under the `/var` link.
+    let base = studio_runtime_store::path_identity::resolve(fixture.path()).expect("resolved root");
+    let root = base.join("project");
+    let rust_store = base.join("rust-store");
     make_git_project(&root);
     fs::create_dir_all(&rust_store).expect("Rust store");
 

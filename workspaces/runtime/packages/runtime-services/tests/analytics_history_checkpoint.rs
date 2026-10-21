@@ -45,7 +45,22 @@ fn fixture() -> (tempfile::TempDir, Value) {
     });
     let copy = fixture_directory();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(root.path().join(name), copy.path().join(name)).expect("clone template");
+        // A copy of the main file alone loses the rows that are still in the
+        // write-ahead log when the seed store closes in the background.
+        let target = copy.path().join(name);
+        rusqlite::Connection::open(root.path().join(name))
+            .expect("open template")
+            .execute(
+                "VACUUM INTO ?1",
+                [target.to_str().expect("UTF-8 fixture path")],
+            )
+            .expect("clone template");
+        // VACUUM INTO writes a rollback-journal file; the store requires WAL.
+        let mode: String = rusqlite::Connection::open(&target)
+            .expect("open clone")
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+            .expect("clone uses WAL");
+        assert_eq!(mode, "wal");
     }
     (copy, agent.clone())
 }
@@ -711,7 +726,11 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
         json!({"type":"token_usage_record","timestamp":6.5,"payload":{"thread_id":"thread","turn_id":"earlier-turn","response_id":"delayed-earlier-response","usage":{"total_tokens":4},"thread_token_usage":{"total_tokens":19}}}),
         json!({"type":"event_msg","timestamp":7,"payload":{"type":"task_complete","turn_id":"current-turn","status":"completed"}}),
     ];
-    let sessions = root.path().join("sessions");
+    // Discovery gives the collector the resolved path; the replay below uses
+    // the same form, as production does.
+    let sessions = studio_runtime_store::path_identity::resolve(root.path())
+        .expect("resolved fixture root")
+        .join("sessions");
     fs::create_dir_all(&sessions).expect("fixture sessions");
     let path = file(&sessions, &lines, b"");
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1359,8 +1378,10 @@ async fn unavailable_account_profile_records_checkpoint_instead_of_read_error() 
 
 #[test]
 fn discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules() {
-    let root = tempfile::tempdir().expect("profile");
-    let sessions = root.path().join("sessions");
+    let temp = tempfile::tempdir().expect("profile");
+    // Discovery reports resolved paths; the macOS temporary folder is under `/var`.
+    let root = studio_runtime_store::path_identity::resolve(temp.path()).expect("resolved profile");
+    let sessions = root.join("sessions");
     fs::create_dir(&sessions).expect("sessions");
     let cancel = AtomicBool::new(false);
     let first = sessions.join("rollout-fixture-first.jsonl");
@@ -1378,33 +1399,29 @@ fn discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules()
     std::os::unix::fs::symlink(outside.path(), sessions.join("linked-directory")).expect("symlink");
     let mut round = history::DiscoveryRound::default();
     assert_eq!(
-        round
-            .resolve(root.path(), "first", &cancel)
-            .expect("first scan"),
+        round.resolve(&root, "first", &cancel).expect("first scan"),
         RolloutPath::Found(first)
     );
     fs::write(sessions.join("rollout-duplicate-second.jsonl"), "duplicate")
         .expect("new file after round snapshot");
     assert_eq!(
         round
-            .resolve(root.path(), "second", &cancel)
+            .resolve(&root, "second", &cancel)
             .expect("shared scan"),
         RolloutPath::Found(second)
     );
     assert_eq!(
-        round
-            .resolve(root.path(), "third", &cancel)
-            .expect("prefix"),
+        round.resolve(&root, "third", &cancel).expect("prefix"),
         RolloutPath::Missing
     );
     assert_eq!(
         round
-            .resolve(root.path(), "hidden", &cancel)
+            .resolve(&root, "hidden", &cancel)
             .expect("symlink directory"),
         RolloutPath::Missing
     );
     assert_eq!(
-        history::discover(root.path(), "second", &cancel).expect("next round"),
+        history::discover(&root, "second", &cancel).expect("next round"),
         RolloutPath::Ambiguous
     );
 }

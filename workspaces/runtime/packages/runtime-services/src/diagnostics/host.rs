@@ -134,23 +134,30 @@ fn build_process_tree(root_pid: u32, rows: &BTreeMap<u32, ProcessSnapshot>) -> O
     if !rows.contains_key(&root_pid) {
         return None;
     }
-    let mut descendants = BTreeSet::from([root_pid]);
-    loop {
-        let children = rows
-            .iter()
-            .filter_map(|(pid, row)| {
-                (descendants.contains(&row.parent)
-                    && !descendants.contains(pid)
-                    && *pid != row.parent)
-                    .then_some(*pid)
-            })
-            .take(PROCESS_LIMIT.saturating_sub(descendants.len()))
-            .collect::<Vec<_>>();
-        let before = descendants.len();
-        descendants.extend(children);
-        if descendants.len() == before || descendants.len() >= PROCESS_LIMIT {
-            break;
+    // One index of children by parent: a level costs its own rows, so a deep
+    // tree is not a scan of every row per level.
+    let mut children = BTreeMap::<u32, Vec<u32>>::new();
+    for (pid, row) in rows {
+        if *pid != row.parent {
+            children.entry(row.parent).or_default().push(*pid);
         }
+    }
+    // Level by level from the root; each level is taken in PID order up to the limit.
+    let mut descendants = BTreeSet::from([root_pid]);
+    let mut level = vec![root_pid];
+    while !level.is_empty() && descendants.len() < PROCESS_LIMIT {
+        let mut next = level
+            .iter()
+            .filter_map(|parent| children.get(parent))
+            .flatten()
+            .copied()
+            .filter(|pid| !descendants.contains(pid))
+            .collect::<Vec<_>>();
+        next.sort_unstable();
+        next.dedup();
+        next.truncate(PROCESS_LIMIT - descendants.len());
+        descendants.extend(next.iter().copied());
+        level = next;
     }
 
     let mut processes = Vec::with_capacity(descendants.len());
@@ -252,6 +259,36 @@ mod tests {
         );
         assert_eq!(tree["processes"][0]["pid"], 1);
         assert_eq!(tree["rootPid"], 1);
+    }
+
+    /// The tree holds every descendant at any depth, once, and no process
+    /// outside it, including one that names itself as its parent.
+    #[test]
+    fn process_tree_holds_descendants_only() {
+        let row = |parent| ProcessSnapshot {
+            parent,
+            rss_bytes: 1024,
+            cpu_percent: 0.0,
+            kind: "other",
+        };
+        let rows = BTreeMap::from([
+            (1, row(0)),
+            (10, row(1)),
+            (11, row(10)),
+            (12, row(11)),
+            (5, row(10)),
+            (20, row(2)),
+            (2, row(2)),
+        ]);
+        let tree = build_process_tree(10, &rows).expect("root exists");
+        let pids = tree["processes"]
+            .as_array()
+            .expect("process rows")
+            .iter()
+            .map(|row| row["pid"].as_u64().expect("pid"))
+            .collect::<Vec<_>>();
+        assert_eq!(pids.len(), 4, "each process once: {pids:?}");
+        assert_eq!(BTreeSet::from_iter(pids), BTreeSet::from([5, 10, 11, 12]));
     }
 
     #[cfg(target_os = "linux")]

@@ -359,7 +359,10 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
     };
     assert_eq!(value["gitOrigin"], "example.invalid/team/repo");
     assert_eq!(value["matches"], json!([]));
-    let browse = local_root.path().join("remote-browse");
+    // A browsed folder is reported in its resolved form.
+    let browse = studio_runtime_store::path_identity::resolve(local_root.path())
+        .expect("resolved fixture root")
+        .join("remote-browse");
     std::fs::create_dir_all(browse.join("visible-child")).expect("fake remote child");
     std::fs::create_dir_all(browse.join(".hidden-child")).expect("fake hidden child");
     let folders = local

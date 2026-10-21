@@ -1923,7 +1923,8 @@ mod tests {
     }
 
     fn wait_for_build(manager: &WorkspaceLifecycle<FakeBackend>, root: &Path) -> Value {
-        let key = repo_key(root);
+        // The worker key is that of the canonical root, as production builds it.
+        let key = repo_key(&root_path(root).expect("canonical root"));
         assert!(
             wait_for_build_worker(&key, ASYNC_PROVISION_TIMEOUT),
             "base build worker completion; status={:?}",
@@ -2110,7 +2111,10 @@ mod tests {
         );
         assert_eq!(wait_for_build(&manager, &project)["state"], "failed");
         assert_eq!(
-            read_json(&manager.base_state(&repo_key(&project))).expect("failed row")["error"],
+            read_json(
+                &manager.base_state(&repo_key(&root_path(&project).expect("canonical project")))
+            )
+            .expect("failed row")["error"],
             "Workspace backend failed: Base tree copy failed: Workspace backend failed: failpoint:copy"
         );
         assert_eq!(
@@ -2136,11 +2140,14 @@ mod tests {
             "building"
         );
         assert_eq!(wait_for_build(&manager, &project)["state"], "ready");
-        let base = read_json(&manager.base_state(&repo_key(&project))).expect("base row");
+        let base = read_json(
+            &manager.base_state(&repo_key(&root_path(&project).expect("canonical project"))),
+        )
+        .expect("base row");
         let version = base["version"].as_str().expect("base version");
         let copied_file = store
             .join("bases")
-            .join(repo_key(&project))
+            .join(repo_key(&root_path(&project).expect("canonical project")))
             .join("versions")
             .join(version)
             .join("repo/file.txt");

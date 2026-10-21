@@ -271,7 +271,8 @@ impl OwnedChild {
                 .then_some(sequence),
         )
     }
-    #[cfg(test)]
+    /// Only the Linux deadline tests hold the append lock.
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn lock_append_for_test(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
         lock(&self.append_lock)
     }
