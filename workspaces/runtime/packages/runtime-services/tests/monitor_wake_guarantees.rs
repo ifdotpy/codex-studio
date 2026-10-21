@@ -335,37 +335,72 @@ async fn unstarted_cancel_and_start_refusal_each_wake_once() {
 }
 
 #[tokio::test]
-async fn restart_of_unsubmitted_start_or_approval_decides_loss_without_relaunch() {
+async fn restart_preserves_unsubmitted_start_and_pending_approval() {
     for status in ["starting", "approval"] {
         let (root, store, id, _operation) = fixture().await;
         let selected = id.clone();
         store.transaction(move |tx| {
-            tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status',?1),'$.operation') WHERE id=?2", (status, selected))?;
+            tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status',?1),'$.operation') WHERE id=?2", (status, &selected))?;
+            if status == "approval" {
+                studio_runtime_store::Table::new(tx).put(&studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?)?;
+            }
             Ok(())
-        }).await.expect("persist a start whose preparation was interrupted");
+        }).await.expect("persist unsubmitted intent");
         drop(store);
         let store = RuntimeStore::open(Some(&root.path().join("wake")))
             .await
-            .expect("restart backend");
-        monitor_runtime::recover_on_startup(&store, 2001.0)
-            .await
-            .expect("stage recovery");
-        assert_eq!(fixtures::events(&store), json!([]));
-        assert!(
-            studio_runtime_services::monitor_driver::pending_start_ids(&store)
+            .expect("restart");
+        for now in [2001.0, 2002.0] {
+            monitor_runtime::recover_on_startup(&store, now)
                 .await
-                .expect("pending starts")
-                .is_empty(),
-            "restart never launches the command again"
-        );
-        monitor_runtime::settle_reattach(&store, &id, "no_operation", 2002.0)
+                .expect("preserve first-start intent");
+            assert_eq!(fixtures::events(&store), json!([]));
+            let starts = studio_runtime_services::monitor_driver::pending_start_ids(&store)
+                .await
+                .expect("pending starts");
+            assert_eq!(
+                starts,
+                if status == "starting" {
+                    vec![id.clone()]
+                } else {
+                    vec![]
+                }
+            );
+            let record = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
+                .expect("read")
+                .expect("monitor");
+            assert_eq!(record.value()["status"], status);
+            assert!(record.value().get("reattachRecovery").is_none());
+            if status == "approval" {
+                let request =
+                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(
+                        &store.test_reader().expect("reader"),
+                    )
+                    .get(&"approval".to_owned())
+                    .expect("request read")
+                    .expect("approval");
+                assert_eq!(request.value()["status"], "pending");
+            }
+        }
+        if status == "approval" {
+            let answer = monitor_runtime::answer_approval(
+                &store,
+                "approval",
+                &json!({"decision":"accept"}),
+                2003.0,
+                true,
+            )
             .await
-            .expect("decide unsubmitted loss");
-        assert_wake(&store, "lost");
-        monitor_runtime::recover_on_startup(&store, 2003.0)
-            .await
-            .expect("repeat restart");
-        assert_wake(&store, "lost");
+            .expect("answer survives restart")
+            .expect("monitor approval");
+            assert!(answer.accepted);
+            assert_eq!(
+                studio_runtime_services::monitor_driver::pending_start_ids(&store)
+                    .await
+                    .expect("approved start"),
+                vec![id]
+            );
+        }
     }
 }
 

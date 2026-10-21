@@ -77,6 +77,16 @@ struct OperationObservation {
     response: Option<CommandResponse>,
 }
 #[derive(Deserialize)]
+struct ConfigurationResponse {
+    config: serde_json::Map<String, Value>,
+}
+#[derive(Deserialize)]
+struct ConfigurationFailure {
+    #[serde(default)]
+    code: Option<i64>,
+    message: String,
+}
+#[derive(Deserialize)]
 struct CommandTiming {
     created: f64,
     timeout_ms: u64,
@@ -542,8 +552,12 @@ impl RetainedMonitorPort {
             .unwrap_or("default");
         let scope = self
             .session
-            .current_scope(account)
-            .ok_or(MonitorError::Unavailable("provider-session/monitor-start"))?;
+            .ensure_session(account)
+            .await
+            .map_err(|source| MonitorError::ProviderRequest {
+                stage: "monitor session preparation",
+                source,
+            })?;
         let operation = Operation {
             agent: agent_id.to_owned(),
             epoch: i64::try_from(epoch)
@@ -579,23 +593,39 @@ impl RetainedMonitorPort {
                 true,
             )
             .await
-            .map_err(|_| MonitorError::Unavailable("provider-session/monitor-config"))?;
-        if config_receipt.operation != format!("monitor-config:{id}:{epoch}")
-            || config_receipt.scope != scope
-        {
-            return Err(MonitorError::Unavailable("provider-session/monitor-config"));
-        }
+            .map_err(|source| MonitorError::ProviderRequest {
+                stage: "monitor configuration request",
+                source,
+            })?;
+        // AccountSessionRuntime owns receipt identity/scope validation, including
+        // committed replays from the original connection after a restart.
         let config = match config_receipt.result {
             Some(ProviderResponse::Reply(value))
                 if config_receipt.certainty == RequestCertainty::Written =>
             {
-                value["config"].clone()
+                let response: ConfigurationResponse =
+                    serde_json::from_value(value).map_err(|_| {
+                        MonitorError::Refused("Monitor configuration response is invalid")
+                    })?;
+                Value::Object(response.config)
             }
-            _ => return Err(MonitorError::Unavailable("provider-session/monitor-config")),
+            Some(ProviderResponse::Rejected(value)) => {
+                let failure: ConfigurationFailure =
+                    serde_json::from_value(value).map_err(|_| {
+                        MonitorError::Refused("Provider configuration rejection is invalid")
+                    })?;
+                return Err(MonitorError::ConfigurationRejected {
+                    code: failure.code,
+                    message: failure.message,
+                });
+            }
+            _ => {
+                return Err(MonitorError::ConfigurationReceipt {
+                    certainty: config_receipt.certainty,
+                    reason: config_receipt.not_sent_reason,
+                });
+            }
         };
-        if !config.is_object() {
-            return Err(MonitorError::Refused("Monitor configuration is invalid"));
-        }
         let command = monitor["command"]
             .as_str()
             .ok_or(MonitorError::Refused("Monitor command is invalid"))?;
@@ -1689,6 +1719,199 @@ mod tests {
             "outputEventCount":0,"outputEventIds":[],"status":"starting","created":1.0,
             "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,
             "log":log.to_string_lossy(),"cancelRequested":false})
+    }
+
+    #[tokio::test]
+    async fn monitor_completion_waiting_owner_starts_queued_command_without_a_live_turn() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        struct Session {
+            live: AtomicBool,
+            executions: AtomicUsize,
+            replay_config: bool,
+            refuse_config_once: AtomicBool,
+        }
+        impl AccountSessionPort for Session {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                self.live.load(Ordering::SeqCst).then(|| {
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.into(),
+                        connection: "new".into(),
+                        generation: 2,
+                    }
+                })
+            }
+            fn ensure_session<'a>(
+                &'a self,
+                account: &'a str,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                studio_runtime_services::account_session_runtime::ConnectionScope,
+            > {
+                Box::pin(async move {
+                    self.live.store(true, Ordering::SeqCst);
+                    Ok(self.current_scope(account).expect("ensured session"))
+                })
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    let mut scope = request.expected_scope.expect("scope");
+                    let (result, replayed) = match request.method {
+                        Method::ConfigRead => {
+                            if self.refuse_config_once.swap(false, Ordering::SeqCst) {
+                                return Err(AccountSessionError::Refused(
+                                    "temporary fixture config refusal",
+                                ));
+                            }
+                            if self.replay_config {
+                                scope.connection = "old".into();
+                                scope.generation = 1;
+                            }
+                            (
+                                json!({"config":{"allow_login_shell":false}}),
+                                self.replay_config,
+                            )
+                        }
+                        Method::CommandExec => {
+                            self.executions.fetch_add(1, Ordering::SeqCst);
+                            (json!({"exitCode":0}), false)
+                        }
+                        _ => panic!("unexpected monitor preparation request"),
+                    };
+                    Ok(SessionReceipt {
+                        scope,
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result: Some(ProviderResponse::Reply(result)),
+                        not_sent_reason: None,
+                        replayed,
+                    })
+                })
+            }
+            fn callback_barrier<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+                _: Instant,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<'a, ()>
+            {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        for restart in [false, true] {
+            for replay_config in [false, true] {
+                let root = tempfile::tempdir().expect("root");
+                let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+                let now = studio_runtime_services::event_write::unix_time().expect("clock");
+                let mut owner = owner(root.path(), true);
+                owner["status"] = json!("waiting_on_monitor");
+                owner["threadId"] = json!("thread");
+                owner["turnId"] = Value::Null;
+                owner["inFlight"] = json!(false);
+                owner["sandbox"] = json!({"type":"readOnly"});
+                owner["model"] = json!("gpt-6");
+                owner["isLead"] = json!(false);
+                owner["role"] = json!("implementer");
+                let mut watch = starting_watch(root.path(), "watch");
+                watch["created"] = json!(now);
+                store
+                    .transaction(move |tx| {
+                        AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                        studio_runtime_store::Table::new(tx)
+                            .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                        Ok::<_, studio_runtime_store::StoreError>(())
+                    })
+                    .await
+                    .expect("queue start after owner turn completed");
+                let store = if restart {
+                    drop(store);
+                    let reopened = RuntimeStore::open(Some(root.path())).await.expect("reopen");
+                    studio_runtime_services::monitor_runtime::recover_on_startup(&reopened, now)
+                        .await
+                        .expect("recover queued intent");
+                    reopened
+                } else {
+                    store
+                };
+                let store = Arc::new(store);
+                let session = Arc::new(Session {
+                    live: AtomicBool::new(false),
+                    executions: AtomicUsize::new(0),
+                    replay_config,
+                    refuse_config_once: AtomicBool::new(replay_config),
+                });
+                let port = RetainedMonitorPort::new(
+                    Arc::clone(&store),
+                    Arc::clone(&session) as Arc<dyn AccountSessionPort>,
+                );
+                port.set_preparation_resources(Arc::new(studio_runtime_services::account_worker::preparation::PreparationResources::bundled(root.path().to_string_lossy().into(),studio_runtime_services::model_catalog::ModelCatalogService::new()).expect("resources")));
+                if replay_config {
+                    let error = port
+                        .dispatch_monitor_start("watch", now)
+                        .await
+                        .expect_err("temporary config refusal");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("Refused(\"temporary fixture config refusal\")"),
+                        "{error}"
+                    );
+                    assert_eq!(session.executions.load(Ordering::SeqCst), 0);
+                }
+                let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+                    Arc::clone(&store),
+                    Arc::clone(&port) as Arc<dyn MonitorPort>,
+                    Arc::new(Notify::new()),
+                );
+                port.set_dispatch_wake(runtime.dispatch_wake_handle());
+                let wake = runtime.dispatch_wake_handle();
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let changed = wake.notified();
+                        tokio::pin!(changed);
+                        changed.as_mut().enable();
+                        runtime.tick(now).await.expect("dispatch queued start");
+                        let record = store
+                            .read_async("test/queued-start", |tx| {
+                                MonitorsRepository::get(tx, "watch")
+                            })
+                            .await
+                            .expect("read")
+                            .expect("watch");
+                        if record.value()["status"] == "completed" {
+                            break;
+                        }
+                        changed.await;
+                    }
+                })
+                .await
+                .expect("queued monitor starts and finishes without a turn");
+                runtime.tick(now + 1.0).await.expect("replay dispatch");
+                assert_eq!(
+                    session.executions.load(Ordering::SeqCst),
+                    1,
+                    "restart={restart} replay={replay_config}"
+                );
+                let agent = store
+                    .read_async("test/owner-turn", |tx| {
+                        AgentRepository::get(tx, &"owner".into())
+                    })
+                    .await
+                    .expect("read")
+                    .expect("owner");
+                assert_eq!(agent.value()["turnId"], Value::Null);
+            }
+        }
     }
 
     #[tokio::test]

@@ -96,7 +96,9 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
                 value["status"] = json!("uncertain");
                 value["answerError"] = json!("Server restarted before answer delivery completed");
             }
-            Some("pending") if !retained_question(tx, &value)? => {
+            Some("pending")
+                if !retained_question(tx, &value)? && !retained_monitor_approval(tx, &value)? =>
+            {
                 value["status"] = json!("expired");
             }
             _ => continue,
@@ -139,6 +141,35 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
         count += 1;
     }
     Ok(count)
+}
+
+/// Monitor approvals are local durable intents, independent of a native turn.
+fn retained_monitor_approval(tx: &Transaction<'_>, request: &Value) -> Result<bool, MonitorError> {
+    #[derive(Deserialize)]
+    enum Method {
+        #[serde(rename = "monitor/approve")]
+        Approve,
+    }
+    #[derive(Deserialize)]
+    struct Params {
+        #[serde(rename = "monitorId")]
+        monitor_id: String,
+    }
+    #[derive(Deserialize)]
+    struct Approval {
+        #[serde(rename = "method")]
+        _method: Method,
+        agent: String,
+        params: Params,
+    }
+    let Ok(approval) = serde_json::from_value::<Approval>(request.clone()) else {
+        return Ok(false);
+    };
+    match snapshot(tx, &approval.params.monitor_id) {
+        Ok((monitor, _)) => Ok(monitor.retains_approval_for(&approval.agent)),
+        Err(error) if startup_store_failure(&error) => Err(error),
+        Err(_) => Ok(false),
+    }
 }
 
 fn retained_question(tx: &Transaction<'_>, request: &Value) -> Result<bool, MonitorError> {
@@ -204,7 +235,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
     for id in &ids {
         let result = (|| {
             let (snapshot, actor) = snapshot(tx, id)?;
-            if snapshot.recovering() {
+            if snapshot.recovering() || snapshot.unsubmitted_intent() {
                 return Ok(false);
             }
             let decision = policy::restart_recovery(&snapshot, now)?;
