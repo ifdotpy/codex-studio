@@ -62,8 +62,9 @@ are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
 The comprehensive tier first builds its Rust HTTP fixture with
-`cargo build --locked --release -p studio-runtime-server`, so a clean worktree
-needs no manual step. Hosted CI builds it once per run, and the server jobs use
+`cargo build --locked --release -p studio-runtime-server`, and it builds the
+renderer bundle that the native client crate embeds before Rust nextest, so a
+clean worktree needs no manual step. Hosted CI builds it once per run, and the server jobs use
 that binary. The short local tier does not require that fixture binary;
 building a native desktop package does not produce it.
 
