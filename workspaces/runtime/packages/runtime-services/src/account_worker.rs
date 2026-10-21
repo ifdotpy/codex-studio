@@ -663,7 +663,7 @@ pub async fn start_account_worker_with_publication_sink(
                 .read_async("runtime-services/account_worker_read", move |connection| {
                     Ok::<_, WorkerError>((
                         store::recover_effects(connection, &read_account)?,
-                        callback_record::any_unsent(connection, &read_account)?,
+                        callback_record::any_unsent(connection, &read_account, generation.0)?,
                     ))
                 })
                 .await?;
@@ -745,6 +745,7 @@ pub async fn start_account_worker_with_publication_sink(
         vm_notification_waiters: BTreeMap::new(),
         callbacks: BTreeMap::new(),
         managed_callback_cursors: BTreeSet::new(),
+        callback_parked: BTreeSet::new(),
         callback_scan,
         retained_requests: retained
             .into_iter()
@@ -851,6 +852,9 @@ type ManagedCallbackResult = (
     Option<i64>,
     Option<Frame>,
 );
+/// A callback record held by this worker: provider generation, emitting VM
+/// actor, its epoch and the journal cursor.
+type CallbackKey = (u64, Option<String>, Option<i64>, u64);
 type CallbackCursor = (
     studio_runtime_process::EventCursor,
     Option<String>,
@@ -947,7 +951,9 @@ struct Worker {
     closing: bool,
     callbacks: BTreeMap<String, CallbackCursor>,
     /// Accepted callback records this worker already started or answers.
-    managed_callback_cursors: BTreeSet<(Option<String>, Option<i64>, u64)>,
+    managed_callback_cursors: BTreeSet<CallbackKey>,
+    /// Records of VM actors that have not reattached since this worker started.
+    callback_parked: BTreeSet<CallbackKey>,
     /// Whether accepted callback records may be waiting to start: set by a
     /// journal commit, a finished handler or answer, and at startup.
     callback_scan: bool,
@@ -2529,6 +2535,7 @@ impl Worker {
             });
             self.vm_event_forwarders.push(forwarder);
             let had_active_claude_vm = self.has_active_claude_vm_sessions();
+            self.callback_scan = true;
             self.vm_sessions.insert(
                 request.agent_id.clone(),
                 ActorProviderSession {
@@ -3030,6 +3037,7 @@ impl Worker {
                     return Err(WorkerError::CallbackUnknown);
                 }
                 self.managed_callback_cursors.remove(&(
+                    self.generation.0,
                     callback_actor.clone(),
                     callback_epoch,
                     cursor.0,
@@ -3736,12 +3744,14 @@ impl Worker {
         }
         let account = self.account.clone();
         // Records this worker already holds are skipped below.
-        let limit = free + self.managed_callback_cursors.len();
+        let limit = free + self.managed_callback_cursors.len() + self.callback_parked.len();
+        let generation = self.generation.0;
         let accepted = self
             .db("callbacks_unsent", move |store| async move {
-                callback_record::unsent(&store, &account, limit).await
+                callback_record::unsent(&store, &account, generation, limit).await
             })
             .await?;
+        self.callback_parked.clear();
         for record in accepted {
             if free == 0 {
                 self.callback_scan = true;
@@ -3755,10 +3765,8 @@ impl Worker {
                         .map(|session| session.launch_request.epoch)
                 })
             });
-            if self
-                .managed_callback_cursors
-                .contains(&(actor.clone(), epoch, record.cursor))
-            {
+            let key = (record.generation, actor.clone(), epoch, record.cursor);
+            if self.managed_callback_cursors.contains(&key) {
                 continue;
             }
             let origin = Generation(record.generation);
@@ -3772,27 +3780,66 @@ impl Worker {
                     .load(std::sync::atomic::Ordering::SeqCst);
             #[cfg(not(test))]
             let exited = origin != self.generation;
-            // The provider process that sent this request has exited, or the
-            // VM actor that relayed it is gone: no answer can reach its sender.
-            if exited
-                || actor.as_ref().is_some_and(|actor| {
-                    !self
-                        .vm_sessions
-                        .get(actor)
-                        .is_some_and(|session| Some(session.epoch) == epoch)
-                })
-            {
+            // The provider process that sent this request has exited: no
+            // answer can reach its sender.
+            if exited {
                 self.abandon_callback(cursor, origin, actor.as_deref(), epoch)
                     .await?;
                 continue;
             }
+            if let Some(actor_id) = actor.as_deref() {
+                match self.vm_sessions.get(actor_id).map(|session| session.epoch) {
+                    Some(session_epoch) if Some(session_epoch) == epoch => {}
+                    Some(_) => {
+                        // A newer epoch of the actor runs; this one is gone.
+                        self.abandon_callback(cursor, origin, actor.as_deref(), epoch)
+                            .await?;
+                        continue;
+                    }
+                    None => {
+                        // The guest provider outlives a server restart and the
+                        // actor reattaches later. Wait for it unless its row
+                        // proves this epoch is gone.
+                        if self.vm_actor_epoch_gone(actor_id, epoch).await? {
+                            self.abandon_callback(cursor, origin, actor.as_deref(), epoch)
+                                .await?;
+                        } else {
+                            self.callback_parked.insert(key);
+                        }
+                        continue;
+                    }
+                }
+            }
             let frame = record.frame()?;
-            self.managed_callback_cursors
-                .insert((actor.clone(), epoch, record.cursor));
+            self.managed_callback_cursors.insert(key);
             self.start_callback(cursor, origin, frame, actor, epoch)?;
             free -= 1;
         }
         Ok(())
+    }
+    /// Whether the stored VM actor row proves `epoch` of `actor` is gone.
+    async fn vm_actor_epoch_gone(
+        &mut self,
+        actor: &str,
+        epoch: Option<i64>,
+    ) -> Result<bool, WorkerError> {
+        let (Some(epoch), account) = (epoch, self.account.clone()) else {
+            return Ok(false);
+        };
+        let actor = actor.to_owned();
+        let matches = self
+            .db("callback_actor_epoch", move |store| async move {
+                store
+                    .read_async("runtime-services/account_worker_read", move |connection| {
+                        crate::linux_vm_provider::vm_actor_matches(
+                            connection, &actor, epoch, &account, None,
+                        )
+                        .map_err(WorkerError::from)
+                    })
+                    .await
+            })
+            .await?;
+        Ok(!matches)
     }
     /// Run the handler of one accepted request, or queue its fixed answer.
     fn start_callback(
@@ -3966,8 +4013,12 @@ impl Worker {
             callback_record::retire_async(&store, &operation).await
         })
         .await?;
-        self.managed_callback_cursors
-            .remove(&(actor_id.map(str::to_owned), actor_epoch, cursor.0));
+        self.managed_callback_cursors.remove(&(
+            origin.0,
+            actor_id.map(str::to_owned),
+            actor_epoch,
+            cursor.0,
+        ));
         eprintln!(
             "provider request settled without an answer; account={} generation={} cursor={} current-generation={} outcome=provider-generation-ended",
             self.account, origin.0, cursor.0, self.generation.0
@@ -4097,8 +4148,12 @@ impl Worker {
             })
             .await?;
         if answered {
-            self.managed_callback_cursors
-                .remove(&(actor_id.clone(), actor_epoch, cursor.0));
+            self.managed_callback_cursors.remove(&(
+                origin.0,
+                actor_id.clone(),
+                actor_epoch,
+                cursor.0,
+            ));
             return Ok(());
         }
         // A callback may have waited while this actor was resolving. Fence it

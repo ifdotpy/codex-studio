@@ -194,41 +194,50 @@ fn unsent_prefix(account: &str) -> String {
 const UNSENT_SQL: &str = "SELECT a.result FROM runtime_operation_receipts a \
     WHERE a.id>=?1 AND a.id<?2 AND a.signature='accepted' \
     AND json_extract(a.result,'$.account')=?3 \
-    AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts s \
-        WHERE s.id=substr(a.id,1,length(a.id)-8)||'submitted') ";
+    AND (json_extract(a.result,'$.generation')<?4 OR NOT EXISTS (SELECT 1 FROM runtime_operation_receipts s \
+        WHERE s.id=substr(a.id,1,length(a.id)-8)||'submitted')) ";
 
-/// Whether any accepted record of the account has no submitted answer.
+/// Whether any accepted record of the account needs the worker: its answer
+/// was not submitted, or its generation ended and it only waits to be retired.
 pub(super) fn any_unsent(
     connection: &rusqlite::Connection,
     account: &str,
+    generation: u64,
 ) -> Result<bool, WorkerError> {
     let prefix = unsent_prefix(account);
     Ok(connection.query_row(
         &format!("SELECT EXISTS({UNSENT_SQL})"),
-        params![prefix, format!("{prefix}~"), account],
+        params![
+            prefix,
+            format!("{prefix}~"),
+            account,
+            i64::try_from(generation).map_err(|_| WorkerError::TaskFailed)?
+        ],
         |row| row.get(0),
     )?)
 }
 
 /// Up to `limit` accepted records of the account whose answer was not
-/// submitted, oldest first.
+/// submitted, or whose generation ended before `generation`, oldest first.
 pub(super) async fn unsent(
     store: &RuntimeStore,
     account: &str,
+    generation: u64,
     limit: usize,
 ) -> Result<Vec<Accepted>, WorkerError> {
     let account = account.to_owned();
     let limit = i64::try_from(limit).map_err(|_| WorkerError::TaskFailed)?;
+    let generation = i64::try_from(generation).map_err(|_| WorkerError::TaskFailed)?;
     store
         .read_async("runtime-services/account_worker_read", move |connection| {
             let prefix = unsent_prefix(&account);
             let mut statement = connection.prepare_cached(&format!(
                 "{UNSENT_SQL} ORDER BY json_extract(a.result,'$.generation'), \
-                 json_extract(a.result,'$.cursor') LIMIT ?4"
+                 json_extract(a.result,'$.cursor') LIMIT ?5"
             ))?;
             let rows = statement
                 .query_map(
-                    params![prefix, format!("{prefix}~"), account, limit],
+                    params![prefix, format!("{prefix}~"), account, generation, limit],
                     |row| row.get::<_, String>(0),
                 )?
                 .collect::<Result<Vec<_>, _>>()?;

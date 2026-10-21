@@ -896,12 +896,31 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::)",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--test",
+            "provider_session_task",
+            "-E",
+            "test(active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts)",
           ],
         ],
       ],
       options: {
-        selector: "account_worker::tests::callback_handoff",
+        selector:
+          "account_worker::tests::callback_handoff, callback_head_of_line and the session callback lane",
         reason:
           "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work.",
       },

@@ -81,7 +81,7 @@ async fn checkpoint(state: &State, generation: u64) -> u64 {
 }
 
 async fn unsent(state: &State) -> Vec<callback_record::Accepted> {
-    callback_record::unsent(&state.bridge.store, "default", 100)
+    callback_record::unsent(&state.bridge.store, "default", GENERATION, 100)
         .await
         .expect("unsent records")
 }
@@ -502,6 +502,185 @@ async fn a_burst_beyond_the_callback_limits_is_answered_once_each() {
     );
     callbacks_retired(&state).await;
     worker_barrier(&worker).await;
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+/// Accept a record directly, as an earlier worker run would have left it.
+async fn leave_record(
+    state: &State,
+    generation: u64,
+    cursor: u64,
+    frame: &Value,
+    actor: Option<(&str, i64)>,
+) {
+    let entry = entry(generation, cursor, frame);
+    let scope = actor.map_or_else(
+        || SCOPE.to_owned(),
+        |(actor, _)| format!("default:vm:{actor}"),
+    );
+    let actor = actor.map(|(actor, epoch)| (actor.to_owned(), epoch));
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let actor = actor
+                .as_ref()
+                .map(|(actor, epoch)| (actor.as_str(), *epoch));
+            callback_record::accept(tx, "default", &scope, actor, &entry)
+        })
+        .await
+        .expect("leave record");
+}
+
+/// The same cursor in two provider generations names two records. The held
+/// handler of the current one must survive the retirement of the old one.
+#[tokio::test]
+async fn the_same_cursor_in_two_generations_is_two_records() {
+    let state = State::new().await;
+    let tool_call = json!({"id":"current","method":"item/tool/call","params":{}});
+    journal(&state, vec![entry(2, 1, &tool_call)]).await;
+    let gate = Arc::clone(&state.bridge.faults.callback_gate)
+        .write_owned()
+        .await;
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    // An ended generation's record with the same cursor appears next to it.
+    leave_record(&state, 1, 1, &request("old"), None).await;
+    peer.frame(tool_call).await;
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while phases(&state, 1, 1)[0] {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the scan retires the old record");
+    drop(gate);
+    let answer = peer.next_write().await;
+    assert_eq!(answer.value["id"], "current");
+    answer
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .unwrap();
+    callbacks_retired(&state).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "each request is answered once"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+/// An uncertain answer of an ended generation is retired, never sent.
+#[tokio::test]
+async fn a_submitted_record_of_an_ended_generation_is_retired_unsent() {
+    let state = State::new().await;
+    let mut peer = Peer::identity("default", 6, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    leave_record(&state, 5, 1, &request("old"), None).await;
+    let operation = callback_record::operation(SCOPE, 5, 1);
+    assert!(
+        !callback_record::admit(&state.bridge.store, &operation)
+            .await
+            .unwrap()
+    );
+    peer.frame(request("current")).await;
+    let answer = peer.next_write().await;
+    assert_eq!(answer.value["id"], "current");
+    answer
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .unwrap();
+    callbacks_retired(&state).await;
+    assert_eq!(phases(&state, 5, 1), [false, false, false]);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the ended generation's answer is not sent"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+/// The guest provider outlives a server restart and its actor reattaches, so
+/// a record of a VM actor waits at startup; only a stale epoch retires it.
+#[tokio::test]
+async fn a_vm_actor_record_waits_for_reattach_and_a_stale_epoch_retires() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let mut record =
+                        AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    record.extra.insert("executionMode".into(), json!("vm"));
+                    AgentRepository::put(tx, &record)
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let actor = state.agent.as_str();
+    leave_record(
+        &state,
+        GENERATION,
+        1,
+        &request("live"),
+        Some((actor, state.epoch)),
+    )
+    .await;
+    leave_record(
+        &state,
+        GENERATION,
+        2,
+        &request("stale"),
+        Some((actor, state.epoch + 1)),
+    )
+    .await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    // Any journaled request runs a scan.
+    peer.frame(request("host")).await;
+    let host = peer.next_write().await;
+    assert_eq!(host.value["id"], "host");
+    host.receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .unwrap();
+    worker_barrier(&worker).await;
+    let scope = format!("default:vm:{actor}");
+    let phases_of = |cursor| {
+        let reader = state.bridge.store.test_reader().unwrap();
+        let id = format!(
+            "account-worker:{}:accepted",
+            callback_record::operation(&scope, GENERATION, cursor)
+        );
+        reader
+            .query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        phases_of(1),
+        1,
+        "the record of the current epoch waits for its actor"
+    );
+    assert_eq!(phases_of(2), 0, "the record of a stale epoch is retired");
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
