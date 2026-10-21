@@ -42,6 +42,10 @@ WAIT_SECONDS = 30
 
 class QuietRuntime(Runtime):
     def put(self, db, table, record, **kwargs):
+        if table == "agents":
+            row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
+            if row:
+                self.__dict__.setdefault("_restart_monitor_owners", {}).setdefault(record["id"], json.loads(row[0]))
         if (table == "monitors" and record.get("status") == "lost"
                 and record.get("error") == "Server restarted. Command outcome unknown; not rerun."):
             previous = json.loads(db.execute(
@@ -54,15 +58,36 @@ class QuietRuntime(Runtime):
             owner = self.agent(previous["agent"], db)
             record.clear()
             record.update(previous)
-            record["reattachRecovery"] = {
-                "accountKey": owner.get("accountKey", "default"),
-                "epoch": owner["epoch"], "status": "running", "startedAt": NOW,
-            }
+            # Never-submitted starts remain launch intents; pending approvals
+            # remain approvals. Only a committed operation requires reconciliation.
+            if previous.get("operation") is not None or previous["status"] == "running":
+                record["reattachRecovery"] = {
+                    "accountKey": owner.get("accountKey", "default"),
+                    "epoch": owner["epoch"], "status": "running", "startedAt": NOW,
+                }
+        if (table == "requests" and record.get("method") == "monitor/approve"
+                and record.get("status") == "expired"):
+            row = db.execute("SELECT record FROM runtime_monitors WHERE id=?",
+                             (record["params"]["monitorId"],)).fetchone()
+            monitor = json.loads(row[0]) if row else None
+            # Rust recovers local requests before generation/turn reconciliation.
+            # Read the independently captured persisted owner, not Python's later
+            # paused generation-hold projection.
+            owner = self.__dict__.get("_restart_monitor_owners", {}).get(record["agent"])
+            # A retained local approval must remain answerable after restart.
+            if (monitor and monitor["status"] == "approval" and not monitor.get("operation")
+                    and owner and owner.get("autoWake") and not owner.get("deletedAt")
+                    and owner["epoch"] == monitor["epoch"] and owner["id"] == monitor["agent"]):
+                previous = json.loads(db.execute(
+                    "SELECT record FROM runtime_requests WHERE id=?", (record["id"],)
+                ).fetchone()[0])
+                assert previous["status"] == "pending"
+                record.clear()
+                record.update(previous)
         return super().put(db, table, record, **kwargs)
 
     def _monitor_exit_event(self, db, owner, monitor, *, wake=True):
-        if (monitor.get("reattachRecovery", {}).get("status") == "running"
-                and monitor["status"] in {"running", "starting", "approval"}):
+        if monitor["status"] in {"running", "starting", "approval"}:
             # #373: no provisional monitor_exit or event projection. Exact exits
             # and decided loss are independently witnessed by monitor_wake_guarantees.
             return

@@ -174,7 +174,8 @@ Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
 including failure, cancellation, and process loss. After a backend restart,
-commands stay active while their retained process is reconciled: a survivor
+never-submitted queued commands remain first-start intents and pending approvals
+remain pending. Submitted commands stay active while their retained process is reconciled: a survivor
 wakes on its real exit, and a failed reattach wakes with an unknown-outcome
 notice. Explicit stops, deletion, and epoch changes remain authoritative.
 Native provider exec sessions are unobservable to Studio; an agent must collect

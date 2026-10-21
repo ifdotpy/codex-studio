@@ -59,6 +59,18 @@ pub enum MonitorError {
     Refused(&'static str),
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
+    #[error("{stage}: {source:?}")]
+    ProviderRequest {
+        stage: &'static str,
+        source: crate::account_session_runtime::AccountSessionError,
+    },
+    #[error("Provider rejected monitor configuration ({code:?}): {message}")]
+    ConfigurationRejected { code: Option<i64>, message: String },
+    #[error("Monitor configuration receipt is {certainty:?} ({reason:?})")]
+    ConfigurationReceipt {
+        certainty: crate::account_session_runtime::RequestCertainty,
+        reason: Option<crate::account_session_runtime::NotSentReason>,
+    },
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
     #[error(transparent)]
@@ -287,6 +299,20 @@ impl MonitorSnapshot {
             self.fields.status,
             MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
         )
+    }
+    /// No command bytes can be sent until reserve_start commits an operation.
+    pub(crate) fn unsubmitted_intent(&self) -> bool {
+        self.fields.operation.is_none()
+            && matches!(
+                self.fields.status,
+                MonitorStatus::Starting | MonitorStatus::Approval
+            )
+    }
+    pub(crate) fn retains_approval_for(&self, agent: &str) -> bool {
+        self.fields.status == MonitorStatus::Approval
+            && self.unsubmitted_intent()
+            && self.agent() == agent
+            && self.active_owner()
     }
     pub(crate) fn recovering(&self) -> bool {
         self.fields
