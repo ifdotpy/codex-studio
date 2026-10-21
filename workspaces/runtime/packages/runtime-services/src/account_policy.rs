@@ -385,6 +385,11 @@ pub(crate) fn project_registry_value(
         let Some(mut row) = accounts_by_key.get(key).and_then(Value::as_object).cloned() else {
             continue;
         };
+        let provider = studio_runtime_providers::ProviderKind::of_field(row.get("provider"))
+            .map_err(|_| {
+                registry_error(&format!("/accounts/{key}/provider"), "unknown provider")
+            })?;
+        row.insert("provider".into(), Value::String(provider.key().into()));
         known.insert(key.clone());
         row.retain(|field, _| !field.starts_with('_'));
         if row.get("deleted") == Some(&Value::Bool(true)) {

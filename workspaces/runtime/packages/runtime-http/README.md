@@ -303,6 +303,12 @@ The registry is `<state>/accounts/registry.json` (`codex_accounts.py:84-117`), v
 
 When the registry is absent, Python creates an implicit default Codex row from `<CODEX_HOME>/auth.json` (`codex_accounts.py:102-117`). The file is capped at 1 MiB; missing auth produces `signedOut`, while malformed, unreadable, or oversized auth produces status `error` and the safe message `Cannot read this Codex profile's authentication` (`codex_accounts.py:25-81`). Account identity, email, and plan are display metadata; JWT claims are not verified. Credentials are never response fields. A malformed or unsupported registry makes Python startup exit before the ready line: `AccountStore` raises `RuntimeError("Cannot read the account registry")` (`codex_accounts.py:92-100`), and `codex_canvas.py:740-751` exits non-zero. When the registry is absent, Rust startup writes the same default registry (`account_driver::create_default_registry`, checked byte for byte against Python by `runtime-services/tests/default_registry_oracle.rs`) and never replaces an existing entry. Rust loads and validates the persisted registry at startup, refusing invalid input before readiness with its file path and JSON pointer. Its one known product-writable refusal, a lone surrogate in a label, is guarded by schema-tightening's read-only pre-cutover state check and lead-owned one-time upgrade. Neither route behavior nor this Rust slice initiates a provider request.
 
+The public account projection always includes the required `provider` field,
+including archived accounts and mutation responses. It resolves legacy stored
+rows through [`ProviderKind`](../runtime-providers/src/provider_kind.rs) without
+rewriting the registry. This lets account cards select their provider's turn
+start limits.
+
 ### `GET /api/limits`
 
 Python registers this operation in `studio_api/accounts/router.py:214-228`. The response fields are `accountKey`, `data`, `at`, `error`, `readAt`, `checkedAt`, and `processedAt` (`studio_api/accounts/models.py:362-369`). `data` is an extensible provider result; known fields include `accountId`, `rateLimits`, `rateLimitsByLimitId`, `rateLimitResetCredits`, `ordinaryUsageAllowed`, `status`, `signedIn`, and `source` (`models.py:347-359`). Rate-limit buckets contain primary/secondary usage windows, optional individual limits and reset-credit data (`models.py:302-344`). The Rust route preserves the persisted JSON snapshot, including timestamps and provider-specific fields.

@@ -229,6 +229,8 @@ class AccountStore:
     def _public(self, row):
         import copy
         result = {k: v for k, v in row.items() if not k.startswith('_')}
+        if row.get('provider') is None:
+            result['provider'] = 'codex'
         if 'claudeOptions' in result:
             result['claudeOptions'] = copy.deepcopy(result['claudeOptions'])
         if self.allow_native_auth_attempt(row['id'], result):
@@ -311,7 +313,7 @@ class AccountStore:
                 "accounts": [self._public(row)
                              for key in keys if not (row := self._row(key)).get("deleted")
                              and (not key.startswith("login-") or row.get("status") == "ready")],
-                "archivedAccounts": [{k: v for k, v in row.items() if not k.startswith("_")}
+                "archivedAccounts": [self._public(row)
                                      for key in keys if (row := self._row(key)).get("deleted")],
                 "defaultAccountKey": self.data["defaultAccountKey"],
                 "logins": logins,

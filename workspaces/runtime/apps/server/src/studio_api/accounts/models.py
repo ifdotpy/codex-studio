@@ -90,7 +90,7 @@ class Account(ContractModel):
     home: str
     label: str
     source: str
-    provider: Literal["codex", "claude"] | None = None
+    provider: Literal["codex", "claude"]
     accountId: str | None = None
     email: str | None = None
     plan: str | None = None

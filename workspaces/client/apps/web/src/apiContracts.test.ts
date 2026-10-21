@@ -229,3 +229,10 @@ it("serializes a typed query scalar using OpenAPI's default encoding", () => {
     "cursor=next%20page",
   );
 });
+
+// Every public account identifies its provider, including legacy Codex profiles.
+type AccountProvider =
+  paths["/api/accounts"]["get"]["responses"][200]["content"]["application/json"]["accounts"][number]["provider"];
+const accountProvider: Assert<Equal<AccountProvider, "codex" | "claude">> =
+  true;
+void accountProvider;

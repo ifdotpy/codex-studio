@@ -109,12 +109,12 @@ class AccountsModelTests(unittest.TestCase):
     def test_account_contract_keeps_unknown_public_fields(self) -> None:
         good = Account.model_validate({
             "id": "default", "home": "/profiles/default", "label": "Codex",
-            "source": "Codex CLI", "status": "ready", "accountId": "acct-1",
+            "source": "Codex CLI", "provider": "codex", "status": "ready", "accountId": "acct-1",
         })
         self.assertEqual(good.accountId, "acct-1")
         extended = Account.model_validate({
             "id": "default", "home": "/profiles/default", "label": "Codex",
-            "source": "Codex CLI", "status": "ready", "providerMetadata": {"kind": "legacy"},
+            "source": "Codex CLI", "provider": "codex", "status": "ready", "providerMetadata": {"kind": "legacy"},
         })
         self.assertEqual(extended.__pydantic_extra__, {"providerMetadata": {"kind": "legacy"}})
 
@@ -610,16 +610,17 @@ class AccountsRouterTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
+        self.assertNotIn("provider", accounts["default"])
         self.assertEqual(body["accounts"][0]["legacyPublicMetadata"], {"version": 1})
         self.assertTrue(body["accounts"][0]["claudeOptions"]["legacyOptionMetadata"])
         self.assertEqual(
             body["accounts"][0]["claudeOptions"]["customModels"][0]["legacyModelMetadata"],
             "preserved",
         )
-        self.assertNotIn("provider", body["accounts"][0])
+        self.assertEqual(body["accounts"][0]["provider"], "codex")
         archived_response = next(row for row in body["archivedAccounts"] if row["id"] == "archived-fixture")
         self.assertEqual(archived_response["archiveExtension"], "preserved")
-        self.assertNotIn("provider", archived_response)
+        self.assertEqual(archived_response["provider"], "codex")
         receipt = next(row for row in body["logins"] if row["requestId"] == request_id)
         self.assertEqual(receipt["legacyReceiptMetadata"], "preserved")
         self.assertNotIn("createdAt", receipt)

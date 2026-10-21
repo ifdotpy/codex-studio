@@ -153,3 +153,75 @@ inventory::submit! {
         dependencies: &[],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::{Body, to_bytes},
+        extract::ConnectInfo,
+        http::Request,
+    };
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use studio_runtime_services::{
+        account_driver::AccountDriver, account_policy::AccountPolicyState,
+    };
+    use studio_runtime_store::RuntimeStore;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn accounts_route_requires_provider_for_legacy_codex_and_claude() {
+        for with_driver in [false, true] {
+            let root = tempfile::tempdir().expect("isolated state");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let row = json!({"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"});
+            let mut claude = row.clone();
+            claude["id"] = json!("claude");
+            claude["provider"] = json!("claude");
+            claude["deleted"] = json!(true);
+            let registry = json!({"version":1,"defaultAccountKey":"default","accounts":{"default":row,"claude":claude},"logins":{}});
+            let bytes = serde_json::to_vec(&registry).expect("registry JSON");
+            let path = root.path().join("registry.json");
+            std::fs::write(&path, &bytes).expect("registry");
+            let policy = AccountPolicyState::from_startup(Some(&bytes), []).expect("policy");
+            let mut state = crate::HttpState::new(
+                "fixture-token".into(),
+                "fixture".into(),
+                root.path().display().to_string(),
+                49171,
+                None,
+                Some(store),
+                Some(Arc::new(policy)),
+            );
+            if with_driver {
+                state = state
+                    .with_account_driver(Arc::new(AccountDriver::open(&path).expect("driver")));
+            }
+            let request = Request::builder()
+                .uri("/api/accounts")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("address"),
+                ))
+                .body(Body::empty())
+                .expect("request");
+            let response = crate::router(state)
+                .expect("router")
+                .oneshot(request)
+                .await
+                .expect("response");
+            assert_eq!(response.status(), 200);
+            let body = to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("body");
+            let body: Value = serde_json::from_slice(&body).expect("JSON");
+            assert_eq!(body["accounts"][0]["provider"], "codex");
+            assert_eq!(body["archivedAccounts"][0]["provider"], "claude");
+            assert_eq!(std::fs::read(&path).expect("registry unchanged"), bytes);
+        }
+    }
+}
