@@ -44,6 +44,12 @@ import {
 } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
+import {
+  capabilityToolOptions,
+  capabilityToolDenial,
+  prepareCapabilities,
+  preflightCapabilityServers,
+} from "./worker-capabilities.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
@@ -394,7 +400,9 @@ const settings = (s) => ({
     ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
     : {}),
   // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
-  ...(s.userMcp === false ? { strictMcpConfig: true } : {}),
+  ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
+    ? { strictMcpConfig: true }
+    : {}),
   includePartialMessages: true,
   env: {
     ...process.env,
@@ -415,7 +423,12 @@ const settings = (s) => ({
           CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
         }
       : {}),
-    ...(s.userMcp === false ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
+    ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
+      ? {
+          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+          CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+        }
+      : {}),
     ...(typeof s.studioImageWorkspaceTempDir === "string"
       ? { TMPDIR: s.studioImageWorkspaceTempDir }
       : {}),
@@ -626,6 +639,12 @@ function wireThread(s, metadata, includeTurns = true) {
   };
 }
 async function permissions(s, turn, name, input, options) {
+  const denial = capabilityToolDenial(
+    s.capabilityProfile,
+    name,
+    options?.mcpServer,
+  );
+  if (denial) return { behavior: "deny", message: denial };
   if (!turn)
     return {
       behavior: "deny",
@@ -994,7 +1013,8 @@ async function finishTurn(s, active, result, error) {
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
   if (
     (error?.preparationTimedOut === true ||
-      error?.claudeAccountValidationFailed === true) &&
+      error?.claudeAccountValidationFailed === true ||
+      error?.capabilityPreparationFailed === true) &&
     error?.data?.turnStartOutcome === "not_applied" &&
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
@@ -1028,7 +1048,8 @@ async function finishTurn(s, active, result, error) {
       ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
       (error?.preparationTimedOut === true ||
-        error?.claudeAccountValidationFailed === true) &&
+        error?.claudeAccountValidationFailed === true ||
+        error?.capabilityPreparationFailed === true) &&
       error?.data?.turnStartOutcome === "not_applied"
         ? {
             data: {
@@ -1351,6 +1372,7 @@ async function startSession(s, active, p) {
       s.claude,
       s.developerInstructions,
       s.dynamicTools,
+      s.capabilityProfile,
     ]);
   const initialSource = source();
   let admit;
@@ -1364,26 +1386,36 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
+    const capabilities = await prepareCapabilities(s);
+    const externalMcpServers =
+      capabilities.mcpServers ?? (await movedExternalConfigs(s));
+    const systemPrompt = s.moveProof?.options.systemPrompt || {
+      type: "preset",
+      preset: "claude_code",
+      append: s.developerInstructions || "",
+      ...movePrompt,
+    };
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
+        ...capabilityToolOptions(s.capabilityProfile),
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
         model: s.moveProof?.options.model || p.model || s.model,
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
-        systemPrompt: s.moveProof?.options.systemPrompt || {
-          type: "preset",
-          preset: "claude_code",
-          append: s.developerInstructions || "",
-          ...movePrompt,
-        },
-        // Studio managed agents replace native subagents, as in Codex threads.
-        disallowedTools: ["Agent"],
+        systemPrompt: capabilities.instructions
+          ? {
+              ...systemPrompt,
+              append: [systemPrompt.append, capabilities.instructions]
+                .filter(Boolean)
+                .join("\n\n"),
+            }
+          : systemPrompt,
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...((s.moveProof ? s.moveProof.options.effort : p.effort)
@@ -1406,7 +1438,7 @@ async function startSession(s, active, p) {
         canUseTool: (name, input, options) =>
           permissions(s, active.turn, name, input, options),
         mcpServers: {
-          ...(await movedExternalConfigs(s)),
+          ...externalMcpServers,
           studio: studioTools(s, () => active.turn),
         },
         supportedDialogKinds: ["resume_return"],
@@ -1474,6 +1506,7 @@ async function startSession(s, active, p) {
       },
     });
     active.q = q;
+    active.externalMcpServers = externalMcpServers;
     active.session = s;
     active.permissionMode = mode;
     active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
@@ -1483,6 +1516,19 @@ async function startSession(s, active, p) {
       () => q.close(),
       startedAt,
     );
+    try {
+      await boundedPreparation(
+        () => preflightCapabilityServers(q, s.capabilityProfile),
+        deadline,
+        () => q.close(),
+        "capability_mcp_servers",
+        startedAt,
+      );
+    } catch (error) {
+      if (error.preparationTimedOut)
+        error.message = `capabilityProfile.mcpServers ${JSON.stringify(s.capabilityProfile?.mcpServers)}: connection check timed out`;
+      throw error;
+    }
     if (
       initial?.interrupted ||
       active.input.closed ||
@@ -2425,7 +2471,17 @@ async function handle(method, p) {
             : {},
         );
         await persist(s);
-      } else reattached = true;
+      } else {
+        if (
+          Object.hasOwn(p, "capabilityProfile") &&
+          canonicalJson(p.capabilityProfile) !==
+            canonicalJson(s.capabilityProfile)
+        )
+          throw new Error(
+            "Pause Claude before changing capabilityProfile on resume",
+          );
+        reattached = true;
+      }
     }
     const includeTurns =
       method === "thread/read"
@@ -2600,10 +2656,14 @@ async function handle(method, p) {
         // Replace only the Studio MCP server; background tasks keep running.
         // The SDK keeps an already registered in-process server even when its
         // tools change. Remove it first so the new schema replaces it.
-        await control(() => active.q.setMcpServers({}), "mcp_remove");
+        await control(
+          () => active.q.setMcpServers(active.externalMcpServers || {}),
+          "mcp_remove",
+        );
         await control(
           () =>
             active.q.setMcpServers({
+              ...active.externalMcpServers,
               studio: studioTools(s, () => active.turn),
             }),
           "mcp_install",

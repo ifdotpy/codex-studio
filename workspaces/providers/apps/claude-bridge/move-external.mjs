@@ -67,7 +67,7 @@ export function externalAliases(proof) {
     ),
   ];
 }
-async function localConfigs(cwd) {
+export async function localConfigs(cwd) {
   const configured = process.env.CLAUDE_CONFIG_DIR;
   const user = configured
     ? path.join(configured, ".claude.json")
