@@ -171,7 +171,6 @@ fn shared_values_ts() -> String {
     ts_strings(
         &mut text,
         &[
-            
             (
                 "PROVIDER_DISCONNECTED_TURN_ERROR",
                 values::PROVIDER_DISCONNECTED_TURN_ERROR,

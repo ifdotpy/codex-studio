@@ -106,7 +106,10 @@ mod tests {
             let validator = jsonschema::validator_for(&schema).expect("test fixture value");
             assert!(validator.is_valid(&example));
             assert_eq!(
-                schema["required"].as_array().expect("test fixture value").len(),
+                schema["required"]
+                    .as_array()
+                    .expect("test fixture value")
+                    .len(),
                 example.as_object().expect("test fixture value").len()
             );
         }
