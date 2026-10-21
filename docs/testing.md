@@ -710,6 +710,64 @@ tool calls, placeholder answers, repeated final reports, long lead input waits,
 start-order inversions, provider retries, other journal warnings) is listed under
 `anomalies` in `summary.txt` and `evidence.json`.
 
+## Installed build smoke
+
+Run `just smoke-installed` after each install of a new Studio build on a Mac. It
+checks the installed artifact, not the checkout, and takes about one minute. It is
+a manual run outside every test tier; it makes a few small model requests.
+
+- `--app PATH` selects the bundle (default `/Applications/Codex Studio.app`).
+- `--read-only` runs only part 1.
+- `--model` and `--effort` select the smoke agents (default `gpt-6-luna`, `low`).
+- `--codex-home PATH` selects the Codex home of the smoke account. The default is
+  the production default account (`CODEX_HOME` unset, so `~/.codex`).
+
+Part 1 reads the live server at `http://127.0.0.1:4620` without a session token,
+so it cannot change it:
+
+| Check            | Pass condition                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build`          | `studio-build.json` of the bundle names a commit.                                                                                              |
+| `live backend`   | `verify_backend_process` of the installed `recover_backend.py` proves that the PID runs the bundle's configured backend and owns the listener. |
+| `live accounts`  | Every account of `/api/accounts` has a cached limit reading (`/api/limits?cached=1`), an unavailable reason, or a status other than `ready`.   |
+| `live providers` | Every supervised provider handle has a running PID and output reader, without backpressure or journal errors.                                  |
+| `live acks`      | No handle keeps unacknowledged events for 3 seconds.                                                                                           |
+| `live renderer`  | The served page has the `studio-build` of the bundle's `web/dist/index.html`, and its module script loads.                                     |
+
+A limit read with a cold cache asks the provider once, as the window does.
+
+Part 2 makes a private state folder `/tmp/studio-smoke-*` and a free port. It
+starts the bundle's supervisor with the argument list of
+`codex_supervisor_service._macos_jobs`, and the backend with `tick` of the bundle's
+`recover_backend.py`, so the production launch path and environment are used. The
+default account of that state is the production default Codex home. Then it runs
+these flows in order:
+
+| Flow            | Pass condition                                                                                                                                                    |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sign-in`       | A new Codex sign-in returns an OpenAI device link and code, and the cancel makes it `cancelled`. No browser opens and the code is never printed.                  |
+| `agent turn`    | A new lead answers a fixed word and has a provider thread.                                                                                                        |
+| `orchestration` | A reviewer child calls `orchestration_send` to `parent` (a private room) and to `broadcast`; both messages reach the lead, and the child result reaches the lead. |
+| `resume`        | After the test stops the provider process of this smoke, the next message runs on the same thread with a new provider PID and recalls the first answer.           |
+
+The script stops only the processes that it started (and the providers of its own
+supervisor whose executable is in its state). It deletes the folder after a pass,
+when the folder has its owner marker and no mount. After a failure it keeps the
+folder and prints `Evidence:` with its path. Any failed check gives exit code 1.
+The smoke threads are saved in the default Codex home, as for any Codex chat. The
+Claude sign-in is not covered, because `claude auth login` opens a browser.
+
+On another Mac, run the script of the installed bundle there. For example, for
+igor-mbp from this Mac:
+
+```sh
+ssh -o BatchMode=yes igor-mbp '/opt/homebrew/bin/python3.14 "/Applications/Codex Studio.app/Contents/Resources/workspace/scripts/smoke-installed.py"'
+```
+
+A bundle older than this script does not ship it. Copy
+`workspaces/runtime/apps/server/src/smoke-installed.py` to a temporary folder on
+that Mac and run the copy: it imports its client and launcher from `--app`.
+
 ## Interpret evidence
 
 Report which suites actually ran, which failed, and which were excluded. A
