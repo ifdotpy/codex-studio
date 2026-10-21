@@ -266,7 +266,22 @@ fn post(
 async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("wave7_p03_message_ingress/cases.json")).expect("cases");
-    for case in cases {
+    for mut case in cases {
+        // This corpus starts after HTTP request validation. Exercise its
+        // largest valid attachment list; the shared request-schema and public
+        // send contracts cover rejection above the same owner budget.
+        for step in case["steps"].as_array_mut().expect("steps") {
+            if step["assetsAtTurnLimit"] == true {
+                step.as_object_mut()
+                    .expect("step")
+                    .remove("assetsAtTurnLimit");
+                step["assets"] = json!(
+                    (0..studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS)
+                        .map(|index| format!("asset-{index}"))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
         let name = case["name"].as_str().expect("case name");
         let (root, expected) = oracle.seed(name, &case);
         let store = RuntimeStore::open(Some(&root))

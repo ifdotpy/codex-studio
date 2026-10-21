@@ -1150,6 +1150,7 @@
           },
           "metadata": {
             "event": {
+              "delivery": "current_turn",
               "timing": {
                 "enqueuedAt": "<time>",
                 "fastSkipReason": "scheduleOverride"
@@ -1172,7 +1173,7 @@
             "error": null,
             "id": "event",
             "kind": "user",
-            "metadata": {},
+            "metadata": { "delivery": "current_turn" },
             "text": "input"
           }
         ],
@@ -1195,6 +1196,7 @@
           "id": "event",
           "kind": "user",
           "metadata": {
+            "delivery": "current_turn",
             "timing": {
               "enqueuedAt": "<time>",
               "fastSkipReason": "scheduleOverride"
@@ -4420,6 +4422,7 @@
           },
           "metadata": {
             "event": {
+              "delivery": "current_turn",
               "timing": {
                 "enqueuedAt": "<time>",
                 "fastSkipReason": "scheduleOverride"
@@ -4442,7 +4445,7 @@
             "error": null,
             "id": "event",
             "kind": "user",
-            "metadata": {},
+            "metadata": { "delivery": "current_turn" },
             "text": "input"
           }
         ],
@@ -4466,6 +4469,7 @@
           "id": "event",
           "kind": "user",
           "metadata": {
+            "delivery": "current_turn",
             "timing": {
               "enqueuedAt": "<time>",
               "fastSkipReason": "scheduleOverride"
@@ -5044,6 +5048,7 @@
           },
           "metadata": {
             "event": {
+              "delivery": "current_turn",
               "timing": {
                 "enqueuedAt": "<time>",
                 "fastSkipReason": "scheduleOverride"
@@ -5066,7 +5071,7 @@
             "error": null,
             "id": "event",
             "kind": "user",
-            "metadata": {},
+            "metadata": { "delivery": "current_turn" },
             "text": "input"
           }
         ],
@@ -5093,6 +5098,7 @@
           "id": "event",
           "kind": "user",
           "metadata": {
+            "delivery": "current_turn",
             "timing": {
               "enqueuedAt": "<time>",
               "fastSkipReason": "scheduleOverride"

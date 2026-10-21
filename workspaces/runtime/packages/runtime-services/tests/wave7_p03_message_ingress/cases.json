@@ -80,10 +80,10 @@
     ]
   },
   {
-    "name": "attachment-count-deferred",
+    "name": "attachment-count-at-turn-budget",
     "steps": [
       {
-        "assets": ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
+        "assetsAtTurnLimit": true
       }
     ]
   },

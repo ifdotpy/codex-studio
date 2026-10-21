@@ -13,6 +13,7 @@ import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 from codex_runtime import Runtime, SubmissionRejected
+from codex_delivery import stamp_delivery
 
 NOW = 2000.0
 ROOT = Path(sys.argv[2])
@@ -58,6 +59,7 @@ class Fixture:
         for table in ("agents", "monitors", "requests"):
             self.connection.execute(f"CREATE TABLE runtime_{table}(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
         self.connection.execute("CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT)")
+        self.connection.execute("CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
         self.actor = {"id": "agent", "rootId": "agent", "epoch": 2, "autoWake": True, "status": "idle", "cwd": str(ROOT), "accountKey": "default"}
         self.put(self.connection, "agents", self.actor)
     @contextmanager
@@ -80,7 +82,8 @@ class Fixture:
     def agent_connection(self, *args): return None
     def server_for(self, *args): return None
     def connection_current(self, *args): return True
-    def enqueue(self, db, actor, kind, text, key):
+    def enqueue(self, db, actor, kind, text, key, *, delivery=None):
+        stamp_delivery(db, key, kind, text, delivery)
         db.execute("INSERT OR IGNORE INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)", (key, actor["id"], kind, text, "pending" if actor["autoWake"] else "cancelled", NOW, actor["epoch"], None, None))
         return key
     def saved(self):

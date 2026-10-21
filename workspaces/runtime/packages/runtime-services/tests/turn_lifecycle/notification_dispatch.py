@@ -35,7 +35,12 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
 # attempt that was reserved while no turn was active. The submission cases use
 # an unsubmitted attempt reserved while active, and long-completion's attempt
 # has no epoch or events, so the cases below are unchanged.
-_NOTIFICATION_GUARD_DIGEST = 'ef5cbb42330b7da8ae4b1cbc154caeae6fac7b6f6e517504cc16b8296044df64'
+# Since that guarded source, only completed-message sign-in card scheduling
+# changed (a587ddca). It requires "://" in the final message; neither input
+# corpus contains that string, including saved items and buffered deltas, so
+# this branch cannot run here. Delivery timing and the complete stored-state
+# comparisons remain unchanged; sign-in cards have their own bridge contracts.
+_NOTIFICATION_GUARD_DIGEST = '49ddbbe9f307bd030461655e338016a3fc6c747084e696b2f81c7dbd7aed73c2'
 assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
     'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:

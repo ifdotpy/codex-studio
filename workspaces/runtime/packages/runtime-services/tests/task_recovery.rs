@@ -67,7 +67,7 @@ fn malformed_persisted_recovery_inputs_are_located() {
         ("threadId", json!(1)),
         ("autoWake", json!(0)),
         ("id", json!("")),
-        ("startAttempt", json!({"events":vec!["event";33]})),
+        ("startAttempt", json!({"events":["event", 1]})),
     ] {
         let mut invalid = base.clone();
         invalid[field] = value;
@@ -77,6 +77,17 @@ fn malformed_persisted_recovery_inputs_are_located() {
         };
         assert!(error.location.starts_with("runtime_agents"));
     }
+}
+
+#[test]
+fn large_recovery_attempt_retains_every_persisted_event_identity() {
+    use studio_runtime_services::recovery_policy::RecoverySnapshot;
+    let events: Vec<_> = (0..1000).map(|index| format!("event-{index}")).collect();
+    let agent = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running",
+        "startAttempt":{"id":"attempt","events":events}});
+    let snapshot = RecoverySnapshot::from_record(agent.clone()).expect("valid large attempt");
+    assert_eq!(snapshot.record(), &agent);
+    assert_eq!(snapshot.start_attempt()["events"], json!(events));
 }
 
 #[tokio::test]
