@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError, Transaction};
 use thiserror::Error;
 
+#[path = "workspace_cleanup_submodules.rs"]
+mod submodules;
+
 const INTENT_FIELD: &str = "workspaceCleanupIntent";
 const GUEST_TIMEOUT: Duration = Duration::from_secs(3_600);
 
@@ -50,6 +53,8 @@ pub enum WorkspaceCleanupError {
     Held,
     #[error("Workspace cleanup effect was not sent")]
     NotSent,
+    #[error("Worktree retained: {0}")]
+    UnsafeSubmodule(String),
     #[error("Workspace cleanup worker failed")]
     Worker,
     #[error(transparent)]
@@ -72,6 +77,7 @@ pub enum CleanupEffect {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EffectFailure {
     NotSent,
+    UnsafeSubmodule(String),
     Unknown,
 }
 
@@ -175,6 +181,17 @@ pub async fn cleanup_agent_workspace_with_ports(
             Err(EffectFailure::NotSent) => {
                 mark_effect(&store, &agent_id, &request_id, "not_sent", Value::Null).await?;
                 return Err(WorkspaceCleanupError::NotSent);
+            }
+            Err(EffectFailure::UnsafeSubmodule(reason)) => {
+                mark_effect(
+                    &store,
+                    &agent_id,
+                    &request_id,
+                    "not_sent",
+                    json!({"reason":reason}),
+                )
+                .await?;
+                return Err(WorkspaceCleanupError::UnsafeSubmodule(reason));
             }
             Err(EffectFailure::Unknown) => {
                 mark_effect(&store, &agent_id, &request_id, "unknown", Value::Null).await?;
@@ -335,7 +352,11 @@ pub async fn reconcile_pending_cleanup(
             .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
             match cleanup_agent_workspace(Arc::clone(&store), id.clone(), action).await {
                 Ok(cleanup) => held.push(cleanup),
-                Err(WorkspaceCleanupError::Held | WorkspaceCleanupError::NotSent) => {
+                Err(
+                    WorkspaceCleanupError::Held
+                    | WorkspaceCleanupError::NotSent
+                    | WorkspaceCleanupError::UnsafeSubmodule(_),
+                ) => {
                     held.push(result(&id, action, None, None, true));
                 }
                 Err(error) => return Err(error),
@@ -914,13 +935,11 @@ impl CleanupPorts for ProductionPorts {
                     .map_err(guest_failure)
             }
             CleanupEffect::SaveWorktreeRef { identity } => {
-                check_worktree(identity).map_err(|_| EffectFailure::NotSent)?;
-                save_worktree_archive_ref(identity).map_err(|_| EffectFailure::Unknown)?;
+                save_worktree_archive_ref(identity)?;
                 Ok(json!({"state":"saved"}))
             }
             CleanupEffect::RemoveWorktree { identity } => {
-                check_worktree(identity).map_err(|_| EffectFailure::NotSent)?;
-                remove_worktree(identity).map_err(|_| EffectFailure::Unknown)?;
+                remove_worktree(identity)?;
                 Ok(json!({"state":"removed","bytes":null}))
             }
         }
@@ -1064,14 +1083,6 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
             return Err(());
         }
     }
-    let status = git_output(
-        &root,
-        &["status", "--porcelain", "--untracked-files=normal"],
-        None,
-    )?;
-    if !status.is_empty() {
-        return Err(());
-    }
     let cwd = identity.get("cwd").and_then(Value::as_str).ok_or(())?;
     let relative = identity.get("relative").and_then(Value::as_str).ok_or(())?;
     if PathBuf::from(cwd)
@@ -1085,30 +1096,58 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
     Ok((repo, root, id, saved_head))
 }
 
-fn save_worktree_archive_ref(identity: &Value) -> Result<(), ()> {
-    let (repo, _root, id, head) = check_worktree(identity)?;
-    let current = format!("refs/codex-agents/archive/{id}");
-    let previous = String::from_utf8(git_output(
-        &repo,
-        &["for-each-ref", "--format=%(objectname)", &current],
+fn checked_cleanup_worktree(
+    identity: &Value,
+) -> Result<(PathBuf, PathBuf, String, String), EffectFailure> {
+    let checked = check_worktree(identity).map_err(|_| EffectFailure::NotSent)?;
+    submodules::inspect(&checked.1, &checked.0).map_err(EffectFailure::UnsafeSubmodule)?;
+    let status = git_output(
+        &checked.1,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ],
         None,
-    )?)
-    .map_err(|_| ())?;
+    )
+    .map_err(|_| EffectFailure::NotSent)?;
+    if !status.is_empty() {
+        return Err(EffectFailure::NotSent);
+    }
+    Ok(checked)
+}
+
+fn save_worktree_archive_ref(identity: &Value) -> Result<(), EffectFailure> {
+    let (repo, _root, id, head) = checked_cleanup_worktree(identity)?;
+    let current = format!("refs/codex-agents/archive/{id}");
+    let previous = String::from_utf8(
+        git_output(
+            &repo,
+            &["for-each-ref", "--format=%(objectname)", &current],
+            None,
+        )
+        .map_err(|_| EffectFailure::Unknown)?,
+    )
+    .map_err(|_| EffectFailure::Unknown)?;
     let previous = previous.trim();
     let zero = "0".repeat(head.len());
     let mut commands = String::from("start\n");
     if !previous.is_empty() && previous != head {
         let history = format!("refs/codex-agents/archive-history/{id}/{previous}");
-        let existing = String::from_utf8(git_output(
-            &repo,
-            &["for-each-ref", "--format=%(objectname)", &history],
-            None,
-        )?)
-        .map_err(|_| ())?;
+        let existing = String::from_utf8(
+            git_output(
+                &repo,
+                &["for-each-ref", "--format=%(objectname)", &history],
+                None,
+            )
+            .map_err(|_| EffectFailure::Unknown)?,
+        )
+        .map_err(|_| EffectFailure::Unknown)?;
         if existing.trim().is_empty() {
             commands.push_str(&format!("create {history} {previous}\n"));
         } else if existing.trim() != previous {
-            return Err(());
+            return Err(EffectFailure::Unknown);
         }
     }
     commands.push_str(&format!(
@@ -1119,14 +1158,16 @@ fn save_worktree_archive_ref(identity: &Value) -> Result<(), ()> {
             previous
         }
     ));
-    git_output(&repo, &["update-ref", "--stdin"], Some(commands.as_bytes()))?;
+    git_output(&repo, &["update-ref", "--stdin"], Some(commands.as_bytes()))
+        .map_err(|_| EffectFailure::Unknown)?;
     Ok(())
 }
 
-fn remove_worktree(identity: &Value) -> Result<(), ()> {
-    let (repo, root, _, _) = check_worktree(identity)?;
-    let root = root.to_str().ok_or(())?;
-    git_output(&repo, &["worktree", "remove", "--force", root], None)?;
+fn remove_worktree(identity: &Value) -> Result<(), EffectFailure> {
+    let (repo, root, _, _) = checked_cleanup_worktree(identity)?;
+    let root = root.to_str().ok_or(EffectFailure::NotSent)?;
+    git_output(&repo, &["worktree", "remove", "--force", root], None)
+        .map_err(|_| EffectFailure::Unknown)?;
     Ok(())
 }
 
@@ -1930,6 +1971,494 @@ mod tests {
         assert!(matches!(error, WorkspaceCleanupError::NotSent));
         assert!(root.exists(), "parent worktree remains on disk");
         assert!(nested.exists(), "nested worktree remains on disk");
+    }
+
+    fn fixture_git(directory: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Cleanup Fixture")
+            .env("GIT_AUTHOR_EMAIL", "cleanup@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Cleanup Fixture")
+            .env("GIT_COMMITTER_EMAIL", "cleanup@example.invalid")
+            .output()
+            .expect("fixture Git starts");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("fixture Git output is UTF-8")
+            .trim()
+            .to_owned()
+    }
+
+    async fn submodule_fixture() -> (
+        tempfile::TempDir,
+        Arc<RuntimeStore>,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        submodule_fixture_with_nested(false).await
+    }
+
+    async fn submodule_fixture_with_nested(
+        nested: bool,
+    ) -> (
+        tempfile::TempDir,
+        Arc<RuntimeStore>,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let (directory, store) = fixture().await;
+        let base = std::fs::canonicalize(directory.path()).expect("fixture path resolves");
+        let source = base.join("submodule-source");
+        std::fs::create_dir(&source).expect("submodule source creates");
+        fixture_git(&source, &["init", "-q"]);
+        std::fs::write(source.join("file.txt"), "original\n").expect("source writes");
+        if nested {
+            let nested_source = base.join("nested-source");
+            std::fs::create_dir(&nested_source).expect("nested source creates");
+            fixture_git(&nested_source, &["init", "-q"]);
+            std::fs::write(nested_source.join("file.txt"), "nested original\n")
+                .expect("nested source writes");
+            fixture_git(&nested_source, &["add", "."]);
+            fixture_git(&nested_source, &["commit", "-qm", "nested base"]);
+            fixture_git(
+                &source,
+                &[
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    nested_source.to_str().unwrap(),
+                    "nested",
+                ],
+            );
+            fixture_git(
+                &source,
+                &[
+                    "config",
+                    "-f",
+                    ".gitmodules",
+                    "submodule.nested.ignore",
+                    "all",
+                ],
+            );
+        }
+        fixture_git(&source, &["add", "."]);
+        fixture_git(&source, &["commit", "-qm", "submodule base"]);
+        let repository = base.join("project");
+        std::fs::create_dir(&repository).expect("repository creates");
+        fixture_git(&repository, &["init", "-q"]);
+        fixture_git(
+            &repository,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                source.to_str().unwrap(),
+                "module",
+            ],
+        );
+        fixture_git(
+            &repository,
+            &[
+                "config",
+                "-f",
+                ".gitmodules",
+                "submodule.module.ignore",
+                "all",
+            ],
+        );
+        fixture_git(&repository, &["add", "."]);
+        fixture_git(&repository, &["commit", "-qm", "parent base"]);
+        let root = repository.join(".worktrees/codex-agents/cleanup-agent");
+        fixture_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-qb",
+                "cleanup-agent",
+                root.to_str().unwrap(),
+            ],
+        );
+        fixture_git(
+            &root,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ],
+        );
+        put_agent(
+            &store,
+            json!({
+                "cwd":root, "branch":"cleanup-agent", "worktreeReady":true,
+                "agentArchive":{"at":7,"epoch":7,"cleanupPending":true}
+            }),
+        )
+        .await;
+        (directory, store, repository, root)
+    }
+
+    async fn assert_submodule_edit_survives_archive(change: &str) {
+        let (_directory, store, repository, root) = submodule_fixture().await;
+        let module = root.join("module");
+        let saved_gitdir = fixture_git(&module, &["rev-parse", "--absolute-git-dir"]);
+        let file = module.join(if change == "untracked" {
+            "untracked.txt"
+        } else {
+            "file.txt"
+        });
+        std::fs::write(&file, "worker data\n").expect("worker edit writes");
+        let commit = if change == "commit" {
+            fixture_git(&module, &["commit", "-qam", "worker commit"]);
+            Some(fixture_git(&module, &["rev-parse", "HEAD"]))
+        } else {
+            None
+        };
+        assert_eq!(
+            fixture_git(&root, &["status", "--porcelain"]),
+            "",
+            "ignore=all hides submodule changes"
+        );
+        let outcome = super::cleanup_agent_workspace(
+            Arc::clone(&store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await;
+        let archive = fixture_git(
+            &repository,
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/codex-agents/archive/cleanup-agent",
+            ],
+        );
+        eprintln!(
+            "submodule reproduction: change={change}, outcome={outcome:?}, file_exists={}, module_gitdir_exists={}, archive_ref={archive}, worker_commit={commit:?}",
+            file.exists(),
+            std::path::Path::new(&saved_gitdir).exists()
+        );
+        assert!(
+            root.exists(),
+            "archive must retain the worktree with {change} submodule data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("worker file remains"),
+            "worker data\n"
+        );
+        let error = outcome.expect_err("unsafe submodule prevents archive removal");
+        assert!(
+            matches!(error, WorkspaceCleanupError::UnsafeSubmodule(_)),
+            "{error}"
+        );
+        assert_eq!(agent(&store)["worktreeReady"], true);
+        assert!(
+            agent(&store)["workspaceCleanupIntent"]["receipt"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("submodule")
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_modified_file_despite_ignore_all() {
+        assert_submodule_edit_survives_archive("modified").await;
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_untracked_file_despite_ignore_all() {
+        assert_submodule_edit_survives_archive("untracked").await;
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_unpushed_commit_despite_ignore_all() {
+        assert_submodule_edit_survives_archive("commit").await;
+    }
+
+    async fn assert_submodule_held(
+        store: &Arc<RuntimeStore>,
+        root: &std::path::Path,
+        reason: &str,
+    ) {
+        let error = super::cleanup_agent_workspace(
+            Arc::clone(store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await
+        .expect_err("unsafe submodule retains worktree");
+        assert!(
+            matches!(error, WorkspaceCleanupError::UnsafeSubmodule(_)),
+            "{error}"
+        );
+        assert!(error.to_string().contains(reason), "{error}");
+        assert!(root.exists());
+        let saved = agent(store);
+        assert_eq!(saved["worktreeReady"], true);
+        assert_eq!(saved["workspaceCleanupIntent"]["phase"], "not_sent");
+        assert!(
+            saved["workspaceCleanupIntent"]["receipt"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(reason)
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_cleans_recursive_submodules_and_preserves_archive_ref() {
+        let (_directory, store, repository, root) = submodule_fixture_with_nested(true).await;
+        assert!(root.join("module/nested/file.txt").exists());
+        let head = fixture_git(&root, &["rev-parse", "HEAD"]);
+        super::cleanup_agent_workspace(
+            Arc::clone(&store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await
+        .expect("clean recursive submodules archive");
+        assert!(!root.exists());
+        assert_eq!(
+            fixture_git(
+                &repository,
+                &["rev-parse", "refs/codex-agents/archive/cleanup-agent"]
+            ),
+            head
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_cleans_uninitialized_submodules() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        fixture_git(&root, &["submodule", "deinit", "module"]);
+        super::cleanup_agent_workspace(
+            Arc::clone(&store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await
+        .expect("uninitialized submodule archives");
+        assert!(!root.exists());
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_local_branch_with_recorded_head() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        let module = root.join("module");
+        let recorded = fixture_git(&module, &["rev-parse", "HEAD"]);
+        fixture_git(&module, &["checkout", "-qb", "worker"]);
+        std::fs::write(module.join("file.txt"), "local branch\n").unwrap();
+        fixture_git(&module, &["commit", "-qam", "local branch"]);
+        fixture_git(&module, &["checkout", "--detach", &recorded]);
+        assert_submodule_held(&store, &root, "local commits").await;
+        let held = reconcile_pending_cleanup(Arc::clone(&store))
+            .await
+            .expect("recovery retains unsafe worktree");
+        assert_eq!(held.len(), 1);
+        assert!(held[0].held);
+        assert!(root.exists());
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_recursive_local_commit_with_clean_status() {
+        let (_directory, store, _repository, root) = submodule_fixture_with_nested(true).await;
+        let nested = root.join("module/nested");
+        let recorded = fixture_git(&nested, &["rev-parse", "HEAD"]);
+        std::fs::write(nested.join("file.txt"), "nested worker data\n").unwrap();
+        fixture_git(&nested, &["commit", "-qam", "nested detached commit"]);
+        let local = fixture_git(&nested, &["rev-parse", "HEAD"]);
+        fixture_git(&nested, &["checkout", "--detach", &recorded]);
+        assert_eq!(
+            fixture_git(
+                &root,
+                &["status", "--porcelain", "--ignore-submodules=none"]
+            ),
+            ""
+        );
+        assert_submodule_held(&store, &root, "module/nested has local commits").await;
+        assert_eq!(fixture_git(&nested, &["rev-parse", "HEAD@{1}"]), local);
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_recursive_modified_file() {
+        let (_directory, store, _repository, root) = submodule_fixture_with_nested(true).await;
+        let file = root.join("module/nested/file.txt");
+        std::fs::write(&file, "nested edit\n").unwrap();
+        assert_eq!(fixture_git(&root, &["status", "--porcelain"]), "");
+        assert_submodule_held(&store, &root, "modified or untracked").await;
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "nested edit\n");
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_unreadable_head() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        let gitdir = fixture_git(&root.join("module"), &["rev-parse", "--absolute-git-dir"]);
+        std::fs::write(std::path::Path::new(&gitdir).join("HEAD"), "invalid head\n").unwrap();
+        assert_submodule_held(&store, &root, "cannot be read").await;
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_foreign_git_directory() {
+        let (directory, store, _repository, root) = submodule_fixture().await;
+        let foreign =
+            std::fs::canonicalize(directory.path().join("submodule-source/.git")).unwrap();
+        std::fs::write(
+            root.join("module/.git"),
+            format!("gitdir: {}\n", foreign.display()),
+        )
+        .unwrap();
+        assert_submodule_held(&store, &root, "foreign Git directory").await;
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_without_git_directory_and_with_files() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        std::fs::remove_file(root.join("module/.git")).unwrap();
+        assert_submodule_held(&store, &root, "contains files but has no Git directory").await;
+    }
+
+    #[tokio::test]
+    async fn archive_rechecks_submodule_after_saving_parent_ref() {
+        let (_directory, store, repository, root) = submodule_fixture().await;
+        let identity = super::worktree_identity(&agent(&store)).expect("worktree identity");
+        super::save_worktree_archive_ref(&identity).expect("clean parent ref saves");
+        std::fs::write(root.join("module/file.txt"), "late edit\n").unwrap();
+        let error =
+            super::remove_worktree(&identity).expect_err("new submodule edit blocks removal");
+        assert!(matches!(error, EffectFailure::UnsafeSubmodule(_)));
+        assert!(root.exists());
+        assert_eq!(
+            fixture_git(
+                &repository,
+                &["rev-parse", "refs/codex-agents/archive/cleanup-agent"]
+            ),
+            identity["head"].as_str().unwrap()
+        );
+    }
+
+    fn record_local_submodule_commit(root: &std::path::Path) -> String {
+        let module = root.join("module");
+        std::fs::write(module.join("file.txt"), "recorded local commit\n").unwrap();
+        fixture_git(&module, &["commit", "-qam", "local submodule commit"]);
+        let head = fixture_git(&module, &["rev-parse", "HEAD"]);
+        fixture_git(
+            root,
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("160000,{head},module"),
+            ],
+        );
+        fixture_git(
+            root,
+            &[
+                "-c",
+                "submodule.module.ignore=none",
+                "commit",
+                "-qm",
+                "record local submodule commit",
+            ],
+        );
+        assert_eq!(fixture_git(root, &["rev-parse", "HEAD:module"]), head);
+        head
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_recorded_unpushed_commit() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        let local = record_local_submodule_commit(&root);
+        assert_submodule_held(&store, &root, "recorded commit without a remote ref").await;
+        assert_eq!(
+            fixture_git(&root.join("module"), &["rev-parse", "HEAD"]),
+            local
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_without_remote_or_main_copy() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        record_local_submodule_commit(&root);
+        fixture_git(&root.join("module"), &["remote", "remove", "origin"]);
+        assert_submodule_held(&store, &root, "recorded commit without a remote ref").await;
+    }
+
+    #[tokio::test]
+    async fn archive_cleans_submodule_without_remote_with_main_copy() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        fixture_git(&root.join("module"), &["remote", "remove", "origin"]);
+        super::cleanup_agent_workspace(
+            Arc::clone(&store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await
+        .expect("main submodule object store preserves the recorded commit");
+        assert!(!root.exists());
+    }
+
+    #[tokio::test]
+    async fn archive_cleans_recorded_submodule_commit_copied_to_main() {
+        let (_directory, store, repository, root) = submodule_fixture().await;
+        let local = record_local_submodule_commit(&root);
+        fixture_git(
+            &repository.join("module"),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "fetch",
+                root.join("module").to_str().unwrap(),
+                &local,
+            ],
+        );
+        fixture_git(&root.join("module"), &["remote", "remove", "origin"]);
+        super::cleanup_agent_workspace(
+            Arc::clone(&store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+        )
+        .await
+        .expect("main copy preserves the otherwise unpublished commit");
+        assert!(!root.exists());
+        assert_eq!(
+            fixture_git(&repository.join("module"), &["cat-file", "-t", &local]),
+            "commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_with_foreign_object_alternates() {
+        let (_directory, store, repository, root) = submodule_fixture().await;
+        let gitdir = fixture_git(&root.join("module"), &["rev-parse", "--absolute-git-dir"]);
+        let foreign = fixture_git(
+            &repository.join("module"),
+            &["rev-parse", "--absolute-git-dir"],
+        );
+        std::fs::write(
+            std::path::Path::new(&gitdir).join("objects/info/alternates"),
+            format!("{foreign}/objects\n"),
+        )
+        .unwrap();
+        assert_submodule_held(&store, &root, "foreign Git directory or configuration").await;
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_submodule_with_unreadable_configuration() {
+        let (_directory, store, _repository, root) = submodule_fixture().await;
+        std::fs::write(root.join(".gitmodules"), "[broken\n").unwrap();
+        assert_submodule_held(&store, &root, "cannot be read").await;
     }
 
     #[tokio::test]
