@@ -72,7 +72,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);
-  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 3);
+  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 4);
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
   assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
