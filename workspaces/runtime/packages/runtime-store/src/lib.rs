@@ -840,6 +840,9 @@ pub struct RuntimeStore {
     simulate_unknown_commit_after_success: Arc<AtomicBool>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
     committed_change_generation: Arc<AtomicU64>,
+    /// Count of jobs admitted to this store's serialized writer lane since open.
+    /// Unit: jobs. Process-local; read by tests that require no writer use.
+    writer_admissions: AtomicU64,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
     entity_projection_maintenance_lock: tokio::sync::Mutex<()>,
     wal_checkpoint_requested: Arc<AtomicBool>,
@@ -1213,6 +1216,7 @@ impl RuntimeStore {
             #[cfg(test)]
             simulate_unknown_commit_after_success: Arc::new(AtomicBool::new(false)),
             committed_change_generation: Arc::new(AtomicU64::new(0)),
+            writer_admissions: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: tokio::sync::Mutex::new(()),
             wal_checkpoint_requested: Arc::new(AtomicBool::new(false)),
@@ -1631,6 +1635,7 @@ impl RuntimeStore {
             .map_err(actor_transport_outcome_unknown)
             .map_err(E::from)?;
         drop(waiter_registration);
+        self.writer_admissions.fetch_add(1, Ordering::Relaxed);
         let waiting_threads = self.writer_waiters.load(Ordering::Relaxed);
         let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
         if diagnostics_enabled {
@@ -1932,6 +1937,13 @@ impl RuntimeStore {
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)?;
         Ok(reader.query_row("PRAGMA data_version", [], |row| row.get(0))?)
+    }
+
+    /// Return the number of jobs this store admitted to its serialized writer
+    /// lane, including jobs that changed no rows. Unlike the process-global
+    /// diagnostics callback, it counts only this store.
+    pub fn writer_admissions(&self) -> u64 {
+        self.writer_admissions.load(Ordering::Relaxed)
     }
 
     /// Return the number of committed writer transactions that changed rows.
