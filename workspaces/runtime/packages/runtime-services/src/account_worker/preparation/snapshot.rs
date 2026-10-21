@@ -149,18 +149,33 @@ impl PreparationResources {
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
-        let data: Bundled = decode(
+        let mut data: Bundled = decode(
             serde_json::from_str(include_str!("../preparation-resources.json"))
                 .map_err(|_| invalid("preparation resources"))?,
             "preparation resources",
         )?;
-        let legacy_tools = decode(
+        let mut legacy_tools: Vec<thread::ToolDefinition> = decode(
             serde_json::from_str(include_str!(
                 "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
             ))
             .map_err(|_| invalid("legacy tools"))?,
             "legacy tools",
         )?;
+        for tool in data.tools.iter_mut().chain(legacy_tools.iter_mut()) {
+            if tool.name == "orchestration_spawn" {
+                let properties = tool
+                    .input_schema
+                    .get_mut("properties")
+                    .and_then(|value| value.pointer_mut("/agents/items/properties"))
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| invalid("spawn properties"))?;
+                properties.insert("permission_mode".into(), json!({
+                    "type": "string",
+                    "enum": crate::claude_controls::PERMISSION_MODES,
+                    "description": "Claude child permission mode. Defaults to the parent's mode. Bypass requires a bypass parent. Reviewers always use plan."
+                }));
+            }
+        }
         let skills_root = root.join(".agents/skills");
         let mut role_guidance = BTreeMap::new();
         for relative in [
@@ -1832,6 +1847,56 @@ mod resource_tests {
 mod workspace_fence_tests {
     use super::*;
 
+    #[test]
+    fn claude_child_spawn_catalog_exposes_valid_permission_modes() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn");
+            let field = &spawn.input_schema["properties"]["agents"]["items"]["properties"]["permission_mode"];
+            assert_eq!(
+                field["enum"],
+                json!(crate::claude_controls::PERMISSION_MODES)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_child_saved_mode_reaches_start_and_resume() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+                "status":"running","isLead":true,"cwd":"/project"})).expect("lead"))?;
+            for mode in crate::claude_controls::PERMISSION_MODES {
+                for resumed in [false, true] {
+                    let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                        "status":"queued","isLead":false,"role":"implementer","provider":"claude","cwd":"/project",
+                        "workspaceMode":"shared","yoloMode":*mode == "bypassPermissions","claudeOptions":{"permissionMode": mode}});
+                    if resumed {
+                        record["threadId"] = json!("existing-thread");
+                        record["nativeToolSource"] = json!("current");
+                    }
+                    let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
+                        &ThreadFilesystemInputs { progress_directory: None }, None)?;
+                    let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                        thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
+                        other => panic!("expected thread launch, got {other:?}"),
+                    };
+                    assert_eq!(attempt.params["claude"]["permissionMode"], *mode);
+                }
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("thread plans");
+    }
+
     #[tokio::test]
     async fn claude_workspace_fence_reaches_thread_launch_options() {
         let directory = tempfile::tempdir().expect("temporary state");
@@ -1875,6 +1940,11 @@ mod workspace_fence_tests {
                         other => panic!("expected thread launch, got {other:?}"),
                     };
                     let options = attempt.params.get("claude").unwrap_or(&Value::Null);
+                    if provider == "claude" && role == "reviewer" {
+                        assert_eq!(options["permissionMode"], "plan");
+                        assert_eq!(attempt.params["sandbox"], "read-only");
+                        assert_eq!(attempt.params["approvalPolicy"], "on-request");
+                    }
                     if fenced {
                         assert_eq!(options["permissionMode"], "bypassPermissions");
                         assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
@@ -1901,7 +1971,11 @@ mod workspace_fence_tests {
                     } else {
                         assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
                     }
-                    assert_eq!(attempt.params["sandbox"], "danger-full-access");
+                    assert_eq!(attempt.params["sandbox"], if provider == "claude" && role == "reviewer" {
+                        "read-only"
+                    } else {
+                        "danger-full-access"
+                    });
                 }
             }
             Ok::<_, WorkerError>(())

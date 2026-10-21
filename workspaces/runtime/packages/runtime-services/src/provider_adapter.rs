@@ -355,6 +355,11 @@ impl ProviderAdapter for ClaudeAdapter {
     ) {
         instructions.push_str(CLAUDE_SESSION_INSTRUCTIONS);
         let mut options = s.settings.claude_options.clone();
+        if s.settings.role == crate::thread_prepare::Role::Reviewer {
+            options.insert("permissionMode".into(), json!("plan"));
+            params.insert("approvalPolicy".into(), json!("on-request"));
+            params.insert("sandbox".into(), json!("read-only"));
+        }
         if let Some(worktree) = &s.host_worktree {
             let mut environment = options
                 .get("env")

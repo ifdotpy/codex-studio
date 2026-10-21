@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
+#[path = "ingress_tests/claude_permissions.rs"]
+mod claude_permissions;
+
 use crate::managed_host_tools::{
     Actor, ChildCreationPort, ComplaintPort, ContextPort, Error, InterruptPort, OperationResult,
     PostCommitPort, ReviewPort, SearchPort, SendPort, StatusPort, WakeSignal, WatchMonitorPort,
