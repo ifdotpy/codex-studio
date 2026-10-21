@@ -808,6 +808,10 @@ struct TerminalPayload {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OutputMatchSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    suppressed_matches: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_wakes_paused: Option<bool>,
     events: u64,
     matches: Vec<OutputMatch>,
     pending: Vec<OutputMatch>,

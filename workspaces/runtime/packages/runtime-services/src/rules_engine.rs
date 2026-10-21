@@ -7,6 +7,9 @@ use uuid::Uuid;
 
 use crate::event_write::{python_json, python_strip, truthy};
 
+/// Maximum automatic catch-up delay for one-shot rules, in seconds.
+pub const ONCE_RULE_GRACE_SECONDS: f64 = 60.0;
+
 pub const OUTPUT_CHARACTERS: usize = 12_000;
 pub const DEFAULT_RULE_STALL_SECONDS: u64 = 1800;
 /// Delay past the exact low-worker duration because its alert predicate is strict `>`.
@@ -406,6 +409,23 @@ impl RuleSnapshot {
         }
         if r.next_at > now {
             return Ok(RuleDecision::default());
+        }
+        if r.kind == Kind::Once && now - r.next_at > ONCE_RULE_GRACE_SECONDS {
+            let message = "Missed scheduled run. Resume this rule to schedule a new run, or delete it to cancel.";
+            next["status"] = json!("paused");
+            next["error"] = json!(message);
+            next["wakes"] = json!(r.wakes + 1);
+            return Ok(RuleDecision {
+                record: Some(next),
+                wake: Some(RuleWake {
+                    id: format!("rule-missed:{}:{}:{}", r.id, r.epoch, r.next_at),
+                    kind: "rule_missed",
+                    text: python_json(
+                        &json!({"rule":r.id,"name":r.name,"dueAt":r.next_at,"delaySeconds":now-r.next_at,"message":message}),
+                    ),
+                }),
+                check: None,
+            });
         }
         next["nextAt"] = json!(now + r.interval_seconds as f64);
         if r.kind == Kind::File {
