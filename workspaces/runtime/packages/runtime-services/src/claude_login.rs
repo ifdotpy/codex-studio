@@ -43,6 +43,10 @@ pub enum LoginError {
     Persistence,
     #[error("Cannot complete Claude sign-in. Start a new sign-in request.")]
     Unavailable,
+    #[error(
+        "This profile uses the system Claude Code login. Sign in with `claude` in a terminal, or add a separate profile for another account."
+    )]
+    SystemProfile,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

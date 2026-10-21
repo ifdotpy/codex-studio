@@ -846,7 +846,8 @@ impl LoginService {
             } else if !job.snapshot.adding() {
                 // Python reauthentication receipts omit configDir, but Python children
                 // inherit this same canonical-config lease. Resolve only a matching
-                // saved account identity; never probe credentials during recovery.
+                // saved account identity with its own config directory; never probe
+                // credentials during recovery.
                 let accounts = self.accounts.clone();
                 let key = job.snapshot.account_key().to_owned();
                 let Ok(profile) = blocking(move || accounts.profile(&key)).await else {
@@ -903,24 +904,14 @@ impl LoginService {
         }
         Ok(())
     }
+    /// A profile without its own config directory is the system Claude Code
+    /// login, which the user signs in to outside Studio.
     fn profile_config(&self, profile: &Value) -> Result<PathBuf, LoginError> {
         profile
             .pointer("/claudeOptions/configDir")
             .and_then(Value::as_str)
             .map(PathBuf::from)
-            .or_else(|| {
-                self.config
-                    .environment
-                    .get(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR"))
-                    .map(PathBuf::from)
-            })
-            .or_else(|| {
-                self.config
-                    .environment
-                    .get(std::ffi::OsStr::new("HOME"))
-                    .map(|v| PathBuf::from(v).join(".claude"))
-            })
-            .ok_or(LoginError::Unavailable)
+            .ok_or(LoginError::SystemProfile)
     }
     async fn canonical_config(
         &self,
