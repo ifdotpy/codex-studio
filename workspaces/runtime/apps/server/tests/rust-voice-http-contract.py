@@ -394,30 +394,6 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn("error", failed.json())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
-    def test_unknown_voice_action_keeps_the_python_error_contract(self):
-        before = no_write_snapshot(self.backend.state)
-        audio_before = self._audio_snapshot()
-        response = self.request("/api/voice/not-a-route", {"anything": True})
-        self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(response.json()["error"], "Unknown voice action")
-        after = no_write_snapshot(self.backend.state)
-        self.assertEqual(after, before)
-        non_object = self.backend.request(
-            "POST", "/api/voice/not-a-route", body=[1], headers=self.headers(),
-        )
-        self.assertEqual(non_object.status, 400, non_object.body[:1000])
-        missing = self.backend.request(
-            "POST", "/api/voice/not-a-route", headers=self.headers(),
-        )
-        self.assertEqual(missing.status, 415, missing.body[:1000])
-        after = no_write_snapshot(self.backend.state)
-        self.assertEqual(after, before)
-        self.assertEqual(self._audio_snapshot(), audio_before)
-
-    def _audio_snapshot(self) -> list[str]:
-        audio = self.backend.state / "voice-audio"
-        return sorted(path.name for path in audio.iterdir()) if audio.exists() else []
-
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_provider_operations_match_python_without_live_voice_transport(self):
         # Runtime.__init__ expires pending native requests during startup
@@ -553,6 +529,48 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT COUNT(*) FROM voice_sessions WHERE id=?", (session_id,),
             ).fetchone()[0]
         self.assertEqual(count, 1, "replay returns the existing session without another insert")
+
+
+class VoiceReadOnlyHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    """Refusals use a fresh backend without another test's queued voice work."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls)
+
+    def headers(self):
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
+
+    def request(self, path, body):
+        return self.backend.request("POST", path, body=body, headers=self.headers())
+
+    def test_unknown_voice_action_keeps_the_python_error_contract(self):
+        before = no_write_snapshot(self.backend.state)
+        audio_before = self._audio_snapshot()
+        response = self.request("/api/voice/not-a-route", {"anything": True})
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json()["error"], "Unknown voice action")
+        after = no_write_snapshot(self.backend.state)
+        self.assertEqual(after, before)
+        non_object = self.backend.request(
+            "POST", "/api/voice/not-a-route", body=[1], headers=self.headers(),
+        )
+        self.assertEqual(non_object.status, 400, non_object.body[:1000])
+        missing = self.backend.request(
+            "POST", "/api/voice/not-a-route", headers=self.headers(),
+        )
+        self.assertEqual(missing.status, 415, missing.body[:1000])
+        after = no_write_snapshot(self.backend.state)
+        self.assertEqual(after, before)
+        self.assertEqual(self._audio_snapshot(), audio_before)
+
+    def _audio_snapshot(self) -> list[str]:
+        audio = self.backend.state / "voice-audio"
+        return sorted(path.name for path in audio.iterdir()) if audio.exists() else []
 
 
 if __name__ == "__main__":

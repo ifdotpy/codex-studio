@@ -17,6 +17,7 @@ use studio_runtime_services::browser_host::{
     self, HostBridgeOptions, HostBridgeService, StoreChats,
 };
 use studio_runtime_services::linux_vm_guest::{GuestRpc, UnixSocketGuestRpc};
+use studio_runtime_services::sign_in;
 
 fn read_request(stream: &mut TcpStream) -> String {
     let mut data = Vec::new();
@@ -454,4 +455,207 @@ fn the_launcher_and_the_path_links_reach_the_runtime_binary() {
     let environment = browser_host::session_environment(dir.path());
     assert!(environment["BROWSER"].ends_with("browser-host/studio-browser"));
     assert!(environment["STUDIO_BROWSER_PATH"].ends_with("browser-host/bin"));
+}
+
+/// On macOS `bin/open` sends exactly one http or https URL to the launcher and gives every
+/// other use to `/usr/bin/open` with the same arguments. The passthrough cases here make the
+/// system `open` fail before it starts an application.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_open_shim_sends_only_one_web_link_to_the_launcher() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("test step");
+    let record = dir.path().join("launched.txt");
+    let fake = dir.path().join("fake-server");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            record.to_string_lossy()
+        ),
+    )
+    .expect("test step");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("test step");
+    browser_host::write_launcher(dir.path(), &fake).expect("test step");
+    let shim = dir.path().join("bin").join(browser_host::OPEN_NAME);
+    assert_eq!(
+        std::fs::read_to_string(&shim).expect("test step"),
+        browser_host::OPEN_SHIM
+    );
+    for link in [
+        "https://id.example.com/device?user_code=AB-CD",
+        "HTTP://127.0.0.1:8000/",
+    ] {
+        let status = std::process::Command::new(&shim)
+            .arg(link)
+            .status()
+            .expect("test step");
+        assert!(status.success(), "{link}");
+        assert_eq!(
+            std::fs::read_to_string(&record).expect("test step"),
+            format!("--studio-browser\n{link}\n")
+        );
+        std::fs::remove_file(&record).expect("test step");
+    }
+    let missing = dir.path().join("missing file.txt");
+    let cases: [Vec<std::ffi::OsString>; 3] = [
+        vec![],
+        vec![missing.clone().into()],
+        vec!["-R".into(), missing.into()],
+    ];
+    for arguments in cases {
+        let shimmed = std::process::Command::new(&shim)
+            .args(&arguments)
+            .output()
+            .expect("test step");
+        let system = std::process::Command::new("/usr/bin/open")
+            .args(&arguments)
+            .output()
+            .expect("test step");
+        assert_eq!(shimmed.status.code(), system.status.code(), "{arguments:?}");
+        assert_eq!(shimmed.stdout, system.stdout, "{arguments:?}");
+        assert_eq!(shimmed.stderr, system.stderr, "{arguments:?}");
+        assert!(!shimmed.status.success(), "{arguments:?}");
+    }
+    assert!(!record.exists());
+}
+
+fn cards(store: &studio_runtime_store::RuntimeStore) -> Vec<Value> {
+    let connection = store.test_reader().expect("test step");
+    let mut statement = connection
+        .prepare("SELECT record FROM runtime_requests ORDER BY id")
+        .expect("test step");
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("test step")
+        .map(|raw| serde_json::from_str(&raw.expect("test step")).expect("test step"))
+        .collect()
+}
+
+async fn agent_message(
+    store: &studio_runtime_store::RuntimeStore,
+    agent: &str,
+    item: &str,
+    text: &str,
+    streaming: bool,
+) -> sign_in::MessageLinks {
+    let key = format!("{agent}:{item}");
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test step")
+        .as_secs_f64();
+    let record = json!({"id": key, "role": "assistant", "title": "Assistant", "text": text,
+                        "truncated": false, "at": at, "streaming": streaming})
+    .to_string();
+    let (row, owner) = (key.clone(), agent.to_owned());
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![row, owner, record, at],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("test step");
+    sign_in::MessageLinks {
+        agent_id: agent.to_owned(),
+        item_key: key,
+        links: studio_runtime_services::browser_policy::sign_in_links(text),
+    }
+}
+
+/// Section 7: a link that the agent gives through `orchestration_sign_in` or in its message
+/// reaches the same bridge and card as a link that its command opens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_link_from_the_tool_and_from_the_message_gets_one_card() {
+    let agent = "45c48cce-2e2d-4fbd-8a3c-1d2c3b4a5f62";
+    let (dir, store) = seeded_store(agent).await;
+    let service = HostBridgeService::start(
+        dir.path(),
+        Arc::new(StoreChats {
+            store: Arc::clone(&store),
+        }),
+        HostBridgeOptions::default(),
+        None,
+    )
+    .expect("test step");
+    let guest: Arc<dyn GuestRpc> =
+        Arc::new(UnixSocketGuestRpc::new(service.control_socket.clone()));
+    let sources = sign_in::SignInSources::new(vec![CardSource {
+        source: "host",
+        guest,
+        forwarder: None,
+        http_providers: BTreeSet::new(),
+    }]);
+    let record = json!({"id": agent, "executionMode": "host"});
+    let device = "https://device.sso.us-east-1.amazonaws.com/?user_code=WDJB-MJHT";
+    let first = sign_in::tool(&store, &sources, &record, Some(device), "call-1")
+        .await
+        .expect("test step");
+    let [pending]: [Value; 1] = cards(&store).try_into().expect("one card");
+    assert_eq!(first["status"], "pending");
+    assert_eq!(first["requestId"], pending["id"]);
+    assert!(
+        first["message"]
+            .as_str()
+            .expect("test step")
+            .contains("sign-in card")
+    );
+    assert_eq!(pending["params"]["userCode"], "WDJB-MJHT");
+    assert_eq!(pending["params"]["source"], "host");
+    // A retry and the same link in the agent's message keep the one card.
+    let again = sign_in::tool(&store, &sources, &record, Some(device), "call-2")
+        .await
+        .expect("test step");
+    assert_eq!(again["requestId"], pending["id"]);
+    let text = format!("Open **{device}** now.");
+    let note = agent_message(&store, agent, "item-1", &text, false).await;
+    assert_eq!(note.links, vec![device.to_owned()]);
+    sign_in::handle_message(&store, &sources, &note, &[0]).await;
+    assert_eq!(cards(&store).len(), 1);
+    // A new link in a message gets its own card, but only once the message is complete.
+    let other = "https://device.sso.us-east-1.amazonaws.com/?user_code=QQQQ-RRRR";
+    let text = format!("Then confirm the code at {other}.");
+    let draft = agent_message(&store, agent, "item-2", &text, true).await;
+    sign_in::handle_message(&store, &sources, &draft, &[0]).await;
+    assert_eq!(cards(&store).len(), 1);
+    let done = agent_message(&store, agent, "item-2", &text, false).await;
+    sign_in::handle_message(&store, &sources, &done, &[0]).await;
+    let all = cards(&store);
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().any(|card| card["params"]["url"] == other));
+    // A refusal reaches the model as text, and no card is written.
+    let scheme = sign_in::tool(
+        &store,
+        &sources,
+        &record,
+        Some("ftp://files.acme.dev/x"),
+        "call-3",
+    )
+    .await
+    .expect_err("refused");
+    assert!(scheme.contains("Only https sign-in links"), "{scheme}");
+    let vm = json!({"id": agent, "executionMode": "vm"});
+    let missing = sign_in::tool(&store, &sources, &vm, Some(device), "call-4")
+        .await
+        .expect_err("refused");
+    assert!(missing.contains("VM chats"), "{missing}");
+    assert_eq!(cards(&store).len(), 2);
+    service.stop().await;
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn only_a_macos_host_gets_the_open_shim() {
+    let dir = tempfile::tempdir().expect("test step");
+    browser_host::write_launcher(dir.path(), std::path::Path::new("/opt/server"))
+        .expect("test step");
+    assert!(
+        !dir.path()
+            .join("bin")
+            .join(browser_host::OPEN_NAME)
+            .exists()
+    );
 }

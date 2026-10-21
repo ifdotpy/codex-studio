@@ -79,6 +79,19 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 "Too short agent ID; use at least 8 characters",
             ));
         }
+        // An agent ID names one visible agent: the full ID, or a prefix of at
+        // least eight characters that matches exactly one agent in the caller's
+        // scope. An ambiguous or unknown ID is refused with its reason.
+        let resolved;
+        let target = if matches!(target, "parent" | "lead" | "broadcast" | "all")
+            || target.starts_with("remote:")
+            || target.starts_with("federated:")
+        {
+            target
+        } else {
+            resolved = messages::resolve_agent(tx, &snapshot, target).map_err(callback_refusal)?;
+            resolved.as_str()
+        };
         if is_descendant(tx, snapshot.context().agent.as_str(), target)? {
             let text = args["text"]
                 .as_str()
@@ -128,21 +141,46 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         // Runtime.dynamic routes non-descendants through chat_message, which
         // supplies its default importance and never accepts progress metadata.
         let chat_args = json!({"target":target,"text":args["text"],"delivery":args["delivery"]});
-        let value = messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(
-            |error| match error {
-                CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                CallbackError::Dependency(name) => {
-                    crate::managed_host_tools::Error::Unavailable(name)
-                }
-                _ => crate::managed_host_tools::Error::Invalid(
-                    "Message ingress refused this request",
-                ),
-            },
-        )?;
+        let value =
+            messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(callback_refusal)?;
         Ok(crate::managed_host_tools::OperationResult {
             value,
             signals: Vec::new(),
         })
+    }
+}
+
+/// The agent whose authority cancels a command watch. The owner cancels its
+/// own watch. An ancestor may cancel a descendant's watch, as it may interrupt
+/// or archive that descendant. Every other caller stays itself, so
+/// `monitor_policy::cancel` refuses it as another agent's command.
+fn monitor_cancel_owner(
+    tx: &Transaction<'_>,
+    caller: &str,
+    monitor_id: &str,
+) -> Result<String, crate::managed_host_tools::Error> {
+    let owner =
+        studio_runtime_store::MonitorsRepository::get(tx, monitor_id)?.and_then(|monitor| {
+            monitor
+                .value()
+                .get("agent")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    match owner {
+        Some(owner) if owner != caller && is_descendant(tx, caller, &owner)? => Ok(owner),
+        _ => Ok(caller.to_owned()),
+    }
+}
+
+/// Keep a named refusal visible to the caller. Other failures keep their
+/// generic text, because they can carry stored detail.
+fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {
+    match error {
+        CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+        CallbackError::Dependency(name) => crate::managed_host_tools::Error::Unavailable(name),
+        CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
+        _ => crate::managed_host_tools::Error::Invalid("Message ingress refused this request"),
     }
 }
 
@@ -409,19 +447,20 @@ impl crate::managed_host_tools::WatchMonitorPort for ProductionPorts {
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Missing monitor_id",
             ))?;
-        let (value, operation) =
-            crate::monitor_driver::reserve_cancel(tx, id, Some(&actor.record().id.0), now)
-                .map_err(|error| match error {
-                    crate::monitor_policy::MonitorError::Store(error) => {
-                        crate::managed_host_tools::Error::Store(error)
-                    }
-                    crate::monitor_policy::MonitorError::Unavailable(name) => {
-                        crate::managed_host_tools::Error::Unavailable(name)
-                    }
-                    _ => crate::managed_host_tools::Error::Invalid(
-                        "Monitor cancellation was refused",
-                    ),
-                })?;
+        let owner = monitor_cancel_owner(tx, &actor.record().id.0, id)?;
+        let (value, operation) = crate::monitor_driver::reserve_cancel(tx, id, Some(&owner), now)
+            .map_err(|error| match error {
+            crate::monitor_policy::MonitorError::Store(error) => {
+                crate::managed_host_tools::Error::Store(error)
+            }
+            crate::monitor_policy::MonitorError::Unavailable(name) => {
+                crate::managed_host_tools::Error::Unavailable(name)
+            }
+            crate::monitor_policy::MonitorError::Refused(reason) => {
+                crate::managed_host_tools::Error::Invalid(reason)
+            }
+            _ => crate::managed_host_tools::Error::Invalid("Monitor cancellation was refused"),
+        })?;
         let signals = operation
             .into_iter()
             .map(|_| crate::managed_host_tools::WakeSignal::new("monitor-driver"))
@@ -710,10 +749,17 @@ pub(super) fn execute(
     let args = &resolved_args;
     if matches!(kind, ToolKind::CancelMonitor) {
         let monitor_id = text(args, "monitor_id")?;
+        let owner =
+            monitor_cancel_owner(tx, &snapshot.context().agent, monitor_id).map_err(|error| {
+                match error {
+                    crate::managed_host_tools::Error::Store(error) => CallbackError::Store(error),
+                    _ => CallbackError::Stale,
+                }
+            })?;
         let (value, operation) = crate::monitor_driver::reserve_cancel(
             tx,
             monitor_id,
-            Some(&snapshot.context().agent),
+            Some(&owner),
             now,
         )
         .map_err(|error| match error {
@@ -721,6 +767,7 @@ pub(super) fn execute(
             crate::monitor_policy::MonitorError::Unavailable(name) => {
                 CallbackError::Dependency(name)
             }
+            crate::monitor_policy::MonitorError::Refused(reason) => CallbackError::Invalid(reason),
             _ => CallbackError::Invalid("Monitor cancellation was refused"),
         })?;
         return Ok(crate::managed_host_tools::Staged {
@@ -803,6 +850,10 @@ pub(super) fn execute(
             "Agent management dispatch was not handled",
         )),
         ToolKind::Speak => Err(CallbackError::Dependency("voice/provider-session")),
+        // The managed-tool dispatcher sends every sign-in link to the browser bridge.
+        ToolKind::SignIn => Err(CallbackError::Dependency(
+            super::runtime_dispatch::SIGN_IN_DEPENDENCY,
+        )),
         ToolKind::HostExec => Err(CallbackError::Dependency("host-exec/layr-bridge")),
         ToolKind::Title => {
             if actor["isLead"] != true {

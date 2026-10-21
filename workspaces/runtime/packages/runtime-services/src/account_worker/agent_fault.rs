@@ -215,8 +215,26 @@ fn record_agent(
             )
             .optional()?);
     }
-    // `runtime_agents/<id>`, and the worker's own `invalid(<agent id>)`.
-    if matches!(scope, "runtime_agents" | "account_worker") {
+    // A run row names its agent. A turn outcome that finds no run reports
+    // the agent id itself as `runtime_execution_runs/<agent id>`.
+    if scope == "runtime_execution_runs"
+        && let Some(agent) = tx
+            .query_row_cached(
+                "SELECT agent FROM runtime_execution_runs WHERE id=?1",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+    {
+        return Ok(Some(agent));
+    }
+    // `runtime_agents/<id>`, the worker's own `invalid(<agent id>)`, and a
+    // turn outcome without a run.
+    if matches!(
+        scope,
+        "runtime_agents" | "account_worker" | "runtime_execution_runs"
+    ) {
         let exists: bool = tx.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1)",
             [id],

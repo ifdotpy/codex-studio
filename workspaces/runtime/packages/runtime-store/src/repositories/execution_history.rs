@@ -144,6 +144,8 @@ impl ExecutionHistoryRepository {
         Ok(())
     }
     /// Reflect a claimed/submitted/accepted attempt, including Python-written existing runs.
+    /// Each accepted attempt keeps its own run, so several runs can share one
+    /// native turn; [`Self::terminal`] owns that contract.
     pub fn record(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
         let Some(attempt) = agent
             .extra
@@ -296,6 +298,16 @@ impl ExecutionHistoryRepository {
         Ok(())
     }
     /// Native outcome is retained even when missing transcript support makes the agent fail.
+    ///
+    /// One native turn can own several runs. A `turn/start` that reaches a
+    /// provider while that thread's turn is still active is accepted with the
+    /// active turn's id (Codex merges the input into the running turn), and
+    /// [`Self::record`] keeps one run per accepted attempt. This happens after
+    /// a worker restart: the restart marks the agent interrupted, its queued
+    /// input starts again, and the provider turn never stopped (agents
+    /// d0c9c794 and 50f9a796, 21 October 2026). The turn's outcome settles
+    /// every one of its runs. A run that already carries a different outcome
+    /// is a real conflict and refuses the whole settlement.
     pub fn terminal(
         tx: &Transaction<'_>,
         agent_id: &str,
@@ -303,33 +315,36 @@ impl ExecutionHistoryRepository {
         status: &str,
         error: Option<&Value>,
     ) -> StoreResult<()> {
-        let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=a.account_key AND r.thread IS a.thread_id LIMIT 2")?;
+        let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=a.account_key AND r.thread IS a.thread_id ORDER BY r.created,r.id")?;
         let rows = stmt
             .query_map(params![agent_id, turn_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let [(id, raw)] = rows.as_slice() else {
-            return Err(Self::invalid(
-                "runtime_execution_runs",
-                rows.first().map_or(agent_id, |r| r.0.as_str()),
-            ));
-        };
-        let mut run = decode("runtime_execution_runs", id, raw)?;
-        if terminal(&run["status"]) {
-            if run["status"] != status
+        if rows.is_empty() {
+            return Err(Self::invalid("runtime_execution_runs", agent_id));
+        }
+        let mut open = Vec::with_capacity(rows.len());
+        for (id, raw) in &rows {
+            let run = decode("runtime_execution_runs", id, raw)?;
+            if !terminal(&run["status"]) {
+                open.push(run);
+            } else if run["status"] != status
                 || run.get("error").unwrap_or(&Value::Null) != error.unwrap_or(&Value::Null)
             {
                 return Err(Self::invalid("runtime_execution_runs", id));
             }
-            return Ok(());
         }
-        run["status"] = json!(status);
-        run["finished"] = json!(now());
-        run["result"] = json!("");
-        run["resultItemId"] = Value::Null;
-        run["error"] = error.cloned().unwrap_or(Value::Null);
-        save_run(tx, &run)
+        let finished = now();
+        for mut run in open {
+            run["status"] = json!(status);
+            run["finished"] = json!(finished);
+            run["result"] = json!("");
+            run["resultItemId"] = Value::Null;
+            run["error"] = error.cloned().unwrap_or(Value::Null);
+            save_run(tx, &run)?;
+        }
+        Ok(())
     }
 }
 fn save_run(tx: &Transaction<'_>, run: &Value) -> StoreResult<()> {

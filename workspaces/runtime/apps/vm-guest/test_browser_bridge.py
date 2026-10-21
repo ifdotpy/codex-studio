@@ -7,6 +7,7 @@ loopback. A fake /proc/net/tcp table names the listener owners, so they also run
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import shutil
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from browser_bridge import (BridgeError, BrowserBridge, Listener, connect_address,  # noqa: E402
                             parse_listeners)
 from browser_policy import (USER_CODE_LIMIT, PolicyError, Provider, StartPage, classify, pasted,  # noqa: E402
-                            provider)
+                            provider, sign_in_links)
 from test_browser_fakes import SHIM, FakeProvider, FakeTool, install_shim  # noqa: E402
 
 AGENT = str(uuid.uuid4())
@@ -84,6 +85,15 @@ class Policy(unittest.TestCase):
         # A page with a loopback redirect is no device code page.
         self.assertIsNone(provider("https://idp.example.com/a?redirect_uri=http%3A%2F%2Flocalhost%3A8000"
                                    "&user_code=X").user_code)
+
+    def test_sign_in_links_of_a_message_follow_the_shared_corpus(self) -> None:
+        # The Rust port (runtime-services browser_policy.rs) checks the same file.
+        corpus = json.loads((Path(__file__).resolve().parent / "sign_in_links.json").read_text())
+        self.assertGreater(len(corpus), 20)
+        for case in corpus:
+            with self.subTest(case["name"]):
+                self.assertEqual(sign_in_links(case["text"]), case["links"])
+        self.assertEqual(sign_in_links(None), [])
 
     def test_a_pasted_redirect_must_match_the_request(self) -> None:
         redirect = {"host": "localhost", "port": 8000, "path": "/"}
@@ -296,8 +306,12 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
 
     async def test_limits_replace_and_shim_errors(self) -> None:
         tool = self.tool("aws")
-        for _ in range(6):
+        first_url = tool.open_url
+        # Each run gives a new link: the same link of a chat gets its earlier request back.
+        for index in range(6):
+            tool.open_url = first_url + f"&try={index}"
             self.assertEqual((await self.launch(tool)).returncode, 0)
+        tool.open_url = first_url + "&try=6"
         limited = await self.launch(tool)
         self.assertIn("6 times in 10 minutes", limited.stderr)
         items = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
@@ -329,6 +343,40 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BridgeError) as stale:
             await self.bridge.call("browser.answer", {"id": item["id"], "decision": "approve"})
         self.assertEqual(stale.exception.code, "stale")
+
+    async def test_a_server_submit_queues_for_the_chat_user_and_one_link_gets_one_request(self) -> None:
+        tool = self.tool("aws")
+        item = await self.bridge.call("browser.submit", {"agentId": AGENT, "url": tool.open_url})
+        self.assertEqual((item["state"], item["agentId"], item["uid"], item["linuxUser"]),
+                         ("pending", AGENT, UID, "studio-a-test"))
+        self.assertEqual(item["redirect"], {"host": "127.0.0.1", "port": tool.port, "path": "/oauth/callback"})
+        # The agent's tool call, its message and the command itself can give the same link.
+        again = await self.bridge.call("browser.submit", {"agentId": AGENT, "url": tool.open_url})
+        result = await self.launch(tool)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(again["id"], item["id"])
+        self.assertEqual([entry["id"] for entry in self.bridge.items.values()], [item["id"]])
+        # A declined link stays declined for this chat until its request expires.
+        await self.bridge.call("browser.answer", {"id": item["id"], "decision": "decline"})
+        declined = await self.bridge.call("browser.submit", {"agentId": AGENT, "url": tool.open_url})
+        self.assertEqual((declined["id"], declined["state"]), (item["id"], "declined"))
+        self.now += 601
+        fresh = await self.bridge.call("browser.submit", {"agentId": AGENT, "url": tool.open_url})
+        self.assertNotEqual(fresh["id"], item["id"])
+        # The listener checks stay those of the chat's Linux user.
+        self.contexts[OTHER]["uid"] = UID
+        self.owners[tool.port] = UID + 7
+        with self.assertRaises(BridgeError) as other:
+            await self.bridge.call("browser.submit", {"agentId": OTHER, "url": tool.open_url})
+        self.assertEqual(other.exception.code, "forbidden")
+        for params in ({"agentId": str(uuid.uuid4()), "url": tool.open_url},
+                       {"agentId": "lead", "url": tool.open_url}):
+            with self.subTest(params=params), self.assertRaises(BridgeError) as refused:
+                await self.bridge.call("browser.submit", params)
+            self.assertEqual(refused.exception.code, "unknown_agent")
+        with self.assertRaises(BridgeError) as scheme:
+            await self.bridge.call("browser.submit", {"agentId": AGENT, "url": "file:///etc/passwd"})
+        self.assertEqual(scheme.exception.code, "invalid_url")
 
     async def test_decline_close_expiry_and_device_links(self) -> None:
         tool = self.tool("aws")
@@ -412,5 +460,10 @@ class ServiceMethods(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale["error"]["code"], "stale")
         missing = await self.call("a3", "browser.callback", {"id": "none", "target": "/"})
         self.assertEqual(missing["error"]["code"], "not_found")
+        # The server's submit of the same link returns the closed request; its receipt replays.
+        submitted = await self.call("s1", "browser.submit", {"agentId": AGENT, "url": self.tool.open_url})
+        self.assertEqual((submitted["result"]["id"], submitted["result"]["state"]), (item["id"], "closed"))
+        self.assertEqual(await self.call("s1", "browser.submit", {"agentId": AGENT, "url": self.tool.open_url}),
+                         submitted)
         wrong = await self.call("w2", "browser.wait", {"after": -1})
         self.assertEqual(wrong["error"]["code"], "invalid_params")

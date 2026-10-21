@@ -40,6 +40,29 @@ LAUNCHER = "studio-browser"
 # backend (runtime-services browser_host.rs) writes the same folder and names.
 PATH_FOLDER = "bin"
 PATH_NAMES = ("xdg-open", "x-www-browser", "www-browser")
+# Studio's `open` in PATH_FOLDER of a macOS host, for tools that run `open URL` and ignore
+# BROWSER: one http or https URL goes to the launcher, every other use to /usr/bin/open
+# unchanged. The owner is the Rust file runtime-services/src/browser_open.sh;
+# test_codex_browser_host_env.py checks that this copy equals it. Linux hosts do not get it:
+# there `open` is another program (openvt), and tools run xdg-open.
+OPEN_NAME = "open"
+OPEN_SHIM = """#!/bin/sh
+# Studio's `open` for agent commands on a macOS host (docs/vm-browser-bridge.md, section 6.4).
+# One http or https URL goes to the person's browser through the Studio launcher next to this
+# folder. Every other use runs the system `open` with the same arguments.
+if [ "$#" -eq 1 ]; then
+  case "$1" in
+    [Hh][Tt][Tt][Pp]://* | [Hh][Tt][Tt][Pp][Ss]://*)
+      case "$0" in
+        */*) folder=${0%/*} ;;
+        *) folder=. ;;
+      esac
+      exec "$folder/../studio-browser" "$1"
+      ;;
+  esac
+fi
+exec /usr/bin/open "$@"
+"""
 
 
 def lsof_listeners(text: str) -> list[Listener]:
@@ -124,6 +147,8 @@ def session_environment(state: Path) -> dict[str, str]:
     links.mkdir(mode=0o700, exist_ok=True)
     for name in PATH_NAMES:
         _link(links / name, Path("..") / LAUNCHER)
+    if sys.platform == "darwin":
+        _write(links / OPEN_NAME, OPEN_SHIM, 0o755)
     return {"BROWSER": str(shim), "STUDIO_BROWSER_SOCKET": str(folder / "open.sock"),
             "STUDIO_BROWSER_PATH": str(links)}
 
@@ -143,8 +168,10 @@ def thread_environment(state: Path | str, agent_id: str) -> dict[str, str]:
     """Per-thread Codex config overrides that send a host Codex chat's browser links to this
     server (docs/vm-browser-bridge.md, section 6.4). Codex applies `shell_environment_policy.set`
     to the commands of the thread; its app-server launch stays unchanged. PATH is not set: a
-    Codex `set.PATH` replaces the whole PATH of the command. Nothing is set before the launcher
-    exists, so a server without the host bridge keeps the tool's own browser behaviour."""
+    Codex `set.PATH` replaces the whole PATH of the command, also the entries that the
+    person's shell startup files add (section 6.4 has the measurement). Nothing is set before
+    the launcher exists, so a server without the host bridge keeps the tool's own browser
+    behaviour."""
     folder = Path(state) / FOLDER
     launcher = folder / LAUNCHER
     if not launcher.is_file():

@@ -537,3 +537,157 @@ async fn corrupt_notification_metadata_is_quarantined_and_other_agents_keep_work
     assert_running(&mut worker).await;
     worker.shutdown().await.unwrap();
 }
+
+/// A run row that refuses its turn outcome names its agent, so only that
+/// agent is held (the 21 October 2026 worker end on
+/// `runtime_execution_runs/run:<id>`).
+#[tokio::test]
+async fn a_run_that_refuses_its_turn_outcome_holds_only_its_agent() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    second_agent(&state, "agent-b", "fake-thread-1", "b-input").await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let a_start = start_agent(&state, &mut peer, &worker, &a, "fake-thread-0").await;
+    peer.reply(&a_start, json!({"turn":{"id":"turn-a"}})).await;
+    let b_start = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
+
+    // Agent A's run already carries a different outcome than the provider reports.
+    let a_row = a.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    assert_eq!(
+                        tx.execute(
+                            "UPDATE runtime_execution_runs SET record=json_set(record,'$.status','failed','$.error','stale') WHERE agent=?1 AND turn='turn-a'",
+                            [a_row],
+                        )?,
+                        1
+                    );
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let completed = peer
+        .frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn-a","status":"completed"}}}))
+        .await;
+    peer.acknowledged_or_worker_exits(completed, &mut worker)
+        .await;
+    assert_held(&record_of(&state, &a).await, "runtime_execution_runs/run:");
+
+    let reply = peer
+        .frame(json!({"id":b_start["id"],"result":{"turn":{"id":"turn-b"}}}))
+        .await;
+    peer.acknowledged_or_worker_exits(reply, &mut worker).await;
+    assert_eq!(state.event_status("b-input").await, "delivered");
+    assert_running(&mut worker).await;
+    worker.shutdown().await.unwrap();
+}
+
+/// Monitor output that a full durable queue refuses waits for room instead of
+/// ending the account worker. Before this, `notification output queue capacity
+/// reached` ended the worker (21 October 2026, account profile-1a70).
+#[tokio::test]
+async fn a_full_monitor_output_queue_holds_the_journal_until_it_drains() {
+    let state = State::new().await;
+    let (agent, epoch) = (state.agent.clone(), state.epoch);
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let operation = json!({
+                        "agent": agent, "epoch": epoch, "accountKey": "default",
+                        "connectionId": "connection"
+                    });
+                    // One event short of the reserved terminal slots: full for output.
+                    let queue = (0..126)
+                        .map(|index| {
+                            json!({
+                                "cursor": format!("seed:{index}"), "offset": index,
+                                "byteLength": 1, "deltaBase64": "eA==", "stream": "stdout",
+                                "operation": operation
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES('monitor-full',?1)",
+                        [json!({
+                            "id": "monitor-full", "agent": agent, "epoch": epoch,
+                            "status": "running", "bytes": 0, "created": 1.0,
+                            "operation": operation, "streamQueue": queue
+                        })
+                        .to_string()],
+                    )?;
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let queued = |state: &State| {
+        let bridge = state.bridge.clone();
+        async move {
+            bridge
+                .run(|store| async move {
+                    let raw: String = store.test_reader()?.query_row(
+                        "SELECT json_extract(record,'$.streamQueue') FROM runtime_monitors WHERE id='monitor-full'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    Ok(serde_json::from_str::<Vec<Value>>(&raw).unwrap())
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let delta = peer
+        .frame(json!({"method":"command/exec/outputDelta","params":{
+            "processId":"monitor-full","stream":"stdout","deltaBase64":"eQ=="
+        }}))
+        .await;
+    assert_running(&mut worker).await;
+    assert!(
+        peer.acks.try_recv().is_err(),
+        "the refused delta is not settled"
+    );
+    assert_eq!(queued(&state).await.len(), 126);
+
+    // The consumer drains the queue; the waiting delta then lands once, in order.
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_monitors SET record=json_set(record,'$.streamQueue',json('[]')) WHERE id='monitor-full'",
+                        [],
+                    )?;
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        PROGRESS_DEADLINE,
+        peer.acknowledged_or_worker_exits(delta, &mut worker),
+    )
+    .await
+    .expect("the delta is journaled after the queue drains");
+    let queue = queued(&state).await;
+    assert_eq!(queue.len(), 1, "{queue:?}");
+    assert_eq!(queue[0]["deltaBase64"], "eQ==");
+    assert_running(&mut worker).await;
+    worker.shutdown().await.unwrap();
+}

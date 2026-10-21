@@ -658,6 +658,108 @@ impl SchedulerRepository {
         ))
     }
 
+    /// Bind a turn that the provider started on its own to the idle agent of
+    /// `thread_id`, as Python `Runtime.notification` does. Claude starts such
+    /// a turn when a background task of the session finishes after its last
+    /// turn ended. Without this binding the agent stays idle in the store
+    /// while the turn runs, so every managed tool call of the turn has no
+    /// active turn and fails.
+    ///
+    /// The agent must be idle on its current epoch (`completed`, `waiting` or
+    /// `queued`, not in flight, not held), wake automatically, and its last
+    /// attempt must be on this provider generation of the same account and
+    /// thread; that attempt supplies the connection. The new attempt carries
+    /// no input (`providerTurn`), so its turn settles like any other turn and
+    /// queued input reaches it as busy-turn input. Returns `None` and writes
+    /// nothing when any condition fails.
+    pub fn adopt_provider_turn(
+        transaction: &Transaction<'_>,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: &str,
+        expected_agent: Option<&str>,
+    ) -> StoreResult<Option<TurnAttemptIdentity>> {
+        let ids = {
+            let mut statement = transaction.prepare_cached(
+                "SELECT id FROM runtime_agents \
+                 WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
+            )?;
+            statement
+                .query_map(params![thread_id, account_key], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let [id] = ids.as_slice() else {
+            return Ok(None);
+        };
+        if expected_agent.is_some_and(|expected| expected != id) {
+            return Ok(None);
+        }
+        let Some(mut agent) = load_agent(transaction, id)? else {
+            return Ok(None);
+        };
+        let flag = |key: &str| agent.extra.get(key).is_some_and(truthy);
+        let text = |key: &str| agent.extra.get(key).and_then(Value::as_str);
+        let Some(previous) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+            return Ok(None);
+        };
+        let Some(connection) = previous
+            .get("connectionId")
+            .and_then(Value::as_str)
+            .filter(|connection| !connection.is_empty())
+        else {
+            return Ok(None);
+        };
+        let idle = matches!(
+            agent.status,
+            AgentStatus::Completed | AgentStatus::Waiting | AgentStatus::Queued
+        );
+        if !idle
+            || flag("deletedAt")
+            || flag("inFlight")
+            || flag("nativeFailureHold")
+            || flag("remoteWorker")
+            || flag("remoteAnchor")
+            || agent.extra.get("autoWake") != Some(&json!(true))
+            || text("threadId") != Some(thread_id)
+            || text("accountKey").unwrap_or("default") != account_key
+            || previous.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
+            || previous.get("accountKey").and_then(Value::as_str) != Some(account_key)
+            || previous.get("threadId").and_then(Value::as_str) != Some(thread_id)
+            || previous.get("connectionGeneration").and_then(Value::as_u64) != Some(generation)
+            || completed_turn(transaction, id, turn_id)?
+        {
+            return Ok(None);
+        }
+        let attempt_id = format!("{PROVIDER_TURN_ATTEMPT_PREFIX}{id}:{turn_id}");
+        let attempt = json!({
+            "id": attempt_id,
+            "epoch": agent.epoch,
+            "activeAtReservation": false,
+            "accountKey": account_key,
+            "events": [],
+            "submitted": true,
+            "created": timestamp(),
+            "providerTurn": true,
+            "requestTicket": attempt_id,
+            "connectionId": connection,
+            "connectionGeneration": generation,
+            "threadId": thread_id,
+            "turnId": turn_id,
+        });
+        let epoch = agent.epoch;
+        agent.extra.insert("startAttempt".into(), attempt);
+        agent.extra.insert("turnEpoch".into(), json!(epoch));
+        publish_agent(transaction, &agent)?;
+        Ok(Some(TurnAttemptIdentity {
+            agent_id: id.clone(),
+            epoch,
+            attempt_id,
+        }))
+    }
+
     /// Persist the uncertainty boundary before calling the turn-driver port.
     pub fn mark_submitted(
         transaction: &Transaction<'_>,
@@ -2679,9 +2781,9 @@ pub(super) fn validated_events(
         .filter(|v| v.is_array())
         .ok_or_else(|| invalid_agent(&agent.id.0))?
         .to_string();
-    // A native action submits no queued input; every other attempt submits at
-    // least one event.
-    let empty_allowed = native_action_attempt(attempt);
+    // A native action and a provider-started turn submit no queued input;
+    // every other attempt submits at least one event.
+    let empty_allowed = native_action_attempt(attempt) || provider_turn_attempt(attempt);
     let valid: bool = transaction.query_row_cached(
         "SELECT (COUNT(*) > 0 OR ?2) AND COUNT(*)=COUNT(DISTINCT value) AND COUNT(*)=COALESCE(SUM(type='text'),0) FROM json_each(?1)",
         params![events, empty_allowed], |r|r.get(0))?;
@@ -2697,6 +2799,19 @@ pub(super) fn native_action_attempt(attempt: &Value) -> bool {
         .get("action")
         .and_then(Value::as_str)
         .is_some_and(|action| NATIVE_ACTION_ATTEMPT_KINDS.contains(&action))
+}
+
+/// Attempt id prefix of a turn the provider started on its own
+/// ([`SchedulerRepository::adopt_provider_turn`]): `provider-turn:{agent}:{turn}`.
+const PROVIDER_TURN_ATTEMPT_PREFIX: &str = "provider-turn:";
+
+/// True for the attempt of a provider-started turn, which carries no input.
+pub(super) fn provider_turn_attempt(attempt: &Value) -> bool {
+    attempt.get("providerTurn") == Some(&Value::Bool(true))
+        && attempt
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with(PROVIDER_TURN_ATTEMPT_PREFIX))
 }
 
 /// The provider turn an attempt is bound to. An ordinary attempt is bound by

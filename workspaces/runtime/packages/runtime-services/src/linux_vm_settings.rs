@@ -141,8 +141,10 @@ fn read_macos_host_memory_bytes() -> Result<u64, SettingsError> {
                 thread::sleep(Duration::from_millis(10));
             }
             None => {
-                let _ = child.kill();
-                let _ = child.wait();
+                // The timeout error is the result. A kill error means the child
+                // already exited, and the wait only reaps it.
+                let _kill_result = child.kill();
+                let _wait_result = child.wait();
                 return Err(SettingsError::Invalid(
                     "Reading macOS host memory exceeded its timeout.".to_owned(),
                 ));

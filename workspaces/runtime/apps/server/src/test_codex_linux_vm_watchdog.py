@@ -641,5 +641,66 @@ class UpgradeSpace(unittest.TestCase):
         self.assertFalse((self.directory / 'updates/space-1/receipt.json').exists())
 
 
+class UpgradeOrphans(unittest.TestCase):
+    """An approved lost provider stops the reboot path only while its process can still run."""
+
+    HANDLE = 'linux-worker:efb541b3-cdaa-408c-bea2-aaedeb87171d'
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='vm-upgrade-')
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        (self.directory / 'config.json').write_text('{}')
+        (self.directory / 'helper').touch(mode=0o700)
+        for name in ('system.raw', 'data.raw'):
+            (self.directory / name).write_bytes(b'x')
+        path = Path(vm.__file__).with_name('upgrade-linux-vm-layr.py')
+        spec = importlib.util.spec_from_file_location('upgrade_linux_vm_layr', path)
+        assert spec is not None and spec.loader is not None
+        self.upgrade = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.upgrade)
+
+    def run_with(self, row: dict[str, Any], approved: set[str]) -> None:
+        usage = SimpleNamespace(total=2**50, used=0, free=2**49)
+        copy = Mock(side_effect=RuntimeError('clone reached'))
+        with patch.object(vm.Client, 'call', return_value={'providers': [row]}), \
+                patch.object(self.upgrade.shutil, 'disk_usage', return_value=usage), \
+                patch.object(self.upgrade.subprocess, 'run', copy):
+            self.upgrade.upgrade(self.directory, self.directory / 'helper', self.directory,
+                                 'orphan-1', approved, reboot=True)
+
+    def lost(self, reason: str) -> dict[str, Any]:
+        # The row that a VM panic left on igor-mbp, 2026-10-21.
+        return {'handle': self.HANDLE, 'state': 'lost', 'reason': reason,
+                'agentId': 'efb541b3-cdaa-408c-bea2-aaedeb87171d'}
+
+    def test_an_approved_agent_handle_whose_process_is_gone_admits_the_backup(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, 'clone reached'):
+            self.run_with(self.lost('native_process_lost'), {self.HANDLE})
+
+    def test_the_same_lost_provider_without_approval_blocks(self) -> None:
+        with self.assertRaisesRegex(vm.LinuxVMError, 'prevent a VM restart'):
+            self.run_with(self.lost('native_process_lost'), set())
+
+    def test_an_approved_provider_whose_process_can_still_run_blocks(self) -> None:
+        for reason in ('timeout', 'outcome_unknown', 'supervisor_lost'):
+            with self.subTest(reason=reason), \
+                    self.assertRaisesRegex(vm.LinuxVMError, 'prevent a VM restart'):
+                self.run_with(self.lost(reason), {self.HANDLE})
+
+    def test_an_approved_legacy_uuid_handle_keeps_its_rule(self) -> None:
+        handle = 'efb541b3-cdaa-408c-bea2-aaedeb87171d'
+        row = {'handle': handle, 'state': 'lost', 'reason': 'outcome_unknown'}
+        with self.assertRaisesRegex(RuntimeError, 'clone reached'):
+            self.run_with(row, {handle})
+
+    def test_an_approved_handle_must_have_the_provider_format(self) -> None:
+        for handle in ('linux-worker:lead', 'linux-worker:EFB541B3-CDAA-408C-BEA2-AAEDEB87171D',
+                       'worker:efb541b3-cdaa-408c-bea2-aaedeb87171d', ''):
+            with self.subTest(handle=handle), self.assertRaisesRegex(ValueError, 'linux-worker'):
+                self.run_with(self.lost('native_process_lost'), {handle})
+        self.assertFalse((self.directory / 'updates').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

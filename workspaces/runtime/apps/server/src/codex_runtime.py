@@ -309,7 +309,13 @@ from codex_agent_review import review_tools
 from codex_multi_server_orchestration import server_tools
 from codex_agent_move import move_tools
 
-TOOLS += server_tools(tool, TEXT) + move_tools(tool, TEXT) + voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
+def sign_in_tools():
+    """`orchestration_sign_in` from its owner, the sign-in contract (docs/vm-browser-bridge.md, section 7)."""
+    from codex_layout import VM_GUEST_ROOT
+    return [json.loads((VM_GUEST_ROOT / "sign_in_contract.json").read_text())["tool"]]
+
+
+TOOLS += server_tools(tool, TEXT) + move_tools(tool, TEXT) + voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT) + sign_in_tools()
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -8518,6 +8524,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 text = saved.get('text', '')
                     self.item(db, a["id"], item["id"], "assistant", text, streaming=False,
                               turnId=p.get("turnId") or a.get("turnId"), phase=item.get("phase"))
+                    if not stale and "://" in text and a.get("role") != "reviewer":
+                        # Sign-in links in the message become sign-in cards after this commit
+                        # (docs/vm-browser-bridge.md, section 7). The text stays as it is.
+                        from codex_browser_bridge import message_links, sign_in_links
+                        links = sign_in_links(text)
+                        if links:
+                            self.pool.submit(message_links, self, a["id"], a["id"] + ":" + item["id"], links)
                     if item.get("questions"):
                         request_id = async_question_id(a["id"], item["id"])
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
@@ -9457,6 +9470,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
+                elif name == "orchestration_sign_in":
+                    from codex_browser_bridge import sign_in
+                    value = sign_in(self, a, args.get("url"), key)
                 elif name == "orchestration_servers":
                     value = self.multi_server().tools(a, args, key)
                 elif name == "host_exec":

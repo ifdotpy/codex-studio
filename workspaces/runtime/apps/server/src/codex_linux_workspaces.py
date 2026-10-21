@@ -91,7 +91,8 @@ def connect_agent(runtime, agent):
         profile_relative = profile_path(account_key, provider)
         home = agent.get('layrHome', '/home/studio')
         profile = home + '/' + profile_relative
-        handle = 'linux-worker:' + agent_id
+        from codex_linux_vm import provider_handle
+        handle = provider_handle(agent_id)
         if provider == 'claude':
             from codex_claude import bridge_options
             command = ['node', '/opt/codex-studio/claude_bridge/bridge.mjs',

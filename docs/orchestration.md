@@ -302,6 +302,7 @@ The lead receives these additional tools:
 | `orchestration_monitor`        | Start or observe a command watch. Optional literal output patterns wake the owner.                                           |
 | `orchestration_cancel_monitor` | Cancel a command watch.                                                                                                      |
 | `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
+| `orchestration_sign_in`        | Show the person a sign-in card for a link to open. Every agent has it. See docs/vm-browser-bridge.md, section 7.             |
 
 Current sender tool declarations in the Rust preparation bundle are checked against
 [`codex_runtime.TOOLS`](../workspaces/runtime/apps/server/src/codex_runtime.py).

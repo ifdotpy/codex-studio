@@ -960,3 +960,127 @@ async fn idle_authority_change_at_commit_reclaims_safe_input_with_a_fresh_identi
     no_write(&mut peer).await;
     worker.shutdown().await.unwrap();
 }
+
+/// The follow-up a lead sends to its busy worker.
+const FOLLOWUP: &str = "lead-followup";
+const FOLLOWUP_TEXT: &str = "Push with 360 s, not 600 s";
+
+/// An accepted, running turn of a `provider` agent with one queued follow-up
+/// whose stored sender is `sender`. A sender other than the agent is added as
+/// the root of another team.
+async fn running_turn_with_followup(
+    provider: &'static str,
+    sender: &'static str,
+) -> (State, Peer, AccountHandle) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let (agent, epoch) = (state.agent.clone(), state.epoch);
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?
+                        .expect("agent");
+                    record.extra.insert("provider".into(), json!(provider));
+                    AgentRepository::put(tx, &record)?;
+                    if sender != agent {
+                        let mut outsider = record.clone();
+                        outsider.id = AgentId::from(sender);
+                        outsider.root_id = AgentId::from(sender);
+                        outsider.status = studio_runtime_store::AgentStatus::Completed;
+                        outsider
+                            .extra
+                            .insert("threadId".into(), json!("outsider-thread"));
+                        outsider.extra.insert("inFlight".into(), json!(false));
+                        AgentRepository::put(tx, &outsider)?;
+                    }
+                    tx.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                         VALUES(?1,?2,'followup',?3,'pending',?4,?5,NULL,NULL)",
+                        rusqlite::params![FOLLOWUP, agent, FOLLOWUP_TEXT, now(), epoch],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",
+                        rusqlite::params![FOLLOWUP, json!({"senderId":sender}).to_string()],
+                    )?;
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    (state, peer, worker)
+}
+
+async fn followup_status(state: &State) -> (String, Option<String>) {
+    state
+        .bridge
+        .run(move |store| async move {
+            Ok(store.test_reader()?.query_row(
+                "SELECT status,turn_id FROM runtime_events WHERE id=?1",
+                [FOLLOWUP],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap()
+}
+
+per_provider!(
+    a_team_followup_reaches_the_running_turn,
+    a_followup_from_another_team_is_quarantined,
+);
+
+/// A lead's follow-up reaches its worker's running turn at once, in the
+/// orchestration event form of a turn start. It used to wait for the turn to
+/// end (Lumina trackwork-parity, 20 October 2026: median 810 s).
+async fn a_team_followup_reaches_the_running_turn(provider: &'static str) {
+    let (state, mut peer, mut worker) =
+        running_turn_with_followup(provider, FIXTURE_AGENT_ID).await;
+    state.wake(&worker).await;
+    let wire = peer.next_write().await;
+    assert_eq!(wire.value["method"], "turn/steer", "{}", wire.value);
+    let request = wire.value.clone();
+    let _ignored = wire.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    assert_eq!(request["params"]["expectedTurnId"], "turn");
+    assert_eq!(request["params"]["clientUserMessageId"], FOLLOWUP);
+    assert_eq!(
+        request["params"]["input"],
+        json!([{"type":"text","text":format!("[Orchestration event: followup]\n{FOLLOWUP_TEXT}")}])
+    );
+    assert_eq!(followup_status(&state).await.0, "dispatching");
+    peer.reply(&request, json!({"turnId":"turn"})).await;
+    frame(
+        &mut peer,
+        json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn",
+            "item":{"id":FOLLOWUP,"type":"userMessage","clientId":FOLLOWUP,"delivery":"steer",
+                    "content":[{"type":"text","text":FOLLOWUP_TEXT}]}}}),
+    )
+    .await;
+    assert_eq!(
+        followup_status(&state).await,
+        ("delivered".into(), Some("turn".into()))
+    );
+    peer.completed().await;
+    no_write(&mut peer).await;
+    worker.shutdown().await.unwrap();
+}
+
+/// The team-isolation gate also guards the busy-turn path: a follow-up whose
+/// sender is outside the recipient's team is quarantined by full preparation.
+async fn a_followup_from_another_team_is_quarantined(provider: &'static str) {
+    let (state, mut peer, mut worker) = running_turn_with_followup(provider, "outsider").await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    no_write(&mut peer).await;
+    assert_eq!(followup_status(&state).await, ("failed".into(), None));
+    worker.shutdown().await.unwrap();
+}

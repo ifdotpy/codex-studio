@@ -41,7 +41,7 @@ if str(VM_GUEST_ROOT) not in sys.path:
     # module shadows a server module.
     sys.path.append(str(VM_GUEST_ROOT))
 
-from browser_policy import PolicyError, pasted, provider  # noqa: E402
+from browser_policy import PolicyError, pasted, provider, sign_in_links  # noqa: E402,F401
 
 METHOD = "browser/open"
 REMOTE_MESSAGE = ("Open this chat in the window of the Mac that runs its server to sign in, "
@@ -372,7 +372,8 @@ class Bridge:
             return "The link differs from its checked redirect"
         return None
 
-    def apply(self, item: dict[str, Any]) -> None:
+    def apply(self, item: dict[str, Any]) -> str | None:
+        """Write or expire the card of one guest item. Returns why a new link got no card."""
         bridge_id, state = str(item["id"]), item.get("state")
         key = card_id(bridge_id)
         refused = None
@@ -409,6 +410,7 @@ class Bridge:
                 forward = self.forwards.get(bridge_id)
             if forward is not None:
                 forward.close("guest " + str(state))
+        return refused
 
     def user_code(self, item: dict[str, Any]) -> str | None:
         try:
@@ -818,6 +820,79 @@ def paired_exchange(runtime: Any) -> Callable[[str, str, dict[str, Any]], Any]:
             raise ValueError(str(receipt.get("error") or "The server refused the sign-in redirect"))
         raise RuntimeError("The sign-in redirect outcome is unknown")
     return exchange
+
+
+# Section 7: links that the agent gives. The tool definition and its result texts have one owner,
+# the shared contract beside the URL rules; the Rust backend checks its copies against it.
+SIGN_IN_CONTRACT: dict[str, Any] = json.loads((VM_GUEST_ROOT / "sign_in_contract.json").read_text())
+SIGN_IN_TOOL = str(SIGN_IN_CONTRACT["tool"]["name"])
+SUBMIT_SECONDS = float(SIGN_IN_CONTRACT["submitSeconds"])
+MESSAGE_AGE_SECONDS = float(SIGN_IN_CONTRACT["messageAgeSeconds"])
+
+
+def submit(runtime: Any, agent: dict[str, Any], url: object, request_id: str) -> tuple[dict[str, Any], str | None]:
+    """Queue one sign-in link for a chat and write its card at once. Returns the bridge item and
+    why the link got no card, or None. The same link of a chat returns its earlier request, so a
+    retry, the tool call and the message rule together make one card."""
+    vm = agent.get("executionMode") == "vm"
+    if vm and platform.system() != "Darwin":
+        raise ValueError("Sign-in links of VM chats open only on the Mac that runs the VM")
+    owner = bridge(runtime) if vm else host_bridge(runtime)
+    try:
+        item = owner.guest().call("browser.submit", {"agentId": agent["id"], "url": url},
+                                  request_id=request_id, timeout=SUBMIT_SECONDS)
+    except LinuxVMError as error:
+        if str(error) == SIGN_IN_CONTRACT["unsupportedMessage"]:
+            raise ValueError(SIGN_IN_CONTRACT["results"]["unsupported"]) from None
+        raise ValueError(str(error)) from None
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+        raise ValueError("The browser bridge returned no sign-in request")
+    return item, owner.apply(item)
+
+
+def sign_in_result(item: dict[str, Any], refused: str | None) -> dict[str, Any]:
+    texts: dict[str, str] = SIGN_IN_CONTRACT["results"]
+    state = str(item.get("state"))
+    if refused is not None:
+        return {"status": "refused", "host": item.get("host"),
+                "message": texts["refused"].replace("{reason}", refused)}
+    text = texts.get(state, texts["closed"])
+    return {"status": state if state in texts else "closed", "host": item.get("host"),
+            "requestId": card_id(item["id"]), "message": text.replace("{host}", str(item.get("host")))}
+
+
+def sign_in(runtime: Any, agent: dict[str, Any], url: object, request_id: str) -> dict[str, Any]:
+    """`orchestration_sign_in`: show the person the sign-in card of a link that the agent gives."""
+    if not isinstance(url, str) or not url:
+        raise ValueError("Supply url: the link that the person must open to sign in")
+    item, refused = submit(runtime, agent, url, "sign-in-tool:" + request_id)
+    return sign_in_result(item, refused)
+
+
+def message_links(runtime: Any, agent_id: str, item_key: str, links: list[str]) -> None:
+    """Show the sign-in links of a completed agent message as cards (section 7). It runs after
+    the message commits and changes nothing in the message: its text stays as the agent wrote it.
+    A link that the URL rules refuse stays an ordinary link."""
+    try:
+        with runtime.lock, runtime.db() as db:
+            row = db.execute("SELECT record FROM runtime_items WHERE id=?", (item_key,)).fetchone()
+            agent = runtime.agent(agent_id, db)
+    except ValueError:
+        return
+    record = json.loads(row[0]) if row is not None else None
+    # A message that history recovery writes again is older than any open sign-in.
+    if record is None or record.get("streaming") or agent.get("deletedAt") or agent.get("role") == "reviewer" \
+            or float(record.get("at") or time.time()) < time.time() - MESSAGE_AGE_SECONDS:
+        return
+    for link in links:
+        request_id = "sign-in-message:" + str(uuid.uuid5(uuid.NAMESPACE_URL, item_key + "\n" + link))
+        try:
+            _item, refused = submit(runtime, agent, link, request_id)
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            refused = str(error)
+        if refused is not None:
+            # No query value reaches the log.
+            print("sign-in link of message " + item_key + " has no card: " + refused[:200], file=sys.stderr)
 
 
 def stop(runtime: Any) -> None:

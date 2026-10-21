@@ -9,12 +9,37 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
+import re
 from urllib.parse import SplitResult, parse_qs, urlsplit
 
 MAX_URL = 8192
 # The longest device code that the card shows, in characters.
 USER_CODE_LIMIT = 64
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# The protocol markers of a link that a person must open to sign in or approve
+# (docs/vm-browser-bridge.md, section 7). A link is a sign-in link when its query has every name
+# of one set, each with a value. The names come from the protocols, never from a tool:
+# an OAuth 2.0 or OpenID Connect authorization request (RFC 6749 4.1.1, RFC 9126 for
+# `request_uri`), a device verification link with its code (RFC 8628 3.3.1), and a SAML 2.0
+# request in the HTTP-Redirect binding.
+SIGN_IN_MARKERS = (
+    frozenset({"client_id", "response_type"}),
+    frozenset({"client_id", "redirect_uri"}),
+    frozenset({"client_id", "request_uri"}),
+    frozenset({"user_code"}),
+    frozenset({"SAMLRequest"}),
+)
+# The most sign-in links that one agent message can give to the person.
+MESSAGE_LINK_LIMIT = 4
+_LINK_START = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+# A link ends at a character that is not printable ASCII or at one of these.
+_LINK_STOP = frozenset("<>\"'`")
+# Text punctuation after a link, not part of it.
+_LINK_TRAIL = frozenset(".,;:!?*")
+# Names for documentation and examples (RFC 2606, RFC 6761). A message that explains a sign-in
+# protocol with them names no real sign-in.
+DOCUMENTATION_DOMAINS = ("example.com", "example.net", "example.org")
+DOCUMENTATION_SUFFIXES = (".example", ".invalid")
 
 
 class PolicyError(ValueError):
@@ -193,3 +218,60 @@ def pasted(text: object, redirect: dict[str, object], state: str | None) -> Call
     if _exact(query, "state") != state:
         raise PolicyError("The address belongs to another sign-in: its state value is different")
     return Callback((parts.path or "/") + "?" + parts.query, state, bool(_first(query, "error")))
+
+
+def _trim(link: str) -> str:
+    while link:
+        last = link[-1]
+        if last in _LINK_TRAIL or (last == ")" and link.count(")") > link.count("(")) \
+                or (last == "]" and link.count("]") > link.count("[")):
+            link = link[:-1]
+            continue
+        return link
+    return link
+
+
+def _documentation_host(link: str) -> bool:
+    """Whether the link's host is a name for documentation. The link is printable ASCII."""
+    authority = link.split("://", 1)[1]
+    for stop in "/?#":
+        authority = authority.split(stop, 1)[0]
+    host = authority.rpartition("@")[2].lower()
+    host = host[1:].partition("]")[0] if host.startswith("[") else host.partition(":")[0]
+    host = host.rstrip(".")
+    return any(host == name or host.endswith("." + name) for name in DOCUMENTATION_DOMAINS) \
+        or any(host.endswith(suffix) or host == suffix[1:] for suffix in DOCUMENTATION_SUFFIXES)
+
+
+def _query_names(link: str) -> set[str]:
+    """The query names with a value, split as `urlsplit` and `parse_qs` split them."""
+    query = link.split("#", 1)[0].partition("?")[2]
+    return {name for name, values in parse_qs(query, keep_blank_values=True).items() if any(values)}
+
+
+def sign_in_links(text: object) -> list[str]:
+    """The links in an agent's message that the person must open to sign in or approve.
+
+    Studio shows each one as a sign-in card (docs/vm-browser-bridge.md, section 7). The rule
+    reads only protocol markers in the query (`SIGN_IN_MARKERS`), so an ordinary link stays an
+    ordinary link, and a link to a documentation name (`DOCUMENTATION_DOMAINS`) is an example.
+    The URL rules of `classify` still decide whether the link can open."""
+    if not isinstance(text, str) or "://" not in text:
+        return []
+    links: list[str] = []
+    position = 0
+    while len(links) < MESSAGE_LINK_LIMIT:
+        match = _LINK_START.search(text, position)
+        if match is None:
+            break
+        end = match.end()
+        while end < len(text) and 32 < ord(text[end]) < 127 and text[end] not in _LINK_STOP:
+            end += 1
+        position = end
+        link = _trim(text[match.start():end])
+        if len(link) > MAX_URL or link in links or _documentation_host(link):
+            continue
+        names = _query_names(link)
+        if any(marker <= names for marker in SIGN_IN_MARKERS):
+            links.append(link)
+    return links

@@ -394,6 +394,8 @@ pub(crate) struct LatePorts {
     pub(crate) voice: std::sync::Arc<
         std::sync::OnceLock<std::sync::Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
     >,
+    /// The browser bridges that take `orchestration_sign_in` links.
+    pub(crate) sign_in: std::sync::Arc<std::sync::OnceLock<crate::sign_in::SignInSources>>,
 }
 
 /// The dependency that a remote worker's forwarded tool names until the host
@@ -403,6 +405,10 @@ pub(crate) const WORKER_CALL_DEPENDENCY: &str = "multi-server/worker-call";
 /// The dependency that `orchestration_servers` names until the host attaches
 /// the paired-server driver.
 pub(crate) const SERVERS_DEPENDENCY: &str = "multi-server/tool-coordinator";
+
+/// The dependency that `orchestration_sign_in` names until the host attaches
+/// the browser bridges.
+pub(crate) const SIGN_IN_DEPENDENCY: &str = "browser-bridge/sign-in";
 
 pub(super) struct DispatchRequest<'a> {
     pub(super) store: std::sync::Arc<RuntimeStore>,
@@ -490,6 +496,37 @@ pub(super) async fn dispatch(
                 ports.late.voice.get().cloned(),
             )
             .await
+        }
+        crate::sign_in::TOOL => {
+            if execution_move {
+                return Ok(Some(not_sent(Error::Invalid(
+                    "The move is accepted. Finish this turn before the next task",
+                ))));
+            }
+            let Some(sources) = ports.late.sign_in.get() else {
+                return Ok(Some(not_sent(Error::Unavailable(SIGN_IN_DEPENDENCY))));
+            };
+            match crate::sign_in::tool(
+                store_ref,
+                sources,
+                &actor.record().value(),
+                args.get("url").and_then(Value::as_str),
+                request_id,
+            )
+            .await
+            {
+                Ok(value) => written(value, Vec::new()),
+                // The bridge returns the earlier request of the same link, so a
+                // refusal, also after a lost reply, is safe to send again.
+                Err(message) => DispatchedOperation {
+                    result: OperationResult {
+                        value: json!(message),
+                        signals: Vec::new(),
+                    },
+                    certainty: DeliveryCertainty::NotSent,
+                    applied: Some(false),
+                },
+            }
         }
         "orchestration_servers" => {
             if execution_move {

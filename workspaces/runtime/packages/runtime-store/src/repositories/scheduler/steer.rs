@@ -1,7 +1,8 @@
 //! Busy-turn input for Codex and Claude agents.
 //!
-//! A running turn receives pending user input through `turn/steer`; both
-//! providers speak the same request and acknowledge it the same way.
+//! A running turn receives eligible current-turn input through `turn/steer`;
+//! both providers speak the same request and
+//! acknowledge it the same way.
 //! The running turn keeps its `startAttempt`, which still routes the turn's
 //! notifications and terminal outcome. Each steer owns one durable receipt in
 //! `runtime_operation_receipts`; its event rows move through these states:
@@ -600,6 +601,13 @@ impl SchedulerRepository {
             .map(|event| &event.id.0)
             .collect::<Vec<_>>();
         mark_timing(tx, &json!(ids).to_string(), "acceptedAt")?;
+        // A steered agent message is delivered to its chat recipient, as at
+        // turn acceptance.
+        let delivered_ids = delivered
+            .iter()
+            .map(|event| event.id.0.clone())
+            .collect::<Vec<_>>();
+        Self::project_delivered_chat_events(tx, agent_id, epoch, turn_id, &delivered_ids)?;
         Ok(Some(AcknowledgedSteer {
             agent_id: agent_id.into(),
             steer_id: id

@@ -1041,6 +1041,7 @@ fn next_deadline_in(
                 END AS deadline
                 FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
                 WHERE json_extract(m.record,'$.status')='running'
+                  AND COALESCE(json_extract(m.record,'$.cancelRequested'),0)=0
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
                   AND json_extract(a.record,'$.epoch')=COALESCE(json_extract(m.record,'$.epoch'),json_extract(m.record,'$.operation.epoch'))
@@ -2804,17 +2805,6 @@ mod tests {
         assert!(super::filesystem_event_needs_rescan(&event));
     }
 
-    static WRITER_TRANSACTIONS: AtomicUsize = AtomicUsize::new(0);
-
-    fn count_writer_transactions(event: studio_runtime_store::StoreDiagnosticsEvent) {
-        if matches!(
-            event,
-            studio_runtime_store::StoreDiagnosticsEvent::WriterAdmission { .. }
-        ) {
-            WRITER_TRANSACTIONS.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
     fn lost_monitor(id: &str) -> serde_json::Value {
         serde_json::json!({
             "id":id,"agent":"owner","epoch":0,"status":"lost",
@@ -2865,16 +2855,14 @@ mod tests {
         };
 
         // Inside the window both recoveries are offered to the port on every tick and
-        // an otherwise idle store never takes the writer lane.
-        store
-            .set_diagnostics_callback(Some(count_writer_transactions))
-            .await
-            .expect("install diagnostics");
-        WRITER_TRANSACTIONS.store(0, Ordering::SeqCst);
+        // an otherwise idle store never takes the writer lane. The count belongs to
+        // this store: the diagnostics callback is process-global and also counts the
+        // stores of tests that run in parallel.
+        let writes = store.writer_admissions();
         for _ in 0..5 {
             runtime.tick(now).await.expect("in-window tick");
         }
-        assert_eq!(WRITER_TRANSACTIONS.load(Ordering::SeqCst), 0);
+        assert_eq!(store.writer_admissions(), writes);
         assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
         assert_eq!(status("stuck"), "running");
         assert_eq!(
@@ -2887,15 +2875,11 @@ mod tests {
         runtime.tick(now).await.expect("expiry tick");
         assert_eq!(status("stuck"), "not_reattachable");
         assert_eq!(status("fresh"), "not_reattachable");
-        WRITER_TRANSACTIONS.store(0, Ordering::SeqCst);
+        let writes = store.writer_admissions();
         for _ in 0..5 {
             runtime.tick(now).await.expect("idle tick");
         }
-        store
-            .set_diagnostics_callback(None)
-            .await
-            .expect("clear diagnostics");
-        assert_eq!(WRITER_TRANSACTIONS.load(Ordering::SeqCst), 0);
+        assert_eq!(store.writer_admissions(), writes);
         assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
         assert_eq!(runtime.next_deadline().await.expect("deadline"), None);
     }

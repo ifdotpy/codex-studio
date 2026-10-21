@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -780,6 +780,16 @@ describe("scale verifier readiness markers", () => {
     } finally {
       unknown.close();
     }
+    // An event for the directory's own name is ignored only when no entry inside
+    // has that name; such an entry is still an unknown marker.
+    const named = await createReadinessMarkerDirectory(join(root, "named"));
+    const sameName = await watchReadinessMarkers(named, tokens);
+    try {
+      await writeFile(join(named, "named"), "x", { mode: 0o600 });
+      await expect(sameName.next(soon())).rejects.toThrow(/Unknown readiness/);
+    } finally {
+      sameName.close();
+    }
     const linked = await createReadinessMarkerDirectory(join(root, "linked"));
     const target = join(root, "target");
     await writeFile(target, `${tokens[0]}\n`, { mode: 0o600 });
@@ -1530,13 +1540,16 @@ describe("scale verifier shared-workspace concurrency criterion", () => {
     const fifoB = join(root, "b.fifo");
     await Promise.all([writeFile(fifoA, ""), writeFile(fifoB, "")]);
     const proc = join(root, "proc");
+    // The kernel reports a descriptor's canonical path, so the fake /proc links
+    // to the resolved FIFO path (on macOS the temporary root is under a link).
+    const canonicalA = realpathSync(fifoA);
     const addFd = async (pid, fd, target) => {
       await mkdir(join(proc, String(pid), "fd"), { recursive: true });
       await symlink(target, join(proc, String(pid), "fd", String(fd)));
     };
-    await addFd(100, 3, fifoA);
+    await addFd(100, 3, canonicalA);
     await addFd(100, 4, "/dev/null");
-    await addFd(200, 3, fifoA);
+    await addFd(200, 3, canonicalA);
     await addFd(300, 0, "/dev/null");
     await mkdir(join(proc, "self"), { recursive: true });
     const holders = findFifoHolders([fifoA, fifoB], proc);

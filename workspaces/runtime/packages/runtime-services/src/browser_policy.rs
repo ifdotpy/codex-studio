@@ -587,12 +587,156 @@ pub fn pasted(
     })
 }
 
+/// The protocol markers of a sign-in link in an agent's message (`SIGN_IN_MARKERS` of the
+/// owner): an OAuth or OpenID Connect authorization request, a pushed authorization request, a
+/// device verification link with its code, and a SAML request.
+const SIGN_IN_MARKERS: [&[&str]; 5] = [
+    &["client_id", "response_type"],
+    &["client_id", "redirect_uri"],
+    &["client_id", "request_uri"],
+    &["user_code"],
+    &["SAMLRequest"],
+];
+/// The most sign-in links that one agent message can give (`MESSAGE_LINK_LIMIT`).
+pub const MESSAGE_LINK_LIMIT: usize = 4;
+/// A link ends at a character that is not printable ASCII or at one of these (`_LINK_STOP`).
+const LINK_STOP: &[u8] = b"<>\"'`";
+/// Text punctuation after a link, not part of it (`_LINK_TRAIL`).
+const LINK_TRAIL: &[u8] = b".,;:!?*";
+/// Names for documentation and examples (`DOCUMENTATION_DOMAINS`, `DOCUMENTATION_SUFFIXES`).
+const DOCUMENTATION_DOMAINS: [&str; 3] = ["example.com", "example.net", "example.org"];
+const DOCUMENTATION_SUFFIXES: [&str; 2] = [".example", ".invalid"];
+
+/// The start and end of the next `https?://` (any case) at or after `from`.
+fn link_scheme(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut index = from;
+    while index + 7 <= bytes.len() {
+        let rest = &bytes[index..];
+        if rest[..4].eq_ignore_ascii_case(b"http") {
+            if rest.len() >= 8 && rest[4].eq_ignore_ascii_case(&b's') && &rest[5..8] == b"://" {
+                return Some((index, index + 8));
+            }
+            if &rest[4..7] == b"://" {
+                return Some((index, index + 7));
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn trim_link(mut link: &str) -> &str {
+    while let Some(&last) = link.as_bytes().last() {
+        let count = |byte: u8| link.bytes().filter(|value| *value == byte).count();
+        if LINK_TRAIL.contains(&last)
+            || (last == b')' && count(b')') > count(b'('))
+            || (last == b']' && count(b']') > count(b'['))
+        {
+            link = &link[..link.len() - 1];
+        } else {
+            break;
+        }
+    }
+    link
+}
+
+/// Whether the link's host is a name for documentation (`_documentation_host`).
+fn documentation_host(link: &str) -> bool {
+    let after = link.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = after.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_ascii_lowercase();
+    let host = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or_default().to_owned(),
+        None => host.split(':').next().unwrap_or_default().to_owned(),
+    };
+    let host = host.trim_end_matches('.');
+    DOCUMENTATION_DOMAINS
+        .iter()
+        .any(|name| host == *name || host.ends_with(&format!(".{name}")))
+        || DOCUMENTATION_SUFFIXES
+            .iter()
+            .any(|suffix| host.ends_with(suffix) || host == &suffix[1..])
+}
+
+/// The query names with a value (`_query_names`).
+fn query_names(link: &str) -> BTreeSet<String> {
+    let before = link.split('#').next().unwrap_or_default();
+    let query = before.split_once('?').map_or("", |(_, query)| query);
+    parse_query(query)
+        .into_iter()
+        .filter(|(_, values)| values.iter().any(|value| !value.is_empty()))
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// The links in an agent's message that the person must open to sign in or approve
+/// (`sign_in_links` of the owner, docs/vm-browser-bridge.md section 7). Only protocol markers in
+/// the query count, so an ordinary link stays an ordinary link.
+pub fn sign_in_links(text: &str) -> Vec<String> {
+    let mut links: Vec<String> = Vec::new();
+    if !text.contains("://") {
+        return links;
+    }
+    let bytes = text.as_bytes();
+    let mut position = 0;
+    while links.len() < MESSAGE_LINK_LIMIT {
+        let Some((start, scheme_end)) = link_scheme(bytes, position) else {
+            break;
+        };
+        let mut end = scheme_end;
+        while end < bytes.len()
+            && (33..127).contains(&bytes[end])
+            && !LINK_STOP.contains(&bytes[end])
+        {
+            end += 1;
+        }
+        position = end;
+        let link = trim_link(&text[start..end]);
+        if link.len() > MAX_URL
+            || links.iter().any(|known| known == link)
+            || documentation_host(link)
+        {
+            continue;
+        }
+        let names = query_names(link);
+        if SIGN_IN_MARKERS
+            .iter()
+            .any(|marker| marker.iter().all(|name| names.contains(*name)))
+        {
+            links.push(link.to_owned());
+        }
+    }
+    links
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn none() -> BTreeSet<String> {
         BTreeSet::new()
+    }
+
+    #[test]
+    fn sign_in_links_follow_the_shared_corpus() {
+        // The owner (vm-guest/browser_policy.py) checks the same file.
+        let corpus: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../apps/vm-guest/sign_in_links.json"))
+                .expect("corpus");
+        assert!(corpus.len() > 20);
+        for case in corpus {
+            let expected: Vec<String> =
+                serde_json::from_value(case["links"].clone()).expect("links");
+            assert_eq!(
+                sign_in_links(case["text"].as_str().expect("text")),
+                expected,
+                "{}",
+                case["name"]
+            );
+        }
     }
 
     #[test]

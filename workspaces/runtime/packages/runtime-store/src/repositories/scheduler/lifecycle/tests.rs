@@ -591,3 +591,145 @@ fn a_park_requested_during_a_turn_takes_effect_when_the_turn_ends() {
     assert_eq!(agent["parkedEvent"], "deploy");
     assert_eq!(agent["parkReceipt"]["sequence"], 1);
 }
+
+fn turn_runs(connection: &Connection, turn: &str) -> Vec<(String, String)> {
+    connection
+        .prepare("SELECT id,json_extract(record,'$.status') FROM runtime_execution_runs WHERE turn=?1 ORDER BY created,id")
+        .expect("run query prepares")
+        .query_map([turn], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("runs read")
+        .collect::<Result<_, _>>()
+        .expect("runs decode")
+}
+
+/// A start accepted with the turn that an earlier start already owns: the
+/// provider merged the second input into its active turn. Both attempts keep
+/// their runs, and the turn's outcome settles both. Before this contract the
+/// outcome refused the turn with `invalid stored sync object
+/// runtime_execution_runs/<first run>` and ended the account worker (agents
+/// d0c9c794 and 50f9a796, 21 October 2026).
+#[test]
+fn a_turn_outcome_settles_every_run_that_bound_the_turn() {
+    let mut connection = database();
+    connection
+        .execute_batch(
+            "INSERT INTO runtime_events VALUES('event-first','agent','user','first','delivered',1,0,'turn-shared',NULL);
+             INSERT INTO runtime_events VALUES('event-second','agent','user','second','dispatching',2,0,NULL,NULL);",
+        )
+        .expect("events write");
+    for (attempt, created) in [("first", 1.0), ("second", 2.0)] {
+        let mut start = python_attempt(attempt, Some("turn-shared"), false);
+        start["created"] = json!(created);
+        let agent = agent_from(json!({
+            "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-shared",
+            "turnEpoch": 0, "error": null, "startAttempt": start
+        }));
+        with(&mut connection, |tx| {
+            publish_agent(tx, &agent).expect("the accepted attempt records its run")
+        });
+    }
+    assert_eq!(
+        turn_runs(&connection, "turn-shared"),
+        [
+            ("run:first".to_owned(), "running".to_owned()),
+            ("run:second".to_owned(), "running".to_owned())
+        ]
+    );
+    let settled = with(&mut connection, |tx| {
+        SchedulerRepository::settle_terminal(
+            tx,
+            AGENT,
+            0,
+            "second",
+            "turn-shared",
+            AgentStatus::Completed,
+            None,
+            "completed",
+            None,
+            &[],
+        )
+    });
+    assert!(settled.expect("the shared turn settles"));
+    assert_eq!(
+        turn_runs(&connection, "turn-shared"),
+        [
+            ("run:first".to_owned(), "completed".to_owned()),
+            ("run:second".to_owned(), "completed".to_owned())
+        ]
+    );
+    // The same outcome again is a replay; a different one is a conflict.
+    with(&mut connection, |tx| {
+        crate::ExecutionHistoryRepository::terminal(tx, AGENT, "turn-shared", "completed", None)
+    })
+    .expect("a repeated outcome is accepted");
+    let conflict = with(&mut connection, |tx| {
+        crate::ExecutionHistoryRepository::terminal(tx, AGENT, "turn-shared", "failed", None)
+    });
+    assert!(
+        matches!(&conflict, Err(StoreError::InvalidSyncObject { scope, id })
+            if scope == "runtime_execution_runs" && id == "run:first"),
+        "{conflict:?}"
+    );
+}
+
+/// The stored rows of the incident load as they are: their recovery marker
+/// has `connectionId` and `supervisor` set to null, and three runs name one
+/// turn. Shapes are copied from canvas.sqlite3 (agent d0c9c794).
+#[test]
+fn stored_incident_runs_that_share_a_turn_settle_without_an_edit() {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({"status": "interrupted", "autoWake": true, "turnId": "01a15bfb", "epoch": 2}),
+    );
+    for (id, created, at, connection_id) in [
+        ("2a953440", 1792544583.54869, 1792546623.0489, "f879d500"),
+        ("8e3f28f4", 1792546628.945204, 1792546669.374566, "c7f1ba69"),
+        (
+            "b1846549",
+            1_792_547_053.921_893,
+            1_792_547_477.119_958,
+            "fcd49da7",
+        ),
+    ] {
+        let run = json!({
+            "accountKey": ACCOUNT, "agent": AGENT, "created": created, "epoch": 2,
+            "disconnectRecovery": {
+                "accountKey": ACCOUNT, "at": at, "autoWake": true, "connectionId": null,
+                "epoch": 2, "supervisor": null, "threadId": "thread", "turnId": "01a15bfb",
+                "startAttempt": {
+                    "accountKey": ACCOUNT, "activeAtReservation": false,
+                    "connectionGeneration": 6, "connectionId": connection_id,
+                    "created": created, "epoch": 2, "events": [format!("event-{id}")],
+                    "id": id, "observedTurnId": "01a15bfb", "settingsFixed": true,
+                    "submitted": true, "supervisorIdentity": null, "threadId": "thread",
+                    "turnId": "01a15bfb"
+                }
+            },
+            "firstAttemptId": id, "id": format!("run:{id}"), "latestAttemptId": id,
+            "rootAttemptId": id, "status": "running", "threadId": "thread", "turnId": "01a15bfb"
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_execution_runs VALUES(?1,?2,?3,2,'thread','01a15bfb',?4,?5)",
+                rusqlite::params![
+                    format!("run:{id}"),
+                    AGENT,
+                    ACCOUNT,
+                    created,
+                    run.to_string()
+                ],
+            )
+            .expect("incident run writes");
+    }
+    with(&mut connection, |tx| {
+        crate::ExecutionHistoryRepository::terminal(tx, AGENT, "01a15bfb", "interrupted", None)
+    })
+    .expect("the incident turn settles");
+    let runs = turn_runs(&connection, "01a15bfb");
+    assert_eq!(runs.len(), 3);
+    assert!(
+        runs.iter().all(|(_, status)| status == "interrupted"),
+        "{runs:?}"
+    );
+}

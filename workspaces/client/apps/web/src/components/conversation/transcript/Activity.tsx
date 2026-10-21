@@ -70,6 +70,7 @@ const toolNames: Record<string, string> = {
   orchestration_chat_read: "Read agent chat",
   orchestration_complaint: "Message",
   orchestration_title: "Name the conversation",
+  orchestration_sign_in: "Show a sign-in card",
 };
 const pretty = (value: unknown) =>
   typeof value === "string" ? value : JSON.stringify(value, null, 2);

@@ -854,6 +854,7 @@ impl Worker {
             && self.managed_callbacks.is_empty()
             && self.effects.is_empty()
             && self.deferred.is_empty()
+            && self.capacity_blocked.is_empty()
             && self.vm_sessions.is_empty()
             && self.resolving_vm_actors.is_empty()
             && self.vm_notification_waiters.is_empty()

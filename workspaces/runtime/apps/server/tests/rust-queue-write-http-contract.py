@@ -81,10 +81,51 @@ def clone_for_python(backend: object) -> Path:
     with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source:
         with closing(sqlite3.connect(root / "canvas.sqlite3")) as target:
             source.backup(target)
+            hydrate_python_agents(target)
+            # The reference now uses the legacy inline layout exclusively.
+            # Later Python writes must not be masked by stale split columns.
+            if target.execute('PRAGMA table_info("runtime_agent_volatile")').fetchone():
+                target.execute("DELETE FROM runtime_agent_volatile")
+                target.commit()
     # Project locations refer to this fixture server identity, stored outside SQLite.
     # A new identity would make local projects remote during startup projection.
     shutil.copytree(backend.state / "multi-server", root / "multi-server")
     return root
+
+
+def logical_agents(database):
+    """Read whole agents as runtime-store/src/agent_volatile.rs::merged_record does."""
+    agents = {
+        identity: json.loads(record)
+        for identity, record in database.execute("SELECT id,record FROM runtime_agents")
+    }
+    # Read the owner-defined columns, including future fields, rather than
+    # maintaining another copy of AGENT_VOLATILE_FIELDS in this oracle.
+    columns = [row[1] for row in database.execute('PRAGMA table_info("runtime_agent_volatile")')]
+    if columns:
+        for values in database.execute("SELECT * FROM runtime_agent_volatile"):
+            fields = dict(zip(columns, values, strict=True))
+            identity = fields.pop("id")
+            assert identity in agents, f"Orphan runtime_agent_volatile/{identity}"
+            for field, value in fields.items():
+                if value is not None:
+                    agents[identity][field] = json.loads(value)
+    return agents
+
+
+def hydrate_python_agents(database):
+    # The legacy Runtime reads only runtime_agents.record. Its INSERT OR
+    # REPLACE can delete the volatile row through the owner-delete trigger.
+    # Hydrate before Runtime startup so no logical field can disappear.
+    from codex_sync_entities import register_functions
+
+    register_functions(database)
+    for identity, record in logical_agents(database).items():
+        database.execute(
+            "UPDATE runtime_agents SET record=? WHERE id=?",
+            (json.dumps(record), identity),
+        )
+    database.commit()
 
 
 def normalized_state(state: Path):
@@ -102,14 +143,20 @@ def normalized_state(state: Path):
             "runtime_scheduler_agent_change_state",
             "runtime_scheduler_agent_changes",
         }
-        tables = [table for table in tables if table not in scheduler_tables]
+        agents = logical_agents(database) if "runtime_agents" in tables else {}
+        # Every volatile value is compared in its complete logical agent below;
+        # only the physical split between the two layouts is normalized away.
+        tables = [table for table in tables if table not in scheduler_tables | {"runtime_agent_volatile"}]
         for table in tables:
             columns = [row[1] for row in database.execute(f'PRAGMA table_info("{table}")')]
             rows = []
             for values in database.execute(f'SELECT * FROM "{table}"'):
                 row = {}
+                agent_id = values[columns.index("id")] if table == "runtime_agents" else None
                 for column, value in zip(columns, values):
-                    if column in {"sequence", "seq", "revision", "signature", "hash", "created", "acceptedAt", "updatedAt"}:
+                    if table == "runtime_agents" and column == "record":
+                        value = agents[agent_id]
+                    elif column in {"sequence", "seq", "revision", "signature", "hash", "created", "acceptedAt", "updatedAt"}:
                         value = "<opaque>"
                     elif column in {"record", "payload", "result"} and isinstance(value, str):
                         try:
@@ -228,6 +275,50 @@ class QueueStateNormalizationContract(unittest.TestCase):
                 database.commit()
             with self.assertRaisesRegex(AssertionError, 'match committed event rows'):
                 normalized_state(root)
+
+    def test_split_agent_storage_compares_every_logical_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            roots = [Path(directory) / name for name in ("legacy", "split")]
+            expected = {"id": "agent", "name": "Keep", "tail": "Answer", "tokensUsed": 17, "activity": None}
+            for root in roots:
+                root.mkdir()
+                with closing(sqlite3.connect(root / "canvas.sqlite3")) as database:
+                    database.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT)")
+                    database.execute("INSERT INTO runtime_agents VALUES (?,?)", ("agent", json.dumps(expected)))
+                    database.commit()
+            with closing(sqlite3.connect(roots[1] / "canvas.sqlite3")) as database:
+                database.execute("CREATE TABLE runtime_agent_volatile(id TEXT PRIMARY KEY,tail TEXT,tokensUsed TEXT,activity TEXT)")
+                database.execute("INSERT INTO runtime_agent_volatile VALUES ('agent',?,?,?)", ('"Answer"', '17', 'null'))
+                database.execute("UPDATE runtime_agents SET record=?", (json.dumps({"id": "agent", "name": "Keep"}),))
+                database.commit()
+            self.assertEqual(normalized_state(roots[0]), normalized_state(roots[1]))
+            for field, changed in (("tail", "Changed"), ("tokensUsed", 18), ("activity", {})):
+                with self.subTest(inline_field=field), closing(sqlite3.connect(roots[0] / "canvas.sqlite3")) as database:
+                    database.execute("UPDATE runtime_agents SET record=?", (json.dumps({**expected, field: changed}),))
+                    database.commit()
+                    self.assertNotEqual(normalized_state(roots[0]), normalized_state(roots[1]))
+                    database.execute("UPDATE runtime_agents SET record=?", (json.dumps(expected),))
+                    database.commit()
+            for field, changed in (("tail", '"Changed"'), ("tokensUsed", '18'), ("activity", '{}')):
+                with self.subTest(field=field), closing(sqlite3.connect(roots[1] / "canvas.sqlite3")) as database:
+                    before = database.execute(f'SELECT "{field}" FROM runtime_agent_volatile').fetchone()[0]
+                    database.execute(f'UPDATE runtime_agent_volatile SET "{field}"=?', (changed,))
+                    database.commit()
+                    self.assertNotEqual(normalized_state(roots[0]), normalized_state(roots[1]))
+                    database.execute(f'UPDATE runtime_agent_volatile SET "{field}"=?', (before,))
+                    database.commit()
+            with closing(sqlite3.connect(roots[1] / "canvas.sqlite3")) as database:
+                database.execute(
+                    "CREATE TRIGGER runtime_agent_volatile_owner_delete AFTER DELETE ON runtime_agents "
+                    "BEGIN DELETE FROM runtime_agent_volatile WHERE id=OLD.id; END"
+                )
+                hydrate_python_agents(database)
+                record = database.execute("SELECT record FROM runtime_agents WHERE id='agent'").fetchone()[0]
+                database.execute("PRAGMA recursive_triggers=ON")
+                database.execute("INSERT OR REPLACE INTO runtime_agents VALUES ('agent',?)", (record,))
+                database.commit()
+                self.assertEqual(database.execute("SELECT COUNT(*) FROM runtime_agent_volatile").fetchone()[0], 0)
+            self.assertEqual(normalized_state(roots[0]), normalized_state(roots[1]))
 
 
 class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -499,29 +590,38 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             original_agent = database.execute(
                 "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
             ).fetchone()[0]
+            triggers = database.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='runtime_agents'"
+            ).fetchall()
             indexes = database.execute(
                 "SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='runtime_agents' AND sql IS NOT NULL"
             ).fetchall()
+            for name, _sql in triggers:
+                database.execute(f'DROP TRIGGER "{name}"')
             for name, _sql in indexes:
                 database.execute(f'DROP INDEX "{name}"')
             database.execute(
                 "UPDATE runtime_agents SET record='{' WHERE id=?", (self.agent_id,)
             )
             database.commit()
-        before = no_write_snapshot(self.backend.state)
-        agent = self.request({
-            "agent": self.agent_id, "action": "cancel", "message_id": self.queue_ids[0],
-        })
-        self.assertEqual(agent.status, 503, agent.body[:1000])
-        self.assertIn(f"runtime_agents/{self.agent_id}", agent.json()["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
-            database.execute(
-                "UPDATE runtime_agents SET record=? WHERE id=?", (original_agent, self.agent_id)
-            )
-            for _name, sql in indexes:
-                database.execute(sql)
-            database.commit()
+        try:
+            before = no_write_snapshot(self.backend.state)
+            agent = self.request({
+                "agent": self.agent_id, "action": "cancel", "message_id": self.queue_ids[0],
+            })
+            self.assertEqual(agent.status, 503, agent.body[:1000])
+            self.assertIn(f"runtime_agents/{self.agent_id}", agent.json()["error"])
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
+        finally:
+            with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+                database.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?", (original_agent, self.agent_id)
+                )
+                for _name, sql in triggers:
+                    database.execute(sql)
+                for _name, sql in indexes:
+                    database.execute(sql)
+                database.commit()
 
     def test_reorder_ties_remain_before_the_system_event_boundary(self):
         from codex_sync_entities import register_functions

@@ -2,7 +2,9 @@
 
 Status: the first slice is implemented (sections 2 to 4). The measurements are from
 2026-10-11, against `origin/main` at `07ea99c7`. Section 6 (sign-in from a phone or any
-window) was designed and implemented on 2026-10-20.
+window) was designed and implemented on 2026-10-20. Section 7 (links that the agent gives:
+the `orchestration_sign_in` tool and sign-in links in messages) was implemented on
+2026-10-21.
 
 ## Goal
 
@@ -604,9 +606,16 @@ chat stops; the existing rules then expire the pending record.
   sessions through `studio-browser.json` and Codex threads through the per-thread
   `shell_environment_policy.set` overrides. The Codex app-server launch command does not
   change. A folder `<state>/browser-host/bin` holds `xdg-open`, `x-www-browser` and
-  `www-browser` links to the launcher for tools that search `PATH`.
-  - Owners: Python `codex_browser_host.py` (`session_environment`, `thread_environment`) and
-    Rust `browser_environment.rs`; `tests/browser_environment_differential.rs` compares them.
+  `www-browser` links to the launcher for tools that search `PATH`. On a macOS host it also
+  holds `open`, for tools that run `open URL` and ignore `BROWSER` (kubelogin and other Go
+  tools with `pkg/browser`, Node `open`).
+  - Owners: Python `codex_browser_host.py` (`session_environment`, `thread_environment`,
+    `OPEN_SHIM`) and Rust `browser_environment.rs` and `browser_host.rs` (`write_launcher`).
+    The `open` script text has one owner, `runtime-services/src/browser_open.sh`; the Python
+    copy is checked against it by `test_codex_browser_host_env.py`.
+  - `open` sends exactly one `http` or `https` URL to the launcher. Every other use (no
+    argument, a file, an option, two URLs) runs `/usr/bin/open` with the same arguments.
+    Linux hosts get no `open`: there it is another program (openvt).
   - Codex gets the three names only for a host Codex chat (not Claude, not VM), and only when
     `<state>/browser-host/studio-browser` exists. The value is stable for each chat, so the
     thread settings digest changes once.
@@ -614,13 +623,28 @@ chat stops; the existing rules then expire the pending record.
     Responses provider on the loopback: with the overrides `shell_environment_policy.set.BROWSER`
     and `.STUDIO_BROWSER_SESSION` in `thread/start` `config`, the thread's `exec_command`
     (`/bin/zsh -lc`) printed both values; without them, `BROWSER` was empty.
-  - `PATH` for Codex: in the same run, `shell_environment_policy.set.PATH` replaced the whole
-    `PATH` of the command (the login shell did not add the person's entries back). Studio
-    therefore does not set `PATH` for Codex threads, and their tools that search `PATH` do not
-    find the links. Claude sessions get the link folder first on `PATH`
-    (`STUDIO_BROWSER_PATH` in `studio-browser.json`).
-  - On macOS some tools run `open` and ignore `BROWSER` (kubelogin). Studio does not replace
-    `open`. The agent guidance says to pass `"$BROWSER"` to a browser command option.
+  - `PATH` for Codex, measured on 2026-10-21 with the same fixture and a `ZDOTDIR` whose
+    `.zprofile` and `.zshrc` each add one entry. Without an override the command `PATH` had
+    both entries, then the `path_helper` order. With `shell_environment_policy.set.PATH` and
+    `shell_snapshot` on (the default), the command `PATH` was exactly the set value (after
+    Codex's own `codex-path`): Codex replays a set value after the shell startup, so both
+    entries were lost. With `shell_snapshot` off, the login shell rebuilt `PATH` and put the set
+    folder last, after `/usr/bin`. The Studio supervisor runs with the launchd `PATH`, so a value
+    made from the launch environment would also lose Homebrew and `~/.local/bin`, and a value
+    taken from a login shell would keep entries that change for each shell (fnm). Studio
+    therefore does not set `PATH` for Codex threads. Their tools that search `PATH` for
+    `xdg-open` or `open` do not reach the launcher, and on a macOS host `open URL` opens the
+    browser of the host. The agent guidance says to pass `"$BROWSER"` to a browser command
+    option. A real fix needs a Codex setting that adds a folder to `PATH` (section 7.4).
+  - Claude sessions get the link folder first on `PATH` (`STUDIO_BROWSER_PATH` in
+    `studio-browser.json`). A login shell can move it: `/usr/libexec/path_helper` puts the
+    `/etc/paths` folders first, so `/usr/bin/open` would win. The bridge therefore also sets
+    `CLAUDE_ENV_FILE` to `<bridge root>/studio-browser-path.sh`, which puts the folder first
+    again. Claude Code runs that file ahead of each Bash command. Measured on 2026-10-21 with
+    Claude Code 2.1.300 (`-p`) and a fake Messages API on the loopback: the Bash command found
+    `bin/open` and `bin/xdg-open`, and the file's entry came before the session `PATH`. That run
+    made no shell snapshot, so the order after a snapshot is not measured. A person's own
+    `CLAUDE_ENV_FILE` stays in place.
 - Web: the sign-in card (`SignInCard.tsx`), paste mode for every window that cannot hold the
   port, and the countdown.
 - Desktop (Electron and Tauri): no change. They keep `openSignIn` and the forward.
@@ -654,6 +678,142 @@ provider with a real account.
   the same time send one code; cancel closes the guest request; a stopped tool ends the
   waiting card with a chat event; a device code link opens from a phone without a forward.
   `NativeChats`: a phone signs in to a command of a headless server by paste.
+
+## 7. Links that the agent gives
+
+The paths of sections 2 to 6 start when a command runs `BROWSER`, `xdg-open` or `open`. Two
+cases miss them:
+
+- The command prints its link and opens no browser: device code flows, `--no-browser`
+  options, and tools that find no browser.
+- On a macOS host, Codex commands do not get the `open` shim (section 7.4). Go tools with
+  `pkg/browser` run `/usr/bin/open`, and the link opens on the host.
+
+In both cases the model can give the link in a message. The person then opens it without the
+card, without the forward, and not through the phone path of section 6. Studio now catches
+these links in two ways. Both reach the bridge of the chat and the same card. Neither depends
+on a tool name or on the model following guidance: the tool is the preferred path, and the
+message rule catches the link when the model only writes it.
+
+### 7.1 The tool `orchestration_sign_in`
+
+- Owner: `vm-guest/sign_in_contract.json`. It holds the tool definition, the result texts and
+  the time values `submitSeconds` and `messageAgeSeconds`. The Python server reads it
+  (`codex_runtime.sign_in_tools`, `codex_browser_bridge.SIGN_IN_CONTRACT`). The Rust server
+  reads the texts and times (`runtime-services/src/sign_in.rs`). The Rust catalog
+  `account_worker/preparation-resources.json` holds a copy of the definition, and
+  `sign_in.rs` and `sign-in-link-contract.py` check that copy against the owner.
+- Every agent gets the tool: lead and worker, Codex and Claude, host and VM. A thread keeps the
+  tools that it started with, so existing Codex threads get the tool only in a new thread. The
+  message rule (section 7.2) covers them.
+- The call is `{"url": LINK}`. The server sends `browser.submit` with `{agentId, url}` to the
+  bridge of the chat: the host bridge for a native chat, the VM guest for a VM chat. The
+  request ID is `sign-in-tool:<tool request ID>`, and the guest keeps a receipt for it.
+- The bridge checks the link with the URL rules of section 2, as for a link from the shim. The
+  chat's own Linux user owns the request, so the listener checks do not change.
+- The server writes the card at once (`browser_cards::apply`, `Bridge.apply`). The card poll
+  finds the same item later; the card ID is `uuid5(bridgeId)`, so it writes no second card.
+- The result has `status` (`pending`, `approved`, `opened`, `declined`, `closed` or
+  `refused`), `host`, `requestId` (the card) and `message`. A refusal is text for the model: the
+  URL rule message, "Sign-in links of VM chats open only on the Mac that runs the VM", or the
+  text for a bridge from before `browser.submit`.
+- One link gets one card. `browser.submit` and the shim return the earlier request of the same
+  chat and link (`url` or `startUrl`) for 10 minutes, while it is not `stale`, `expired` or
+  `replaced`. So a retry, the tool call, the message rule and the command's own `BROWSER` call
+  make one card. A declined link stays declined.
+- A VM chat needs the guest upgrade for `browser.submit`. Before it, the tool answers with the
+  `unsupported` text of the contract, and `studio-browser LINK` in the VM still works.
+
+### 7.2 Sign-in links in messages
+
+The rule is `browser_policy.sign_in_links`, with the Rust port in `browser_policy.rs`:
+
+- The server reads each completed agent message (`item/completed` with an `agentMessage`) of
+  Codex and Claude. A link starts at `http://` or `https://`, in any case. It ends at a
+  character that is not printable ASCII, or at `<`, `>`, `"`, `'` or a backtick. A trailing
+  `.`, `,`, `;`, `:`, `!`, `?` or `*`, and an unbalanced `)` or `]`, are not part of the link.
+- A link is a sign-in link when its query has every name of one of these sets, each with a
+  value. The fragment does not count.
+  - `client_id` and `response_type`: an OAuth 2.0 or OpenID Connect authorization request.
+  - `client_id` and `redirect_uri`.
+  - `client_id` and `request_uri`: a pushed authorization request (RFC 9126).
+  - `user_code`: a device verification link with its code (RFC 8628).
+  - `SAMLRequest`: a SAML 2.0 request in the HTTP-Redirect binding.
+- A link to a documentation name (`example.com`, `example.net`, `example.org`, `*.example`,
+  `*.invalid`) is an example, not a sign-in.
+- One message gives at most 4 links, and a repeated link counts once.
+- `vm-guest/sign_in_links.json` is the shared corpus. The guest tests, the server contract and
+  the Rust test check both implementations against it.
+- Ordinary links stay ordinary: a pull request, a documentation page, `http://localhost:3000/`.
+  A device page without its code in the link (`https://microsoft.com/devicelogin`,
+  `https://github.com/login/device`) also stays a link. It needs no forward, and the code is in
+  the text.
+
+The flow:
+
+1. The server saves the message as before. The text does not change: the person sees the link
+   and the card.
+2. After the message commits, the server sends each link with `browser.submit`. The request ID
+   is `sign-in-message:uuid5(<item key>, <link>)`.
+   - Rust: the notification writer notes the message (`sign_in::note_message`). One task
+     (`sign_in::run_messages`) reads the committed item and waits at most 3.75 s for
+     `streaming: false`. A note that a server stop loses leaves the link as a link.
+   - Python: `Runtime` gives `codex_browser_bridge.message_links` to its pool.
+3. These get no card: a reviewer chat (it quotes links from code under review), a deleted
+   chat, a message older than `messageAgeSeconds` (600 s: history recovery writes old messages
+   again), a link that the URL rules refuse (the log has no query value), and a link with a
+   loopback redirect where the chat's user has no listener.
+
+### 7.3 Tests
+
+- `test_browser_bridge.py` (guest): the corpus. `browser.submit` queues for the chat's Linux
+  user. One link gets one request, also from the shim. A declined link stays declined, an
+  expired one opens again, a listener of another user refuses, an unknown chat refuses. The
+  submit receipt replays.
+- `sign-in-link-contract.py` (server, in `just test-fast`): both catalogs equal the owner, the
+  corpus, and the text of an older bridge. With a real `Runtime`, a fake app-server and the real
+  host bridge: the tool makes one card, a retry and the message keep it, and the browser
+  reaches the command. Refusals reach the model. A sign-in link in a message becomes a card and
+  the text stays. Ordinary links, documentation names, reviewers, streaming messages and missing
+  messages get no card.
+- `sign_in.rs` and `browser_policy.rs` (Rust unit tests): the contract, the results, the text
+  of an unknown method, the corpus. `browser_host_flow.rs`: on the Rust host bridge the tool
+  and the message give one card, a new link gets its own card, and refusals write nothing.
+- `just test-sign-in-live` (heavy, manual, real models; announce it). `tests/sign-in-live.py`
+  starts a local OAuth and OpenID Connect provider (Python standard library: device code, and
+  authorization code with PKCE and a loopback redirect). `tests/fixtures/sign_in_live_cli.py` is
+  a command that only prints its link. For Codex (the configured account) and Claude
+  (`claude-local`), and for each flow, the prompt asks the model to give the link to the person
+  and names no tool. The check passes when a card for the lead shows the provider link, every
+  sign-in link in the lead's messages has a card, and the command prints `LOGIN_OK` after the
+  test approves the card and acts as the browser. The result names the path that the model
+  took (`tool` or `message`). It runs on the Python backend in a throwaway state; the
+  deterministic tests above cover the Rust path. dex was the first choice; the standard library
+  provider needs no download and serves both flows. The check sets `CODEX_AGENTS_STATE_DIR` and
+  `CODEX_WORKSPACE_STORE` to throwaway folders, so it never reads or writes the state of the
+  running Studio. Measured on 2026-10-21 with `--providers codex --flows device`
+  (`gpt-6-astra`): PASS; the model called the tool and also wrote the link in its message, and
+  the two made one card. The Claude scenarios and the loopback flow were not run.
+
+### 7.4 Remaining gap: Codex on a macOS host
+
+- Measured on 2026-10-21 (section 6.4): with `shell_snapshot` on (the default),
+  `shell_environment_policy.set.PATH` replaces the command `PATH` with the set value, so the
+  entries of the person's `.zprofile` and `.zshrc` are lost. With `shell_snapshot` off, the
+  login shell rebuilds `PATH` and puts the set folder last, after `/usr/bin`. A value built
+  from the launchd environment loses Homebrew and `~/.local/bin`. So Studio cannot put
+  `<state>/browser-host/bin` first for Codex host chats.
+- Effect: a tool that runs `open URL` from `PATH`, or `/usr/bin/open`, and ignores `BROWSER`
+  (Go `pkg/browser`, for example kubelogin; Node `open`) opens the link in the browser of the
+  host, without a card. On a headless host nobody sees it.
+- What covers it now: the tool and the message rule when the command also prints its link
+  (kubelogin prints "Please visit"), and a browser command option with `"$BROWSER"`.
+- Still open: a command that runs `open` without a printed link. The model sees no link.
+- Proposed upstream Codex setting: `shell_environment_policy.prepend_path`, a list of folders
+  that Codex puts first in the `PATH` of each command after the login shell and the shell
+  snapshot have built it. Studio would then set `<state>/browser-host/bin` for each host Codex
+  thread, as it sets `BROWSER` now, and the person's `PATH` stays complete. Claude Code already
+  allows this with `CLAUDE_ENV_FILE` (section 6.4).
 
 ## Decisions
 

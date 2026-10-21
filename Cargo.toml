@@ -84,6 +84,11 @@ rustls-pki-types = { version = "=1.15.1", features = ["std"] }
 spki = { version = "=0.7.3", features = ["std"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 
+# The server hashes its own executable at startup, a file of up to a gigabyte in
+# a debug build; unoptimized hashing delayed readiness by about 20 seconds.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.test.package.sha2]
 opt-level = 3
 

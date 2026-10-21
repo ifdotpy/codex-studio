@@ -3,9 +3,9 @@
 //! The Rust port of `vm-guest/browser_bridge.py` as `codex_browser_host.py` runs it in the
 //! Python server: the same sockets, the same queue file, the same JSON-RPC methods. Agents run
 //! the launcher `<state>/browser-host/studio-browser URL` (it is also `BROWSER`, and
-//! `xdg-open` in `<state>/browser-host/bin`). The launcher sends the link on `open.sock`; this
-//! bridge checks it with the URL rules (`browser_policy`), finds the chat by its session hint
-//! and queues a request. The server reads the queue on `control.sock` with `browser.wait` and
+//! `xdg-open`, and `open` on macOS, in `<state>/browser-host/bin`). The launcher sends the
+//! link on `open.sock`; this bridge checks it with the URL rules (`browser_policy`), finds the
+//! chat by its session hint and queues a request. The server reads the queue on `control.sock` with `browser.wait` and
 //! shows the person a card (`browser_cards`). After an approval the one sign-in redirect is
 //! relayed to the tool's loopback listener with `browser.callback`. Every connection to a
 //! listener first checks that the listener belongs to this server's user.
@@ -40,6 +40,14 @@ pub const SHIM_ARGUMENT: &str = "--studio-browser";
 /// The guest's launcher socket when `STUDIO_BROWSER_SOCKET` is unset.
 const GUEST_SOCKET: &str = "/run/codex-studio-browser/open.sock";
 const PATH_NAMES: [&str; 3] = ["xdg-open", "x-www-browser", "www-browser"];
+/// Studio's `open` in the `PATH` folder of a macOS host, for tools that run `open URL` and
+/// ignore `BROWSER`. It sends one http or https URL to the launcher and passes every other use
+/// to `/usr/bin/open` unchanged. Python `codex_browser_host.OPEN_SHIM` holds a copy;
+/// `test_codex_browser_host_env.py` checks that the copy equals this file.
+pub const OPEN_SHIM: &str = include_str!("browser_open.sh");
+/// The name of `OPEN_SHIM` in the `PATH` folder. Only a macOS host gets it: on Linux `open`
+/// is a different program (openvt), and tools there run `xdg-open`.
+pub const OPEN_NAME: &str = "open";
 
 /// A request lives this long, in seconds (`TTL_SECONDS`).
 const TTL_SECONDS: f64 = 600.0;
@@ -58,6 +66,8 @@ const HEAD_LIMIT: usize = 64 * 1024;
 const MAX_WAIT_SECONDS: f64 = 20.0;
 const SENT_HEADERS: [&str; 3] = ["user-agent", "accept", "accept-language"];
 const OPEN_STATES: [&str; 2] = ["pending", "approved"];
+/// States after which the same link of a chat can queue again (`REOPEN_STATES`).
+const REOPEN_STATES: [&str; 3] = ["stale", "expired", "replaced"];
 const IPV4_REACH: [&str; 4] = ["127.0.0.1", "0.0.0.0", "::ffff:127.0.0.1", "::"];
 const IPV6_REACH: [&str; 2] = ["::1", "::"];
 
@@ -609,12 +619,69 @@ impl HostBridge {
                 "LAYR_SESSION names a chat of another Linux user",
             );
         }
+        self.queue_link(uid, url, agent, context).await
+    }
+
+    /// `browser.submit`: the server queues a link for a chat, from the agent's
+    /// `orchestration_sign_in` call or from a sign-in link in its message (section 7). The chat's
+    /// own user owns the request, so the listener checks stay those of a link that its command
+    /// opened itself (`BrowserBridge.submit`).
+    async fn submit(&self, params: &Value) -> Result<Value, BridgeError> {
+        let agent = canonical_session(params.get("agentId").unwrap_or(&Value::Null))?;
+        let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
+            code: "unknown_agent",
+            message: "Studio does not know this chat".into(),
+        })?;
+        self.queue_link(
+            context.uid,
+            params.get("url").unwrap_or(&Value::Null),
+            agent,
+            context,
+        )
+        .await
+    }
+
+    /// The request of this chat for the same link while it can still answer
+    /// (`BrowserBridge._existing`): a link that a command opens and that the agent also gives
+    /// in a message or a tool call gets one card.
+    fn existing(queue: &Queue, agent: &str, url: &Value, now: f64) -> Option<Value> {
+        let url = url.as_str()?;
+        queue
+            .items
+            .values()
+            .find(|item| {
+                item.get("agentId").and_then(Value::as_str) == Some(agent)
+                    && (item.get("url").and_then(Value::as_str) == Some(url)
+                        || item.get("startUrl").and_then(Value::as_str) == Some(url))
+                    && !REOPEN_STATES.contains(
+                        &item
+                            .get("state")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    )
+                    && item.get("createdAt").and_then(Value::as_f64).unwrap_or(0.0)
+                        > now - TTL_SECONDS
+            })
+            .cloned()
+    }
+
+    async fn queue_link(
+        &self,
+        uid: u32,
+        url: &Value,
+        agent: String,
+        context: ChatContext,
+    ) -> Result<Value, BridgeError> {
         let agent = if context.agent_id.is_empty() {
             agent
         } else {
             context.agent_id.clone()
         };
         let now = (self.clock)();
+        let original = url.clone();
+        if let Some(item) = Self::existing(&self.lock(), &agent, &original, now) {
+            return Ok(item);
+        }
         {
             let queue = self.lock();
             let recent = queue
@@ -713,6 +780,9 @@ impl HostBridge {
             connect_address(uid, redirect.port, &rows)?;
         }
         let mut queue = self.lock();
+        if let Some(item) = Self::existing(&queue, &agent, &original, now) {
+            return Ok(item);
+        }
         // The latest link of a chat replaces its earlier pending link.
         let replaced: Vec<String> = queue
             .items
@@ -749,6 +819,7 @@ impl HostBridge {
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value, BridgeError> {
         match method {
             "browser.wait" => self.wait(params).await,
+            "browser.submit" => self.submit(params).await,
             "browser.answer" => self.answer(params).await,
             "browser.close" => {
                 let mut queue = self.lock();
@@ -1287,9 +1358,10 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\"'\"'"))
 }
 
-/// Write the launcher `<folder>/studio-browser` and its `PATH` links. The launcher runs this
-/// server's binary as the shim, so it needs no Python. Tools split `BROWSER` into words, so
-/// the launcher path is the value and the binary path stays inside the script.
+/// Write the launcher `<folder>/studio-browser`, its `PATH` links and, on macOS, the `open`
+/// shim (`OPEN_SHIM`). The launcher runs this server's binary as the shim, so it needs no
+/// Python. Tools split `BROWSER` into words, so the launcher path is the value and the binary
+/// path stays inside the script.
 pub fn write_launcher(folder: &Path, executable: &Path) -> std::io::Result<PathBuf> {
     let launcher = folder.join(LAUNCHER);
     let script = format!(
@@ -1308,6 +1380,9 @@ pub fn write_launcher(folder: &Path, executable: &Path) -> std::io::Result<PathB
             std::os::unix::fs::symlink(&target, &temporary)?;
             std::fs::rename(&temporary, &link)?;
         }
+    }
+    if cfg!(target_os = "macos") {
+        write_atomic(&bin.join(OPEN_NAME), OPEN_SHIM.as_bytes(), 0o755)?;
     }
     Ok(launcher)
 }

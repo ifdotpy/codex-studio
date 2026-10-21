@@ -287,6 +287,27 @@ async fn call_named_tool(
     tools: Option<Arc<dyn MultiServerToolPort>>,
     voice: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
 ) -> Value {
+    call_with_ports(
+        store,
+        actor,
+        tool,
+        name,
+        call_id,
+        args,
+        runtime_ports(tools, voice),
+    )
+    .await
+}
+
+async fn call_with_ports(
+    store: &Arc<RuntimeStore>,
+    actor: &Value,
+    tool: &str,
+    name: &str,
+    call_id: &str,
+    args: &Value,
+    runtime_ports: ManagedToolRuntimePorts,
+) -> Value {
     let context = context(actor);
     let frame = frame(&context, tool, name, call_id, args);
     let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
@@ -296,7 +317,7 @@ async fn call_named_tool(
         ManagedToolPortsConfig {
             wake: Arc::new(tokio::sync::Notify::new()),
             monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
-            runtime_ports: runtime_ports(tools, voice),
+            runtime_ports,
             preparation: None,
         },
     )
@@ -1121,6 +1142,90 @@ async fn ready_voice_session(store: &RuntimeStore, lead: &Value) {
         })
         .await
         .unwrap();
+}
+
+/// `orchestration_sign_in` (docs/vm-browser-bridge.md, section 7) through the managed-tool
+/// dispatcher: the host bridge queues the link and the card is written at once; a second call
+/// with the same link returns the same card; without the attached bridges the tool refuses.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sign_in_shows_one_card_through_the_chat_bridge() {
+    let seed = &seed().value;
+    let (directory, store) = seeded_store().await;
+    let lead = &seed["lead"];
+    let service = crate::browser_host::HostBridgeService::start(
+        directory.path(),
+        Arc::new(crate::browser_host::StoreChats {
+            store: Arc::clone(&store),
+        }),
+        Default::default(),
+        None,
+    )
+    .unwrap();
+    let guest: Arc<dyn crate::linux_vm_guest::GuestRpc> = Arc::new(
+        crate::linux_vm_guest::UnixSocketGuestRpc::new(service.control_socket.clone()),
+    );
+    let sources = crate::sign_in::SignInSources::new(vec![crate::browser_cards::CardSource {
+        source: "host",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    }]);
+    let link = json!({"url": "https://device.sso.us-east-1.amazonaws.com/?user_code=WDJB-MJHT"});
+    let attached = || {
+        let ports = runtime_ports(None, None);
+        assert!(ports.late.sign_in.set(sources.clone()).is_ok());
+        ports
+    };
+    let first = call_with_ports(
+        &store,
+        lead,
+        crate::sign_in::TOOL,
+        "sign-in",
+        "call-sign-in",
+        &link,
+        attached(),
+    )
+    .await;
+    assert_eq!(first["success"], true, "{first}");
+    let value = parsed(&first);
+    assert_eq!(value["status"], "pending", "{value}");
+    let card = value["requestId"].as_str().unwrap().to_owned();
+    let saved = store
+        .read_async("test", move |tx| {
+            studio_runtime_store::QuestionsWriteRepository::request(tx, &card)
+        })
+        .await
+        .unwrap()
+        .expect("the card is written before the tool answers");
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        (saved["method"].as_str(), saved["agent"].as_str()),
+        (Some("browser/open"), lead["id"].as_str())
+    );
+    let again = call_with_ports(
+        &store,
+        lead,
+        crate::sign_in::TOOL,
+        "sign-in",
+        "call-sign-in-again",
+        &link,
+        attached(),
+    )
+    .await;
+    assert_eq!(parsed(&again)["requestId"], value["requestId"]);
+    let detached = call_with_ports(
+        &store,
+        lead,
+        crate::sign_in::TOOL,
+        "sign-in",
+        "call-sign-in-detached",
+        &link,
+        runtime_ports(None, None),
+    )
+    .await;
+    assert_eq!(detached["success"], false, "{detached}");
+    service.stop().await;
 }
 
 #[tokio::test]

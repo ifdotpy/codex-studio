@@ -15,6 +15,8 @@ mod late_thread_reply;
 mod many_agents;
 mod native_review;
 mod orphan_thread_receipt;
+#[cfg(unix)]
+mod provider_started_turn;
 mod publication_drain;
 mod publication_off_path;
 mod retained;
@@ -51,6 +53,10 @@ pub(super) struct Faults {
     count: std::sync::atomic::AtomicUsize,
     pub(super) journal_count: std::sync::atomic::AtomicUsize,
     pub(super) journal_transactions: std::sync::atomic::AtomicUsize,
+    /// Hold the worker just before it registers the browser skill roots.
+    pub(super) hold_browser_skill: std::sync::atomic::AtomicBool,
+    pub(super) browser_skill_held: tokio::sync::Notify,
+    pub(super) release_browser_skill: tokio::sync::Notify,
     pub(super) hold_journal_batch: std::sync::atomic::AtomicBool,
     pub(super) journal_batch_ready: tokio::sync::Notify,
     pub(super) release_journal_batch: tokio::sync::Notify,

@@ -340,6 +340,142 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(old["state"], "running")
         self.assertTrue((Path(old["slotPath"]).parent / "lease.json").exists())
 
+    def restarted_guest(self):
+        """A new guest service process: a new owner with the same channels."""
+        guest = HostExec(SimpleNamespace(state=self.state, host_context=self.guest.service.host_context))
+        guest.call, guest.broker = self.guest.call, self.guest.broker
+        return guest
+
+    async def run_then_lose_guest(self, operation, script):
+        """The guest sends the run request and dies before its response (2026-10-20 incident)."""
+        call = self.guest.call
+        async def lost(method, params, phase, *options):
+            result = await call(method, params, phase, *options)
+            if method == "run":
+                raise HostExecError("outcome_unknown", "The VM stopped")
+            return result
+        with patch.object(self.guest, "call", side_effect=lost):
+            with self.assertRaises(HostExecError):
+                await self.execute(operation, script)
+
+    async def test_a_guest_restart_frees_the_slot_of_an_exited_command(self):
+        self.host.slots = 1
+        await self.run_then_lose_guest("panic", 'open("out", "w").write("mac result")')
+        await asyncio.gather(*list(self.host.commands.values()))
+        old = self.host.load("panic")
+        self.assertEqual(old["state"], "exited")
+        self.assertTrue((Path(old["slotPath"]).parent / "lease.json").exists())
+        # The same guest keeps the lease for inspection.
+        with self.assertRaises(HostExecError) as caught:
+            await self.execute("same-guest", 'print("busy")')
+        self.assertEqual(caught.exception.code, "busy")
+        guest = self.restarted_guest()
+        new = await guest.handle("after-restart", {"agentId": "agent", "operationId": "after-restart",
+            "argv": [sys.executable, "-c", 'print("next")'], "cwd": str(self.line), "timeoutSeconds": 5}, self.emit)
+        self.assertEqual(new["exitCode"], 0)
+        self.assertEqual(new["slotPath"], old["slotPath"])
+        self.assertNotEqual(new["generation"], old["generation"])
+        old = self.host.load("panic")
+        self.assertEqual((old["state"], old["abandoned"], old["collected"]), ("released", "guest_owner_lost", False))
+        # The result of the lost command stays readable.
+        changes = await guest.call("result.manifest", {"operationId": "panic", "agentId": "agent", "area": "changes",
+                                                      "after": ""}, "changes")
+        self.assertIn("out", changes["entries"])
+        self.assertFalse((self.line / "out").exists())
+
+    async def test_a_running_command_of_a_lost_guest_keeps_its_slot_until_it_exits(self):
+        self.host.slots = 1
+        gate = self.root / "gate"
+        await self.run_then_lose_guest("running", f'import os,time\nwhile not os.path.exists({str(gate)!r}): time.sleep(0.02)')
+        guest = self.restarted_guest()
+        listed = await guest.handle("list", {"agentId": "agent", "action": "list"}, self.emit)
+        row = next(item for item in listed["operations"] if item["operationId"] == "running")
+        self.assertEqual((row["state"], row["leased"], row["orphaned"]), ("running", True, True))
+        # A running command is never released.
+        with self.assertRaises(HostExecError) as caught:
+            await guest.handle("release-running", {"agentId": "agent", "action": "release", "operationId": "running"}, self.emit)
+        self.assertEqual(caught.exception.code, "invalid_params")
+        with self.assertRaises(HostExecError) as caught:
+            await guest.handle("while-running", {"agentId": "agent", "operationId": "while-running",
+                "argv": [sys.executable, "-c", "print()"], "cwd": str(self.line), "timeoutSeconds": 5}, self.emit)
+        self.assertEqual(caught.exception.code, "busy")
+        self.assertTrue(self.host.children)
+        gate.write_text("exit")
+        await asyncio.gather(*list(self.host.commands.values()))
+        old = self.host.load("running")
+        self.assertEqual((old["state"], old["exitCode"], old["abandoned"]), ("released", 0, "guest_owner_lost"))
+        new = await guest.handle("after-exit", {"agentId": "agent", "operationId": "after-exit",
+            "argv": [sys.executable, "-c", 'print("next")'], "cwd": str(self.line), "timeoutSeconds": 5}, self.emit)
+        self.assertEqual(new["exitCode"], 0)
+
+    async def test_an_unstarted_command_of_a_lost_guest_never_starts(self):
+        op = await self.guest.call("acquire", {"operationId": "starting", "agentId": "agent", "projectId": "project",
+                                               "linePath": str(self.line), "owner": "old"}, "acquire")
+        manifest = scan(Path(op["slotPath"]))
+        lock = self.host.locks.setdefault("run\0starting", asyncio.Lock())
+        async with lock:
+            # The old guest's run request holds the start while the new guest recovers.
+            report = await self.guest.call("recover", {"operationId": "guest-owner:new", "owner": "new"}, "recover")
+            self.assertEqual(report["orphaned"], ["starting"])
+            self.assertTrue((self.host.slot(op) / "lease.json").exists())
+        with self.assertRaises(HostExecError) as caught:
+            await self.guest.call("run", {"operationId": "starting", "agentId": "agent",
+                "argv": [sys.executable, "-c", 'open("ran", "w").write("bad")'],
+                "manifestSha256": key(json.dumps(manifest, sort_keys=True))}, "run")
+        self.assertEqual(caught.exception.code, "guest_owner_lost")
+        self.assertFalse(self.host.commands)
+        self.assertFalse((Path(op["slotPath"]) / "ran").exists())
+        self.assertFalse((Path(op["slotPath"]).parent / "lease.json").exists())
+        self.assertEqual(self.host.load("starting")["abandoned"], "guest_owner_lost")
+        # An unstarted operation without a held start is released at once; the owner's own stays.
+        idle = await self.guest.call("acquire", {"operationId": "idle", "agentId": "agent", "projectId": "project",
+                                                 "linePath": str(self.line), "owner": "old"}, "acquire")
+        mine = await self.guest.call("acquire", {"operationId": "mine", "agentId": "agent", "projectId": "project",
+                                                 "linePath": str(self.line), "owner": "new"}, "acquire")
+        report = await self.guest.call("recover", {"operationId": "guest-owner:new", "owner": "new"}, "recover-2")
+        self.assertEqual(report["released"], ["idle"])
+        self.assertEqual(self.host.load("idle")["state"], "released")
+        self.assertTrue((self.host.slot(mine) / "lease.json").exists())
+        self.assertNotEqual(json.loads((Path(idle["slotPath"]).parent / "slot.json").read_text())["generation"],
+                            idle["generation"])
+
+    async def test_the_agent_lists_and_releases_its_own_operations(self):
+        self.host.slots = 1
+        broker = self.guest.broker
+        async def failed(method, params, phase):
+            if method == "host.slot.collect":
+                raise HostExecError("layr_failed", "Collect failed")
+            return await broker(method, params, phase)
+        with patch.object(self.guest, "broker", side_effect=failed):
+            with self.assertRaises(HostExecError):
+                await self.execute("uncollected", 'open("out", "w").write("mac result")')
+        self.assertTrue((Path(self.host.load("uncollected")["slotPath"]).parent / "lease.json").exists())
+        listed = await self.guest.handle("list", {"agentId": "agent", "action": "list"}, self.emit)
+        self.assertEqual([(row["operationId"], row["state"], row["leased"]) for row in listed["operations"]],
+                         [("uncollected", "exited", True)])
+        self.another_line("other", self.line)
+        other = await self.guest.handle("list-other", {"agentId": "other", "action": "list"}, self.emit)
+        self.assertEqual(other["operations"], [])
+        with self.assertRaises(HostExecError) as caught:
+            await self.guest.handle("release-other", {"agentId": "other", "action": "release", "operationId": "uncollected"}, self.emit)
+        self.assertEqual(caught.exception.code, "forbidden")
+        # A request of this guest that runs the operation keeps it.
+        self.guest.live.add("uncollected")
+        with self.assertRaises(HostExecError) as caught:
+            await self.guest.handle("release-live", {"agentId": "agent", "action": "release", "operationId": "uncollected"}, self.emit)
+        self.assertEqual(caught.exception.code, "busy")
+        self.guest.live.discard("uncollected")
+        released = await self.guest.handle("release", {"agentId": "agent", "action": "release", "operationId": "uncollected"}, self.emit)
+        self.assertEqual((released["state"], released["abandoned"], released["collected"]), ("released", "agent_release", False))
+        again = await self.guest.handle("release-again", {"agentId": "agent", "action": "release", "operationId": "uncollected"}, self.emit)
+        self.assertEqual(again["state"], "released")
+        changes = await self.guest.call("result.manifest", {"operationId": "uncollected", "agentId": "agent",
+                                                           "area": "changes", "after": ""}, "changes")
+        self.assertIn("out", changes["entries"])
+        new = await self.execute("after-release", 'print("next")')
+        self.assertEqual(new["exitCode"], 0)
+        self.assertNotEqual(new["generation"], released["generation"])
+
     async def test_a_transfer_error_release_needs_an_error_object(self):
         op = await self.guest.call("acquire", {"operationId": "pre-run", "agentId": "agent", "projectId": "project",
                                                "linePath": str(self.line)}, "acquire")
@@ -979,6 +1115,33 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["state"], "done")
             # Each command first checks the Mac service: a VM start was the only check before.
             ensured.assert_called_with(client.return_value.state_dir)
+
+    def test_a_lost_result_names_its_operation_and_stays_uncertain(self):
+        from codex_linux_vm import LinuxVMError
+        runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "vm"})
+        actor = {"id": "agent", "cwd": "/line", "role": "implementer"}
+        with patch("codex_linux_workspaces.client") as client, patch("codex_host_exec.ensure_service"):
+            def closed(*args, **kwargs):
+                raise LinuxVMError("The Linux VM connection closed before its response.", uncertain=True)
+                yield
+            client.return_value.stream.side_effect = closed
+            with self.assertRaises(LinuxVMError) as caught:
+                run_tool(runtime, actor, {"action": "execute", "command": "true", "request_id": "build"}, "tool")
+            operation = client.return_value.stream.call_args.args[1]["operationId"]
+            self.assertIn("Operation: " + operation, str(caught.exception))
+            self.assertTrue(caught.exception.uncertain)
+            # The agent lists its operations without an ID.
+            client.return_value.stream.side_effect = None
+            client.return_value.stream.return_value = iter([{"result": {"operations": []}}])
+            listed = run_tool(runtime, actor, {"action": "list"}, "tool-list")
+            self.assertEqual(listed["operations"], [])
+            self.assertEqual(client.return_value.stream.call_args.args[1], {"agentId": "agent", "action": "list"})
+        for action in ("status", "cancel", "release"):
+            with self.subTest(action=action), self.assertRaises(ValueError):
+                with patch("codex_linux_workspaces.client"):
+                    run_tool(runtime, actor, {"action": action}, "tool")
+        self.assertEqual(tool_definition()["inputSchema"]["properties"]["action"]["enum"],
+                         ["execute", "status", "cancel", "list", "release"])
 
 
 if __name__ == "__main__":

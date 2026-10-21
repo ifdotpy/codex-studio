@@ -7,10 +7,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
-from codex_browser_host import PATH_NAMES, publish, session_environment, thread_environment
+from codex_browser_host import (OPEN_NAME, OPEN_SHIM, PATH_NAMES, publish, session_environment,
+                                thread_environment)
+from codex_layout import REPOSITORY_ROOT
 
 
 class HostEnvironment(unittest.TestCase):
@@ -38,6 +41,28 @@ class HostEnvironment(unittest.TestCase):
                                      "STUDIO_BROWSER_SESSION": "s"})
         self.assertEqual(result.returncode, 1)
         self.assertIn("Studio is not available here", result.stderr)
+        shim = folder / "bin" / OPEN_NAME
+        if sys.platform != "darwin":
+            self.assertFalse(shim.exists())
+            return
+        # macOS: `open URL` reaches the launcher; another use is the system open's own result.
+        self.assertTrue(os.access(shim, os.X_OK))
+        result = subprocess.run([str(shim), "https://id.example.com/"], capture_output=True,
+                                text=True, timeout=20,
+                                env={**os.environ, "STUDIO_BROWSER_SOCKET": str(folder / "none.sock"),
+                                     "STUDIO_BROWSER_SESSION": "s"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Studio is not available here", result.stderr)
+        missing = str(self.root / "missing file.txt")
+        shimmed = subprocess.run([str(shim), missing], capture_output=True, text=True, timeout=20)
+        system = subprocess.run(["/usr/bin/open", missing], capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(system.returncode, 0)
+        self.assertEqual((shimmed.returncode, shimmed.stdout, shimmed.stderr),
+                         (system.returncode, system.stdout, system.stderr))
+
+    def test_the_open_shim_copy_equals_its_rust_owner(self) -> None:
+        owner = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/browser_open.sh"
+        self.assertEqual(OPEN_SHIM, owner.read_text(encoding="utf-8"))
 
     def test_publish_gives_the_claude_bridge_the_link_folder(self) -> None:
         bridge = self.root / "claude"

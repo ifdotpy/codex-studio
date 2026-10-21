@@ -179,6 +179,17 @@ operation ID.
 reboot path is the earlier full path: it requires idle providers, makes a disk backup, stops
 the VM, writes a new provision seed and starts the VM.
 
+A `running`, `starting` or `lost` provider in `provider.list` stops the reboot path. An
+operator can approve one lost provider with `--approved-orphan <handle>`. The handle is
+`linux-worker:<agent UUID>` (owner `PROVIDER_HANDLE_PREFIX` in `codex_linux_vm.py`), or the
+UUID name of a provider directory without `native.json`. An approved row does not block when:
+
+- its reason is `native_process_lost`: the guest proved that the process is gone, so its
+  agent ID only names the former owner.
+- its reason is `outcome_unknown` and it has no agent ID.
+
+An approved row with any other reason still blocks, because the process can still run.
+
 ## x86_64 binaries
 
 The VM can run Linux x86_64 binaries with Rosetta for Linux, for example a prebuilt x64 tool
