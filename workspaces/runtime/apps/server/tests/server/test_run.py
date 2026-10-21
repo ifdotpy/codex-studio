@@ -40,7 +40,7 @@ COMPARE_SPEC.loader.exec_module(COMPARE_RUNS)
 def _save_profile_in_process(profile_path, profile, start_gate):
     RUNNER.PROFILE_PATH = Path(profile_path)
     RUNNER.TEST_TMP_ROOT = Path(profile_path).parent
-    start_gate.wait(timeout=5)
+    start_gate.wait(timeout=HANG_GUARD_SECONDS)  # Only guards against a hang.
     RUNNER._save_profile(profile)
 
 
@@ -195,7 +195,7 @@ class ServerSuiteRunner(unittest.TestCase):
                 self.assertEqual(environment[f"GIT_CONFIG_VALUE_{index}"], value)
                 result = subprocess.run(
                     ["git", "config", "--get", key], cwd=ROOT, env=environment,
-                    capture_output=True, text=True, check=True, timeout=5,
+                    capture_output=True, text=True, check=True, timeout=HANG_GUARD_SECONDS,
                 )
                 self.assertEqual(result.stdout.strip(), value)
 
@@ -335,7 +335,7 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertTrue(all(path not in RUNNER.EXPENSIVE_SUITES for path, _kind in automated))
         heavy = RUNNER.only_category(RUNNER.inventory(), "heavy")
         self.assertEqual({path for path, _kind in heavy}, set(RUNNER.HEAVY_SUITES))
-        self.assertEqual(len(heavy), 5)
+        self.assertEqual(len(heavy), 7)
         self.assertTrue(all(kind == "heavy" for _path, kind in heavy))
         self.assertFalse(set(RUNNER.HEAVY_SUITES).intersection(RUNNER.AUTOMATED_SUITES))
         self.assertIn("heavy", RUNNER.OPT_IN)
@@ -920,7 +920,8 @@ class ServerSuiteRunner(unittest.TestCase):
                 writer.start()
             start_gate.set()
             for writer in writers:
-                writer.join(timeout=5)
+                # The join only guards against a hang; a busy machine starts processes slowly.
+                writer.join(timeout=HANG_GUARD_SECONDS)
                 if writer.is_alive():
                     writer.terminate()
                     writer.join(timeout=2)
@@ -940,7 +941,8 @@ class ServerSuiteRunner(unittest.TestCase):
             def first():
                 with RUNNER._runner_live_lock():
                     entered.set()
-                    release.wait(timeout=5)
+                    # The test releases the lock; the waits only guard against a hang.
+                    release.wait(timeout=HANG_GUARD_SECONDS)
             def second():
                 with contextlib.redirect_stdout(output):
                     with RUNNER._runner_live_lock():
@@ -956,7 +958,7 @@ class ServerSuiteRunner(unittest.TestCase):
                     "runner lock contention announcement",
                 )
                 self.assertFalse(acquired.is_set())
-                release.set(); a.join(timeout=2); b.join(timeout=2)
+                release.set(); a.join(timeout=HANG_GUARD_SECONDS); b.join(timeout=HANG_GUARD_SECONDS)
             self.assertTrue(acquired.is_set())
             self.assertIn("waiting for another test run to finish", output.getvalue())
 
@@ -1140,7 +1142,7 @@ class ServerSuiteRunner(unittest.TestCase):
             target = Path(environment["CODEX_SERVER_TEST_REAL_HOME"]) / ".codex" / "auth.json"
             result = subprocess.run(
                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).open('rb')", str(target)],
-                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=5,
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("real-home audit blocked open", result.stderr)
@@ -1152,7 +1154,7 @@ class ServerSuiteRunner(unittest.TestCase):
             safe_result = subprocess.run(
                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ok')",
                  str(safe_target)],
-                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=5,
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertEqual(safe_result.returncode, 0, safe_result.stderr)
             self.assertEqual(safe_target.read_text(), "ok")
@@ -1208,7 +1210,7 @@ class ServerSuiteRunner(unittest.TestCase):
             )
             result = subprocess.run(
                 [sys.executable, "-c", child, str(executable)], cwd=ROOT,
-                env=environment, capture_output=True, text=True, timeout=5,
+                env=environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "codex-fixture")
@@ -1217,7 +1219,7 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertIn("ALLOWED_EXEC\t" + str(executable.resolve()), audit_log)
             wrapped = subprocess.run(
                 ["/usr/bin/env", "--", str(executable)], cwd=ROOT,
-                env=environment, capture_output=True, text=True, timeout=5,
+                env=environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertEqual(wrapped.returncode, 0, wrapped.stderr)
             self.assertEqual(wrapped.stdout.strip(), "codex-fixture")
@@ -1225,13 +1227,13 @@ class ServerSuiteRunner(unittest.TestCase):
             empty_allow["CODEX_SERVER_TEST_AUDIT_ALLOW_EXECUTABLE"] = ""
             blocked_empty = subprocess.run(
                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).open('rb')", str(executable)],
-                cwd=ROOT, env=empty_allow, capture_output=True, text=True, timeout=5)
+                cwd=ROOT, env=empty_allow, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS)
             self.assertNotEqual(blocked_empty.returncode, 0)
             self.assertIn("real-home audit blocked open", blocked_empty.stderr)
             environment["CODEX_BIN"] = str(executable)
             pass_through = subprocess.run(
                 [sys.executable, "-c", "import os,subprocess,sys; subprocess.run([sys.executable, '-c', 'pass'], env=os.environ.copy(), check=True)"],
-                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=5,
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertEqual(pass_through.returncode, 0, pass_through.stderr)
             audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"]).read_text()
@@ -1241,14 +1243,14 @@ class ServerSuiteRunner(unittest.TestCase):
             unsafe_environment["CODEX_HOME"] = str(fake_home / ".codex")
             unsafe = subprocess.run(
                 [sys.executable, "-c", "import os,subprocess,sys; subprocess.run([sys.executable, '-c', 'pass'], env=os.environ.copy(), check=True)"],
-                cwd=ROOT, env=unsafe_environment, capture_output=True, text=True, timeout=5,
+                cwd=ROOT, env=unsafe_environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertNotEqual(unsafe.returncode, 0)
             self.assertIn("blocked subprocess environment: CODEX_HOME", unsafe.stderr)
             forbidden = fake_home / ".codex" / "auth.json"
             blocked = subprocess.run(
                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).open('rb')", str(forbidden)],
-                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=5,
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             self.assertNotEqual(blocked.returncode, 0)
             self.assertIn("real-home audit blocked open", blocked.stderr)

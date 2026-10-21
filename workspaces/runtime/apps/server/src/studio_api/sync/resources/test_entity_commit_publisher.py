@@ -10,7 +10,6 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import threading
-import time
 import unittest
 from typing import cast
 from unittest.mock import patch
@@ -23,6 +22,7 @@ from codex_rules import RulesMixin, RulesRuntime
 from codex_sqlite import connect
 from codex_sync_entities import ensure_tables, put
 from codex_workspace import WorkspaceMixin
+from server_test_waits import HANG_GUARD_SECONDS
 from studio_api.sync.resources.hub import (
     ENTITY_SEQUENCE_THROTTLE_SECONDS,
     EntityPublicationScheduler,
@@ -31,6 +31,28 @@ from studio_api.sync.resources.hub import (
     unregister_resource_hub,
 )
 from studio_api.sync.resources.models import ResourceChangeEvent, ResourceRef, StateResource
+
+
+NON_TRANSCRIPT_MAX_SEQ_QUERY = (
+    "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+    "WHERE collection NOT LIKE 'transcript:%'"
+)
+CHECKPOINT_TRANSCRIPT_ROWS = 300_000
+
+
+def insert_checkpoint_rows(database: sqlite3.Connection) -> None:
+    """Insert many transcript rows and 20 project rows with sequences 1 to 20."""
+    with database:
+        database.executemany(
+            "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+            "VALUES ('transcript:agent-a',?,?,?,NULL,0)",
+            [(f"item-{index}", index + 10, str(index)) for index in range(CHECKPOINT_TRANSCRIPT_ROWS)],
+        )
+        database.executemany(
+            "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+            "VALUES ('project',?,?,?,NULL,0)",
+            [(f"project-{index}", index + 1, str(index)) for index in range(20)],
+        )
 
 
 class PublisherFixture(unittest.IsolatedAsyncioTestCase):
@@ -84,7 +106,8 @@ class PublisherFixture(unittest.IsolatedAsyncioTestCase):
         )
         self.initial_scan_patch.start()
         ensure_tables(self.database)
-        self.assertTrue(await asyncio.to_thread(self.initial_scan.wait, 5))
+        # The initial scan must run; this wait only guards against a hang.
+        self.assertTrue(await asyncio.to_thread(self.initial_scan.wait, HANG_GUARD_SECONDS))
         self.initial_scan_patch.stop()
         # Drain schema/setup commits before each test starts observing writes.
         await asyncio.sleep(ENTITY_SEQUENCE_THROTTLE_SECONDS + 0.05)
@@ -100,7 +123,8 @@ class PublisherFixture(unittest.IsolatedAsyncioTestCase):
         self.temporary.cleanup()
 
     async def assert_entity_event(self, sequences: list[int]) -> None:
-        event = await self.subscription.next_event(timeout=1)
+        # The event is expected; the timeout only guards against a hang.
+        event = await self.subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert isinstance(event, ResourceChangeEvent)
         self.assertEqual(event.resources, [ResourceRef(StateResource(kind="state"))])
@@ -149,34 +173,18 @@ class EntityCommitPublisherTests(PublisherFixture):
             autocommit.close()
 
     async def test_non_transcript_checkpoint_scan_uses_partial_seq_index(self) -> None:
-        with self.database:
-            self.database.executemany(
-                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
-                "VALUES ('transcript:agent-a',?,?,?,NULL,0)",
-                [(f"item-{index}", index + 10, str(index)) for index in range(300_000)],
-            )
-            self.database.executemany(
-                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
-                "VALUES ('project',?,?,?,NULL,0)",
-                [(f"project-{index}", index + 1, str(index)) for index in range(20)],
-            )
+        # The query plan is the deterministic contract. The wall-clock witness of
+        # the same scan is in test_entity_commit_publisher_index_realtime.py.
+        insert_checkpoint_rows(self.database)
         plan = self.database.execute(
-            "EXPLAIN QUERY PLAN SELECT COALESCE(MAX(seq),0) FROM sync_entities "
-            "WHERE collection NOT LIKE 'transcript:%'"
+            "EXPLAIN QUERY PLAN " + NON_TRANSCRIPT_MAX_SEQ_QUERY
         ).fetchall()
-        started = time.perf_counter()
-        maximum = self.database.execute(
-            "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
-            "WHERE collection NOT LIKE 'transcript:%'",
-        ).fetchone()[0]
-        elapsed_ms = (time.perf_counter() - started) * 1000
+        maximum = self.database.execute(NON_TRANSCRIPT_MAX_SEQ_QUERY).fetchone()[0]
         self.assertEqual(maximum, 20)
-        print({"checkpointRows": 300_000, "plan": plan, "elapsedMs": round(elapsed_ms, 3)})
         self.assertIn(
             "sync_entities_non_transcript_seq",
             " ".join(str(row) for row in plan),
         )
-        self.assertLess(elapsed_ms, 250)
 
     async def test_restarted_hub_reuses_entity_sequence_in_a_new_epoch(self) -> None:
         state = ResourceRef(StateResource(kind="state"))
@@ -196,7 +204,7 @@ class EntityCommitPublisherTests(PublisherFixture):
             with self.database:
                 self.database.execute("BEGIN IMMEDIATE")
                 put(self.database, "project", "after-restart", {"id": "after-restart"})
-            event = await subscription.next_event(timeout=1)
+            event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
             self.assertIsNotNone(event)
             assert isinstance(event, ResourceChangeEvent)
             self.assertEqual(event.resourceVersions[0].revision, 2)
@@ -256,7 +264,8 @@ class EntityCommitPublisherTests(PublisherFixture):
             with self.database:
                 self.database.execute("BEGIN IMMEDIATE")
                 put(self.database, "project", "first", {"id": "first"})
-            self.assertTrue(await asyncio.to_thread(failed.wait, 5))
+            # The first publication must fail; this wait only guards against a hang.
+            self.assertTrue(await asyncio.to_thread(failed.wait, HANG_GUARD_SECONDS))
             await self.assert_entity_event([1])
         self.assertGreaterEqual(calls, 2)
 
@@ -319,7 +328,7 @@ class EntityCommitPublisherTests(PublisherFixture):
             set(),
             False,
         )
-        event = await self.subscription.next_event(timeout=1)
+        event = await self.subscription.next_event(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(event)
         assert isinstance(event, ResourceChangeEvent)
         self.assertEqual(event.resourceVersions[0].entitySequences, [1])

@@ -36,7 +36,9 @@ class Backend(BaseHTTPRequestHandler):
     do_GET = do_POST = _answer
 
 
-class PeerLinkProcesses(unittest.TestCase):
+class PeerLinkFixture(unittest.TestCase):
+    """Three peer link processes and a backend; it holds no tests."""
+
     def setUp(self) -> None:
         executable = codex_peer_link.binary()
         if executable is None:
@@ -78,6 +80,8 @@ class PeerLinkProcesses(unittest.TestCase):
         return self.links[source].exchange(target, self._route(target), self.keys[key or target]["publicKey"], method, path,
                                            headers or {}, raw, 10, 8 * 1024 * 1024)
 
+
+class PeerLinkProcesses(PeerLinkFixture):
     def test_a_request_reaches_the_backend_as_a_serve_request(self) -> None:
         response = self._send("a", "b", headers={"X-Studio-Signature": "sig", "X-Forwarded-For": "100.64.0.9",
                                                  "Host": "evil", "Tailscale-User-Login": "someone"})
@@ -94,10 +98,10 @@ class PeerLinkProcesses(unittest.TestCase):
         self.assertEqual(seen["headers"]["x-studio-signature"], "sig")
 
     def test_a_large_response_arrives_whole(self) -> None:
-        started = time.monotonic()
+        # The exchange keeps its own 10 s deadline, so a stalled stream still fails here.
+        # The wall-clock transfer bound is in test_codex_peer_link_realtime.py (heavy tier).
         response = self._send("a", "b", "/api/big", method="GET", raw=b"")
         self.assertEqual(response["raw"], BIG)
-        self.assertLess(time.monotonic() - started, 5)
 
     def test_an_export_offset_query_reaches_the_backend(self) -> None:
         # The bundle fetch and the chat move continue an export from an offset (docs/peer-link.md).
