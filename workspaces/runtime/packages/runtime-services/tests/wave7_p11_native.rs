@@ -12,6 +12,7 @@ use studio_runtime_services::{
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 
+#[allow(clippy::disallowed_methods)]
 fn corpus() -> &'static Value {
     static CORPUS: OnceLock<Value> = OnceLock::new();
     CORPUS.get_or_init(|| {

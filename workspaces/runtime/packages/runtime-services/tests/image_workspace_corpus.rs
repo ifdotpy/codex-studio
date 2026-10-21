@@ -238,6 +238,7 @@ fn copy_tree(
     Ok(())
 }
 
+#[allow(clippy::disallowed_methods)]
 fn wait_for_build(manager: &WorkspaceLifecycle<ScriptedBackend>, root: &Path) -> Value {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -298,6 +299,7 @@ fn repo_key(root: &Path) -> String {
         .to_owned()
 }
 
+#[allow(clippy::disallowed_methods)]
 fn make_git_project(root: &Path) {
     fs::create_dir_all(root).expect("project root");
     fs::write(root.join("tracked.txt"), "tracked\n").expect("tracked fixture");

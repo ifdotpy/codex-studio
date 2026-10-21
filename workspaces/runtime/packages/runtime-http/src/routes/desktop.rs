@@ -16,8 +16,16 @@ pub(crate) fn routes() -> RouteGroup {
     )])
 }
 
-pub(crate) async fn get(State(state): State<HttpState>) -> Json<Value> {
-    Json(status(&state))
+pub(crate) async fn get(
+    State(state): State<HttpState>,
+) -> Result<Json<Value>, crate::error::ApiError> {
+    let status = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/desktop-status",
+        move || status(&state),
+    )
+    .await
+    .map_err(|_| crate::error::ApiError::internal())?;
+    Ok(Json(status))
 }
 
 fn backend_build_from(
@@ -46,6 +54,10 @@ fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
     Ok(data_encoding::HEXLOWER.encode(&hasher.finalize()))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "backend identity hashing runs on a labeled blocking worker"
+)]
 fn executable_build() -> io::Result<String> {
     let executable_path = std::env::current_exe()?;
     sha256_reader(std::fs::File::open(executable_path)?)
@@ -132,6 +144,7 @@ inventory::submit! {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::{backend_build_from, is_sha256_hex, sha256_reader};
     use axum::{body::to_bytes, extract::ConnectInfo, http::Request};

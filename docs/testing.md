@@ -696,3 +696,5 @@ provider request. Replay transcripts are maintained offline contracts; see
 Before committing, run the affected suites plus the repository lint and format
 checks. The [pre-commit hook](../.githooks/pre-commit) checks staged content only;
 it does not replace behavior tests.
+
+Runtime Clippy (`just clippy-runtime`) rejects blocking calls on Tokio threads, blocking filesystem calls in HTTP handlers, blocking lock guards or RefCell borrows held across awaits, and oversized inline futures; use async APIs, labeled `blocking_pool::spawn_blocking`, or a documented dedicated non-Tokio thread (policy: [runtime/clippy.toml](../workspaces/runtime/clippy.toml)).

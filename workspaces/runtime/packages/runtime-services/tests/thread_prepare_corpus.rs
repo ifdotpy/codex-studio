@@ -505,6 +505,7 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn oracle_guard_blocks_content_metadata_processes_and_network() {
     let python = prepared_python::prepared_python(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
@@ -687,6 +688,7 @@ fn malformed_stored_catalog_family_never_panics() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn oracle_boundary_guards_detect_enclosing_control_flow_changes() {
     let python = prepared_python::prepared_python(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

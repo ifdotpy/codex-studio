@@ -43,7 +43,7 @@ async fn log(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let state_dir = state.state_dir.clone();
     let response_id = id.clone();
-    let prepared = store
+    let (path, tail, bytes) = store
         .read_async("runtime-http/routes/monitors", move |connection| {
             let monitor = MonitorsRepository::get(connection, &id)
                 .map_err(store_read_error)?
@@ -81,7 +81,14 @@ async fn log(
                 .get("bytes")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| invalid_monitor(monitor_id))?;
-            let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
+            Ok::<_, ApiError>((path.to_owned(), tail, bytes))
+        })
+        .await?;
+    let log_id = response_id.clone();
+    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/monitor-log-open",
+        move || {
+            let (mut source, size) = open_log(&state_dir, &path, &log_id, tail)?;
             let truncated = bytes > size;
             let (start, end, status) = match range.as_deref() {
                 Some(range) => match byte_range(range, size) {
@@ -102,8 +109,10 @@ async fn log(
                 end,
                 status,
             })
-        })
-        .await?;
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     prepared.response(&response_id)
 }
 
@@ -207,6 +216,10 @@ impl Prepared {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "monitor-log-open owns filesystem validation on a labeled blocking worker"
+)]
 fn open_log(
     state_dir: &str,
     stored: &str,

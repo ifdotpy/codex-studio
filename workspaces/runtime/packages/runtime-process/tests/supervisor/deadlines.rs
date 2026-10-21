@@ -453,6 +453,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
 // This exercises a real retained child with Linux kernel process identity.
 #[cfg(target_os = "linux")]
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
     let (root, supervisor) = fixture();
     let handle = "server-command:batch-exit-tail";

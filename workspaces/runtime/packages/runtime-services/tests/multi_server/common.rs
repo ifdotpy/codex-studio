@@ -23,6 +23,7 @@ fn test_directory() -> tempfile::TempDir {
         .tempdir_in(root)
         .expect("isolated fixture root")
 }
+#[allow(clippy::disallowed_methods)]
 pub fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
         let root = test_directory();
@@ -58,6 +59,7 @@ pub fn fixture() -> &'static Fixture {
         Fixture { root, data }
     })
 }
+#[allow(clippy::disallowed_methods)]
 pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let template = fixture();
     let root = test_directory();

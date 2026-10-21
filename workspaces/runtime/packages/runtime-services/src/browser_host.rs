@@ -204,14 +204,24 @@ pub fn host_listeners() -> Vec<Listener> {
         }
         return rows;
     }
-    let output = std::process::Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "ptun"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output();
+    // Bound the external listener probe even on a blocking-pool worker.
+    const LISTENER_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
+    const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    let output = crate::bounded_child::run(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("lsof"),
+        cwd: std::ffi::OsStr::new("/"),
+        args: &["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "ptun"],
+        environment: &[],
+        input: None,
+        stdout_limit: LISTENER_OUTPUT_LIMIT_BYTES,
+        stderr_limit: LISTENER_OUTPUT_LIMIT_BYTES,
+        timeout: LISTENER_TIMEOUT,
+    });
     match output {
-        Ok(output) => parse_lsof_listeners(&String::from_utf8_lossy(&output.stdout)),
-        Err(_) => Vec::new(),
+        Ok(output) if !output.stdout.truncated => {
+            parse_lsof_listeners(&String::from_utf8_lossy(&output.stdout.bytes))
+        }
+        _ => Vec::new(),
     }
 }
 

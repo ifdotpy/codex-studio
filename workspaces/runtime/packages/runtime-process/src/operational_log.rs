@@ -220,6 +220,7 @@ fn writer_task<W: Write>(receiver: mpsc::Receiver<WriterCommand>, mut writer: W)
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::{io, process::Command, sync::mpsc as std_mpsc};

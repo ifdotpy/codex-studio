@@ -114,13 +114,16 @@ impl StreamChild {
                         return;
                     }
                 };
+
                 runtime.block_on(async move {
                     let lifetime = spec.timeout;
                     match spawn_process(spec) {
                         Ok(child) => {
                             let _delivery = ready_tx.send(Ok(child.id()));
-                            let result =
-                                run_child(child, input_rx, output_tx, cancel_rx, lifetime).await;
+                            let result = Box::pin(run_child(
+                                child, input_rx, output_tx, cancel_rx, lifetime,
+                            ))
+                            .await;
                             done_tx.send_replace(Some(result));
                         }
                         Err(error) => {

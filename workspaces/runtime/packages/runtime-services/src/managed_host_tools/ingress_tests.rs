@@ -2229,15 +2229,25 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
         &Self
     }
-    fn validate_worker_choice(
-        &self,
-        _: &RuntimeStore,
-        _: &str,
-        _: &crate::host_worker_create::AccountIdentity,
-        _: &str,
-        _: &str,
-    ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
-        Ok(())
+    fn validate_worker_choice<'a>(
+        &'a self,
+        _: &'a RuntimeStore,
+        _: &'a str,
+        _: &'a crate::host_worker_create::AccountIdentity,
+        _: &'a str,
+        _: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        (),
+                        crate::managed_child_create::ManagedCreationEnvironmentError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { Ok(()) })
     }
     fn prepare_workspace(
         &self,
@@ -2291,6 +2301,7 @@ impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")

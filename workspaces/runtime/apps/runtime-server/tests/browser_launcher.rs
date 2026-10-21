@@ -26,6 +26,7 @@ impl ChatLookup for OneChat {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn open(service: &HostBridgeService, folder: &std::path::Path, url: &str) -> std::process::Output {
     Command::new(folder.join("bin/xdg-open"))
         .arg(url)
@@ -40,6 +41,7 @@ fn open(service: &HostBridgeService, folder: &std::path::Path, url: &str) -> std
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::disallowed_methods)]
 async fn xdg_open_queues_a_link_through_the_runtime_binary() {
     let state = tempfile::tempdir().expect("test step");
     let service = HostBridgeService::start(

@@ -1,6 +1,16 @@
 # Blocking work has one entry point: `studio_runtime_store::blocking_pool::spawn_blocking`
 # (re-exported as `studio_runtime_process::blocking_pool`), which labels every call site.
+# Runtime::block_on is reserved for rare synchronous runtime entry points; banning it
+# would also flag every tokio::test expansion, so audit its production callers directly.
 disallowed-methods = [
-    { path = "tokio::task::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
-    { path = "tokio::runtime::Handle::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
+  { path = "tokio::task::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
+  { path = "tokio::runtime::Handle::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
+  { path = "std::thread::sleep", reason = "use tokio::time::sleep, or document the dedicated blocking thread" },
+  { path = "futures_executor::block_on", reason = "await the future on Tokio instead of blocking a runtime thread" },
+  { path = "tokio::runtime::Handle::block_on", reason = "await the future; only dedicated non-Tokio threads may block" },
+  { path = "std::process::Command::output", reason = "use bounded_child or tokio::process with a deadline and output bound" },
+  { path = "std::process::Command::status", reason = "use bounded_child or tokio::process with a deadline" },
 ]
+
+# Maximum inline future size in bytes; larger futures must be boxed at their owner.
+future-size-threshold = 16384

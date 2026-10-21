@@ -1043,6 +1043,7 @@ fn new_id() -> Result<String, TerminalError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};

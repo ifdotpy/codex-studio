@@ -313,6 +313,10 @@ impl OwnedChild {
         self.publish_exit();
         Ok(())
     }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "journal appends run on dedicated child reader/reaper threads"
+    )]
     fn append(&self, kind: &str, payload: Value) -> Result<(AppendResult, u64)> {
         let _append = lock(&self.append_lock)?;
         let row = self

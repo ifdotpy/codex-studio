@@ -7,6 +7,7 @@ mod prepared_python;
 
 /// Python `codex_server_exec` results for the same inputs
 /// (tests/server_exec/oracle.py).
+#[allow(clippy::disallowed_methods)]
 fn oracle() -> Value {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let output = std::process::Command::new(prepared_python::prepared_python(

@@ -146,6 +146,7 @@ fn api_responses_include_schema_and_security_headers() {
 // The current OpenAPI operation count is owned by the document and can change.
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn workspace_keeps_serde_json_maps_sorted() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../");
     let output = std::process::Command::new("cargo")

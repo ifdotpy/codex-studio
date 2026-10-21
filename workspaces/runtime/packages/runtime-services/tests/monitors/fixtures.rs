@@ -38,6 +38,7 @@ pub fn corpus(root: &Path) -> Vec<Value> {
     ]
 }
 
+#[allow(clippy::disallowed_methods)]
 pub async fn store(root: &Path, name: &str) -> RuntimeStore {
     let target = root.join(name);
     std::fs::create_dir(&target).expect("monitor fixture");

@@ -472,6 +472,7 @@ async fn late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input() {
     assert_eq!(delivered, 3);
 }
 
+#[allow(clippy::disallowed_methods)]
 fn run_python(root: &Path, code: &str, args: &[&str]) -> String {
     let output = Command::new(python_executable())
         .arg("-c")

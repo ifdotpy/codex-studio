@@ -38,6 +38,7 @@ fn test_resources() -> Arc<PreparationResources> {
     )
 }
 
+#[allow(clippy::disallowed_methods)]
 fn python_corpus() -> (PathBuf, Value) {
     static CORPUS: OnceLock<(PathBuf, Value)> = OnceLock::new();
     CORPUS

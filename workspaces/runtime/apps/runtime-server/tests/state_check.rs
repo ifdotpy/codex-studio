@@ -3,6 +3,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn state_check_reads_python_written_rows_without_changing_or_disclosing_them() {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

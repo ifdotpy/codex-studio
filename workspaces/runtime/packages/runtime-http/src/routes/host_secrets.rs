@@ -1028,7 +1028,12 @@ async fn refresh_mac_views(
         move || {
             let mut projects = BTreeMap::new();
             let directory = state_dir.join("layr-projects");
-            let Ok(entries) = std::fs::read_dir(directory) else {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "project enumeration runs on the labeled host_secrets blocking worker"
+            )]
+            let entries = std::fs::read_dir(directory);
+            let Ok(entries) = entries else {
                 return Ok(projects);
             };
             for entry in entries {
@@ -1038,7 +1043,12 @@ async fn refresh_mac_views(
                 let Some(project_id) = entry.file_name().to_str().map(str::to_owned) else {
                     continue;
                 };
-                if !entry.path().join("project.json").is_file() {
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "project validation runs on the labeled host_secrets blocking worker"
+                )]
+                let is_file = entry.path().join("project.json").is_file();
+                if !is_file {
                     continue;
                 }
                 if let Some(view) = studio_runtime_services::vault::view(&state_dir, &project_id)?
@@ -1081,11 +1091,16 @@ async fn refresh_mac_views(
         .get("program")
         .and_then(Value::as_str)
         .map(std::path::PathBuf::from);
+    let canonical_program = tokio::fs::canonicalize(&program)
+        .await
+        .unwrap_or(program.clone());
+    let program_matches = match current_program {
+        Some(path) => tokio::fs::canonicalize(&path).await.unwrap_or(path) == canonical_program,
+        None => false,
+    };
     let current = service.get("installed").and_then(Value::as_bool) == Some(true)
         && service.get("site").and_then(Value::as_str) == Some(first_site.trim_end_matches('/'))
-        && current_program.is_some_and(|path| {
-            path.canonicalize().unwrap_or(path) == program.canonicalize().unwrap_or(program.clone())
-        });
+        && program_matches;
     if host_command.is_bundled_desk()? && !current {
         let result = host_command
             .run_desk(
@@ -1224,7 +1239,7 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
     use super::{
         GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, SetupJob, VAULT_JOB_CAPACITY,

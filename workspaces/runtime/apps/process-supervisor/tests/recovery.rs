@@ -9,6 +9,7 @@ use studio_runtime_process::{
 use support::*;
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn unknown_ownership_survives_restart_until_exact_operator_close() {
     let state = DisposableState::new();
     let python = python_executable();
@@ -80,6 +81,7 @@ impl Drop for Probe {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;

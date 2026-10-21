@@ -14,6 +14,7 @@ fn python() -> PathBuf {
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
     )
 }
+#[allow(clippy::disallowed_methods)]
 fn oracle() -> Vec<Value> {
     let mut command = Command::new(python());
     command.arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules_engine/oracle.py"));

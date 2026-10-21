@@ -185,6 +185,7 @@ fn record_failure(mechanism: &'static str, error: io::ErrorKind) {
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

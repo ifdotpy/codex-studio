@@ -45,6 +45,7 @@ fn observation() -> RecoveryObservation {
         completed_turn: None,
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn fixture() -> tempfile::TempDir {
     static TEMPLATE: OnceLock<Vec<(std::ffi::OsString, Vec<u8>)>> = OnceLock::new();
     let files = TEMPLATE.get_or_init(|| {
@@ -78,6 +79,7 @@ fn python() -> std::path::PathBuf {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
     )
 }
+#[allow(clippy::disallowed_methods)]
 fn corpus() -> &'static Value {
     static CORPUS: OnceLock<Value> = OnceLock::new();
     CORPUS.get_or_init(|| {

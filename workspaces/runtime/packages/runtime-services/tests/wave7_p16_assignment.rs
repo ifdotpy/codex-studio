@@ -162,6 +162,7 @@ fn spawn_assignment_rechecks_the_active_lead_and_same_team_child() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn real_python_spawn_assignment_corpus_matches_complete_work_rows() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../../apps/server/src");

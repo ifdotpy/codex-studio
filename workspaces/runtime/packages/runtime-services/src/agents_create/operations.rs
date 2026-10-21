@@ -3169,15 +3169,25 @@ mod tests {
             ))
         }
 
-        fn validate_worker_choice(
-            &self,
-            _store: &RuntimeStore,
-            _account_key: &str,
-            _account: &AccountIdentity,
-            _requested: &str,
-            _default: &str,
-        ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
-            Ok(())
+        fn validate_worker_choice<'a>(
+            &'a self,
+            _store: &'a RuntimeStore,
+            _account_key: &'a str,
+            _account: &'a AccountIdentity,
+            _requested: &'a str,
+            _default: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            (),
+                            crate::managed_child_create::ManagedCreationEnvironmentError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move { Ok(()) })
         }
 
         fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {

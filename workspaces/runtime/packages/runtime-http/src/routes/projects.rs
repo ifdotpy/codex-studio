@@ -1200,6 +1200,7 @@ inventory::submit! {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod local_registration_tests {
     use serde_json::json;
     use std::sync::{

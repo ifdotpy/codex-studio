@@ -995,6 +995,7 @@ fn feature_catalog(path: &Path) -> Vec<(String, String, String, String)> {
         .collect()
 }
 
+#[allow(clippy::disallowed_methods)]
 fn python(root: &Path, code: &str, args: &[&str]) -> String {
     let output = Command::new(python_executable())
         .arg("-c")

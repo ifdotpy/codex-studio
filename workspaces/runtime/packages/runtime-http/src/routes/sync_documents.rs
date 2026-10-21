@@ -49,6 +49,7 @@ pub(crate) async fn protocol(
     let socket_path = PathBuf::from(state.state_dir).join("canvas.sock");
     let unix_socket = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/sync_documents",
+        #[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
         move || socket_path.exists(),
     )
     .await
@@ -902,7 +903,7 @@ fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, A
 
 #[cfg(test)]
 mod vault_maintenance_tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
     use super::sync_policy;
     use super::{

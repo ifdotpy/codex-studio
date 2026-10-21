@@ -82,7 +82,7 @@ impl Commit {
             }
         }
         let control = self.control.clone();
-        self.finish(control, false).await
+        Box::pin(self.finish(control, false)).await
     }
 
     /// Validate the request on `control`'s session, then commit `submitted`.
@@ -123,7 +123,7 @@ impl Commit {
         let recovery = prepared.recovery_record();
         let context = Arc::new(context);
         let save_context = Arc::clone(&context);
-        let authorized = crate::diagnostics::measure_runtime_stage_async(
+        let authorized = Box::pin(crate::diagnostics::measure_runtime_stage_async(
             "turn_submission.submitted",
             bridge.worker_run("submitted", move |store| async move {
                 store::submitted(
@@ -141,7 +141,7 @@ impl Commit {
                 )
                 .await
             }),
-        )
+        ))
         .await?;
         if !authorized {
             let intent = context.intent.clone();

@@ -25,6 +25,7 @@ fn scope() -> ConnectionScope {
         generation: 1,
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn fixture() -> tempfile::TempDir {
     fn temporary() -> tempfile::TempDir {
         let base = std::env::temp_dir();
@@ -466,6 +467,7 @@ async fn queued_active_wait_terminal_is_reconciled_and_saved() {
     assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
 }
 
+#[allow(clippy::disallowed_methods)]
 fn oracle(name: &str) -> Vec<serde_json::Value> {
     let output = Command::new(python_test_support::prepared_python(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

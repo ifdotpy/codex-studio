@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::{path::Path, process::Command};
 use studio_runtime_services::recovery_policy::{RecoverySnapshot, native_operations_settled};
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn python_written_eligibility_corpus() {
     let python = python_test_support::prepared_python(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

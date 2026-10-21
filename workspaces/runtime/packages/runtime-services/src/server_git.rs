@@ -439,6 +439,10 @@ pub fn bounded_command(command: &GitCommand) -> Result<(Vec<u8>, i32, bool), Git
     Ok((data, exit_code(status), truncated))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Git operations run on multi-server labeled blocking workers"
+)]
 fn wait_until(
     child: &mut std::process::Child,
     deadline: Instant,
@@ -791,6 +795,7 @@ fn export(root: &Path, directory: &Path, payload: &Value, key: &str) -> Result<V
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

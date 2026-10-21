@@ -57,8 +57,8 @@ async fn scenario(index: usize) {
         18 => scenario_workspace_refusal_retains_queue().await,
         19 => scenario_workspace_pending_reuses_reserved_attempt().await,
         20 => preparation_review::scenario_completed_repair_and_missing_complaint_deliver().await,
-        21 => preparation_review::scenario_late_context_change_refuses_submission().await,
-        22 => preparation_review::scenario_sibling_completion_does_not_refuse_non_lead().await,
+        21 => Box::pin(preparation_review::scenario_late_context_change_refuses_submission()).await,
+        22 => Box::pin(preparation_review::scenario_sibling_completion_does_not_refuse_non_lead()).await,
         23 => closure::pending_text_recovery(true).await,
         24 => closure::pending_text_recovery(false).await,
         25 => closure::scenario_retained_submit_and_settlement_keep_one_replay_identity().await,
@@ -79,9 +79,12 @@ async fn execute(
     context.faults.arm(None);
     *context.faults.named_target.lock().unwrap() = target.clone();
     let result = tokio::spawn(MATRIX.scope(context.clone(), async move {
-        tokio::time::timeout(std::time::Duration::from_secs(300), scenario(index))
-            .await
-            .expect("scenario watchdog")
+        Box::pin(tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            scenario(index),
+        ))
+        .await
+        .expect("scenario watchdog")
     }))
     .await;
     if target.is_none() {

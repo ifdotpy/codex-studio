@@ -1288,6 +1288,7 @@ fn escape(pointer: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;

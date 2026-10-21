@@ -83,7 +83,7 @@ pub(super) struct Wake {
 }
 
 pub(super) async fn run(run: Run) -> Box<Done> {
-    let step = stage("turn_preparation.total", prepare(&run)).await;
+    let step = Box::pin(stage("turn_preparation.total", prepare(&run))).await;
     Box::new(Done {
         agent_id: run.intent.agent_id.clone(),
         effect: run.effect,
@@ -106,7 +106,7 @@ pub(super) async fn wake(
     start: impl FnOnce(TurnIntent, Option<String>) -> Run + Send,
 ) -> Box<Done> {
     let outcome = match stage("turn_preparation.claim", claim(&wake)).await {
-        Ok(Ok(intent)) => return run(start(intent, wake.effect)).await,
+        Ok(Ok(intent)) => return Box::pin(run(start(intent, wake.effect))).await,
         Ok(Err(Unclaimed::NativeReview)) => {
             // The driver saves every outcome on the child before it returns.
             if let Err(error) = crate::native_review_turn::run(
@@ -142,7 +142,7 @@ pub(super) async fn commit(
     mut commit: submission::Commit,
 ) -> Box<Done> {
     commit.effect = effect.clone();
-    let outcome = commit.run().await;
+    let outcome = Box::pin(commit.run()).await;
     Box::new(Done {
         agent_id,
         effect: effect.filter(|_| !matches!(outcome, Ok(submission::Committed::Ready(_)))),
@@ -355,10 +355,10 @@ async fn prepare(
             }),
         )
         .await?;
-        match ready(run, None, token).await {
+        match Box::pin(ready(run, None, token)).await {
             // A stale carried token or unfrozen settings take the full path.
             Err(WorkerError::PreparationRefused(_)) => {}
-            result => return settle(run, result).await,
+            result => return Box::pin(settle(run, result)).await,
         }
     }
     let i = intent.clone();
@@ -380,21 +380,26 @@ async fn prepare(
     };
     let i = intent.clone();
     let r = resources.clone();
-    let token = match stage(
+    let token = match Box::pin(stage(
         "turn_preparation.workspace",
         bridge.prepare_run("workspace", move |s| async move {
-            store::preparation_step(&s, &r, &i, preparation::workspace(Arc::clone(&s), &r, &i))
-                .await
+            Box::pin(store::preparation_step(
+                &s,
+                &r,
+                &i,
+                preparation::workspace(Arc::clone(&s), &r, &i),
+            ))
+            .await
         }),
-    )
+    ))
     .await?
     .into_ready()
     {
         Ok(token) => token,
         Err(step) => return Ok(step),
     };
-    let result = ready(run, Some(selection), token).await;
-    settle(run, result).await
+    let result = Box::pin(ready(run, Some(selection), token)).await;
+    Box::pin(settle(run, result)).await
 }
 
 /// Apply an account transfer requested before this turn starts.
@@ -441,7 +446,7 @@ async fn ready(
         )
         .await
     });
-    stage("turn_preparation.ready", ready).await
+    Box::pin(stage("turn_preparation.ready", ready)).await
 }
 
 async fn settle(

@@ -123,6 +123,7 @@ async fn drain(root: &Path, crash_after_publish: bool) {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn wave7_p06_commit_publication_restart_preserves_order() {
     if let Some(root) = std::env::var_os("P06_PUBLICATION_CHILD") {
         drain(Path::new(&root), true).await;

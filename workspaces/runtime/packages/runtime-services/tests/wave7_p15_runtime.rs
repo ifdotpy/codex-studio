@@ -63,6 +63,7 @@ fn delivery(case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn rule_case(name: &str) -> Value {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let python = prepared_python_support::prepared_python(&manifest.join("../../apps/server/src"));
@@ -590,6 +591,7 @@ async fn stopped_runtime_exits_without_ticking_or_submitting() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
     use studio_runtime_store::{RuleRecord, RulesRepository};
     let root = fixtures::tempdir();

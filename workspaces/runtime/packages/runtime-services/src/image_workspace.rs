@@ -586,6 +586,10 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         }
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "image workspace creation runs on dedicated image-job workers"
+    )]
     fn wait_for_base_ready(&self, root: &Path) -> Result<Value, ImageWorkspaceError> {
         let key = repo_key(root);
         let deadline = std::time::Instant::now() + BASE_BUILD_WAIT;
@@ -1647,6 +1651,7 @@ mod macos;
 pub use macos::MacAsifBackend;
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, mpsc};

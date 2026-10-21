@@ -156,6 +156,10 @@ struct VmArchiveExclusions {
     worktrees: HashSet<String>,
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "archive creation runs on the labeled vm-project-archive blocking worker"
+)]
 fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
     let mut repositories = HashSet::new();
     let mut worktrees = HashSet::new();
@@ -402,6 +406,10 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
     Ok(exclusions)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "archive creation runs on the labeled vm-project-archive blocking worker"
+)]
 fn collect_vm_ignored_directories(
     root: &Path,
     directory: &Path,
@@ -1447,7 +1455,7 @@ pub async fn prepare_child(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
     use super::*;
     use crate::linux_vm_guest::GuestError;

@@ -91,7 +91,7 @@ impl<R: Read> Read for CountReader<R> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
     use super::TarGzipWriter;
     use flate2::read::GzDecoder;

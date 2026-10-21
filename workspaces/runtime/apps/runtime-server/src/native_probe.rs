@@ -38,6 +38,10 @@ impl SystemCompatibilityProbe {
         Self { runtime }
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "native compatibility probes run on labeled native-runtime blocking workers"
+    )]
     fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
         self.runtime.block_on(future)
     }

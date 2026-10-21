@@ -165,6 +165,7 @@ impl SupervisorProcess {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn python_executable() -> String {
     let output = Command::new("python3")
         .args(["-c", "import sys; print(sys.executable)"])
@@ -186,6 +187,7 @@ pub(crate) fn python_executable() -> String {
 }
 
 impl Drop for SupervisorProcess {
+    #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         for pid in self
             .owned_children

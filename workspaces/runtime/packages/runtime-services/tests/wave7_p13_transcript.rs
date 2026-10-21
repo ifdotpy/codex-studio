@@ -10,6 +10,7 @@ use studio_runtime_services::{
 use studio_runtime_store::RuntimeStore;
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
     let root = tempfile::tempdir().expect("isolated state");
     let environment = prepared_python::IsolatedTestEnvironment::new();

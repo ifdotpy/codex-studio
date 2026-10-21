@@ -95,6 +95,7 @@ pub struct Fixture {
     root: PathBuf,
 }
 impl Fixture {
+    #[allow(clippy::disallowed_methods)]
     pub async fn new(label: &str, prepared_python: fn(&Path) -> PathBuf) -> Self {
         let root =
             std::env::temp_dir().join(format!("cs-w7-p03-gate-{label}-{}", std::process::id()));
@@ -151,6 +152,7 @@ impl Fixture {
     }
 }
 impl Drop for Fixture {
+    #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         writeln!(
             self.child.stdin.as_mut().expect("stdin"),

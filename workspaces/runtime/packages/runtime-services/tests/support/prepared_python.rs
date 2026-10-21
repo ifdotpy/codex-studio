@@ -12,6 +12,7 @@ pub(crate) const PYTHON_ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Prefer a memory filesystem: `STUDIO_RUNTIME_CORPUS_TMP` when set, else the
 /// Linux `/dev/shm` mount, else the process temporary directory.
 #[allow(dead_code)]
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn disposable_state_parent() -> std::path::PathBuf {
     if let Some(directory) = std::env::var_os("STUDIO_RUNTIME_CORPUS_TMP") {
         return directory.into();
@@ -45,6 +46,7 @@ impl IsolatedTestEnvironment {
         }
     }
 
+    #[allow(clippy::disallowed_methods)]
     pub(crate) fn apply(&self, command: &mut Command) {
         let root = self.root.path();
         for (name, directory) in [
@@ -75,6 +77,7 @@ fn terminate_child(child: &mut Child, label: &std::path::Path) -> Result<(), Str
         .map_err(|error| format!("{}: could not reap Python oracle: {error}", label.display()))
 }
 
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn output_with_timeout(
     command: &mut Command,
     label: &std::path::Path,

@@ -37,6 +37,7 @@ fn report(priority: ChildPriority, own_group: bool) -> String {
     String::from_utf8(output.stdout).expect("probe text")
 }
 
+#[allow(clippy::disallowed_methods)]
 fn inherited_report() -> String {
     let nice = getpriority_process(None).expect("parent nice");
     let output = Command::new("ionice")
@@ -114,6 +115,7 @@ fn environment_child_probe() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn two_priority_failures_are_counted_without_emitting_io() {
     let output = Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", "environment_child_probe", "--nocapture"])
@@ -162,6 +164,7 @@ fn group_priority_includes_a_grandchild_forked_before_application() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn environment_selects_background_by_default_and_normal_disables_it() {
     for (value, expected) in [
         (None, "Background"),
@@ -187,6 +190,7 @@ fn environment_selects_background_by_default_and_normal_disables_it() {
 
 // A fresh executable per setting keeps the process-wide configuration immutable.
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn stream_child_honors_default_background_and_normal_for_child_and_grandchild() {
     for value in [None, Some("background"), Some("normal")] {
         let mut command = Command::new(std::env::current_exe().expect("test executable"));

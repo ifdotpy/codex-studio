@@ -73,6 +73,7 @@ fn fixed_response_server(
     (port, task)
 }
 
+#[allow(clippy::disallowed_methods)]
 fn command(port: u16) -> Output {
     Command::new(env!("CARGO_BIN_EXE_codex-diagnostics"))
         .args(["--port", &port.to_string()])
@@ -103,6 +104,7 @@ fn fixture_output_matches_rust_golden() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn cli_help_and_errors_use_expected_status_codes() {
     let help = Command::new(env!("CARGO_BIN_EXE_codex-diagnostics"))
         .arg("--help")

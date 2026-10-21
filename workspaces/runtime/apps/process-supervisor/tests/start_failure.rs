@@ -11,6 +11,7 @@ use studio_runtime_store::supervisor_journal::START_FAILED_REASON;
 use support::*;
 
 /// Read `(pid, closed, closed_reason)` of one journal row, read-only.
+#[allow(clippy::disallowed_methods)]
 fn handle_row(python: &str, state: &DisposableState, handle: &str) -> serde_json::Value {
     let output = Command::new(python)
         .args([

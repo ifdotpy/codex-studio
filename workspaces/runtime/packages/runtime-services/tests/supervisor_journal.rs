@@ -25,6 +25,7 @@ fn template(corpus: bool) -> tempfile::TempDir {
         "--template-only"
     })
 }
+#[allow(clippy::disallowed_methods)]
 fn template_mode(mode: &str) -> tempfile::TempDir {
     let root = disposable_root();
     let python = python_test_support::prepared_python(

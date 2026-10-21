@@ -1817,7 +1817,7 @@ impl Worker {
         }
         if method == Method::TurnInterrupt {
             let commit = self.commit(intent, method, interrupt_turn, None, false);
-            let committed = self.drive(commit.run()).await?;
+            let committed = Box::pin(self.drive(commit.run())).await?;
             return Box::pin(self.committed(committed)).await;
         }
         // A recovered durable effect may outlive its submitted request. Check
@@ -2116,7 +2116,7 @@ impl Worker {
             }
         };
         match ready {
-            Some(ready) => self.write(*ready).await,
+            Some(ready) => Box::pin(self.write(*ready)).await,
             None => Ok(()),
         }
     }
@@ -2160,10 +2160,12 @@ impl Worker {
             })
             .unwrap_or_else(|| self.control.clone());
         let vm = actor_session.is_some();
-        Ok(match self.drive(commit.finish(control, vm)).await? {
-            submission::Committed::Ready(ready) => Some(ready),
-            _ => None,
-        })
+        Ok(
+            match Box::pin(self.drive(commit.finish(control, vm))).await? {
+                submission::Committed::Ready(ready) => Some(ready),
+                _ => None,
+            },
+        )
     }
     /// The only serialized step of a submission: the provider write of a
     /// request whose FULL submitted commit has already returned.
@@ -2197,10 +2199,10 @@ impl Worker {
             }
             receipt
         };
-        match crate::diagnostics::measure_runtime_stage_async(
+        match Box::pin(crate::diagnostics::measure_runtime_stage_async(
             "turn_submission.admission",
             self.drive(admission),
-        )
+        ))
         .await
         {
             Ok(_ticket) => {}
@@ -2298,14 +2300,13 @@ impl Worker {
         }
         let recovery = prepared.recovery_record();
         let save_context = context.clone();
-        let authorized = self
-            .db("steer_submitted", move |store| async move {
-                scheduler::lifecycle_transaction_with(&store, move |tx| {
-                    steer::submitted(tx, &save_context, &recovery, &compiled)
-                })
-                .await
+        let authorized = Box::pin(self.db("steer_submitted", move |store| async move {
+            scheduler::lifecycle_transaction_with(&store, move |tx| {
+                steer::submitted(tx, &save_context, &recovery, &compiled)
             })
-            .await?;
+            .await
+        }))
+        .await?;
         if !authorized {
             self.wake(context.intent.agent_id.clone(), context.intent.epoch)
                 .await?;

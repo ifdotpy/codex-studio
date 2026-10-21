@@ -65,6 +65,7 @@ fn template(root: &Path) {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 async fn fixture() -> (tempfile::TempDir, RuntimeStore) {
     let root = tempfile::tempdir().expect("tmpfs state directory");
     template(root.path());
@@ -477,6 +478,7 @@ async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_res
     assert_eq!(port.calls.load(Ordering::SeqCst), 0);
 }
 
+#[allow(clippy::disallowed_methods)]
 fn python_persisted_snapshot(root: &Path, scenario: &str) -> Value {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = prepared_python::prepared_python(&source);

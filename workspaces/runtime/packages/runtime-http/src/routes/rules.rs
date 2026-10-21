@@ -74,7 +74,7 @@ async fn update(
     let prepare_rule_id = rule_id.clone();
     let prepare_action = action.clone();
     let prepare_body = body.clone();
-    let (prepared_agent, prepared_old, prepared_path, prepared_fingerprint) = prepare_store
+    let (prepared_agent, prepared_old, prepared_path) = prepare_store
         .read_async("runtime-http/routes/rules", move |connection| {
             let agent = RulesRepository::agent(connection, &prepare_agent_id)
                 .map_err(store_api_error)?
@@ -101,12 +101,13 @@ async fn update(
             } else {
                 None
             };
-            let fingerprint = path
-                .as_deref()
-                .and_then(|path| file_fingerprint(Path::new(path)));
-            Ok::<_, ApiError>((agent_value, old_value, path, fingerprint))
+            Ok::<_, ApiError>((agent_value, old_value, path))
         })
         .await?;
+    let prepared_fingerprint = match prepared_path.as_deref() {
+        Some(path) => file_fingerprint(Path::new(path)).await,
+        None => None,
+    };
     let (result, cancel_ids) = store
         .transaction_with(move |transaction| {
             let agent = RulesRepository::agent(transaction, &agent_id)
@@ -401,8 +402,8 @@ fn low_worker_rule_unchanged(old: &Value, new: &Value) -> bool {
     .all(|key| old.get(key) == new.get(key))
 }
 
-fn file_fingerprint(path: &Path) -> Option<Value> {
-    let metadata = std::fs::metadata(path).ok()?;
+async fn file_fingerprint(path: &Path) -> Option<Value> {
+    let metadata = tokio::fs::metadata(path).await.ok()?;
     let modified = metadata
         .modified()
         .ok()?

@@ -363,50 +363,53 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
         .await
         .unwrap();
     change_agent(&state, "agentModeRevision", json!(444)).await;
-    state
-        .bridge
-        .worker_run("preparation-review", move |store| async move {
-            let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
-            let request = RecoveredRequest {
-                ticket: studio_runtime_providers::RequestTicket {
-                    id: RequestId::String(operation.clone()),
-                    generation: 1,
-                    method: Method::TurnStart,
-                },
-                operation_id: OperationId(operation.clone()),
-                thread_id: prepared.intent.thread_id.clone(),
-                lightweight: false,
-                deadline_ms: 60_000,
-                unknown: false,
-                remote_id: None,
-            };
-            let context = Pending {
-                intent: prepared.intent,
-                method: "turn/start".into(),
-                operation,
-                thread: prepared.thread,
-                compiled: prepared.compiled,
-            };
-            assert!(
-                !store::submitted(
-                    store.as_ref(),
-                    context,
-                    "default",
-                    request,
-                    store::SubmissionEvidence {
-                        turn: None,
-                        submission: prepared.submission,
-                        guard: Some(prepared.guard),
-                        connection_id: "test-connection".into(),
-                        effect: None,
+    Box::pin(
+        state
+            .bridge
+            .worker_run("preparation-review", move |store| async move {
+                let operation =
+                    format!("account:default:{}:turn/start", prepared.intent.attempt_id);
+                let request = RecoveredRequest {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        id: RequestId::String(operation.clone()),
+                        generation: 1,
+                        method: Method::TurnStart,
                     },
-                )
-                .await?
-            );
-            Ok(())
-        })
-        .await
-        .unwrap();
+                    operation_id: OperationId(operation.clone()),
+                    thread_id: prepared.intent.thread_id.clone(),
+                    lightweight: false,
+                    deadline_ms: 60_000,
+                    unknown: false,
+                    remote_id: None,
+                };
+                let context = Pending {
+                    intent: prepared.intent,
+                    method: "turn/start".into(),
+                    operation,
+                    thread: prepared.thread,
+                    compiled: prepared.compiled,
+                };
+                assert!(
+                    !store::submitted(
+                        store.as_ref(),
+                        context,
+                        "default",
+                        request,
+                        store::SubmissionEvidence {
+                            turn: None,
+                            submission: prepared.submission,
+                            guard: Some(prepared.guard),
+                            connection_id: "test-connection".into(),
+                            effect: None,
+                        },
+                    )
+                    .await?
+                );
+                Ok(())
+            }),
+    )
+    .await
+    .unwrap();
     assert_eq!(state.event_status("input").await, "pending");
     assert!(
         state.record().await["error"]
@@ -417,7 +420,7 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
 }
 #[tokio::test]
 async fn late_context_change_refuses_submission() {
-    scenario_late_context_change_refuses_submission().await;
+    Box::pin(scenario_late_context_change_refuses_submission()).await;
 }
 
 #[tokio::test]
@@ -527,56 +530,59 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
         })
         .await
         .unwrap();
-    state
-        .bridge
-        .worker_run("preparation-review", move |store| async move {
-            let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
-            let request = RecoveredRequest {
-                ticket: studio_runtime_providers::RequestTicket {
-                    id: RequestId::String(operation.clone()),
-                    generation: 1,
-                    method: Method::TurnStart,
-                },
-                operation_id: OperationId(operation.clone()),
-                thread_id: prepared.intent.thread_id.clone(),
-                lightweight: false,
-                deadline_ms: 60_000,
-                unknown: false,
-                remote_id: None,
-            };
-            let context = Pending {
-                intent: prepared.intent,
-                method: "turn/start".into(),
-                operation,
-                thread: prepared.thread,
-                compiled: prepared.compiled,
-            };
-            assert!(
-                store::submitted(
-                    store.as_ref(),
-                    context,
-                    "default",
-                    request,
-                    store::SubmissionEvidence {
-                        turn: None,
-                        submission: prepared.submission,
-                        guard: Some(prepared.guard),
-                        connection_id: "test-connection".into(),
-                        effect: None,
+    Box::pin(
+        state
+            .bridge
+            .worker_run("preparation-review", move |store| async move {
+                let operation =
+                    format!("account:default:{}:turn/start", prepared.intent.attempt_id);
+                let request = RecoveredRequest {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        id: RequestId::String(operation.clone()),
+                        generation: 1,
+                        method: Method::TurnStart,
                     },
-                )
-                .await?
-            );
-            Ok(())
-        })
-        .await
-        .unwrap();
+                    operation_id: OperationId(operation.clone()),
+                    thread_id: prepared.intent.thread_id.clone(),
+                    lightweight: false,
+                    deadline_ms: 60_000,
+                    unknown: false,
+                    remote_id: None,
+                };
+                let context = Pending {
+                    intent: prepared.intent,
+                    method: "turn/start".into(),
+                    operation,
+                    thread: prepared.thread,
+                    compiled: prepared.compiled,
+                };
+                assert!(
+                    store::submitted(
+                        store.as_ref(),
+                        context,
+                        "default",
+                        request,
+                        store::SubmissionEvidence {
+                            turn: None,
+                            submission: prepared.submission,
+                            guard: Some(prepared.guard),
+                            connection_id: "test-connection".into(),
+                            effect: None,
+                        },
+                    )
+                    .await?
+                );
+                Ok(())
+            }),
+    )
+    .await
+    .unwrap();
     assert_eq!(state.event_status("input").await, "dispatching");
     assert_eq!(state.record().await["startAttempt"]["submitted"], true);
 }
 #[tokio::test]
 async fn sibling_completion_does_not_refuse_non_lead() {
-    scenario_sibling_completion_does_not_refuse_non_lead().await;
+    Box::pin(scenario_sibling_completion_does_not_refuse_non_lead()).await;
 }
 
 #[tokio::test]

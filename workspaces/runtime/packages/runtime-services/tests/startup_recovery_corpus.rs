@@ -18,6 +18,7 @@ fn state_root() -> tempfile::TempDir {
         .expect("tmpfs Python-written state")
 }
 
+#[allow(clippy::disallowed_methods)]
 fn oracle(root: &Path, command: &str) -> Value {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../../apps/server/src");

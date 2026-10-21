@@ -44,6 +44,7 @@ impl RetainedAccountSession for Session {
         })
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn request(&self, request: ProviderRequest) -> SessionFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(request.deadline > std::time::Instant::now());
@@ -113,6 +114,7 @@ async fn post(app: &axum::Router, path: &str, value: Value) -> (u16, Value) {
         .expect("body");
     (status, serde_json::from_slice(&bytes).expect("JSON"))
 }
+#[allow(clippy::disallowed_methods)]
 fn fixture(
     certainty: RequestCertainty,
     foreign: bool,
@@ -190,6 +192,7 @@ async fn unknown_foreign_and_not_sent_receipts_never_repeat_native_login() {
     }
 }
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn failed_intent_write_cannot_reach_native_session() {
     let (root, app, session) = fixture(RequestCertainty::Written, false);
     let saved = root.path().join("saved-registry.json");
@@ -207,6 +210,7 @@ async fn failed_intent_write_cannot_reach_native_session() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn login_material_uses_private_modes_even_when_registry_modes_are_broad() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -248,6 +252,7 @@ async fn login_material_uses_private_modes_even_when_registry_modes_are_broad() 
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn login_refuses_preexisting_symlink_that_escapes_accounts_root() {
     let (root, app, session) = fixture(RequestCertainty::Written, false);
     let outside = tempfile::tempdir().expect("outside directory");

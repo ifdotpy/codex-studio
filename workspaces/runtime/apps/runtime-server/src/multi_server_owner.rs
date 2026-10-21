@@ -51,6 +51,10 @@ pub(crate) fn tailscale_json(args: &[&str]) -> Result<Value, AccessError> {
     tailscale_json_from(std::path::Path::new("tailscale"), args)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Tailscale observations run on labeled multi-server blocking workers"
+)]
 pub(crate) fn tailscale_json_from(
     executable: &std::path::Path,
     args: &[&str],

@@ -260,6 +260,7 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn paired_project_location_read_uses_the_fake_peer_transport() {
     use std::sync::Arc;
     use std::time::Duration;
@@ -1553,6 +1554,7 @@ async fn python_authentication_outputs_match_complete_principal_and_writes() {
 }
 
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;

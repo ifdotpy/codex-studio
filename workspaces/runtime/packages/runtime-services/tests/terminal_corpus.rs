@@ -8,6 +8,7 @@ use studio_runtime_store::{RuntimeStore, TerminalsRepository};
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 
+#[allow(clippy::disallowed_methods)]
 fn run_python_oracle(root: &Path, full: bool) -> Value {
     let home = root.join("home");
     std::fs::create_dir_all(&home).expect("isolated oracle home");

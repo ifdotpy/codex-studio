@@ -73,6 +73,7 @@ fn template(root: &Path) {
             .expect("fixture schema commits once");
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn cases() -> Vec<Value> {
     let output = Command::new(prepared_python_support::prepared_python(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

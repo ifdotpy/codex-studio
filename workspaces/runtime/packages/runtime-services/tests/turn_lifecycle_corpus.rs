@@ -226,7 +226,7 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                 assert_eq!(actual_text, expected_text, "{}: no live or fixture guidance is appended", case["id"]);
                 assert_eq!(actual, *expected,"{}: native method and params",case["id"]);
             }
-            let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).await.map_err(|e|e.to_string())?;
+            let submitted=Box::pin(prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1)).await.map_err(|e|e.to_string())?;
             if submitted {
                 let db=store.test_reader().map_err(|e|e.to_string())?;
                 let receipt=studio_runtime_store::EventWriteRepository::receipt(&db,"account-worker:account:default:attempt:turn/start:submitted").map_err(|e|e.to_string())?.expect("production account-worker submission receipt");
@@ -676,7 +676,7 @@ async fn python_written_turn_lifecycle_corpus() {
         let mut prepared_case = case.clone();
         prepared_case["nativeRequest"] = expected["nativeRequest"].clone();
         let case = &prepared_case;
-        let first = apply(&store, case).await;
+        let first = Box::pin(apply(&store, case)).await;
         let mut error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
             let normalized = oracle.call(json!({"command":"normalize","value":value}));
@@ -704,7 +704,7 @@ async fn python_written_turn_lifecycle_corpus() {
                 .transaction(|tx| Ok(tx.total_changes()))
                 .await
                 .expect("probe write counter");
-            let refusal = apply(&store, &changed)
+            let refusal = Box::pin(apply(&store, &changed))
                 .await
                 .expect_err("conflicting evidence must be refused");
             assert_eq!(
@@ -781,7 +781,7 @@ async fn python_written_turn_lifecycle_corpus() {
                 .transaction(|tx| Ok(tx.total_changes()))
                 .await
                 .expect("write counter");
-            let replay = apply(&store, case).await;
+            let replay = Box::pin(apply(&store, case)).await;
             assert_eq!(
                 replay, first,
                 "{id}: replay must return the saved first result"
@@ -877,6 +877,7 @@ async fn python_written_turn_lifecycle_corpus() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn oracle_guard_refuses_synthetic_provider_home_access() {
     let python = prepared_python::prepared_python(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

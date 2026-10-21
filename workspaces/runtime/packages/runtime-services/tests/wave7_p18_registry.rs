@@ -19,6 +19,7 @@ fn read(path: &Path) -> Value {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn registry_login_writes_match_python_and_replay_without_writes() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR"));
     let output = Command::new(prepared_python_support::prepared_python(
@@ -288,6 +289,7 @@ fn local_auth_reconciliation_only_commits_a_terminal_result() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn discovery_and_settings_registry_rows_match_python() {
     use studio_runtime_services::account_driver::{AuthMetadata, AuthStatus};
     let source = Path::new(env!("CARGO_MANIFEST_DIR"));

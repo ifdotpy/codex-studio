@@ -23,6 +23,7 @@ use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 
 const OPERATION: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 
+#[allow(clippy::disallowed_methods)]
 fn template() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {

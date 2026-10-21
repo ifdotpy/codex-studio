@@ -849,6 +849,7 @@ fn radio_queue_snapshot() -> Value {
     radio_snapshot("queue")
 }
 
+#[allow(clippy::disallowed_methods)]
 async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
     let project_root = fixture._root.path().join("radio-project");
     fs::create_dir_all(&project_root).unwrap();
@@ -2527,6 +2528,7 @@ struct SupervisorFixture {
 }
 #[cfg(target_os = "linux")]
 impl Drop for SupervisorFixture {
+    #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         for pid in &self.native {
             let _result = std::process::Command::new("kill")
@@ -2877,6 +2879,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     use std::os::unix::fs::PermissionsExt;
     use tower::ServiceExt;
@@ -3286,6 +3289,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+#[allow(clippy::disallowed_methods)]
 async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncReadExt;
