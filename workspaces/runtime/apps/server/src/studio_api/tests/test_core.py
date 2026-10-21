@@ -970,7 +970,8 @@ print(api_schema_hash(openapi_document()))
 
         context._compute_api_schema_hash = fail
         with self.assertRaisesRegex(RuntimeError, "schema generation failed"):
-            context.start_api_schema_hash().result(timeout=2)
+            # The result wait only guards against a hang; the hash fails at once.
+            context.start_api_schema_hash().result(timeout=HANG_GUARD_SECONDS)
         client = TestClient(app)
         for method, path, request_headers in (
             ("GET", "/api/session", {"Origin": "http://test"}),
@@ -1000,7 +1001,8 @@ print(api_schema_hash(openapi_document()))
 
         def delayed_hash() -> str:
             started.set()
-            if not release.wait(5):
+            # The test releases the hash; this wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError("test did not release schema hash")
             return "server-schema"
 
@@ -1020,7 +1022,7 @@ print(api_schema_hash(openapi_document()))
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=boundary), base_url="http://test",
             ) as client:
-                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                self.assertTrue(await asyncio.to_thread(started.wait, HANG_GUARD_SECONDS))
                 hashless = await client.get(
                     "/api/session",
                     headers={"Origin": "http://test"},
@@ -1048,7 +1050,7 @@ print(api_schema_hash(openapi_document()))
             asyncio.run(exercise())
         finally:
             release.set()
-        self.assertEqual(future.result(timeout=2), "server-schema")
+        self.assertEqual(future.result(timeout=HANG_GUARD_SECONDS), "server-schema")
 
     def test_cold_renderer_identity_waits_for_its_schema_hash(self) -> None:
         context = ApiContext.for_schema()
@@ -1079,7 +1081,8 @@ print(api_schema_hash(openapi_document()))
                     headers={"Origin": "http://test", API_SCHEMA_HASH_HEADER: "renderer-schema"},
                 ))
                 try:
-                    await asyncio.wait_for(entered.wait(), timeout=1)
+                    # This wait only guards against a hang.
+                    await asyncio.wait_for(entered.wait(), timeout=HANG_GUARD_SECONDS)
                     self.assertFalse(pending.done())
                     unmarked = await client.get("/api/sync/identity", headers={"Origin": "http://test"})
                     self.assertEqual(unmarked.status_code, 200)
@@ -1183,7 +1186,8 @@ print(api_schema_hash(openapi_document()))
                 for thread in threads:
                     thread.start()
                 for thread in threads:
-                    thread.join(timeout=5)
+                    # The join only guards against a hang; the check below fails on one.
+                    thread.join(timeout=HANG_GUARD_SECONDS)
                 self.assertFalse(failures)
                 self.assertTrue(all(not thread.is_alive() for thread in threads))
                 directory = Path(cache_home) / API_SCHEMA_CACHE_DIRECTORY
@@ -1208,7 +1212,9 @@ print(api_schema_hash(openapi_document()))
                 cache_path.parent.mkdir(parents=True)
                 poisoned = "f" * 64
                 cache_path.write_text(json.dumps({"key": key, "hash": poisoned}), encoding="utf-8")
-                self.assertEqual(context.start_api_schema_hash().result(timeout=2), poisoned)
+                self.assertEqual(
+                    context.start_api_schema_hash().result(timeout=HANG_GUARD_SECONDS), poisoned,
+                )
                 wait_for_condition(
                     lambda: context.api_schema_hash != poisoned,
                     "background schema hash verification",
@@ -1226,7 +1232,8 @@ print(api_schema_hash(openapi_document()))
 
         def delayed_hash() -> str:
             started.set()
-            if not release.wait(5):
+            # The test releases the hash; this wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError("test did not release schema hash")
             return "server-schema"
 
@@ -1255,13 +1262,15 @@ print(api_schema_hash(openapi_document()))
                 transport=httpx.ASGITransport(app=observed_boundary),
                 base_url="http://test",
             ) as client:
-                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                self.assertTrue(await asyncio.to_thread(started.wait, HANG_GUARD_SECONDS))
                 before = time.perf_counter()
                 early_get = await client.get("/api/session")
                 early_latency = time.perf_counter() - before
                 self.assertEqual(early_get.status_code, 200)
                 self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), early_get.headers)
-                self.assertLess(early_latency, 0.25)
+                # The test has not released the hash yet. A blocked event loop could
+                # answer only after the hash finished, so the hash must still be pending.
+                self.assertFalse(hash_future.done(), "the hashless GET waited for the schema hash")
                 post_request = asyncio.create_task(
                     client.post(
                         "/api/messages",
@@ -1281,7 +1290,7 @@ print(api_schema_hash(openapi_document()))
                 self.assertFalse(post_request.done())
                 self.assertFalse(stream_request.done())
                 release.set()
-                await asyncio.to_thread(hash_future.result, 2)
+                await asyncio.to_thread(hash_future.result, HANG_GUARD_SECONDS)
                 api_response = await client.get("/api/session")
                 self.assertEqual(api_response.headers[API_SCHEMA_HASH_HEADER.lower()], "server-schema")
                 self.assertEqual(api_response.status_code, 200)
@@ -1724,7 +1733,10 @@ print(api_schema_hash(openapi_document()))
             socket_path = Path(state_dir) / "canvas.sock"
             try:
                 with patch.object(codex_canvas, "WEB", web_root):
-                    with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5) as client:
+                    # The client timeouts only guard against a hang of the local server.
+                    with httpx.Client(
+                        base_url=f"http://127.0.0.1:{server.server_port}", timeout=HANG_GUARD_SECONDS,
+                    ) as client:
                         session = client.get("/api/session")
                         identity = session
                         static = client.get("/")
@@ -1739,7 +1751,9 @@ print(api_schema_hash(openapi_document()))
                         )
                         denied_write = client.post("/api/action", json={"request_id": "denied"})
                 uds_transport = httpx.HTTPTransport(uds=str(socket_path))
-                with httpx.Client(transport=uds_transport, base_url="http://localhost", timeout=5) as unix_client:
+                with httpx.Client(
+                    transport=uds_transport, base_url="http://localhost", timeout=HANG_GUARD_SECONDS,
+                ) as unix_client:
                     unix_session = unix_client.get("/api/session")
                     unix_write = unix_client.post(
                         "/api/action", json={"request_id": "unix-write"},

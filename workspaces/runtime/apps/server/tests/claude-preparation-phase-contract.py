@@ -17,6 +17,10 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from server_test_waits import wait_for_condition
 
+# How long the slow catalog read takes, in milliseconds. It ends well inside the
+# 700 ms initialization budget, and a second deadline would add all of it.
+SLOW_CATALOG_MS = 350
+
 SDK = fixture.SDK.replace(
     ' let abort=new AbortController();',
     " if(!options.systemPrompt)fs.appendFileSync(process.argv[2]+'/.catalog-queries','query\\n');\n let abort=new AbortController();")
@@ -26,7 +30,7 @@ SDK = SDK.replace(
    if(options.systemPrompt&&fs.existsSync(options.cwd+'/.hang-session-account'))await new Promise(()=>{});
    if(options.systemPrompt&&fs.existsSync(options.cwd+'/.missing-session-email'))return {subscriptionType:'Claude Max',apiProvider:'firstParty'};
    if(!options.systemPrompt&&fs.existsSync(process.argv[2]+'/.hang-catalog'))await new Promise(()=>{});
-   if(!options.systemPrompt&&fs.existsSync(process.argv[2]+'/.slow-catalog'))await new Promise(resolve=>setTimeout(resolve,250));""")
+   if(!options.systemPrompt&&fs.existsSync(process.argv[2]+'/.slow-catalog'))await new Promise(resolve=>setTimeout(resolve,%d));""" % SLOW_CATALOG_MS)
 SDK = SDK.replace(
     '  initializationResult:',
     """  reinitialize:async()=>{fs.appendFileSync(options.cwd+'/.catalog-reinitializations','refresh\\n');await new Promise(()=>{});},
@@ -75,6 +79,7 @@ class PreparationPhase(fixture.Bridge):
         saved = self.call('thread/turns/list', {'threadId': self.thread})['data'][0]
         self.assertEqual(saved['error']['data'], completed['error']['data'])
         self.assertEqual(self.admissions(), [])
+        return completed['error']['data']
 
     def test_cold_catalog_timeout_prevents_query_and_input(self):
         self.cold_timeout('.hang-catalog', 'catalog_flags')
@@ -93,9 +98,12 @@ class PreparationPhase(fixture.Bridge):
 
     def test_catalog_and_session_share_the_original_deadline(self):
         (self.root / 'state' / '.slow-catalog').touch()
-        started = time.monotonic()
-        self.cold_timeout('.hang-session-account', 'account_initialize')
-        self.assertLess(time.monotonic() - started, .95)
+        data = self.cold_timeout('.hang-session-account', 'account_initialize')
+        # The bridge measures its own preparation time, so process start and request
+        # round trips on a busy machine do not count. A second deadline for the
+        # session would start after the slow catalog and add all of SLOW_CATALOG_MS.
+        self.assertLess(data['claudePreparationElapsedMs'],
+                        self.initialization_timeout_ms + SLOW_CATALOG_MS - 50)
 
     def retained_timeout(self, marker, phase):
         self.turn('hello', 'original')

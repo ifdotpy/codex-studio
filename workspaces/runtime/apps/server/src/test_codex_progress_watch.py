@@ -89,7 +89,9 @@ class ProgressWatchdogTests(unittest.TestCase):
     def assert_callbacks(self, calls, expected):
         with self.callback_condition:
             self.assertTrue(
-                self.callback_condition.wait_for(lambda: len(calls) >= len(expected), timeout=2),
+                # The wait only guards against a hang; the equality below checks the calls.
+                self.callback_condition.wait_for(lambda: len(calls) >= len(expected),
+                                                 timeout=HANG_GUARD_SECONDS),
                 f"timed out waiting for callbacks: {calls!r}",
             )
             self.assertEqual(calls, expected)
@@ -113,7 +115,8 @@ class ProgressWatchdogTests(unittest.TestCase):
         def wait_for_dispatches(expected):
             with completed:
                 self.assertTrue(
-                    completed.wait_for(lambda: count >= expected, timeout=2),
+                    # The wait only guards against a hang.
+                    completed.wait_for(lambda: count >= expected, timeout=HANG_GUARD_SECONDS),
                     f"timed out waiting for {expected} dispatches; saw {count}",
                 )
 
@@ -287,6 +290,7 @@ class ProgressWatchdogTests(unittest.TestCase):
                 from unittest.mock import patch
                 import codex_progress_watch as module
                 from codex_progress import provision_progress
+                from server_test_waits import HANG_GUARD_SECONDS
 
                 with tempfile.TemporaryDirectory(prefix="studio-progress-native-race-") as temporary:
                     root = Path(temporary)
@@ -300,7 +304,8 @@ class ProgressWatchdogTests(unittest.TestCase):
 
                     def paused_run(emitter):
                         entered.set()
-                        if not release.wait(3):
+                        # The test releases the emitter; these waits only guard against a hang.
+                        if not release.wait(HANG_GUARD_SECONDS):
                             raise RuntimeError("test did not release native emitter")
                         original_run(emitter)
 
@@ -308,7 +313,7 @@ class ProgressWatchdogTests(unittest.TestCase):
                     with patch.object(emitter_class, "run", paused_run), \
                             patch.object(module, "_observer_class", return_value=lambda: observer):
                         detach = watcher.subscribe("agent", lambda: None)
-                        assert entered.wait(2), "native emitter did not enter its run method"
+                        assert entered.wait(HANG_GUARD_SECONDS), "native emitter did not enter its run method"
                         emitter = next(iter(observer.emitters))
                         dispatcher = watcher._dispatcher
 
@@ -321,10 +326,10 @@ class ProgressWatchdogTests(unittest.TestCase):
                         thread = threading.Thread(target=unsubscribe, daemon=True)
                         thread.start()
                         try:
-                            assert emitter.stopped_event.wait(2), "native emitter did not receive stop"
+                            assert emitter.stopped_event.wait(HANG_GUARD_SECONDS), "native emitter did not receive stop"
                         finally:
                             release.set()
-                        thread.join(3)
+                        thread.join(HANG_GUARD_SECONDS)
                         assert not thread.is_alive(), "native unschedule did not finish after pre-start stop"
                         assert not failures, failures
                         assert not emitter.is_alive(), "native emitter survived pre-start stop"
@@ -355,7 +360,8 @@ class ProgressWatchdogTests(unittest.TestCase):
             cwd=Path(__file__).parent,
             capture_output=True,
             text=True,
-            timeout=15,
+            # The inner waits use the hang guard; this outer bound must exceed them.
+            timeout=3 * HANG_GUARD_SECONDS,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("16 rapid detach cycles passed", result.stdout)
@@ -418,11 +424,13 @@ class ProgressWatchdogTests(unittest.TestCase):
 
         def on_change():
             observer = watcher._observer
-            observer_lock_acquired = observer._lock.acquire(timeout=0.5)
+            # The main thread can hold the condition for a while on a busy machine.
+            # A lock inversion never releases, so each wait only guards against a hang.
+            observer_lock_acquired = observer._lock.acquire(timeout=HANG_GUARD_SECONDS / 4)
             if observer_lock_acquired:
                 observer._lock.release()
             # Do not create an observer/condition lock inversion in the probe.
-            condition_acquired = watcher._condition.acquire(timeout=0.5)
+            condition_acquired = watcher._condition.acquire(timeout=HANG_GUARD_SECONDS / 4)
             callback_lock_results.append((observer_lock_acquired, condition_acquired))
             if condition_acquired:
                 watcher._condition.release()
@@ -457,7 +465,9 @@ class ProgressWatchdogTests(unittest.TestCase):
             self.assertTrue(event_dispatched.wait(timeout=HANG_GUARD_SECONDS), "native handler waited on watcher lock")
             # BaseObserver owns this lock while dispatching. It must be available
             # even though the watcher condition is still held by this thread.
-            self.assertTrue(observer._lock.acquire(timeout=1), "native observer lock remained held")
+            # A held dispatch never releases; the wait only guards against a hang.
+            self.assertTrue(observer._lock.acquire(timeout=HANG_GUARD_SECONDS),
+                            "native observer lock remained held")
             observer._lock.release()
             subscribe_thread.start()
             self.assertTrue(subscribe_started.wait(timeout=HANG_GUARD_SECONDS))
@@ -535,7 +545,8 @@ class ProgressWatchdogTests(unittest.TestCase):
         def pause_unschedule(watch):
             if watch is first_watch:
                 entered_unschedule.set()
-                if not continue_unschedule.wait(timeout=5):
+                # The test releases the unschedule; the wait only guards against a hang.
+                if not continue_unschedule.wait(timeout=HANG_GUARD_SECONDS):
                     raise RuntimeError("test did not release native unschedule")
             return original_unschedule(watch)
 

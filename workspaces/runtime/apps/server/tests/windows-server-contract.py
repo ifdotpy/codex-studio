@@ -457,17 +457,20 @@ class WindowsServerContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="studio checkout timeout Ω ") as temporary:
             child_pid = Path(temporary) / "child.pid"
-            child = "import time; time.sleep(60)"
+            child_sleep_seconds = 60
+            child = f"import time; time.sleep({child_sleep_seconds})"
             parent = (
                 "import pathlib,subprocess,sys,time; "
                 f"p=subprocess.Popen([sys.executable,'-c',{child!r}]); "
-                f"pathlib.Path({str(child_pid)!r}).write_text(str(p.pid)); time.sleep(60)"
+                f"pathlib.Path({str(child_pid)!r}).write_text(str(p.pid)); time.sleep({child_sleep_seconds})"
             )
             started = time.monotonic()
             with self.assertRaises(subprocess.TimeoutExpired):
                 _run_checkout([sys.executable, "-c", parent], timeout=.5,
                               check=False, capture_output=True, text=True)
-            self.assertLess(time.monotonic() - started, 4)
+            # A drain that waits for the descendant takes its whole sleep; half of
+            # it leaves room for load and still fails on that bug.
+            self.assertLess(time.monotonic() - started, child_sleep_seconds / 2)
             pid = int(child_pid.read_text(encoding="ascii"))
             self.assertFalse(_process_commandline(pid))
 

@@ -290,8 +290,9 @@ class CriticalWorkspaceContract(fixture.WorkspaceContract):
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             accounts.delete("default", str(uuid.uuid4()))
             release.set()
+            # The branch fails once released; this wait only guards against a hang.
             with self.assertRaisesRegex(RuntimeError, "local branch completion"):
-                pending.result(5)
+                pending.result(HANG_GUARD_SECONDS)
 
         with self.runtime.db() as db:
             operation = self.runtime._workspace_operation(

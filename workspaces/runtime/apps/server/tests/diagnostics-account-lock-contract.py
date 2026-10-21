@@ -165,7 +165,9 @@ class DiagnosticsAccountLockContract(unittest.TestCase):
             try:
                 # The old path announces auth; the new path finishes without it.
                 self.assertTrue(done.wait(HANG_GUARD_SECONDS) or progress.wait(HANG_GUARD_SECONDS))
-                acquired = runtime.lock.acquire(timeout=.1)
+                # A short diagnostics step may hold the lock on a busy machine; the bug holds it
+                # until the fixture releases, so the wait only guards against a hang.
+                acquired = runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                 try:
                     self.assertTrue(acquired, "Authentication holds Runtime.lock")
                     self.assertEqual(auth_calls, [], "Diagnostics must not authenticate")
@@ -188,7 +190,10 @@ class DiagnosticsAccountLockContract(unittest.TestCase):
                     self.assertTrue(runtime.accounts.lock.attempted.wait(HANG_GUARD_SECONDS))
                     self.assertFalse(runtime.accounts.lock.nested,
                                      "Diagnostics nests Accounts.lock under Runtime.lock")
-                    acquired = runtime.lock.acquire(timeout=.1)
+                    # A short diagnostics step may hold the lock on a busy machine; the bug
+                    # holds it until this test releases the registry lock, so the wait only
+                    # guards against a hang.
+                    acquired = runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                     try:
                         self.assertTrue(acquired, "Registry lock blocks runtime work")
                         self.assertFalse(done.is_set(), "The registry lock fixture must hold diagnostics")

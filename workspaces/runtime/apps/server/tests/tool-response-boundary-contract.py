@@ -344,11 +344,12 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         self.assertEqual(len(futures), 1)
         return futures[0]
 
+    # Each future wait below only guards against a hang; the failure is due at once.
     def test_future_failure_after_both_result_writes_returns_unknown_once(self):
         self.reject_tool_result_inserts()
         future = self.submit_request()
         with self.assertRaises(sqlite3.OperationalError):
-            future.result(timeout=3)
+            future.result(timeout=HANG_GUARD_SECONDS)
         self.assertTrue(self.sink.changed.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.operations, 1)
         self.assertEqual(self.sink.attempts, 1)
@@ -372,7 +373,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         with patch.object(self.runtime, 'dynamic', side_effect=sqlite3.OperationalError('fixture old frame failure')):
             future = self.submit_request()
             with self.assertRaises(sqlite3.OperationalError):
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
         self.assertTrue(self.sink.changed.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.operations, 1)
         self.assertEqual(self.sink.attempts, 1)
@@ -392,7 +393,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         with patch.object(self.runtime, 'model_work', stopped):
             future = self.submit_request()
             with self.assertRaises(sqlite3.OperationalError):
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
             self.assertTrue(self.sink.changed.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.operations, 1)
         self.assertEqual(self.sink.attempts, 1)

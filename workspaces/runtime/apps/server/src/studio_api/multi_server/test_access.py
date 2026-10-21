@@ -27,6 +27,7 @@ import httpx
 from starlette.types import Message, Receive, Scope, Send
 
 from codex_federation import _crypto, _sign
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_multi_server import AccessError, MultiServerService, PAIR_PATH, _peer_login, request_bytes
 from codex_remote import RemoteAccess
 from studio_api.app import create_app
@@ -934,16 +935,18 @@ class AccessTests(unittest.TestCase):
 
             request = asyncio.create_task(self.app(scope, receive, send))
             try:
-                await asyncio.wait_for(ready.wait(), 3)
+                # These waits only guard against a hang; a stream that never closes
+                # still fails at the guard.
+                await asyncio.wait_for(ready.wait(), HANG_GUARD_SECONDS)
                 remote.path.write_text(json.dumps(updated))
                 if local:
                     # Wait through several policy checks, then verify live delivery.
                     await asyncio.sleep(0.05)
                     self.assertFalse(request.done())
                     hub.publish_overflow()
-                    await asyncio.wait_for(changed.wait(), 3)
+                    await asyncio.wait_for(changed.wait(), HANG_GUARD_SECONDS)
                     disconnected.set()
-                await asyncio.wait_for(asyncio.shield(request), 1)
+                await asyncio.wait_for(asyncio.shield(request), HANG_GUARD_SECONDS)
                 self.assertFalse(hub._subscriptions)
                 if not local:
                     count = len(messages)
@@ -986,9 +989,11 @@ class AccessTests(unittest.TestCase):
 
             boundary = MultiServerBoundary(stream_app, self.context)
             request = asyncio.create_task(boundary(scope, receive, send))
-            await asyncio.wait_for(started.wait(), 5)
+            # These waits only guard against a hang; a stream that never closes
+            # still fails at the guard.
+            await asyncio.wait_for(started.wait(), HANG_GUARD_SECONDS)
             change()
-            await asyncio.wait_for(request, 3)
+            await asyncio.wait_for(request, HANG_GUARD_SECONDS)
 
         with patch("studio_api.multi_server.boundary.STREAM_RECHECK_SECONDS", 0.01):
             asyncio.run(run())

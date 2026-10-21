@@ -49,7 +49,10 @@ pub(crate) async fn protocol(
     let socket_path = PathBuf::from(state.state_dir).join("canvas.sock");
     let unix_socket = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/sync_documents",
-        #[allow(clippy::disallowed_methods, reason = "runs inside blocking_pool::spawn_blocking")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "runs inside blocking_pool::spawn_blocking"
+        )]
         move || socket_path.exists(),
     )
     .await

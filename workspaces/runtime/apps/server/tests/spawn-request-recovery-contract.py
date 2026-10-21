@@ -185,7 +185,8 @@ class SpawnRequestRecovery(unittest.TestCase):
         original_catalog = self.runtime.catalog
         def delayed_catalog(*args, **kwargs):
             entered.set()
-            if not release.wait(5):
+            # The test always releases the gate; this wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('Fixture gate timeout')
             return original_catalog(*args, **kwargs)
         with patch.object(self.runtime, 'catalog', side_effect=delayed_catalog):
@@ -231,7 +232,8 @@ class SpawnRequestRecovery(unittest.TestCase):
                 entered += 1
                 if entered == expected:
                     all_entered.set()
-            release.wait(8)
+            # Hold the pools until the test releases them.
+            release.wait(HANG_GUARD_SECONDS)
         futures = []
         try:
             for executor in [self.runtime.pool, self.runtime.tool_pool]:
@@ -249,8 +251,9 @@ class SpawnRequestRecovery(unittest.TestCase):
             self.assertTrue(all(not future.done() for future in futures), 'Both saturated pools must still be blocked')
         finally:
             release.set()
+            # The released holds end; this wait only guards against a hang.
             for future in futures:
-                future.result(3)
+                future.result(HANG_GUARD_SECONDS)
 
     def test_spawned_children_run_and_completion_resumes_finished_parent(self):
         self.runtime.dynamic(self.message())
@@ -276,23 +279,25 @@ class SpawnRequestRecovery(unittest.TestCase):
         release_tools, release_coordination = threading.Event(), threading.Event()
         tools_entered = threading.Barrier(self.runtime.tool_pool._max_workers + 1)
         coordination_entered = threading.Barrier(self.runtime.coordination_pool._max_workers + 1)
+        # Every pool worker reaches the barrier and holds until the test releases
+        # it; these waits only guard against a hang.
         def hold(entered, release):
-            entered.wait(4)
-            release.wait(10)
+            entered.wait(HANG_GUARD_SECONDS)
+            release.wait(HANG_GUARD_SECONDS)
         tool_futures = [self.runtime.tool_pool.submit(hold, tools_entered, release_tools)
                         for _ in range(self.runtime.tool_pool._max_workers)]
         coordination_futures = [self.runtime.coordination_pool.submit(hold, coordination_entered, release_coordination)
                                 for _ in range(self.runtime.coordination_pool._max_workers)]
         try:
-            tools_entered.wait(4)
-            coordination_entered.wait(4)
+            tools_entered.wait(HANG_GUARD_SECONDS)
+            coordination_entered.wait(HANG_GUARD_SECONDS)
             self.runtime.request(self.message('request-recovery', 'orchestration_request',
                 {'action': 'get', 'request_id': 'batch-1'}))
             self.assertEqual(self.value(self.response('request-recovery'))['outcome'], 'applied')
             self.assertTrue(all(not future.done() for future in tool_futures + coordination_futures))
             release_coordination.set()
             for future in coordination_futures:
-                future.result(3)
+                future.result(HANG_GUARD_SECONDS)
             self.runtime.request(self.message('ordinary-send', 'orchestration_send', {
                 'agent_id': child_id, 'text': 'Continue the bounded task'}))
             receipt = self.value(self.response('ordinary-send'))
@@ -307,7 +312,7 @@ class SpawnRequestRecovery(unittest.TestCase):
             release_tools.set()
             release_coordination.set()
             for future in tool_futures + coordination_futures:
-                future.result(3)
+                future.result(HANG_GUARD_SECONDS)
 
     def test_removed_workspace_envelopes_fail_without_intake_crash(self):
         for n, text in enumerate(['not-json', '[]', json.dumps({'tool': []}),

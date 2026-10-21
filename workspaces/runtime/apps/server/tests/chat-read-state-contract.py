@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from runtime_test_environment import make_runtime
 
 from concurrent.futures import ThreadPoolExecutor
@@ -108,7 +109,7 @@ class ChatReadStateContract(fixture.RuntimeContract):
         agent = self.completed()
         gate = threading.Barrier(2)
         def submit(read):
-            gate.wait(5)
+            gate.wait(HANG_GUARD_SECONDS)  # Only guards against a hang.
             try:
                 return self.apply(agent, read=read)
             except ValueError as error:

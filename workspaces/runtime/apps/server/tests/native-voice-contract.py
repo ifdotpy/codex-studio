@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -36,7 +36,8 @@ class Server:
         self.calls.append((method, params))
         if method == "account/read":
             if self.read_gate:
-                self.read_gate.wait(2)
+                # The test always opens the gate; this wait only guards against a hang.
+                self.read_gate.wait(HANG_GUARD_SECONDS)
             return {"account": {"type": self.auth}}
         if method == "thread/read":
             return {"thread": {"status": {"type": "idle"}}}

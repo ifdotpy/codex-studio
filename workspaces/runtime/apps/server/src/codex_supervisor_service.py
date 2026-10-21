@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -226,9 +227,14 @@ def starting_desktop(url: str, state: Path) -> dict[str, Any] | None:
     except (TimeoutError, ConnectionError):
         return None
     except URLError as error:
-        if isinstance(error.reason, (TimeoutError, ConnectionError)):
+        if isinstance(error.reason, (TimeoutError, ConnectionError)) or reset_on_connect(error.reason):
             return None
         raise
+
+
+def reset_on_connect(reason: object) -> bool:
+    """macOS reports a connection the listener reset during connect as EINVAL from TCP_NODELAY."""
+    return sys.platform == 'darwin' and isinstance(reason, OSError) and reason.errno == errno.EINVAL
 
 def idle(state: Path) -> dict[str, int]:
     """Read current activity, never open a runtime or modify its database."""

@@ -72,7 +72,7 @@ class Native:
             raise ResponseTimeout("Spawn response timed out; outcome unknown")
         if not self.wait_release.wait(HANG_GUARD_SECONDS):
             raise AssertionError("Receipt gate was not released")
-        return submitted[2].result(timeout=1)
+        return submitted[2].result(timeout=HANG_GUARD_SECONDS)  # Only guards against a hang.
 
     def call(self, method, params, **kwargs):
         self.killed.append((method, params))

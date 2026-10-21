@@ -12,6 +12,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 from codex_python import (
     _publish_environment,
     managed_python,
@@ -60,7 +62,8 @@ class PythonResolutionTests(unittest.TestCase):
                 continue
             result = subprocess.run(
                 [str(candidate), "-c", "import sys; print('%s.%s' % sys.version_info[:2])"],
-                capture_output=True, text=True, timeout=5,
+                # The timeout only guards against a hang of the version probe.
+                capture_output=True, text=True, timeout=HANG_GUARD_SECONDS,
             )
             if result.returncode == 0:
                 version = tuple(map(int, result.stdout.strip().split(".")))

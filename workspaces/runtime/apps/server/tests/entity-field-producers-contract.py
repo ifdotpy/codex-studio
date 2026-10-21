@@ -753,7 +753,10 @@ class EntityFieldProducers(unittest.TestCase):
             self.assertFalse(self.runtime.refresh_workspace_volatile())
             self.assertTrue(self.runtime.__dict__.get("_workspace_entity_refresh_dirty"))
             self.runtime._publish_desktop_resource()
-            self.assertLess(__import__("time").monotonic() - started, 0.5)
+            # A refresh that waits on the write lock blocks for the 15 s default
+            # Runtime.db busy timeout. A third of it separates the two cases on a
+            # busy machine.
+            self.assertLess(__import__("time").monotonic() - started, 5)
         finally:
             conn.rollback()
             conn.close()
@@ -910,17 +913,20 @@ class EntityFieldProducers(unittest.TestCase):
         def hold_lock():
             with self.runtime.lock:
                 locked.set()
-                release.wait(2)
+                # The test releases the lock; this wait only guards against a hang.
+                release.wait(HANG_GUARD_SECONDS)
         thread = threading.Thread(target=hold_lock)
         thread.start()
         self.assertTrue(locked.wait(HANG_GUARD_SECONDS))
         started = time.monotonic()
         try:
             self.assertFalse(self.runtime.refresh_workspace_volatile())
-            self.assertLess(time.monotonic() - started, 0.5)
+            # A refresh that waits for the runtime lock blocks until the holder
+            # gives it up after the hang guard, far above this bound.
+            self.assertLess(time.monotonic() - started, 10)
         finally:
             release.set()
-            thread.join(2)
+            thread.join(HANG_GUARD_SECONDS)
 
     def test_workspace_notice_trim_refreshes_the_entity_after_the_trim(self):
         connection_id = "notice-trim-connection"

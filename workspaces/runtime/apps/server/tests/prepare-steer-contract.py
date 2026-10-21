@@ -350,7 +350,9 @@ class PrepareSteerContract(unittest.TestCase):
                 executor = self.runtime.worktree_creation_executors[key]
                 self.assertEqual(executor._work_queue.qsize(), 69)
                 delivered = self.runtime.delivery_executor().submit(lambda: "delivered")
-                self.assertEqual(delivered.result(timeout=2), "delivered")
+                # The wait only guards against a hang; a delivery queue blocked
+                # behind the checkouts never returns.
+                self.assertEqual(delivered.result(timeout=HANG_GUARD_SECONDS), "delivered")
                 other = self.create()
                 eventually(lambda: self.runtime.agent(other["id"])["status"] == "running")
         finally:
