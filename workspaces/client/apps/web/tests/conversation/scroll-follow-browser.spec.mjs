@@ -91,6 +91,22 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
   let transcriptSeq = 1;
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // Both native EventSource and the scoped fetch-based stream must have an
+  // open, successful SSE response before transcript notifications count.
+  const syncStreams = new Map();
+  page.on("response", (response) => {
+    const request = response.request();
+    const url = new URL(request.url());
+    if (
+      url.origin === origin &&
+      url.pathname === "/api/sync/stream" &&
+      response.status() === 200 &&
+      response.headers()["content-type"]?.startsWith("text/event-stream")
+    )
+      syncStreams.set(request, url);
+  });
+  page.on("requestfinished", (request) => syncStreams.delete(request));
+  page.on("requestfailed", (request) => syncStreams.delete(request));
   installApiSchemaFixtureHeaders(page);
   // WebKit, the macOS client engine, applies a wheel step to scrollTop
   // before it dispatches the scroll event, and it dispatches that event
@@ -118,16 +134,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
         run(time);
         callback(time);
       });
-    // Stream updates count only after the renderer subscribes to them.
-    window.syncStreams = [];
-    const NativeEventSource = window.EventSource;
-    window.EventSource = new Proxy(NativeEventSource, {
-      construct(target, args) {
-        const source = Reflect.construct(target, args);
-        window.syncStreams.push(source);
-        return source;
-      },
-    });
   });
   await stubEntityState(
     page,
@@ -218,6 +224,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       transcripts.set(chat.id, reset());
     }
     await page.setViewportSize(viewport);
+    syncStreams.clear();
     await page.goto(origin);
     if (width < 700) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${chat.id}"]`).click();
@@ -226,19 +233,18 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       await root.evaluate((e) => !!e.querySelector("[data-history-window]")),
       `${width}px: the long transcript uses the windowed history`,
     );
-    await page.waitForFunction(
-      (id) =>
-        window.syncStreams.some((source) => {
-          const url = new URL(source.url, location.href);
-          if (url.pathname !== "/api/sync/stream" || source.readyState !== 1)
-            return false;
-          return JSON.parse(url.searchParams.get("resources") || "[]").some(
-            (resource) =>
-              resource.kind === "transcript" && resource.agentId === id,
-          );
-        }),
-      chat.id,
-    );
+    await expect
+      .poll(
+        () =>
+          [...syncStreams.values()].some((url) =>
+            JSON.parse(url.searchParams.get("resources") || "[]").some(
+              (resource) =>
+                resource.kind === "transcript" && resource.agentId === chat.id,
+            ),
+          ),
+        { timeout: 15000, message: "The chat has an open transcript stream" },
+      )
+      .toBe(true);
     // Loading can take longer than a few stable frames on a busy machine.
     await root.evaluate(
       (element) =>
