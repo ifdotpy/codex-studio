@@ -436,7 +436,8 @@ class Contract(unittest.TestCase):
         def delayed(source, destination):
             if Path(destination) == self.manager.path and threading.current_thread().name == 'older-save':
                 entered.set()
-                if not release.wait(5):
+                # The test releases the save; this wait only guards against a hang.
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('The test did not release the older save')
             return replace(source, destination)
         def older():
@@ -841,7 +842,7 @@ class Contract(unittest.TestCase):
             self.assertFalse(closed.wait(.05), "close returned while validation still held runtime state")
         finally:
             release.set()
-            closer.join(3)
+            closer.join(HANG_GUARD_SECONDS)  # Only guards against a hang.
         self.assertTrue(closed.is_set())
         self.assertFalse(self.manager.worker.is_alive())
         self.assertEqual(self.spawned, [])

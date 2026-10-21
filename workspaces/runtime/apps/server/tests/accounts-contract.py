@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 isolate_supervisor_environment()
 from runtime_test_environment import make_runtime
@@ -266,7 +267,8 @@ class AccountsContract(unittest.TestCase):
                 headers=headers,
             )
             try:
-                with urllib.request.urlopen(req, timeout=5) as response:
+                # Each request must answer; the timeout only guards against a hang.
+                with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as response:
                     return response.status, json.load(response)
             except urllib.error.HTTPError as error:
                 with error:

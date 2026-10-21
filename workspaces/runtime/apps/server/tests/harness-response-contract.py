@@ -29,6 +29,8 @@ spec = importlib.util.spec_from_file_location('response_fixture', SERVER_TESTS_R
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_runtime import ResponseTimeout, Runtime
+# Pool and result waits on HANG_GUARD_SECONDS only guard against a hang.
+from server_test_waits import HANG_GUARD_SECONDS
 
 eventually = fixture.fixture.eventually
 CONFIG = {'config': {'features': {'shell_snapshot': False}}}
@@ -152,7 +154,7 @@ class HarnessResponseContract(unittest.TestCase):
         key = self.pending_monitor()
         self.runtime.cancel_monitor(key)
         self.config_futures()[0].set_result(CONFIG)
-        self.runtime.pool.submit(lambda: None).result(2)
+        self.runtime.pool.submit(lambda: None).result(HANG_GUARD_SECONDS)
         self.assertEqual(self.record(key)['status'], 'cancelled')
         self.assertFalse(self.record(key)['configurationPending'])
         self.assertEqual(self.count('command/exec'), 0)
@@ -161,7 +163,7 @@ class HarnessResponseContract(unittest.TestCase):
         key = self.pending_monitor()
         self.runtime.stop(self.agent['id'])
         self.config_futures()[0].set_result(CONFIG)
-        self.runtime.pool.submit(lambda: None).result(2)
+        self.runtime.pool.submit(lambda: None).result(HANG_GUARD_SECONDS)
         self.assertEqual(self.count('command/exec'), 0)
         self.assertEqual(self.record(key)['status'], 'cancelled')
 
@@ -169,7 +171,7 @@ class HarnessResponseContract(unittest.TestCase):
         self.pending_monitor()
         self.runtime.disconnected('default', self.runtime.connection_ids['default'])
         self.config_futures()[0].set_result(CONFIG)
-        self.runtime.pool.submit(lambda: None).result(2)
+        self.runtime.pool.submit(lambda: None).result(HANG_GUARD_SECONDS)
         self.assertEqual(self.count('command/exec'), 0)
 
     def test_current_permission_policy_used_after_config_ack(self):
@@ -196,7 +198,8 @@ class HarnessResponseContract(unittest.TestCase):
         for future in self.config_futures():
             future.set_result(CONFIG)
         eventually(lambda: len(self.server.commands) == 17)
-        self.runtime.pool.submit(self.runtime.dynamic, self.message()).result(3)
+        # An exhausted pool never runs this call, so the hang guard still fails on it.
+        self.runtime.pool.submit(self.runtime.dynamic, self.message()).result(HANG_GUARD_SECONDS)
         self.assertTrue(self.server.responses[-1]['result']['success'])
         self.assertEqual(set(self.server.commands), set(keys))
         with self.runtime.lock:
@@ -217,7 +220,7 @@ class HarnessResponseContract(unittest.TestCase):
         eventually(lambda: monitor['id'] in self.server.commands)
         with self.runtime.lock:
             self.assertIn(self.server.command_threads[0], self.runtime.monitor_threads)
-        self.runtime.pool.submit(lambda: True).result(2)
+        self.runtime.pool.submit(lambda: True).result(HANG_GUARD_SECONDS)
         self.assertEqual(self.count('thread/resume'), 1)
         self.assertEqual(self.count('command/exec'), 1)
 

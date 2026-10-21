@@ -161,7 +161,8 @@ class CanvasChatSeedContract(unittest.TestCase):
                 store.connect = fail_fast_connect
                 try:
                     with runtime.lock:
-                        blocker = sqlite3.connect(runtime.db_path, timeout=5)
+                        # The busy timeout only guards against a hang of a short writer.
+                        blocker = sqlite3.connect(runtime.db_path, timeout=HANG_GUARD_SECONDS)
                         try:
                             blocker.execute("BEGIN IMMEDIATE")
                             for _ in range(5):

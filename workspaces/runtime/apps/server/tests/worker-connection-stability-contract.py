@@ -335,7 +335,8 @@ class WorkerConnectionStability(unittest.TestCase):
         def hold_start():
             with self.runtime.start_lock:
                 entered.set()
-                release.wait(2)
+                # Hold the other start until release, past the connect wait below.
+                release.wait(HANG_GUARD_SECONDS)
         def connect():
             result.append(self.runtime.connect('default'))
             returned.set()
@@ -345,7 +346,9 @@ class WorkerConnectionStability(unittest.TestCase):
         try:
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             reader.start()
-            self.assertTrue(returned.wait(HANG_GUARD_SECONDS), 'Ready Codex account waits behind another account start')
+            # A connect blocked by the held start cannot return before release.
+            self.assertTrue(returned.wait(HANG_GUARD_SECONDS / 2),
+                            'Ready Codex account waits behind another account start')
         finally:
             release.set()
             holder.join()
@@ -361,7 +364,8 @@ class WorkerConnectionStability(unittest.TestCase):
                 with self.runtime.lock:
                     self.runtime._native_tools_refreshing = {'default'}
                 entered.set()
-                release.wait(2)
+                # Keep the reservation until the test releases it, even on a busy machine.
+                release.wait(HANG_GUARD_SECONDS)
                 with self.runtime.lock:
                     self.runtime._native_tools_refreshing.clear()
         def connect():
@@ -393,7 +397,8 @@ class WorkerConnectionStability(unittest.TestCase):
                 super().__init__(*args)
                 self.join_called = False
                 def callback():
-                    callback_release.wait(3)
+                    # Run until close releases it, even on a busy machine.
+                    callback_release.wait(HANG_GUARD_SECONDS)
                     with runtime.lock:
                         callback_done.set()
                 self.callback = threading.Thread(target=callback)
@@ -407,7 +412,8 @@ class WorkerConnectionStability(unittest.TestCase):
                 callback_release.set()
             def join_callbacks(self, timeout=10):
                 self.join_called = True
-                self.callback.join(min(timeout, 2))
+                # Respect the product's drain deadline; the cap only guards against a hang.
+                self.callback.join(min(timeout, HANG_GUARD_SECONDS))
                 return not self.callback.is_alive()
         def connect():
             try:

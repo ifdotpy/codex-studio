@@ -47,7 +47,7 @@ class RuntimeCloseWakeContract(unittest.TestCase):
                 with patch.object(codex_work.shutil, 'disk_usage', return_value=NoFreeSpace()):
                     self.assertTrue(runtime.search_migration_start())
 
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + HANG_GUARD_SECONDS  # Only guards against a hang.
                     while time.monotonic() < deadline:
                         with runtime.db() as db:
                             phase = db.execute(

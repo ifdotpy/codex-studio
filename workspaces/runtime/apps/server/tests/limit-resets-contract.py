@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
 from runtime_test_environment import make_runtime
 
@@ -251,7 +252,8 @@ class ResetContracts(unittest.TestCase):
                 data=json.dumps(body).encode() if body is not None else None,
                 headers=headers or {},
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            # The timeout only guards against a hang of the local server.
+            with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as response:
                 return json.load(response)
 
         body = {

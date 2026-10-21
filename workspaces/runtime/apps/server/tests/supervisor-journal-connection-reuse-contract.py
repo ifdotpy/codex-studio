@@ -266,7 +266,8 @@ class JournalConnectionReuse(unittest.TestCase):
             release.set()
             self.assertTrue(acquired.wait(HANG_GUARD_SECONDS))
             for thread in self.threads:
-                thread.join(2)
+                # The join only guards against a hang; the checks below need finished threads.
+                thread.join(HANG_GUARD_SECONDS)
             self.assertEqual(errors, [])
             self.assertEqual(len(connections.opened), 5)
             self.assertEqual(len(connections.closed), 1)

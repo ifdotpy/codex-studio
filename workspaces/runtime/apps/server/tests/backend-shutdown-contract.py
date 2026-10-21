@@ -4,7 +4,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -142,7 +142,8 @@ main()
             return int(probe.getsockname()[1])
 
     def wait_for_start(self, process: subprocess.Popen[str], port: int) -> str:
-        deadline = time.monotonic() + 20
+        # The bound only guards against a hang; a cold start on a busy machine is slow.
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         output = ""
         assert process.stdout is not None
         while time.monotonic() < deadline:
@@ -229,9 +230,10 @@ main()
                         port, stream_count, read_initial=not unread_stream,
                     )
                 if handler_delay:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/session", timeout=5) as response:
+                    # These requests must succeed; the timeouts only guard against a hang.
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/session", timeout=HANG_GUARD_SECONDS) as response:
                         token = json.load(response)["token"]
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/sync/identity", timeout=5) as response:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/sync/identity", timeout=HANG_GUARD_SECONDS) as response:
                         workspace_id = json.load(response)["workspaceId"]
                     payload = json.dumps({"rows": [{
                         "newDocumentState": {

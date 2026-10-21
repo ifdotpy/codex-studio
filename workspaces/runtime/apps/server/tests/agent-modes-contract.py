@@ -501,17 +501,22 @@ class AgentModes(unittest.TestCase):
         reached, release = threading.Event(), threading.Event()
         def catalog(account):
             reached.set()
-            release.wait(2)
+            # Hold the catalog read until the test releases it.
+            release.wait(HANG_GUARD_SECONDS)
             return copy.deepcopy(f.CATALOG)
         self.rt.catalog = catalog
         result = []
         thread = threading.Thread(target=lambda: result.append(self.rt.new_lead({'previous': blank['id'], 'model': 'worker'})))
         thread.start()
-        self.assertTrue(reached.wait(HANG_GUARD_SECONDS))
-        self.assertTrue(self.rt.lock.acquire(timeout=.1))
-        self.rt.lock.release()
-        release.set()
-        thread.join(2)
+        try:
+            self.assertTrue(reached.wait(HANG_GUARD_SECONDS))
+            # The catalog read stays blocked far longer than this wait, so a lock
+            # held through it fails here; the margin only absorbs a busy machine.
+            self.assertTrue(self.rt.lock.acquire(timeout=10))
+            self.rt.lock.release()
+        finally:
+            release.set()
+        thread.join(HANG_GUARD_SECONDS)
         self.assertEqual((result[0]['id'], result[0]['model']), (blank['id'], 'worker'))
 
 

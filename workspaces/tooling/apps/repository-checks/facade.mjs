@@ -1000,10 +1000,19 @@ function comprehensiveTierCommands(root) {
           ["build", "--locked", "--release", "-p", "studio-runtime-server"],
         ],
       ],
-      options: { allowZeroTests: true },
+      options: { allowZeroTests: true, buildOnly: true },
     },
     { item: server, label: "server" },
     { item: bridge, label: "server bridge" },
+    {
+      // The native client crate embeds web/dist at compile time.
+      item: { name: "renderer build", ecosystem: "pnpm" },
+      label: "renderer build",
+      commands: [
+        ["pnpm", ["--filter", "codex-agents-web", "run", "build:bundle"]],
+      ],
+      options: { allowZeroTests: true, buildOnly: true },
+    },
     {
       item: { name: "Rust workspace", ecosystem: "cargo" },
       label: "Rust nextest",
@@ -1600,7 +1609,12 @@ export async function execute(
   if (selectionError) errors.push(selectionError);
   if (nextestError(output) && !errors.includes(NEXTTEST_MISSING))
     errors.push(NEXTTEST_MISSING);
-  if (exitCode === 0 && item.ecosystem !== "pnpm" && !counts.summaryFound)
+  if (
+    exitCode === 0 &&
+    item.ecosystem !== "pnpm" &&
+    !options.buildOnly &&
+    !counts.summaryFound
+  )
     errors.push(
       "native runner summary was missing; refusing to report success",
     );

@@ -410,6 +410,10 @@ and a replaced image file. Archive and removal refuse in the same states, so the
 cannot delete an image whose volume is attached somewhere else. Each backend
 checks the mounts once at start. It writes each problem to stderr and shows the
 problem codes in `/api/diagnostics` (`imageMounts`). The check repairs nothing.
+A backend judges only the volumes of its own store: a volume whose image or mount
+point is in the store, or a volume of one of its agents. A volume of another
+state folder (for example the live Studio while a test fixture runs) is not a
+stray volume of this backend.
 
 `studio-runtime-server mounts check [--store <store>]` prints the full report as
 JSON and changes nothing. The default store is `<state>/workspaces`. The command

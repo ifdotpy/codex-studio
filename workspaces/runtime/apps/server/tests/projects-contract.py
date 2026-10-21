@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 isolate_supervisor_environment()
 from runtime_test_environment import make_runtime
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -300,7 +301,8 @@ class ProjectContracts(unittest.TestCase):
 
         def request(path, body=None):
             req = urllib.request.Request(base + path, data=None if body is None else json.dumps(body).encode(), headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as response:
+            # Each request must answer; the timeout only guards against a hang.
+            with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as response:
                 return json.loads(response.read())
 
         try:

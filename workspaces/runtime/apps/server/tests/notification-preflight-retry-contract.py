@@ -114,12 +114,15 @@ class NotificationPreflightRetry(unittest.TestCase):
             worker.start()
             try:
                 self.assertTrue(notification_started.wait(HANG_GUARD_SECONDS))
-                blocker = sqlite3.connect(runtime.db_path, timeout=1)
+                # The busy timeout only guards against a hang of a short writer.
+                blocker = sqlite3.connect(runtime.db_path, timeout=HANG_GUARD_SECONDS)
                 try:
                     blocker.execute("BEGIN IMMEDIATE")
                     proceed.set()
                     self.assertTrue(busy_preflight.wait(HANG_GUARD_SECONDS), "writer admission did not hit SQLITE_BUSY")
-                    acquired = runtime.lock.acquire(timeout=.2)
+                    # A short step may hold the lock on a busy machine; the bug holds it
+                    # until the blocker rolls back, so the wait only guards against a hang.
+                    acquired = runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                     self.assertTrue(acquired, "SQLite writer preflight must not retain Runtime.lock")
                     if acquired:
                         runtime.lock.release()
@@ -129,7 +132,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                 self.assertTrue(callback_finished.wait(HANG_GUARD_SECONDS))
             finally:
                 proceed.set()
-                worker.join(5)
+                worker.join(HANG_GUARD_SECONDS)
                 self.assertFalse(worker.is_alive())
 
         self.assertEqual(callback_error, [])
@@ -218,8 +221,8 @@ class NotificationPreflightRetry(unittest.TestCase):
                                 "notification should retry after the owner commits")
             finally:
                 allow_writer.set()
-                owner.join(3)
-                callback.join(3)
+                owner.join(HANG_GUARD_SECONDS)
+                callback.join(HANG_GUARD_SECONDS)
                 self.assertFalse(owner.is_alive())
                 self.assertFalse(callback.is_alive())
 
@@ -378,7 +381,7 @@ class NotificationPreflightRetry(unittest.TestCase):
             finally:
                 server.reader_done.set()
                 if dispatcher.is_alive():
-                    dispatcher.join(3)
+                    dispatcher.join(HANG_GUARD_SECONDS)  # Only guards against a hang.
 
         self.assertTrue(injected)
         self.assertEqual(callback_sequences, [1, 2, 3, 4])

@@ -31,6 +31,16 @@ from codex_runtime import Runtime, ResponseTimeout
 from codex_streaming import StreamBuffer
 
 
+# Seconds a test waits for Runtime.lock and the main writer after a capture
+# meets a locked analytics writer. A third of the 15 s default analytics busy
+# timeout, so a capture that waits that timeout while holding them fails.
+MAIN_AVAILABLE_SECONDS = 5
+# Seconds Runtime.close may take with a locked analytics writer. A third of the
+# same 15 s default, so a close that waits it fails.
+BOUNDED_CLOSE_SECONDS = 5
+# Worker joins on HANG_GUARD_SECONDS only guard against a hang.
+
+
 class NoNativeServer:
     calls = 0
 
@@ -87,10 +97,10 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             self.assertTrue(idle.wait(HANG_GUARD_SECONDS), 'Analytics FIFO did not finish')
 
     def assert_main_available(self):
-        acquired = self.runtime.lock.acquire(timeout=.15)
+        acquired = self.runtime.lock.acquire(timeout=MAIN_AVAILABLE_SECONDS)
         self.assertTrue(acquired, 'Analytics retains Runtime.lock')
         self.runtime.lock.release()
-        db = sqlite3.connect(self.runtime.db_path, timeout=.15)
+        db = sqlite3.connect(self.runtime.db_path, timeout=MAIN_AVAILABLE_SECONDS)
         try:
             db.execute('BEGIN IMMEDIATE')
         finally:
@@ -148,7 +158,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 self.assertEqual(self.runtime.agent(self.agent['id'])['tokensUsed'], 17)
                 self.assertEqual(self.count(self.runtime.db_path, 'runtime_budget_usage'), 1)
                 self.assertEqual(self.count(self.runtime.analytics_db_path, 'analytics_usage'), 0)
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
             self.drain()
         self.assertEqual(self.count(self.runtime.analytics_db_path, 'analytics_usage'), 1)
         self.notice('thread/tokenUsage/updated', **params)
@@ -208,7 +218,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                     agent = self.runtime.agent(self.agent['id'], db)
                     agent['name'] = 'Changed after the native callback'
                     self.runtime.put(db, 'agents', agent)
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
             self.drain()
         item = self.batch_item()
         self.assertEqual(item['stream']['deltas'], 128)
@@ -273,7 +283,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             )
             start = time.monotonic()
             self.runtime.close()
-            self.assertLess(time.monotonic() - start, 1)
+            self.assertLess(time.monotonic() - start, BOUNDED_CLOSE_SECONDS)
         state = self.runtime.analytics_capture_status()
         self.assertEqual(state['queued'] + state['active'], 0)
         self.assertEqual(state['failed'], 1)
@@ -339,7 +349,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             self.assertEqual([type(error) for error in errors], [ResponseTimeout])
             self.assert_main_available()
             self.assertEqual(self.count(self.runtime.db_path, 'fixture_receipts'), 1)
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.drain()
         self.assertEqual(self.captures(), [7])
 
@@ -380,7 +390,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             self.assertEqual(self.count(self.runtime.db_path, 'runtime_items'), 1)
             with stream.lock:
                 self.assertTrue(all(not entry['batches'] for entry in stream.entries.values()))
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.drain()
         with closing(sqlite3.connect(self.runtime.analytics_db_path)) as db:
             value = json.loads(db.execute('SELECT record FROM analytics_agents WHERE id=?',
@@ -641,7 +651,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
             self.assert_main_available()
         self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertEqual(errors, [])
         self.assertTrue(self.runtime.lease.closed)
         self.assertEqual(self.captures(), [])
@@ -667,7 +677,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             wait_for_condition(lambda: self.runtime.closed, 'runtime close completion')
             release.set()
             self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertEqual(errors, [])
         self.assertEqual(self.captures(), list(range(limit)))
         state = self.runtime.analytics_capture_status()

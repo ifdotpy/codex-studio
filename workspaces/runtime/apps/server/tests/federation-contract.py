@@ -262,12 +262,13 @@ class FederationContract(unittest.TestCase):
         worker.start()
         origin = f"http://127.0.0.1:{server.server_port}"
         try:
-            with urllib.request.urlopen(origin + "/api/session", timeout=5) as response:
+            # Local request timeouts only guard against a hang.
+            with urllib.request.urlopen(origin + "/api/session", timeout=HANG_GUARD_SECONDS) as response:
                 token = json.loads(response.read())["token"]
             body = _json({"room": room, "text": text, "id": message_id}).encode()
             request = urllib.request.Request(origin + "/api/messages", data=body, method="POST",
                 headers={"Content-Type": "application/json", "X-Canvas-Token": token})
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
                 return json.loads(response.read())
         finally:
             server.shutdown()

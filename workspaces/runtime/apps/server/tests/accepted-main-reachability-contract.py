@@ -237,7 +237,10 @@ class MainReachability(unittest.TestCase):
             thread.start()
             try:
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS), 'archive did not fetch origin/main')
-                self.assertTrue(self.runtime.lock.acquire(timeout=.2), 'fetch held Runtime.lock')
+                # A fetch that holds Runtime.lock keeps it until the barrier is released
+                # below, so half the hang guard only absorbs load and still fails on it.
+                self.assertTrue(self.runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2),
+                                'fetch held Runtime.lock')
                 self.runtime.lock.release()
                 with self.runtime.db() as db:
                     db.execute('BEGIN IMMEDIATE')
@@ -254,12 +257,13 @@ class MainReachability(unittest.TestCase):
 
         child_file = self.root / 'checkout-child.pid'
         ready_read, ready_write = os.pipe()
-        child = 'import time; time.sleep(60)'
+        child_sleep_seconds = 60
+        child = f'import time; time.sleep({child_sleep_seconds})'
         parent = (
             'import os,pathlib,subprocess,sys,time; '
             f'p=subprocess.Popen([sys.executable,"-c",{child!r}]); '
             f'pathlib.Path({str(child_file)!r}).write_text(str(p.pid)); '
-            f'os.write({ready_write},b"ready"); time.sleep(60)'
+            f'os.write({ready_write},b"ready"); time.sleep({child_sleep_seconds})'
         )
         original_popen = subprocess.Popen
         ready_at = 0.0
@@ -291,7 +295,9 @@ class MainReachability(unittest.TestCase):
         finally:
             if ready_write_open:
                 os.close(ready_write)
-        self.assertLess(time.monotonic() - ready_at, 3)
+        # An unbounded pipe drain waits for the sleeping grandchild; half of its
+        # sleep leaves room for load and still fails on that bug.
+        self.assertLess(time.monotonic() - ready_at, child_sleep_seconds / 2)
         pid = int(child_file.read_text(encoding='ascii'))
         if hasattr(os, 'pidfd_open'):
             try:

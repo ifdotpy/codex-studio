@@ -536,7 +536,8 @@ class InsightsRouterTests(unittest.TestCase):
             port = sockets[0].getsockname()[1]
 
             received: list[bytes] = []
-            with httpx.Client(timeout=5) as client:
+            # The client timeout only guards against a hang; the server ends the stream.
+            with httpx.Client(timeout=HANG_GUARD_SECONDS) as client:
                 with client.stream("GET", f"http://127.0.0.1:{port}/api/analytics?export=1") as response:
                     self.assertEqual(response.status_code, 200)
                     with self.assertRaises(httpx.RemoteProtocolError):

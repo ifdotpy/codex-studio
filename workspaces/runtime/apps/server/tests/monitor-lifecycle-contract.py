@@ -283,7 +283,8 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.server.finish(key, 0)
         self.runtime.close()
         for thread in self.monitor_threads:
-            thread.join(3)
+            # The join only guards against a hang; the checks below fail on content.
+            thread.join(HANG_GUARD_SECONDS)
         self.assertEqual(self.record(key)["status"], "lost")
         exits = self.exits(key)
         self.assertEqual(len(exits), 1)
@@ -383,7 +384,8 @@ class MonitorLifecycleContract(unittest.TestCase):
         original_tick = self.runtime.rules_tick
         def tick():
             entered.set()
-            release.wait(5)
+            # The test releases the tick; this wait only guards against a hang.
+            release.wait(HANG_GUARD_SECONDS)
             return original_tick()
         self.runtime.rules_tick = tick
         self.runtime.changed.set()

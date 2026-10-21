@@ -566,26 +566,15 @@ impl AdapterTask {
         if exited {
             return Ok(self.open.env.clone());
         }
-        let slots = self.environment_reads.clone();
-        let permit = interruptible(&mut self.stop, async move {
-            slots
-                .acquire_owned()
-                .await
-                .map_err(|_| AdapterError::TaskFailed)
-        })
-        .await?;
-        let job =
-            crate::blocking_pool::spawn_blocking("runtime-process/provider_task", move || {
-                let _permit = permit;
-                read_process_environment(pid)
-            });
-        // Reap the bounded filesystem job; never detach a started blocking job.
         #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-        let mut original = reap_environment_job(job, &mut self.stop)
-            .await?
-            .map_err(|_| AdapterError::UnverifiableChild)?;
-        verify_environment(&original, &self.open.env)
-            .map_err(|_| AdapterError::UnverifiableChild)?;
+        let mut original = settled_environment(
+            &mut self.stop,
+            &self.environment_reads,
+            &self.open.env,
+            RETAINED_ENVIRONMENT_SETTLE,
+            move || read_process_environment(pid),
+        )
+        .await?;
         // A macOS Python launcher adds its marker after the script's exec, so
         // the live environment has it although the accepted launch did not,
         // as the Python supervisor's native_launch_environment handles.
@@ -1087,6 +1076,61 @@ async fn event_pump(
         if terminal {
             let _ignored = send_pump_message(&sender, &mut stop, Ok(PumpMessage::Terminal)).await;
             return Ok(());
+        }
+    }
+}
+
+/// Upper bound for re-reading a retained child's launch record until it
+/// equals the accepted launch. A just-started child can show a record in
+/// transition (see `read_process_environment`), which the next read corrects.
+/// A child whose record still differs at the end is refused as unverifiable.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const RETAINED_ENVIRONMENT_SETTLE: Duration = Duration::from_secs(5);
+
+/// Pause between two reads of a retained child's launch record.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const RETAINED_ENVIRONMENT_RETRY: Duration = Duration::from_millis(10);
+
+/// Read a retained child's launch environment until it verifies against
+/// `clean` or `settle` ends. Each read is a bounded blocking job that holds
+/// one of the `slots`; stop cancels the wait between reads.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn settled_environment(
+    stop: &mut watch::Receiver<bool>,
+    slots: &Arc<Semaphore>,
+    clean: &BTreeMap<String, String>,
+    settle: Duration,
+    read: impl Fn() -> std::io::Result<BTreeMap<String, String>> + Clone + Send + 'static,
+) -> Result<BTreeMap<String, String>, AdapterError> {
+    let deadline = Instant::now() + settle;
+    loop {
+        let slots = slots.clone();
+        let permit = interruptible(stop, async move {
+            slots
+                .acquire_owned()
+                .await
+                .map_err(|_| AdapterError::TaskFailed)
+        })
+        .await?;
+        let read = read.clone();
+        let job =
+            crate::blocking_pool::spawn_blocking("runtime-process/provider_task", move || {
+                let _permit = permit;
+                read()
+            });
+        // Reap the bounded filesystem job; never detach a started blocking job.
+        if let Ok(original) = reap_environment_job(job, stop).await?
+            && verify_environment(&original, clean).is_ok()
+        {
+            return Ok(original);
+        }
+        if Instant::now() >= deadline {
+            return Err(AdapterError::UnverifiableChild);
+        }
+        tokio::select! {
+            biased;
+            _ = Shutdown::cancelled(stop) => return Err(AdapterError::Cancelled),
+            _ = tokio::time::sleep(RETAINED_ENVIRONMENT_RETRY) => {}
         }
     }
 }

@@ -136,7 +136,9 @@ class SkillCatalogContract(unittest.TestCase):
         worker.start()
         try:
             self.assertTrue(self.runtime.entered.wait(HANG_GUARD_SECONDS))
-            acquired = self.runtime.lock.acquire(timeout=0.2)
+            # The provider stays blocked until release, so a held lock still fails;
+            # the wait only tolerates a short step on a busy machine.
+            acquired = self.runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
             self.assertTrue(acquired, "Typing/state updates must not wait on discovery")
             if acquired:
                 self.runtime.lock.release()

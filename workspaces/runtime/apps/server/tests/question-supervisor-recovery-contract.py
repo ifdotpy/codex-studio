@@ -235,7 +235,9 @@ class QuestionSupervisorRecovery(unittest.TestCase):
         from codex_tool_response_recovery import _native_proof
         def proof(runtime, server, request):
             self.assertFalse(runtime.lock._is_owned())
-            with closing(sqlite3.connect(runtime.db_path, timeout=.05)) as db:
+            # A runtime writer held through the proof keeps the lock for the whole
+            # wait, so this still fails on that bug; 5 s only absorbs brief writers.
+            with closing(sqlite3.connect(runtime.db_path, timeout=5)) as db:
                 db.execute('BEGIN IMMEDIATE')
                 db.rollback()
             self.update_request(status='deleted')

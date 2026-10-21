@@ -66,7 +66,8 @@ are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
 The comprehensive gate builds its Rust HTTP fixture before running the server
-suites. For a standalone server run, prepare it with
+suites and builds the renderer bundle that the native client crate embeds before
+Rust nextest. For a standalone server run, prepare the HTTP fixture with
 `cargo build --locked --release -p studio-runtime-server`. Hosted CI builds it
 once per run, and the server jobs use that binary. The short local tier does not require that fixture binary;
 building a native desktop package does not produce it.

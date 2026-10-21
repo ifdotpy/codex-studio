@@ -1189,6 +1189,10 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test thread polls the process identity with a deadline"
+    )]
     fn wait_until_gone(pid: u32, identity: &str) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
