@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
 from runtime_test_environment import make_runtime
 
@@ -128,7 +129,7 @@ class ClaudeProvider(unittest.TestCase):
             if method == 'thread/read':
                 server.calls.append((method, params))
                 if read_gate is not None:
-                    read_gate.wait(5)
+                    read_gate.wait(HANG_GUARD_SECONDS)  # The test releases it; only a hang guard.
                 if read_error:
                     raise read_error
                 return {'thread': {'id': read_thread or agent['threadId']},
@@ -186,7 +187,8 @@ class ClaudeProvider(unittest.TestCase):
         with self.assertRaises(PreparationPending):
             self.runtime.prepare(agent)
         gate.set()
-        self.assertEqual(pending.exception.future.result(3)['threadId'], agent['threadId'])
+        # The wait only guards against a hang.
+        self.assertEqual(pending.exception.future.result(HANG_GUARD_SECONDS)['threadId'], agent['threadId'])
         self.assertEqual(sum(m == 'thread/read' for m, _ in server.calls), 1)
         self.assertEqual(sum(m == 'thread/resume' for m, _ in server.calls), 1)
 

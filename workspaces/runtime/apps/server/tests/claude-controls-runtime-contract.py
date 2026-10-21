@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# Waits on HANG_GUARD_SECONDS only guard against a hang.
 from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
 from runtime_test_environment import make_runtime
@@ -125,14 +126,16 @@ class Controls(unittest.TestCase):
         for kind, body in [('settings', {'settings': {}, 'request_id': 'path-settings'}),
                            ('rollback', {'turn_id': 't2', 'request_id': 'path-rollback'})]:
             with self.subTest(kind=kind), self.path_gate(kind, **body) as (future, release):
-                acquired = self.rt.lock.acquire(blocking=False)
+                # The path gate holds until release, so a lock or writer kept through it
+                # blocks the whole probe; the probe bound only absorbs load.
+                acquired = self.rt.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                 if acquired:
                     self.rt.lock.release()
                 self.assertTrue(acquired, 'Path.resolve must not hold Runtime.lock')
-                with closing(sqlite3.connect(self.rt.db_path, timeout=0)) as writer, writer:
+                with closing(sqlite3.connect(self.rt.db_path, timeout=HANG_GUARD_SECONDS / 2)) as writer, writer:
                     writer.execute('INSERT INTO fixture_control_probe VALUES (?)', (kind,))
                 release.set()
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
         self.assertEqual(self.server.forks, 1)
 
     def test_epoch_change_during_path_checks_rejects_the_action(self):
@@ -143,7 +146,7 @@ class Controls(unittest.TestCase):
                 self.rt.put(db, 'agents', agent)
             release.set()
             with self.assertRaisesRegex(ValueError, 'session changed'):
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
         self.assertEqual(self.server.forks, 0)
         self.assertTrue(all('afterRestore' not in row for row in self.records()))
 
@@ -155,7 +158,7 @@ class Controls(unittest.TestCase):
                 self.rt.put(db, 'agents', agent)
             release.set()
             with self.assertRaisesRegex(ValueError, 'session changed'):
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
         self.assertEqual(self.server.state['settings'], {})
         self.assertIsNone(self.rt.agent(self.key).get('workspaceOperation'))
 
@@ -168,7 +171,7 @@ class Controls(unittest.TestCase):
                 self.rt.enqueue(db, agent, 'user', 'queued', 'path-queued')
             release.set()
             with self.assertRaisesRegex(ValueError, 'queued messages'):
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
         self.assertEqual(self.server.forks, 0)
 
     def test_busy_workspace_during_path_checks_blocks_settings(self):
@@ -180,7 +183,7 @@ class Controls(unittest.TestCase):
                 self.rt.put(db, 'agents', peer)
             release.set()
             with self.assertRaisesRegex(ValueError, 'Workspace activity changed'):
-                future.result(timeout=3)
+                future.result(timeout=HANG_GUARD_SECONDS)
         self.assertEqual(self.server.state['settings'], {})
 
     def test_completed_receipt_retry_skips_path_checks(self):
@@ -207,7 +210,7 @@ class Controls(unittest.TestCase):
                 self.assertEqual(json.loads(payload)['value']['workspaceOperation'], 'branch')
             finally:
                 release.set()
-            future.result(timeout=3)
+            future.result(timeout=HANG_GUARD_SECONDS)
         self.assertIsNone(self.rt.agent(self.key).get('workspaceOperation'))
         with self.rt.db() as db:
             payload = db.execute(
