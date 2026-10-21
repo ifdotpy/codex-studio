@@ -15,6 +15,7 @@ spec = importlib.util.spec_from_file_location('roster_contract',
     Path(__file__).with_name('scheduler-roster-cache-cpu-contract.py'))
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 class IncrementalRoster(base.RosterCache):
@@ -267,12 +268,16 @@ class IncrementalRoster(base.RosterCache):
             self.runtime.install_scheduler_change_tracking(self.db)
         writer = self.connect()
         writer.execute('BEGIN IMMEDIATE')
-        self.db.execute('PRAGMA busy_timeout=2000')
+        # The connection's own busy timeout is far above the bound below, so an
+        # installer that kept it would fail, while a busy machine cannot stretch
+        # the installer's short timeout past that bound.
+        connection_busy_ms = int(HANG_GUARD_SECONDS * 1000 / 2)
+        self.db.execute(f'PRAGMA busy_timeout={connection_busy_ms}')
         started = time.monotonic()
         with self.assertRaises(sqlite3.OperationalError):
             self.runtime.install_scheduler_change_tracking(self.db)
-        self.assertLess(time.monotonic() - started, .8)
-        self.assertEqual(self.db.execute('PRAGMA busy_timeout').fetchone()[0], 2000)
+        self.assertLess(time.monotonic() - started, HANG_GUARD_SECONDS / 4)
+        self.assertEqual(self.db.execute('PRAGMA busy_timeout').fetchone()[0], connection_busy_ms)
         self.assertFalse(self.db.in_transaction)
         writer.rollback()
 

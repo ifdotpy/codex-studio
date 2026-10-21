@@ -23,6 +23,8 @@ sys.modules[spec.name] = fixture
 spec.loader.exec_module(fixture)
 
 
+from codex_shared_values import MONITOR_WAIT_MAX_MILLISECONDS
+from server_test_waits import HANG_GUARD_SECONDS
 from settlement_contract_support import settlement_outcome
 
 
@@ -36,7 +38,8 @@ class MonitorOutputEventsContract(unittest.TestCase):
     monitor = fixture.MonitorLifecycleContract.monitor
     record = fixture.MonitorLifecycleContract.record
 
-    def eventually(self, condition, timeout=5):
+    # The default timeout only guards against a hang.
+    def eventually(self, condition, timeout=HANG_GUARD_SECONDS):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if condition():
@@ -205,7 +208,7 @@ class MonitorOutputEventsContract(unittest.TestCase):
         self.output(key, b"\xc3")
         waiter_result = []
         waiter = threading.Thread(target=lambda: waiter_result.append(self.runtime.observe_monitor(
-            self.agent["id"], key, epoch=self.agent["epoch"], wait_timeout_ms=3000,
+            self.agent["id"], key, epoch=self.agent["epoch"], wait_timeout_ms=MONITOR_WAIT_MAX_MILLISECONDS,
             account_key="default", after_sequence=1)))
         waiter.start()
         operation = self.record(key)["operation"]
@@ -213,7 +216,9 @@ class MonitorOutputEventsContract(unittest.TestCase):
             "code": 0, "error": None, "operation": operation, "finished": time.time()})
         with self.runtime.monitor_condition, self.runtime.db() as db:
             recovered = recover_monitor_results(self.runtime, db, keys=[key])
-        waiter.join(1)
+        # Without the wake the observer sleeps for its whole maximum wait, so half
+        # of that wait separates a wake from an expiry even on a busy machine.
+        waiter.join(MONITOR_WAIT_MAX_MILLISECONDS / 2000)
         self.assertFalse(waiter.is_alive(), "Recovered terminal output did not wake the observer")
         self.assertIn(key, recovered["restored"])
         self.assertEqual(waiter_result[0]["status"], "completed")
@@ -255,7 +260,8 @@ class MonitorOutputEventsContract(unittest.TestCase):
         worker.start()
         time.sleep(0.1)
         self.runtime.lock.release()
-        worker.join(3)
+        # The deadline expired before the release; this join only guards against a hang.
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(len(errors), 1)
         self.assertIn("expired before launch", str(errors[0]))
@@ -278,12 +284,14 @@ class MonitorOutputEventsContract(unittest.TestCase):
         message = {"id": "saturated-wait-rpc", "method": "item/tool/call", "params": {
             "threadId": self.agent["threadId"], "callId": "saturated-wait-call",
             "tool": "orchestration_monitor",
-            "arguments": {"command": "must-not-run", "wait_timeout_ms": 1000}}}
+            "arguments": {"command": "must-not-run", "wait_timeout_ms": MONITOR_WAIT_MAX_MILLISECONDS}}}
         connection_id = self.runtime.connection_ids["default"]
         self.runtime.request(message, "default", connection_id)
         started = time.monotonic()
         self.runtime.agent(self.agent["id"])
-        self.assertLess(time.monotonic() - started, 0.25)
+        # A queued wait that held the runtime lock would block this read for the
+        # whole maximum wait; half of it leaves a busy machine room.
+        self.assertLess(time.monotonic() - started, MONITOR_WAIT_MAX_MILLISECONDS / 2000)
         self.assertEqual(sum(method == "command/exec" for method, _ in self.server.calls), 0)
         self.assertEqual(len(self.server.responses), 1)
         outcome = request_result_outcome(
@@ -294,7 +302,8 @@ class MonitorOutputEventsContract(unittest.TestCase):
         original_observe = self.runtime.observe_monitor
 
         def change_epoch_then_observe(*args, **kwargs):
-            self.assertTrue(self.server.command_wait_entered.wait(3))
+            # The command wait must start; this only guards against a hang.
+            self.assertTrue(self.server.command_wait_entered.wait(HANG_GUARD_SECONDS))
             with self.runtime.lock, self.runtime.db() as db:
                 agent = self.runtime.agent(self.agent["id"], db)
                 agent["epoch"] += 1
@@ -319,21 +328,25 @@ class MonitorOutputEventsContract(unittest.TestCase):
         key = self.monitor(output_patterns=["READY"])
         waiting = threading.Event()
         result = []
+        wait_timeout_ms = 3000
 
         def observe():
             waiting.set()
             result.append(self.runtime.observe_monitor(
                 self.agent["id"], key, epoch=self.agent["epoch"],
-                wait_timeout_ms=500, account_key="default"))
+                wait_timeout_ms=wait_timeout_ms, account_key="default"))
 
         worker = threading.Thread(target=observe)
         worker.start()
-        self.assertTrue(waiting.wait(1))
+        self.assertTrue(waiting.wait(HANG_GUARD_SECONDS))
         time.sleep(0.03)
         started = time.monotonic()
         self.runtime.agent(self.agent["id"])
-        self.assertLess(time.monotonic() - started, 0.2)
-        worker.join(2)
+        # A wait that held the runtime lock would block this read until the wait
+        # expires; half of the wait budget leaves a busy machine room.
+        self.assertLess(time.monotonic() - started, wait_timeout_ms / 2000)
+        # The wait expires by itself; this join only guards against a hang.
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertTrue(result[0]["waitExpired"])
         with self.assertRaisesRegex(ValueError, "agent or epoch"):
@@ -352,7 +365,8 @@ class MonitorOutputEventsContract(unittest.TestCase):
         first = self.runtime.monitor(
             self.agent["id"], args, key=request_id, approved=True,
             epoch=self.agent["epoch"], account_key="default")
-        self.assertTrue(self.server.command_wait_entered.wait(3))
+        # The command wait must start; this only guards against a hang.
+        self.assertTrue(self.server.command_wait_entered.wait(HANG_GUARD_SECONDS))
         second = self.runtime.monitor(
             self.agent["id"], {**args, "wait_timeout_ms": 20}, key=request_id,
             approved=True, epoch=self.agent["epoch"], account_key="default")

@@ -91,10 +91,14 @@ class CriticalRuntimeContract(unittest.TestCase):
                 errors.append(error)
             finally:
                 finished.set()
+        # Wait half the product's write deadline: a wide multiple of the patched
+        # budget, so load cannot break it, while a write that ignores the patched
+        # deadline (or has none) still fails.
+        product_deadline = AppServer.WRITE_TIMEOUT
         with patch.object(AppServer, 'WRITE_TIMEOUT', .1, create=True):
             worker = threading.Thread(target=write, daemon=True)
             worker.start()
-            bounded = finished.wait(.7)
+            bounded = finished.wait(product_deadline / 2)
             os.close(read_fd)
             worker.join(2)
         stdin.close()
@@ -113,7 +117,8 @@ class CriticalRuntimeContract(unittest.TestCase):
         def hold():
             with server.write_lock:
                 entered.set()
-                release.wait(2)
+                # Hold the writer until the test releases it, even on a busy machine.
+                release.wait(HANG_GUARD_SECONDS)
         worker = threading.Thread(target=hold)
         worker.start()
         self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
@@ -146,7 +151,8 @@ class CriticalRuntimeContract(unittest.TestCase):
         payload = {'text': 'Привет 🌍' * 10000}
         try:
             server.write(payload)
-            worker.join(2)
+            # The join only guards against a hang; the assertion checks the frame.
+            worker.join(HANG_GUARD_SECONDS)
             self.assertEqual(result, [payload])
         finally:
             stdin.close()

@@ -114,7 +114,8 @@ class FakeServer:
             assert params['sandboxPolicy']['type'] in {'readOnly', 'workspaceWrite', 'dangerFullAccess'}
             self.notify({'method': 'command/exec/outputDelta', 'params': {'processId': params['processId'],
                 'deltaBase64': base64.b64encode(b'early output\n').decode(), 'stream': 'stdout'}})
-            self.gate.wait(5)
+            # Run until terminate, even on a busy machine; teardown also opens the gate.
+            self.gate.wait(HANG_GUARD_SECONDS)
             return {'exitCode': 7, 'stdout': '', 'stderr': ''}
         if method == 'command/exec/terminate':
             self.gate.set()
@@ -309,7 +310,7 @@ class RuntimeContract(unittest.TestCase):
 
         def hold_scheduler(_runtime):
             started.set()
-            release.wait(5)
+            release.wait(HANG_GUARD_SECONDS)  # The test releases it; only a hang guard.
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(Runtime, 'schedule', hold_scheduler):
@@ -809,19 +810,32 @@ class RuntimeContract(unittest.TestCase):
         def hold_runtime():
             with self.runtime.lock:
                 entered.set()
-                release.wait(3)
+                release.wait(HANG_GUARD_SECONDS)
         holder = threading.Thread(target=hold_runtime)
         holder.start()
         self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         try:
-            started = time.monotonic()
-            self.runtime.notification({'method': 'account/rateLimits/updated', 'params': {
-                'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 42}}}})
-            self.assertLess(time.monotonic() - started, 1)
+            done, errors = threading.Event(), []
+
+            def notify():
+                try:
+                    self.runtime.notification({'method': 'account/rateLimits/updated', 'params': {
+                        'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 42}}}})
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    done.set()
+
+            threading.Thread(target=notify, daemon=True).start()
+            # The holder keeps Runtime.lock until release, so a notification that
+            # waits for it cannot finish here. The wait only tolerates a busy machine.
+            self.assertTrue(done.wait(HANG_GUARD_SECONDS / 2),
+                            'The rate limit notification waited for Runtime.lock')
+            self.assertEqual(errors, [])
             self.assertEqual(self.runtime.rate_limits['data']['rateLimits']['primary']['usedPercent'], 42)
         finally:
             release.set()
-            holder.join(3)
+            holder.join(HANG_GUARD_SECONDS)
 
     def test_dispatcher_database_reuses_connection_and_commits_each_callback(self):
         import sqlite3
@@ -909,7 +923,8 @@ class RuntimeContract(unittest.TestCase):
         calls = []
         def title(_runtime, _agent, first, recent):
             calls.append((first, recent))
-            gate.wait(5)
+            # Hold the title until the test opens the gate, even on a busy machine.
+            gate.wait(HANG_GUARD_SECONDS)
             return 'Specific release review'
         with patch.object(codex_rename, '_generate', side_effect=title):
             pending = self.runtime.rename(a['id'], None, 'rename-auto')
@@ -924,7 +939,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(a['id'])['name'], 'Specific release review')
         self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in self.runtime.server.calls[before:]))
         interrupted = threading.Event()
-        with patch.object(codex_rename, '_generate', side_effect=lambda *_: (interrupted.wait(5), 'Other title')[1]):
+        with patch.object(codex_rename, '_generate', side_effect=lambda *_: (interrupted.wait(HANG_GUARD_SECONDS), 'Other title')[1]):
             self.assertEqual(self.runtime.rename(a['id'], None, 'rename-lost')['status'], 'pending')
             with self.runtime.lock:
                 self.runtime._rename_jobs.clear()
@@ -1203,9 +1218,14 @@ class RuntimeContract(unittest.TestCase):
             'arguments': {'title': 'Release review'}}})
         eventually(lambda: self.runtime.agent(a['id'])['name'] == 'Release review')
         self.assertFalse(self.runtime.agent(a['id'])['needsTitle'])
+        # Bracket the reply with the clock around the request, so a busy machine
+        # cannot widen the gap; one second covers rounding of the reported time.
+        before_request = time.time()
         self.runtime.server.request({'id': 211, 'method': 'currentTime/read', 'params': {'threadId': a['threadId']}})
+        after_request = time.time()
         reply = next(r for r in self.runtime.server.responses if r['id'] == 211)
-        self.assertLess(abs(reply['result']['currentTimeAt'] - time.time()), 2)
+        self.assertGreaterEqual(reply['result']['currentTimeAt'], before_request - 1)
+        self.assertLessEqual(reply['result']['currentTimeAt'], after_request + 1)
         self.assertEqual(self.snapshot()['requests'], [])
         params = next(p for method, p in self.runtime.server.calls if method == 'thread/start')
         self.assertFalse(params['config']['agents.enabled'])
@@ -1340,9 +1360,10 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(initial['agent']['id'], a['id'])
         self.assertEqual(self.runtime.wait_transcript(a['id'], revision, .01), (revision, None))
         with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(self.runtime.wait_transcript, a['id'], revision, 2)
+            # The send wakes the wait at once; both timeouts only guard against a hang.
+            future = pool.submit(self.runtime.wait_transcript, a['id'], revision, HANG_GUARD_SECONDS)
             self.runtime.send(a['id'], 'Visible queued text')
-            next_revision, update = future.result(2)
+            next_revision, update = future.result(HANG_GUARD_SECONDS + 5)
         self.assertGreater(next_revision, revision)
         self.assertTrue(any(i['text'] == 'Visible queued text' for i in update['items']))
         self.runtime.close()
@@ -1523,7 +1544,9 @@ class RuntimeContract(unittest.TestCase):
         eventually(lambda: len(self.snapshot()['agents']) == 41)
         self.complete(lead)
         peak = 0
-        for _ in range(1000):
+        # The deadline only guards against a hang; a busy machine needs more rounds.
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
+        while time.monotonic() < deadline:
             agents = self.snapshot()['agents']
             active = [a for a in agents if a['status'] in ('running', 'starting', 'approval')]
             running_workers = [a for a in active if a['id'] != lead['id']]
@@ -1861,7 +1884,8 @@ class RuntimeContract(unittest.TestCase):
             c.create_chat('Team', [lead['id']], room)
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(c.post, room, f'Instruction {i}', str(uuid.uuid4())) for i in range(8)]
-            results = [f.result(5) for f in futures]
+            # Each wait only guards against a hang.
+            results = [f.result(HANG_GUARD_SECONDS) for f in futures]
         self.assertTrue(all(x['deliveries'][lead['id']] == 'queued' for x in results))
         reader = Canvas(self.root, read_only=True)
         self.assertTrue(any(a['id'] == lead['id'] for a in reader.threads()))
