@@ -1361,13 +1361,22 @@ pub fn compile(
     };
     let fulltext = truncated.then(|| transcript_source.clone());
     let mut provider_inputs = if attributed {
-        projected
-            .into_iter()
-            .map(|part| ProviderInput::Text {
+        // Budget parts can split wrappers from exempt task bodies. Provider
+        // items change only at an authority boundary, never at that split.
+        let mut inputs = Vec::new();
+        for part in projected.into_iter().filter(|part| !part.text.is_empty()) {
+            if let Some(ProviderInput::Text { text, origin }) = inputs.last_mut()
+                && *origin == Some(part.origin)
+            {
+                text.push_str(&part.text);
+                continue;
+            }
+            inputs.push(ProviderInput::Text {
                 text: part.text,
                 origin: Some(part.origin),
-            })
-            .collect()
+            });
+        }
+        inputs
     } else {
         vec![ProviderInput::Text { text, origin: None }]
     };

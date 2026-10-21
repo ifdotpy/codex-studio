@@ -241,7 +241,14 @@ fn bounded_assignments_keep_input_origin_and_reports_remain_data() {
     let p = compile(&s, &rows).unwrap();
     assert!(text(&p).len() - task_text.len() <= STUDIO_INPUT_BYTES);
     assert!(p.provider_inputs.iter().any(|input| matches!(input,
-        ProviderInput::Text { text, origin: Some(ProviderInputOrigin::Human) } if text == &task_text)));
+        ProviderInput::Text { text, origin: Some(ProviderInputOrigin::Human) } if text.contains(&task_text))));
+    assert!(p.provider_inputs.windows(2).all(|pair| match pair {
+        [
+            ProviderInput::Text { origin: left, .. },
+            ProviderInput::Text { origin: right, .. },
+        ] => left != right,
+        _ => true,
+    }));
     let full = p.studio_input.as_ref().unwrap();
     assert!(full.contains("event:decision"));
     assert!(full.contains("event:ready"));
