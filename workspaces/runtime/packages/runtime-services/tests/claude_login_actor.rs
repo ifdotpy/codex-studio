@@ -233,7 +233,13 @@ async fn restarted_unknown_keeps_config_until_recorded_child_is_proven_gone() {
     std::fs::write(config.join("keep"), "fixture data").expect("marker");
     let lock = f.receipts.file.directory().join(format!(
         "{}.lock",
-        studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
+        // The service names a lease by its canonical config folder.
+        studio_runtime_store::sha256_hex(
+            studio_runtime_store::path_identity::resolve(&config)
+                .expect("resolved config folder")
+                .to_string_lossy()
+                .as_bytes()
+        )
     ));
     let lease = std::fs::File::create(lock).expect("lease");
     lease.try_lock().expect("lock");
@@ -528,7 +534,13 @@ async fn legacy_reauth_resolves_free_lease_or_explicit_exact_cancel() {
         let registry = std::fs::read(f.directory.join("registry.json")).expect("registry");
         let lease = std::fs::File::create(f.receipts.file.directory().join(format!(
             "{}.lock",
-            studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
+            // The service names a lease by its canonical config folder.
+            studio_runtime_store::sha256_hex(
+                studio_runtime_store::path_identity::resolve(&config)
+                    .expect("resolved config folder")
+                    .to_string_lossy()
+                    .as_bytes()
+            )
         )))
         .expect("lease");
         lease.try_lock().expect("locked");

@@ -1716,7 +1716,10 @@ mod tests {
         use std::process::Command;
 
         let (directory, store) = fixture().await;
-        let repository = directory.path().join("project");
+        // Git reports the repository in its resolved form.
+        let repository = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder")
+            .join("project");
         let root = repository.join(".worktrees/codex-agents/cleanup-agent");
         std::fs::create_dir_all(root.parent().expect("worktree parent creates"))
             .expect("fixture parent creates");

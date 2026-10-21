@@ -32,7 +32,7 @@ class QuietRuntime(Runtime):
 Canvas(ROOT)
 TerminalManager(ROOT)
 runtime = QuietRuntime(ROOT, lambda *_args, **_kwargs: None)
-assert runtime.accounts.base_home.is_relative_to(ROOT), "fixture owns its provider home"
+assert runtime.accounts.base_home.is_relative_to(ROOT.resolve()), "fixture owns its provider home"
 agent = runtime.create(
     {"name": "portable history fixture", "cwd": str(ROOT), "prompt": "synthetic"},
     defer=True,

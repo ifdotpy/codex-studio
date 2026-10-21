@@ -48,6 +48,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(row.clone())
     }
 
+    /// The Claude account whose configuration folder is `config`, compared by
+    /// path identity: a stored folder may be spelled through a link.
     pub fn find_claude_config(&self, config: &str) -> Result<Option<Value>, ClaudeAccountError> {
         let state = self
             .state
@@ -63,7 +65,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                     && row
                         .pointer("/claudeOptions/configDir")
                         .and_then(Value::as_str)
-                        == Some(config)
+                        .is_some_and(|stored| {
+                            studio_runtime_store::path_identity::same_text(stored, config)
+                        })
             })
             .cloned())
     }

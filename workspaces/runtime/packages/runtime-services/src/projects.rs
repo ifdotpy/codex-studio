@@ -411,8 +411,11 @@ mod peer_location_tests {
 
     #[tokio::test]
     async fn peer_location_reads_return_only_bounded_metadata_and_matches() {
-        let root = tempfile::tempdir().expect("temporary project root");
-        let repo = root.path().join("repo");
+        let temp = tempfile::tempdir().expect("temporary project root");
+        // A browsed folder is reported in its canonical form.
+        let root = studio_runtime_store::path_identity::resolve(temp.path())
+            .expect("resolved project root");
+        let repo = root.join("repo");
         std::fs::create_dir_all(&repo).expect("temporary repository directory");
         let initialized = std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -441,7 +444,7 @@ mod peer_location_tests {
         let matches = peer_location_matches(
             &store,
             "example.invalid/team/repo".to_owned(),
-            Some(root.path().to_str().expect("UTF-8 temp path").to_owned()),
+            Some(root.to_str().expect("UTF-8 temp path").to_owned()),
         )
         .await
         .expect("read peer matches");
@@ -1154,9 +1157,12 @@ mod compatibility_tests {
     fn profile_normalization_matches_python_for_missing_parent_components() {
         let home = tempfile::tempdir().expect("temporary home");
         let requested = home.path().join("fixtures/../profile");
+        // Python `resolve()` also resolves the links of the existing prefix.
+        let resolved_home = studio_runtime_store::path_identity::resolve(home.path())
+            .expect("resolved temporary home");
         assert_eq!(
             super::resolve_nonstrict(&requested).expect("normalized profile"),
-            home.path().join("profile")
+            resolved_home.join("profile")
         );
     }
 }

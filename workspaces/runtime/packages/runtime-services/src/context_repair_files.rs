@@ -1553,7 +1553,10 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, Vec<Value>) {
         let root = tempfile::tempdir().expect("tmpfs fixture root");
-        let home = root.path().join("provider");
+        // History paths are canonical by contract; the fixture names them so.
+        let home = studio_runtime_store::path_identity::resolve(root.path())
+            .expect("resolved fixture root")
+            .join("provider");
         let sessions = home.join("sessions");
         fs::create_dir_all(&sessions).expect("provider fixture sessions");
         let source = sessions.join(format!("rollout-2026-10-14-{THREAD}.jsonl"));
@@ -1616,7 +1619,10 @@ mod tests {
     #[test]
     fn inherited_history_is_flattened_into_the_private_copy() {
         let root = tempfile::tempdir().expect("tmpfs fixture root");
-        let home = root.path().join("provider");
+        // History paths are canonical by contract; the fixture names them so.
+        let home = studio_runtime_store::path_identity::resolve(root.path())
+            .expect("resolved fixture root")
+            .join("provider");
         let sessions = home.join("sessions");
         fs::create_dir_all(&sessions).expect("provider fixture sessions");
         let parent_id = "22222222-2222-4222-8222-222222222222";
@@ -1670,7 +1676,10 @@ mod tests {
     #[test]
     fn inherited_empty_leaf_uses_verified_ancestor_terminal() {
         let root = tempfile::tempdir().expect("tmpfs fixture root");
-        let home = root.path().join("provider");
+        // History paths are canonical by contract; the fixture names them so.
+        let home = studio_runtime_store::path_identity::resolve(root.path())
+            .expect("resolved fixture root")
+            .join("provider");
         let sessions = home.join("sessions");
         fs::create_dir_all(&sessions).expect("provider fixture sessions");
         let parent_id = "22222222-2222-4222-8222-222222222222";
@@ -1789,7 +1798,10 @@ mod tests {
     #[test]
     fn archived_history_publishes_copy_under_new_sessions_chain() {
         let root = tempfile::tempdir().expect("tmpfs fixture root");
-        let home = root.path().join("provider");
+        // History paths are canonical by contract; the fixture names them so.
+        let home = studio_runtime_store::path_identity::resolve(root.path())
+            .expect("resolved fixture root")
+            .join("provider");
         let archived = home.join("archived_sessions");
         fs::create_dir_all(&archived).expect("archived fixture directory");
         let source = archived.join(format!("rollout-archived-{THREAD}.jsonl"));

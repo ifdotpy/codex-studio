@@ -17,7 +17,9 @@ fn fixture_parent() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     std::fs::create_dir_all(&path).expect("isolated fixture parent");
-    path
+    // Git and the workspace gate report resolved paths; the macOS temporary
+    // folder is under the `/var` link.
+    path_identity::resolve(&path).expect("resolved fixture parent")
 }
 
 struct Fixture {
@@ -1945,6 +1947,12 @@ async fn git_failure_and_git_deadline_have_distinct_messages() {
 #[tokio::test]
 async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
     const WORKERS: usize = 40;
+    // The preparations queue on one repository lock, and each lock wait counts
+    // against its Git deadline. This test checks that concurrency refuses and
+    // defers nothing, not host speed: on a macOS host under shared disk load one
+    // preparation takes about one second, so the production 30-second deadline
+    // would defer the last ones. Unit: wall time per preparation.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(150);
     let fixture = Fixture::new().await;
     let seed = fixture.actor();
     let mut ids = vec![fixture.id.clone()];
@@ -1987,7 +1995,9 @@ async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
         .into_iter()
         .map(|id| {
             let store = std::sync::Arc::clone(&fixture.store);
-            tokio::spawn(async move { (id.clone(), prepare(store, id).await) })
+            tokio::spawn(
+                async move { (id.clone(), prepare_with_timeout(store, id, DEADLINE).await) },
+            )
         })
         .collect::<Vec<_>>();
     for task in tasks {

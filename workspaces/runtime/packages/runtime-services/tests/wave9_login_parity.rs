@@ -94,6 +94,16 @@ fn python_corpus() -> Value {
     serde_json::from_slice(&output.stdout).expect("Python parity corpus JSON")
 }
 
+/// The resolved spelling of a fixture root. Rust and Python store some paths
+/// resolved and others as written; on macOS the temporary folder is under the
+/// `/var` link, so both spellings are replaced, the longer resolved one first.
+fn resolved_text(root: &Path) -> String {
+    studio_runtime_store::path_identity::resolve(root)
+        .expect("resolved fixture root")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn normalize_paths(value: &mut Value, roots: &[(&str, &str)], normalize_account: bool) {
     match value {
         Value::Object(object) => {
@@ -210,8 +220,13 @@ async fn compare_codex(expected: &Value) {
         .expect("Rust registry object")
         .remove("pendingAccountsChange");
     let rust_root = root.path().to_string_lossy().into_owned();
+    let resolved_root = resolved_text(root.path());
     let python_root = expected["root"].as_str().expect("Python fixture root");
-    let roots = [(python_root, "$ROOT"), (rust_root.as_str(), "$ROOT")];
+    let roots = [
+        (python_root, "$ROOT"),
+        (resolved_root.as_str(), "$ROOT"),
+        (rust_root.as_str(), "$ROOT"),
+    ];
     normalize_paths(&mut actual_registry, &roots, false);
     normalize_paths(&mut expected_registry, &roots, false);
     assert_eq!(
@@ -367,7 +382,12 @@ async fn compare_claude(expected: &Value, adding: bool) {
     }
     let python_root = expected["root"].as_str().expect("Python fixture root");
     let rust_root = f.directory.to_string_lossy().into_owned();
-    let roots = [(python_root, "$ROOT"), (rust_root.as_str(), "$ROOT")];
+    let resolved_root = resolved_text(&f.directory);
+    let roots = [
+        (python_root, "$ROOT"),
+        (resolved_root.as_str(), "$ROOT"),
+        (rust_root.as_str(), "$ROOT"),
+    ];
     normalize_paths(&mut actual, &roots, true);
     normalize_paths(&mut expected_responses, &roots, true);
     normalize_paths(&mut rust_record, &roots, true);
