@@ -2869,6 +2869,38 @@ async function handle(method, p) {
     await active.q.stopTask(p.taskId);
     return {};
   }
+  if (method === "mcpServerStatus/list" || method === "mcpServer/reconnect") {
+    await session(p.threadId);
+    const active = queries.get(p.threadId);
+    if (!active) throw new Error("The Claude session query is not loaded");
+    await active.ready;
+    if (queries.get(p.threadId) !== active || !active.q)
+      throw new Error("The Claude session query is not loaded");
+    if (method === "mcpServer/reconnect") {
+      if (typeof p.name !== "string" || !p.name.trim())
+        throw new Error("An MCP server name is required");
+      if (typeof active.q.reconnectMcpServer !== "function")
+        throw new Error("This Claude SDK does not support MCP reconnect");
+      await active.q.reconnectMcpServer(p.name);
+      return {};
+    }
+    const offset = p.cursor == null ? 0 : Number(p.cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid Claude MCP status cursor");
+    const limit = p.limit == null ? null : Number(p.limit);
+    if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1))
+      throw new Error("Claude MCP status limit must be a positive integer");
+    const statuses = await active.q.mcpServerStatus();
+    const end = limit === null ? statuses.length : offset + limit;
+    // SDK configuration can contain credentials. Discovery exposes status only.
+    const data = statuses
+      .slice(offset, end)
+      .map(({ config: _config, ...status }) => status);
+    return {
+      data,
+      nextCursor: end < statuses.length ? String(end) : null,
+    };
+  }
   if (method === "skills/list") return listSkills(p?.cwds);
   throw new Error("Claude does not support " + method);
 }
