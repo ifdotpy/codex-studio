@@ -37,6 +37,7 @@ use studio_runtime_services::account_driver::{
     AccountDriver, create_default_registry, resolve_codex_home,
 };
 use studio_runtime_services::account_policy::AccountPolicyState;
+use studio_runtime_services::diagnostics::log_stderr;
 use studio_runtime_store::{ObservedTable, RuntimeStore, account_state};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, watch};
@@ -81,7 +82,9 @@ fn observe_table_wakes(store: &RuntimeStore, tables: &[ObservedTable], wake: Arc
 
 fn startup_trace(checkpoint: &'static str) {
     if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
-        eprintln!("runtime server startup checkpoint: {checkpoint}");
+        log_stderr(format_args!(
+            "runtime server startup checkpoint: {checkpoint}"
+        ));
     }
 }
 
@@ -107,7 +110,7 @@ fn main() {
         std::process::exit(code);
     }
     std::panic::set_hook(Box::new(|panic| {
-        eprintln!("{}", panic_observed_log(panic.location()));
+        log_stderr(format_args!("{}", panic_observed_log(panic.location())));
     }));
     let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
     if let Some(worker_threads) = async_executor_worker_threads(

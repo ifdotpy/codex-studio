@@ -29,7 +29,9 @@
 //! opt-in Linux current RSS; peak RSS and allocation traces are unavailable.
 
 use futures_util::future::BoxFuture;
+use std::fmt::Arguments;
 use std::future::Future;
+use std::io::Write;
 use std::time::Instant;
 
 mod allocator;
@@ -39,6 +41,15 @@ mod locks;
 mod sqlite;
 mod startup;
 mod store;
+
+/// Write one diagnostic line without turning a failed stderr sink into a runtime failure.
+pub fn log_stderr(message: Arguments<'_>) {
+    write_diagnostic_line(&mut std::io::stderr().lock(), message);
+}
+
+fn write_diagnostic_line(writer: &mut impl Write, message: Arguments<'_>) {
+    let _ignored = writeln!(writer, "{message}");
+}
 
 /// Opt-in switch for runtime stage timings: `CODEX_RUNTIME_STAGE_TIMINGS=1`.
 /// The environment is read once.
@@ -53,10 +64,10 @@ fn runtime_stage_timings_enabled() -> bool {
 
 /// The only writer of the `runtime_stage` line. Unit for `elapsed_ms`: milliseconds.
 fn log_runtime_stage(name: &'static str, started: Instant) {
-    eprintln!(
+    log_stderr(format_args!(
         "runtime_stage name={name} elapsed_ms={}",
         started.elapsed().as_millis()
-    );
+    ));
 }
 
 /// Record one fixed-name runtime stage duration only when explicitly enabled.
@@ -296,7 +307,39 @@ fn try_with_state<T>(state: &std::sync::Mutex<T>, f: impl FnOnce(&mut T)) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::{Ring, measure_runtime_stage, measure_runtime_stage_async};
+    use super::{Ring, measure_runtime_stage, measure_runtime_stage_async, write_diagnostic_line};
+
+    #[test]
+    fn diagnostic_line_preserves_content_and_ignores_failed_sinks() {
+        let mut output = Vec::new();
+        write_diagnostic_line(
+            &mut output,
+            format_args!("runtime_stage name={} elapsed_ms={}", "test", 7),
+        );
+        assert_eq!(output, b"runtime_stage name=test elapsed_ms=7\n");
+
+        struct FailedSink(std::io::ErrorKind, usize);
+        impl std::io::Write for FailedSink {
+            fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+                self.1 += 1;
+                Err(std::io::Error::from(self.0))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                unreachable!("diagnostic lines must not flush or retry failed sinks")
+            }
+        }
+        for error in [
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::BrokenPipe,
+        ] {
+            let mut sink = FailedSink(error, 0);
+            write_diagnostic_line(
+                &mut sink,
+                format_args!("runtime server observed panic (payload redacted)"),
+            );
+            assert_eq!(sink.1, 1, "a failed diagnostic sink must not be retried");
+        }
+    }
 
     #[test]
     fn ring_keeps_only_the_newest_fixed_capacity_samples() {

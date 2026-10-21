@@ -43,7 +43,7 @@ pub fn log_on_demand_memory_snapshot() {
         "startupMemoryMarks": startup_marks,
         "allocator": allocator,
     });
-    eprintln!("{ALLOCATOR_MEMORY_LOG_PREFIX} {event}");
+    super::log_stderr(format_args!("{ALLOCATOR_MEMORY_LOG_PREFIX} {event}"));
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]

@@ -223,20 +223,24 @@ export async function startRustBackend(
       ...(modelsFile ? { FAKE_CODEX_MODELS: modelsFile } : {}),
     },
   });
-  const exited = new Promise((_, reject) =>
+  const exited = new Promise((_, reject) => {
+    child.once("error", reject);
     child.once("exit", (code, signal) =>
       reject(new Error(`studio-runtime-server exited ${code ?? signal}`)),
-    ),
-  );
+    );
+  });
   exited.catch(() => {});
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   for (;;) {
-    if (child.exitCode !== null) await exited;
+    if (child.exitCode !== null || child.signalCode !== null) await exited;
     try {
       if ((await fetch(`${origin}/api/session`)).ok) break;
     } catch {}
     if (Date.now() > deadline) throw new Error("server start timed out");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await Promise.race([
+      exited,
+      new Promise((resolveWait) => setTimeout(resolveWait, 50)),
+    ]);
   }
   const { token } = await (await fetch(`${origin}/api/session`)).json();
   const post = async (path, body) => {
@@ -468,7 +472,12 @@ async function main() {
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
-  backend.child.once("exit", () => process.exit(0));
+  backend.child.once("exit", (code, signal) => {
+    process.stderr.write(
+      `studio-runtime-server exited code=${code} signal=${signal}\n`,
+      () => process.exit(code ?? 1),
+    );
+  });
   // The default start throttle spaces turn starts 30 seconds apart after a
   // burst of 16 and cap running turns; seeded agents and wake-ups would wait.
   await backend.post("/api/accounts/throttle", {
