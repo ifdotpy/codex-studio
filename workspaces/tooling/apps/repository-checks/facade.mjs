@@ -881,6 +881,18 @@ function comprehensiveTierCommands(root) {
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
+    {
+      item: { name: "Rust HTTP fixture", ecosystem: "cargo" },
+      label: "Rust HTTP fixture build",
+      commands: [
+        [
+          "cargo",
+          ["build", "--locked", "--release", "-p", "studio-runtime-server"],
+        ],
+      ],
+      // A build step has no test runner summary; its exit code is the result.
+      options: { allowZeroTests: true, buildOnly: true },
+    },
     { item: server, label: "server" },
     { item: bridge, label: "server bridge" },
     {
@@ -1474,7 +1486,12 @@ export async function execute(
   if (selectionError) errors.push(selectionError);
   if (nextestError(output) && !errors.includes(NEXTTEST_MISSING))
     errors.push(NEXTTEST_MISSING);
-  if (exitCode === 0 && item.ecosystem !== "pnpm" && !counts.summaryFound)
+  if (
+    exitCode === 0 &&
+    item.ecosystem !== "pnpm" &&
+    !options.buildOnly &&
+    !counts.summaryFound
+  )
     errors.push(
       "native runner summary was missing; refusing to report success",
     );
