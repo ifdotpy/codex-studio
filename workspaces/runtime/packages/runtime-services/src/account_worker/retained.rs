@@ -732,13 +732,70 @@ pub(super) struct Call {
     method: String,
     params: Value,
 }
+/// Read a monitor's checkpoint-verified retained terminal receipt. This never
+/// creates a provider request; recovered pending requests publish into this ledger.
+pub async fn monitor_result(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<crate::account_session_runtime::ProviderResponse>, WorkerError> {
+    let id = id.to_owned();
+    let operation = operation.clone();
+    store
+        .read_async("runtime-services/retained_monitor_result", move |tx| {
+            #[derive(serde::Deserialize)]
+            struct Submitted {
+                call: Call,
+            }
+            let identity = format!("monitor:{id}");
+            let key = Call::operation_key(&operation.account_key, &identity);
+            let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
+                return Ok(None);
+            };
+            let submitted: Submitted =
+                serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
+            let call = submitted.call;
+            if call.operation != identity
+                || call.method != Method::CommandExec.as_str()
+                || call.actor.as_ref().is_none_or(|actor| {
+                    actor.agent != operation.agent || actor.epoch != operation.epoch
+                })
+            {
+                return Err(WorkerError::PreparationRefused(
+                    "monitor retained receipt identity changed".into(),
+                ));
+            }
+            let receipt = match storage::replay_in_transaction(tx, &call)? {
+                Ok(storage::Replay::Return(receipt)) => receipt,
+                Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
+                Err(_) => {
+                    return Err(WorkerError::PreparationRefused(
+                        "monitor retained receipt authorization changed".into(),
+                    ));
+                }
+            };
+            Ok(match receipt.result {
+                RequestResult::Reply(value) => Some(
+                    crate::account_session_runtime::ProviderResponse::Reply(value),
+                ),
+                RequestResult::Rejected(value) => Some(
+                    crate::account_session_runtime::ProviderResponse::Rejected(value),
+                ),
+                RequestResult::Unknown | RequestResult::NotSent => None,
+            })
+        })
+        .await
+}
+
 impl Call {
-    fn key(&self) -> String {
+    fn operation_key(account: &str, operation: &str) -> String {
         format!(
-            "retained:{}:{}",
-            self.scope.account,
-            studio_runtime_store::sha256_hex(self.operation.as_bytes())
+            "retained:{account}:{}",
+            studio_runtime_store::sha256_hex(operation.as_bytes())
         )
+    }
+    fn key(&self) -> String {
+        Self::operation_key(&self.scope.account, &self.operation)
     }
     fn receipt(&self, ticket: RequestTicket, result: RequestResult) -> SessionReceipt {
         SessionReceipt {

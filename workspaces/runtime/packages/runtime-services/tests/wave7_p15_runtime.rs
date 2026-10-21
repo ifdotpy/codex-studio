@@ -534,9 +534,10 @@ async fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
-    case["before"]["status"] = json!("lost");
+    case["before"]["status"] = json!("running");
     case["before"]["interactive"] = json!(true);
-    case["before"]["reattachRecovery"] = json!({"status":"running","epoch":2});
+    case["before"]["reattachRecovery"] =
+        json!({"status":"running","epoch":2,"accountKey":"default","startedAt":2000.0});
     let store = Arc::new(fixtures::store(root.path(), "attach").await);
     fixtures::seed(&store, &case).await;
     let port = Arc::new(Port::default());

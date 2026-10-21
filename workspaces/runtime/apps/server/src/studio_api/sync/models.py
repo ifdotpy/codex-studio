@@ -43,6 +43,7 @@ class AgentStatus(ContractStrEnum):
     PARKED = "parked"
     ABANDONED = "abandoned"
     CAPACITY_RETRY = "capacity-retry"
+    WAITING_ON_MONITOR = "waiting_on_monitor"
 
 
 class AgentSource(ContractStrEnum):

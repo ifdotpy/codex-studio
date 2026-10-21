@@ -602,6 +602,18 @@ class SchemaContractTests(unittest.TestCase):
         ):
             add(pointer, "enum")
 
+        # #373: AgentStatus is owned by the runtime-store Rust enum.
+        for pointer in (
+            "/components/schemas/AgentRecordResponse/properties/lastCompletedTurnStatus",
+            "/components/schemas/AgentRecordResponse/properties/status",
+            "/components/schemas/AgentResponse/properties/status",
+            "/components/schemas/AgentResponse/properties/turnStatus",
+            "/components/schemas/AgentStatus",
+            "/components/schemas/BranchResponse/properties/status",
+            "/components/schemas/BranchResponse/properties/turnStatus",
+        ):
+            add(pointer, "enum")
+
         blocking_fields = ("closureP95Ms", "closureP99Ms", "queueWaitP95Ms", "queueWaitP99Ms")
         for prefix in (
             "/components/schemas/BlockingPoolGroupMetrics/properties",

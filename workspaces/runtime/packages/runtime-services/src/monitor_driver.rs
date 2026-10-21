@@ -100,6 +100,10 @@ pub async fn start(
         )
         .await?;
     }
+    if matches!(submission, Submission::Unknown) {
+        let observed = crate::event_write::unix_time()?;
+        monitor_runtime::reconcile_unknown(store, id, observed).await?;
+    }
     Ok(submission)
 }
 
@@ -338,7 +342,7 @@ pub async fn pending_start_ids(store: &RuntimeStore) -> Result<Vec<String>, Moni
 fn pending_start_ids_in(connection: &rusqlite::Connection) -> Result<Vec<String>, MonitorError> {
     let mut statement = connection
         .prepare(
-            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='starting' AND json_extract(record,'$.operation') IS NULL AND json_extract(record,'$.ruleId') IS NULL ORDER BY json_extract(record,'$.created'),id LIMIT 64",
+            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='starting' AND COALESCE(json_extract(record,'$.reattachRecovery.status'),'')!='running' AND json_extract(record,'$.operation') IS NULL AND json_extract(record,'$.ruleId') IS NULL ORDER BY json_extract(record,'$.created'),id LIMIT 64",
         )
         .map_err(studio_runtime_store::StoreError::from)?;
     let ids = statement

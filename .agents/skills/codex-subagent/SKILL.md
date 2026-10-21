@@ -51,8 +51,10 @@ Recover the saved receipt before deciding whether an uncertain operation needs a
 
 ## Working rules
 
-- Do not end a turn to wait for an external condition. Start a monitor with a
-  timeout and continue when it exits.
+- Use `orchestration_monitor` for every long command, check, and watcher. After
+  its creation result is collected, finish the turn when no independent work
+  remains; its terminal event resumes you. Never end a turn with an unfinished
+  native provider exec session: Studio cannot observe or wake on that session.
 - Before you ask the orchestrator, read the latest messages in the room. Do not
   ask again about a point that already has an answer.
 - Work in the workspace the lead selected for this worker.

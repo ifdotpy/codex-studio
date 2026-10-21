@@ -41,37 +41,6 @@ pub fn exit_event(connection: &Connection, id: &str) -> StoreResult<Option<Queue
     })).optional()?)
 }
 
-pub fn replace_pending_exit(
-    transaction: &Transaction<'_>,
-    id: &str,
-    text: &str,
-) -> StoreResult<()> {
-    transaction.execute(
-        "UPDATE runtime_events SET text=?1 WHERE id=?2 AND status='pending'",
-        (text, id),
-    )?;
-    Ok(())
-}
-
 pub fn active_count(connection: &Connection) -> StoreResult<i64> {
     Ok(connection.query_row("SELECT COUNT(*) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval')", [], |row| row.get(0))?)
-}
-
-/// Cancel only a provisional notice that has never reached the model.
-pub fn cancel_lost_notice(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
-    tx.execute("UPDATE runtime_events SET status='cancelled',error='Native command reattached; discard the provisional disconnect notice.' WHERE id=? AND status='pending' AND json_extract(text,'$.status')='lost'", [format!("monitor:{id}")])?;
-    Ok(())
-}
-
-pub fn restore_cancelled_notice(
-    tx: &Transaction<'_>,
-    id: &str,
-    text: &str,
-    pending: bool,
-) -> StoreResult<()> {
-    tx.execute(
-        "UPDATE runtime_events SET text=?1,status=?2,error=NULL WHERE id=?3 AND status='cancelled'",
-        (text, if pending { "pending" } else { "cancelled" }, id),
-    )?;
-    Ok(())
 }

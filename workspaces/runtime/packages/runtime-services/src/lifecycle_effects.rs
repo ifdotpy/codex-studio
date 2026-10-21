@@ -75,6 +75,10 @@ impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
         turn: &Value,
         _: crate::recovery::CompletionMode,
     ) -> Result<(), crate::recovery::RecoveryError> {
+        let mut owner = AgentRecord::from_value(agent.clone())
+            .map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
+        studio_runtime_store::SchedulerRepository::wait_for_owned_monitors(tx, &mut owner)?;
+        *agent = owner.value();
         let mut before = agent.clone();
         before["turnId"] = turn["id"].clone();
         let effect = LifecycleEffect::new(

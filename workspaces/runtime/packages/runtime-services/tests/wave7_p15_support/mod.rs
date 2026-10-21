@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use studio_runtime_services::{
     monitor_driver::{MonitorNative, NotSentReason, Submission},
-    monitor_policy::{Effect, MonitorError, MonitorSnapshot, Operation, ReattachProof},
+    monitor_policy::{
+        Effect, MonitorError, MonitorSnapshot, Operation, ReattachOutcome, ReattachProof,
+    },
     monitor_runtime_wiring::{Delivery, InputReply, MonitorPort},
     rules_engine::RuleCheck,
     rules_tick::{CheckReconciliation, CheckSubmission, RuleMonitor, RulesTickError},
@@ -131,15 +133,18 @@ impl MonitorPort for Port {
     fn reattach<'a>(
         &'a self,
         snapshot: &'a MonitorSnapshot,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>> {
+    ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
         Box::pin(async move {
-            Ok(Some(ReattachProof {
+            Ok(ReattachOutcome::Running(ReattachProof {
                 operation: snapshot.operation().expect("operation").clone(),
                 operation_id: format!("monitor:{}", snapshot.id()),
                 native_id: 42,
                 current_connection: "restarted".into(),
             }))
         })
+    }
+    fn await_exit(&self, _: &MonitorSnapshot) -> Result<(), MonitorError> {
+        Ok(())
     }
     fn probe<'a>(
         &'a self,

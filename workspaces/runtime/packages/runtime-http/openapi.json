@@ -6602,7 +6602,8 @@
                   "paused",
                   "parked",
                   "abandoned",
-                  "capacity-retry"
+                  "capacity-retry",
+                  "waiting_on_monitor"
                 ],
                 "type": "string"
               },
@@ -7291,7 +7292,8 @@
               "paused",
               "parked",
               "abandoned",
-              "capacity-retry"
+              "capacity-retry",
+              "waiting_on_monitor"
             ],
             "title": "Status",
             "type": "string"
@@ -9451,7 +9453,8 @@
           "paused",
           "parked",
           "abandoned",
-          "capacity-retry"
+          "capacity-retry",
+          "waiting_on_monitor"
         ],
         "title": "AgentStatus",
         "type": "string"

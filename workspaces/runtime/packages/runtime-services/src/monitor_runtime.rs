@@ -1,10 +1,10 @@
 //! Synchronous monitor consumer: ownership checks and all row writes share one transaction.
 //! Native I/O is returned as an effect, and must run only after a successful commit.
-//! Startup recovery for remote-owned monitors records its owner exit event locally as
-//! `stored_only`; that row claims no delivery and is not resent. The remote owner is not notified
-//! until `cross-server/remote-events` lands.
+//! Startup reconciliation preserves active commands until a retained result or a failed
+//! reattach decides their terminal outcome.
 
 use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
@@ -33,9 +33,10 @@ pub struct StartupRecovery {
     pub monitors: usize,
 }
 
-/// Recover durable monitor results first, then expire requests and mark only
-/// monitors with no surviving process as lost. All row and projection writes
-/// share one transaction; result files are handled before that transaction.
+/// Recover durable results first, then expire requests and stage active monitors
+/// for retained-process reconciliation. Only a decided failed reattach marks a
+/// command lost. Row and projection writes share a transaction; result files are
+/// handled before that transaction.
 pub async fn recover_on_startup(
     store: &RuntimeStore,
     now: f64,
@@ -202,43 +203,17 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
     let mut recovered = 0;
     for id in &ids {
         let result = (|| {
-            let (snapshot, actor) = snapshot(tx, id)?;
-            let decision = policy::restart_loss(&snapshot)?;
-            let remote = event_write::truthy(actor.extra.get("remoteWorker"))
-                || event_write::truthy(actor.extra.get("remoteAnchor"));
-            if remote {
-                if event_write::truthy(actor.extra.get("remoteAnchor")) {
-                    // Anchors have a cross-server event adapter; preserve that
-                    // delivery while marking the local monitor as lost.
-                    for effect in &decision.effects {
-                        if let Effect::ExitEvent { wake } = effect {
-                            exit_event(tx, &actor, &decision.record, *wake, now)?;
-                        }
-                    }
-                    tx.execute(
-                        "UPDATE runtime_events SET status='stored_only' WHERE id=?1 AND status='pending'",
-                        [format!("monitor:{id}")],
-                    )
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                } else {
-                    // Remote workers have no event delivery adapter. Preserve
-                    // the lost result locally without putting it in a queue.
-                    store_remote_exit_event(tx, &actor, &decision.record, now)?;
-                }
-                MonitorSnapshot::checked(
-                    decision.record.clone(),
-                    serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
-                )?;
-                repository::put(tx, decision.record)?;
-                crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-                    deleted
-                        || studio_runtime_schema::validate("MonitorEntityDto", view)
-                            .unwrap_or(false)
-                })?;
-            } else {
-                apply(tx, &snapshot, &actor, &decision, now)?;
+            let (snapshot, _) = snapshot(tx, id)?;
+            if snapshot.recovering() {
+                return Ok(false);
             }
-            Ok::<(), MonitorError>(())
+            let decision = policy::restart_recovery(&snapshot, now)?;
+            repository::put(tx, decision.record)?;
+            crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
+                deleted
+                    || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
+            })?;
+            Ok::<bool, MonitorError>(true)
         })();
         if let Err(error) = result {
             if startup_store_failure(&error) {
@@ -247,7 +222,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
             eprintln!("startup monitor recovery skipped row id={id}: {error}");
             continue;
         }
-        recovered += 1;
+        recovered += usize::from(result.unwrap_or(false));
     }
     Ok(recovered)
 }
@@ -257,54 +232,6 @@ fn active_monitor_ids(tx: &Transaction<'_>) -> Result<Vec<String>, MonitorError>
         .into_iter()
         .map(|(id, _)| id)
         .collect())
-}
-
-fn store_remote_exit_event(
-    tx: &Transaction<'_>,
-    actor: &AgentRecord,
-    monitor: &Value,
-    now: f64,
-) -> Result<(), MonitorError> {
-    let id = monitor
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("?", "id"))?;
-    let payload: serde_json::Map<String, Value> = [
-        "id", "command", "status", "exitCode", "error", "tail", "log", "bytes",
-    ]
-    .into_iter()
-    .map(|key| (key.into(), monitor.get(key).cloned().unwrap_or(Value::Null)))
-    .collect();
-    let event_id = format!("monitor:{id}");
-    let text = python_json(&Value::Object(payload));
-    let epoch = monitor
-        .get("epoch")
-        .and_then(Value::as_i64)
-        .or_else(|| monitor.pointer("/operation/epoch").and_then(Value::as_i64))
-        .unwrap_or(actor.epoch);
-
-    EventWriteRepository::insert_event(
-        tx,
-        &QueueEvent {
-            id: QueueEventId::from(event_id.as_str()),
-            agent: actor.id.clone(),
-            kind: "monitor_exit".into(),
-            text: text.clone(),
-            status: "stored_only".into(),
-            created: now,
-            epoch,
-            turn_id: None,
-            error: None,
-        },
-    )?;
-    tx.execute(
-        "UPDATE runtime_events SET text=?1,status='stored_only',created=?2,epoch=?3,error=NULL \
-         WHERE id=?4 AND agent=?5 AND kind='monitor_exit' \
-         AND status IN ('pending','cancelled','stored_only')",
-        rusqlite::params![text, now, epoch, event_id, actor.id.0.as_str()],
-    )
-    .map_err(studio_runtime_store::StoreError::from)?;
-    Ok(())
 }
 
 pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
@@ -633,7 +560,7 @@ pub async fn tick_page(
     let start = after.clone();
     let any_running = store.read_async("runtime-services/monitor_tick_page", move |tx| {
         tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND id>?1)",
+            "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND COALESCE(json_extract(record,'$.reattachRecovery.status'),'')!='running' AND id>?1)",
             [start.as_deref().unwrap_or("")],
             |row| row.get::<_, bool>(0),
         ).map_err(|error| MonitorError::from(studio_runtime_store::StoreError::from(error)))
@@ -646,7 +573,7 @@ pub async fn tick_page(
     }
     store.transaction_with(move |tx| {
         let mut statement = tx.prepare_cached(
-            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND id>?1 ORDER BY id LIMIT ?2",
+            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND COALESCE(json_extract(record,'$.reattachRecovery.status'),'')!='running' AND id>?1 ORDER BY id LIMIT ?2",
         ).map_err(studio_runtime_store::StoreError::from)?;
         let ids = statement
             .query_map((after.as_deref().unwrap_or(""), (MONITOR_TICK_BATCH + 1) as i64), |row| {
@@ -774,7 +701,7 @@ pub fn apply_with_rule(
                 )?;
             }
             Effect::RuleFinished => rules.finish(tx, before.record(), &decision.record, now)?,
-            Effect::ExitEvent { wake } => exit_event(tx, actor, &decision.record, *wake, now)?,
+            Effect::ExitEvent => exit_event(tx, actor, &decision.record, now)?,
             Effect::StallEvent {
                 generation,
                 payload,
@@ -813,112 +740,98 @@ pub fn apply_with_rule(
     Ok(())
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TerminalStatus {
+    Completed,
+    Failed,
+    Cancelled,
+    Lost,
+}
+
+// This is a projection of a full persisted monitor, so unrelated monitor fields
+// are intentionally ignored during deserialization.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalPayload {
+    id: String,
+    command: String,
+    status: TerminalStatus,
+    #[serde(default)]
+    exit_code: Option<i64>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    tail: String,
+    #[serde(default)]
+    log: Option<String>,
+    #[serde(default)]
+    bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_match_summary: Option<OutputMatchSummary>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OutputMatchSummary {
+    events: u64,
+    matches: Vec<OutputMatch>,
+    pending: Vec<OutputMatch>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OutputMatch {
+    stream: OutputStream,
+    pattern: String,
+    count: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOwner {
+    #[serde(default)]
+    epoch: Option<i64>,
+    #[serde(default)]
+    operation: Option<Operation>,
+}
+
 fn exit_event(
     tx: &Transaction<'_>,
     actor: &AgentRecord,
     monitor: &Value,
-    wake: bool,
     now: f64,
 ) -> Result<(), MonitorError> {
-    let id = monitor
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("?", "id"))?;
-    let payload: serde_json::Map<String, Value> = [
-        "id", "command", "status", "exitCode", "error", "tail", "log", "bytes",
-    ]
-    .into_iter()
-    .map(|key| (key.into(), monitor.get(key).cloned().unwrap_or(Value::Null)))
-    .collect();
-    let mut payload = Value::Object(payload);
-    if let Some(summary) = crate::monitor_matches::summary(monitor) {
-        payload["outputMatchSummary"] = summary;
-    }
-    let event_id = format!("monitor:{id}");
-    let monitor_epoch = monitor
-        .get("epoch")
-        .and_then(Value::as_i64)
-        .or_else(|| monitor.pointer("/operation/epoch").and_then(Value::as_i64));
-    let can_wake = wake
-        && monitor_epoch == Some(actor.epoch)
-        && !event_write::truthy(actor.extra.get("deletedAt"));
-    if let Some(existing) = repository::exit_event(tx, &event_id)? {
-        let previous: Value = serde_json::from_str(&existing.text).unwrap_or(Value::Null);
-        if previous.get("status").and_then(Value::as_str) != Some("lost")
-            || monitor.get("status").and_then(Value::as_str) == Some("lost")
-        {
-            return Ok(());
-        }
-        if existing.status == "pending" {
-            repository::replace_pending_exit(tx, &event_id, &python_json(&payload))?;
-            return Ok(());
-        }
-        if existing.status == "cancelled"
-            && existing.kind == "monitor_exit"
-            && existing.agent == actor.id
-            && Some(existing.epoch) == monitor_epoch
-            && previous.get("id").and_then(Value::as_str) == Some(id)
-            && previous.get("exitCode").is_none_or(Value::is_null)
-            && (existing.error.as_deref()
-                == Some("Native command reattached; discard the provisional disconnect notice.")
-                || legacy_reattach_notice(actor, monitor, &existing, &previous))
-            && monitor.pointer("/operation/agent").and_then(Value::as_str)
-                == Some(actor.id.0.as_str())
-            && monitor.pointer("/operation/epoch").and_then(Value::as_i64) == monitor_epoch
-            && monitor
-                .pointer("/operation/accountKey")
-                .and_then(Value::as_str)
-                == Some(
-                    actor
-                        .extra
-                        .get("accountKey")
-                        .and_then(Value::as_str)
-                        .unwrap_or("default"),
-                )
-            && monitor
-                .pointer("/operation/connectionId")
-                .and_then(Value::as_str)
-                .is_some_and(|id| !id.is_empty())
-        {
-            let authorized = can_wake
-                && actor.status != studio_runtime_store::AgentStatus::Paused
-                && (actor.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
-                    || event_write::recovery_pending(actor));
-            repository::restore_cancelled_notice(
-                tx,
-                &event_id,
-                &python_json(&payload),
-                authorized,
-            )?;
-            if authorized {
-                event_write::enqueue_recovery_event(
-                    tx,
-                    actor,
-                    event_id,
-                    "monitor_exit",
-                    python_json(&payload),
-                    now,
-                )?;
-            }
-            return Ok(());
-        }
-        let correction = json!({"monitorId": id, "corrects": event_id, "message": "This exact result corrects the earlier unknown monitor outcome. Do not repeat the command.", "result": payload});
-        return enqueue(
-            tx,
-            actor,
-            &format!("monitor-correction:{id}"),
-            "monitor_correction",
-            &correction,
-            (can_wake, monitor_epoch),
-            now,
-        );
+    let mut payload: TerminalPayload =
+        serde_json::from_value(monitor.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    payload.output_match_summary = crate::monitor_matches::summary(monitor)
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let owner: TerminalOwner =
+        serde_json::from_value(monitor.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    let event_id = format!("monitor:{}", payload.id);
+    let monitor_epoch = owner
+        .epoch
+        .or_else(|| owner.operation.map(|operation| operation.epoch));
+    let can_wake =
+        monitor_epoch == Some(actor.epoch) && !event_write::truthy(actor.extra.get("deletedAt"));
+    if repository::exit_event(tx, &event_id)?.is_some() {
+        return Ok(());
     }
     enqueue(
         tx,
         actor,
         &event_id,
         "monitor_exit",
-        &payload,
+        &serde_json::to_value(payload).map_err(studio_runtime_store::StoreError::from)?,
         (can_wake, monitor_epoch),
         now,
     )
@@ -961,72 +874,6 @@ fn invalid(id: &str, location: &str) -> MonitorError {
     }
 }
 
-// Python's old restore path did not stamp cancelled notices. Exact restart/turn
-// evidence proves these identities too; unrelated cancelled events stay cancelled.
-fn legacy_reattach_notice(
-    actor: &studio_runtime_store::AgentRecord,
-    monitor: &Value,
-    event: &studio_runtime_store::QueueEvent,
-    previous: &Value,
-) -> bool {
-    let created = event.created;
-    if event.error.is_some()
-        || event.turn_id.is_some()
-        || previous["error"] != "Server restarted. Command outcome unknown; not rerun."
-        || !created.is_finite()
-        || !monitor["created"]
-            .as_f64()
-            .is_some_and(|at| at.is_finite() && at > 0.0 && at <= created)
-    {
-        return false;
-    }
-    let epoch = &monitor["epoch"];
-    let default_account = json!("default");
-    let account = actor.extra.get("accountKey").unwrap_or(&default_account);
-    let scoped_account = |receipt: &Value| {
-        receipt.get("epoch") == Some(epoch)
-            && receipt.get("accountKey").unwrap_or(&default_account) == account
-    };
-    let recent = |at: &Value| {
-        at.as_f64()
-            .is_some_and(|at| at.is_finite() && at >= created)
-    };
-    let receipt = &monitor["reattachRecovery"];
-    if receipt["status"] == "running"
-        && scoped_account(receipt)
-        && recent(&receipt["cancelledNoticeLostAt"])
-    {
-        return true;
-    }
-    if monitor["status"] == "lost" {
-        return false;
-    }
-    let scoped_turn = |receipt: &Value, at: &Value| {
-        scoped_account(receipt)
-            && recent(at)
-            && actor
-                .extra
-                .get("threadId")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-            && receipt.get("threadId") == actor.extra.get("threadId")
-            && receipt["turnId"].as_str().is_some_and(|s| !s.is_empty())
-    };
-    let restore = actor.extra.get("supervisorRestore").unwrap_or(&Value::Null);
-    let restart = actor.extra.get("restartRecovery").unwrap_or(&Value::Null);
-    (restore["status"] == "restored"
-        && restore["reason"] == "live_handle_resumed"
-        && scoped_turn(restore, &restore["at"]))
-        || (matches!(restart["stage"].as_str(), Some("reattached" | "finished"))
-            && event_write::truthy(restart.get("autoWake"))
-            && scoped_turn(restart, &restart["reattachedAt"]))
-}
-
-/// Actor inputs consumed by monitor command/permission preparation. Execution
-/// progress and turnId are excluded: the command belongs to the agent/epoch,
-/// and the monitor row retains its original turn as creation provenance.
-/// See prepare_monitor_command/monitor_command_settings and monitor_port's
-/// apply_turn_permissions. Live ownership is checked by policy::start/apply.
 const MONITOR_START_ACTOR_INPUTS: &[&str] = &[
     "/threadId",
     "/cwd",
@@ -1083,8 +930,28 @@ pub async fn reserve_start(
         .await
 }
 
-/// Settle a lost monitor's reattach recovery as `not_reattachable`. Idempotent: a
-/// monitor that is no longer in a running recovery is left untouched.
+/// Unknown submission and backend restart share the same durable reconciliation.
+pub async fn reconcile_unknown(
+    store: &RuntimeStore,
+    id: &str,
+    now: f64,
+) -> Result<(), MonitorError> {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            // A late exact receipt may already have settled the command.
+            if !snapshot.active() {
+                return Ok(());
+            }
+            let decision = policy::restart_recovery(&snapshot, now)?;
+            apply(tx, &snapshot, &actor, &decision, now)
+        })
+        .await
+}
+
+/// Decide an active command's failed reattach as lost and enqueue its one result.
+/// Idempotent: a command with no running recovery is left untouched.
 pub async fn settle_reattach(
     store: &RuntimeStore,
     id: &str,
@@ -1096,14 +963,7 @@ pub async fn settle_reattach(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
-            if snapshot.record()["status"] != "lost"
-                || snapshot.record()["reattachRecovery"]["status"] != "running"
-            {
-                return Ok(());
-            }
-            let mut decision = snapshot.decision();
-            decision.record["reattachRecovery"]["status"] = serde_json::json!("not_reattachable");
-            decision.record["reattachRecovery"]["proof"] = serde_json::json!(reason);
+            let decision = policy::restart_lost(&snapshot, &reason, now)?;
             apply(tx, &snapshot, &actor, &decision, now)
         })
         .await
@@ -1114,7 +974,7 @@ pub async fn reattach(
     id: &str,
     proof: &policy::ReattachProof,
     now: f64,
-) -> Result<(), MonitorError> {
+) -> Result<policy::ReattachDisposition, MonitorError> {
     let id = id.to_owned();
     let proof = policy::ReattachProof {
         operation: proof.operation.clone(),
@@ -1127,8 +987,11 @@ pub async fn reattach(
             let (snapshot, actor) = snapshot(tx, &id)?;
             let decision = policy::reattach(&snapshot, &proof)?;
             apply(tx, &snapshot, &actor, &decision, now)?;
-            repository::cancel_lost_notice(tx, &id)?;
-            Ok(())
+            Ok(if decision.effects.contains(&Effect::Terminate) {
+                policy::ReattachDisposition::Cancel
+            } else {
+                policy::ReattachDisposition::AwaitExit
+            })
         })
         .await
 }

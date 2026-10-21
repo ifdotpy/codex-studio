@@ -170,7 +170,16 @@ have a native thread; existing sessions and transferred threads sync as well.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
-Agents create monitors through `orchestration_monitor`. The interface shows their output and controls but has no manual monitor form.
+Agents use `orchestration_monitor` for all long commands, checks, and watchers.
+A settled turn with active owned commands stays in `waiting_on_monitor`. Each
+command queues one durable `monitor_exit` event when its outcome is decided,
+including failure, cancellation, and process loss. After a backend restart,
+commands stay active while their retained process is reconciled: a survivor
+wakes on its real exit, and a failed reattach wakes with an unknown-outcome
+notice. Explicit stops, deletion, and epoch changes remain authoritative.
+Native provider exec sessions are unobservable to Studio; an agent must collect
+the terminal result before ending its turn if it starts one.
+The interface shows their output and controls but has no manual monitor form.
 Monitor commands use the local user's shell and Codex's `allow_login_shell` setting.
 With shell snapshots enabled, they load the same zshrc or bashrc setup as native
 `exec_command`. Explicit `shell_environment_policy.set` values take priority over

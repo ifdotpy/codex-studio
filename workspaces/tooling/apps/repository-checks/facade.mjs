@@ -890,7 +890,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "monitor start preparation witnesses",
+      label: "monitor ownership, terminal wake, and recovery witnesses",
       commands: [
         [
           "cargo",
@@ -904,13 +904,23 @@ function fastTierCommands(root) {
             "libtest-json-plus",
             "-p",
             "studio-runtime-services",
+            "-p",
+            "studio-runtime-server",
+            "--bin",
+            "studio-runtime-server",
             "--test",
             "monitor_start_preparation",
+            "--test",
+            "monitor_wake_guarantees",
+            "--lib",
+            "-E",
+            "binary(monitor_start_preparation) | binary(monitor_wake_guarantees) | test(monitor_completion_) | test(reattached_exit_)",
           ],
         ],
       ],
       options: {
-        selector: "monitor start preparation ownership and progress conflicts",
+        selector:
+          "monitor start ownership and exactly-once terminal continuation",
         reason:
           "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
       },

@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_providers::Method;
 use studio_runtime_services::account_session_runtime::{
@@ -25,7 +26,7 @@ use studio_runtime_services::account_worker::retained::RequestActor;
 use studio_runtime_services::monitor_driver::{MonitorNative, NotSentReason, Submission};
 use studio_runtime_services::monitor_event_queue;
 use studio_runtime_services::monitor_policy::{
-    Effect, MonitorError, MonitorSnapshot, Operation, ReattachProof,
+    Effect, MonitorError, MonitorSnapshot, Operation, ReattachOutcome, ReattachProof,
 };
 use studio_runtime_services::monitor_runtime_wiring::{Delivery, InputReply, MonitorPort};
 use studio_runtime_services::rules_engine::RuleCheck;
@@ -48,6 +49,39 @@ const RULE_CHECK_SETTLE_RETRY_SECONDS: u64 = 5;
 /// command with the process ID runs. Owner: the provider protocol.
 const NO_ACTIVE_COMMAND_EXEC: &str = "no active command/exec for process id";
 
+// These are projections of external provider responses, not owned input envelopes.
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandExit {
+    #[serde(default)]
+    exit_code: Option<i64>,
+    #[serde(default)]
+    error: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CommandResponse {
+    Result { result: CommandExit },
+    Error { error: Value },
+    Direct(CommandExit),
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationObservation {
+    accepted: bool,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    native_id: Option<u64>,
+    #[serde(default)]
+    response: Option<CommandResponse>,
+}
+#[derive(Deserialize)]
+struct CommandTiming {
+    created: f64,
+    timeout_ms: u64,
+}
+
 pub(crate) struct RetainedMonitorPort {
     store: Arc<RuntimeStore>,
     session: Arc<dyn AccountSessionPort>,
@@ -63,6 +97,7 @@ pub(crate) struct RetainedMonitorPort {
     /// Process IDs whose command/exec reply, the exit receipt, this process
     /// still waits for.
     execs: Arc<Mutex<BTreeSet<String>>>,
+    receipt_wake: Arc<Notify>,
     this: Weak<Self>,
 }
 
@@ -87,6 +122,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl RetainedMonitorPort {
     pub(crate) fn new(store: Arc<RuntimeStore>, session: Arc<dyn AccountSessionPort>) -> Arc<Self> {
+        let receipt_wake = Arc::new(Notify::new());
+        let wake = Arc::clone(&receipt_wake);
+        store.add_table_change_observer(
+            studio_runtime_store::ObservedTable::OperationReceipts,
+            move || wake.notify_waiters(),
+        );
         Arc::new_cyclic(|this| Self {
             store,
             session,
@@ -96,8 +137,118 @@ impl RetainedMonitorPort {
             starts: Mutex::new(BTreeSet::new()),
             rule_checks: Arc::new(Mutex::new(BTreeSet::new())),
             execs: Arc::new(Mutex::new(BTreeSet::new())),
+            receipt_wake,
             this: this.clone(),
         })
+    }
+
+    /// The only command-result enqueue path, shared by the first request and
+    /// the restored future over its durable retained receipt.
+    async fn command_result(
+        &self,
+        id: &str,
+        operation: &Operation,
+        response: ProviderResponse,
+    ) -> Result<(), MonitorError> {
+        let (code, error) = match response {
+            ProviderResponse::Reply(value) => {
+                let result: CommandExit = serde_json::from_value(value)
+                    .map_err(|_| MonitorError::Refused("Invalid monitor exit response"))?;
+                (result.exit_code, result.error)
+            }
+            ProviderResponse::Rejected(value) => (None, Some(value.to_string())),
+        };
+        if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+            return Err(MonitorError::Refused(
+                "Monitor result has no definitive outcome",
+            ));
+        }
+        monitor_event_queue::enqueue_exit(
+            &self.store,
+            id,
+            operation,
+            &format!("provider-result:monitor:{id}"),
+            code,
+            error.as_deref(),
+            studio_runtime_services::event_write::unix_time()?,
+        )
+        .await?;
+        self.wake_dispatch();
+        Ok(())
+    }
+
+    /// Restore event ownership of a retained command without a provider write.
+    fn await_retained_exit(
+        &self,
+        id: &str,
+        operation: &Operation,
+        timeout: Duration,
+    ) -> Result<(), MonitorError> {
+        let port = self
+            .this
+            .upgrade()
+            .ok_or(MonitorError::Unavailable("provider-session/monitor-result"))?;
+        if !lock(&self.execs).insert(id.to_owned()) {
+            return Ok(());
+        }
+        let guard = InFlightId {
+            set: Arc::clone(&self.execs),
+            id: id.to_owned(),
+        };
+        let (id, operation) = (id.to_owned(), operation.clone());
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + timeout;
+            let result = async {
+                loop {
+                    let changed = port.receipt_wake.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    if let Some(response) =
+                        studio_runtime_services::account_worker::retained::monitor_result(
+                            &port.store,
+                            &id,
+                            &operation,
+                        )
+                        .await
+                        .map_err(|_| MonitorError::Unavailable("provider-session/monitor-result"))?
+                    {
+                        return port.command_result(&id, &operation, response).await;
+                    }
+                    tokio::time::timeout_at(deadline, changed)
+                        .await
+                        .map_err(|_| {
+                            MonitorError::Unavailable("provider-session/monitor-result-deadline")
+                        })?;
+                }
+            }
+            .await;
+            drop(guard);
+            if let Err(error) = result {
+                eprintln!("monitor {id} retained exit wait ended: {error}");
+                if let Err(error) = async {
+                    let now = studio_runtime_services::event_write::unix_time()?;
+                    studio_runtime_services::monitor_runtime::reconcile_unknown(
+                        &port.store,
+                        &id,
+                        now,
+                    )
+                    .await?;
+                    studio_runtime_services::monitor_runtime::settle_reattach(
+                        &port.store,
+                        &id,
+                        "retained_exit_unavailable",
+                        now,
+                    )
+                    .await
+                }
+                .await
+                {
+                    eprintln!("monitor {id} reconciliation was not recorded: {error}");
+                }
+                port.wake_dispatch();
+            }
+        });
+        Ok(())
     }
 
     /// Run one managed start in its own task. command/exec answers only when
@@ -359,6 +510,11 @@ impl RetainedMonitorPort {
                 ))
             })
             .await?;
+        let timing: CommandTiming = serde_json::from_value(monitor.clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if now >= timing.created + timing.timeout_ms as f64 / 1000.0 {
+            return Err(MonitorError::Refused("Monitor startup deadline expired"));
+        }
         let agent_id = monitor["agent"]
             .as_str()
             .ok_or(MonitorError::Refused("Monitor owner is invalid"))?;
@@ -948,32 +1104,12 @@ impl MonitorNative for RetainedMonitorPort {
                 if id.is_empty() {
                     return Submission::Unknown;
                 }
-                let (code, error) = match receipt.result {
-                    Some(ProviderResponse::Reply(result)) => (
-                        result["exitCode"].as_i64(),
-                        result["error"].as_str().map(str::to_owned),
-                    ),
-                    Some(ProviderResponse::Rejected(result)) => (None, Some(result.to_string())),
-                    None => return Submission::Unknown,
+                let Some(response) = receipt.result else {
+                    return Submission::Unknown;
                 };
-                if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+                if self.command_result(id, operation, response).await.is_err() {
                     return Submission::Unknown;
                 }
-                if monitor_event_queue::enqueue_exit(
-                    &self.store,
-                    id,
-                    operation,
-                    &format!("provider-result:{identity}"),
-                    code,
-                    error.as_deref(),
-                    studio_runtime_services::event_write::unix_time().unwrap_or(0.0),
-                )
-                .await
-                .is_err()
-                {
-                    return Submission::Unknown;
-                }
-                self.wake_dispatch();
             } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
                 let ticket = identity.rsplit(':').next().unwrap_or(identity).to_owned();
                 let reply = match receipt.result {
@@ -1110,24 +1246,14 @@ impl MonitorPort for RetainedMonitorPort {
     fn reattach<'a>(
         &'a self,
         snapshot: &'a MonitorSnapshot,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>> {
+    ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
         Box::pin(async move {
-            let now = studio_runtime_services::event_write::unix_time()
-                .map_err(|_| MonitorError::Refused("System clock unavailable"))?;
             let Some(operation) = snapshot.operation() else {
-                // Without a recorded operation there is nothing to reattach to.
-                studio_runtime_services::monitor_runtime::settle_reattach(
-                    &self.store,
-                    snapshot.id(),
-                    "no_operation",
-                    now,
-                )
-                .await?;
-                return Ok(None);
+                return Ok(ReattachOutcome::Gone("no_operation".into()));
             };
             let operation_id = format!("monitor:{}", snapshot.id());
             let Some(scope) = self.session.current_scope(&operation.account_key) else {
-                return Ok(None);
+                return Ok(ReattachOutcome::Pending);
             };
             let receipt = match self
                 .request(
@@ -1141,89 +1267,79 @@ impl MonitorPort for RetainedMonitorPort {
                 .await
             {
                 Ok(receipt) => receipt,
-                Err(AccountSessionError::Unknown) => return Ok(None),
-                Err(AccountSessionError::Requires(name)) => {
-                    return Err(MonitorError::Unavailable(name));
-                }
-                Err(_) => return Ok(None),
+                Err(_) => return Ok(ReattachOutcome::Pending),
             };
             if receipt.certainty != RequestCertainty::Written {
-                return Ok(None);
+                return Ok(ReattachOutcome::Pending);
             }
-            let result = match receipt.result {
-                Some(ProviderResponse::Reply(result)) => result,
+            let observation: OperationObservation = match receipt.result {
+                Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        return Ok(ReattachOutcome::Gone("invalid_provider_observation".into()));
+                    }
+                },
                 Some(ProviderResponse::Rejected(_)) => {
-                    // The provider answered that it cannot show this operation.
-                    studio_runtime_services::monitor_runtime::settle_reattach(
-                        &self.store,
-                        snapshot.id(),
-                        "provider_rejected",
-                        now,
-                    )
-                    .await?;
-                    return Ok(None);
+                    return Ok(ReattachOutcome::Gone("provider_rejected".into()));
                 }
-                None => return Ok(None),
+                None => return Ok(ReattachOutcome::Pending),
             };
-            if result["accepted"] != true {
-                let reason = result["reason"]
-                    .as_str()
-                    .unwrap_or("operation_not_accepted");
-                studio_runtime_services::monitor_runtime::settle_reattach(
-                    &self.store,
-                    snapshot.id(),
-                    reason,
-                    now,
-                )
-                .await?;
-                return Ok(None);
+            if !observation.accepted {
+                return Ok(ReattachOutcome::Gone(
+                    observation
+                        .reason
+                        .unwrap_or_else(|| "operation_not_accepted".into()),
+                ));
             }
-            let Some(native_id) = result["nativeId"].as_u64() else {
-                return Ok(None);
-            };
-            if let Some(response) = result.get("response").filter(|value| !value.is_null()) {
-                if self
-                    .session
-                    .callback_barrier(
-                        &receipt.scope.account,
-                        &receipt.scope,
-                        Instant::now() + Duration::from_secs(10),
-                    )
+            if let Some(response) = observation.response {
+                let response = match response {
+                    CommandResponse::Result { result } => ProviderResponse::Reply(
+                        serde_json::to_value(result)
+                            .map_err(studio_runtime_store::StoreError::from)?,
+                    ),
+                    CommandResponse::Error { error } => ProviderResponse::Rejected(error),
+                    CommandResponse::Direct(result) => ProviderResponse::Reply(
+                        serde_json::to_value(result)
+                            .map_err(studio_runtime_store::StoreError::from)?,
+                    ),
+                };
+                return match self
+                    .command_result(snapshot.id(), operation, response)
                     .await
-                    .is_err()
                 {
-                    return Ok(None);
-                }
-                let response_value = response.get("result").unwrap_or(response);
-                let code = response_value["exitCode"].as_i64();
-                let error = response_value["error"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| response.get("error").map(Value::to_string));
-                if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
-                    return Ok(None);
-                }
-                monitor_event_queue::enqueue_exit(
-                    &self.store,
-                    snapshot.id(),
-                    operation,
-                    &format!("operation-status:{operation_id}"),
-                    code,
-                    error.as_deref(),
-                    studio_runtime_services::event_write::unix_time()
-                        .map_err(|_| MonitorError::Refused("System clock unavailable"))?,
-                )
-                .await?;
-                self.wake_dispatch();
-                return Ok(None);
+                    Ok(()) => Ok(ReattachOutcome::TerminalQueued),
+                    Err(MonitorError::Refused(_)) => {
+                        Ok(ReattachOutcome::Gone("invalid_terminal_receipt".into()))
+                    }
+                    Err(error) => Err(error),
+                };
             }
-            Ok(Some(ReattachProof {
+            let Some(native_id) = observation.native_id else {
+                return Ok(ReattachOutcome::Pending);
+            };
+            Ok(ReattachOutcome::Running(ReattachProof {
                 operation: operation.clone(),
                 operation_id,
                 native_id,
                 current_connection: scope.connection,
             }))
         })
+    }
+
+    fn await_exit(&self, snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
+        let operation = snapshot
+            .operation()
+            .ok_or(MonitorError::Refused("Missing retained command identity"))?;
+        let timing: CommandTiming = serde_json::from_value(snapshot.record().clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let now = studio_runtime_services::event_write::unix_time()?;
+        let remaining =
+            ((timing.created + timing.timeout_ms as f64 / 1000.0 - now).max(0.0) * 1000.0) as u64;
+        self.await_retained_exit(
+            snapshot.id(),
+            operation,
+            Duration::from_millis(remaining.saturating_add(MONITOR_TIMEOUT_GRACE_MS)),
+        )
     }
 
     fn probe<'a>(
@@ -1573,6 +1689,343 @@ mod tests {
             "outputEventCount":0,"outputEventIds":[],"status":"starting","created":1.0,
             "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,
             "log":log.to_string_lossy(),"cancelRequested":false})
+    }
+
+    #[tokio::test]
+    async fn reattached_exit_uses_retained_receipt_events_without_another_provider_write() {
+        for already_present in [false, true] {
+            let root = tempfile::tempdir().expect("state root");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let now = studio_runtime_services::event_write::unix_time().expect("clock");
+            let operation = Operation {
+                agent: "owner".into(),
+                epoch: 0,
+                account_key: "default".into(),
+                connection_id: "old".into(),
+                evidence: BTreeMap::new(),
+            };
+            let mut watch = starting_watch(root.path(), "watch");
+            watch["status"] = json!("running");
+            watch["created"] = json!(now);
+            watch["operation"] = json!(operation);
+            let owner = owner(root.path(), true);
+            let key = format!(
+                "retained:default:{}",
+                studio_runtime_store::sha256_hex(b"monitor:watch")
+            );
+            let submitted = json!({
+                "call":{"scope":{"account":"default","connection":"old","generation":1},
+                    "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
+                    "transfer":null,"deleted_actor_session":null,"method":"command/exec",
+                    "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
+                "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
+                    "thread":null,"lightweight":true,"deadline":60000,"remoteId":42}
+            });
+            let submitted_id = format!("account-worker:{key}:submitted");
+            store.transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            }).await.expect("persist retained command before restart");
+            studio_runtime_services::monitor_runtime::recover_on_startup(&store, now)
+                .await
+                .expect("startup");
+            let (snapshot, _) = store
+                .read_async("test/snapshot", |tx| {
+                    studio_runtime_services::monitor_runtime::snapshot(tx, "watch")
+                })
+                .await
+                .expect("snapshot");
+            let proof = ReattachProof {
+                operation: operation.clone(),
+                operation_id: "monitor:watch".into(),
+                native_id: 42,
+                current_connection: "current".into(),
+            };
+            studio_runtime_services::monitor_runtime::reattach(&store, "watch", &proof, now)
+                .await
+                .expect("reattach");
+            let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+            let wake = Arc::new(Notify::new());
+            port.set_dispatch_wake(Arc::clone(&wake));
+            async fn receipt(store: &RuntimeStore, key: String) {
+                store.transaction(move |tx| {
+                    for (id, result) in [
+                        (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
+                        ("account-worker:cursor:default:1:ack".into(),json!(1)),
+                    ] {
+                        tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
+                    }
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                }).await.expect("retained native reply and checkpoint commit");
+            }
+            if already_present {
+                receipt(&store, key.clone()).await;
+            }
+            port.await_exit(&snapshot).expect("restore exit waiter");
+            if !already_present {
+                receipt(&store, key.clone()).await;
+            }
+            tokio::time::timeout(Duration::from_secs(10), wake.notified())
+                .await
+                .expect("receipt commit wakes restored waiter");
+            let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+                Arc::clone(&store),
+                Arc::clone(&port) as Arc<dyn MonitorPort>,
+                Arc::new(Notify::new()),
+            );
+            runtime.tick(now + 1.0).await.expect("terminal delivery");
+            receipt(&store, key).await;
+            runtime.tick(now + 2.0).await.expect("receipt replay");
+            let count: i64 = store.read_async("test/wake-count",|tx| {
+                tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:watch' AND kind='monitor_exit' AND status='pending'",[],|row|row.get(0)).map_err(studio_runtime_store::StoreError::from)
+            }).await.expect("wake count");
+            assert_eq!(count, 1);
+            let owner = store
+                .read_async("test/owner", |tx| AgentRepository::get(tx, &"owner".into()))
+                .await
+                .expect("owner read")
+                .expect("owner");
+            assert_eq!(owner.status, studio_runtime_store::AgentStatus::Queued);
+        }
+    }
+
+    #[tokio::test]
+    async fn reattached_exit_inactive_owner_terminates_survivor_without_waking() {
+        struct Survivor {
+            terminated: std::sync::atomic::AtomicUsize,
+            confirmed: bool,
+        }
+        impl AccountSessionPort for Survivor {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.into(),
+                        connection: "new".into(),
+                        generation: 2,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    let response = match request.method {
+                        Method::OperationStatus => json!({"accepted":true,"nativeId":42}),
+                        Method::CommandExecTerminate => {
+                            assert_eq!(request.operation, "monitor-cancel:watch");
+                            assert_eq!(request.params, json!({"processId":"watch"}));
+                            self.terminated
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            json!({})
+                        }
+                        _ => panic!("inactive owner must never start or resume a command"),
+                    };
+                    let result =
+                        if request.method == Method::CommandExecTerminate && !self.confirmed {
+                            None
+                        } else {
+                            Some(ProviderResponse::Reply(response))
+                        };
+                    Ok(SessionReceipt {
+                        scope: request.expected_scope.expect("scope"),
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result,
+                        not_sent_reason: None,
+                        replayed: false,
+                    })
+                })
+            }
+        }
+        for (boundary, confirmed) in [
+            json!({"deletedAt":1}),
+            json!({"autoWake":false,"status":"paused"}),
+            json!({"epoch":1}),
+        ]
+        .into_iter()
+        .flat_map(|boundary| [true, false].map(move |confirmed| (boundary.clone(), confirmed)))
+        {
+            let root = tempfile::tempdir().expect("root");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let mut owner = owner(root.path(), true);
+            for (key, value) in boundary.as_object().expect("boundary") {
+                owner[key] = value.clone();
+            }
+            let mut watch = starting_watch(root.path(), "watch");
+            watch["status"] = json!("running");
+            watch["operation"] = json!(Operation {
+                agent: "owner".into(),
+                epoch: 0,
+                account_key: "default".into(),
+                connection_id: "old".into(),
+                evidence: BTreeMap::new()
+            });
+            store
+                .transaction(move |tx| {
+                    AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                    studio_runtime_store::Table::new(tx)
+                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("persist survivor");
+            studio_runtime_services::monitor_runtime::recover_on_startup(&store, 2.0)
+                .await
+                .expect("restart");
+            let session = Arc::new(Survivor {
+                terminated: std::sync::atomic::AtomicUsize::new(0),
+                confirmed,
+            });
+            let port = RetainedMonitorPort::new(
+                Arc::clone(&store),
+                Arc::clone(&session) as Arc<dyn AccountSessionPort>,
+            );
+            let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+                Arc::clone(&store),
+                port,
+                Arc::new(Notify::new()),
+            );
+            runtime.tick(3.0).await.expect("reconcile and terminate");
+            runtime.tick(4.0).await.expect("replay");
+            assert_eq!(
+                session.terminated.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            let (watch, owner, event) = store
+                .read_async("test/inactive-terminal", |tx| {
+                    Ok::<_, studio_runtime_store::StoreError>((
+                        MonitorsRepository::get(tx, "watch")?.expect("watch"),
+                        AgentRepository::get(tx, &"owner".into())?.expect("owner"),
+                        tx.query_row(
+                            "SELECT status FROM runtime_events WHERE id='monitor:watch'",
+                            [],
+                            |row| row.get::<_, String>(0),
+                        )?,
+                    ))
+                })
+                .await
+                .expect("terminal evidence");
+            assert_eq!(
+                watch.value()["status"],
+                if confirmed { "cancelled" } else { "lost" }
+            );
+            if !confirmed {
+                assert_eq!(
+                    watch.value()["error"],
+                    "Command outcome unknown after losing the provider result; not rerun."
+                );
+            }
+            assert_ne!(owner.status, studio_runtime_store::AgentStatus::Queued);
+            assert_eq!(event, "cancelled");
+        }
+    }
+
+    #[tokio::test]
+    async fn reattached_exit_unsupported_status_decides_loss_at_the_monitor_deadline() {
+        struct UnsupportedStatus;
+        impl AccountSessionPort for UnsupportedStatus {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.into(),
+                        connection: "new".into(),
+                        generation: 2,
+                    },
+                )
+            }
+        }
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let owner = owner(root.path(), true);
+        let mut watch = starting_watch(root.path(), "watch");
+        watch["status"] = json!("running");
+        watch["operation"] = json!(Operation {
+            agent: "owner".into(),
+            epoch: 0,
+            account_key: "default".into(),
+            connection_id: "old".into(),
+            evidence: BTreeMap::new()
+        });
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed command");
+        studio_runtime_services::monitor_runtime::recover_on_startup(&store, 2.0)
+            .await
+            .expect("restart");
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(UnsupportedStatus));
+        let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            Arc::clone(&store),
+            port,
+            Arc::new(Notify::new()),
+        );
+        runtime.tick(2.0).await.expect("unresolved status");
+        let now = 2.0 + studio_runtime_services::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS;
+        runtime.tick(now).await.expect("bounded loss");
+        runtime.tick(now + 1.0).await.expect("replay");
+        let (watch, owner, count) = store.read_async("test/lost-status", |tx| {
+            Ok::<_, studio_runtime_store::StoreError>((MonitorsRepository::get(tx,"watch")?.expect("watch"), AgentRepository::get(tx,&"owner".into())?.expect("owner"), tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:watch' AND kind='monitor_exit'",[],|row|row.get::<_,i64>(0))?))
+        }).await.expect("loss evidence");
+        assert_eq!(watch.value()["status"], "lost");
+        assert_eq!(owner.status, studio_runtime_store::AgentStatus::Queued);
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn monitor_completion_expired_preparation_wakes_without_submitting() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let owner = owner(root.path(), true);
+        let watch = starting_watch(root.path(), "watch");
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed expired preparation");
+        let changed = Arc::new(Notify::new());
+        let wake = Arc::clone(&changed);
+        store.add_table_change_observer(studio_runtime_store::ObservedTable::Monitors, move || {
+            wake.notify_one()
+        });
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+        port.start_monitor("watch", 62.0).await.expect("own start");
+        tokio::time::timeout(Duration::from_secs(10), changed.notified())
+            .await
+            .expect("terminal commit");
+        let (watch, owner, count) = store.read_async("test/expired-preparation", |tx| {
+            Ok::<_, studio_runtime_store::StoreError>((MonitorsRepository::get(tx,"watch")?.expect("watch"), AgentRepository::get(tx,&"owner".into())?.expect("owner"), tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:watch' AND kind='monitor_exit'",[],|row|row.get::<_,i64>(0))?))
+        }).await.expect("terminal evidence");
+        assert_eq!(watch.value()["status"], "failed");
+        assert_eq!(
+            watch.value()["error"],
+            "The command was not started: Monitor startup deadline expired"
+        );
+        assert_eq!(owner.status, studio_runtime_store::AgentStatus::Queued);
+        assert_eq!(count, 1);
     }
 
     /// 2026-10-20: managed watches stayed "starting" for minutes. The monitor

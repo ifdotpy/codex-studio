@@ -224,16 +224,64 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     } else {
         false
     };
-    Ok(
-        (actor_identity || stopped_turn_interrupt || deleted_voice_stop)
+    Ok(authorize_recovered_monitor_cancel(tx, call, actor)?
+        || (actor_identity || stopped_turn_interrupt || deleted_voice_stop)
             && (thread_matches
                 || (actor_identity && repair_fork)
                 || thread_start
                 || ephemeral_turn
                 || config_read
                 || monitor_matches
-                || deleted_voice_stop),
-    )
+                || deleted_voice_stop))
+}
+
+/// No orphan processes after owner deletion across restart: only a latched
+/// cancellation of the exact proved monitor handle may cross the inactive-owner boundary.
+fn authorize_recovered_monitor_cancel(
+    tx: &rusqlite::Transaction<'_>,
+    call: &Call,
+    actor: &RequestActor,
+) -> Result<bool, WorkerError> {
+    if call.method != "command/exec/terminate" {
+        return Ok(false);
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CancelParams {
+        process_id: String,
+    }
+    let Ok(params) = serde_json::from_value::<CancelParams>(call.params.clone()) else {
+        return Ok(false);
+    };
+    if call.operation != format!("monitor-cancel:{}", params.process_id) {
+        return Ok(false);
+    }
+    let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, &params.process_id)?
+    else {
+        return Ok(false);
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RecoveredCancelMonitor {
+        agent: String,
+        epoch: i64,
+        operation: crate::monitor_policy::Operation,
+        status: crate::monitor_policy::MonitorStatus,
+        cancel_requested: bool,
+        reattached_connection_id: String,
+    }
+    let Ok(monitor) = serde_json::from_value::<RecoveredCancelMonitor>(record.value().clone())
+    else {
+        return Ok(false);
+    };
+    Ok(monitor.agent == actor.agent
+        && monitor.epoch == actor.epoch
+        && monitor.operation.agent == actor.agent
+        && monitor.operation.epoch == actor.epoch
+        && monitor.operation.account_key == call.scope.account
+        && monitor.status == crate::monitor_policy::MonitorStatus::Running
+        && monitor.cancel_requested
+        && monitor.reattached_connection_id == call.scope.connection)
 }
 
 fn authorize_deleted_voice_stop(
@@ -542,6 +590,60 @@ mod replay_identity_tests {
             method: "thread/read".into(),
             params: json!({"threadId":"thread-1","includeTurns":false}),
         }
+    }
+
+    #[tokio::test]
+    async fn monitor_completion_recovered_cancel_authority_is_exact_and_cannot_resume() {
+        let root = tempfile::tempdir().expect("root");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false}))?)?;
+            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}}))?)?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.expect("seed deleted owner and proved handle");
+        store
+            .read_async("test/cancel-authority", |tx| {
+                let mut exact = call();
+                exact.scope.connection = "new-connection".into();
+                exact.operation = "monitor-cancel:watch".into();
+                exact.method = "command/exec/terminate".into();
+                exact.params = json!({"processId":"watch"});
+                assert!(authorize(tx, &exact)?);
+                for method in [
+                    "command/exec",
+                    "command/exec/write",
+                    "command/exec/resize",
+                    "thread/read",
+                ] {
+                    let mut invalid = exact.clone();
+                    invalid.method = method.into();
+                    assert!(
+                        !authorize(tx, &invalid)?,
+                        "deleted actor must not resume {method}"
+                    );
+                }
+                let mut invalid = exact.clone();
+                invalid.operation = "monitor-cancel:other".into();
+                assert!(!authorize(tx, &invalid)?);
+                let mut invalid = exact.clone();
+                invalid.params = json!({"processId":"other"});
+                assert!(!authorize(tx, &invalid)?);
+                let mut invalid = exact.clone();
+                invalid.actor.as_mut().expect("actor").epoch = 9;
+                assert!(!authorize(tx, &invalid)?);
+                let mut invalid = exact.clone();
+                invalid.scope.connection = "unproved".into();
+                assert!(!authorize(tx, &invalid)?);
+                let mut invalid = exact.clone();
+                invalid.scope.account = "other".into();
+                assert!(!authorize(tx, &invalid)?);
+                let mut invalid = exact;
+                invalid.params = json!({"processId":"watch","command":["true"]});
+                assert!(!authorize(tx, &invalid)?);
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("authority witnesses");
     }
 
     #[test]
