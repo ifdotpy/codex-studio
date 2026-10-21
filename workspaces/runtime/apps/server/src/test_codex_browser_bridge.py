@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 import uuid
-from server_test_waits import wait_for_condition as wait_until
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition as wait_until
 
 import codex_browser_bridge as bridge_module
 from codex_browser_bridge import (REMOTE_MESSAGE, SANDBOX, Bridge, Forward, PortBusy, card_id,
@@ -45,6 +45,8 @@ from browser_bridge import BridgeError, BrowserBridge, Listener
 from test_browser_fakes import FakeProvider, FakeTool, free_port, install_shim
 
 UID = os.getuid()
+# Seconds of the browser.wait long poll that the close tests leave pending.
+CONTROL_LONG_POLL_SECONDS = 20
 
 
 class Runtime:
@@ -110,7 +112,8 @@ def provider_redirect(url: str) -> str:
         def redirect_request(self, *args: Any, **kwargs: Any) -> None:
             return None
     try:
-        urllib.request.build_opener(Stop).open(url, timeout=5)
+        # The timeout only guards against a hang of the local fake provider.
+        urllib.request.build_opener(Stop).open(url, timeout=HANG_GUARD_SECONDS)
     except urllib.error.HTTPError as error:
         with error:
             return str(error.headers["Location"])
@@ -489,7 +492,7 @@ class PhoneWindow(FlowBase):
         self.assertEqual(self.bridge.forwards, {})
         [item] = self.guest_bridge.items.values()
         self.assertEqual(item["state"], "opened")
-        with urllib.request.urlopen(result["openUrl"], timeout=5) as response:
+        with urllib.request.urlopen(result["openUrl"], timeout=HANG_GUARD_SECONDS) as response:
             self.assertEqual(response.status, 200)
         self.assertEqual(self.provider.devices, ["ABCD-EFGH"])
         self.assertEqual(self.bridge.answer(card["id"], {"decision": "accept", "paste": True}, local=False),
@@ -897,7 +900,8 @@ class NativeChats(unittest.TestCase):
         [card] = self.runtime.cards()
         control = self.root / "browser-host" / "control.sock"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(5)
+            # The socket timeout only guards against a hang of the local bridge.
+            client.settimeout(HANG_GUARD_SECONDS)
             client.connect(str(control))
             client.sendall(json.dumps({
                 "id": "host-browser-answer-test",
@@ -918,7 +922,8 @@ class NativeChats(unittest.TestCase):
 
         def wait_for_browser() -> None:
             try:
-                self.guest.call("browser.wait", {"after": 0, "waitSeconds": 20}, timeout=35)
+                self.guest.call("browser.wait", {"after": 0, "waitSeconds": CONTROL_LONG_POLL_SECONDS},
+                                timeout=CONTROL_LONG_POLL_SECONDS + 15)
             except Exception as error:
                 errors.append(error)
 
@@ -927,8 +932,10 @@ class NativeChats(unittest.TestCase):
         wait_until(lambda: bool(self.guest.control_tasks))
         started = time.monotonic()
         self.guest.close()
-        self.assertLess(time.monotonic() - started, 2)
-        client.join(timeout=2)
+        # A close that waits for the long poll takes all of it; half leaves room for load.
+        self.assertLess(time.monotonic() - started, CONTROL_LONG_POLL_SECONDS / 2)
+        # The join only guards against a hang; a released RPC ends with an error.
+        client.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(client.is_alive(), "closing the host bridge must release its control RPC")
         self.assertTrue(errors)
 
@@ -961,17 +968,20 @@ class NativeChats(unittest.TestCase):
 
         def wait_for_browser() -> None:
             try:
-                self.guest.call("browser.wait", {"after": 0, "waitSeconds": 20}, timeout=35)
+                self.guest.call("browser.wait", {"after": 0, "waitSeconds": CONTROL_LONG_POLL_SECONDS},
+                                timeout=CONTROL_LONG_POLL_SECONDS + 15)
             except Exception as error:
                 errors.append(error)
 
         client = threading.Thread(target=wait_for_browser, daemon=True)
         client.start()
-        self.assertTrue(entered.wait(5))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         started = time.monotonic()
         self.guest.close()
-        self.assertLess(time.monotonic() - started, 2)
-        client.join(timeout=2)
+        # A close that waits for the long poll takes all of it; half leaves room for load.
+        self.assertLess(time.monotonic() - started, CONTROL_LONG_POLL_SECONDS / 2)
+        # The join only guards against a hang; a released RPC ends with an error.
+        client.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(client.is_alive(), "closing the host bridge must refuse a late control RPC")
         self.assertTrue(errors)
 

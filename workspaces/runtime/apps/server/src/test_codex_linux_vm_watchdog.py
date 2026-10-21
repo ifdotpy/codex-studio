@@ -13,6 +13,8 @@ from typing import Any
 import unittest
 from unittest.mock import Mock, patch
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import codex_linux_vm as vm
 import codex_linux_vm_watchdog as watchdog
 
@@ -93,8 +95,10 @@ class GuestSocket:
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(str(directory / 'guest.sock'))
         self.listener.listen(1)
-        self.listener.settimeout(5)
+        # Accept only guards against a hang; every ping connects at once.
+        self.listener.settimeout(HANG_GUARD_SECONDS)
         self.mode = mode
+        self.release = threading.Event()
         self.thread = threading.Thread(target=self.run)
         self.thread.start()
 
@@ -115,10 +119,12 @@ class GuestSocket:
             elif self.mode == 'late-close':
                 time.sleep(0.3)  # the helper's connect timer for a kernel that never accepts
             else:
-                time.sleep(0.5)
+                # Stay silent until the test ends, so a slow client still sees no answer.
+                self.release.wait(HANG_GUARD_SECONDS)
 
     def finish(self) -> None:
-        self.thread.join(5)
+        self.release.set()
+        self.thread.join(HANG_GUARD_SECONDS)
         self.listener.close()
 
 
@@ -129,7 +135,8 @@ class PingTests(unittest.TestCase):
         self.directory = Path(temporary.name)
         self.client = vm.Client(self.directory)
 
-    def ping(self, mode: str, timeout: float = 2) -> str | None:
+    # The default ping timeout only guards against a hang; the silent case passes its own.
+    def ping(self, mode: str, timeout: float = HANG_GUARD_SECONDS) -> str | None:
         guest = GuestSocket(self.directory, mode)
         try:
             return self.client.ping(timeout)
@@ -598,7 +605,8 @@ class WatchdogTests(unittest.TestCase):
         service = owner.__dict__['_vm_watchdog']
         self.assertTrue(service.thread.is_alive())
         watchdog.close(owner)
-        service.thread.join(5)
+        # The join only guards against a hang; the assertion checks that close stops it.
+        service.thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(service.thread.is_alive())
 
 

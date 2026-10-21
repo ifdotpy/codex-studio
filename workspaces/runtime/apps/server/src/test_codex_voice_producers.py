@@ -171,7 +171,7 @@ class VoiceResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
 
                 checker = threading.Thread(target=check_locks)
                 checker.start()
-                checker.join(1)
+                checker.join(HANG_GUARD_SECONDS)  # Only guards against a hang.
                 publication_checks.append((acquired == [True], runtime.active_transactions))
                 original_publish(agent_id)
 
@@ -192,7 +192,8 @@ class VoiceResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                     "connection-a",
                 )
                 self.assertTrue(handled)
-                event = await subscription.next_event(timeout=1)
+                # The wait only guards against a hang.
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(
