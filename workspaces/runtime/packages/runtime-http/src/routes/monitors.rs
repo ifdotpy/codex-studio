@@ -217,7 +217,12 @@ fn open_log(
         .map_err(|_| ApiError::internal())?
         .join("monitor-logs");
     let path = Path::new(stored);
-    if path.parent() != Some(root.as_path()) {
+    // The record can name the log through a link to the state root; the
+    // opened file is checked against the canonical root below.
+    if !path
+        .parent()
+        .is_some_and(|parent| studio_runtime_store::path_identity::same(parent, &root))
+    {
         return Err(invalid_monitor(id));
     }
     match fs::symlink_metadata(&root) {

@@ -145,11 +145,12 @@ pub fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
-/// Canonicalize existing paths; unresolved paths remain evidence rather than disappearing.
+/// Resolve paths with the path identity owner; unresolved paths remain
+/// evidence rather than disappearing.
 pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
     let path = |v: &Value| {
         let p = PathBuf::from(v.as_str().unwrap_or("/"));
-        p.canonicalize().unwrap_or(p)
+        crate::path_identity::resolve(&p).unwrap_or(p)
     };
     let mut result = Vec::new();
     for other in &snapshot.agents {

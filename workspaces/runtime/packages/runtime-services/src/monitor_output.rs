@@ -116,11 +116,14 @@ impl MonitorOutput {
             return Err(MonitorError::InvalidOutputReceipt("invalid log directory"));
         }
         let path = root.join(format!("{id}.log"));
-        if before
+        // The record can name the log through a link to the state root.
+        if !before
             .record()
             .get("log")
             .and_then(serde_json::Value::as_str)
-            != path.to_str()
+            .is_some_and(|log| {
+                studio_runtime_store::path_identity::same(std::path::Path::new(log), &path)
+            })
         {
             return Err(MonitorError::InvalidOutputReceipt(
                 "log path differs from state directory",

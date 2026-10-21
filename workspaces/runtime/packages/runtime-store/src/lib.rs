@@ -8,6 +8,7 @@ mod feature_schema;
 mod fresh_state;
 mod multi_server_state_check;
 mod path;
+pub mod path_identity;
 mod records;
 mod repositories;
 mod schema;
