@@ -1,4 +1,6 @@
-//! Capacity retry transitions. A claim is an intent, never permission to resend an unknown turn.
+//! Capacity retry transitions. A claim queues one follow-up input; the ordinary
+//! queued start path (start gate, auth gate, admission) starts it like any other
+//! input. A claim is never permission to resend an unknown turn.
 use crate::continuation::{
     ContinuationError, Decision, Effect, Result, Snapshot, account, flag, now_checked, patch,
     present, remove, text,
@@ -13,8 +15,10 @@ const CONNECTION_DELAYS: [f64; 7] = [10.0, 30.0, 120.0, 300.0, 600.0, 1200.0, 18
 /// A disk-full retry is due at once; the tick waits while the disk is still full.
 const DISK_FULL_DELAYS: [f64; DISK_FULL_MAX_RESUMES as usize] =
     [0.0; DISK_FULL_MAX_RESUMES as usize];
-/// Prefix of a capacity retry's start-attempt id; the rest is the retry record id.
-pub const CAPACITY_ATTEMPT_PREFIX: &str = "capacity:";
+/// Prefix of a capacity retry's follow-up event id; the rest is the retry record id.
+pub const CAPACITY_FOLLOWUP_PREFIX: &str = "capacity-retry:";
+/// The follow-up input that continues the turn a capacity failure stopped.
+pub const CONTINUATION: &str = "The previous turn stopped on a temporary provider, connection or disk error. Check the current task and conversation state, then continue the same task. Do not repeat completed work.";
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
     ServerOverloaded,
@@ -48,7 +52,6 @@ impl Failure {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Action<'a> {
-    Restart,
     Completed {
         turn_id: &'a str,
         completed: bool,
@@ -58,13 +61,13 @@ pub enum Action<'a> {
     /// The disk is full: check free space again after a fixed interval.
     DiskWait(&'a str),
     Excluded(&'a str),
+    /// The `turn/start` that carried the retry's follow-up was rejected or its outcome is unknown.
     Error {
-        attempt: &'a Value,
         reason: &'a str,
         unknown: bool,
     },
+    /// The provider accepted the `turn/start` that carried the retry's follow-up.
     Accepted {
-        attempt: &'a Value,
         turn_id: &'a str,
     },
     Claim {
@@ -138,7 +141,12 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     let mut r = stored.clone();
     let mut agent = s.agent.clone();
     let mut hold = None;
-    let attempt = agent.get("startAttempt").cloned().unwrap_or(Value::Null);
+    // A start outcome belongs to the claimed follow-up of this retry, once.
+    let started = text(&r, "status") == "starting"
+        && present(&r, "claimedAt")
+        && !present(&r, "acceptedTurnId")
+        && r.get("epoch") == agent.get("epoch")
+        && account(&r) == account(&agent);
     match action {
         Action::Completed { turn_id, completed } => {
             if text(&r, "acceptedTurnId") != turn_id {
@@ -153,38 +161,6 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             }
         }
 
-        Action::Restart => {
-            if matches!(text(&r, "status"), "starting" | "unknown") {
-                if attempt.get("capacityRetryId") == r.get("id")
-                    && !flag(&attempt, "submitted")
-                    && !present(&r, "acceptedTurnId")
-                {
-                    patch(
-                        &mut r,
-                        json!({"status":"cancelled","dueAt":null,"reason":"The server restarted before turn submission. Automatic retry was cancelled."}),
-                    );
-                    remove(&mut r, "claimedAt");
-                    patch(
-                        &mut agent,
-                        json!({"status":"failed","autoWake":true,"inFlight":false}),
-                    );
-                } else {
-                    patch(
-                        &mut r,
-                        json!({"status":"unknown","dueAt":null,"reason":"The server restarted. The turn outcome is unknown."}),
-                    );
-                }
-                hold = Some("restart-terminal");
-            } else if text(&r, "status") == "scheduled"
-                && (!present(&r, "taskClaims") || !s.claims_valid(&r))
-            {
-                patch(
-                    &mut r,
-                    json!({"status":"cancelled","dueAt":null,"reason":"The server restarted. Automatic retry was cancelled."}),
-                );
-                hold = Some("restart-terminal");
-            }
-        }
         Action::Cancel => {
             if text(&r, "status") != "scheduled" || present(&r, "claimedAt") {
                 return Ok(Decision::default());
@@ -196,10 +172,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             hold = Some("cancelled");
         }
         Action::Wait(reason) => {
-            if text(&r, "status") == "unknown"
-                || present(&r, "acceptedTurnId")
-                || flag(&attempt, "submitted")
-            {
+            if text(&r, "status") == "unknown" || present(&r, "acceptedTurnId") {
                 return Ok(Decision::default());
             }
             let waits = r
@@ -214,10 +187,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             );
         }
         Action::DiskWait(reason) => {
-            if text(&r, "status") == "unknown"
-                || present(&r, "acceptedTurnId")
-                || flag(&attempt, "submitted")
-            {
+            if text(&r, "status") == "unknown" || present(&r, "acceptedTurnId") {
                 return Ok(Decision::default());
             }
             remove(&mut r, "claimedAt");
@@ -240,17 +210,8 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             );
             hold = Some("account-excluded");
         }
-        Action::Error {
-            attempt: receipt,
-            reason,
-            unknown,
-        } => {
-            if receipt != &attempt
-                || text(receipt, "action") != "capacity"
-                || receipt.get("capacityRetryId") != r.get("id")
-                || receipt.get("epoch") != agent.get("epoch")
-                || account(receipt) != account(&agent)
-            {
+        Action::Error { reason, unknown } => {
+            if !started {
                 return Ok(Decision::default());
             }
             patch(
@@ -258,25 +219,12 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                 json!({"status":if unknown{"unknown"}else{"failed"},"dueAt":null,"reason":reason}),
             );
         }
-        Action::Accepted {
-            attempt: receipt,
-            turn_id,
-        } => {
-            // The caller's transport receipt must name the persisted claim, epoch and account.
-            if text(receipt, "action") != "capacity"
-                || receipt != &attempt
-                || receipt.get("capacityRetryId") != r.get("id")
-                || receipt.get("epoch") != agent.get("epoch")
-                || account(receipt) != account(&agent)
-                || present(&r, "acceptedTurnId")
-            {
+        Action::Accepted { turn_id } => {
+            if !started {
                 return Ok(Decision::default());
             }
             r["acceptedTurnId"] = json!(turn_id);
-            patch(
-                &mut r,
-                json!({"status":"starting","reason":null,"dueAt":null}),
-            );
+            patch(&mut r, json!({"reason":null,"dueAt":null}));
             agent["capacityRetryCount"] = json!(
                 agent
                     .get("capacityRetryCount")
@@ -317,24 +265,26 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                         "/capacity/earlier-agent-state".into(),
                     ));
                 }
-                // Workspace, request, budget and slot admission belong to the turn driver.
-                // This pure intent must be checked and reserved by that driver in the same transaction.
+                // The follow-up input waits in the queue like any other input:
+                // the start gate, auth gate and admission of the ordinary
+                // start path decide when it starts, and the input is never
+                // claimed twice. The failure hold ends with the claim.
                 patch(
                     &mut r,
                     json!({"status":"starting","dueAt":null,"claimedAt":now,"reason":null}),
                 );
-                let attempt = json!({"id":format!("{CAPACITY_ATTEMPT_PREFIX}{}",text(&r,"id")),"epoch":agent["epoch"],"events":[],"action":"capacity","submitted":false,"capacityRetryId":r["id"],"accountKey":r["accountKey"]});
-                let epoch = agent["epoch"].clone();
-                patch(
-                    &mut agent,
-                    json!({"status":"starting","inFlight":true,"turnEpoch":epoch,"startAttempt":attempt}),
-                );
+                remove(&mut agent, "nativeFailureHold");
+                patch(&mut agent, json!({"status":"queued","error":null}));
                 r["updatedAt"] = json!(now);
                 agent["capacityRetry"] = r.clone();
+                let id = format!("{CAPACITY_FOLLOWUP_PREFIX}{}", text(&r, "id"));
                 return Ok(Decision {
                     agent: Some(agent),
                     record: Some(r),
-                    effects: vec![Effect::CapacityStart { attempt }],
+                    effects: vec![Effect::Followup {
+                        id,
+                        text: CONTINUATION.into(),
+                    }],
                     ..Decision::default()
                 });
             }

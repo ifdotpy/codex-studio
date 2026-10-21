@@ -292,6 +292,7 @@ pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, Scheduler
     Ok(lifecycle_transaction(store, move |transaction| {
         studio_runtime_store::agent_management::settle_orphaned_inputs(transaction)?;
         migrate_auth_probe_waits(transaction)?;
+        release_capacity_start_attempts(transaction, unix_now())?;
         let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
@@ -379,6 +380,61 @@ fn migrate_auth_probe_waits(transaction: &rusqlite::Transaction<'_>) -> Result<(
         AgentRepository::put(transaction, &agent)?;
     }
     Ok(())
+}
+
+/// One-time release of the retired capacity start attempts. Before capacity
+/// retries queued a follow-up input, a claim parked its agent `starting` with an
+/// unsent `capacity` start attempt that no worker ever claimed (the 512-agent
+/// run of 21 October 2026). Such a retry becomes due again at `now`, and its
+/// agent returns to its failed, held state, so the continuation tick claims it
+/// through the follow-up path. A submitted attempt is left to restart recovery.
+fn release_capacity_start_attempts(
+    transaction: &rusqlite::Transaction<'_>,
+    now: f64,
+) -> Result<(), StoreError> {
+    let ids = transaction
+        .prepare(
+            "SELECT id FROM runtime_agents WHERE json_extract(record,'$.startAttempt.action')='capacity' \
+             AND json_extract(record,'$.startAttempt.submitted')=0",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for id in ids {
+        let Some(row) = AgentRepository::get(transaction, &AgentId::from(id.as_str()))? else {
+            continue;
+        };
+        let mut agent = row.value();
+        let retry_id = agent["startAttempt"]["capacityRetryId"].clone();
+        let mut retry = agent["capacityRetry"].clone();
+        if retry["id"] == retry_id && retry["status"] == "starting" {
+            if let Some(record) = retry.as_object_mut() {
+                record.remove("claimedAt");
+            }
+            retry["status"] = json!("scheduled");
+            retry["dueAt"] = json!(now);
+            retry["updatedAt"] = json!(now);
+            studio_runtime_store::ContinuationRepository::put_record(
+                transaction,
+                studio_runtime_store::ContinuationTable::Capacity,
+                &id,
+                &retry,
+            )?;
+            agent["capacityRetry"] = retry;
+        }
+        if let Some(record) = agent.as_object_mut() {
+            record.remove("startAttempt");
+        }
+        agent["status"] = json!("failed");
+        agent["inFlight"] = json!(false);
+        studio_runtime_store::ContinuationRepository::put_agent(transaction, &agent)?;
+    }
+    Ok(())
+}
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
 
 /// Mirror Python's final per-agent startup cleanup after both recovery scans.
@@ -1400,6 +1456,96 @@ mod child_turn_parent_tests {
             .ok_or_else(|| StoreError::SchemaMismatch("child is missing".into()))
     }
 
+    /// A capacity claim parked by the retired start path (agent `starting`
+    /// with an unsent `capacity` attempt, as in the 512-agent run) is released
+    /// at startup; the due tick then queues its follow-up for the ordinary claim.
+    #[tokio::test]
+    async fn startup_releases_a_parked_capacity_claim_to_the_followup_path() {
+        for provider in ["codex", "claude"] {
+            let (_directory, store, intent) = seeded(provider).await;
+            let turn = json!({"id":TURN,"status":"failed",
+                "error":{"message":"429 Too Many Requests","codexErrorInfo":TOO_MANY_ATTEMPTS}});
+            assert!(
+                settle_staged(&store, &intent.attempt_id, turn)
+                    .await
+                    .expect("terminal settles")
+            );
+            let retry_id = child(&store)["capacityRetry"]["id"]
+                .as_str()
+                .expect("retry id")
+                .to_owned();
+            let parked = retry_id.clone();
+            store
+                .transaction(move |tx| {
+                    let mut agent = child_record(tx)?;
+                    let mut retry = agent.extra["capacityRetry"].clone();
+                    retry["status"] = json!("starting");
+                    retry["claimedAt"] = json!(15.0);
+                    retry["dueAt"] = Value::Null;
+                    studio_runtime_store::ContinuationRepository::put_record(
+                        tx,
+                        studio_runtime_store::ContinuationTable::Capacity,
+                        "child",
+                        &retry,
+                    )?;
+                    agent.status = AgentStatus::Starting;
+                    for (key, value) in [
+                        ("capacityRetry", retry),
+                        ("inFlight", json!(true)),
+                        (
+                            "startAttempt",
+                            json!({"id":format!("capacity:{parked}"),"epoch":1,"events":[],
+                                "action":"capacity","submitted":false,
+                                "capacityRetryId":parked,"accountKey":"default"}),
+                        ),
+                    ] {
+                        agent.extra.insert(key.into(), value);
+                    }
+                    AgentRepository::put(tx, &agent)
+                })
+                .await
+                .expect("parked claim writes");
+
+            recover_on_startup(&store).await.expect("startup recovery");
+            let released = child(&store);
+            assert_eq!(released["status"], "failed", "{provider}: {released}");
+            assert_eq!(released["inFlight"], false, "{provider}");
+            assert_eq!(released.get("startAttempt"), None, "{provider}");
+            assert_eq!(released["capacityRetry"]["status"], "scheduled");
+            assert_eq!(released["capacityRetry"].get("claimedAt"), None);
+            let due = released["capacityRetry"]["dueAt"].as_f64().expect("due");
+
+            store
+                .transaction(move |tx| {
+                    let staged =
+                        crate::continuation_runtime::stage_tick(tx, "child", due + 1.0, None)
+                            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                    assert!(staged.changed(), "the due tick claims the retry");
+                    Ok(())
+                })
+                .await
+                .expect("tick runs");
+            assert_eq!(status(&store, "child"), AgentStatus::Queued, "{provider}");
+            let claimed = store
+                .transaction(|tx| {
+                    claim_preparation_in_transaction(tx, "child", 1, "released", 30.0)
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+                })
+                .await
+                .expect("claim runs")
+                .expect("the follow-up is claimable");
+            assert_eq!(
+                claimed.events[0].id,
+                format!(
+                    "{}{retry_id}",
+                    crate::capacity_retry::CAPACITY_FOLLOWUP_PREFIX
+                ),
+                "{provider}"
+            );
+            assert!(parent_events(&store).is_empty(), "{provider}");
+        }
+    }
+
     #[tokio::test]
     async fn retried_capacity_failure_reports_only_the_retried_outcome() {
         const RETRY_TURN: &str = "turn-2";
@@ -1419,37 +1565,55 @@ mod child_turn_parent_tests {
                 "{provider}: a scheduled retry answers for the failed turn"
             );
 
-            // The retry claims its attempt, submits a new turn, and completes.
+            // The retry queues its follow-up; the ordinary claim starts it as a new turn.
             let retry_id = retry["id"].as_str().expect("retry id").to_owned();
-            let attempt_id = store
+            store
                 .transaction(move |tx| {
                     let staged = crate::continuation_runtime::stage_capacity_retry_observed(
                         tx, "child", &retry_id, 20.0, false, None,
                     )
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
                     assert!(staged.changed(), "the retry claims");
-                    tx.execute(
-                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
-                         VALUES('capacity-input','child','user','continue','reserved',20,1,NULL,NULL)",
-                        [],
-                    )?;
-                    let mut agent = child_record(tx)?;
-                    let attempt = agent
-                        .extra
-                        .get_mut("startAttempt")
-                        .ok_or_else(|| StoreError::SchemaMismatch("no capacity attempt".into()))?;
-                    attempt["events"] = json!(["capacity-input"]);
-                    attempt["submitted"] = json!(true);
-                    attempt["threadId"] = json!("thread");
-                    attempt["turnId"] = json!(RETRY_TURN);
-                    let attempt_id = attempt["id"].as_str().unwrap_or_default().to_owned();
-                    agent.status = AgentStatus::Running;
-                    agent.extra.insert("turnId".into(), json!(RETRY_TURN));
-                    AgentRepository::put(tx, &agent)?;
-                    Ok(attempt_id)
+                    Ok(())
                 })
                 .await
-                .expect("retry claims and submits");
+                .expect("retry claims");
+            assert_eq!(status(&store, "child"), AgentStatus::Queued, "{provider}");
+            let attempt_id = "retry-attempt".to_owned();
+            let intent = store
+                .transaction(|tx| {
+                    claim_preparation_in_transaction(tx, "child", 1, "retry-attempt", 20.0)
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+                })
+                .await
+                .expect("claim runs")
+                .expect("the follow-up is claimable");
+            assert_eq!(intent.events.len(), 1, "{provider}");
+            assert_eq!(intent.events[0].kind, "followup", "{provider}");
+            assert!(
+                mark_submitted_for_provider(&store, &intent, "retry-ticket", 1, "connection")
+                    .await
+                    .expect("submission marks")
+            );
+            let accepted = intent.clone();
+            store
+                .transaction(move |tx| {
+                    crate::continuation_runtime::stage_capacity_start(
+                        tx,
+                        "child",
+                        accepted.events.iter().map(|event| event.id.as_str()),
+                        crate::continuation_runtime::CapacityStartOutcome::Accepted {
+                            turn_id: RETRY_TURN,
+                        },
+                        21.0,
+                    )
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+                })
+                .await
+                .expect("the start receipt settles the retry");
+            settle_started_provider(&store, &intent, "retry-ticket", 1, RETRY_TURN)
+                .await
+                .expect("retried start settles");
             assert!(
                 settle_staged(
                     &store,
@@ -1459,6 +1623,8 @@ mod child_turn_parent_tests {
                 .await
                 .expect("retried turn settles")
             );
+            assert_eq!(child(&store)["capacityRetry"]["status"], "finished");
+            assert_eq!(child(&store)["capacityRetryCount"], 1);
             let events = parent_events(&store);
             assert_eq!(events.len(), 1, "{provider}: {events:?}");
             assert_eq!(events[0].0, "child:child:turn-2", "{provider}");

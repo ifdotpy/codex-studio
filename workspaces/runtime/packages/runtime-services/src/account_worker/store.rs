@@ -2719,8 +2719,8 @@ pub(super) fn delete_delivered_publications(
     Ok(())
 }
 
-/// One pass that deletes its delivered prefix in its own transaction.
-/// Settle a capacity retry's record with its `turn/start` outcome; other attempts stage nothing.
+/// Settle a capacity retry's record with the outcome of the `turn/start` that
+/// carried its follow-up input; other starts stage nothing.
 pub(super) fn stage_capacity_start(
     tx: &studio_runtime_store::Transaction<'_>,
     intent: &crate::scheduler::TurnIntent,
@@ -2729,14 +2729,14 @@ pub(super) fn stage_capacity_start(
     crate::continuation_runtime::stage_capacity_start(
         tx,
         &intent.agent_id,
-        &intent.attempt_id,
+        intent.events.iter().map(|event| event.id.as_str()),
         outcome,
         now(),
     )
-    .map(drop)
     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
 }
 
+/// One pass that deletes its delivered prefix in its own transaction.
 #[cfg(test)]
 pub(super) async fn drain_publications(
     store: Arc<RuntimeStore>,

@@ -169,17 +169,12 @@ fn preconditions_for_purpose(
     prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
-    let capacity_retry = record["startAttempt"]["action"] == "capacity"
-        && record["startAttempt"]["capacityRetryId"] == record["capacityRetry"]["id"]
-        && intent
-            .attempt_id
-            .starts_with(crate::capacity_retry::CAPACITY_ATTEMPT_PREFIX);
     if record["epoch"] != intent.epoch
         || (!allow_paused_start
             && (record["startAttempt"]["id"] != intent.attempt_id
                 || record["startAttempt"]["submitted"] != false
                 || record["autoWake"] != true))
-        || (record["nativeFailureHold"] == true && !capacity_retry)
+        || record["nativeFailureHold"] == true
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
     {

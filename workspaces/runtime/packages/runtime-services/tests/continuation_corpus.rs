@@ -65,13 +65,11 @@ fn unknown_capacity_never_resumes() {
         .find(|c| c["name"] == "capacity-restart-unknown-True")
         .expect("unknown fixture");
     let s = Snapshot::from_records(case["input"].clone()).expect("snapshot");
-    let foreign = json!({"id":"foreign","action":"capacity","capacityRetryId":"retry","epoch":1,"accountKey":"default"});
     assert!(
         capacity_retry::transition(
             &s,
             capacity_retry::Action::Error {
-                attempt: &foreign,
-                reason: "foreign receipt",
+                reason: "late start outcome",
                 unknown: false
             },
             1000.0
@@ -136,7 +134,7 @@ fn automatic_capacity_claim_and_late_completion_cannot_resurrect_cancelled_retry
     }
 }
 
-/// A claimed capacity retry follows its turn to a terminal state: the claim starts it, the
+/// A claimed capacity retry follows its turn to a terminal state: the claim queues its follow-up, the
 /// provider's positive receipt binds the turn, and that turn's completion finishes it.
 #[test]
 fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
@@ -164,16 +162,22 @@ fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
         },
     );
     assert_eq!(raw["record"]["status"], "starting");
-    let attempt = raw["agent"]["startAttempt"].clone();
+    assert_eq!(raw["agent"]["status"], "queued");
     step(
         &mut raw,
-        capacity_retry::Action::Accepted {
-            attempt: &attempt,
-            turn_id: "turn-2",
-        },
+        capacity_retry::Action::Accepted { turn_id: "turn-2" },
     );
     assert_eq!(raw["record"]["acceptedTurnId"], "turn-2");
     assert_eq!(raw["agent"]["capacityRetryCount"], 1);
+    // A replayed start receipt counts the attempt once.
+    let snapshot = Snapshot::from_records(raw.clone()).expect("accepted snapshot");
+    let replay = capacity_retry::transition(
+        &snapshot,
+        capacity_retry::Action::Accepted { turn_id: "turn-2" },
+        1000.0,
+    )
+    .expect("replay");
+    assert!(replay.record.is_none() && replay.agent.is_none());
     step(
         &mut raw,
         capacity_retry::Action::Completed {
@@ -210,12 +214,10 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
         .expect("claim");
         raw["record"] = claimed.record.expect("record");
         raw["agent"] = claimed.agent.expect("agent");
-        let attempt = raw["agent"]["startAttempt"].clone();
         let snapshot = Snapshot::from_records(raw).expect("claimed snapshot");
         let failed = capacity_retry::transition(
             &snapshot,
             capacity_retry::Action::Error {
-                attempt: &attempt,
                 reason: "start failed",
                 unknown,
             },

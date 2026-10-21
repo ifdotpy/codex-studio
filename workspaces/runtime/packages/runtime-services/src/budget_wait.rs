@@ -212,7 +212,7 @@ pub fn defer(
         && (!ids.is_empty()
             || !matches!(
                 attempt.get("action").and_then(Value::as_str),
-                Some("compact" | "review" | "capacity")
+                Some("compact" | "review")
             )))
         || (!action && ids.is_empty())
         || (action && !action_identity(a, attempt))

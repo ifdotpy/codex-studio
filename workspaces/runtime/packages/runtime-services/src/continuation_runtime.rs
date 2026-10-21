@@ -3,7 +3,7 @@
 
 use crate::{
     capacity_retry::{
-        self, Action as CapacityAction, CAPACITY_ATTEMPT_PREFIX, Failure as CapacityFailure,
+        self, Action as CapacityAction, CAPACITY_FOLLOWUP_PREFIX, Failure as CapacityFailure,
     },
     continuation::{
         ContinuationError, Decision, Effect, Result, Snapshot, account, flag, present, text,
@@ -14,15 +14,6 @@ use crate::{
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, Transaction};
-
-/// Tokens used by a team root and its members.
-static TEAM_TOKENS_USED_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!(
-        "SELECT COALESCE(SUM(CAST(COALESCE({},0) AS INTEGER)),0) \
-         FROM runtime_agents WHERE root_id=?1 OR id=?1",
-        studio_runtime_store::agent_volatile::field_sql("runtime_agents", "tokensUsed")
-    )
-});
 
 /// The exact settings copied by Python's `preparation_settings` helper.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,103 +115,22 @@ pub trait WakePort: Send + Sync {
     fn wake_events(&self, agent_id: &str, epoch: i64) -> Result<()>;
 }
 
-struct RuntimeCapacityAdmission;
-
-impl continuation_driver::CapacityAdmission for RuntimeCapacityAdmission {
-    fn check(&mut self, tx: &Transaction<'_>, snapshot: &Snapshot, _: &Value) -> Result<()> {
-        let agent = &snapshot.agent;
-        let agent_id = text(agent, "id");
-        let root_id = text(agent, "rootId");
-        let root = if agent_id == root_id {
-            agent
-        } else {
-            snapshot
-                .ancestors
-                .iter()
-                .find(|ancestor| text(ancestor, "id") == root_id)
-                .ok_or_else(|| ContinuationError::Invalid("/agent/rootId".into()))?
-        };
-        if present(agent, "deletedAt")
-            || !flag(agent, "autoWake")
-            || flag(agent, "inFlight")
-            || present(agent, "turnId")
-            || !matches!(text(agent, "status"), "failed" | "queued")
-            || !snapshot
-                .record
-                .as_ref()
-                .is_some_and(|record| snapshot.claims_valid(record))
-        {
-            return Err(ContinuationError::Unavailable(
-                "turn-driver/capacity-state-changed",
-            ));
-        }
-        if root
-            .get("excludedAccountKeys")
-            .and_then(Value::as_array)
-            .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(account(agent))))
-        {
-            return Err(ContinuationError::Unavailable(
-                "turn-driver/capacity-account-excluded",
-            ));
-        }
-        if agent_id != root_id && !snapshot.parents_running(false) {
-            return Err(ContinuationError::Unavailable(
-                "turn-driver/capacity-parent-not-running",
-            ));
-        }
-        let pending: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_requests \
-                 WHERE json_extract(record,'$.agent')=?1 \
-                 AND json_extract(record,'$.status') IN ('pending','answering','uncertain'))",
-                [agent_id],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        if pending {
-            return Err(ContinuationError::Unavailable(
-                "turn-driver/capacity-request-pending",
-            ));
-        }
-        let token_budget = root.get("tokenBudget").and_then(Value::as_u64);
-        if let Some(token_budget) = token_budget {
-            let used: i64 = tx
-                .query_row(&TEAM_TOKENS_USED_SQL, [root_id], |row| row.get(0))
-                .map_err(studio_runtime_store::StoreError::from)?;
-            if used >= token_budget.min(i64::MAX as u64) as i64 {
-                return Err(ContinuationError::Unavailable(
-                    "turn-driver/capacity-token-budget",
-                ));
-            }
-        }
-        let active_count =
-            studio_runtime_store::AgentIndexedReads::global_slots_in_use(tx, agent_id)?;
-        let global_limit = std::env::var("CODEX_CANVAS_CONCURRENCY")
-            .ok()
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(studio_runtime_schema::agent_limits::DEFAULT_GLOBAL_CONCURRENCY)
-            .max(studio_runtime_schema::agent_limits::MIN_GLOBAL_CONCURRENCY);
-        if active_count >= global_limit {
-            return Err(ContinuationError::Unavailable(
-                "turn-driver/capacity-global-slots",
-            ));
-        }
-        if agent_id != root_id {
-            let team_active =
-                studio_runtime_store::AgentIndexedReads::team_slots_in_use(tx, agent_id, root_id)?;
-            let team_limit = root.get("concurrency").and_then(Value::as_i64).unwrap_or(0);
-            if team_active >= team_limit {
-                return Err(ContinuationError::Unavailable(
-                    "turn-driver/capacity-team-slots",
-                ));
-            }
-        }
-        Ok(())
+/// Why a due capacity retry waits instead of queueing its follow-up: its agent
+/// still has a turn in flight, or an ancestor stopped. Slots, budget and the
+/// account's start throttle belong to the ordinary start path.
+fn capacity_claim_wait(snapshot: &Snapshot) -> Option<&'static str> {
+    let agent = &snapshot.agent;
+    if flag(agent, "inFlight")
+        || present(agent, "turnId")
+        || !matches!(text(agent, "status"), "failed" | "queued")
+    {
+        return Some("turn-driver/capacity-state-changed");
     }
+    (!snapshot.parents_running(false)).then_some("turn-driver/capacity-parent-not-running")
 }
 
-/// Claim an explicit or automatic retry only after its durable identity and
-/// scheduler admission gates pass in the same transaction as the attempt write.
+/// Claim an explicit or automatic retry: queue its follow-up input in the same
+/// transaction as the claim, after its durable identity checks pass.
 pub fn stage_capacity_retry(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -320,65 +230,29 @@ pub fn stage_capacity_retry_observed(
                 "turn-driver/capacity-account-excluded",
             ));
         }
-        None => capacity_retry::transition(
-            &snapshot,
-            CapacityAction::Claim {
-                settings: &settings,
-                automatic,
-            },
-            now,
-        )?,
-    };
-    let mut fault = continuation_driver::NoFault;
-    let mut admission = RuntimeCapacityAdmission;
-    let mut hooks = continuation_driver::DriverHooks {
-        fault: &mut fault,
-        capacity_admission: &mut admission,
-    };
-    let changed = decision
-        .agent
-        .as_ref()
-        .is_some_and(|agent| agent != &snapshot.agent)
-        || decision
-            .record
-            .as_ref()
-            .is_some_and(|record| snapshot.record.as_ref() != Some(record));
-    let mut staged = empty_stage(tx, agent_id)?;
-    if changed {
-        let applied = continuation_driver::apply_in_transaction_with_hooks(
-            tx,
-            &snapshot,
-            ContinuationTable::Capacity,
-            &decision,
-            now,
-            &mut hooks,
-        );
-        match applied {
-            Err(ContinuationError::Unavailable(reason)) => {
-                let deferred =
-                    capacity_retry::transition(&snapshot, CapacityAction::Wait(reason), now)?;
-                let mut staged = empty_stage(tx, agent_id)?;
-                collect_apply(
-                    tx,
-                    &mut staged,
-                    ContinuationTable::Capacity,
-                    &snapshot,
-                    deferred,
-                    now,
-                )?;
-                return Ok(staged);
+        None => match capacity_claim_wait(&snapshot) {
+            Some(reason) => {
+                capacity_retry::transition(&snapshot, CapacityAction::Wait(reason), now)?
             }
-            Err(error) => return Err(error),
-            Ok(()) => {}
-        }
-        staged.changed = true;
-        add_account_wake(
-            &mut staged,
-            agent_id,
-            snapshot.agent["epoch"].as_i64().unwrap_or(-1),
-        );
-        staged.effects.extend(decision.effects);
-    }
+            None => capacity_retry::transition(
+                &snapshot,
+                CapacityAction::Claim {
+                    settings: &settings,
+                    automatic,
+                },
+                now,
+            )?,
+        },
+    };
+    let mut staged = empty_stage(tx, agent_id)?;
+    collect_apply(
+        tx,
+        &mut staged,
+        ContinuationTable::Capacity,
+        &snapshot,
+        decision,
+        now,
+    )?;
     Ok(staged)
 }
 
@@ -434,38 +308,28 @@ pub enum CapacityStartOutcome<'a> {
     Failed { reason: &'a str, unknown: bool },
 }
 
-/// Persist the outcome of the capacity attempt in the same transaction as the
-/// provider's `turn/start` settlement. `attempt_id` is the settled attempt;
-/// any attempt that is not a capacity retry stages nothing.
-pub fn stage_capacity_start(
+/// Persist the outcome of a capacity retry's `turn/start` in the same
+/// transaction as the provider's settlement. `event_ids` are the inputs that
+/// start carried; a start without the retry's follow-up stages nothing.
+pub fn stage_capacity_start<'a>(
     tx: &Transaction<'_>,
     agent_id: &str,
-    attempt_id: &str,
+    mut event_ids: impl Iterator<Item = &'a str>,
     outcome: CapacityStartOutcome<'_>,
     now: f64,
-) -> Result<Staged> {
-    let mut staged = empty_stage(tx, agent_id)?;
-    let Some(retry_id) = attempt_id.strip_prefix(CAPACITY_ATTEMPT_PREFIX) else {
-        return Ok(staged);
+) -> Result<()> {
+    let Some(retry_id) = event_ids.find_map(|id| id.strip_prefix(CAPACITY_FOLLOWUP_PREFIX)) else {
+        return Ok(());
     };
     let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
-    let attempt = snapshot
-        .agent
-        .get("startAttempt")
-        .cloned()
-        .unwrap_or(Value::Null);
     let action = match outcome {
-        CapacityStartOutcome::Accepted { turn_id } => CapacityAction::Accepted {
-            attempt: &attempt,
-            turn_id,
-        },
-        CapacityStartOutcome::Failed { reason, unknown } => CapacityAction::Error {
-            attempt: &attempt,
-            reason,
-            unknown,
-        },
+        CapacityStartOutcome::Accepted { turn_id } => CapacityAction::Accepted { turn_id },
+        CapacityStartOutcome::Failed { reason, unknown } => {
+            CapacityAction::Error { reason, unknown }
+        }
     };
     let decision = capacity_retry::transition(&snapshot, action, now)?;
+    let mut staged = empty_stage(tx, agent_id)?;
     collect_apply(
         tx,
         &mut staged,
@@ -473,8 +337,7 @@ pub fn stage_capacity_start(
         &snapshot,
         decision,
         now,
-    )?;
-    Ok(staged)
+    )
 }
 
 /// Stage all durable continuation state in the transaction that settles the

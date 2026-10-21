@@ -1,13 +1,14 @@
-//! A capacity retry's `turn/start` outcome settles its record through the account worker's
-//! store, for both providers: an accepted start binds the turn and the turn's completion finishes the record,
-//! a rejected start ends it `failed`, and a reply without a turn id ends it `unknown`. Every
-//! outcome counts the attempt once it is accepted.
+//! The outcome of the `turn/start` that carried a capacity retry's follow-up
+//! input settles its record through the account worker's store, for both
+//! providers: an accepted start binds the turn and the turn's completion
+//! finishes the record, a rejected start ends it `failed`, and a reply without
+//! a turn id ends it `unknown`. Only an accepted start counts the attempt.
 use super::auth_hold::{agents, record_of};
 use super::*;
 use crate::capacity_retry::{self, Action, Failure};
 use crate::continuation::Snapshot;
 use crate::continuation_runtime::CapacityStartOutcome;
-use crate::scheduler::TurnIntent;
+use crate::scheduler::{TurnEvent, TurnIntent};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::{ContinuationRepository, ContinuationTable};
 
@@ -15,7 +16,7 @@ const PREVIOUS_TURN: &str = "previous-turn";
 const NOW: f64 = 1000.0;
 
 /// Claim a scheduled capacity retry of the fixture agent as the continuation driver does:
-/// the agent is `starting` with the retry's unsent `capacity` attempt.
+/// the record is `starting` and the agent is queued for the retry's follow-up input.
 async fn claim_retry(state: &State) -> String {
     let agent = state.agent.clone();
     state
@@ -112,9 +113,13 @@ async fn retry_of(state: &State, id: &str) -> Value {
         .clone()
 }
 
-/// Settle the retry's `turn/start` outcome in one transaction, as the worker does.
+/// Settle the outcome of the `turn/start` that carried the retry's follow-up in one
+/// transaction, as the worker does.
 async fn settle(state: &State, id: &str, outcome: CapacityStartOutcome<'static>) {
-    let (agent, attempt) = (state.agent.clone(), format!("capacity:{id}"));
+    let (agent, followup) = (
+        state.agent.clone(),
+        format!("{}{id}", capacity_retry::CAPACITY_FOLLOWUP_PREFIX),
+    );
     let (epoch, thread) = (state.epoch, "fake-thread-0");
     state
         .bridge
@@ -124,13 +129,21 @@ async fn settle(state: &State, id: &str, outcome: CapacityStartOutcome<'static>)
                     let intent = TurnIntent {
                         agent_id: agent,
                         epoch,
-                        attempt_id: attempt,
+                        attempt_id: "attempt".into(),
                         account_key: "default".into(),
                         provider: ProviderKind::Codex,
                         thread_id: Some(thread.into()),
                         cwd: None,
                         model: None,
-                        events: Vec::new(),
+                        events: vec![TurnEvent {
+                            id: followup,
+                            kind: "followup".into(),
+                            text: capacity_retry::CONTINUATION.into(),
+                            created: NOW,
+                            epoch,
+                            error: None,
+                            metadata: json!({}),
+                        }],
                         radio_authorized: false,
                     };
                     Ok::<_, WorkerError>(store::stage_capacity_start(tx, &intent, outcome)?)
