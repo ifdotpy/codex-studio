@@ -1,4 +1,4 @@
-//! First-pass account-worker recovery for a restart-held input receipt.
+//! First-pass account recovery for restart-held input and disconnected turns.
 use super::{AccountCommand, StoreBridge};
 use crate::{
     account_worker::retained::{RequestActor, consumers::HistoryPort},
@@ -91,11 +91,10 @@ async fn reconcile_first_pass(
     while !cursor.swept() {
         let jobs = load_recovery_jobs(&store, account, &mut cursor).await?;
         for job in jobs {
-            // Python's connection recovery service reconciles each restart turn
-            // automatically from native history (`codex_connection_recovery.tick`).
-            let restart_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
-                if snapshot.eligibility().restart_turn);
-            if restart_turn
+            // Restart and provider loss share the same guarded native-history pass.
+            let recovery_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
+                if snapshot.eligibility().restart_turn || snapshot.eligibility().transport_turn);
+            if recovery_turn
                 && matches!(&job, RecoveryJob::Connection { snapshot, .. }
                 if !crate::image_workspace::restart_follow_up_allowed(
                     snapshot.record(),
@@ -105,7 +104,7 @@ async fn reconcile_first_pass(
                 continue;
             }
             let mut history_id = None;
-            let job = if restart_turn {
+            let job = if recovery_turn {
                 let RecoveryJob::Connection {
                     snapshot,
                     automatic,
@@ -114,9 +113,7 @@ async fn reconcile_first_pass(
                     continue;
                 };
                 let check = automatic_check_id(&snapshot, &scope);
-                let Some(snapshot) =
-                    claim_automatic_restart_check(&store, snapshot, &check).await?
-                else {
+                let Some(snapshot) = claim_automatic_check(&store, snapshot, &check).await? else {
                     continue;
                 };
                 history_id = Some(check);
@@ -135,7 +132,7 @@ async fn reconcile_first_pass(
                 {
                     snapshot
                 }
-                RecoveryJob::Connection { snapshot, .. } if restart_turn => snapshot,
+                RecoveryJob::Connection { snapshot, .. } if recovery_turn => snapshot,
                 _ => continue,
             };
             let agent = snapshot.record()["id"]
@@ -177,7 +174,7 @@ async fn reconcile_first_pass(
             );
             let mut reader =
                 RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
-            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> = if restart_turn {
+            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> = if recovery_turn {
                 super::connection_recovery::lifecycle_completion(
                     &store,
                     account,
@@ -205,9 +202,9 @@ async fn reconcile_first_pass(
             scan.finish(&selected, std::time::Instant::now(), &outcome)?;
             let outcome = match outcome {
                 Ok(outcome) => outcome,
-                // An unreadable restart turn keeps its interrupted state and its
+                // An unreadable turn keeps its interrupted state and its
                 // error; the user's next message still runs. Later rows proceed.
-                Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) if restart_turn => {
+                Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) if recovery_turn => {
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -253,7 +250,7 @@ fn automatic_check_id(snapshot: &RecoverySnapshot, scope: &ConnectionScope) -> S
 
 /// Claim the automatic native-history check `check` (see [`automatic_check_id`]).
 /// A manual connection check and the user's next message remain available.
-async fn claim_automatic_restart_check(
+async fn claim_automatic_check(
     store: &Arc<RuntimeStore>,
     snapshot: RecoverySnapshot,
     check: &str,
@@ -264,15 +261,20 @@ async fn claim_automatic_restart_check(
         .to_owned();
     let check = check.to_owned();
     let expected = snapshot.record().clone();
+    let marker_key = if snapshot.eligibility().restart_turn {
+        "restartRecovery"
+    } else {
+        "disconnectRecovery"
+    };
     crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
             return Ok(None);
         };
         let mut current = agent.value();
-        if current != expected || current["restartRecovery"]["automaticCheck"] == check.as_str() {
+        if current != expected || current[marker_key]["automaticCheck"] == check.as_str() {
             return Ok(None);
         }
-        current["restartRecovery"]["automaticCheck"] = json!(check);
+        current[marker_key]["automaticCheck"] = json!(check);
         let snapshot = RecoverySnapshot::from_record(current.clone())?;
         AgentRepository::put(
             tx,

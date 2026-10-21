@@ -896,7 +896,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line)",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(account_worker::tests::retained::automatic_recovery_)",
           ],
         ],
         [

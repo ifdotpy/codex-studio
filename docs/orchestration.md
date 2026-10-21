@@ -716,11 +716,16 @@ The runtime stores agents, events, transcripts, command watches and approval req
 in `runtime_*` tables in `canvas.sqlite3`. Existing chat tables remain intact.
 Only one runtime can own the state directory. SQLite uses write-ahead logging.
 
-After a server restart, queued input and verified interrupted work can resume.
-Continuation requires the original permission and authoritative native evidence.
-An unacknowledged delivery stays uncertain and is not replayed. Command watches
-without a definitive result remain lost. See [restart recovery](restart-recovery.md)
-for the persistence contract and exact limits.
+After a backend restart or provider disconnect:
+
+1. Leads and workers use the same automatic native-history check for their saved turn.
+2. An authorized turn confirmed interrupted gets one guarded follow-up to continue
+   its existing task; the original input is never sent again.
+3. Explicit Stop, pause, deletion, changed epochs and native failure holds block continuation.
+4. Unknown native outcomes stay held until native history proves what happened.
+5. Queued input keeps its order. Command watches without a definitive result remain lost.
+
+See [restart recovery](restart-recovery.md) for the persistence contract and limits.
 
 ## Codex features
 
