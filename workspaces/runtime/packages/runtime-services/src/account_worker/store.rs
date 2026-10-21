@@ -1686,6 +1686,19 @@ fn journal_one(
                     })?
                     .map(|identity| (identity, true))
                 }
+                // A turn the provider started on its own binds the idle agent.
+                None if method == "turn/started" => match turn {
+                    Some(turn) => SchedulerRepository::adopt_provider_turn(
+                        tx,
+                        account,
+                        entry.generation.0,
+                        thread,
+                        turn,
+                        expected_vm_actor.map(|(actor_id, _)| actor_id),
+                    )?
+                    .map(|identity| (identity, true)),
+                    None => None,
+                },
                 None => None,
             };
             if let Some((identity, bound)) = attempt {

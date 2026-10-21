@@ -64,7 +64,7 @@ async fn reply_rows(state: &State) -> (i64, i64) {
         .expect("reply row counts")
 }
 
-async fn running_tool_turn(
+pub(super) async fn running_tool_turn(
     state: &State,
     peer: &mut Peer,
     provider: studio_runtime_providers::ProviderKind,

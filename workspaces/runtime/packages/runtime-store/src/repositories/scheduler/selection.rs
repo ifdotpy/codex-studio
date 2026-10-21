@@ -1595,23 +1595,30 @@ pub(super) fn set_waiting(
     EventWriteRepository::set_agent_sync_lifecycle(transaction, agent_id, "waiting", false, None)
 }
 
-/// Event kinds that share one turn with neighboring input. Child results
-/// batch only on the preparation path, the one that renders them, so a lead
-/// receives results that arrive together in a single turn.
-fn shares_turn(kind: &str, child_results: bool) -> bool {
-    matches!(kind, "user" | "complaint") || (child_results && kind == "child_result")
+/// Event kinds that share one turn with neighboring input. On the preparation
+/// path, the one that renders and authorizes every kind, all queued input
+/// shares the turn, as in Python `pending_batch`: an agent that comes back
+/// from a long turn reads every message that arrived meanwhile at once,
+/// instead of one message per turn, oldest first, acting on each old decision
+/// before it sees the newer one. Radio turns keep their own turn and policy.
+fn shares_turn(kind: &str, preparation: bool) -> bool {
+    if preparation {
+        !matches!(kind, "radio" | "radio_turn")
+    } else {
+        matches!(kind, "user" | "complaint")
+    }
 }
 
 pub(super) fn select_turn_batch(
     events: &[QueueEvent],
     metadata: &BTreeMap<String, Value>,
     limit: usize,
-    child_results: bool,
+    preparation: bool,
 ) -> Vec<QueueEvent> {
     let mut selected = Vec::new();
     let mut has_composer_input = false;
     for event in events.iter().take(limit.min(MAX_EVENTS_PER_TURN)) {
-        if !shares_turn(&event.kind, child_results) {
+        if !shares_turn(&event.kind, preparation) {
             break;
         }
         let meta = metadata.get(&event.id.0);
