@@ -78,7 +78,10 @@ test.each(["completed", "failed", "killed", "stopped"])(
       taskEvents()[2].params.item.arguments.description,
       "Build almost done",
     );
-    await fs.writeFile(path.join(bridge.root, ".finish"), status);
+    // The SDK polls for .finish, so publish it only after its status is complete.
+    const pending = path.join(bridge.root, ".finish-pending");
+    await fs.writeFile(pending, status);
+    await fs.rename(pending, path.join(bridge.root, ".finish"));
     const wake = await bridge.note(
       (n) => n.method === "turn/completed" && n.params.turn.id !== turn,
     );
