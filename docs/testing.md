@@ -748,12 +748,15 @@ starts the bundle's supervisor with the argument list of
 `codex_supervisor_service._macos_jobs`, and the backend with `tick` of the bundle's
 `recover_backend.py`, so the production launch path and environment are used. The
 default account of that state is the production default Codex home. Then it runs
-these flows in order:
+these flows in order. Before them, the `models` check waits up to `MODELS_SECONDS` while a
+fresh backend answers that its model catalog is pending. The flows test host
+execution only, because a fresh smoke state has no Linux VM. A flow that needs the
+lead stops at once when the lead fails.
 
 | Flow            | Pass condition                                                                                                                                                    |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sign-in`       | A new Codex sign-in returns an OpenAI device link and code, and the cancel makes it `cancelled`. No browser opens and the code is never printed.                  |
-| `agent turn`    | A new lead answers a fixed word and has a provider thread.                                                                                                        |
+| `agent turn`    | A new lead in a host worktree (`workspaceMode` `worktree`, `executionMode` `native`) answers a fixed word and has a provider thread.                              |
 | `orchestration` | A reviewer child calls `orchestration_send` to `parent` (a private room) and to `broadcast`; both messages reach the lead, and the child result reaches the lead. |
 | `resume`        | After the test stops the provider process of this smoke, the next message runs on the same thread with a new provider PID and recalls the first answer.           |
 
