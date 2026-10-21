@@ -1,3 +1,50 @@
+diff --git a/dist/cjs/incremental-write.js b/dist/cjs/incremental-write.js
+index 8c7c0d60f3a4b4615b5577c7bde7aad7bc579457..4323a9846abd078d6421342df75dae2d91598b5b 100644
+--- a/dist/cjs/incremental-write.js
++++ b/dist/cjs/incremental-write.js
+@@ -59,6 +59,9 @@ var IncrementalWriteQueue = exports.IncrementalWriteQueue = /*#__PURE__*/functio
+      */
+     var itemsById = this.queueByDocId;
+     this.queueByDocId = new Map();
++    // Studio backport of RxDB 17.6.0: a rejected storage write rejects its
++    // callers and releases the queue instead of blocking later writes forever.
++    try {
+     await Promise.all(Array.from(itemsById.entries()).map(async ([_docId, items]) => {
+       var oldData = findNewestOfDocumentStates(items.map(i => i.lastKnownDocumentState));
+       var newData = oldData;
+@@ -93,9 +96,17 @@ var IncrementalWriteQueue = exports.IncrementalWriteQueue = /*#__PURE__*/functio
+         document: newData
+       });
+     }));
+-    var writeResult = writeRows.length > 0 ? await this.storageInstance.bulkWrite(writeRows, 'incremental-write') : {
+-      error: []
+-    };
++    var writeResult;
++    try {
++      writeResult = writeRows.length > 0 ? await this.storageInstance.bulkWrite(writeRows, 'incremental-write') : {
++        error: []
++      };
++    } catch (err) {
++      itemsById.forEach(items => {
++        items.forEach(item => item.reject(err));
++      });
++    }
++    if (writeResult) {
+ 
+     // process success
+     await Promise.all((0, _rxStorageHelper.getWrittenDocumentsFromBulkWriteResponse)(this.primaryPath, writeRows, writeResult).map(result => {
+@@ -127,7 +138,10 @@ var IncrementalWriteQueue = exports.IncrementalWriteQueue = /*#__PURE__*/functio
+         items.forEach(item => item.reject(rxError));
+       }
+     });
+-    this.isRunning = false;
++    }
++    } finally {
++      this.isRunning = false;
++    }
+ 
+     /**
+      * Always trigger another run
 diff --git a/dist/cjs/rx-change-event.js b/dist/cjs/rx-change-event.js
 index 73a80a4de09a57a58750d8953027117714c0f2d0..69541f793d24f9642eac5d1d387f36e97a28d9ce 100644
 --- a/dist/cjs/rx-change-event.js
@@ -24,6 +71,53 @@ index 32b8007f4ef3b71d392b8f62fe1bc0d989fb1ca3..0d918ce6a8534722f7a08213ea0cdeb8
            return true;
          }
  
+diff --git a/dist/esm/incremental-write.js b/dist/esm/incremental-write.js
+index 8e6aa5f2d492fdc87aa36d7c46d48ec599e1aed1..59c9e08426775a6dabefb2259d0517d6eaaf8229 100644
+--- a/dist/esm/incremental-write.js
++++ b/dist/esm/incremental-write.js
+@@ -48,6 +48,9 @@ export class IncrementalWriteQueue {
+      */
+     var itemsById = this.queueByDocId;
+     this.queueByDocId = new Map();
++    // Studio backport of RxDB 17.6.0: a rejected storage write rejects its
++    // callers and releases the queue instead of blocking later writes forever.
++    try {
+     await Promise.all(Array.from(itemsById.entries()).map(async ([_docId, items]) => {
+       var oldData = findNewestOfDocumentStates(items.map(i => i.lastKnownDocumentState));
+       var newData = oldData;
+@@ -82,9 +85,17 @@ export class IncrementalWriteQueue {
+         document: newData
+       });
+     }));
+-    var writeResult = writeRows.length > 0 ? await this.storageInstance.bulkWrite(writeRows, 'incremental-write') : {
+-      error: []
+-    };
++    var writeResult;
++    try {
++      writeResult = writeRows.length > 0 ? await this.storageInstance.bulkWrite(writeRows, 'incremental-write') : {
++        error: []
++      };
++    } catch (err) {
++      itemsById.forEach(items => {
++        items.forEach(item => item.reject(err));
++      });
++    }
++    if (writeResult) {
+ 
+     // process success
+     await Promise.all(getWrittenDocumentsFromBulkWriteResponse(this.primaryPath, writeRows, writeResult).map(result => {
+@@ -116,7 +127,10 @@ export class IncrementalWriteQueue {
+         items.forEach(item => item.reject(rxError));
+       }
+     });
+-    this.isRunning = false;
++    }
++    } finally {
++      this.isRunning = false;
++    }
+ 
+     /**
+      * Always trigger another run
 diff --git a/dist/esm/rx-change-event.js b/dist/esm/rx-change-event.js
 index 0063a9ad8d09b871d66a8b2c2df2abd6f8dea739..b7c43f524e4ed48fc5efcb6e8b188fb42ca59938 100644
 --- a/dist/esm/rx-change-event.js

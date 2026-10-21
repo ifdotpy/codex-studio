@@ -8,7 +8,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // A WeakMap preserves identity reuse while allowing those objects to be collected.
 // Projection pulls must retain 409 conflicts for server-sequence comparison;
 // RxDB's automatic deleted-document reinsertion remains enabled elsewhere.
-// Recheck both runtime changes whenever the pinned RxDB version changes.
+// A rejected incremental storage write (for example, a full disk) must reject
+// its callers and release the queue; RxDB 17.6.0 has the same fix upstream.
+// Recheck these runtime changes whenever the pinned RxDB version changes.
 if (!global.gc) {
   const result = spawnSync(
     process.execPath,
@@ -23,6 +25,10 @@ const rxdbRoot =
   process.env.RXDB_TEST_ROOT ?? dirname(require.resolve("rxdb/package.json"));
 const delay = () => new Promise((resolve) => setTimeout(resolve, 10));
 const failures = [];
+// Unpatched RxDB leaves a rejected incremental write as an unhandled rejection.
+process.on("unhandledRejection", (error) => {
+  failures.push(`unhandled rejection: ${error?.stack ?? error}`);
+});
 
 async function testEventCache(format, implementation) {
   function makeBatch() {
@@ -134,6 +140,55 @@ async function testProjectionConflict(format) {
   );
 }
 
+async function testIncrementalWriteFailure(format) {
+  const queueFile = `${rxdbRoot}/dist/${format}/incremental-write.js`;
+  const { IncrementalWriteQueue } =
+    format === "esm"
+      ? await import(pathToFileURL(queueFile))
+      : require(queueFile);
+  let failNext = true;
+  const storageInstance = {
+    async bulkWrite(rows) {
+      if (failNext) {
+        failNext = false;
+        throw new Error("disk full");
+      }
+      return { error: [], success: rows.map((row) => row.document) };
+    },
+  };
+  const queue = new IncrementalWriteQueue(
+    storageInstance,
+    "id",
+    async () => {},
+    () => {},
+  );
+  const state = { id: "outbox-row", value: 0, _rev: "1-a" };
+  const settle = (work) =>
+    Promise.race([
+      work.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      ),
+      delay().then(() => ({ pending: true })),
+    ]);
+  const failed = await settle(
+    queue.addWrite(state, async (doc) => ({ ...doc, value: 1 })),
+  );
+  assert.equal(
+    failed.error?.message,
+    "disk full",
+    `${format}: a rejected storage write rejects its caller`,
+  );
+  const next = await settle(
+    queue.addWrite(state, async (doc) => ({ ...doc, value: 2 })),
+  );
+  assert.equal(
+    next.value?.value,
+    2,
+    `${format}: the next incremental write runs after a rejected write`,
+  );
+}
+
 for (const format of ["esm", "cjs"]) {
   const eventFile = `${rxdbRoot}/dist/${format}/rx-change-event.js`;
   const implementation =
@@ -143,6 +198,7 @@ for (const format of ["esm", "cjs"]) {
   for (const [name, verify] of [
     ["event cache", () => testEventCache(format, implementation)],
     ["projection conflict", () => testProjectionConflict(format)],
+    ["incremental write failure", () => testIncrementalWriteFailure(format)],
   ]) {
     try {
       await verify();
@@ -157,6 +213,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    "PASS: RxDB ESM/CJS caches release payloads and projection conflicts remain visible",
+    "PASS: RxDB ESM/CJS caches release payloads, projection conflicts remain visible, and failed incremental writes release the queue",
   );
 }
