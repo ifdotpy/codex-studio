@@ -213,6 +213,9 @@ fn inside(path: &Path, root: &Path) -> bool {
     real_path(path).starts_with(real_path(root))
 }
 
+/// An agent of this store with its image path and that image's file identity.
+type VolumeOwner<'a> = (&'a str, Option<&'a Path>, Option<(u64, u64)>);
+
 impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
     /// Whether an attached Studio volume is this state's concern: its image or
     /// a mount point lies in this store, or it belongs to an agent of this
@@ -221,7 +224,7 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
     fn owns_attachment(
         &self,
         attachment: &WorkspaceAttachment,
-        owners: &[(&str, Option<&Path>, Option<(u64, u64)>)],
+        owners: &[VolumeOwner<'_>],
     ) -> bool {
         attachment
             .image
