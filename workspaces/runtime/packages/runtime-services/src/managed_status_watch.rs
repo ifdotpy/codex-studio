@@ -114,8 +114,9 @@ impl RuleWatchFiles for LocalRuleWatchFiles {
         } else {
             Path::new(cwd).join(supplied)
         };
-        let resolved = crate::projects::resolve_nonstrict(&candidate)
-            .map_err(|_| RulesServiceError::FilePath)?;
+        let resolved =
+            studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(&candidate)
+                .map_err(|_| RulesServiceError::FilePath)?;
         Ok(resolved.to_string_lossy().into_owned())
     }
 
@@ -186,9 +187,11 @@ pub async fn model_directory(
     let resolved = inputs
         .iter()
         .map(|input| {
-            crate::projects::resolve_nonstrict(Path::new(&input.cwd))
-                .map(|path| (input.agent_id.clone(), path.to_string_lossy().into_owned()))
-                .map_err(|_| StatusError::InvalidArguments)
+            studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(Path::new(
+                &input.cwd,
+            ))
+            .map(|path| (input.agent_id.clone(), path.to_string_lossy().into_owned()))
+            .map_err(|_| StatusError::InvalidArguments)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let storage = crate::disk_space::storage_report(store.root(), &workspaces);

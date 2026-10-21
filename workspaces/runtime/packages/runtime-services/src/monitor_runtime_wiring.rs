@@ -26,7 +26,7 @@ use tokio::task::JoinHandle;
 use crate::monitor_driver::{self, InputRequest, MonitorNative, Submission};
 use crate::monitor_output::MonitorOutput;
 use crate::monitor_policy::{
-    Input, InputOutcome, MonitorError, MonitorSnapshot, Operation, ReattachProof,
+    Input, InputOutcome, MonitorError, MonitorSnapshot, Operation, ReattachOutcome,
 };
 use crate::monitor_receipts::{self, ResultReceipt};
 use crate::rules_engine::RuleCheck;
@@ -133,7 +133,12 @@ pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     fn reattach<'a>(
         &'a self,
         snapshot: &'a MonitorSnapshot,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>>;
+    ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>>;
+    /// Install the retained receipt future after the reattach transition commits.
+    /// This owns completion without a provider write or periodic status query.
+    fn await_exit(&self, _snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
+        Err(MonitorError::Unavailable("provider-session/monitor-result"))
+    }
     /// Reserve through the account owner, using liveness:{id}:{generation}.
     /// Return promptly; completion is delivered as MonitorEvent::Probe.
     fn probe<'a>(
@@ -160,8 +165,6 @@ struct Scan {
 }
 
 pub struct MonitorRuntime {
-    /// Wall time (unix seconds) after which unresolved reattach recoveries settle.
-    reattach_window_end: f64,
     store: Arc<RuntimeStore>,
     port: Arc<dyn MonitorPort>,
     output: MonitorOutput,
@@ -226,9 +229,6 @@ impl MonitorRuntime {
             hint_wake.notify_one();
         });
         Self {
-            reattach_window_end: event_write::unix_time().map_or(f64::INFINITY, |now| {
-                now + crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS
-            }),
             store,
             port,
             output: MonitorOutput::default(),
@@ -444,12 +444,10 @@ impl MonitorRuntime {
         self.loop_activity
             .deadline_reads
             .fetch_add(1, Ordering::SeqCst);
-        let reattach_window_end = self.reattach_window_end;
         self.store
-            .read_async(
-                "runtime-services/monitor_runtime_wiring",
-                move |connection| next_deadline_in(connection, reattach_window_end),
-            )
+            .read_async("runtime-services/monitor_runtime_wiring", |connection| {
+                next_deadline_in(connection)
+            })
             .await
     }
 
@@ -669,7 +667,7 @@ impl MonitorRuntime {
                     {
                         crate::monitor_policy::Effect::RuleFinished
                     } else {
-                        crate::monitor_policy::Effect::ExitEvent { wake: true }
+                        crate::monitor_policy::Effect::ExitEvent
                     },
                 );
                 monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)
@@ -682,29 +680,71 @@ impl MonitorRuntime {
         let ids = self
             .store
             .read_async("runtime-services/monitor_reattach", move |connection| {
-                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
+                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
                 let ids = query
                     .query_map((&after, BATCH as i64), |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, studio_runtime_store::StoreError>(ids)
             })
             .await?;
-        let expired = now >= self.reattach_window_end;
         for id in &ids {
-            if expired {
-                monitor_runtime::settle_reattach(&self.store, id, "reattach_window_expired", now)
-                    .await?;
-            } else {
-                let id_for_read = id.clone();
-                let (snapshot, _) = self
-                    .store
-                    .read_async("runtime-services/monitor_reattach", move |tx| {
-                        monitor_runtime::snapshot(tx, &id_for_read)
-                    })
-                    .await?;
-                if let Some(proof) = self.port.reattach(&snapshot).await? {
-                    monitor_runtime::reattach(&self.store, id, &proof, now).await?;
+            let id_for_read = id.clone();
+            let (snapshot, _) = self
+                .store
+                .read_async("runtime-services/monitor_reattach", move |tx| {
+                    monitor_runtime::snapshot(tx, &id_for_read)
+                })
+                .await?;
+            match self.port.reattach(&snapshot).await? {
+                ReattachOutcome::Running(proof) => {
+                    match monitor_runtime::reattach(&self.store, id, &proof, now).await? {
+                        crate::monitor_policy::ReattachDisposition::Cancel => {
+                            monitor_driver::cancel(&self.store, self.port.as_ref(), id, None, now)
+                                .await?;
+                            // Confirmed termination has already finished through cancel. An
+                            // unconfirmed termination has no exit waiter and must report uncertainty.
+                            monitor_runtime::reconcile_unknown(&self.store, id, now).await?;
+                            monitor_runtime::settle_reattach(
+                                &self.store,
+                                id,
+                                "termination_unconfirmed",
+                                now,
+                            )
+                            .await?;
+                            scan.monitor.clone_from(id);
+                            continue;
+                        }
+                        crate::monitor_policy::ReattachDisposition::AwaitExit => (),
+                    }
+                    if let Err(error) = self.port.await_exit(&snapshot) {
+                        monitor_runtime::reconcile_unknown(&self.store, id, now).await?;
+                        monitor_runtime::settle_reattach(
+                            &self.store,
+                            id,
+                            "retained_exit_unavailable",
+                            now,
+                        )
+                        .await?;
+                        return Err(error);
+                    }
                 }
+                ReattachOutcome::Gone(reason) => {
+                    monitor_runtime::settle_reattach(&self.store, id, &reason, now).await?
+                }
+                ReattachOutcome::Pending
+                    if snapshot
+                        .reconciliation_deadline()
+                        .is_some_and(|deadline| now >= deadline) =>
+                {
+                    monitor_runtime::settle_reattach(
+                        &self.store,
+                        id,
+                        "reattach_window_expired",
+                        now,
+                    )
+                    .await?;
+                }
+                ReattachOutcome::Pending | ReattachOutcome::TerminalQueued => (),
             }
             scan.monitor.clone_from(id);
         }
@@ -1027,10 +1067,7 @@ fn agent_commit_needs_tick_in(
 }
 
 /// The earliest persisted work deadline, in Unix seconds.
-fn next_deadline_in(
-    connection: &rusqlite::Connection,
-    reattach_window_end: f64,
-) -> Result<Option<f64>, MonitorError> {
+fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, MonitorError> {
     let monitor_deadline: Option<f64> = connection
         .query_row(
             "SELECT MIN(deadline) FROM (
@@ -1041,6 +1078,7 @@ fn next_deadline_in(
                 END AS deadline
                 FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
                 WHERE json_extract(m.record,'$.status')='running'
+                  AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND COALESCE(json_extract(m.record,'$.cancelRequested'),0)=0
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
@@ -1054,6 +1092,7 @@ fn next_deadline_in(
                 SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
                 FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
                 WHERE json_extract(m.record,'$.status')='running'
+                  AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
                   AND json_extract(a.record,'$.epoch')=json_extract(m.record,'$.epoch')
@@ -1129,12 +1168,11 @@ fn next_deadline_in(
     // An unresolved reattach recovery settles once its window ends.
     let reattach_deadline = connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running')",
-            [],
-            |row| row.get::<_, bool>(0),
+            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
+            [crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS],
+            |row| row.get::<_, Option<f64>>(0),
         )
-        .map_err(studio_runtime_store::StoreError::from)?
-        .then_some(reattach_window_end);
+        .map_err(studio_runtime_store::StoreError::from)?;
     Ok(earliest_deadline([
         monitor_deadline,
         rule_deadline,
@@ -1536,7 +1574,9 @@ fn register_rule_directories(
 mod tests {
     use super::{ERROR_RETRY_MIN, MonitorRuntime, record_tick_failure};
     use crate::monitor_driver::{MonitorNative, Submission};
-    use crate::monitor_policy::{Effect, MonitorError, MonitorSnapshot, Operation, ReattachProof};
+    use crate::monitor_policy::{
+        Effect, MonitorError, MonitorSnapshot, Operation, ReattachOutcome,
+    };
     use crate::monitor_runtime_wiring::{Delivery, InputReply};
     use crate::rules_engine::RuleCheck;
     use crate::rules_tick::{CheckReconciliation, CheckSubmission, RuleMonitor, RulesTickError};
@@ -1633,11 +1673,10 @@ mod tests {
         fn reattach<'a>(
             &'a self,
             _snapshot: &'a MonitorSnapshot,
-        ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>>
-        {
+        ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
             Box::pin(async {
                 self.reattach_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(None)
+                Ok(ReattachOutcome::Pending)
             })
         }
         fn probe<'a>(
@@ -2805,10 +2844,10 @@ mod tests {
         assert!(super::filesystem_event_needs_rescan(&event));
     }
 
-    fn lost_monitor(id: &str) -> serde_json::Value {
+    fn lost_monitor(id: &str, now: f64) -> serde_json::Value {
         serde_json::json!({
-            "id":id,"agent":"owner","epoch":0,"status":"lost",
-            "reattachRecovery":{"accountKey":"default","epoch":0,"status":"running"},
+            "id":id,"agent":"owner","epoch":0,"status":"running","command":"true",
+            "reattachRecovery":{"accountKey":"default","epoch":0,"status":"running","startedAt":now},
             "error":"Server restarted. Command outcome unknown; not rerun."
         })
     }
@@ -2818,8 +2857,8 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         let now = crate::event_write::unix_time().expect("fixture time");
-        let fresh = lost_monitor("fresh");
-        let stuck = lost_monitor("stuck");
+        let fresh = lost_monitor("fresh", now);
+        let stuck = lost_monitor("stuck", now);
         store
             .transaction_with(move |tx| {
                 for (id, record) in [("fresh", fresh), ("stuck", stuck)] {
@@ -2841,7 +2880,7 @@ mod tests {
             })
             .await
             .expect("persist lost monitors");
-        let mut runtime = MonitorRuntime::new(store.clone(), port.clone(), Arc::new(Notify::new()));
+        let runtime = MonitorRuntime::new(store.clone(), port.clone(), Arc::new(Notify::new()));
         runtime.scan.lock().await.recovering_rules = false;
         let status = |id: &'static str| -> String {
             let connection = store.test_reader().expect("reader");
@@ -2867,12 +2906,14 @@ mod tests {
         assert_eq!(status("stuck"), "running");
         assert_eq!(
             runtime.next_deadline().await.expect("deadline"),
-            Some(runtime.reattach_window_end)
+            Some(now + crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS)
         );
 
         // After the window each recovery settles once and is never offered again.
-        runtime.reattach_window_end = now - 1.0;
-        runtime.tick(now).await.expect("expiry tick");
+        runtime
+            .tick(now + crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS)
+            .await
+            .expect("expiry tick");
         assert_eq!(status("stuck"), "not_reattachable");
         assert_eq!(status("fresh"), "not_reattachable");
         let writes = store.writer_admissions();
@@ -2880,7 +2921,7 @@ mod tests {
             runtime.tick(now).await.expect("idle tick");
         }
         assert_eq!(store.writer_admissions(), writes);
-        assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 10);
+        assert_eq!(port.reattach_calls.load(Ordering::SeqCst), 12);
         assert_eq!(runtime.next_deadline().await.expect("deadline"), None);
     }
 }

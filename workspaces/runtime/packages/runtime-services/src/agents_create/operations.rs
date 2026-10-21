@@ -141,6 +141,23 @@ pub struct AgentAdmission {
 }
 
 pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
+/// The workspace mode of a new macOS lead chat whose request has no `workspaceMode`.
+/// Owner: `MACOS_LEAD_WORKSPACE_MODE` in `apps/server/src/codex_vm_agents.py`.
+const MACOS_LEAD_WORKSPACE_MODE: &str = "layr";
+/// The workspace mode of every other new top-level chat without `workspaceMode`: a task
+/// agent (`POST /api/agents`) and every chat on another system.
+/// Owner: `DEFAULT_WORKSPACE_MODE` in `apps/server/src/codex_vm_agents.py`.
+const DEFAULT_WORKSPACE_MODE: &str = "worktree";
+
+/// The workspace mode of a new top-level chat whose request omits it (`lead` is a
+/// `POST /api/leads` chat), as `codex_vm_agents.workspace_mode` selects it.
+fn default_workspace_mode(lead: bool) -> &'static str {
+    if lead && cfg!(target_os = "macos") {
+        MACOS_LEAD_WORKSPACE_MODE
+    } else {
+        DEFAULT_WORKSPACE_MODE
+    }
+}
 
 pub async fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true).await
@@ -160,11 +177,7 @@ pub async fn replay_lead_request(
     let workspace = request
         .workspace
         .as_deref()
-        .unwrap_or(if cfg!(target_os = "macos") {
-            "layr"
-        } else {
-            "worktree"
-        });
+        .unwrap_or(default_workspace_mode(true));
     let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
     let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
     let validate = std::sync::Arc::clone(&context.validate);
@@ -530,11 +543,7 @@ async fn create(
     let workspace = request
         .workspace
         .as_deref()
-        .unwrap_or(if draft && cfg!(target_os = "macos") {
-            "layr"
-        } else {
-            "worktree"
-        })
+        .unwrap_or(default_workspace_mode(draft))
         .to_owned();
     let requested_cwd = project_directory_async(request.cwd.clone()).await?;
     if !draft {
@@ -2912,7 +2921,9 @@ pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
     } else {
         PathBuf::from(value)
     };
-    super::canonical_project_directory(&path).map_err(OperationError::Invalid)
+    studio_runtime_store::path_identity::CanonicalPath::existing_utf8_directory(&path)
+        .map_err(|_| OperationError::Invalid("Select an existing project directory"))
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
@@ -3023,6 +3034,27 @@ async fn mutate(
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
+
+    #[test]
+    fn default_workspace_mode_matches_python_owner() {
+        let python = include_str!("../../../../apps/server/src/codex_vm_agents.py");
+        for expected in [
+            format!("MACOS_LEAD_WORKSPACE_MODE = \"{MACOS_LEAD_WORKSPACE_MODE}\""),
+            format!("DEFAULT_WORKSPACE_MODE = \"{DEFAULT_WORKSPACE_MODE}\""),
+        ] {
+            assert!(
+                python.lines().any(|line| line.trim() == expected),
+                "Python owner codex_vm_agents.py must declare {expected}"
+            );
+        }
+        assert_eq!(default_workspace_mode(false), DEFAULT_WORKSPACE_MODE);
+        let lead = if cfg!(target_os = "macos") {
+            MACOS_LEAD_WORKSPACE_MODE
+        } else {
+            DEFAULT_WORKSPACE_MODE
+        };
+        assert_eq!(default_workspace_mode(true), lead);
+    }
 
     #[test]
     fn limit_refusals_name_the_owned_bounds() {

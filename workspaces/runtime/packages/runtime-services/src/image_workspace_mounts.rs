@@ -10,6 +10,7 @@ use super::*;
 use studio_runtime_schema::shared_values::{
     IMAGE_MOUNT_PROBLEM_STATUSES, IMAGE_WORKSPACE_MARKER_NAME, IMAGE_WORKSPACE_MARKER_SCHEMA,
 };
+use studio_runtime_store::path_identity::PathEvidence;
 
 /// One attached disk image as the operating system reports it (`hdiutil info`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -68,34 +69,9 @@ fn file_identity(_path: Option<&Path>) -> Option<(u64, u64)> {
     None
 }
 
-/// `os.path.realpath`: resolve the existing ancestors, keep the missing tail.
-fn real_path(path: &Path) -> PathBuf {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
-    let mut tail = Vec::new();
-    let mut current = absolute.as_path();
-    loop {
-        if let Ok(resolved) = fs::canonicalize(current) {
-            return tail
-                .iter()
-                .rev()
-                .fold(resolved, |path: PathBuf, part| path.join(part));
-        }
-        match (current.parent(), current.file_name()) {
-            (Some(parent), Some(name)) => {
-                tail.push(name.to_os_string());
-                current = parent;
-            }
-            _ => return absolute,
-        }
-    }
-}
-
+/// Compare mount evidence with the owner's missing-tail compatibility rule.
 fn same_path(left: &Path, right: &Path) -> bool {
-    real_path(left) == real_path(right)
+    PathEvidence::ancestor(left) == PathEvidence::ancestor(right)
 }
 
 fn read_marker(mount: &Path) -> Option<Value> {
@@ -193,11 +169,11 @@ fn studio_attachment(attachment: &WorkspaceAttachment) -> bool {
 }
 
 fn base_staging_attachment(attachment: &WorkspaceAttachment, store: &Path) -> bool {
-    let Some(image) = attachment.image.as_deref().map(real_path) else {
+    let Some(image) = attachment.image.as_deref().map(PathEvidence::ancestor) else {
         return false;
     };
     let image = image.as_path();
-    let Ok(relative) = image.strip_prefix(real_path(store)) else {
+    let Ok(relative) = image.strip_prefix(PathEvidence::ancestor(store)) else {
         return false;
     };
     let parts = relative
@@ -213,7 +189,7 @@ fn base_staging_attachment(attachment: &WorkspaceAttachment, store: &Path) -> bo
 }
 
 fn inside(path: &Path, root: &Path) -> bool {
-    real_path(path).starts_with(real_path(root))
+    PathEvidence::ancestor(path).starts_with(PathEvidence::ancestor(root))
 }
 
 impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {

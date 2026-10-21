@@ -11,6 +11,7 @@ from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
 from codex_nested_delegation import (
     DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
 )
+from studio_api.sync.agent_progress_generated import AgentCommandProgress, AgentStall
 from studio_api.sync.preferences import UiPreferencesDto
 from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.sync.protocol_type_generated import SyncProtocolVersion
@@ -43,6 +44,7 @@ class AgentStatus(ContractStrEnum):
     PARKED = "parked"
     ABANDONED = "abandoned"
     CAPACITY_RETRY = "capacity-retry"
+    WAITING_ON_MONITOR = "waiting_on_monitor"
 
 
 class AgentSource(ContractStrEnum):
@@ -565,6 +567,10 @@ class MovePointerDto(ContractModel):
 
 
 class AgentEntityDto(ContractModel):
+    commandProgress: list[AgentCommandProgress] = Field(
+        default_factory=list, json_schema_extra={"default": []},
+    )
+    stall: AgentStall | None = None
     moveImportPending: bool = False
     movedTo: MovePointerDto | None = None
     movedFrom: MovePointerDto | None = None

@@ -1467,7 +1467,50 @@ RETAINED_LAUNCHER_ENVIRONMENT = frozenset({
 })
 
 
-def native_launch_environment(root, handle, command, env, cwd):
+# The reattach settle window and its read interval, in seconds. Their owner is
+# RETAINED_ENVIRONMENT_SETTLE and RETAINED_ENVIRONMENT_RETRY in
+# workspaces/runtime/packages/runtime-process/src/provider_task.rs; the parity
+# test in test_codex_process_supervisor_environment.py checks these copies.
+RETAINED_ENVIRONMENT_SETTLE_SECONDS = 5.0
+RETAINED_ENVIRONMENT_RETRY_SECONDS = 0.01
+
+
+def comparable_launch_environment(environment):
+    """The launch values that a retained child must keep exactly."""
+    return {key: value for key, value in environment.items()
+            if key not in BACKEND_ONLY_ENVIRONMENT and key not in RETAINED_LAUNCHER_ENVIRONMENT}
+
+
+def settled_launch_environment(pid, requested, stop=None):
+    """Read a retained child's launch environment until it matches `requested`.
+
+    A just-started child can show a launch record in transition: a zeroed
+    record during an exec (a Homebrew Python launcher re-executes itself), or
+    on macOS the Apple strings directly after the environment before libSystem
+    startup clears them. The next read corrects either one. At the end of the
+    settle window the last record is returned for the caller's exact check, or
+    the last read error is raised. A set `stop` event ends the wait.
+    """
+    deadline = time.monotonic() + RETAINED_ENVIRONMENT_SETTLE_SECONDS
+    while True:
+        failure = None
+        try:
+            original = process_launch_environment(pid)
+        except (OSError, ValueError) as error:
+            original, failure = None, error
+        if original is not None and comparable_launch_environment(original) == requested:
+            return original
+        if time.monotonic() >= deadline:
+            if failure is not None:
+                raise failure
+            return original
+        stopped = (stop.wait(RETAINED_ENVIRONMENT_RETRY_SECONDS) if stop is not None
+                   else time.sleep(RETAINED_ENVIRONMENT_RETRY_SECONDS))
+        if stopped:
+            raise RuntimeError('Supervisor reattach stopped before the native launch settled')
+
+
+def native_launch_environment(root, handle, command, env, cwd, *, stop=None):
     """Exclude backend ownership and diagnostics from native launch settings."""
     clean = dict(env)
     for key in BACKEND_ONLY_ENVIRONMENT:
@@ -1496,22 +1539,17 @@ def native_launch_environment(root, handle, command, env, cwd):
         return clean
     if not started or pid != identity_pid or not process_start_matches(pid, started, allow_legacy=True):
         raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
-    original = process_launch_environment(pid)
+    requested = comparable_launch_environment(clean)
+    original = settled_launch_environment(pid, requested, stop)
     if Supervisor.signature(command, original, cwd) != saved[0]:
         # A macOS Python launcher can add this marker after a script's exec.
         original.pop('__PYVENV_LAUNCHER__', None)
-    comparable = dict(original)
-    for key in BACKEND_ONLY_ENVIRONMENT:
-        comparable.pop(key, None)
     # Reattachment keeps the child's accepted launch, including its desktop
     # and locale settings. A launcher can supply different ambient values. These
     # values never replace the live child's settings; command, account,
     # credentials, provider options and process identity still match exactly.
-    for key in RETAINED_LAUNCHER_ENVIRONMENT:
-        comparable.pop(key, None)
-    requested = {key: value for key, value in clean.items()
-                 if key not in RETAINED_LAUNCHER_ENVIRONMENT}
-    if (comparable != requested or Supervisor.signature(command, original, cwd) != saved[0]
+    if (comparable_launch_environment(original) != requested
+            or Supervisor.signature(command, original, cwd) != saved[0]
             or not process_start_matches(pid, started, allow_legacy=True)):
         raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
     return original

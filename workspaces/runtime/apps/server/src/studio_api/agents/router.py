@@ -170,7 +170,7 @@ def create_router(context: ApiContext) -> APIRouter:
         request = body_data(body)
         if "workspaceMode" not in request:
             from codex_vm_agents import workspace_mode
-            request["workspaceMode"] = workspace_mode({}, creation=True)
+            request["workspaceMode"] = workspace_mode({}, lead=True)
         created = runtime.new_lead(request)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 
@@ -178,9 +178,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
-        if body.parent is None and "workspaceMode" not in request:
-            from codex_vm_agents import workspace_mode
-            request["workspaceMode"] = workspace_mode({}, creation=True)
+        # A request without workspaceMode gets DEFAULT_WORKSPACE_MODE of codex_vm_agents.
         created = runtime.create(request, parent=body.parent)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 

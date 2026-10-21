@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use axum::Extension;
 use rusqlite::OptionalExtension;
@@ -183,7 +184,7 @@ fn startup_registry(
             registry_path.display()
         )
     })?;
-    let registry_file = match registry_path.canonicalize() {
+    let registry_file = match CanonicalPath::existing(&registry_path) {
         Ok(path) if !path.starts_with(state_root) => {
             return Err("Cannot read the account registry outside the state directory".into());
         }
@@ -446,10 +447,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             ))
         })
         .await?;
-    let state_root = store.root().canonicalize()?;
+    let state_root = CanonicalPath::existing(store.root())?;
     // One disk gate watches state, worker workspace and build-output filesystems.
     studio_runtime_services::disk_space::install(
-        state_root.clone(),
+        state_root.clone().to_path_buf(),
         studio_runtime_services::disk_space::WorkerStorageConfig::from_environment()?,
     );
     let state_dir = state_root.to_string_lossy().into_owned();
@@ -929,7 +930,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                 Arc::clone(&store),
                 address.port(),
                 origin.clone(),
-                state_root.clone(),
+                state_root.clone().to_path_buf(),
                 Arc::clone(&peer_link_advert),
             )
         })
@@ -2406,7 +2407,8 @@ mod startup_registry_tests {
         let store = RuntimeStore::open(Some(state.path()))
             .await
             .expect("store opens beside the supervisor journal");
-        let state_root = store.root().canonicalize().expect("state root resolves");
+        let state_root = studio_runtime_store::path_identity::CanonicalPath::existing(store.root())
+            .expect("state root resolves");
         let codex_home = resolve_codex_home(Some(codex.path().as_os_str()), Path::new("/"))
             .expect("CODEX_HOME resolves");
 

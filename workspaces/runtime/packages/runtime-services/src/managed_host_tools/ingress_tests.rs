@@ -15,10 +15,11 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 const BASE_AGENT: &str = "{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}";
-const FIXTURE_MONITOR: &str = "{\"activityAt\": 19.0, \"activityGeneration\": 0, \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"bytes\": 0, \"command\": \"printf fixture\", \"created\": 19.0, \"cwd\": \"@cwd\", \"epoch\": 3, \"error\": \"Server restarted. Command outcome unknown; not rerun.\", \"exitCode\": null, \"id\": \"6a1cbd51-e035-54ce-af5c-7fd9850e3065\", \"interactive\": false, \"livenessCommand\": \"\", \"log\": \"@cwd/monitor-logs/6a1cbd51-e035-54ce-af5c-7fd9850e3065.log\", \"operation\": {\"accountKey\": \"default\", \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"connectionId\": \"connection\", \"epoch\": 3, \"requestId\": \"managed-monitor\"}, \"outputEventCount\": 0, \"outputEventIds\": [], \"outputEventSequence\": 0, \"outputPatterns\": [], \"reattachRecovery\": {\"accountKey\": \"default\", \"epoch\": 3, \"error\": null, \"finished\": null, \"status\": \"running\"}, \"requestId\": \"managed-monitor\", \"ruleId\": null, \"stallTimeoutSeconds\": 1800, \"stallWakeGeneration\": -1, \"status\": \"lost\", \"successExitCodes\": [0], \"tail\": \"\", \"timeout_ms\": 3600000, \"turnId\": \"turn-0\", \"wakeOn\": \"exit\"}";
+const FIXTURE_MONITOR: &str = "{\"activityAt\": 19.0, \"activityGeneration\": 0, \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"bytes\": 0, \"command\": \"printf fixture\", \"created\": 19.0, \"cwd\": \"@cwd\", \"epoch\": 3, \"error\": \"Server restarted. Command outcome unknown; not rerun.\", \"exitCode\": null, \"id\": \"6a1cbd51-e035-54ce-af5c-7fd9850e3065\", \"interactive\": false, \"livenessCommand\": \"\", \"log\": \"@cwd/monitor-logs/6a1cbd51-e035-54ce-af5c-7fd9850e3065.log\", \"operation\": {\"accountKey\": \"default\", \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"connectionId\": \"connection\", \"epoch\": 3, \"requestId\": \"managed-monitor\"}, \"outputEventCount\": 0, \"outputEventIds\": [], \"outputEventSequence\": 0, \"outputPatterns\": [], \"reattachRecovery\": {\"accountKey\": \"default\", \"epoch\": 3, \"status\": \"not_reattachable\", \"startedAt\": 19.0}, \"requestId\": \"managed-monitor\", \"ruleId\": null, \"stallTimeoutSeconds\": 1800, \"stallWakeGeneration\": -1, \"status\": \"lost\", \"successExitCodes\": [0], \"tail\": \"\", \"timeout_ms\": 3600000, \"turnId\": \"turn-0\", \"wakeOn\": \"exit\"}";
 const LEAD: &str = "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331";
 const WORKER: &str = "415ccbb7-cd04-444e-8599-af5c52da8e5e";
 const FOREIGN: &str = "787d59cc-071a-4918-990a-cb1dffba4e2f";
@@ -538,9 +539,9 @@ impl crate::monitor_runtime_wiring::MonitorPort for ScriptedRetainedMonitorPort 
         _snapshot: &'a crate::monitor_policy::MonitorSnapshot,
     ) -> futures_util::future::BoxFuture<
         'a,
-        Result<Option<crate::monitor_policy::ReattachProof>, crate::monitor_policy::MonitorError>,
+        Result<crate::monitor_policy::ReattachOutcome, crate::monitor_policy::MonitorError>,
     > {
-        Box::pin(async { Ok(None) })
+        Box::pin(async { Ok(crate::monitor_policy::ReattachOutcome::Pending) })
     }
     fn probe<'a>(
         &'a self,
@@ -2316,12 +2317,13 @@ fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
 #[tokio::test]
 async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let (_root, store, context) = fixture().await;
-    let project_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(4)
-        .unwrap()
-        .canonicalize()
-        .unwrap();
+    let project_path = CanonicalPath::existing(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(4)
+            .unwrap(),
+    )
+    .unwrap();
     let review_target = project_path.join("workspaces/runtime/apps/server");
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
     std::fs::create_dir_all(&home).unwrap();
@@ -2334,14 +2336,11 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let review_cwd = "~/review-target".to_owned();
     // A folder outside every Git repository, shared by both runtimes.
     let no_git_root = tempfile::tempdir().unwrap();
-    let no_git_folder = no_git_root
-        .path()
-        .canonicalize()
+    let no_git_folder = CanonicalPath::existing(no_git_root.path())
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    let review_directory = review_target
-        .canonicalize()
+    let review_directory = CanonicalPath::existing(&review_target)
         .unwrap()
         .to_string_lossy()
         .into_owned();

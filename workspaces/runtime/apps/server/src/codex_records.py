@@ -25,7 +25,7 @@ SafeNumber = Annotated[float, Field(ge=MIN_SAFE_INTEGER, le=MAX_SAFE_INTEGER)]
 AgentStatusValue = Literal[
     "unknown", "idle", "queued", "starting", "running", "waiting", "approval",
     "completed", "interrupted", "failed", "blocked", "paused", "parked",
-    "abandoned", "capacity-retry",
+    "abandoned", "capacity-retry", "waiting_on_monitor",
 ]
 AgentProviderValue = Literal["codex", "claude"]
 AgentRoleValue = Literal["lead", "worker", "orchestrator", "agent", "implementer", "reviewer"]

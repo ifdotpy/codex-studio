@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Instant;
+use studio_runtime_store::path_identity::LexicalPath;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -16,7 +17,7 @@ struct AgentAuthority {
     pub parent_id: Option<String>,
     pub is_lead: bool,
     pub deleted: bool,
-    pub resolved_cwd: Option<String>,
+    pub resolved_cwd: Option<LexicalPath>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -44,7 +45,7 @@ pub struct AuthorizationSnapshot {
     agents: BTreeMap<String, AgentAuthority>,
     rooms: BTreeMap<String, RoomAuthority>,
     complaints: BTreeMap<String, ComplaintAuthority>,
-    projects: BTreeMap<String, Vec<Vec<String>>>,
+    projects: BTreeMap<LexicalPath, Vec<Vec<String>>>,
     events: Vec<EventSnapshot>,
 }
 
@@ -111,7 +112,7 @@ impl AuthorizationSnapshot {
         let (Some(left), Some(right)) = (self.agents.get(left), self.agents.get(right)) else {
             return false;
         };
-        let Some(path) = left.resolved_cwd.as_deref().filter(|p| !p.is_empty()) else {
+        let Some(path) = left.resolved_cwd.as_deref() else {
             return false;
         };
         let lead = |agent: &AgentAuthority| {
@@ -397,7 +398,7 @@ impl AuthorizationSnapshot {
             return Err(invalid("recipient_id"));
         }
         let resolve =
-            |value: Option<&Value>, location: &str| -> Result<Option<String>, SnapshotError> {
+            |value: Option<&Value>, location: &str| -> Result<Option<LexicalPath>, SnapshotError> {
                 let Some(path) = optional_string(value, location)?.filter(|p| !p.trim().is_empty())
                 else {
                     return Ok(None);
@@ -405,20 +406,9 @@ impl AuthorizationSnapshot {
                 let resolved = rows
                     .resolved_paths
                     .get(&path)
-                    .filter(|p| {
-                        let path = std::path::Path::new(p);
-                        path.is_absolute()
-                            && path
-                                .components()
-                                .collect::<std::path::PathBuf>()
-                                .as_os_str()
-                                == p.as_str()
-                            && !path
-                                .components()
-                                .any(|c| matches!(c, std::path::Component::ParentDir))
-                    })
+                    .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
                     .ok_or_else(|| invalid(location))?;
-                Ok(Some(resolved.clone()))
+                Ok(Some(resolved))
             };
         let mut snapshot = Self {
             recipient_id: rows.recipient_id.clone(),
@@ -525,8 +515,8 @@ impl AuthorizationSnapshot {
                     teams.push(members);
                 }
             }
-            if path == *key {
-                snapshot.projects.insert(key.clone(), teams);
+            if path.to_str() == Some(key.as_str()) {
+                snapshot.projects.insert(path, teams);
             }
         }
         for event in &rows.events {

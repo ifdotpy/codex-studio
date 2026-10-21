@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use studio_runtime_process::{
     BackendId, BackendIdentity, CursorRequest, EventCursor, OpenRequest, SupervisorClient,
@@ -36,10 +37,10 @@ impl DisposableState {
         let directory = tempfile::Builder::new().prefix("rp-").tempdir().unwrap();
         // Supervisors compare the handshake state directory with their resolved
         // root; macOS temporary directories sit behind the /var symlink.
-        let path = directory.path().canonicalize().unwrap();
+        let path = CanonicalPath::existing(directory.path()).unwrap();
         assert_outside_runtime_state(&path);
         assert_socket_path_fits(&path.join(SOCKET));
-        Self(path, directory)
+        Self(path.to_path_buf(), directory)
     }
 
     pub(crate) fn socket(&self) -> PathBuf {

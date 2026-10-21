@@ -39,7 +39,8 @@ before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
 Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-Mac servers default to `layr`. Linux servers support `worktree` only.
+A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
+`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
 
 | Chat mode  | Environment                         | Worker workspace |
 | ---------- | ----------------------------------- | ---------------- |
@@ -78,7 +79,10 @@ When Codex uses code-mode cells for Studio tools, keep each returned cell ID.
 Use the exposed wait tool to collect the final result of each finished cell.
 A normal turn completion does not release a cell with an unread result.
 Before you finish your turn, collect these results.
-Use Studio monitors for long commands.
+Use `orchestration_monitor` as the only path for long commands, including
+checks and lead watchers. Native provider exec sessions have no Studio completion
+wake. If a native command yields a process session, collect its terminal result
+before ending the turn; never leave that unfinished work behind a final answer.
 Collect the monitor creation result before you finish its cell.
 If a cell still waits for an uncertain external result, save its ID in your checkpoint.
 Do not cancel the cell or repeat the external operation without checking its receipt.
@@ -145,7 +149,12 @@ Inspect the server before a replacement command with an unknown outcome.
 
 Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,
-signal, or a lost process. `wake_on` cannot suppress an exit event. Read the exit
+signal, or a lost process. Backend restart keeps the command active while
+reattach is unresolved; its real exit or a decided loss queues the same single
+terminal event. Turn completion with unfinished owned monitors leaves the agent
+in `waiting_on_monitor`. Every monitor exit can resume its owner through the
+ordinary event queue. Explicit stops, deletion, and epoch changes still apply.
+`wake_on` cannot suppress an exit event. Read the exit
 code, status, and output before claiming success. Inspect an uncertain command
 result before attempting a rerun. Set `success_exit_codes` when a nonzero code
 means success, for example `[0, 1]` for `grep` or `diff`.

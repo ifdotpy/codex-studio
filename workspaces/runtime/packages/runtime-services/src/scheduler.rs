@@ -1211,6 +1211,107 @@ mod child_turn_parent_tests {
     }
 
     #[tokio::test]
+    async fn monitor_completion_waits_after_turn_and_each_exit_queues_the_owner() {
+        for provider in ["codex", "claude"] {
+            let (directory, store, intent) = seeded(provider).await;
+            let log_root = directory
+                .path()
+                .join("monitor-logs")
+                .to_string_lossy()
+                .into_owned();
+            store
+                .transaction(move |tx| {
+                    let actor = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
+                    for key in ["first", "second"] {
+                        let monitor = crate::monitor_policy::create_record(
+                            &actor.value(),
+                            &json!({"command":"true"}),
+                            key,
+                            &log_root,
+                            2.0,
+                        )
+                        .expect("monitor admission");
+                        studio_runtime_store::monitor_runtime::put(tx, monitor)?;
+                    }
+                    Ok(())
+                })
+                .await
+                .expect("owned commands");
+            assert!(finish(&store, &intent, "completed").await);
+            assert_eq!(status(&store, "child"), AgentStatus::WaitingOnMonitor);
+            let ids: Vec<String> = store
+                .read_async("test/owned-monitors", |tx| {
+                    let mut query = tx.prepare("SELECT id FROM runtime_monitors ORDER BY id")?;
+                    query
+                        .query_map([], |row| row.get(0))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(StoreError::from)
+                })
+                .await
+                .expect("monitors");
+            // Every exit wakes; no special treatment of the last monitor.
+            for id in ids {
+                store
+                    .transaction(|tx| {
+                        let mut agent =
+                            AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
+                        agent.status = AgentStatus::WaitingOnMonitor;
+                        AgentRepository::put(tx, &agent)
+                    })
+                    .await
+                    .expect("wait for next command");
+                crate::monitor_runtime::cancel(&store, &id, Some("child"), 3.0)
+                    .await
+                    .expect("cancel pending command");
+                assert_eq!(status(&store, "child"), AgentStatus::Queued);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn monitor_completion_recovered_turn_keeps_owned_command_waiting() {
+        use crate::recovery_store::RecoveryDelivery;
+        for provider in ["codex", "claude"] {
+            let (directory, store, _intent) = seeded(provider).await;
+            let log_root = directory
+                .path()
+                .join("monitor-logs")
+                .to_string_lossy()
+                .into_owned();
+            store
+                .transaction(move |tx| {
+                    let mut agent =
+                        AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
+                    let monitor = crate::monitor_policy::create_record(
+                        &agent.value(),
+                        &json!({"command":"true"}),
+                        "recovery-monitor",
+                        &log_root,
+                        2.0,
+                    )
+                    .expect("monitor");
+                    studio_runtime_store::monitor_runtime::put(tx, monitor)?;
+                    agent.status = AgentStatus::Completed;
+                    agent.extra.insert("turnId".into(), Value::Null);
+                    agent.extra.insert("inFlight".into(), json!(false));
+                    let mut value = agent.value();
+                    crate::lifecycle_effects::ProductionRecoveryDelivery { at: 3.0 }
+                        .terminal(
+                            tx,
+                            &mut value,
+                            &json!({"id":TURN,"status":"completed","items":[]}),
+                            crate::recovery::CompletionMode::AutomaticConnection,
+                        )
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                    AgentRepository::put(tx, &AgentRecord::from_value(value)?)
+                })
+                .await
+                .expect("recovery terminal delivery");
+            assert_eq!(status(&store, "child"), AgentStatus::WaitingOnMonitor);
+        }
+    }
+
+    #[tokio::test]
     async fn completed_child_turn_notifies_and_wakes_the_parent_exactly_once() {
         for provider in ["codex", "claude"] {
             let (_directory, store, intent) = seeded(provider).await;
@@ -1237,6 +1338,28 @@ mod child_turn_parent_tests {
                 .expect("repeat notification runs");
             assert_eq!(parent_events(&store).len(), 1, "{provider}");
         }
+    }
+
+    #[tokio::test]
+    async fn completed_child_turn_reports_unsubmitted_assignment_once_with_final_text() {
+        let (_directory, store, intent) = seeded("codex").await;
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('task',?1)",
+                [json!({"id":"task","rootId":"lead","owner":"child","status":"running","updated":1}).to_string()])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(finish(&store, &intent, "completed").await);
+        let events = parent_events(&store);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "child:child:turn-1");
+        let payload: serde_json::Value = events[0].2.clone();
+        assert_eq!(payload["result"], "done");
+        let stall: studio_runtime_schema::agent_progress::AgentStall =
+            serde_json::from_value(payload["stall"].clone()).unwrap();
+        assert_eq!(stall.task_id, "task");
+        assert!(stall.since >= 1.0);
+        assert!(finish(&store, &intent, "completed").await);
+        assert_eq!(parent_events(&store).len(), 1);
     }
 
     #[tokio::test]

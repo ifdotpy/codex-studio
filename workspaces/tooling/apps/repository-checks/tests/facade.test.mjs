@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -37,6 +38,21 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
 
   assert.match(fast.command, /['"]--only['"]\s+['"]fast['"]/);
   assert.match(fast.command, /contracts-check/);
+  for (const recipe of [fast, comprehensive]) {
+    assert.match(recipe.command, /build-client-wasm\.mjs/);
+    assert.ok(
+      recipe.command.indexOf("build-client-wasm.mjs") <
+        recipe.command.indexOf("test-server.py"),
+    );
+  }
+  assert.match(
+    comprehensive.command,
+    /['"]build['"] ['"]--locked['"] ['"]--release['"] ['"]-p['"] ['"]studio-runtime-server['"]/,
+  );
+  assert.ok(
+    comprehensive.command.indexOf("studio-runtime-server") <
+      comprehensive.command.indexOf("test-server.py"),
+  );
   assert.match(fast.command, /boundaries-check/);
   assert.match(
     fast.command,
@@ -322,6 +338,7 @@ test("Cargo facade failures retain selection, test failure, install guidance and
     cargo,
     `#!/bin/sh
 printf '%s' "$CODEX_NODE" > "$FIXTURE_NODE_CAPTURE"
+printf '%s' "$CODEX_AGENTS_PYTHON" > "$FIXTURE_NODE_CAPTURE.python"
 case "$FIXTURE_CARGO_MODE" in
   fail) printf '%s\\n' '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}'; exit 100 ;;
   empty) echo 'error: no tests to run'; exit 4 ;;
@@ -330,6 +347,12 @@ esac
 `,
   );
   chmodSync(cargo, 0o755);
+  const resolver = path.join(
+    root,
+    "workspaces/runtime/apps/server/src/codex_python.py",
+  );
+  mkdirSync(path.dirname(resolver), { recursive: true });
+  writeFileSync(resolver, "print('/fixture/prepared-python')\n");
   const original = {
     PATH: process.env.PATH,
     CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
@@ -350,6 +373,10 @@ esac
     const empty = await execute(root, item, "missing_case", true);
     assert.equal(empty.exitCode, 1);
     assert.equal(readFileSync(nodeCapture, "utf8"), process.execPath);
+    assert.equal(
+      readFileSync(`${nodeCapture}.python`, "utf8"),
+      "/fixture/prepared-python",
+    );
     assert.deepEqual(empty.errors, [
       "nextest found no tests matching this selection",
     ]);
@@ -1109,6 +1136,121 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
         { package: "crate-b", reason: "reverse dependency of crate-a" },
       ],
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Exercise the real builder in a disposable checkout with executable witnesses;
+// no compiler, generated files, or installed host CLI can affect these cases.
+test("WASM preparation locates only the pinned CLI and builds before binding", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "studio-wasm-preparation-"));
+  const script = "workspaces/client/apps/web/scripts/build-client-wasm.mjs";
+  const manifest = "workspaces/client/packages/client-wasm/Cargo.toml";
+  const version = readFileSync(manifest, "utf8").match(
+    /^wasm-bindgen\s*=\s*"=([^"\s]+)"/m,
+  )[1];
+  const bin = path.join(root, "bin");
+  const cache = path.join(root, "cache");
+  const cargoHome = path.join(root, "cargo-home");
+  const log = path.join(root, "commands.jsonl");
+  function executable(file, body) {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `#!${process.execPath}\n${body}`);
+    chmodSync(file, 0o755);
+  }
+  mkdirSync(path.dirname(path.join(root, script)), { recursive: true });
+  mkdirSync(path.dirname(path.join(root, manifest)), { recursive: true });
+  writeFileSync(path.join(root, script), readFileSync(script));
+  writeFileSync(path.join(root, manifest), readFileSync(manifest));
+  executable(
+    path.join(bin, "cargo"),
+    `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2))+'\\n')`,
+  );
+  executable(
+    path.join(bin, "wasm-bindgen"),
+    "console.log('wasm-bindgen wrong-version')",
+  );
+  const env = {
+    ...process.env,
+    PATH: bin,
+    CARGO_HOME: cargoHome,
+    XDG_CACHE_HOME: cache,
+    CARGO_TARGET_DIR: path.join(root, "build"),
+  };
+  const run = () =>
+    spawnSync(process.execPath, [path.join(root, script)], {
+      env,
+      encoding: "utf8",
+    });
+  try {
+    const missing = run();
+    assert.notEqual(missing.status, 0);
+    assert.ok(
+      missing.stderr.includes(
+        `cargo install wasm-bindgen-cli --version ${version} --locked`,
+      ),
+    );
+    assert.throws(() => readFileSync(log));
+    const cli = path.join(
+      cache,
+      "codex-studio-rust-ui",
+      `wasm-bindgen-${version}`,
+      "bin",
+      "wasm-bindgen",
+    );
+    executable(
+      cli,
+      `if (process.argv[2] === '--version') console.log('wasm-bindgen ${version}'); else require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2))+'\\n')`,
+    );
+    const prepared = run();
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+    assert.deepEqual(calls[0], [
+      "build",
+      "-p",
+      "studio-client-wasm",
+      "--release",
+      "--target",
+      "wasm32-unknown-unknown",
+      "--locked",
+    ]);
+    assert.equal(
+      calls[1][0],
+      path.join(
+        env.CARGO_TARGET_DIR,
+        "wasm32-unknown-unknown/release/studio_client_wasm.wasm",
+      ),
+    );
+    assert.ok(
+      calls[1].includes("workspaces/client/apps/web/src/wasm/generated"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Playwright launcher removes the session BROWSER selector", () => {
+  const root = mkdtempSync(
+    path.join(os.tmpdir(), "studio-browser-environment-"),
+  );
+  const witness = path.join(root, "pnpm");
+  writeFileSync(
+    witness,
+    `#!${process.execPath}\nif ('BROWSER' in process.env) process.exit(17); console.log('isolated browser');`,
+  );
+  chmodSync(witness, 0o755);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PATH: root, BROWSER: "/session/studio-browser" },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /isolated browser/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

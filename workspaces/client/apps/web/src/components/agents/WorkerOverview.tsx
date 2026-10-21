@@ -43,6 +43,7 @@ export function workerState(
   deferred?: Set<string>,
 ) {
   const status = agent.status ?? "";
+  if (agent.stall) return "stalled";
   if (answers.has(agent.id)) return "answer";
   if (status === "approval")
     return deferred?.has(agent.id) ? "waiting" : "answer";
@@ -59,6 +60,7 @@ export function workerState(
 export const TEAM_STATES = [
   ["answer", "Need you"],
   ["attention", "Failed"],
+  ["stalled", "Stalled"],
   ["working", "Working"],
   ["waiting", "Waiting"],
   ["stopped", "Stopped"],

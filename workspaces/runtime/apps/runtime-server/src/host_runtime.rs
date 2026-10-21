@@ -35,6 +35,7 @@ use studio_runtime_services::{
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::path_identity::CanonicalPath;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -107,9 +108,9 @@ fn resolve_install_root_from_executable(
     #[cfg(debug_assertions)]
     {
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let source_root = source_root.canonicalize().map_err(|_| located())?;
+        let source_root = CanonicalPath::existing(&source_root).map_err(|_| located())?;
         if is_root(&source_root) {
-            return Ok(InstallRoot(source_root));
+            return Ok(InstallRoot(source_root.to_path_buf()));
         }
     }
     Err(located())
@@ -2017,12 +2018,12 @@ mod install_root_tests {
 
     #[test]
     fn bridge_and_server_source_match_install_layout_in_both_modes() {
-        let source_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .unwrap();
+        let source_checkout = studio_runtime_store::path_identity::CanonicalPath::existing(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+        )
+        .unwrap();
         let python_source = source_checkout.join("workspaces/runtime/apps/server/src");
-        let source_layout = InstallRoot(source_checkout.clone());
+        let source_layout = InstallRoot(source_checkout.clone().to_path_buf());
         assert_eq!(source_layout.server_source(), python_source);
         assert_eq!(
             source_layout.claude_bridge_dir(),
@@ -2063,10 +2064,10 @@ mod install_root_tests {
         #[cfg(debug_assertions)]
         assert_eq!(
             resolved.unwrap().workspace_root(),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../..")
-                .canonicalize()
-                .unwrap()
+            studio_runtime_store::path_identity::CanonicalPath::existing(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
+            )
+            .unwrap()
         );
         #[cfg(not(debug_assertions))]
         assert!(matches!(

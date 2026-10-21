@@ -5377,6 +5377,24 @@
               }
             ],
             "title": "Yolomode"
+          },
+          "commandProgress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCommandProgress"
+            },
+            "title": "Commandprogress",
+            "default": []
+          },
+          "stall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStall"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -6602,7 +6620,8 @@
                   "paused",
                   "parked",
                   "abandoned",
-                  "capacity-retry"
+                  "capacity-retry",
+                  "waiting_on_monitor"
                 ],
                 "type": "string"
               },
@@ -7291,7 +7310,8 @@
               "paused",
               "parked",
               "abandoned",
-              "capacity-retry"
+              "capacity-retry",
+              "waiting_on_monitor"
             ],
             "title": "Status",
             "type": "string"
@@ -9350,6 +9370,25 @@
             ],
             "default": null,
             "title": "Yolomode"
+          },
+          "commandProgress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCommandProgress"
+            },
+            "title": "Commandprogress",
+            "default": []
+          },
+          "stall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStall"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -9451,7 +9490,8 @@
           "paused",
           "parked",
           "abandoned",
-          "capacity-retry"
+          "capacity-retry",
+          "waiting_on_monitor"
         ],
         "title": "AgentStatus",
         "type": "string"
@@ -16878,6 +16918,25 @@
             ],
             "default": null,
             "title": "Yolomode"
+          },
+          "commandProgress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCommandProgress"
+            },
+            "title": "Commandprogress",
+            "default": []
+          },
+          "stall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStall"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -62779,6 +62838,54 @@
         ],
         "title": "MessageReceipt",
         "type": "object"
+      },
+      "AgentCommandProgress": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "monitorId": {
+            "type": "string",
+            "title": "Monitorid"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "startedAt": {
+            "type": "number",
+            "title": "Startedat"
+          },
+          "lastOutputLine": {
+            "type": "string",
+            "title": "Lastoutputline"
+          }
+        },
+        "required": [
+          "lastOutputLine",
+          "monitorId",
+          "stage",
+          "startedAt"
+        ],
+        "title": "AgentCommandProgress"
+      },
+      "AgentStall": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "title": "Taskid"
+          },
+          "since": {
+            "type": "number",
+            "title": "Since"
+          }
+        },
+        "required": [
+          "since",
+          "taskId"
+        ],
+        "title": "AgentStall"
       }
     }
   },

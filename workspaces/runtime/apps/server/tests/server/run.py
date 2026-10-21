@@ -89,8 +89,8 @@ SUPERVISOR_EXIT_HANG_GUARD_SECONDS = 60.0
 TEST_TMP_ROOT = Path(os.environ.get(
     "CODEX_SERVER_TEST_TMP_ROOT", Path.home() / ".cache" / "cs" / "st",
 )).expanduser()
-RUNNER_LOCK_PATH = Path.home() / ".cache" / "cs" / "st" / "runner-live.lock"
 REPOSITORY_KEY = hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
+RUNNER_LOCK_PATH = Path.home() / ".cache" / "cs" / "st" / f"runner-live-{REPOSITORY_KEY}.lock"
 PROFILE_PATH = RUNNER_LOCK_PATH.parent / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
 FOCUSED_SUITE_LIMIT = 1
@@ -219,6 +219,8 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
 FAST_SUITES = (
+    f"{TESTS_REL}/server/test_runner_lock.py",
+    f"{SOURCE_REL}/test_codex_records.py",
     f"{TESTS_REL}/server/test_delivery_contract.py",
     f"{TESTS_REL}/question-history-contract.py",
     f"{TESTS_REL}/queued-active-turn-recovery-contract.py",
@@ -231,6 +233,7 @@ FAST_SUITES = (
     f"{TESTS_REL}/server/test_route_manifest.py",
     f"{TESTS_REL}/server/test_http_backend_harness.py",
     f"{TESTS_REL}/server/test_fast_suite_selection.py",
+    f"{TESTS_REL}/server/test_host_exec_teardown.py",
 )
 HEAVY_SUITES = {
     f"{TESTS_REL}/native-fs-events-contract.py":
@@ -1098,6 +1101,59 @@ def _runner_artifact_root(temp_root):
     return artifact_root
 
 
+HOST_EXEC_TEARDOWN_SECONDS = 5.0
+
+
+def _suite_host_exec_processes(scratch):
+    """Find detached host services owned by this suite's private state paths."""
+    if os.name == "nt":
+        # Windows suite children are contained by the runner's kill-on-close job.
+        return set()
+    listing = subprocess.run(
+        [shutil.which("ps", path=os.defpath) or "/bin/ps", "-axo", "pid=,stat=,args="], check=True,
+        capture_output=True, text=True, timeout=HOST_EXEC_TEARDOWN_SECONDS,
+    )
+    state_prefix = str(Path(scratch).resolve()) + os.sep
+    owned = set()
+    for line in listing.stdout.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3 or fields[1].startswith("Z"):
+            continue
+        argv = fields[2].split()
+        for index, argument in enumerate(argv[:-1]):
+            if (Path(argument).name == "codex_host_exec_server.py"
+                    and argv[index + 1].startswith(state_prefix)):
+                owned.add(int(fields[0]))
+    return owned
+
+
+def _check_host_exec_teardown(scratch):
+    """Fail on an escaped service and stop only processes of this private suite."""
+    try:
+        leaked = _suite_host_exec_processes(scratch)
+        if not leaked:
+            return None
+        for pid in leaked:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + HOST_EXEC_TEARDOWN_SECONDS
+        remaining = leaked
+        while remaining and time.monotonic() < deadline:
+            remaining = leaked & _suite_host_exec_processes(scratch)
+            if remaining:
+                time.sleep(.02)
+        for pid in remaining:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        return f"host_exec children outlived suite teardown: {sorted(leaked)}"
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"could not verify host_exec teardown: {error}"
+
+
 def _cleanup_suite_scratch(scratch):
     """Remove one suite scratch folder; describe a failure instead of raising it."""
     try:
@@ -1307,7 +1363,7 @@ def _remove_owned_scratch_root(directory):
 
 @contextmanager
 def _runner_live_lock():
-    """Hold one per-user lock for the whole run; the kernel releases it on exit."""
+    """Serialize runs sharing a checkout; the kernel releases the lock on exit."""
     RUNNER_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with RUNNER_LOCK_PATH.open("a+b") as lock_file:
         import fcntl
@@ -1801,7 +1857,10 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             error, peak_rss = run_in_scratch(
                 Path(scratch.name), relative, kind, selectors, expected_ids)
         finally:
+            host_exec_error = _check_host_exec_teardown(scratch.name)
             cleanup_error = _cleanup_suite_scratch(scratch)
+        if host_exec_error:
+            error = f"{error}; {host_exec_error}" if error else host_exec_error
         if cleanup_error:
             error = f"{error}; {cleanup_error}" if error else cleanup_error
         return relative, error, time.monotonic() - suite_started, peak_rss

@@ -11,6 +11,7 @@ use std::{
     process::{Command as StdCommand, Stdio},
     time::Duration,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use tempfile::tempdir;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -56,7 +57,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     let prefix_guard = tempdir().unwrap();
     // Python resolves its module path, so its layout names the macOS
     // temporary folder through /private/var, not the /var link.
-    let prefix = prefix_guard.path().canonicalize().unwrap();
+    let prefix = CanonicalPath::existing(prefix_guard.path()).unwrap();
     let workspace = prefix.join("workspace");
     let binary_dir = workspace.join("bin");
     let scripts = workspace.join("scripts");
@@ -231,7 +232,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     // Exercise the source-checkout fallback too: Python's layout module points
     // at the providers bridge in a checkout, while installed packages use the
     // scripts/claude_bridge copy above.
-    let source = source.canonicalize().unwrap();
+    let source = CanonicalPath::existing(&source).unwrap();
     let source_workspace = source
         .ancestors()
         .nth(5)

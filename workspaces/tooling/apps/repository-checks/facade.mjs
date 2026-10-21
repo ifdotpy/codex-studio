@@ -799,6 +799,25 @@ function loadClassConditions() {
   );
 }
 
+function webWasmPreparation(root) {
+  return {
+    item: { name: "web WASM preparation", ecosystem: "pnpm" },
+    label: "web WASM preparation",
+    commands: [
+      [
+        "node",
+        [
+          path.join(
+            root,
+            "workspaces/client/apps/web/scripts/build-client-wasm.mjs",
+          ),
+        ],
+      ],
+    ],
+    options: { allowZeroTests: true },
+  };
+}
+
 function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
@@ -809,6 +828,7 @@ function fastTierCommands(root) {
     "workspaces/tooling/apps/repository-checks/facade.mjs",
   );
   return [
+    webWasmPreparation(root),
     {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
@@ -890,7 +910,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "monitor start preparation witnesses",
+      label: "monitor ownership, terminal wake, and recovery witnesses",
       commands: [
         [
           "cargo",
@@ -904,20 +924,30 @@ function fastTierCommands(root) {
             "libtest-json-plus",
             "-p",
             "studio-runtime-services",
+            "-p",
+            "studio-runtime-server",
+            "--bin",
+            "studio-runtime-server",
             "--test",
             "monitor_start_preparation",
+            "--test",
+            "monitor_wake_guarantees",
+            "--lib",
+            "-E",
+            "binary(monitor_start_preparation) | binary(monitor_wake_guarantees) | test(monitor_completion_) | test(reattached_exit_)",
           ],
         ],
       ],
       options: {
-        selector: "monitor start preparation ownership and progress conflicts",
+        selector:
+          "monitor start ownership and exactly-once terminal continuation",
         reason:
           "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
       },
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "Rust SQL filesystem boundary witnesses",
+      label: "Rust SQL boundary and agent progress witnesses",
       commands: [
         [
           "cargo",
@@ -931,17 +961,19 @@ function fastTierCommands(root) {
             "libtest-json-plus",
             "-p",
             "studio-runtime-services",
+            "-p",
+            "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
+            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
           ],
         ],
       ],
       options: {
         selector:
-          "nonempty work submission and unrelated reservation boundary witnesses",
+          "SQL callback boundaries and agent-list progress/turn-result witnesses",
         reason:
-          "Keep filesystem work outside SQLite without rejecting unrelated reservation changes.",
+          "Keep filesystem work outside SQLite and verify typed progress, idle assignments, and one parent result per completed turn.",
       },
     },
     {
@@ -970,16 +1002,16 @@ function comprehensiveTierCommands(root) {
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
+    webWasmPreparation(root),
     {
-      item: { name: "Rust HTTP fixture", ecosystem: "cargo" },
-      label: "Rust HTTP fixture build",
+      item: { name: "Rust HTTP fixture preparation", ecosystem: "cargo" },
+      label: "Rust HTTP fixture preparation",
       commands: [
         [
           "cargo",
           ["build", "--locked", "--release", "-p", "studio-runtime-server"],
         ],
       ],
-      // A build step has no test runner summary; its exit code is the result.
       options: { allowZeroTests: true, buildOnly: true },
     },
     { item: server, label: "server" },
@@ -1040,9 +1072,14 @@ function comprehensiveTierCommands(root) {
 }
 
 function fastTierRestCommands(root) {
-  return comprehensiveTierCommands(root)
-    .slice(1)
-    .filter(({ label }) => label !== "browser smoke subset");
+  return comprehensiveTierCommands(root).filter(
+    ({ label }) =>
+      ![
+        "server",
+        "Rust HTTP fixture preparation",
+        "browser smoke subset",
+      ].includes(label),
+  );
 }
 
 function fastTierRestNonRustCommands(root) {
@@ -1113,7 +1150,7 @@ export function recipePlan(root, name) {
       : "server --only heavy, then codex-agents-web test:browser",
     requiredSetup:
       name === "test-fast"
-        ? "Prepared checkout: pnpm install --frozen-lockfile and pnpm --filter codex-agents-web run build:wasm; managed Python runtime and development dependencies, Rust toolchain and cargo-nextest; no browser or model provider"
+        ? "Frozen pnpm dependencies; managed Python runtime and development dependencies, Rust toolchain, pinned wasm-bindgen CLI and cargo-nextest; web WASM is generated by the gate; no browser or model provider"
         : "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
     reason: fast
       ? name === "test-fast"
@@ -1485,6 +1522,15 @@ export function nextestSelectionError(exitCode) {
     : null;
 }
 
+function preparedPython(root) {
+  return runSync(
+    "python3",
+    [path.join(root, "workspaces/runtime/apps/server/src/codex_python.py")],
+    root,
+    "Prepared Python resolution",
+  ).trim();
+}
+
 export async function execute(
   root,
   item,
@@ -1534,6 +1580,7 @@ export async function execute(
                   // Rust Python-oracle tests must not resolve Node through a
                   // developer PATH that may traverse protected agent homes.
                   CODEX_NODE: process.execPath,
+                  CODEX_AGENTS_PYTHON: preparedPython(root),
                 }
               : {}),
           }
@@ -2393,6 +2440,7 @@ export async function main(argv = process.argv.slice(2)) {
                 ? {
                     NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
                     CODEX_NODE: process.execPath,
+                    CODEX_AGENTS_PYTHON: preparedPython(root),
                   }
                 : {}),
             }

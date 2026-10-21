@@ -52,6 +52,7 @@ ROUTING_ENVIRONMENT = ("CODEX_AGENTS_SUPERVISOR_MODE", "CODEX_AGENTS_STATE_DIR",
 ACK_SAMPLE_SECONDS = 3.0
 # Seconds that each flow may take. Flows run one after another.
 STACK_START_SECONDS = 120.0
+MODELS_SECONDS = 90.0
 SIGN_IN_SECONDS = 90.0
 TURN_SECONDS = 120.0
 TEAM_SECONDS = 240.0
@@ -65,6 +66,12 @@ TURN_TOKEN = "SMOKE_TURN_OK"
 ROOM_TOKEN = "SMOKE_ROOM_OK"
 BROADCAST_TOKEN = "SMOKE_BROADCAST_OK"
 CHILD_NAME = "Smoke Child"
+# The smoke tests host flows: the lead asks for a host worktree, so it never needs the
+# Linux VM, which a fresh smoke state does not have. These are the record fields that
+# the backend stores for that request.
+HOST_WORKSPACE = {"workspaceMode": "worktree"}
+HOST_RECORD = {"workspaceMode": "worktree", "executionMode": "native"}
+FAILED_STATUSES = ("failed", "paused", "interrupted")
 
 
 class CheckFailed(Exception):
@@ -484,6 +491,7 @@ class Flows:
         self.model = model
         self.effort = effort
         self.lead = ""
+        self.lead_answered = False
         self.thread = ""
 
     def agent(self, agent_id: str) -> dict[str, Any]:
@@ -511,7 +519,7 @@ class Flows:
         status, texts = "unknown", list[str]()
         while time.monotonic() < deadline:
             status, texts = self.answers(agent_id)
-            if status in ("failed", "paused", "interrupted"):
+            if status in FAILED_STATUSES:
                 error = self.agent(agent_id).get("error")
                 raise CheckFailed(f"agent {status}: {json.dumps(error)[:300]}")
             if status == "completed" and done(texts):
@@ -522,7 +530,19 @@ class Flows:
         raise CheckFailed(f"timed out after {seconds:.0f} s; status {status}, last answer: {last}")
 
     def models(self) -> str:
-        listing = self.backend.get("/api/models?account_key=default", timeout=60)
+        # A fresh backend answers 400 "Model catalog is pending" until its first
+        # native read finishes; the Python backend reads it in the background.
+        deadline = time.monotonic() + MODELS_SECONDS
+        while True:
+            try:
+                listing = self.backend.get("/api/models?account_key=default", timeout=60)
+                break
+            except Exception as error:
+                if (getattr(error, "status_code", None) != 400
+                        or "Model catalog is pending" not in str(error)
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(POLL_SECONDS)
         models = [item.get("id") for item in listing.get("data", []) if isinstance(item, dict)]
         if self.model not in models:
             raise CheckFailed(f"model {self.model} is not offered; offered: {', '.join(map(str, models))}")
@@ -557,18 +577,28 @@ class Flows:
 
     def turn(self) -> str:
         self.lead = str(uuid.uuid4())
-        self.backend.post("/api/agents", {
+        created = self.backend.post("/api/agents", {
             "id": self.lead, "name": "Smoke lead", "cwd": str(self.backend.work),
             "prompt": f"This is an automated smoke check. Do not use tools. Reply with exactly {TURN_TOKEN}.",
-            "model": self.model, "effort": self.effort})
+            "model": self.model, "effort": self.effort, **HOST_WORKSPACE})
+        modes = {key: created.get(key) for key in HOST_RECORD}
+        if modes != HOST_RECORD:
+            raise CheckFailed(f"the lead was created with {modes}, not the requested host flow {HOST_RECORD}")
         texts = self.wait_answer(self.lead, TURN_SECONDS, lambda texts: any(TURN_TOKEN in t for t in texts))
         self.thread = str(self.agent(self.lead).get("threadId") or "")
         if not self.thread:
             raise CheckFailed("the completed agent has no provider thread")
+        self.lead_answered = True
         return f"lead {self.lead[:8]} answered {texts[-1][:40]!r} on thread {self.thread[:13]}"
 
+    def lead_failed(self) -> None:
+        """Stop a wait at once when the lead can no longer spawn a child or take its result."""
+        value = self.agent(self.lead)
+        if value.get("status") in FAILED_STATUSES:
+            raise CheckFailed(f"the lead became {value.get('status')}: {json.dumps(value.get('error'))[:300]}")
+
     def team(self) -> str:
-        if not self.lead:
+        if not self.lead_answered:
             raise CheckFailed("not run: the agent turn did not pass")
         child_prompt = ("This is a smoke check of the orchestration_send tool. Do not inspect files. Use the "
                         "orchestration_send tool for both calls below; do not use orchestration_message. "
@@ -581,9 +611,14 @@ class Flows:
             f'model "{self.model}", effort "{self.effort}", and this exact prompt: {json.dumps(child_prompt)} '
             "Then finish this turn. When the child result arrives, reply SMOKE_TEAM_OK.")})
         deadline = time.monotonic() + TEAM_SECONDS
-        child = wait_until(deadline, f"no {CHILD_NAME} was spawned", lambda: next((
-            e["value"] for e in self.backend.entities() if e["collection"] == "agent"
-            and e["value"].get("parentId") == self.lead), None))
+        def spawned() -> dict[str, Any] | None:
+            child = next((e["value"] for e in self.backend.entities() if e["collection"] == "agent"
+                          and e["value"].get("parentId") == self.lead), None)
+            if child is None:
+                self.lead_failed()
+            return child
+
+        child = wait_until(deadline, f"no {CHILD_NAME} was spawned", spawned)
         child_id = child["id"]
         tokens = {"private": ROOM_TOKEN, "broadcast": BROADCAST_TOKEN}
         missing = ["no room yet"]
@@ -613,8 +648,9 @@ class Flows:
 
         def child_settled() -> bool:
             value = self.agent(child_id)
-            if value.get("status") in ("failed", "paused", "interrupted"):
+            if value.get("status") in FAILED_STATUSES:
                 raise CheckFailed(f"{CHILD_NAME} {value.get('status')}: {json.dumps(value.get('error'))[:300]}")
+            self.lead_failed()
             self.unexpected_requests()
             return value.get("status") == "completed"
 
@@ -645,7 +681,7 @@ class Flows:
             events = [e["value"] for e in self.backend.entities() if e["collection"] == "event"
                       and e["value"].get("agent") == self.lead and e["value"].get("kind") == "child_result"]
             status, _ = self.answers(self.lead)
-            if status in ("failed", "paused", "interrupted"):
+            if status in FAILED_STATUSES:
                 raise CheckFailed(f"the lead became {status} after the child result")
             return bool(events) and all(e.get("status") == "delivered" for e in events) and status == "completed"
 
@@ -653,7 +689,7 @@ class Flows:
         return f"{CHILD_NAME} {child_id[:8]}: room and broadcast delivered, child result delivered to the lead"
 
     def resume(self) -> str:
-        if not self.thread:
+        if not self.lead_answered:
             raise CheckFailed("not run: the agent turn did not pass")
         handles = self.backend.get("/api/desktop").get("supervisor", {}).get("handles", [])
         old = next((h.get("pid") for h in handles if h.get("id") == "account:default"), None)

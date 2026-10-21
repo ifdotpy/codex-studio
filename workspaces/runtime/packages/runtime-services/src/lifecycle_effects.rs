@@ -75,6 +75,10 @@ impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
         turn: &Value,
         _: crate::recovery::CompletionMode,
     ) -> Result<(), crate::recovery::RecoveryError> {
+        let mut owner = AgentRecord::from_value(agent.clone())
+            .map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
+        studio_runtime_store::SchedulerRepository::wait_for_owned_monitors(tx, &mut owner)?;
+        *agent = owner.value();
         let mut before = agent.clone();
         before["turnId"] = turn["id"].clone();
         let effect = LifecycleEffect::new(
@@ -1399,6 +1403,21 @@ fn reports_turns(agent: &AgentRecord) -> bool {
         && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(agent.epoch)
 }
 
+/// Existing child-result fields plus the optional derived unsubmitted-assignment notice.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChildTurnResultPayload {
+    agent_id: Option<String>,
+    name: Option<String>,
+    status: AgentStatus,
+    result: Value,
+    cwd: Option<String>,
+    branch: Option<String>,
+    workspace: Value,
+    #[serde(default)]
+    stall: Option<studio_runtime_schema::agent_progress::AgentStall>,
+}
+
 /// Queue the `child_result` of one settled turn under `child:{id}:{turn}`.
 fn enqueue_turn_result(
     tx: &Transaction<'_>,
@@ -1431,13 +1450,17 @@ fn enqueue_turn_result(
             .cloned()
             .unwrap_or(json!("No final text returned")),
     };
-    let payload = child_result_payload(value, json!(agent.status), result);
+    let assignments = crate::agent_progress::assignments(tx, &agent.id.0)?;
+    let progress = crate::agent_progress::derive(tx, value, &assignments)?;
+    let mut payload: ChildTurnResultPayload =
+        serde_json::from_value(child_result_payload(value, json!(agent.status), result))?;
+    payload.stall = progress.stall;
     event_write::enqueue_recovery_event(
         tx,
         &parent,
         format!("child:{}:{turn_id}", agent.id.0),
         "child_result",
-        payload.to_string(),
+        serde_json::to_string(&payload)?,
         at,
     )
     .map_err(|error| match error {

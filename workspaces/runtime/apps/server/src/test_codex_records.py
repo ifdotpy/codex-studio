@@ -78,7 +78,7 @@ AGENT_FIELD_GROUPS = {
         remoteAdmissionRequest remoteLastAdmission remoteStopRequest
     """.split()),
     "derived": frozenset("""
-        canSend empty hasApproval hasQuestion hasUnread kind lastReadAt launcherAlive nativeError
+        commandProgress stall canSend empty hasApproval hasQuestion hasUnread kind lastReadAt launcherAlive nativeError
         nextTurnSettingsSupported orchestratorId orchestratorName overview
         panelDataVersion panelVersion queuedSettings readStateSupported retryAt source statusDetail
         turnStatus unreadCount voiceState
@@ -194,6 +194,18 @@ def _creation_literal_keys() -> set[str]:
 
 
 class AgentRecordContractTests(unittest.TestCase):
+    def test_generated_progress_models_are_consumed_by_the_strict_agent_entity(self) -> None:
+        from pydantic import ValidationError
+        entity = AgentEntityDto.model_validate({
+            "id": "worker", "commandProgress": [{"monitorId": "gate", "stage": "Check", "startedAt": 1.0, "lastOutputLine": "pass"}],
+            "stall": {"taskId": "task", "since": 2.0},
+        })
+        self.assertEqual(entity.commandProgress[0].lastOutputLine, "pass")
+        assert entity.stall is not None
+        self.assertEqual(entity.stall.taskId, "task")
+        with self.assertRaises(ValidationError):
+            AgentEntityDto.model_validate({"id": "worker", "stall": {"taskId": "task", "since": 2.0, "extra": True}})
+
     def test_record_entity_field_partition_is_explicit_and_complete(self) -> None:
         record_fields = set(AgentRecord.__annotations__)
         entity_fields = set(AgentEntityDto.model_fields)

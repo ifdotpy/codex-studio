@@ -92,7 +92,9 @@ export function chatWaitState(
       const parked = current.status === "parked" && !!current.parkedEvent;
       if (
         (current.autoWake === false && !parked) ||
-        !["waiting", "parked"].includes(current.status || "")
+        !["waiting", "parked", "waiting_on_monitor"].includes(
+          current.status || "",
+        )
       )
         continue;
       if (parked) return true;
@@ -319,7 +321,9 @@ export function chatIndicators(
   return new Map(
     agents.map((agent) => {
       let indicator: ChatIndicator;
-      const waiting = ["waiting", "parked"].includes(agent.status || "");
+      const waiting = ["waiting", "parked", "waiting_on_monitor"].includes(
+        agent.status || "",
+      );
       const getWait = () => chatWaitState(data, agent, activities, children);
       if (answers.has(agent.id)) {
         let label = "Needs your answer";

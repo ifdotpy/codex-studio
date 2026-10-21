@@ -8,6 +8,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
+use studio_runtime_store::path_identity::CanonicalPath;
 use thiserror::Error;
 
 const DEFAULT_VAULT_REGION: &str = "eu-central-1";
@@ -107,10 +108,12 @@ impl VaultHostCommand {
         let Some(bundled) = bundled_desk_program() else {
             return Ok(false);
         };
-        Ok(
-            selected.canonicalize().unwrap_or(selected)
-                == bundled.canonicalize().unwrap_or(bundled),
-        )
+        Ok(CanonicalPath::existing(&selected)
+            .map(CanonicalPath::into_path_buf)
+            .unwrap_or(selected)
+            == CanonicalPath::existing(&bundled)
+                .map(CanonicalPath::into_path_buf)
+                .unwrap_or(bundled))
     }
 
     /// The command layr-desk runs to configure the VM writer: this executable, with the VM data

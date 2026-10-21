@@ -396,3 +396,22 @@
   content-visibility: auto;
   contain-intrinsic-size: auto 72px;
 }
+
+.agent-command-progress,
+.agent-command-stage,
+.agent-command-output,
+.agent-stall {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.agent-command-output {
+  color: var(--muted);
+}
+.agent-stall,
+#team .worker-state-stalled {
+  color: var(--mantine-color-orange-text);
+}

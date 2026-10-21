@@ -1,4 +1,4 @@
-"""Keep current Rust-hosted delivery tools aligned with the Python tool owner.
+"""Keep current Rust-hosted delivery and monitor tools aligned with their Python owner.
 
 Only these current tool entries are refreshed. Historical native-tools snapshots
 and all other bundled preparation resources retain their existing contents.
@@ -14,15 +14,16 @@ from typing import Any
 from codex_layout import REPOSITORY_ROOT
 from codex_runtime import TOOLS
 
-# Current sender tools whose delivery API is owned by codex_runtime.TOOLS.
+# Current tools owned by codex_runtime.TOOLS; historical snapshots remain frozen.
 DELIVERY_TOOL_NAMES = ("orchestration_message", "orchestration_send")
+CURRENT_TOOL_NAMES = (*DELIVERY_TOOL_NAMES, "orchestration_monitor")
 BUNDLED_RESOURCES = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/account_worker/preparation-resources.json"
 
 
 def current_delivery_tools() -> dict[str, Any]:
     definitions = {definition["name"]: definition for definition in TOOLS
-                   if definition["name"] in DELIVERY_TOOL_NAMES}
-    if set(definitions) != set(DELIVERY_TOOL_NAMES):
+                   if definition["name"] in CURRENT_TOOL_NAMES}
+    if set(definitions) != set(CURRENT_TOOL_NAMES):
         raise ValueError("The Python delivery tool owner is missing a declaration")
     return definitions
 
@@ -30,10 +31,10 @@ def current_delivery_tools() -> dict[str, Any]:
 def stale_delivery_tools(resources: dict[str, Any]) -> list[str]:
     expected = current_delivery_tools()
     tools = resources["tools"]
-    for name in DELIVERY_TOOL_NAMES:
+    for name in CURRENT_TOOL_NAMES:
         if sum(tool.get("name") == name for tool in tools) != 1:
             raise ValueError(f"Bundled preparation must contain exactly one {name} declaration")
-    return [name for name in DELIVERY_TOOL_NAMES
+    return [name for name in CURRENT_TOOL_NAMES
             if next(tool for tool in tools if tool.get("name") == name) != expected[name]]
 
 
@@ -53,7 +54,7 @@ def main() -> int:
         return 1
     definitions = current_delivery_tools()
     resources["tools"] = [copy.deepcopy(definitions[tool["name"]])
-                          if tool["name"] in DELIVERY_TOOL_NAMES else tool
+                          if tool["name"] in CURRENT_TOOL_NAMES else tool
                           for tool in resources["tools"]]
     BUNDLED_RESOURCES.write_text(json.dumps(resources, ensure_ascii=False, indent=2) + "\n")
     subprocess.run(["pnpm", "exec", "oxfmt", "--write", str(BUNDLED_RESOURCES)], cwd=REPOSITORY_ROOT, check=True)

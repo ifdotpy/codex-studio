@@ -15,6 +15,8 @@ use studio_runtime_services::{
     native_action_ports,
     native_actions::{self, Admission, NativeError},
 };
+#[cfg(test)]
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
 
 pub(crate) fn routes() -> RouteGroup {
@@ -743,14 +745,13 @@ mod native_review_preflight_tests {
                 .expect("count receipts")
         };
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .expect("repository root");
+        let root =
+            CanonicalPath::existing(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
+                .expect("repository root");
         let resources = PreparationResources::bundled_at(
             String::new(),
             ModelCatalogService::new(),
-            root.clone(),
+            root.clone().to_path_buf(),
             root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
@@ -1142,14 +1143,13 @@ mod native_review_preflight_tests {
             .transaction(move |tx| AgentRepository::put(tx, &record_for_write))
             .await
             .expect("save VM agent");
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .unwrap();
+        let root =
+            CanonicalPath::existing(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
+                .unwrap();
         let resources = PreparationResources::bundled_at(
             String::new(),
             ModelCatalogService::new(),
-            root.clone(),
+            root.clone().to_path_buf(),
             root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
@@ -1275,14 +1275,13 @@ mod native_review_preflight_tests {
             })
             .await
             .expect("save VM lines");
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .unwrap();
+        let root =
+            CanonicalPath::existing(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
+                .unwrap();
         let resources = PreparationResources::bundled_at(
             String::new(),
             ModelCatalogService::new(),
-            root.clone(),
+            root.clone().to_path_buf(),
             root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
@@ -1368,14 +1367,13 @@ mod native_review_preflight_tests {
             .transaction(move |tx| AgentRepository::put(tx, &record_for_write))
             .await
             .expect("save VM agent");
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .unwrap();
+        let root =
+            CanonicalPath::existing(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
+                .unwrap();
         let resources = PreparationResources::bundled_at(
             String::new(),
             ModelCatalogService::new(),
-            root.clone(),
+            root.clone().to_path_buf(),
             root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");

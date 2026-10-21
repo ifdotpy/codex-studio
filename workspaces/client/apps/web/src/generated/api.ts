@@ -3752,6 +3752,17 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** AgentCommandProgress */
+    AgentCommandProgress: {
+      /** Lastoutputline */
+      lastOutputLine: string;
+      /** Monitorid */
+      monitorId: string;
+      /** Stage */
+      stage: string;
+      /** Startedat */
+      startedAt: number;
+    };
     /** AgentDraftRecordResponse */
     AgentDraftRecordResponse: {
       /**
@@ -3853,6 +3864,11 @@ export interface components {
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
+      /**
+       * Commandprogress
+       * @default []
+       */
+      commandProgress?: components["schemas"]["AgentCommandProgress"][];
       /** Compactions */
       compactions?: number | null;
       /** Concurrency */
@@ -4026,6 +4042,7 @@ export interface components {
       /** Sharedroomid */
       sharedRoomId?: null | string;
       source?: components["schemas"]["AgentSource"] | null;
+      stall?: components["schemas"]["AgentStall"] | null;
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
       startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
       status?: components["schemas"]["AgentStatus"] | null;
@@ -4709,6 +4726,7 @@ export interface components {
             | "parked"
             | "abandoned"
             | "capacity-retry"
+            | "waiting_on_monitor"
           )
         | null;
       /** @default null */
@@ -5173,7 +5191,8 @@ export interface components {
         | "paused"
         | "parked"
         | "abandoned"
-        | "capacity-retry";
+        | "capacity-retry"
+        | "waiting_on_monitor";
       /**
        * Steerrejectedturnid
        * @default null
@@ -5486,6 +5505,11 @@ export interface components {
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
+      /**
+       * Commandprogress
+       * @default []
+       */
+      commandProgress?: components["schemas"]["AgentCommandProgress"][];
       /**
        * Compactions
        * @default null
@@ -5889,6 +5913,8 @@ export interface components {
       /** @default null */
       source?: components["schemas"]["AgentSource"] | null;
       /** @default null */
+      stall?: components["schemas"]["AgentStall"] | null;
+      /** @default null */
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
       /** @default null */
       startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
@@ -5998,6 +6024,13 @@ export interface components {
       | "registered"
       | "app-server"
       | "orchestrator-reference";
+    /** AgentStall */
+    AgentStall: {
+      /** Since */
+      since: number;
+      /** Taskid */
+      taskId: string;
+    };
     /** AgentStartAttempt */
     AgentStartAttempt: {
       /**
@@ -6035,7 +6068,8 @@ export interface components {
       | "paused"
       | "parked"
       | "abandoned"
-      | "capacity-retry";
+      | "capacity-retry"
+      | "waiting_on_monitor";
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
       /**
@@ -8079,6 +8113,11 @@ export interface components {
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
       /**
+       * Commandprogress
+       * @default []
+       */
+      commandProgress?: components["schemas"]["AgentCommandProgress"][];
+      /**
        * Compactions
        * @default null
        */
@@ -8482,6 +8521,8 @@ export interface components {
       sharedRoomId?: null | string;
       /** @default null */
       source?: components["schemas"]["AgentSource"] | null;
+      /** @default null */
+      stall?: components["schemas"]["AgentStall"] | null;
       /** @default null */
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
       /** @default null */

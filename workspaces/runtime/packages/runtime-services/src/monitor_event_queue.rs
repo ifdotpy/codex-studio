@@ -371,7 +371,6 @@ pub async fn enqueue_exit(
                 if existing["kind"] == "exit"
                     && existing["code"] == code.map_or(Value::Null, |v| json!(v))
                     && existing["error"] == error.as_ref().map_or(Value::Null, |v| json!(v))
-                    && existing["finished"] == json!(finished)
                 {
                     return Ok(());
                 }

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -748,7 +749,7 @@ where
 {
     let directory = archive_directory(state_root);
     if path.parent() != Some(directory.as_path())
-        || path.canonicalize().ok().as_deref() != Some(path)
+        || CanonicalPath::existing(path).ok().as_deref() != Some(path)
         || path.extension().and_then(|value| value.to_str()) != Some("jsonl")
     {
         return Err(PortableHistoryError::PathOutsideState);
@@ -1379,6 +1380,7 @@ fn add_native_page(recent: &mut Recent, page: &Value) {
 /// stays as written, and the canonical path check then refuses it.
 fn archive_directory(state_root: &Path) -> PathBuf {
     studio_runtime_store::path_identity::resolve(state_root)
+        .map(CanonicalPath::into_path_buf)
         .unwrap_or_else(|| state_root.to_owned())
         .join(ARCHIVE_DIRECTORY)
 }

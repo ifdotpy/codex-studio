@@ -24,6 +24,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 /// The account's provider server directory: the state root for `default`,
 /// otherwise `<state>/account-servers/<account>`. Python owns this layout
@@ -1835,8 +1836,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if python_strip(home).is_empty() {
             return Err(AccountDriverError::InvalidCodexProfile);
         }
-        let path = expanded_profile_path(home)
-            .canonicalize()
+        let path = CanonicalPath::existing(expanded_profile_path(home))
             .map_err(|_| AccountDriverError::InvalidCodexProfile)?;
         let metadata = codex_auth_metadata(&path);
         if metadata.status != AuthStatus::Ready {
@@ -1888,7 +1888,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let mut registrations = Vec::new();
         for candidate in candidates {
             if candidate.join("auth.json").is_file()
-                && let Ok(path) = candidate.canonicalize()
+                && let Ok(path) = CanonicalPath::existing(&candidate)
             {
                 let metadata = codex_auth_metadata(&path);
                 if metadata.status == AuthStatus::Ready {
@@ -2404,7 +2404,9 @@ pub fn resolve_codex_home(
         Some(value) => expand_user_path(&value.to_string_lossy(), home),
         None => home.join(".codex"),
     };
-    let resolved = resolve_like_python(&selected)?;
+    let resolved = CanonicalPath::profile_nonstrict(&selected)
+        .map_err(|_| CodexHomeError::WorkingDirectory)?
+        .into_path_buf();
     if resolved
         .components()
         .any(|component| component.as_os_str() == ".claude")
@@ -2412,57 +2414,6 @@ pub fn resolve_codex_home(
         return Err(CodexHomeError::InsideClaude(resolved));
     }
     Ok(resolved)
-}
-
-/// Python `Path.resolve()` (non-strict): resolve each existing component's
-/// symlinks and keep missing components as written.
-#[cfg(unix)]
-fn resolve_like_python(path: &Path) -> Result<PathBuf, CodexHomeError> {
-    use std::path::Component;
-
-    fn walk(path: &Path, depth: usize) -> PathBuf {
-        let mut resolved = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(_) | Component::RootDir => resolved.push(component),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    resolved.pop();
-                }
-                Component::Normal(name) => {
-                    let candidate = resolved.join(name);
-                    let is_link = fs::symlink_metadata(&candidate)
-                        .is_ok_and(|metadata| metadata.file_type().is_symlink());
-                    resolved = if !is_link {
-                        candidate
-                    } else if let Ok(target) = candidate.canonicalize() {
-                        target
-                    } else {
-                        // A dangling link resolves through its target text.
-                        match fs::read_link(&candidate) {
-                            Ok(target) if depth < 40 => walk(&resolved.join(target), depth + 1),
-                            _ => candidate,
-                        }
-                    };
-                }
-            }
-        }
-        resolved
-    }
-
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        env::current_dir()
-            .map_err(|_| CodexHomeError::WorkingDirectory)?
-            .join(path)
-    };
-    Ok(walk(&absolute, 0))
-}
-
-#[cfg(not(unix))]
-fn resolve_like_python(path: &Path) -> Result<PathBuf, CodexHomeError> {
-    std::path::absolute(path).map_err(|_| CodexHomeError::WorkingDirectory)
 }
 
 /// Create Python `AccountStore`'s first-start registry when `path` has no
@@ -3737,7 +3688,9 @@ exit 0
     fn re_register_restores_only_a_true_deleted_marker() {
         let fixture = TestDir::new();
         let home = fixture.path.join("profile");
-        let canonical = home.canonicalize().unwrap_or_else(|_| home.clone());
+        let canonical = CanonicalPath::existing(&home)
+            .map(CanonicalPath::into_path_buf)
+            .unwrap_or_else(|_| home.clone());
         let metadata = metadata(
             AuthStatus::Ready,
             Some("stable-account"),
@@ -3781,9 +3734,11 @@ exit 0
         fs::create_dir_all(&selected).expect("create selected profile");
         assert_eq!(
             resolve_codex_home(Some(OsStr::new("~/selected-profile")), &home),
-            Ok(selected.canonicalize().expect("resolve selected profile"))
+            Ok(CanonicalPath::existing(&selected)
+                .expect("resolve selected profile")
+                .into_path_buf())
         );
-        let canonical_home = home.canonicalize().expect("resolve fixture home");
+        let canonical_home = CanonicalPath::existing(&home).expect("resolve fixture home");
         // An empty CODEX_HOME falls back like Python's `or`; a missing
         // directory keeps its written name below the resolved parent.
         assert_eq!(
@@ -3809,7 +3764,7 @@ exit 0
         std::os::unix::fs::symlink(&real, fixture.path.join("link")).expect("create link");
         std::os::unix::fs::symlink(fixture.path.join("absent"), fixture.path.join("dangling"))
             .expect("create dangling link");
-        let base = fixture.path.canonicalize().expect("resolve fixture");
+        let base = CanonicalPath::existing(&fixture.path).expect("resolve fixture");
         assert_eq!(
             resolve_codex_home(Some(fixture.path.join("link/profile").as_os_str()), &real),
             Ok(base.join("real/profile"))
@@ -3944,7 +3899,7 @@ exit 0
         fs::create_dir_all(&home).expect("create profile");
         fs::write(home.join("auth.json"), br#"{"OPENAI_API_KEY":"fixture"}"#)
             .expect("write disposable auth file");
-        let canonical = home.canonicalize().expect("resolve profile");
+        let canonical = CanonicalPath::existing(&home).expect("resolve profile");
         let path = fixture.path.join("accounts/registry.json");
         fs::create_dir_all(path.parent().expect("registry parent")).expect("create registry dir");
         let mut value: Value = serde_json::from_slice(&registry(&canonical)).expect("fixture");

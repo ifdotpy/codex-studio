@@ -1174,7 +1174,8 @@ impl RuntimeStore {
         let root = match state_dir {
             Some(path) => path::resolve_explicit_state_dir(path)?,
             None => resolve_state_dir()?,
-        };
+        }
+        .into_path_buf();
         fresh_state::validate(&root)?;
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");

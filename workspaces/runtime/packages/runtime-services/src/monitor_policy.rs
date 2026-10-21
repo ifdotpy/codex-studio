@@ -25,7 +25,10 @@ pub enum MonitorStatus {
 
 impl MonitorStatus {
     fn terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Lost
+        )
     }
 }
 
@@ -133,6 +136,24 @@ fn fatal_store_error(error: &studio_runtime_store::StoreError) -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RecoveryStatus {
+    Running,
+    NotReattachable,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReattachRecovery {
+    account_key: String,
+    epoch: i64,
+    status: RecoveryStatus,
+    started_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proof: Option<String>,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Fields {
@@ -141,6 +162,8 @@ struct Fields {
     #[serde(default)]
     epoch: Option<i64>,
     status: MonitorStatus,
+    #[serde(default)]
+    reattach_recovery: Option<ReattachRecovery>,
     #[serde(default)]
     rule_id: Option<String>,
     #[serde(default)]
@@ -259,10 +282,29 @@ impl MonitorSnapshot {
     pub fn agent(&self) -> &str {
         &self.fields.agent
     }
+    pub(crate) fn active(&self) -> bool {
+        matches!(
+            self.fields.status,
+            MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
+        )
+    }
+    pub(crate) fn recovering(&self) -> bool {
+        self.fields
+            .reattach_recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.status == RecoveryStatus::Running)
+    }
+    pub(crate) fn reconciliation_deadline(&self) -> Option<f64> {
+        self.fields
+            .reattach_recovery
+            .as_ref()
+            .filter(|recovery| recovery.status == RecoveryStatus::Running)
+            .map(|recovery| recovery.started_at + MONITOR_REATTACH_WINDOW_SECONDS)
+    }
     pub fn operation(&self) -> Option<&Operation> {
         self.fields.operation.as_ref()
     }
-    fn active_owner(&self) -> bool {
+    pub(crate) fn active_owner(&self) -> bool {
         self.actor.deleted_at.is_none_or(|at| at == 0.0)
             && self.actor.auto_wake
             && Some(self.actor.epoch)
@@ -292,9 +334,7 @@ pub enum Effect {
         id: String,
         payload: Value,
     },
-    ExitEvent {
-        wake: bool,
-    },
+    ExitEvent,
     StallEvent {
         generation: i64,
         payload: Value,
@@ -357,7 +397,7 @@ pub fn cancel(
             .push(if f.rule_id.as_deref().is_some_and(|id| !id.is_empty()) {
                 Effect::RuleFinished
             } else {
-                Effect::ExitEvent { wake: true }
+                Effect::ExitEvent
             });
     }
     decision.effects.push(Effect::ExpireApprovals);
@@ -433,6 +473,7 @@ pub fn finish(
     }
     let mut decision = snapshot.decision();
     if !snapshot.fields.status.terminal() {
+        remove(&mut decision.record, "reattachRecovery");
         crate::monitor_matches::flush(&mut decision.record)?;
         output_effect(snapshot, &mut decision, now, true);
         decision.record["status"] = json!(if snapshot.fields.cancel_requested {
@@ -461,7 +502,7 @@ pub fn finish(
         {
             Effect::RuleFinished
         } else {
-            Effect::ExitEvent { wake: true }
+            Effect::ExitEvent
         },
     );
     Ok(decision)
@@ -480,6 +521,9 @@ fn output_effect(snapshot: &MonitorSnapshot, decision: &mut Decision, now: f64, 
 pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorError> {
     let f = &snapshot.fields;
     let mut decision = snapshot.decision();
+    if snapshot.recovering() {
+        return Ok(decision);
+    }
     if f.status == MonitorStatus::Running {
         output_effect(snapshot, &mut decision, now, false);
     }
@@ -792,42 +836,64 @@ pub struct ReattachProof {
     pub current_connection: String,
 }
 
-/// Preserve the submitted command as an unknown outcome when its owning
-/// supervisor did not survive the backend restart.
-pub fn restart_loss(snapshot: &MonitorSnapshot) -> Result<Decision, MonitorError> {
-    let status = snapshot
-        .record
-        .get("status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| MonitorError::InvalidStored {
-            id: snapshot.id().to_owned(),
-            location: "status".into(),
-        })?;
-    if !matches!(status, "running" | "starting" | "approval") {
+/// A retained-process observation never launches a command.
+pub enum ReattachOutcome {
+    Pending,
+    Running(ReattachProof),
+    TerminalQueued,
+    Gone(String),
+}
+
+/// Keep commands active while the new backend reconciles their retained process.
+/// No completion is published until a native result or a failed reattach decides it.
+pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorError> {
+    if !matches!(
+        snapshot.fields.status,
+        MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
+    ) {
         return Err(MonitorError::Refused("Monitor is not active"));
     }
-    let mut recovery = serde_json::Map::from_iter([
-        ("accountKey".into(), json!(snapshot.actor.account_key)),
-        ("epoch".into(), json!(snapshot.actor.epoch)),
-        ("status".into(), json!(status)),
-    ]);
-    for key in ["error", "finished"] {
-        recovery.insert(
-            key.into(),
-            snapshot.record.get(key).cloned().unwrap_or(Value::Null),
-        );
-    }
     let mut decision = snapshot.decision();
-    decision.record["reattachRecovery"] = Value::Object(recovery);
-    decision.record["status"] = json!("lost");
-    decision.record["error"] = json!("Server restarted. Command outcome unknown; not rerun.");
-    if !snapshot
-        .record
-        .get("ruleId")
-        .is_some_and(|rule| !rule.is_null() && rule.as_str().is_none_or(|value| !value.is_empty()))
-    {
-        decision.effects.push(Effect::ExitEvent { wake: true });
+    if snapshot.recovering() {
+        return Ok(decision);
     }
+    decision.record["reattachRecovery"] = json!(ReattachRecovery {
+        account_key: snapshot.actor.account_key.clone(),
+        epoch: snapshot.actor.epoch,
+        status: RecoveryStatus::Running,
+        started_at: now,
+        proof: None,
+    });
+    Ok(decision)
+}
+
+/// A failed or expired reattach is the terminal loss decision, not a provisional notice.
+pub(crate) fn restart_lost(
+    snapshot: &MonitorSnapshot,
+    reason: &str,
+    now: f64,
+) -> Result<Decision, MonitorError> {
+    let mut decision = snapshot.decision();
+    let Some(mut recovery) = snapshot
+        .fields
+        .reattach_recovery
+        .clone()
+        .filter(|recovery| recovery.status == RecoveryStatus::Running)
+    else {
+        return Ok(decision);
+    };
+    recovery.status = RecoveryStatus::NotReattachable;
+    recovery.proof = Some(reason.into());
+    decision.record["reattachRecovery"] = json!(recovery);
+    decision.record["status"] = json!(MonitorStatus::Lost);
+    decision.record["finished"] = json!(now);
+    decision.record["error"] =
+        json!("Command outcome unknown after losing the provider result; not rerun.");
+    decision.effects.push(if snapshot.fields.rule_id.is_some() {
+        Effect::RuleFinished
+    } else {
+        Effect::ExitEvent
+    });
     Ok(decision)
 }
 
@@ -836,21 +902,18 @@ pub fn reattach(
     proof: &ReattachProof,
 ) -> Result<Decision, MonitorError> {
     snapshot.check_operation(&proof.operation)?;
-    let recovery = snapshot.record.get("reattachRecovery");
-    if snapshot.fields.status != MonitorStatus::Lost
-        || !snapshot.active_owner()
-        || proof.operation_id != format!("monitor:{}", snapshot.id())
+    let recovery = snapshot.fields.reattach_recovery.as_ref();
+    if !matches!(
+        snapshot.fields.status,
+        MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
+    ) || proof.operation_id != format!("monitor:{}", snapshot.id())
         || proof.current_connection.is_empty()
-        || proof.current_connection == proof.operation.connection_id
         || proof.operation.account_key != snapshot.actor.account_key
-        || recovery
-            .and_then(|r| r.get("status"))
-            .and_then(Value::as_str)
-            != Some("running")
-        || recovery
-            .and_then(|r| r.get("epoch"))
-            .and_then(Value::as_i64)
-            != Some(snapshot.actor.epoch)
+        || recovery.is_none_or(|recovery| {
+            recovery.status != RecoveryStatus::Running
+                || recovery.epoch != snapshot.actor.epoch
+                || recovery.account_key != snapshot.actor.account_key
+        })
     {
         return Err(MonitorError::Refused(
             "Monitor reattach proof does not match its command",
@@ -858,21 +921,20 @@ pub fn reattach(
     }
     let mut decision = snapshot.decision();
     decision.record["status"] = json!("running");
-    decision.record["error"] = recovery
-        .and_then(|r| r.get("error"))
-        .cloned()
-        .unwrap_or(Value::Null);
     decision.record["reattachedConnectionId"] = json!(proof.current_connection);
-    if let Some(finished) = recovery
-        .and_then(|r| r.get("finished"))
-        .filter(|v| !v.is_null())
-    {
-        decision.record["finished"] = finished.clone();
-    } else {
-        remove(&mut decision.record, "finished");
-    }
     remove(&mut decision.record, "reattachRecovery");
+    if !snapshot.active_owner() {
+        // A verified survivor cannot resume an inactive owner. Latch the ordinary
+        // cancellation path so deletion or an epoch change cannot orphan it.
+        decision.record["cancelRequested"] = json!(true);
+        decision.effects.push(Effect::Terminate);
+    }
     Ok(decision)
+}
+
+pub enum ReattachDisposition {
+    AwaitExit,
+    Cancel,
 }
 
 /// Build the same initial row as Python. Identity, actor and time are server-owned;

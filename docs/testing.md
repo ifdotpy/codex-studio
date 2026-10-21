@@ -33,9 +33,11 @@ which rejects filesystem and process owners called from SQLite callbacks. The re
 fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
 and real credit redemption require separate evidence. The web package owns selected
 API and verifier unit witnesses and type-check scripts, while the tooling package owns
-repository contract checks. Prepare the web WASM artifact once with
-`pnpm --filter codex-agents-web run build:wasm`; this generated artifact is a
-warm-checkout prerequisite and its cold build is outside the 30-second target.
+repository contract checks. Both local gates generate web WASM before checking
+it. The [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs)
+locates the exact CLI version pinned by the client-wasm crate on PATH, in Cargo's
+bin directory, or in Studio's versioned UI cache. If absent, it fails with the
+matching Cargo install command. Cold compilation is outside the warm target.
 The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
 passed in 23.759 seconds; cold setup was excluded.
 The short tier does not build the browser or contact a model provider.
@@ -63,12 +65,22 @@ suite durations over 10 seconds measured inside that parallel run. These values
 are informational; check a suite's 10-second budget by running it alone with
 `just test server <exact-suite-path>`.
 
-The comprehensive tier first builds its Rust HTTP fixture with
-`cargo build --locked --release -p studio-runtime-server`, and it builds the
-renderer bundle that the native client crate embeds before Rust nextest, so a
-clean worktree needs no manual step. Hosted CI builds it once per run, and the server jobs use
-that binary. The short local tier does not require that fixture binary;
-building a native desktop package does not produce it.
+The comprehensive gate builds its Rust HTTP fixture before running the server
+suites and builds the renderer bundle that the native client crate embeds before
+Rust nextest. For a standalone server run, prepare the HTTP fixture with
+`cargo build --locked --release -p studio-runtime-server`. Hosted CI builds it
+once per run, and the server jobs use that binary. The short local tier does not require that fixture binary;
+building a native desktop package does not produce it. The historical upgrade
+contract stages the release executable under a disposable source install root,
+so Cargo output may live outside the checkout. Before Rust nextest, the facade
+resolves the prepared interpreter through
+[`codex_python.py`](../workspaces/runtime/apps/server/src/codex_python.py) and
+passes it to Python oracle children, including those with isolated home paths.
+
+The server runner checks each suite's private scratch paths for detached host-exec
+services after teardown. A surviving service fails its owning suite and is stopped
+before scratch cleanup. Services belonging to other state directories are excluded.
+The Playwright wrapper removes the session's `BROWSER` selector before launch.
 
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them
@@ -462,9 +474,12 @@ Known product issues and reproductions are in
 [`workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md`](../workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md), while expectation edits
 are tracked in [`workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md`](../workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md).
 Use `python3 workspaces/runtime/apps/server/tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
-Full server runs serialize on one per-user lock held for the whole run. A waiting
-full runner prints `waiting for another test run to finish`, then samples load and
-plans workers after the lock is released. A selection resolving to one runnable
+Full server runs sharing a checkout serialize on a per-user, checkout-keyed lock
+held for the whole run; independent worktrees do not wait for each other. Suite
+scratch directories are unique, profile writes have their own atomic merge lock,
+and tmpfs cleanup uses owner locks. A waiting full runner prints
+`waiting for another test run to finish`, then samples load and plans workers
+after the lock is released. A selection resolving to one runnable
 suite uses a bounded per-user focused slot instead, so it can overlap a full run
 or another focused run. Focused slots are capped at four and by allowed CPUs; their
 combined measured peak RSS is limited by the full planner's available-memory budget
@@ -745,12 +760,15 @@ starts the bundle's supervisor with the argument list of
 `codex_supervisor_service._macos_jobs`, and the backend with `tick` of the bundle's
 `recover_backend.py`, so the production launch path and environment are used. The
 default account of that state is the production default Codex home. Then it runs
-these flows in order:
+these flows in order. Before them, the `models` check waits up to `MODELS_SECONDS` while a
+fresh backend answers that its model catalog is pending. The flows test host
+execution only, because a fresh smoke state has no Linux VM. A flow that needs the
+lead stops at once when the lead fails.
 
 | Flow            | Pass condition                                                                                                                                                    |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sign-in`       | A new Codex sign-in returns an OpenAI device link and code, and the cancel makes it `cancelled`. No browser opens and the code is never printed.                  |
-| `agent turn`    | A new lead answers a fixed word and has a provider thread.                                                                                                        |
+| `agent turn`    | A new lead in a host worktree (`workspaceMode` `worktree`, `executionMode` `native`) answers a fixed word and has a provider thread.                              |
 | `orchestration` | A reviewer child calls `orchestration_send` to `parent` (a private room) and to `broadcast`; both messages reach the lead, and the child result reaches the lead. |
 | `resume`        | After the test stops the provider process of this smoke, the next message runs on the same thread with a new provider PID and recalls the first answer.           |
 

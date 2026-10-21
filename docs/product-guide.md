@@ -452,7 +452,13 @@ instructions. Existing threads receive it on their next turn. The versioned turn
 context repeats it after a skill change or context compaction.
 Workers ask their lead to contact the user. Workers cannot send spoken responses to the user.
 
-**Team** shows subagent status and opens subagent chats.
+**Team** shows subagent status and opens subagent chats. Running managed commands
+show their command stage, elapsed time, and latest output in the Team panel and
+agent sidebar rows. A worker that ends its turn with an assigned task still
+unsubmitted and no running command appears as **Stalled**. Its parent receives the
+same assignment notice alongside the worker's final text. Submitting the task or
+resuming work removes the derived notice. Deliberately stopped or parked workers
+keep their lifecycle status.
 **Back to main agent** returns to the main agent.
 The sidebar and Team panel can collapse at any window width.
 

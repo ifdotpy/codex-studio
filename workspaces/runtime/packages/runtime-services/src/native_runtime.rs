@@ -18,6 +18,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -157,7 +158,7 @@ impl Clock for SystemClock {
 }
 
 struct Inner {
-    root: PathBuf,
+    root: CanonicalPath,
     _lock_file: File,
     probe: Arc<dyn CompatibilityProbe>,
     clock: Arc<dyn Clock>,
@@ -208,7 +209,7 @@ impl NativeRuntime {
             .read(true)
             .write(true)
             .open(&lock_path)?;
-        if fs::canonicalize(&lock_path)? != lock_path {
+        if CanonicalPath::existing(&lock_path)? != lock_path {
             return Err(NativeRuntimeError::UnsafeStorePath);
         }
         match lock_file.try_lock() {
@@ -893,9 +894,21 @@ fn add_candidate_identity(row: &mut Value, identity: Option<Value>, companions: 
     }
 }
 
-fn canonical_store_root(path: &Path) -> Result<PathBuf, NativeRuntimeError> {
+fn canonical_store_root(path: &Path) -> Result<CanonicalPath, NativeRuntimeError> {
+    // This creation policy performs filesystem writes before resolution; its
+    // SQL guard is distinct from the identity owner's resolution guard.
     studio_runtime_store::debug_assert_outside_sql();
-    let absolute = lexical_absolute(path)?;
+    let absolute =
+        studio_runtime_store::path_identity::LexicalPath::absolute(path).map_err(|error| {
+            match error {
+                studio_runtime_store::path_identity::AbsolutePathError::WorkingDirectory(error) => {
+                    NativeRuntimeError::Io(error)
+                }
+                studio_runtime_store::path_identity::AbsolutePathError::RelativePath => {
+                    NativeRuntimeError::UnsafeStorePath
+                }
+            }
+        })?;
     let mut current = PathBuf::new();
     for component in absolute.components() {
         current.push(component.as_os_str());
@@ -910,33 +923,7 @@ fn canonical_store_root(path: &Path) -> Result<PathBuf, NativeRuntimeError> {
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(absolute.canonicalize()?)
-}
-
-fn lexical_absolute(path: &Path) -> Result<PathBuf, NativeRuntimeError> {
-    let path = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut absolute = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                absolute.push(component.as_os_str());
-            }
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                absolute.pop();
-            }
-            std::path::Component::Normal(_) => absolute.push(component.as_os_str()),
-        }
-    }
-    if absolute.is_absolute() {
-        Ok(absolute)
-    } else {
-        Err(NativeRuntimeError::UnsafeStorePath)
-    }
+    Ok(CanonicalPath::existing(&absolute)?)
 }
 
 fn reject_symlink_components(path: &Path) -> Result<(), NativeRuntimeError> {

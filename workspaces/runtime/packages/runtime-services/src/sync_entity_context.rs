@@ -186,8 +186,20 @@ pub(crate) fn agent_view_contexts(
             }
         }
     }
+    let mut assigned = HashMap::<String, Vec<crate::agent_progress::Assignment>>::new();
+    for (_, raw) in work_records {
+        let task: crate::agent_progress::Assignment = serde_json::from_str(raw)?;
+        if let Some(owner) = &task.owner {
+            assigned.entry(owner.clone()).or_default().push(task);
+        }
+    }
     let mut contexts = HashMap::with_capacity(parsed_agents.len());
     for (id, record) in parsed_agents {
+        let progress = crate::agent_progress::derive(
+            transaction,
+            &record,
+            assigned.get(id).map(Vec::as_slice).unwrap_or_default(),
+        )?;
         let empty_lead = truthy(record.get("isLead"))
             && !truthy(record.get("deletedAt"))
             && !truthy(record.get("accountTransferId"))
@@ -205,6 +217,8 @@ pub(crate) fn agent_view_contexts(
                 launcher_alive: true,
                 empty_lead,
                 latest_work_result_file: latest_work.remove(id).map(|(_, path)| path),
+                command_progress: progress.commands,
+                stall: progress.stall,
             },
         );
     }
@@ -249,7 +263,11 @@ pub(crate) fn agent_view_context(
     let rows = statement
         .query_map([id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
+    let mut assigned = Vec::with_capacity(rows.len());
     for raw in rows {
+        assigned.push(serde_json::from_str::<crate::agent_progress::Assignment>(
+            &raw,
+        )?);
         let work: Value = serde_json::from_str(&raw)?;
         for result in work
             .get("results")
@@ -275,7 +293,10 @@ pub(crate) fn agent_view_context(
             }
         }
     }
+    let progress = crate::agent_progress::derive(transaction, record, &assigned)?;
     Ok(AgentViewContext {
+        command_progress: progress.commands,
+        stall: progress.stall,
         project_server_id: project_server_id.map(str::to_owned),
         launcher_alive: true,
         empty_lead,
@@ -510,9 +531,12 @@ mod room_preparation_tests {
         let link = state.path().join("project-link");
         std::os::unix::fs::symlink(project.path(), &link).expect("project link");
         let first =
-            crate::agents_create::canonical_project_directory(&link).expect("resolved linked cwd");
-        let second = crate::agents_create::canonical_project_directory(project.path())
-            .expect("resolved real cwd");
+            studio_runtime_store::path_identity::CanonicalPath::existing_utf8_directory(&link)
+                .expect("resolved linked cwd");
+        let second = studio_runtime_store::path_identity::CanonicalPath::existing_utf8_directory(
+            project.path(),
+        )
+        .expect("resolved real cwd");
         let runtime = tempfile::tempdir().expect("runtime state directory");
         let store = studio_runtime_store::RuntimeStore::open(Some(runtime.path()))
             .await

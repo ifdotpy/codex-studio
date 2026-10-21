@@ -25,6 +25,8 @@ import shutil
 from unittest.mock import patch
 sys.path.insert(0, str(SERVER / "src"))
 from codex_runtime import Runtime
+from agent_progress_contract import install_projection_contract
+install_projection_contract(Runtime)
 from codex_tool_requests import RequestMixin
 
 class Quiet(Runtime):

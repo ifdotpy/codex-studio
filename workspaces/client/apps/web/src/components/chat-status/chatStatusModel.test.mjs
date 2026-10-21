@@ -67,11 +67,29 @@ it("classifies unread, work, answer, error and paused states from current runtim
   assert.equal(state({ ...lead, lastCompletedTurn: null }), "none");
   for (const status of ["running", "starting", "queued"])
     assert.equal(state({ ...lead, status }), "working", status);
-  assert.equal(
-    state({ ...lead, status: "waiting" }),
-    "none",
-    "A stale waiting state without an active child does not show busy",
-  );
+  for (const status of ["waiting", "waiting_on_monitor"]) {
+    assert.equal(
+      state({ ...lead, status }),
+      "none",
+      "A stale waiting state without an active command does not show busy",
+    );
+    assert.equal(
+      state(
+        { ...lead, status },
+        { monitors: [{ agent: "lead", status: "running" }] },
+      ),
+      "working",
+    );
+    assert.equal(
+      chatWaitState(
+        snapshot([lead, { ...child, status }], {
+          monitors: [{ agent: "child", status: "running" }],
+        }),
+        lead,
+      ).live,
+      true,
+    );
+  }
   assert.equal(
     state(lead, { monitors: [{ agent: "lead", status: "running" }] }),
     "working",
