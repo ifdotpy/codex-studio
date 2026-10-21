@@ -86,7 +86,7 @@ impl AccountSessionPort for Session<'_> {
         Box::pin(async move {
             let connection = self
                 .store
-                .test_reader()
+                .read()
                 .map_err(|_| AccountSessionError::Persistence)?;
             let raw = connection
                 .query_row(
@@ -246,7 +246,7 @@ impl AccountSessionPort for StartBlockingSession {
         Box::pin(async move {
             let raw = self
                 .store
-                .test_reader()
+                .read()
                 .map_err(|_| AccountSessionError::Persistence)?
                 .query_row(
                     "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
@@ -338,7 +338,7 @@ impl LifecyclePorts for LifecycleProbe {
         Box::pin(async move {
             if let Some(store) = &self.store {
                 let stage: String = store
-                .test_reader()?
+                .read()?
                 .query_row(
                     "SELECT json_extract(record,'$.stage') FROM runtime_safety_retries WHERE id='agent:turn'",
                     [],
@@ -481,7 +481,7 @@ async fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dis
         assert_eq!(actual["scope"]["account"], "acct");
         assert_eq!(actual["scope"]["connection"], "connection");
     }
-    let connection = store.test_reader().expect("read final state");
+    let connection = store.read().expect("read final state");
     let raw = connection
         .query_row(
             "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
@@ -594,7 +594,7 @@ async fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance(
         .expect("late receipt handling");
     assert_eq!(late["stage"], "cancelled");
     assert_eq!(session.calls.lock().expect("calls").len(), 1);
-    let connection = store.test_reader().expect("read state");
+    let connection = store.read().expect("read state");
     let raw: String = connection
         .query_row(
             "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
@@ -836,7 +836,7 @@ async fn rejected_safety_start_settles_the_empty_event_attempt() {
         .await
         .is_err()
     );
-    let db = store.test_reader().expect("state read");
+    let db = store.read().expect("state read");
     let raw: String = db
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='agent'",
@@ -1067,7 +1067,7 @@ async fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_afte
     assert_eq!(result["stage"], "unknown");
     assert_eq!(restarted.calls.lock().expect("calls").len(), 0);
     let raw: String = reopened
-        .test_reader()
+        .read()
         .expect("read recovered state")
         .query_row(
             "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
@@ -1126,7 +1126,7 @@ async fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent()
     .expect("Unknown provider receipt is retained");
     assert_eq!(result["stage"], "unknown");
     let raw: String = store
-        .test_reader()
+        .read()
         .expect("read state")
         .query_row(
             "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
@@ -1239,7 +1239,7 @@ async fn not_sent_retries_same_operation_id_and_records_each_receipt() {
             .expect("stage")
             .to_owned();
         drop(calls);
-        let db = store.test_reader().expect("state read");
+        let db = store.read().expect("state read");
         let raw: String = db
             .query_row(
                 "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",

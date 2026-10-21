@@ -31,7 +31,7 @@ async fn item_text(state: &State, item_id: &str) -> String {
     state
         .bridge
         .run(move |store| async move {
-            Ok(store.test_reader()?.query_row(
+            Ok(store.read()?.query_row(
                 "SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE ?1",
                 [pattern],
                 |row| row.get::<_, String>(0),
@@ -183,7 +183,7 @@ async fn journal_error_does_not_delete_an_acknowledged_pending_batch() {
     let mut replacement = peer.worker(bridge).await;
     replacement.shutdown().await.unwrap();
     let text = state.bridge.run(|store| async move {
-        Ok(store.test_reader()?.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:pending-error'", [], |row| row.get::<_, String>(0))?)
+        Ok(store.read()?.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:pending-error'", [], |row| row.get::<_, String>(0))?)
     }).await.unwrap();
     assert_eq!(text, "must remain durable");
 }
@@ -197,7 +197,7 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     // effect outlives the durable submission.
     let receipts = |pattern: &'static str| {
         state.bridge.run(move |store| async move {
-            Ok(store.test_reader()?.query_row(
+            Ok(store.read()?.query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE ?1",
                 [pattern],
                 |row| row.get::<_, i64>(0),
@@ -213,7 +213,7 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     );
     peer.accepted(&start).await;
     worker_barrier(&worker).await;
-    let count = state.bridge.run(|store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:%' OR id LIKE 'account-worker:account:%:submitted'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
+    let count = state.bridge.run(|store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:%' OR id LIKE 'account-worker:account:%:submitted'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 0, "settlement retires the submission guard");
     worker.shutdown().await.unwrap();
 }
@@ -247,7 +247,7 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
         let flushed = state
             .bridge
             .run(|store| async move {
-                Ok(store.test_reader()?.query_row(
+                Ok(store.read()?.query_row(
                     "SELECT EXISTS(SELECT 1 FROM runtime_items WHERE id LIKE '%:timer')",
                     [],
                     |row| row.get::<_, bool>(0),
@@ -331,7 +331,7 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
         let (text, receipts, retained, checkpoints) = state.bridge.run(|store| async move {
-            let db=store.test_reader()?;
+            let db=store.read()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
             let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%' AND id NOT LIKE 'account-worker:retained:%'",[],|r|r.get::<_,i64>(0))?;
             let retained=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:%'",[],|r|r.get::<_,i64>(0))?;
@@ -464,7 +464,7 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
         peer.writes.try_recv().is_err(),
         "Written answer must not be sent twice"
     );
-    let rows = state.bridge.run(|store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%' OR id LIKE 'account-worker:callback:%'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
+    let rows = state.bridge.run(|store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%' OR id LIKE 'account-worker:callback:%'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(
         rows, 0,
         "Written replay advances and compacts the journal prefix"
@@ -540,11 +540,11 @@ async fn filesystem_preparation_does_not_own_database_permit() {
     let access = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         state.bridge.run(|store| async move {
-            Ok(store.test_reader()?.query_row(
-                "SELECT COUNT(*) FROM runtime_agents",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
+            Ok(store
+                .read()?
+                .query_row("SELECT COUNT(*) FROM runtime_agents", [], |row| {
+                    row.get::<_, i64>(0)
+                })?)
         }),
     )
     .await;

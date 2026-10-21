@@ -109,7 +109,7 @@ pub async fn cleanup_agent_workspace_with_ports(
     action: CleanupAction,
     ports: Arc<dyn CleanupPorts>,
 ) -> Result<WorkspaceCleanupResult, WorkspaceCleanupError> {
-    let agent = read_agent(&store, agent_id.clone()).await?;
+    let agent = read_agent_async(Arc::clone(&store), agent_id.clone()).await?;
     if agent.get("deletedAt").is_none() {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
@@ -139,7 +139,7 @@ pub async fn cleanup_agent_workspace_with_ports(
             }
             continue;
         }
-        let current = read_agent(&store, agent_id.clone()).await?;
+        let current = read_agent_async(Arc::clone(&store), agent_id.clone()).await?;
         if current
             .pointer(&format!("/{INTENT_FIELD}/requestId"))
             .and_then(Value::as_str)
@@ -303,11 +303,13 @@ async fn finalize_cleanup(
 pub async fn reconcile_pending_cleanup(
     store: Arc<RuntimeStore>,
 ) -> Result<Vec<WorkspaceCleanupResult>, WorkspaceCleanupError> {
-    let rows = store
-        .read_async("runtime-services/workspace_cleanup", |reader| {
-            studio_runtime_store::StartupRecoveryRepository::agents_with_cleanup_intent(reader)
-        })
-        .await?;
+    let read_store = Arc::clone(&store);
+    let rows = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_cleanup",
+        move || pending_cleanup_rows(&read_store),
+    )
+    .await
+    .map_err(|_| WorkspaceCleanupError::Worker)??;
     let mut held = Vec::new();
     for (id, raw) in rows {
         let record: Value =
@@ -354,6 +356,13 @@ pub async fn reconcile_pending_cleanup(
         held.push(result(&id, action, None, None, true));
     }
     Ok(held)
+}
+
+fn pending_cleanup_rows(
+    store: &RuntimeStore,
+) -> Result<Vec<(String, String)>, WorkspaceCleanupError> {
+    let reader = store.read()?;
+    Ok(studio_runtime_store::StartupRecoveryRepository::agents_with_cleanup_intent(&reader)?)
 }
 
 fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, WorkspaceCleanupError> {
@@ -520,15 +529,21 @@ fn registered_worktree_branch(
     finish_entry(path.as_ref(), &branch, detached).ok_or(WorkspaceCleanupError::InvalidRecord)
 }
 
-async fn read_agent(
-    store: &RuntimeStore,
+fn read_agent(store: &RuntimeStore, agent_id: &str) -> Result<Value, WorkspaceCleanupError> {
+    let record = store.read_transaction_with_error(|tx| load_agent(tx, agent_id))?;
+    Ok(record)
+}
+
+async fn read_agent_async(
+    store: Arc<RuntimeStore>,
     agent_id: String,
 ) -> Result<Value, WorkspaceCleanupError> {
-    store
-        .read_async("runtime-services/workspace_cleanup", move |tx| {
-            load_agent(tx, &agent_id)
-        })
-        .await
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_cleanup",
+        move || read_agent(&store, &agent_id),
+    )
+    .await
+    .map_err(|_| WorkspaceCleanupError::Worker)?
 }
 
 fn load_agent(tx: &Transaction<'_>, agent_id: &str) -> Result<Value, WorkspaceCleanupError> {
@@ -1263,16 +1278,17 @@ mod tests {
     }
 
     fn agent(store: &RuntimeStore) -> Value {
-        let record = store
-            .test_reader()
-            .expect("test reader")
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id='cleanup-agent'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .expect("agent reads");
-        serde_json::from_str(&record).expect("stored agent parses")
+        store
+            .read_transaction_with_error(|tx| {
+                tx.query_row(
+                    "SELECT record FROM runtime_agents WHERE id='cleanup-agent'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .map(|record| serde_json::from_str(&record).expect("stored agent parses"))
+            .expect("agent reads")
     }
 
     #[test]

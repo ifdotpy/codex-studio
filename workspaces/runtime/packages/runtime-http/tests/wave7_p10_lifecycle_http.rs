@@ -45,7 +45,7 @@ impl AccountSessionPort for InterruptBroker {
     ) -> AccountSessionFuture<'_, SessionReceipt> {
         assert_eq!(request.method, Method::TurnInterrupt);
         assert_eq!(request.expected_scope.as_ref(), Some(&self.scope));
-        let reader = self.store.test_reader().expect("committed store read");
+        let reader = self.store.read().expect("committed store read");
         let raw: String = reader
             .query_row(
                 "SELECT record FROM runtime_agents WHERE id='agent'",
@@ -168,7 +168,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
     .await;
 
     let calls = broker.calls.lock().expect("calls lock");
-    let state = store.test_reader().expect("diagnostic store read");
+    let state = store.read().expect("diagnostic store read");
     let raw: Option<String> = state
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='agent'",
@@ -191,7 +191,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
     );
     assert_eq!(calls[0].expected_scope.as_ref(), Some(&broker.scope));
     assert_eq!(calls[0].method, Method::TurnInterrupt);
-    let reader = store.test_reader().expect("final state");
+    let reader = store.read().expect("final state");
     let raw: String = reader
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='agent'",
@@ -260,7 +260,7 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
     let (status, response) = call(&app, "/api/conversation/delete", json!({"id":"agent"})).await;
 
     let calls = broker.calls.lock().expect("calls lock");
-    let reader = store.test_reader().expect("diagnostic store read");
+    let reader = store.read().expect("diagnostic store read");
     let raw: String = reader
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='agent'",

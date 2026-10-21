@@ -59,7 +59,7 @@ impl Drop for Scratch {
 }
 
 fn rust_state(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("read recovered store");
+    let db = store.read().expect("read recovered store");
     let mut agents = Vec::new();
     let mut statement = db
         .prepare("SELECT id,record FROM runtime_agents ORDER BY id")

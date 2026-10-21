@@ -89,7 +89,7 @@ fn copy_state(source: &Path, target: &Path) {
 }
 
 fn rust_snapshot(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("read Rust startup rows");
+    let db = store.read().expect("read Rust startup rows");
     let records = |table: &str| -> Vec<Value> {
         let mut statement = db
             .prepare(&format!("SELECT record FROM {table} ORDER BY id"))

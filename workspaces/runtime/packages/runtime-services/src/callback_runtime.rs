@@ -164,7 +164,7 @@ impl CallbackRuntime {
     }
 
     pub async fn answer(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
-        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id).await?
+        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
             && !self.port.has_live_session(&context)
         {
             return Err(CallbackError::Dependency(
@@ -184,7 +184,7 @@ impl CallbackRuntime {
         now: f64,
         live_context: &CallbackContext,
     ) -> Result<Value, CallbackError> {
-        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id).await?
+        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
             && context != *live_context
         {
             return Err(CallbackError::Stale);
@@ -208,7 +208,7 @@ impl CallbackRuntime {
     }
 
     pub async fn delete_question(&self, id: &str, now: f64) -> Result<Value, CallbackError> {
-        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id).await?
+        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
             && !self.port.has_live_session(&context)
         {
             return Err(CallbackError::Dependency(
@@ -313,7 +313,7 @@ mod tests {
 
         fn deliver<'a>(&'a self, reply: &'a Reply, _: Duration) -> CallbackReplyFuture<'a> {
             Box::pin(async move {
-                let submitted: i64 = self.store.test_reader()?.query_row(
+                let submitted: i64 = self.store.read()?.query_row(
                     "SELECT count(*) FROM runtime_operation_receipts \
                  WHERE signature='provider-callback' \
                    AND json_extract(result,'$.delivery')='submitted'",
@@ -408,7 +408,7 @@ mod tests {
             }
 
             let request: String = store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_requests WHERE id='native-question'",
@@ -421,7 +421,7 @@ mod tests {
                 expected_status
             );
             let attempts: i64 = store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",

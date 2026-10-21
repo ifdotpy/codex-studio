@@ -78,50 +78,30 @@ pub struct PreviewContext {
     pub recovery_expected_tree: Option<String>,
 }
 
-pub async fn capture_context(
+pub fn capture_context(
     store: &RuntimeStore,
     agent_id: &str,
 ) -> Result<WorkspaceSnapshot, CheckpointsError> {
-    let agent_id = agent_id.to_owned();
-    store
-        .read_async(
-            "runtime-services/checkpoints/capture_context",
-            move |connection| {
-                CheckpointsRepository::workspace_snapshot(connection, &agent_id)?
-                    .ok_or(CheckpointsError::UnknownAgent)
-            },
-        )
-        .await
+    let connection = store.read()?;
+    CheckpointsRepository::workspace_snapshot(&connection, agent_id)?
+        .ok_or(CheckpointsError::UnknownAgent)
 }
 
-pub async fn preview_context(
+pub fn preview_context(
     store: &RuntimeStore,
     agent_id: &str,
     checkpoint_id: &str,
 ) -> Result<PreviewContext, CheckpointsError> {
-    let (agent_id, checkpoint_id) = (agent_id.to_owned(), checkpoint_id.to_owned());
-    store
-        .read_async(
-            "runtime-services/checkpoints/preview_context",
-            move |connection| preview_context_in(connection, &agent_id, &checkpoint_id),
-        )
-        .await
-}
-
-fn preview_context_in(
-    connection: &rusqlite::Connection,
-    agent_id: &str,
-    checkpoint_id: &str,
-) -> Result<PreviewContext, CheckpointsError> {
-    let agent = CheckpointsRepository::agent(connection, agent_id)?
+    let connection = store.read()?;
+    let agent = CheckpointsRepository::agent(&connection, agent_id)?
         .ok_or(CheckpointsError::UnknownAgent)?;
-    let checkpoint = CheckpointsRepository::checkpoint(connection, checkpoint_id)?
+    let checkpoint = CheckpointsRepository::checkpoint(&connection, checkpoint_id)?
         .ok_or(CheckpointsError::UnknownCheckpoint)?;
     if checkpoint.record.get("agent").and_then(Value::as_str) != Some(agent_id) {
         return Err(CheckpointsError::WrongAgent);
     }
     let recovery_expected_tree =
-        CheckpointsRepository::restore_expected_tree(connection, agent_id, checkpoint_id)?;
+        CheckpointsRepository::restore_expected_tree(&connection, agent_id, checkpoint_id)?;
     Ok(PreviewContext {
         agent,
         checkpoint,
@@ -134,10 +114,11 @@ pub async fn capture(
     agent_id: String,
     label: String,
 ) -> Result<Value, CheckpointsError> {
-    let snapshot = capture_context(&store, &agent_id).await?;
+    let preflight_store = Arc::clone(&store);
     let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/checkpoints",
         move || {
+            let snapshot = capture_context(&preflight_store, &agent_id)?;
             ensure_agent_available(&snapshot.agent)?;
             ensure_workspace_idle(&snapshot, None)?;
             Ok::<_, CheckpointsError>(snapshot)
@@ -193,12 +174,13 @@ async fn capture_before_restore_inner(
     expected_tree: String,
 ) -> Result<Value, CheckpointsError> {
     let read_store = Arc::clone(&store);
+    let read_agent = agent_id.clone();
     let read_operation = operation_id.clone();
     let read_expected_tree = expected_tree.clone();
-    let snapshot = capture_context(&store, &agent_id).await?;
     let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/checkpoints",
         move || {
+            let snapshot = capture_context(&read_store, &read_agent)?;
             if snapshot
                 .agent
                 .record
@@ -223,18 +205,15 @@ async fn capture_before_restore_inner(
             let checkpoint_id =
                 uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, read_operation.as_bytes())
                     .to_string();
-            Ok::<_, CheckpointsError>((snapshot, cwd, tree, checkpoint_id))
+            let existing = read_store.read().and_then(|db| {
+                studio_runtime_store::CheckpointsRepository::checkpoint(&db, &checkpoint_id)
+            })?;
+            Ok::<_, CheckpointsError>((snapshot, cwd, tree, checkpoint_id, existing))
         },
     )
     .await
     .map_err(|_| CheckpointsError::Worker)??;
-    let (snapshot, cwd, tree, checkpoint_id) = snapshot;
-    let read_checkpoint_id = checkpoint_id.clone();
-    let existing = store
-        .read_async("runtime-services/checkpoints", move |db| {
-            studio_runtime_store::CheckpointsRepository::checkpoint(db, &read_checkpoint_id)
-        })
-        .await?;
+    let (snapshot, cwd, tree, checkpoint_id, existing) = snapshot;
     if let Some(existing) = existing {
         return Ok(checkpoint_summary(existing.record));
     }
@@ -434,12 +413,14 @@ async fn capture_reserved(
     operation_id: String,
     kind: CaptureKind,
 ) -> Result<Value, CheckpointsError> {
+    let read_store = Arc::clone(&store);
+    let agent_id = snapshot.agent.id.clone();
     let transaction_operation_id = operation_id.clone();
     let preflight_operation_id = transaction_operation_id.clone();
-    let snapshot = capture_context(&store, &snapshot.agent.id).await?;
     let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/checkpoints",
         move || {
+            let snapshot = capture_context(&read_store, &agent_id)?;
             if snapshot
                 .agent
                 .record

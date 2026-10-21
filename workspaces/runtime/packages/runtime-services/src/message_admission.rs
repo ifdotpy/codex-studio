@@ -357,9 +357,7 @@ mod tests {
             .await
             .expect("persist lead record");
 
-        let connection = store
-            .test_reader()
-            .expect("hold message admission snapshot");
+        let connection = store.read().expect("hold message admission snapshot");
         let admission = MessageIngressAdmission::load(Arc::clone(&store), &connection, "lead")
             .expect("positive token budget history loads without nested read");
         assert!(admission.histories.contains_key("lead"));

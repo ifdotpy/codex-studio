@@ -914,20 +914,25 @@ pub async fn copy_guest_credentials(
     if !dispatch {
         return Ok(digest);
     }
+    let dispatch_store = Arc::clone(&store);
     let dispatch_agent = target.agent_id.to_owned();
     let dispatch_account = target.account_key.to_owned();
     let dispatch_provider = target.provider.to_owned();
-    let still_current = store
-        .read_async("runtime-services/linux_vm_provider", move |connection| {
+    let still_current = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/linux_vm_provider",
+        move || {
+            let connection = dispatch_store.read()?;
             vm_actor_matches(
-                connection,
+                &connection,
                 &dispatch_agent,
                 actor_epoch,
                 &dispatch_account,
                 Some(&dispatch_provider),
             )
-        })
-        .await?;
+        },
+    )
+    .await
+    .map_err(|_| GuestProviderError::Task)??;
     if !still_current {
         return Err(GuestProviderError::Refused);
     }
@@ -1484,7 +1489,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let connection = store.test_reader().unwrap();
+        let connection = store.read().unwrap();
         assert!(!vm_actor_matches(&connection, "agent-1", 9, "default", Some("codex")).unwrap());
     }
 
@@ -1689,7 +1694,7 @@ mod tests {
         );
         drop(puts);
         let receipt_id = guest.credential_puts.lock().unwrap()[0].0.clone().unwrap();
-        let receipt = EventWriteRepository::receipt(&store.test_reader().unwrap(), &receipt_id)
+        let receipt = EventWriteRepository::receipt(&store.read().unwrap(), &receipt_id)
             .unwrap()
             .unwrap();
         assert_eq!(receipt.result, "complete");

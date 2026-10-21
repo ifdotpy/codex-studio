@@ -238,21 +238,16 @@ pub(crate) fn read_multi_server_identity(
 }
 
 /// Load the Python federation identity row (`id='local'`) without changing it.
-pub async fn load_federation_identity(
-    store: &RuntimeStore,
-) -> RemoteTransportResult<RemoteIdentity> {
+pub fn load_federation_identity(store: &RuntimeStore) -> RemoteTransportResult<RemoteIdentity> {
     const TABLE: &str = "runtime_federation_identity";
     const KEY: &str = "local";
     let invalid = || RemoteTransportError::InvalidStoredObject {
         table: TABLE,
         key: KEY.to_owned(),
     };
-    let Some(record) = store
-        .read_async("runtime-services/remote_transport", |tx| {
-            RemoteTransportRepository::federation_identity(tx)
-        })
-        .await
-        .map_err(|_| invalid())?
+    let connection = store.read().map_err(|_| invalid())?;
+    let Some(record) =
+        RemoteTransportRepository::federation_identity(&connection).map_err(|_| invalid())?
     else {
         return Err(invalid());
     };
@@ -2150,7 +2145,7 @@ pub(crate) mod tests {
             .await,
             Err(super::RemoteTransportError::Replay)
         ));
-        let connection = store.test_reader().expect("read transaction opens");
+        let connection = store.read().expect("read transaction opens");
         let stale: i64 = connection
             .query_row(
                 "SELECT count(*) FROM runtime_federation_nonces WHERE nonce='stale'",
@@ -2189,7 +2184,7 @@ pub(crate) mod tests {
             .await,
             Err(super::RemoteTransportError::Replay)
         ));
-        let connection = store.test_reader().expect("multi-server stale row reads");
+        let connection = store.read().expect("multi-server stale row reads");
         let stale: i64 = connection
             .query_row(
                 "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
@@ -2216,9 +2211,7 @@ pub(crate) mod tests {
             })
             .await
             .expect("malformed identity fixture commits");
-        let error = super::load_federation_identity(&store)
-            .await
-            .expect_err("malformed key is refused");
+        let error = super::load_federation_identity(&store).expect_err("malformed key is refused");
         assert!(matches!(
             error,
             super::RemoteTransportError::InvalidStoredObject {

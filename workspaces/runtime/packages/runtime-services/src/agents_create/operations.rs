@@ -36,6 +36,25 @@ pub struct Context<'a> {
     pub validate: PersistedRecordValidator,
 }
 
+async fn with_read<T, F>(
+    store: std::sync::Arc<RuntimeStore>,
+    operation: F,
+) -> Result<T, OperationError>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, OperationError> + Send + 'static,
+{
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/read",
+        move || {
+            let read = store.read()?;
+            operation(&read)
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
+}
+
 async fn project_directory_async(value: Option<String>) -> Result<Option<String>, OperationError> {
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/agents_create/project_directory",
@@ -191,14 +210,12 @@ pub async fn creation_account_key(
     let requested_cwd = project_directory_async(request.cwd.clone()).await?;
     let previous_id = request.previous.clone();
     let validate = std::sync::Arc::clone(&context.validate);
-    let previous = context
-        .store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-            previous_lead(read, previous_id.as_deref(), &|schema, value| {
-                validate(schema, value)
-            })
+    let previous = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        previous_lead(read, previous_id.as_deref(), &|schema, value| {
+            validate(schema, value)
         })
-        .await?;
+    })
+    .await?;
     let cwd = if let Some(cwd) = requested_cwd {
         cwd
     } else if let Some(prior) = previous.as_ref() {
@@ -228,23 +245,22 @@ pub async fn conversation_account_key(
     let validate = std::sync::Arc::clone(&context.validate);
     let id = id.to_owned();
     let expected = expected_account.map(str::to_owned);
-    let old_account = store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-            let initial = load_agent_value(read, &id, &|schema, value| validate(schema, value))?
-                .ok_or(MutationError::UnknownAgent)?;
-            let account = initial
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default");
-            if expected
-                .as_deref()
-                .is_some_and(|expected| expected != account)
-            {
-                return Err(MutationError::Stale.into());
-            }
-            Ok(account.to_owned())
-        })
-        .await?;
+    let old_account = with_read(store, move |read| {
+        let initial = load_agent_value(read, &id, &|schema, value| validate(schema, value))?
+            .ok_or(MutationError::UnknownAgent)?;
+        let account = initial
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if expected
+            .as_deref()
+            .is_some_and(|expected| expected != account)
+        {
+            return Err(MutationError::Stale.into());
+        }
+        Ok(account.to_owned())
+    })
+    .await?;
     // Python's conversation update uses the requested project account when cwd
     // changes and otherwise keeps this conversation's account; settings then
     // resolve their catalogs separately (`codex_runtime.py:5484-5491`).
@@ -269,26 +285,25 @@ pub async fn conversation_worker_account_key(
     let validate = std::sync::Arc::clone(&context.validate);
     let id = id.to_owned();
     let expected = expected_account.map(str::to_owned);
-    store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-            let record = load_agent_value(read, &id, &|schema, value| validate(schema, value))?
-                .ok_or(MutationError::UnknownAgent)?;
-            let account = record
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default");
-            if expected
-                .as_deref()
-                .is_some_and(|expected| expected != account)
-            {
-                return Err(MutationError::Stale.into());
-            }
-            Ok(record
-                .pointer("/workerDefaults/accountKey")
-                .and_then(Value::as_str)
-                .map(str::to_owned))
-        })
-        .await
+    with_read(store, move |read| {
+        let record = load_agent_value(read, &id, &|schema, value| validate(schema, value))?
+            .ok_or(MutationError::UnknownAgent)?;
+        let account = record
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if expected
+            .as_deref()
+            .is_some_and(|expected| expected != account)
+        {
+            return Err(MutationError::Stale.into());
+        }
+        Ok(record
+            .pointer("/workerDefaults/accountKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned))
+    })
+    .await
 }
 
 pub async fn agent(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
@@ -313,17 +328,15 @@ pub async fn prepare_agent_admission(
     let read_id = id.clone();
     let read_intent = intent.clone();
     let replayed = {
-        context
-            .store
-            .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-                Ok(super::replay_agent(
-                    read,
-                    &read_id,
-                    &read_intent,
-                    |schema, value| validate(schema, value),
-                )?)
-            })
-            .await?
+        with_read(std::sync::Arc::clone(&context.store), move |read| {
+            Ok(super::replay_agent(
+                read,
+                &read_id,
+                &read_intent,
+                |schema, value| validate(schema, value),
+            )?)
+        })
+        .await?
     };
     if replayed.is_some() {
         let validate = std::sync::Arc::clone(&context.validate);
@@ -355,23 +368,21 @@ async fn prepare_new_agent_admission(
     // only non-null model/effort values that the request did not override.
     let validate = std::sync::Arc::clone(&context.validate);
     let profile_id = request.profile.clone().filter(|id| !id.is_empty());
-    let profile = context
-        .store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-            profile_id
-                .map(|id| {
-                    load_record(
-                        read,
-                        "runtime_profiles",
-                        "ProfileRecord",
-                        &id,
-                        &|schema, value| validate(schema, value),
-                    )?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
-                })
-                .transpose()
-        })
-        .await?;
+    let profile = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        profile_id
+            .map(|id| {
+                load_record(
+                    read,
+                    "runtime_profiles",
+                    "ProfileRecord",
+                    &id,
+                    &|schema, value| validate(schema, value),
+                )?
+                .ok_or(OperationError::Invalid("Unknown worker profile"))
+            })
+            .transpose()
+    })
+    .await?;
     let explicit = request.intent.as_object();
     let profile_model_value = profile
         .as_ref()
@@ -550,17 +561,15 @@ async fn create(
     let read_signature = signature.clone();
     let read_intent = intent.clone();
     let read_validate = std::sync::Arc::clone(&validate);
-    let existing = context
-        .store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-            let validate = |schema: &str, value: &Value| read_validate(schema, value);
-            if draft {
-                Ok(replay_lead(read, &read_id, &read_signature, validate)?)
-            } else {
-                Ok(replay_agent(read, &read_id, &read_intent, validate)?)
-            }
-        })
-        .await?;
+    let existing = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        let validate = |schema: &str, value: &Value| read_validate(schema, value);
+        if draft {
+            Ok(replay_lead(read, &read_id, &read_signature, validate)?)
+        } else {
+            Ok(replay_agent(read, &read_id, &read_intent, validate)?)
+        }
+    })
+    .await?;
     if existing.is_some() {
         let validate = std::sync::Arc::clone(&validate);
         let replay_id = id.clone();
@@ -594,27 +603,25 @@ async fn create(
     let previous_id = request.previous.clone();
     let profile_id = request.profile.clone().filter(|id| !id.is_empty());
     let read_validate = std::sync::Arc::clone(&validate);
-    let (previous, profile) = context
-        .store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-            let previous = previous_lead(read, previous_id.as_deref(), &|schema, value| {
-                read_validate(schema, value)
-            })?;
-            let profile = profile_id
-                .map(|id| {
-                    load_record(
-                        read,
-                        "runtime_profiles",
-                        "ProfileRecord",
-                        &id,
-                        &|schema, value| read_validate(schema, value),
-                    )?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
-                })
-                .transpose()?;
-            Ok((previous, profile))
-        })
-        .await?;
+    let (previous, profile) = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        let previous = previous_lead(read, previous_id.as_deref(), &|schema, value| {
+            read_validate(schema, value)
+        })?;
+        let profile = profile_id
+            .map(|id| {
+                load_record(
+                    read,
+                    "runtime_profiles",
+                    "ProfileRecord",
+                    &id,
+                    &|schema, value| read_validate(schema, value),
+                )?
+                .ok_or(OperationError::Invalid("Unknown worker profile"))
+            })
+            .transpose()?;
+        Ok((previous, profile))
+    })
+    .await?;
     if let Some(profile) = &profile {
         if request.role.is_none() {
             request.role = profile
@@ -1026,9 +1033,8 @@ async fn create_child(
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
     let parent_id_for_read = parent_id.to_owned();
     let validate_fn = std::sync::Arc::clone(&validate);
-    let (parent, root, project_binding) = context
-        .store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |db| {
+    let (parent, root, project_binding) =
+        with_read(std::sync::Arc::clone(&context.store), move |db| {
             let validate = |schema: &str, value: &Value| validate_fn(schema, value);
             let parent = load_agent_value(db, &parent_id_for_read, &validate)?
                 .ok_or(MutationError::UnknownAgent)?;
@@ -1707,13 +1713,11 @@ pub async fn conversation(
     if request.worker_settings {
         let id = request.id.clone();
         let read_validate = std::sync::Arc::clone(&validate);
-        let initial = context
-            .store
-            .read_async::<_, OperationError>("runtime-services/agents_create/read", move |db| {
-                load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
-                    .ok_or(MutationError::UnknownAgent.into())
-            })
-            .await?;
+        let initial = with_read(std::sync::Arc::clone(&context.store), move |db| {
+            load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
+                .ok_or(MutationError::UnknownAgent.into())
+        })
+        .await?;
         if initial.get("isLead").and_then(Value::as_bool) != Some(true) {
             return Err(MutationError::LeadRequired.into());
         }
@@ -1813,18 +1817,13 @@ pub async fn conversation(
         if let Some(expected_account) = request.expected_account.as_deref() {
             let id = request.id.clone();
             let read_validate = std::sync::Arc::clone(&validate);
-            let record = context
-                .store
-                .read_async::<_, OperationError>(
-                    "runtime-services/agents_create/read",
-                    move |connection| {
-                        load_agent_value(connection, &id, &|schema, value| {
-                            read_validate(schema, value)
-                        })?
-                        .ok_or(MutationError::UnknownAgent.into())
-                    },
-                )
-                .await?;
+            let record = with_read(std::sync::Arc::clone(&context.store), move |connection| {
+                load_agent_value(connection, &id, &|schema, value| {
+                    read_validate(schema, value)
+                })?
+                .ok_or(MutationError::UnknownAgent.into())
+            })
+            .await?;
             if record
                 .get("accountKey")
                 .and_then(Value::as_str)
@@ -1850,18 +1849,13 @@ pub async fn conversation(
         .await?;
         let id = request.id.clone();
         let read_validate = std::sync::Arc::clone(&validate);
-        let record = context
-            .store
-            .read_async::<_, OperationError>(
-                "runtime-services/agents_create/read",
-                move |connection| {
-                    load_agent_value(connection, &id, &|schema, value| {
-                        read_validate(schema, value)
-                    })?
-                    .ok_or(MutationError::UnknownAgent.into())
-                },
-            )
-            .await?;
+        let record = with_read(std::sync::Arc::clone(&context.store), move |connection| {
+            load_agent_value(connection, &id, &|schema, value| {
+                read_validate(schema, value)
+            })?
+            .ok_or(MutationError::UnknownAgent.into())
+        })
+        .await?;
         return Ok(record);
     }
     if request.cwd.is_none()
@@ -1894,13 +1888,11 @@ pub async fn conversation(
     }
     let id = request.id.clone();
     let read_validate = std::sync::Arc::clone(&validate);
-    let initial = context
-        .store
-        .read_async::<_, OperationError>("runtime-services/agents_create/read", move |db| {
-            load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
-                .ok_or(MutationError::UnknownAgent.into())
-        })
-        .await?;
+    let initial = with_read(std::sync::Arc::clone(&context.store), move |db| {
+        load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
+            .ok_or(MutationError::UnknownAgent.into())
+    })
+    .await?;
     let old_account = initial
         .get("accountKey")
         .and_then(Value::as_str)
@@ -2331,29 +2323,27 @@ pub async fn rename_operation(
         let id = id.to_owned();
         let request_id = request_id.to_owned();
         let signature_for_read = signature.clone();
-        let replay = context
-            .store
-            .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
-                load_agent_value(read, &id, &|schema, value| validate(schema, value))?
-                    .ok_or(MutationError::UnknownAgent)?;
-                if let Some(receipt) = EventWriteRepository::receipt(read, &request_id)? {
-                    if receipt.signature != signature_for_read {
-                        return Err(MutationError::Conflict.into());
-                    }
-                    let response = serde_json::from_str(&receipt.result).map_err(|_| {
-                        OperationError::Create(MutationError::InvalidStoredObject {
-                            table: "runtime_operation_receipts",
-                            id: request_id.to_owned(),
-                        })
-                    })?;
-                    return Ok(Some(RenameOperationResult {
-                        response,
-                        replayed: true,
-                    }));
+        let replay = with_read(std::sync::Arc::clone(&context.store), move |read| {
+            load_agent_value(read, &id, &|schema, value| validate(schema, value))?
+                .ok_or(MutationError::UnknownAgent)?;
+            if let Some(receipt) = EventWriteRepository::receipt(read, &request_id)? {
+                if receipt.signature != signature_for_read {
+                    return Err(MutationError::Conflict.into());
                 }
-                Ok(None)
-            })
-            .await?;
+                let response = serde_json::from_str(&receipt.result).map_err(|_| {
+                    OperationError::Create(MutationError::InvalidStoredObject {
+                        table: "runtime_operation_receipts",
+                        id: request_id.to_owned(),
+                    })
+                })?;
+                return Ok(Some(RenameOperationResult {
+                    response,
+                    replayed: true,
+                }));
+            }
+            Ok(None)
+        })
+        .await?;
         if let Some(replay) = replay {
             return Ok(replay);
         }
@@ -2423,58 +2413,59 @@ async fn account_key(
                 .map(str::to_owned)
         })
         .ok_or_else(|| OperationError::Internal)?;
-    context
-        .store
-        .read_async::<_, OperationError>(
-            "runtime-services/agents_create/account_key",
-            move |connection| {
-                let mut statement = connection
-                    .prepare("SELECT id,record FROM runtime_projects")
-                    .map_err(|_| OperationError::Internal)?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .map_err(|_| OperationError::Internal)?;
-                let mut selected: Option<(usize, String)> = None;
-                for row in rows {
-                    let (id, raw) = row.map_err(|_| OperationError::Internal)?;
-                    let invalid = || MutationError::InvalidStoredObject {
-                        table: "runtime_projects",
-                        id: id.clone(),
-                    };
-                    let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-                    if !record.is_object()
-                        || record.get("id").and_then(Value::as_str) != Some(id.as_str())
+    let store = std::sync::Arc::clone(&context.store);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/account_key",
+        move || {
+            let connection = store.read()?;
+            let mut statement = connection
+                .prepare("SELECT id,record FROM runtime_projects")
+                .map_err(|_| OperationError::Internal)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|_| OperationError::Internal)?;
+            let mut selected: Option<(usize, String)> = None;
+            for row in rows {
+                let (id, raw) = row.map_err(|_| OperationError::Internal)?;
+                let invalid = || MutationError::InvalidStoredObject {
+                    table: "runtime_projects",
+                    id: id.clone(),
+                };
+                let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                if !record.is_object()
+                    || record.get("id").and_then(Value::as_str) != Some(id.as_str())
+                {
+                    return Err(invalid().into());
+                }
+                let project_path = record
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?;
+                let project_account = match record.get("accountKey") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(account)) => Some(account.as_str()),
+                    Some(_) => return Err(invalid().into()),
+                };
+                let path = PathBuf::from(project_path);
+                if PathBuf::from(&cwd).starts_with(&path)
+                    && let Some(account) = project_account
+                {
+                    let depth = path.components().count();
+                    if selected
+                        .as_ref()
+                        .is_none_or(|(old_depth, _)| depth > *old_depth)
                     {
-                        return Err(invalid().into());
-                    }
-                    let project_path = record
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .ok_or_else(invalid)?;
-                    let project_account = match record.get("accountKey") {
-                        None | Some(Value::Null) => None,
-                        Some(Value::String(account)) => Some(account.as_str()),
-                        Some(_) => return Err(invalid().into()),
-                    };
-                    let path = PathBuf::from(project_path);
-                    if PathBuf::from(&cwd).starts_with(&path)
-                        && let Some(account) = project_account
-                    {
-                        let depth = path.components().count();
-                        if selected
-                            .as_ref()
-                            .is_none_or(|(old_depth, _)| depth > *old_depth)
-                        {
-                            selected = Some((depth, account.to_owned()));
-                        }
+                        selected = Some((depth, account.to_owned()));
                     }
                 }
-                Ok(selected.map_or(default, |(_, account)| account))
-            },
-        )
-        .await
+            }
+            Ok(selected.map_or(default, |(_, account)| account))
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
 }
 
 async fn account_identity(
@@ -2562,28 +2553,26 @@ async fn resolve_project_binding(
     home_server: Option<String>,
     folder: Option<Value>,
 ) -> Result<Value, OperationError> {
-    let local = context
-        .store
-        .local_server_id()?
-        .ok_or(OperationError::Unavailable(
-            "cross-server-driver/local-identity",
-        ))?;
-    context
-        .store
-        .read_async(
-            "runtime-services/agents_create/project_binding",
-            move |connection| {
-                resolve_project_binding_from(
-                    connection,
-                    &cwd,
-                    project_id.as_deref(),
-                    home_server.as_deref(),
-                    &local,
-                    folder.as_ref(),
-                )
-            },
-        )
-        .await
+    let store = std::sync::Arc::clone(&context.store);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/project_binding",
+        move || {
+            let local = store.local_server_id()?.ok_or(OperationError::Unavailable(
+                "cross-server-driver/local-identity",
+            ))?;
+            let connection = store.read()?;
+            resolve_project_binding_from(
+                &connection,
+                &cwd,
+                project_id.as_deref(),
+                home_server.as_deref(),
+                &local,
+                folder.as_ref(),
+            )
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
 }
 
 async fn resolve_worker_defaults(
@@ -3438,7 +3427,7 @@ mod tests {
         persist_image_provision_failure(&store, "image-worker", 4, "ASIF mount failed")
             .await
             .expect("failure phase stores");
-        let read = store.test_reader().expect("saved failure reads");
+        let read = store.read().expect("saved failure reads");
         let saved = studio_runtime_store::AgentRepository::get(
             &read,
             &studio_runtime_store::AgentId::from("image-worker"),

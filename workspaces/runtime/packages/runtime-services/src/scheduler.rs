@@ -1077,7 +1077,7 @@ mod invalid_record_recovery_tests {
             .expect("startup tolerates invalid field");
 
         assert_eq!(recovered, 0);
-        let connection = store.test_reader().expect("state reader opens");
+        let connection = store.read().expect("state reader opens");
         let raw: String = connection
             .query_row(
                 "SELECT record FROM runtime_agents WHERE id='bad'",
@@ -1177,7 +1177,7 @@ mod child_turn_parent_tests {
     }
 
     fn parent_events(store: &RuntimeStore) -> Vec<(String, String, Value)> {
-        let connection = store.test_reader().expect("state reader opens");
+        let connection = store.read().expect("state reader opens");
         let mut statement = connection
             .prepare(
                 "SELECT id,status,text FROM runtime_events WHERE agent='lead' AND kind='child_result'",
@@ -1204,7 +1204,7 @@ mod child_turn_parent_tests {
     }
 
     fn status(store: &RuntimeStore, id: &str) -> AgentStatus {
-        AgentRepository::get(&store.test_reader().expect("reader"), &AgentId::from(id))
+        AgentRepository::get(&store.read().expect("reader"), &AgentId::from(id))
             .expect("agent reads")
             .expect("agent exists")
             .status
@@ -1274,12 +1274,9 @@ mod child_turn_parent_tests {
             .transaction(|tx| SchedulerRepository::disconnect_account(tx, "default", 1, 5.0, false))
             .await
             .expect("disconnect runs");
-        let child = AgentRepository::get(
-            &store.test_reader().expect("reader"),
-            &AgentId::from("child"),
-        )
-        .expect("child reads")
-        .expect("child exists");
+        let child = AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+            .expect("child reads")
+            .expect("child exists");
         assert_eq!(child.extra["autoWake"], false, "disconnect clears autoWake");
     }
 
@@ -1307,13 +1304,11 @@ mod child_turn_parent_tests {
         for provider in ["codex", "claude"] {
             let (_directory, store, _intent) = seeded(provider).await;
             disconnect(&store).await;
-            let mut recovered = AgentRepository::get(
-                &store.test_reader().expect("reader"),
-                &AgentId::from("child"),
-            )
-            .expect("child reads")
-            .expect("child exists")
-            .value();
+            let mut recovered =
+                AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+                    .expect("child reads")
+                    .expect("child exists")
+                    .value();
             // The non-automatic connection-recovery branch keeps autoWake false.
             recovered["status"] = json!("completed");
             recovered["error"] = Value::Null;
@@ -1377,13 +1372,10 @@ mod child_turn_parent_tests {
     }
 
     fn child(store: &RuntimeStore) -> Value {
-        AgentRepository::get(
-            &store.test_reader().expect("reader"),
-            &AgentId::from("child"),
-        )
-        .expect("child reads")
-        .expect("child exists")
-        .value()
+        AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+            .expect("child reads")
+            .expect("child exists")
+            .value()
     }
 
     const TOO_MANY_ATTEMPTS: &str = "responseTooManyFailedAttempts";
@@ -1637,13 +1629,11 @@ mod child_turn_parent_tests {
     async fn connection_recovery_failure_still_reports_a_stopped_child() {
         let (_directory, store, _intent) = seeded("claude").await;
         disconnect(&store).await;
-        let mut recovered = AgentRepository::get(
-            &store.test_reader().expect("reader"),
-            &AgentId::from("child"),
-        )
-        .expect("child reads")
-        .expect("child exists")
-        .value();
+        let mut recovered =
+            AgentRepository::get(&store.read().expect("reader"), &AgentId::from("child"))
+                .expect("child reads")
+                .expect("child exists")
+                .value();
         recovered["status"] = json!("failed");
         recovered["lastCompletedTurnStatus"] = json!("failed");
         recover(&store, &recovered, "failed").await;
@@ -1756,7 +1746,7 @@ mod child_result_coalesce_tests {
     }
 
     fn lead_listed(store: &RuntimeStore, now: f64) -> bool {
-        let connection = store.test_reader().expect("reader");
+        let connection = store.read().expect("reader");
         SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8, now)
             .expect("wake page reads")
             .values()
@@ -1765,7 +1755,7 @@ mod child_result_coalesce_tests {
     }
 
     fn release_at(store: &RuntimeStore, now: f64) -> Option<f64> {
-        let connection = store.test_reader().expect("reader");
+        let connection = store.read().expect("reader");
         SchedulerRepository::child_result_release_at(&connection, now).expect("release reads")
     }
 
@@ -1871,7 +1861,7 @@ mod child_result_coalesce_tests {
             ["child:w1:turn-w1", "child:w2:turn-w2", "child:w3:turn-w3"]
         );
         let results: i64 = store
-            .test_reader()
+            .read()
             .expect("reader")
             .query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE agent='lead' AND kind='child_result'",

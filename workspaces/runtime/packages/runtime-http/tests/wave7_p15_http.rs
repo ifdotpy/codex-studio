@@ -20,7 +20,7 @@ use tower::ServiceExt;
 fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
     use rusqlite::types::ValueRef;
 
-    let connection = store.test_reader().expect("database snapshot connection");
+    let connection = store.read().expect("database snapshot connection");
     let schema = connection
         .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
         .expect("database schema")
@@ -181,7 +181,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     }
     assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
     let saved = MonitorsRepository::get(
-        &store.test_reader().expect("read"),
+        &store.read().expect("read"),
         case["before"]["id"].as_str().expect("id"),
     )
     .expect("monitor")
@@ -259,7 +259,7 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
     );
     drop(submitted);
 
-    let saved = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
+    let saved = MonitorsRepository::get(&store.read().expect("read monitor"), id)
         .expect("read monitor record")
         .expect("monitor record")
         .value()
@@ -334,13 +334,13 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         .await;
         assert_eq!(status, 200, "{response}");
         assert_eq!(response["status"], "answered");
-        let request = Table::<RequestRecord>::new(&store.test_reader().expect("read request"))
+        let request = Table::<RequestRecord>::new(&store.read().expect("read request"))
             .get(&request_id)
             .expect("get approval request")
             .expect("approval request");
         assert_eq!(request.value()["status"], "answered");
         assert_eq!(request.value()["answerDecision"], decision);
-        let monitor = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
+        let monitor = MonitorsRepository::get(&store.read().expect("read monitor"), id)
             .expect("get monitor")
             .expect("monitor")
             .value()

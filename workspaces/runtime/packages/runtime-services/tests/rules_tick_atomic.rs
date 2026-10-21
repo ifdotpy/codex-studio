@@ -54,7 +54,7 @@ impl Template {
     }
 }
 fn rule(store: &RuntimeStore) -> Value {
-    RulesRepository::get(&store.test_reader().expect("read"), "rule")
+    RulesRepository::get(&store.read().expect("read"), "rule")
         .expect("rule read")
         .expect("rule exists")
         .value()
@@ -76,7 +76,7 @@ async fn change(store: &RuntimeStore, fields: Value) {
         .expect("change rule");
 }
 fn events(store: &RuntimeStore) -> Vec<(String, String)> {
-    let db = store.test_reader().expect("events read");
+    let db = store.read().expect("events read");
     db.prepare("SELECT id,status FROM runtime_events ORDER BY id")
         .expect("query")
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -635,7 +635,7 @@ impl RuleMonitor for DurableMonitor<'_> {
                 return CheckReconciliation::Unknown;
             }
             let row = studio_runtime_store::MonitorsRepository::get(
-                &self.store.test_reader().expect("read monitor"),
+                &self.store.read().expect("read monitor"),
                 &check.monitor_id,
             )
             .expect("monitor row");

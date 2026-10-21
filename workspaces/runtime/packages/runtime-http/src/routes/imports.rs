@@ -62,13 +62,18 @@ async fn import_thread(
     let thread_id = body.thread_id.clone();
     if let Some(id) = body.id.as_ref().and_then(|id| id.as_ref()) {
         let id = id.clone();
-        let existing = store
-            .read_async("runtime-http/routes/imports", move |saved| {
-                AgentRepository::get(saved, &AgentId::from(id.as_str()))
+        let check_store = store.clone();
+        let existing = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/imports",
+            move || {
+                let saved = check_store.read().map_err(ApiError::stored)?;
+                AgentRepository::get(&saved, &AgentId::from(id.as_str()))
                     .map_err(ApiError::stored)
                     .map(|record| record.map(|record| record.value()))
-            })
-            .await?;
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
         if let Some(value) = existing {
             if value.get("importedFrom").and_then(Value::as_str) != Some(&thread_id)
                 || value

@@ -467,22 +467,29 @@ async fn update_peers(link: &mut RunningLink, peers: &[String]) -> std::io::Resu
 }
 
 async fn paired_server_keys(store: Arc<RuntimeStore>) -> Result<Vec<String>, String> {
-    store
-        .read_async("runtime-server/peer-link-snapshot", |connection| {
-            let mut statement = connection.prepare_cached(
-                "SELECT json_extract(record,'$.publicKey') FROM runtime_access_clients \
-                 WHERE json_extract(record,'$.kind')='server' \
-                   AND json_extract(record,'$.status')='paired' \
-                   AND COALESCE(json_extract(record,'$.revoked'),0)=0 \
-                 ORDER BY id",
-            )?;
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/peer-link-snapshot",
+        move || {
+            let connection = store.read().map_err(|error| error.to_string())?;
+            let mut statement = connection
+                .prepare_cached(
+                    "SELECT json_extract(record,'$.publicKey') FROM runtime_access_clients \
+                     WHERE json_extract(record,'$.kind')='server' \
+                       AND json_extract(record,'$.status')='paired' \
+                       AND COALESCE(json_extract(record,'$.revoked'),0)=0 \
+                     ORDER BY id",
+                )
+                .map_err(|error| error.to_string())?;
             let keys = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok::<_, studio_runtime_store::StoreError>(keys)
-        })
-        .await
-        .map_err(|error| error.to_string())
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            Ok(keys)
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 async fn tailscale_ipv4() -> Option<Ipv4Addr> {

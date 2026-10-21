@@ -115,7 +115,7 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         json!(intent.events.iter().map(|e| &e.id).collect::<Vec<_>>()),
         fixture["events"]
     );
-    let reader = store.test_reader().expect("read");
+    let reader = store.read().expect("read");
     let reserved: i64 = reader
         .query_row(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='reserved'",
@@ -169,7 +169,7 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
             .expect("accept"),
         Some(false)
     );
-    let reader = store.test_reader().expect("read");
+    let reader = store.read().expect("read");
     let delivered: i64 = reader
         .query_row(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='delivered'",
@@ -215,7 +215,7 @@ async fn named_team_and_radio_refusals_match_python_preparation_and_preserve_who
 }
 
 fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
-    let reader = store.test_reader().expect("policy snapshot reads");
+    let reader = store.read().expect("policy snapshot reads");
     let raw_agent = studio_runtime_store::agent_volatile::merged_record(&reader, agent)
         .expect("agent snapshot reads")
         .expect("agent row exists");
@@ -279,7 +279,7 @@ async fn submitted_marker_survives_settlement_write_failure() {
             .await
             .is_err()
     );
-    let reader = store.test_reader().expect("read");
+    let reader = store.read().expect("read");
     let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
         .expect("agent")
         .expect("present");
@@ -299,12 +299,9 @@ async fn submitted_marker_survives_settlement_write_failure() {
             .expect("uncertain recovery"),
         1
     );
-    let record = AgentRepository::get(
-        &store.test_reader().expect("read"),
-        &AgentId::from(agent.as_str()),
-    )
-    .expect("agent")
-    .expect("present");
+    let record = AgentRepository::get(&store.read().expect("read"), &AgentId::from(agent.as_str()))
+        .expect("agent")
+        .expect("present");
     // Python restart recovery restores an accepted submission to the queue
     // until native history confirms its outcome (codex_restart_recovery.py).
     assert_eq!(record.status, AgentStatus::Queued);
@@ -331,7 +328,7 @@ async fn restart_keeps_a_scoped_receipt_without_replaying_events() {
     drop(store);
     let store = RuntimeStore::open(Some(&state.0)).await.expect("reopen");
     assert_eq!(recover_on_startup(&store).await.expect("recovery"), 1);
-    let reader = store.test_reader().expect("read");
+    let reader = store.read().expect("read");
     let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
         .expect("agent")
         .expect("present");
@@ -383,7 +380,7 @@ async fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbo
             .expect("recover submitted rows"),
         1
     );
-    let reader = store.test_reader().expect("read recovered state");
+    let reader = store.read().expect("read recovered state");
     let good = AgentRepository::get(&reader, &AgentId::from(good_agent.as_str()))
         .expect("read healthy agent")
         .expect("healthy agent remains");
@@ -409,7 +406,7 @@ async fn proven_not_submitted_preserves_failed_projection_and_pending_input() {
     settle_start_outcome(&store, &intent, TurnStart::NotSubmitted)
         .await
         .expect("unsent");
-    let reader = store.test_reader().expect("read");
+    let reader = store.read().expect("read");
     let projected:(String,bool,Option<String>)=reader.query_row("SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("projection");
     assert_eq!(projected, ("failed".into(), false, None));
     let pending: i64 = reader
@@ -462,7 +459,7 @@ async fn late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input() {
             .expect("late"),
         Some(true)
     );
-    let reader = store.test_reader().expect("read");
+    let reader = store.read().expect("read");
     let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
         .expect("agent")
         .expect("present");

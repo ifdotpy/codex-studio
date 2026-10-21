@@ -128,7 +128,7 @@ async fn seed(store: &RuntimeStore, records: Records) {
     }).await.expect("rows seed");
 }
 fn state(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let records = agent_management::read(&db).expect("records");
     let mut statement = db.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities ORDER BY collection,id").expect("sync read");
     let sync = statement
@@ -367,7 +367,7 @@ async fn deleted_team_broadcast_projection_survives_repeated_delete() {
         .await
         .expect("delete");
     let room = |store: &RuntimeStore| -> Value {
-        let raw:String=store.test_reader().expect("reader").query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id='broadcast' AND deleted=0",[],|r| r.get(0)).expect("retained broadcast");
+        let raw:String=store.read().expect("reader").query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id='broadcast' AND deleted=0",[],|r| r.get(0)).expect("retained broadcast");
         serde_json::from_str::<Value>(&raw).expect("payload")["value"].clone()
     };
     let before = room(&store);
@@ -829,7 +829,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
 
 /// Current entity hashes and tombstone flags, keyed by collection and id.
 fn entities(store: &RuntimeStore) -> std::collections::BTreeMap<(String, String), (String, i64)> {
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let mut statement = db
         .prepare("SELECT collection,id,hash,deleted FROM sync_entities")
         .expect("entity read");

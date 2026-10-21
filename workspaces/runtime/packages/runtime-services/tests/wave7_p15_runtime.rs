@@ -31,14 +31,14 @@ use tokio::sync::Notify;
 mod support;
 use support::Port;
 fn record(store: &RuntimeStore, id: &str) -> Value {
-    MonitorsRepository::get(&store.test_reader().expect("read"), id)
+    MonitorsRepository::get(&store.read().expect("read"), id)
         .expect("get")
         .expect("monitor")
         .value()
         .clone()
 }
 fn rule_record(store: &RuntimeStore, id: &str) -> Value {
-    RulesRepository::get(&store.test_reader().expect("read"), id)
+    RulesRepository::get(&store.read().expect("read"), id)
         .expect("get rule")
         .expect("rule")
         .value()
@@ -132,7 +132,6 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .expect("enqueue output in provider receipt transaction");
 
     let first_delivery = monitor_event_queue::next(&store)
-        .await
         .expect("read output queue")
         .expect("first output");
     assert_eq!(first_delivery.cursor, format!("{account}:7:11"));
@@ -141,7 +140,6 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         MonitorEvent::OutputStream { offset: 0, stream, bytes } if stream == "stdout" && bytes == b"one"
     ));
     let replay = monitor_event_queue::next(&store)
-        .await
         .expect("replay output queue")
         .expect("same first output");
     assert_eq!(replay.cursor, first_delivery.cursor);
@@ -150,7 +148,6 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .expect("ack first output");
 
     let second_delivery = monitor_event_queue::next(&store)
-        .await
         .expect("read second output")
         .expect("second output");
     assert_eq!(second_delivery.cursor, format!("{account}:7:12"));
@@ -170,7 +167,6 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .await
         .expect("enqueue definitive result behind output");
     let exit = monitor_event_queue::next(&store)
-        .await
         .expect("read result queue")
         .expect("exit after both output deltas");
     assert_eq!(exit.cursor, "result:monitor");
@@ -189,7 +185,6 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .await
         .expect("enqueue completed liveness probe");
     let probe = monitor_event_queue::next(&store)
-        .await
         .expect("read probe queue")
         .expect("probe result");
     assert_eq!(probe.cursor, format!("liveness:{id}:8"));
@@ -205,7 +200,6 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .expect("replay acknowledged probe without duplicating it");
     assert!(
         monitor_event_queue::next(&store)
-            .await
             .expect("empty output queue")
             .is_none()
     );
@@ -441,9 +435,7 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
             .await
             .expect("restart store"),
     );
-    let pending = monitor_driver::pending_cancel_ids(&store, 2000.0)
-        .await
-        .expect("pending IDs");
+    let pending = monitor_driver::pending_cancel_ids(&store, 2000.0).expect("pending IDs");
     assert_eq!(pending.as_slice(), std::slice::from_ref(&id));
 
     let port = Arc::new(Port::default());
@@ -636,7 +628,7 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
                 .await
                 .is_err()
         );
-        let original_rule = RulesRepository::get(&store.test_reader().expect("read"), "rule")
+        let original_rule = RulesRepository::get(&store.read().expect("read"), "rule")
             .expect("get")
             .map(|row| row.value().clone())
             .unwrap_or(Value::Null);
@@ -661,7 +653,7 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
             "{}",
             case["name"]
         );
-        let saved_rule = RulesRepository::get(&store.test_reader().expect("read"), "rule")
+        let saved_rule = RulesRepository::get(&store.read().expect("read"), "rule")
             .expect("get")
             .map(|row| row.value().clone());
         assert_eq!(

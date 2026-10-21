@@ -1077,9 +1077,7 @@ mod request_tests {
         assert_eq!(first["targetAccountKey"], "target");
         assert_eq!(first["members"]["child"]["phase"], "lazy");
         let child = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
+            &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("child"),
         )
         .expect("test fixture operation succeeds")
@@ -1123,7 +1121,7 @@ mod request_tests {
         )
         .expect("transfer request succeeds");
 
-        let db = store.test_reader().expect("database is readable");
+        let db = store.read().expect("database is readable");
         let agent = AgentRepository::get(&db, &AgentId::from("lead"))
             .expect("lead read succeeds")
             .expect("lead exists")
@@ -1180,9 +1178,7 @@ mod request_tests {
         .expect("test fixture operation succeeds");
         assert_eq!(result["members"]["late"]["phase"], "lazy");
         let late = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
+            &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("late"),
         )
         .expect("test fixture operation succeeds")
@@ -1206,9 +1202,7 @@ mod request_tests {
     fn invalid_scope_and_excluded_account_refuse_without_writes() {
         let (_root, store) = store_with_agents();
         let before = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
+            &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("lead"),
         )
         .expect("test fixture operation succeeds")
@@ -1236,9 +1230,7 @@ mod request_tests {
         }))
         .expect("test fixture operation succeeds");
         let before_blocked = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
+            &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("lead"),
         )
         .expect("test fixture operation succeeds")
@@ -1257,9 +1249,7 @@ mod request_tests {
             .is_err()
         );
         let after = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
+            &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("lead"),
         )
         .expect("test fixture operation succeeds")

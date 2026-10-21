@@ -136,8 +136,10 @@ async fn lead_for_project(
     store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
     project_id: String,
 ) -> Result<Option<String>, ApiError> {
-    store
-        .read_async("runtime-http/routes/mac_sync", move |connection| {
+    let lead = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/mac_sync",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
             let mut statement = connection
                 .prepare_cached("SELECT id FROM runtime_agents")
                 .map_err(|_| ApiError::internal())?;
@@ -147,7 +149,7 @@ async fn lead_for_project(
             let mut leads = Vec::new();
             for id in ids {
                 let id = id.map_err(|_| ApiError::internal())?;
-                let Some(agent) = AgentRepository::get(connection, &AgentId::from(id.as_str()))
+                let Some(agent) = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
                     .map_err(|_| ApiError::internal())?
                 else {
                     continue;
@@ -170,8 +172,11 @@ async fn lead_for_project(
             }
             leads.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
             Ok::<_, ApiError>(leads.pop().map(|lead| lead.2))
-        })
-        .await
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(lead)
 }
 
 async fn send_handoff(
@@ -189,16 +194,18 @@ async fn send_handoff(
     let admission_override = custom_admission.clone();
     let preparation_store = Arc::clone(&store);
     let lead_for_read = lead.clone();
-    let (prepared, ingress_admission) = store
-        .read_async("runtime-http/routes/mac_sync", move |connection| {
-            AgentRepository::get(connection, &AgentId::from(lead_for_read.as_str()))
+    let (prepared, ingress_admission) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/mac_sync",
+        move || {
+            let connection = preparation_store.read().map_err(|_| ApiError::internal())?;
+            AgentRepository::get(&connection, &AgentId::from(lead_for_read.as_str()))
                 .map_err(|_| ApiError::internal())?
                 .ok_or_else(ApiError::internal)?;
             let ingress_admission = if admission_override.is_none() {
                 Some(
                     studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                        preparation_store,
-                        connection,
+                        Arc::clone(&preparation_store),
+                        &connection,
                         &lead_for_read,
                     )
                     .map_err(|_| ApiError::internal())?,
@@ -208,13 +215,15 @@ async fn send_handoff(
             };
             let default_admission =
                 studio_runtime_services::message_admission::PreparedAdmission::load(
-                    connection,
+                    &connection,
                     &lead_for_read,
                 )
                 .map_err(|_| ApiError::internal())?;
             Ok::<_, ApiError>((default_admission, ingress_admission))
-        })
-        .await?;
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let admission: Arc<dyn studio_runtime_services::message_admission::MessageAdmission> =
         custom_admission
             .or_else(|| ingress_admission.map(|value| Arc::new(value) as _))

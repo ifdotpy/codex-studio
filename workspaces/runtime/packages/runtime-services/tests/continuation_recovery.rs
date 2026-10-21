@@ -72,7 +72,7 @@ async fn seeded(kind: &str) -> tempfile::TempDir {
     dir
 }
 fn read(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let mut statement = db
         .prepare("SELECT record FROM runtime_usage_resumes WHERE id='resume'")
         .expect("statement");
@@ -211,7 +211,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
     let after = read(&store);
     assert_eq!(after["record"]["status"], "cancelled");
     assert_eq!(after["agent"]["usageResume"]["status"], "cancelled");
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let parent_event: i64 = db
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='hold:resume:task-changed' AND kind='child_result'",
@@ -243,7 +243,7 @@ async fn foreign_followup_identity_refuses_and_rolls_back() {
 
 type WakeState = (Vec<(String, String, String)>, Vec<(String, String)>);
 fn wake_state(store: &RuntimeStore) -> WakeState {
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let mut events = db
         .prepare("SELECT id,status,text FROM runtime_events ORDER BY id")
         .expect("events");
@@ -328,7 +328,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
         .await
         .expect("seeded state");
     let agent: String = store
-        .test_reader()
+        .read()
         .expect("reader")
         .query_row("SELECT record FROM runtime_agents WHERE id='a'", [], |r| {
             r.get(0)
@@ -362,7 +362,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
 }
 
 fn capacity_state(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let record: String = db
         .query_row(
             "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
@@ -614,7 +614,7 @@ async fn a_disk_full_turn_failure_creates_a_free_space_retry() {
         .await
         .expect("disk-full failure stages a continuation");
     assert!(staged.changed());
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let agent: Value = db
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='a'",

@@ -275,7 +275,7 @@ impl Fixture {
             .expect("patch");
     }
     fn snapshot(&self) -> Value {
-        let db = self.store.test_reader().expect("read");
+        let db = self.store.read().expect("read");
         let agent = CheckpointsRepository::agent(&db, self.id())
             .expect("agent")
             .expect("exists")
@@ -383,10 +383,9 @@ async fn late_completion_and_missing_receipt_write_nothing() {
 #[tokio::test]
 async fn failed_capture_and_restart_release_only_the_owned_reservation() {
     let f = Fixture::new().await;
-    let snapshot =
-        CheckpointsRepository::workspace_snapshot(&f.store.test_reader().expect("db"), f.id())
-            .expect("snapshot")
-            .expect("agent");
+    let snapshot = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("db"), f.id())
+        .expect("snapshot")
+        .expect("agent");
     f.store
         .transaction(move |tx| {
             assert!(CheckpointsRepository::reserve_checkpoint(
@@ -413,7 +412,7 @@ async fn failed_capture_and_restart_release_only_the_owned_reservation() {
         "checkpoint:replacement"
     );
     let op = WorkspaceOperationsRepository::operation(
-        &f.store.test_reader().expect("read"),
+        &f.store.read().expect("read"),
         "checkpoint:interrupted",
     )
     .expect("op")
@@ -489,10 +488,9 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
 #[tokio::test]
 async fn stale_source_at_publication_cannot_attach_checkpoint() {
     let f = Fixture::new().await;
-    let snapshot =
-        CheckpointsRepository::workspace_snapshot(&f.store.test_reader().expect("db"), f.id())
-            .expect("snapshot")
-            .expect("agent");
+    let snapshot = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("db"), f.id())
+        .expect("snapshot")
+        .expect("agent");
     f.store
         .transaction(move |tx| {
             assert!(CheckpointsRepository::reserve_checkpoint(
@@ -507,10 +505,9 @@ async fn stale_source_at_publication_cannot_attach_checkpoint() {
         })
         .await
         .expect("reserve");
-    let reserved =
-        CheckpointsRepository::workspace_snapshot(&f.store.test_reader().expect("db"), f.id())
-            .expect("snapshot")
-            .expect("agent");
+    let reserved = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("db"), f.id())
+        .expect("snapshot")
+        .expect("agent");
     f.store
         .transaction(move |tx| {
             assert!(CheckpointsRepository::set_capture_running(
@@ -554,7 +551,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
         let request = CompletedTurn::from_record(&actor).expect("request");
         let id = format!("checkpoint:{}", request.checkpoint_id());
         let snapshot = CheckpointsRepository::workspace_snapshot(
-            &store.test_reader().expect("read"),
+            &store.read().expect("read"),
             request.agent_id(),
         )
         .expect("snapshot")
@@ -578,7 +575,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
             .expect("reserve");
         if running {
             let reserved = CheckpointsRepository::workspace_snapshot(
-                &store.test_reader().expect("read"),
+                &store.read().expect("read"),
                 request.agent_id(),
             )
             .expect("snapshot")
@@ -615,10 +612,9 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
             std::fs::read(repo.join(".git/index")).expect("index"),
             index
         );
-        let op =
-            WorkspaceOperationsRepository::operation(&reopened.test_reader().expect("read"), &id)
-                .expect("operation")
-                .expect("exists");
+        let op = WorkspaceOperationsRepository::operation(&reopened.read().expect("read"), &id)
+            .expect("operation")
+            .expect("exists");
         assert_eq!(op["phase"], "failed");
     }
 }
@@ -642,10 +638,9 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
         })
         .await
         .expect("prepared ticket");
-    let before =
-        CheckpointsRepository::workspace_snapshot(&f.store.test_reader().expect("read"), f.id())
-            .expect("snapshot")
-            .expect("actor");
+    let before = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("read"), f.id())
+        .expect("snapshot")
+        .expect("actor");
     assert!(
         f.store
             .transaction({
@@ -676,7 +671,7 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
     );
     assert_eq!(
         WorkspaceOperationsRepository::operation(
-            &f.store.test_reader().expect("read"),
+            &f.store.read().expect("read"),
             &expected.operation
         )
         .expect("read"),
@@ -690,7 +685,7 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
     );
     assert_eq!(
         WorkspaceOperationsRepository::operation(
-            &f.store.test_reader().expect("read"),
+            &f.store.read().expect("read"),
             &expected.operation
         )
         .expect("read"),
@@ -704,7 +699,7 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
         response
     );
     let accepted = WorkspaceOperationsRepository::operation(
-        &f.store.test_reader().expect("read"),
+        &f.store.read().expect("read"),
         &expected.operation,
     )
     .expect("read");
@@ -716,19 +711,14 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
     );
     assert_eq!(
         WorkspaceOperationsRepository::operation(
-            &f.store.test_reader().expect("read"),
+            &f.store.read().expect("read"),
             &expected.operation
         )
         .expect("read"),
         accepted
     );
     assert_eq!(
-        inspect_retry(
-            &f.store.test_reader().expect("test reader"),
-            &expected.operation,
-            "signature",
-        )
-        .expect("retry"),
+        inspect_retry(&f.store, &expected.operation, "signature").expect("retry"),
         RetryDecision::ResumeLocal(response)
     );
 }

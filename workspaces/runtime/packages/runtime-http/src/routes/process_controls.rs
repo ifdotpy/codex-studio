@@ -75,13 +75,20 @@ fn connections(state: &HttpState, owners: &[Value]) -> controls::Connections {
         .collect()
 }
 async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
-    let store = store(&state)?;
-    store
-        .read_async("runtime-http/routes/process_controls", move |tx| {
-            let owners = controls::owners(tx, &scope).map_err(error)?;
-            controls::listing(tx, &scope, &connections(&state, &owners)).map_err(error)
-        })
-        .await
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/process_controls",
+        move || {
+            let store = store(&state)?;
+            let connection = store.read().map_err(ApiError::stored)?;
+            let tx = connection
+                .unchecked_transaction()
+                .map_err(|e| ApiError::stored(e.into()))?;
+            let owners = controls::owners(&tx, &scope).map_err(error)?;
+            controls::listing(&tx, &scope, &connections(&state, &owners)).map_err(error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 async fn listing(
     State(state): State<HttpState>,
@@ -99,11 +106,15 @@ async fn receipt(
 ) -> Result<Json<Value>, ApiError> {
     let query = Value::Object((*params.into_typed()).clone());
     let store = store(&state)?;
-    let value = store
-        .read_async("runtime-http/routes/process_controls", move |connection| {
-            controls::receipt(connection, &query).map_err(error)
-        })
-        .await?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/process_controls",
+        move || {
+            let connection = store.read().map_err(ApiError::stored)?;
+            controls::receipt(&connection, &query).map_err(error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
 }
 fn validate(request: &Value) -> Result<(), ApiError> {
@@ -319,52 +330,54 @@ async fn bind(
     state: &HttpState,
     process: &Value,
 ) -> Result<(Arc<dyn AccountSessionPort>, ConnectionScope, ProviderTicket), ApiError> {
+    let state = state.clone();
     let expected = process.clone();
-    let (owners, processes) = {
-        let state = state.clone();
-        let agent = text(&expected, "agent").to_owned();
-        store(&state)?
-            .read_async("runtime-http/routes/process_controls", move |connection| {
-                controls::processes(
-                    connection,
-                    &agent,
-                    &connections(
-                        &state,
-                        &controls::owners(connection, &agent).map_err(error)?,
-                    ),
-                )
-                .map_err(error)
-            })
-            .await?
-    };
-    if !processes
-        .iter()
-        .any(|p| controls::matches(p, &expected) && p["capabilities"]["stop"] == true)
-    {
-        return Err(invalid("The process changed. Refresh the process list"));
-    }
-    let owner = &owners[0];
-    let port = provider(state, owner)?;
-    let account = text(&expected, "_sourceAccountKey");
-    let scope = port
-        .current_scope(account)
-        .ok_or_else(|| invalid("The native process connection is unavailable"))?;
-    if scope.connection != text(&expected, "_sourceConnectionId")
-        || owner["threadId"] != expected["_sourceThreadId"]
-    {
-        return Err(invalid("The native process connection changed"));
-    }
-    let ticket = ProviderTicket {
-        operation: text(&expected, "key").to_owned(),
-        agent: text(&expected, "agent").to_owned(),
-        epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
-        account: account.to_owned(),
-        thread: Some(text(&expected, "_sourceThreadId").to_owned()),
-        connection: scope.connection.clone(),
-        generation: scope.generation,
-        request: String::new(),
-    };
-    Ok((port, scope, ticket))
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/process_controls",
+        move || {
+            let store = store(&state)?;
+            let connection = store.read().map_err(ApiError::stored)?;
+            let (owners, processes) = controls::processes(
+                &connection,
+                text(&expected, "agent"),
+                &connections(
+                    &state,
+                    &controls::owners(&connection, text(&expected, "agent")).map_err(error)?,
+                ),
+            )
+            .map_err(error)?;
+            if !processes
+                .iter()
+                .any(|p| controls::matches(p, &expected) && p["capabilities"]["stop"] == true)
+            {
+                return Err(invalid("The process changed. Refresh the process list"));
+            }
+            let owner = &owners[0];
+            let port = provider(&state, owner)?;
+            let account = text(&expected, "_sourceAccountKey");
+            let scope = port
+                .current_scope(account)
+                .ok_or_else(|| invalid("The native process connection is unavailable"))?;
+            if scope.connection != text(&expected, "_sourceConnectionId")
+                || owner["threadId"] != expected["_sourceThreadId"]
+            {
+                return Err(invalid("The native process connection changed"));
+            }
+            let ticket = ProviderTicket {
+                operation: text(&expected, "key").to_owned(),
+                agent: text(&expected, "agent").to_owned(),
+                epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+                account: account.to_owned(),
+                thread: Some(text(&expected, "_sourceThreadId").to_owned()),
+                connection: scope.connection.clone(),
+                generation: scope.generation,
+                request: String::new(),
+            };
+            Ok((port, scope, ticket))
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 async fn stop_process(
     state: &HttpState,
@@ -511,36 +524,38 @@ async fn stop_response(
     target: &Value,
     request_id: &str,
 ) -> Result<Value, ApiError> {
+    let state = state.clone();
     let expected = target.clone();
     let request_id = request_id.to_owned();
-    let binding = async {
-        let agent = text(&expected, "agent").to_owned();
-        let owners = store(state)?
-            .read_async("runtime-http/routes/process_controls", move |connection| {
-                controls::owners(connection, &agent).map_err(error)
-            })
-            .await?;
-        let owner = &owners[0];
-        let port = provider(state, owner)?;
-        let scope = port
-            .current_scope(text(&expected, "accountKey"))
-            .ok_or_else(|| invalid("The response connection is unavailable"))?;
-        if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
-            return Err(invalid("The response changed. Refresh the process list"));
-        }
-        let ticket = ProviderTicket {
-            operation: request_id.clone(),
-            request: format!("process-action:{request_id}:response"),
-            agent: text(&expected, "agent").to_owned(),
-            epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
-            account: scope.account.clone(),
-            thread: Some(text(&expected, "threadId").to_owned()),
-            connection: scope.connection.clone(),
-            generation: scope.generation,
-        };
-        Ok::<_, ApiError>((port, scope, ticket, owner["provider"] == "claude"))
-    }
-    .await;
+    let binding = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/process_controls",
+        move || {
+            let store = store(&state)?;
+            let connection = store.read().map_err(ApiError::stored)?;
+            let owners = controls::owners(&connection, text(&expected, "agent")).map_err(error)?;
+            let owner = &owners[0];
+            let port = provider(&state, owner)?;
+            let scope = port
+                .current_scope(text(&expected, "accountKey"))
+                .ok_or_else(|| invalid("The response connection is unavailable"))?;
+            if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
+                return Err(invalid("The response changed. Refresh the process list"));
+            }
+            let ticket = ProviderTicket {
+                operation: request_id.clone(),
+                request: format!("process-action:{request_id}:response"),
+                agent: text(&expected, "agent").to_owned(),
+                epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+                account: scope.account.clone(),
+                thread: Some(text(&expected, "threadId").to_owned()),
+                connection: scope.connection.clone(),
+                generation: scope.generation,
+            };
+            Ok((port, scope, ticket, owner["provider"] == "claude"))
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     let (port, scope, ticket, claude) = match binding {
         Ok(binding) => binding,
         Err(_) => {
@@ -574,37 +589,39 @@ async fn background_command(
     item_id: &str,
     request_id: &str,
 ) -> Result<Value, ApiError> {
+    let state = state.clone();
     let expected = target.clone();
     let request_id = request_id.to_owned();
-    let binding = async {
-        let agent = text(&expected, "agent").to_owned();
-        let owners = store(state)?
-            .read_async("runtime-http/routes/process_controls", move |connection| {
-                controls::owners(connection, &agent).map_err(error)
-            })
-            .await?;
-        let owner = &owners[0];
-        let supported = BACKGROUND_COMMAND_PROVIDERS.contains(&text(owner, "provider"));
-        let port = provider(state, owner)?;
-        let scope = port
-            .current_scope(text(&expected, "accountKey"))
-            .ok_or_else(|| invalid("The response connection is unavailable"))?;
-        if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
-            return Err(invalid("The response changed. Refresh the conversation"));
-        }
-        let ticket = ProviderTicket {
-            operation: request_id.clone(),
-            request: format!("process-action:{request_id}:background"),
-            agent: text(&expected, "agent").to_owned(),
-            epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
-            account: scope.account.clone(),
-            thread: Some(text(&expected, "threadId").to_owned()),
-            connection: scope.connection.clone(),
-            generation: scope.generation,
-        };
-        Ok::<_, ApiError>((port, scope, ticket, supported))
-    }
-    .await;
+    let binding = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/process_controls",
+        move || {
+            let store = store(&state)?;
+            let connection = store.read().map_err(ApiError::stored)?;
+            let owners = controls::owners(&connection, text(&expected, "agent")).map_err(error)?;
+            let owner = &owners[0];
+            let supported = BACKGROUND_COMMAND_PROVIDERS.contains(&text(owner, "provider"));
+            let port = provider(&state, owner)?;
+            let scope = port
+                .current_scope(text(&expected, "accountKey"))
+                .ok_or_else(|| invalid("The response connection is unavailable"))?;
+            if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
+                return Err(invalid("The response changed. Refresh the conversation"));
+            }
+            let ticket = ProviderTicket {
+                operation: request_id.clone(),
+                request: format!("process-action:{request_id}:background"),
+                agent: text(&expected, "agent").to_owned(),
+                epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+                account: scope.account.clone(),
+                thread: Some(text(&expected, "threadId").to_owned()),
+                connection: scope.connection.clone(),
+                generation: scope.generation,
+            };
+            Ok((port, scope, ticket, supported))
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     let (port, scope, ticket, supported) = match binding {
         Ok(binding) => binding,
         Err(_) => {

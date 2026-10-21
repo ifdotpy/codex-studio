@@ -28,30 +28,14 @@ struct AgentFence {
     attempt_connection_generation: Option<Value>,
 }
 impl PreparedHost {
-    /// Read the project and agent rows, then resolve their paths on the blocking pool.
-    pub async fn load(store: &RuntimeStore) -> Result<Self, ProjectsError> {
-        let (projects, agents) = store
-            .read_async("runtime-services/host_project_runtime", |db| {
-                Ok::<_, ProjectsError>((
-                    ProjectsRepository::list(db)?,
-                    ProjectsRepository::agents(db)?,
-                ))
-            })
-            .await?;
-        let server = store.local_server_id()?;
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/host_project_runtime",
-            move || Self::from_rows(projects, agents, server),
-        )
-        .await
-        .map_err(|_| ProjectsError::PreparationWorker)?
-    }
-
-    fn from_rows(
-        projects: Vec<(String, Value)>,
-        mut agents: Vec<(String, Value)>,
-        server: Option<String>,
-    ) -> Result<Self, ProjectsError> {
+    pub fn load(store: &RuntimeStore) -> Result<Self, ProjectsError> {
+        let (projects, mut agents) = {
+            let db = store.read()?;
+            (
+                ProjectsRepository::list(&db)?,
+                ProjectsRepository::agents(&db)?,
+            )
+        };
         for (table, rows) in [("runtime_projects", &projects), ("runtime_agents", &agents)] {
             for (id, row) in rows {
                 studio_runtime_store::system_reads::validate(table, id, row.clone())?;
@@ -66,6 +50,7 @@ impl PreparedHost {
                 }
             }
         }
+        let server = store.local_server_id()?;
         let agent_fences = agent_fences(&agents);
         Ok(Self {
             projects,

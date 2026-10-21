@@ -174,19 +174,20 @@ async fn run_once(
     };
     let admission_store = Arc::clone(&store);
     let admission_agent = agent_id.to_owned();
-    let admission = store
-        .read_async(
-            "runtime-services/native_review_turn_admission",
-            move |connection| {
-                crate::message_admission::MessageIngressAdmission::load(
-                    admission_store,
-                    connection,
-                    &admission_agent,
-                )
-                .map_err(|_| NativeError::Unavailable("budget-policy/native-action"))
-            },
-        )
-        .await?;
+    let admission = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/native_review_turn_admission",
+        move || {
+            let connection = admission_store.read()?;
+            crate::message_admission::MessageIngressAdmission::load(
+                Arc::clone(&admission_store),
+                &connection,
+                &admission_agent,
+            )
+            .map_err(|_| NativeError::Unavailable("budget-policy/native-action"))
+        },
+    )
+    .await
+    .map_err(|_| NativeError::Unavailable("native-review/admission"))??;
     let gate: Arc<dyn Admission> = Arc::new(MessageNativeAdmission::new(Arc::new(admission)));
     let preparation = ReviewPreparation {
         store: Arc::clone(&store),
@@ -840,7 +841,7 @@ pub(crate) mod tests {
             .unwrap();
         let status: String = fixture
             .store
-            .test_reader()
+            .read()
             .unwrap()
             .query_row(
                 "SELECT status FROM runtime_events WHERE id='message'",

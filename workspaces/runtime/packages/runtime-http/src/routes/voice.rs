@@ -67,9 +67,13 @@ async fn status(
 ) -> Result<Json<crate::generated::VoiceStatusResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let agent_id = body.agent;
-    let result = voice::status(&store, &agent_id)
-        .await
-        .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::status(&store, &agent_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceStatusResponse,
     >(result)?))
@@ -156,9 +160,13 @@ async fn records(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let agent_id = body.agent;
     let after = body.after.unwrap_or_default();
-    let result = voice::records(&store, &agent_id, after)
-        .await
-        .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::records(&store, &agent_id, after),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordsResponse,
     >(result)?))
@@ -170,9 +178,13 @@ async fn approvals(
 ) -> Result<Json<crate::generated::VoiceApprovalsResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let agent_id = body.agent;
-    let result = voice::approvals(&store, &agent_id)
-        .await
-        .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::approvals(&store, &agent_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceApprovalsResponse,
     >(result)?))
@@ -200,7 +212,6 @@ async fn end(
     let (agent, session) = (body.agent, body.session_id);
     let Some(provider) = state.voice_request_port.clone() else {
         if let Some(result) = voice::provider::read_terminal_session(&store, &agent, &session)
-            .await
             .map_err(provider_error)?
         {
             return Ok(Json(super::generated_json::<
@@ -227,7 +238,6 @@ async fn speech(
     let Some(provider) = state.voice_request_port.clone() else {
         if let Some(result) =
             voice::provider::read_speech_receipt(&store, &agent, &session, &record)
-                .await
                 .map_err(provider_error)?
         {
             return Ok(Json(super::generated_json::<
@@ -255,9 +265,14 @@ async fn approve(
 ) -> Result<Json<crate::generated::VoiceApprovalResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent_id, speech_id) = (body.agent.clone(), body.speech_id.clone());
-    let monitor_approval = voice::provider::is_monitor_approval(&store, &agent_id, &speech_id)
-        .await
-        .map_err(provider_error)?;
+    let store_for_lookup = store.clone();
+    let monitor_approval = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::provider::is_monitor_approval(&store_for_lookup, &agent_id, &speech_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(provider_error)?;
     if monitor_approval {
         let result = voice::provider::approve_monitor(
             store,
@@ -453,6 +468,7 @@ fn voice_error(error: VoiceError) -> ApiError {
             StatusCode::CONFLICT,
             "another runtime owns the state directory",
         ),
+        VoiceError::PreparationWorker => ApiError::internal(),
         VoiceError::Store(_) | VoiceError::EventWrite(_) | VoiceError::Json(_) => {
             ApiError::internal()
         }

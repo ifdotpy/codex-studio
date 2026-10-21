@@ -138,10 +138,8 @@ impl FederationTransport for HttpsFederationTransport {
     }
 }
 
-pub async fn pending_pairings(
-    store: &RuntimeStore,
-) -> std::result::Result<Vec<String>, StoreError> {
-    store.read_async("runtime-services/federation_delivery", |connection| {
+pub fn pending_pairings(store: &RuntimeStore) -> std::result::Result<Vec<String>, StoreError> {
+    store.read_transaction(|connection| {
         let mut statement = connection.prepare_cached(
             "SELECT id FROM runtime_federation_peers WHERE json_extract(record,'$.localApproved')=1 AND json_extract(record,'$.remoteApproved')=0 AND json_extract(record,'$.status')!='revoked' AND json_extract(record,'$.inviteId') IS NOT NULL ORDER BY id",
         )?;
@@ -149,15 +147,14 @@ pub async fn pending_pairings(
         rows.collect::<std::result::Result<Vec<String>, _>>()
             .map_err(StoreError::from)
     })
-    .await
 }
 
 /// Queued delivery deadlines for approved peers. The server uses the peer key
 /// to apply in-memory network failure backoff without delaying unrelated peers.
-pub async fn delivery_deadlines_by_peer(
+pub fn delivery_deadlines_by_peer(
     store: &RuntimeStore,
 ) -> std::result::Result<Vec<(String, f64)>, StoreError> {
-    store.read_async("runtime-services/federation_delivery", |connection| {
+    store.read_transaction(|connection| {
         let mut statement = connection.prepare(
                 "SELECT peer.id,MIN(CASE WHEN json_type(outbox.record,'$.nextAt') IN ('integer','real') \
                      THEN CAST(json_extract(outbox.record,'$.nextAt') AS REAL) END) \
@@ -178,7 +175,6 @@ pub async fn delivery_deadlines_by_peer(
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(StoreError::from)
     })
-    .await
 }
 
 /// Complete a durable outgoing invitation pairing. The peer row already holds
@@ -190,25 +186,32 @@ pub async fn pair_peer(
     transport: &impl FederationTransport,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Value> {
-    let identity = transport::load_federation_identity(&store).await?;
+    let store_for_read = Arc::clone(&store);
     let peer_id_for_read = peer_id.to_owned();
-    let record = store
-        .read_async("runtime-services/federation_delivery", move |connection| {
-            let raw: Option<String> = connection
-                .query_row(
-                    "SELECT record FROM runtime_federation_peers WHERE id=?1",
-                    [&peer_id_for_read],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            raw.map(|raw| serde_json::from_str::<Value>(&raw))
-                .transpose()
-                .map_err(|_| {
-                    StoreError::SchemaMismatch("invalid federation peer record".to_owned())
-                })?
-                .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
-        })
-        .await?;
+    let (identity, record) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || {
+            let identity = transport::load_federation_identity(&store_for_read)?;
+            let record = store_for_read.read_transaction(|connection| {
+                let raw: Option<String> = connection
+                    .query_row(
+                        "SELECT record FROM runtime_federation_peers WHERE id=?1",
+                        [&peer_id_for_read],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                raw.map(|raw| serde_json::from_str::<Value>(&raw))
+                    .transpose()
+                    .map_err(|_| {
+                        StoreError::SchemaMismatch("invalid federation peer record".to_owned())
+                    })?
+                    .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
+            })?;
+            Ok::<_, Error>((identity, record))
+        },
+    )
+    .await
+    .map_err(|_| Error::Unavailable("federation/peer-read-worker"))??;
     if record["status"] == "revoked"
         || record["localApproved"] != true
         || record["remoteApproved"] == true
@@ -392,7 +395,13 @@ pub(crate) async fn pump_peer_until(
     if budget.remaining().is_err() {
         return Ok(0);
     }
-    let identity = transport::load_federation_identity(&store).await?;
+    let store_for_read = Arc::clone(&store);
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || transport::load_federation_identity(&store_for_read),
+    )
+    .await
+    .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
     let identity = Arc::new(identity);
     let peer_id_owned = peer_id.to_owned();
     let identity_for_claim = Arc::clone(&identity);
@@ -572,7 +581,13 @@ pub async fn send_message(
     key: &str,
     now: f64,
 ) -> Result<Value> {
-    let identity = transport::load_federation_identity(&store).await?;
+    let store_for_read = Arc::clone(&store);
+    let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || transport::load_federation_identity(&store_for_read),
+    )
+    .await
+    .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
     let identity = Arc::new(identity);
     let sender = sender.to_owned();
     let room_id = room_id.to_owned();
@@ -598,28 +613,34 @@ pub async fn user_message(
     if text.is_empty() || text.chars().count() > core::MAX_MESSAGE || key.len() > 4096 {
         return Err(Error::Invalid("message"));
     }
+    let store_for_read = Arc::clone(&store);
     let room_id_for_read = room_id.to_owned();
-    let sender = store
-        .read_async("runtime-services/federation_delivery", move |connection| {
-            let room = Repo::record(connection, Table::Room, &room_id_for_read, "")?.ok_or(
-                StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
-            )?;
-            let sender = room
-                .get("localParticipants")
-                .and_then(Value::as_array)
-                .and_then(|participants| {
-                    participants.iter().find_map(|person| {
-                        (person.get("role").and_then(Value::as_str) == Some("lead"))
-                            .then(|| person.get("id").and_then(Value::as_str))
-                            .flatten()
+    let sender = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/federation_delivery",
+        move || {
+            store_for_read.read_transaction(|connection| {
+                let room = Repo::record(connection, Table::Room, &room_id_for_read, "")?.ok_or(
+                    StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
+                )?;
+                let sender = room
+                    .get("localParticipants")
+                    .and_then(Value::as_array)
+                    .and_then(|participants| {
+                        participants.iter().find_map(|person| {
+                            (person.get("role").and_then(Value::as_str) == Some("lead"))
+                                .then(|| person.get("id").and_then(Value::as_str))
+                                .flatten()
+                        })
                     })
-                })
-                .ok_or(StoreError::SchemaMismatch(
-                    "the local lead is not a room participant".to_owned(),
-                ))?;
-            Ok::<_, StoreError>(sender.to_owned())
-        })
-        .await?;
+                    .ok_or(StoreError::SchemaMismatch(
+                        "the local lead is not a room participant".to_owned(),
+                    ))?;
+                Ok::<_, StoreError>(sender.to_owned())
+            })
+        },
+    )
+    .await
+    .map_err(|_| Error::Unavailable("federation/room-read-worker"))??;
     send_message(store, &sender, room_id, text, key, now).await
 }
 
@@ -796,9 +817,7 @@ mod tests {
             .await
             .expect("fixture rows commit");
         assert_eq!(
-            delivery_deadlines_by_peer(&store)
-                .await
-                .expect("deadline query"),
+            delivery_deadlines_by_peer(&store).expect("deadline query"),
             vec![("approved".to_owned(), 52.0)]
         );
     }

@@ -93,9 +93,13 @@ pub async fn answer_async_question_in_store(
     let store_for_preparation = std::sync::Arc::clone(&store);
     let id_for_preparation = id.clone();
     let data_for_preparation = data.clone();
-    let read = store
-        .read_async("runtime-services/questions_write", move |transaction| {
-            let raw = QuestionsWriteRepository::request(transaction, &id_for_preparation)?
+    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/questions_write",
+        move || {
+            let raw = store_for_preparation
+                .read_transaction_with_error(|transaction| {
+                    QuestionsWriteRepository::request(transaction, &id_for_preparation)
+                })?
                 .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
             let record: Value = serde_json::from_str(&raw)
                 .map_err(|_| invalid_stored("runtime_requests", &id_for_preparation))?;
@@ -110,20 +114,25 @@ pub async fn answer_async_question_in_store(
             let agent_id = record
                 .get("agent")
                 .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?;
+                .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?
+                .to_owned();
             let text = async_answer_text(&record, &data_for_preparation)?;
+            let connection = store_for_preparation.read()?;
             let admission = crate::message_admission::MessageIngressAdmission::load(
-                store_for_preparation,
-                transaction,
-                agent_id,
+                std::sync::Arc::clone(&store_for_preparation),
+                &connection,
+                &agent_id,
             )?;
-            Ok(Some((text, admission)))
-        })
-        .await?;
-    let Some((text, admission)) = read else {
+            drop(connection);
+            let prepared = PreparedHost::load(&store_for_preparation)?;
+            Ok(Some((agent_id, text, admission, prepared)))
+        },
+    )
+    .await
+    .map_err(|_| QuestionsWriteError::Projects(ProjectsError::PreparationWorker))??;
+    let Some((_agent_id, text, admission, prepared)) = prepared else {
         return Ok(None);
     };
-    let prepared = PreparedHost::load(&store).await?;
     let validate_for_transaction = std::sync::Arc::clone(&validate);
     let result = store
         .transaction_with_error(move |transaction| {

@@ -351,21 +351,20 @@ impl HistoryRuntime {
     }
 
     /// Full roster in rowid order; the row ids key later incremental rereads.
-    async fn read_roster(
+    fn read_roster(
         store: &RuntimeStore,
         settled: &BTreeMap<String, Value>,
     ) -> Result<(Vec<i64>, Vec<Value>), HistoryError> {
-        let rows = store
-            .read_async("runtime-server/history_roster", |db| {
-                Table::<AgentRecord>::new(db).list_with_row_ids()
-            })
-            .await
-            .map_err(HistoryError::Store)?;
-        Ok(rows
+        let db = store.read().map_err(HistoryError::Store)?;
+        let (row_ids, actors): (Vec<i64>, Vec<Value>) = Table::<AgentRecord>::new(&db)
+            .list_with_row_ids()
+            .map_err(HistoryError::Store)?
             .into_iter()
             .map(|(row_id, agent)| (row_id, agent.value()))
             .filter(|(_, agent)| !is_retired(agent, settled))
-            .unzip())
+            .unzip();
+        drop(db);
+        Ok((row_ids, actors))
     }
 
     async fn step(&mut self, actors: &[Value], clock: HistoryClock) -> Result<bool, HistoryError> {
@@ -480,9 +479,16 @@ impl HistoryRuntime {
                     .as_ref()
                     .map_or_else(|| history_clock(&runtime), |tick| tick.clock);
                 let completion = manual_tick.map(|tick| tick.completed);
-                let actors = HistoryRuntime::read_roster(&runtime.store, &BTreeMap::new())
-                    .await
-                    .map(|(_, actors)| actors);
+                let store = Arc::clone(&runtime.store);
+                let actors = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/history_roster",
+                    move || {
+                        HistoryRuntime::read_roster(&store, &BTreeMap::new())
+                            .map(|(_, actors)| actors)
+                    },
+                )
+                .await
+                .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
                 let result = match actors {
                     Ok(actors) => runtime.step(&actors, clock).await,
                     Err(error) => Err(error),
@@ -545,15 +551,20 @@ async fn run_event_driven_with_wake(
         runtime.collector.profile_changed(&profile);
     }
 
-    let root = runtime.store.root().to_path_buf();
-    runtime.settled = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/history_settled_tombstones",
-        move || read_settled_tombstones(&root),
+    let (next_runtime, roster) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/history_roster_startup",
+        move || {
+            let roster = read_settled_tombstones(runtime.store.root()).and_then(|settled| {
+                runtime.settled = settled;
+                HistoryRuntime::read_roster(&runtime.store, &runtime.settled)
+            });
+            (runtime, roster)
+        },
     )
     .await
-    .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
-    let (mut roster_row_ids, actors) =
-        HistoryRuntime::read_roster(&runtime.store, &runtime.settled).await?;
+    .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
+    runtime = next_runtime;
+    let (mut roster_row_ids, actors) = roster?;
     let mut roster = Arc::new(actors);
     runtime.collector.schedule.refresh(&roster)?;
     #[cfg(test)]
@@ -689,15 +700,34 @@ async fn run_event_driven_with_wake(
         }
 
         if roster_full {
-            let (next_row_ids, next_actors) =
-                HistoryRuntime::read_roster(&runtime.store, &runtime.settled).await?;
+            let (next_runtime, next_roster) =
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/history_roster_refresh",
+                    move || {
+                        let roster = HistoryRuntime::read_roster(&runtime.store, &runtime.settled);
+                        (runtime, roster)
+                    },
+                )
+                .await
+                .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
+            runtime = next_runtime;
+            let (next_row_ids, next_actors) = next_roster?;
             runtime.collector.schedule.refresh(&next_actors)?;
             roster_row_ids = next_row_ids;
             roster = Arc::new(next_actors);
         } else if roster_changed {
             let row_ids = roster_rows.into_iter().collect::<Vec<_>>();
-            let changes = read_roster_rows(&runtime.store, row_ids, &runtime.settled).await?;
-            apply_roster_rows(Arc::make_mut(&mut roster), &mut roster_row_ids, changes);
+            let (next_runtime, changes) = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/history_roster_rows",
+                move || {
+                    let changes = read_roster_rows(&runtime.store, &row_ids, &runtime.settled);
+                    (runtime, changes)
+                },
+            )
+            .await
+            .map_err(|_| HistoryError::read(BLOCKING_TASK))?;
+            runtime = next_runtime;
+            apply_roster_rows(Arc::make_mut(&mut roster), &mut roster_row_ids, changes?);
             runtime.collector.schedule.refresh(&roster)?;
         }
 
@@ -858,32 +888,26 @@ fn actor_matches_rollout(actor: &Value, account: &str, path: &Path) -> bool {
 }
 
 /// Reads only the physical rows named by change hints; `None` means the row is gone.
-async fn read_roster_rows(
+fn read_roster_rows(
     store: &RuntimeStore,
-    row_ids: Vec<i64>,
+    row_ids: &[i64],
     settled: &BTreeMap<String, Value>,
 ) -> Result<Vec<(i64, Option<Value>)>, HistoryError> {
-    let rows = store
-        .read_async("runtime-server/history_roster_rows", move |db| {
-            let table = Table::<AgentRecord>::new(db);
-            row_ids
-                .into_iter()
-                .map(|row_id| Ok((row_id, table.get_by_row_id(row_id)?)))
-                .collect::<studio_runtime_store::StoreResult<Vec<_>>>()
-        })
-        .await
-        .map_err(HistoryError::Store)?;
-    Ok(rows
-        .into_iter()
-        .map(|(row_id, agent)| {
-            (
-                row_id,
-                agent
-                    .map(|agent| agent.value())
-                    .filter(|agent| !is_retired(agent, settled)),
-            )
-        })
-        .collect())
+    let db = store.read().map_err(HistoryError::Store)?;
+    let mut changes = Vec::with_capacity(row_ids.len());
+    for &row_id in row_ids {
+        let agent = Table::<AgentRecord>::new(&db)
+            .get_by_row_id(row_id)
+            .map_err(HistoryError::Store)?;
+        changes.push((
+            row_id,
+            agent
+                .map(|agent| agent.value())
+                .filter(|agent| !is_retired(agent, settled)),
+        ));
+    }
+    drop(db);
+    Ok(changes)
 }
 
 /// A deleted agent leaves the roster once nothing is left to import for it: it never
@@ -1195,18 +1219,14 @@ mod tests {
                 ("done".to_owned(), json!(5.0)),
             ])
         );
-        let (row_ids, roster) = HistoryRuntime::read_roster(&store, &settled)
-            .await
-            .expect("roster");
+        let (row_ids, roster) = HistoryRuntime::read_roster(&store, &settled).expect("roster");
         let ids = roster
             .iter()
             .map(|a| a["id"].as_str().expect("id"))
             .collect::<Vec<_>>();
         assert_eq!(ids, ["live", "owed"]);
         assert_eq!(row_ids.len(), 2);
-        let rows = read_roster_rows(&store, row_ids, &settled)
-            .await
-            .expect("rows");
+        let rows = read_roster_rows(&store, &row_ids, &settled).expect("rows");
         assert!(rows.iter().all(|(_, agent)| agent.is_some()));
     }
 
@@ -1289,16 +1309,13 @@ mod tests {
                 .await
                 .expect("commit agent row");
         }
-        let (row_ids, _) = HistoryRuntime::read_roster(&store, &BTreeMap::new())
-            .await
-            .expect("full roster");
+        let (row_ids, _) =
+            HistoryRuntime::read_roster(&store, &BTreeMap::new()).expect("full roster");
         assert_eq!(row_ids.len(), 2);
         assert!(row_ids[0] < row_ids[1], "full roster keeps rowid order");
         let row_b = row_ids[1];
 
-        let changes = read_roster_rows(&store, vec![row_b], &BTreeMap::new())
-            .await
-            .expect("row hint read");
+        let changes = read_roster_rows(&store, &[row_b], &BTreeMap::new()).expect("row hint read");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].0, row_b);
         assert_eq!(
@@ -1314,9 +1331,7 @@ mod tests {
             .await
             .expect("delete agent row");
         assert_eq!(
-            read_roster_rows(&store, vec![row_b], &BTreeMap::new())
-                .await
-                .expect("deleted row hint"),
+            read_roster_rows(&store, &[row_b], &BTreeMap::new()).expect("deleted row hint"),
             vec![(row_b, None)]
         );
     }
@@ -1941,8 +1956,7 @@ mod tests {
 
         let budget_counts = || {
             store
-                .test_reader()
-                .and_then(|tx| {
+                .read_transaction(|tx| {
                     Ok((
                         tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
                             row.get::<_, i64>(0)

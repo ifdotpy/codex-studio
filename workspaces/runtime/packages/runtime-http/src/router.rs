@@ -1187,7 +1187,7 @@ mod tests {
         let theme_key = r#"["codex-studio-preferences-v1","theme"]"#;
         assert_eq!(response_body["fields"][theme_key]["value"], "dark");
 
-        let reader = store.test_reader().expect("stored preferences can be read");
+        let reader = store.read().expect("stored preferences can be read");
         let stored = SyncDocumentsRepository::preference_payload(&reader, "user")
             .expect("preference payload reads")
             .expect("preference payload was persisted");

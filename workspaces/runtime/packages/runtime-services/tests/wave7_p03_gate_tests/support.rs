@@ -81,7 +81,7 @@ where
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/wave7_p03_gate_tests",
         move || {
-            let connection = store.test_reader().expect("test store reader");
+            let connection = store.read().expect("test store reader");
             operation(&connection)
         },
     )

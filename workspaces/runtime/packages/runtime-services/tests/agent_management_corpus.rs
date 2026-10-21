@@ -157,7 +157,7 @@ impl LifecyclePorts for PostCommitCleanup {
         let store = std::sync::Arc::clone(&self.store);
         Box::pin(async move {
             let queued = {
-                let reader = store.test_reader()?;
+                let reader = store.read()?;
                 repository::read(&reader)?
                     .get("runtime_agents")
                     .into_iter()
@@ -220,7 +220,7 @@ async fn run_lifecycle_end_state(case: &Value) -> (Value, Value) {
         ports,
     )
     .await;
-    let saved = store.test_reader().expect("read final store");
+    let saved = store.read().expect("read final store");
     let rows = repository::read(&saved).expect("complete final rows");
     let final_state = serde_json::to_value(Records { tables: rows }).expect("serialize final rows");
     let result = match result {
@@ -264,7 +264,7 @@ async fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
         .await
         .is_err()
     );
-    let saved = store.test_reader().expect("read committed intent");
+    let saved = store.read().expect("read committed intent");
     let rows = repository::read(&saved).expect("read complete rows");
     let worker = rows["runtime_agents"]
         .iter()
@@ -284,7 +284,7 @@ async fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
     let store = RuntimeStore::open(Some(root.path()))
         .await
         .expect("restart store");
-    let saved = store.test_reader().expect("read after restart");
+    let saved = store.read().expect("read after restart");
     let rows = repository::read(&saved).expect("read restarted rows");
     let worker = rows["runtime_agents"]
         .iter()

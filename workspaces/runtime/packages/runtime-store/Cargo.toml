@@ -17,16 +17,12 @@ sha2 = { workspace = true }
 studio-runtime-schema = { path = "../runtime-schema" }
 studio-runtime-providers = { path = "../runtime-providers" }
 thiserror = { workspace = true }
+futures-executor = { workspace = true }
 tokio-rusqlite = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-studio-runtime-store = { path = ".", features = ["test-support"] }
 tempfile = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-# Lets other crates' tests open an independent read-only canvas connection.
-test-support = []

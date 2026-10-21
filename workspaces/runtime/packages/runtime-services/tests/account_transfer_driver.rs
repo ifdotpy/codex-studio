@@ -45,7 +45,7 @@ fn ticket() -> Ticket {
 }
 fn operation(store: &RuntimeStore) -> Value {
     serde_json::from_str(
-        &AccountTransferRepository::get(&store.test_reader().expect("read"), OP)
+        &AccountTransferRepository::get(&store.read().expect("read"), OP)
             .expect("get")
             .expect("exists"),
     )
@@ -200,9 +200,8 @@ async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
             let trigger_table = table.clone();
             let trigger_timing = timing.clone();
             let before = operation(&store);
-            let agent =
-                AccountTransferRepository::agent(&store.test_reader().expect("read"), "lead")
-                    .expect("agent");
+            let agent = AccountTransferRepository::agent(&store.read().expect("read"), "lead")
+                .expect("agent");
             store.transaction(move |tx| {
                 for (index,event) in ["INSERT","UPDATE"].iter().enumerate() {
                     tx.execute_batch(&format!("CREATE TEMP TRIGGER transfer_fail_{index} {trigger_timing} {event} ON {trigger_table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
@@ -217,7 +216,7 @@ async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
             );
             assert_eq!(operation(&store), before, "{timing}/{table}");
             assert_eq!(
-                AccountTransferRepository::agent(&store.test_reader().expect("read"), "lead")
+                AccountTransferRepository::agent(&store.read().expect("read"), "lead")
                     .expect("agent"),
                 agent
             );

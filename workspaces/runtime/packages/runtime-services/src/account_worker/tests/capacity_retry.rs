@@ -102,7 +102,7 @@ async fn retry_of(state: &State, id: &str) -> Value {
         .bridge
         .run(move |store| async move {
             Ok(ContinuationRepository::snapshot(
-                &store.test_reader()?,
+                &*store.read()?,
                 &agent,
                 ContinuationTable::Capacity,
                 Some(&id),

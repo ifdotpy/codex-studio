@@ -39,7 +39,7 @@ async fn record_of(state: &State, id: &str) -> Value {
     state
         .bridge
         .run(move |store| async move {
-            let raw: String = store.test_reader()?.query_row(
+            let raw: String = store.read()?.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
                 [id],
                 |r| r.get(0),
@@ -213,7 +213,7 @@ async fn poisoned_durable_effect_is_parked_once_and_does_not_end_the_worker() {
         state
             .bridge
             .run(|store| async move {
-                Ok(store.test_reader()?.query_row(
+                Ok(store.read()?.query_row(
                     "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:default:%'",
                     [],
                     |row| row.get::<_, i64>(0),
@@ -300,7 +300,7 @@ async fn publications(state: &State) -> Vec<String> {
     state
         .bridge
         .run(|store| async move {
-            let reader = store.test_reader()?;
+            let reader = store.read()?;
             let mut statement = reader.prepare(
                 "SELECT id FROM runtime_operation_receipts \
                  WHERE id LIKE 'account-worker:notification-publication:default:%' ORDER BY id",

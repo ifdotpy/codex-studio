@@ -161,7 +161,7 @@ mod invalid_agent_repair_tests {
             .await
             .expect("typed repair saves and clears hold atomically");
 
-        let connection = store.test_reader().expect("reader opens");
+        let connection = store.read().expect("reader opens");
         let remaining: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",

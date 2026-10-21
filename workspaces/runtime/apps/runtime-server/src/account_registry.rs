@@ -183,17 +183,24 @@ async fn child_result_release_at(
     store: Arc<studio_runtime_store::RuntimeStore>,
 ) -> Option<tokio::time::Instant> {
     let now = event_time();
-    let read = store
-        .read_async("runtime-server/account_registry", move |db| {
-            SchedulerRepository::child_result_release_at(db, now)
-        })
-        .await;
+    let read = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/account_registry",
+        move || -> Result<Option<f64>, WorkerError> {
+            let db = store.read()?;
+            Ok(SchedulerRepository::child_result_release_at(&db, now)?)
+        },
+    )
+    .await;
     match read {
-        Ok(deadline) => deadline.map(|deadline| {
+        Ok(Ok(deadline)) => deadline.map(|deadline| {
             tokio::time::Instant::now() + Duration::from_secs_f64((deadline - now).max(0.0))
         }),
-        Err(error) => {
+        Ok(Err(error)) => {
             eprintln!("account registry child result release read deferred: {error}");
+            Some(tokio::time::Instant::now() + RETRY_DELAY)
+        }
+        Err(error) => {
+            eprintln!("account registry child result release worker failed: {error}");
             Some(tokio::time::Instant::now() + RETRY_DELAY)
         }
     }
@@ -1144,12 +1151,24 @@ impl AccountRegistry {
             if shutdown.is_some_and(|stop| *stop.subscribe().borrow()) {
                 return Ok(());
             }
-            let rows = wake_page_after(
-                &self.store,
-                account,
-                self.after_agent.get(account).cloned().unwrap_or_default(),
+            let store = self.store.clone();
+            let after_agent = self.after_agent.get(account).cloned().unwrap_or_default();
+            let page_account = account.to_owned();
+            let rows = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || {
+                    let db = store.read()?;
+                    SchedulerRepository::account_wake_agents_after(
+                        &db,
+                        &page_account,
+                        &after_agent,
+                        WAKE_PAGE,
+                        event_time(),
+                    )
+                },
             )
-            .await?;
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
             if rows.is_empty() {
                 self.after_agent.remove(account);
                 return Ok(());
@@ -1193,12 +1212,14 @@ impl AccountRegistry {
         // Every real startup/commit wake begins one bounded full no-wrap pass.
         // Agent cursors are retained only for a command-capacity continuation.
         self.after_account.clear();
-        let mut targets = self
-            .store
-            .read_async("runtime-server/account_registry", |db| {
-                target_page(db, "", &BTreeMap::new())
-            })
-            .await?;
+        let store = self.store.clone();
+        let after_agent = BTreeMap::new();
+        let mut targets = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || target_page(&store, "", &after_agent),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         let mut failure = None;
         loop {
             if targets.is_empty() || stopped() {
@@ -1216,13 +1237,15 @@ impl AccountRegistry {
             if !full_account_page || stopped() {
                 break;
             }
+            let store = self.store.clone();
             let after_account = self.after_account.clone();
-            targets = self
-                .store
-                .read_async("runtime-server/account_registry", move |db| {
-                    target_page_after(db, &after_account, &BTreeMap::new())
-                })
-                .await?;
+            let after_agent = BTreeMap::new();
+            targets = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || target_page_after(&store, &after_account, &after_agent),
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
         }
         failure.map_or(Ok(()), Err)
     }
@@ -1239,22 +1262,23 @@ impl AccountRegistry {
             return self.reconcile(shutdown).await;
         }
         self.maintain(changes.work).await?;
-        let targets = self
-            .store
-            .read_async(
-                "runtime-server/account_registry",
-                move |db| -> Result<AccountTargetPage, WorkerError> {
-                    let accounts = changed_accounts(db, &changes)?;
-                    SchedulerRepository::account_wake_for_accounts(
-                        db,
-                        accounts.iter().map(String::as_str),
-                        WAKE_PAGE,
-                        event_time(),
-                    )
-                    .map_err(Into::into)
-                },
-            )
-            .await?;
+        let store = self.store.clone();
+        let targets = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || -> Result<AccountTargetPage, WorkerError> {
+                let db = store.read()?;
+                let accounts = changed_accounts(&db, &changes)?;
+                SchedulerRepository::account_wake_for_accounts(
+                    &db,
+                    accounts.iter().map(String::as_str),
+                    WAKE_PAGE,
+                    event_time(),
+                )
+                .map_err(Into::into)
+            },
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         let mut failure = None;
         for (account, pending_agents) in targets {
             if shutdown.is_some_and(|stop| *stop.subscribe().borrow()) {
@@ -1310,12 +1334,24 @@ impl AccountRegistry {
         loop {
             match self.dispatch_account_page(&account, page, shutdown).await? {
                 AccountPageDispatch::Continue => {
-                    page = wake_page_after(
-                        &self.store,
-                        &account,
-                        self.after_agent.get(&account).cloned().unwrap_or_default(),
+                    let store = self.store.clone();
+                    let page_account = account.clone();
+                    let after_agent = self.after_agent.get(&account).cloned().unwrap_or_default();
+                    page = studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-server/account_registry",
+                        move || {
+                            let db = store.read()?;
+                            SchedulerRepository::account_wake_agents_after(
+                                &db,
+                                &page_account,
+                                &after_agent,
+                                WAKE_PAGE,
+                                event_time(),
+                            )
+                        },
                     )
-                    .await?;
+                    .await
+                    .map_err(|_| WorkerError::TaskFailed)??;
                     if page.is_empty() {
                         return Ok(());
                     }
@@ -1333,22 +1369,36 @@ impl AccountRegistry {
     /// before dispatch_candidates. Run it before ordinary event reconciliation so
     /// its durable radio_turn events use the same retained account workers.
     async fn tick_radio(&mut self) -> Result<(), WorkerError> {
-        let has_rooms = self
-            .store
-            .read_async("runtime-server/account_registry", |db| {
-                db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_rooms WHERE json_type(record,'$.radio')='object')",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(studio_runtime_store::StoreError::from)
-            })
-            .await?;
+        let store = self.store.clone();
+        let has_rooms = studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/account_registry", move || -> Result<bool, WorkerError> {
+            let db = store.read()?;
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_rooms WHERE json_type(record,'$.radio')='object')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| WorkerError::Store(error.into()))
+        })
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         if !has_rooms {
             return Ok(());
         }
         let now = (self.radio_clock)();
-        let prepared = prepared_host(&self.store).await?;
+        let store = Arc::clone(&self.store);
+        let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || {
+                let prepared = PreparedHost::load(&store)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                prepared
+                    .recheck_paths()
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                Ok::<_, WorkerError>(Arc::new(prepared))
+            },
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         let effects = self
             .store
             .transaction_with(move |tx| {
@@ -1368,8 +1418,21 @@ impl AccountRegistry {
                 continue;
             };
             let sender = worker.radio_interrupt_sender();
+            let store = Arc::clone(&self.store);
             let now = (self.radio_clock)();
-            let prepared = prepared_host(&self.store).await?;
+            let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || {
+                    let prepared = PreparedHost::load(&store)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    prepared
+                        .recheck_paths()
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    Ok::<_, WorkerError>(Arc::new(prepared))
+                },
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
             let mut transport = RuntimeRadioInterrupt { sender };
             radio_runtime::handoff_interrupt(&self.store, prepared, &effect, &mut transport, now)
                 .await
@@ -1565,17 +1628,24 @@ impl AccountRegistry {
                         archive_deadline_retry_at
                     } else {
                         archive_deadline_retry_at = None;
-                        match studio_runtime_services::work_write::next_archive_retry_at(
-                            &self.store,
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs_f64(),
-                            self.accepted_archive_batch_full,
+                        let store = self.store.clone();
+                        let accepted_batch_full = self.accepted_archive_batch_full;
+                        match studio_runtime_process::blocking_pool::spawn_blocking(
+                            "runtime-server/account_registry",
+                            move || {
+                                studio_runtime_services::work_write::next_archive_retry_at(
+                                    &store,
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs_f64(),
+                                    accepted_batch_full,
+                                )
+                            },
                         )
                         .await
                         {
-                            Ok(Some(deadline)) => {
+                            Ok(Ok(Some(deadline))) => {
                                 let now_wall = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
@@ -1583,10 +1653,18 @@ impl AccountRegistry {
                                 let delay = (deadline - now_wall).max(0.0);
                                 Some(tokio::time::Instant::now() + Duration::from_secs_f64(delay))
                             }
-                            Ok(None) => None,
-                            Err(error) => {
+                            Ok(Ok(None)) => None,
+                            Ok(Err(error)) => {
                                 eprintln!(
                                     "account registry archive deadline read deferred: {error}"
+                                );
+                                let retry_at = tokio::time::Instant::now() + RETRY_DELAY;
+                                archive_deadline_retry_at = Some(retry_at);
+                                Some(retry_at)
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "account registry archive deadline worker failed: {error}"
                                 );
                                 let retry_at = tokio::time::Instant::now() + RETRY_DELAY;
                                 archive_deadline_retry_at = Some(retry_at);
@@ -1657,11 +1735,13 @@ async fn classify_pending_agents(
         .filter_map(|(id, epoch, mode)| (mode.as_deref() != Some("image")).then_some((id, epoch)))
         .collect::<Vec<_>>();
     let image_recovery = if agents.is_empty() {
-        store
-            .read_async("runtime-server/account_registry", move |db| {
-                has_image_workspace_recovery(db, &account)
-            })
-            .await
+        let store = Arc::clone(&store);
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || has_image_workspace_recovery(&store, &account),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
     } else {
         Ok(false)
     }?;
@@ -1735,33 +1815,14 @@ fn changed_accounts(
     Ok(accounts)
 }
 
-/// The account's next page of wakeable agents after its agent cursor.
-async fn wake_page_after(
-    store: &RuntimeStore,
-    account: &str,
-    after_agent: String,
-) -> Result<Vec<(String, i64, Option<String>)>, WorkerError> {
-    let account = account.to_owned();
-    Ok(store
-        .read_async("runtime-server/account_registry", move |db| {
-            SchedulerRepository::account_wake_agents_after(
-                db,
-                &account,
-                &after_agent,
-                WAKE_PAGE,
-                event_time(),
-            )
-        })
-        .await?)
-}
-
 pub(crate) fn target_page(
-    db: &rusqlite::Connection,
+    store: &RuntimeStore,
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
+    let db = store.read()?;
     SchedulerRepository::account_wake_page(
-        db,
+        &db,
         after_account,
         after_agent,
         MAX_ACCOUNTS,
@@ -1772,12 +1833,13 @@ pub(crate) fn target_page(
 }
 
 fn target_page_after(
-    db: &rusqlite::Connection,
+    store: &RuntimeStore,
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
+    let db = store.read()?;
     SchedulerRepository::account_wake_page_after(
-        db,
+        &db,
         after_account,
         after_agent,
         MAX_ACCOUNTS,
@@ -1911,10 +1973,8 @@ async fn hold_image_workspace_agents(
         .await
 }
 
-fn has_image_workspace_recovery(
-    db: &rusqlite::Connection,
-    account: &str,
-) -> Result<bool, WorkerError> {
+fn has_image_workspace_recovery(store: &RuntimeStore, account: &str) -> Result<bool, WorkerError> {
+    let db = store.read()?;
     Ok(db.query_row(
         "SELECT EXISTS(
           SELECT 1 FROM runtime_agents a
@@ -1938,24 +1998,6 @@ fn has_image_workspace_recovery(
         [account],
         |row| row.get(0),
     )?)
-}
-
-/// Load the host project snapshot and recheck its paths for one radio write.
-async fn prepared_host(store: &RuntimeStore) -> Result<Arc<PreparedHost>, WorkerError> {
-    let prepared = PreparedHost::load(store)
-        .await
-        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/account_registry",
-        move || {
-            prepared
-                .recheck_paths()
-                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-            Ok::<_, WorkerError>(Arc::new(prepared))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)?
 }
 
 #[cfg(test)]
@@ -2071,8 +2113,7 @@ mod bounded_reconcile_tests {
             .await
             .expect("pending image agent stored");
 
-        let page = target_page(&store.test_reader().expect("read"), "", &BTreeMap::new())
-            .expect("pending target page");
+        let page = target_page(&store, "", &BTreeMap::new()).expect("pending target page");
         assert_eq!(page["default"][0].2.as_deref(), Some("image"));
     }
 
@@ -2199,7 +2240,7 @@ mod tests {
     }
 
     fn accounts_of(store: &RuntimeStore, changes: &RegistryChanges) -> BTreeSet<String> {
-        changed_accounts(&store.test_reader().expect("read"), changes).expect("changed accounts")
+        changed_accounts(&store.read().expect("read"), changes).expect("changed accounts")
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2303,7 +2344,7 @@ mod tests {
         for (id, agent) in [("e1", "codex-a"), ("e2", "claude-a"), ("e3", "claude-b")] {
             queue_user_event(&store, id, agent).await;
         }
-        let db = store.test_reader().expect("read");
+        let db = store.read().expect("read");
         for (account, agent) in [("acct-codex", "codex-a"), ("acct-claude", "claude-a")] {
             let page = SchedulerRepository::account_wake_for_accounts(&db, [account], 8, 0.0)
                 .expect("targeted page");

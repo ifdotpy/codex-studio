@@ -53,23 +53,12 @@ pub enum BudgetRuntimeError {
 /// [`admission`] compares those durable rows inside the owner transaction.
 /// A provider append after this pre-read and before commit remains undetected,
 /// as it also does while Python's Runtime.lock excludes only Studio writers.
-pub async fn read_histories(
+pub fn read_histories(
     store: &RuntimeStore,
     root_id: &str,
 ) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
-    let root = root_id.to_owned();
-    let members = store
-        .read_async("runtime-services/budget_runtime", move |connection| {
-            team_members(connection, &root)
-        })
-        .await?;
-    let state_dir = store.root().to_path_buf();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/budget_runtime",
-        move || observe_histories(&state_dir, members),
-    )
-    .await
-    .map_err(|_| BudgetRuntimeError::Store(StoreError::ReadTaskFailed))?
+    let connection = store.read()?;
+    read_histories_from_connection(store, &connection, root_id)
 }
 
 /// Prepare history evidence using a caller's held canvas reader. Admission
@@ -80,37 +69,23 @@ pub(crate) fn read_histories_from_connection(
     connection: &Connection,
     root_id: &str,
 ) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
-    observe_histories(store.root(), team_members(connection, root_id)?)
-}
-
-/// A team member's agent row with its budget row, if any.
-type TeamMember = (Value, Option<Value>);
-
-fn team_members(
-    connection: &Connection,
-    root_id: &str,
-) -> Result<Vec<TeamMember>, BudgetRuntimeError> {
-    BudgetRepository::agent(connection, root_id)?;
-    let members = BudgetRepository::team(connection, root_id)?;
+    let snapshot = connection.unchecked_transaction()?;
+    BudgetRepository::agent(&snapshot, root_id)?;
+    let members = BudgetRepository::team(&snapshot, root_id)?;
     let mut snapshots = Vec::with_capacity(members.len());
     for agent in members {
         let id = agent
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| StoreError::SchemaMismatch("runtime_agents/id".into()))?;
-        let budget = Table::<BudgetRecord>::new(connection)
+        let budget = Table::<BudgetRecord>::new(&snapshot)
             .get(&AgentId::from(id))?
             .map(|record| record.0);
         snapshots.push((agent, budget));
     }
-    Ok(snapshots)
-}
-
-fn observe_histories(
-    state_dir: &Path,
-    members: Vec<TeamMember>,
-) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
-    let repository = AnalyticsRepository::new(state_dir);
+    let members = snapshots;
+    drop(snapshot);
+    let repository = AnalyticsRepository::new(store.root());
     let db = repository.open_read_only()?;
     let has_history = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='analytics_history')",

@@ -34,7 +34,7 @@ impl AccountSessionPort for Port {
             assert_eq!(request.actor.as_ref().unwrap().agent, "owner");
             let count: i64 = self
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row("SELECT count(*) FROM runtime_process_actions", [], |r| {
                     r.get(0)

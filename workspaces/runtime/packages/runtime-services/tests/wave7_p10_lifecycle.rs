@@ -270,7 +270,7 @@ async fn composed_stop_dispatches_active_voice_session_after_commit() {
         "active voice stop is dispatched after the lifecycle commit"
     );
     let pending_intents = store
-        .test_reader()
+        .read()
         .expect("read voice stop receipt")
         .query_row(
             "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='lifecycle.voice-stop.v1' \
@@ -350,7 +350,7 @@ async fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
         .await
         .expect("stop commits and cancels continuations");
 
-    let db = store.test_reader().expect("read cancelled continuations");
+    let db = store.read().expect("read cancelled continuations");
     let usage: String = db
         .query_row(
             "SELECT record FROM runtime_usage_resumes WHERE id='resume-stop'",
@@ -417,7 +417,7 @@ async fn production_delete_releases_deleted_worker_work_item() {
         .await
         .expect("delete commits and releases worker work");
 
-    let db = store.test_reader().expect("read released work");
+    let db = store.read().expect("read released work");
     let raw: String = db
         .query_row(
             "SELECT record FROM runtime_work WHERE id='deleted-worker-task'",
@@ -443,7 +443,7 @@ async fn production_delete_releases_deleted_worker_work_item() {
 }
 
 fn state(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("reader");
+    let db = store.read().expect("reader");
     let records = agent_management::read(&db).expect("records");
     let mut statement = db.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities ORDER BY collection,id").expect("sync read");
     let sync = statement
@@ -799,7 +799,7 @@ async fn python_stop_corpus_complete_records_and_exact_descendants() {
         }
         ports.settle_deleted(&store).await;
         assert_eq!(result, case["expected"]["result"], "{}", case["name"]);
-        let db = store.test_reader().expect("notification reader");
+        let db = store.read().expect("notification reader");
         let notifications = db
             .prepare("SELECT id,agent,status FROM runtime_events WHERE id LIKE 'child-stop:%' ORDER BY id")
             .expect("notification query")
@@ -936,7 +936,7 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                 assert_eq!(request.expected_scope.as_ref(), Some(&self.scope));
                 let reader = self
                     .store
-                    .test_reader()
+                    .read()
                     .expect("intent is committed before dispatch");
                 let raw: String = reader
                     .query_row(
@@ -1053,7 +1053,7 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
             );
             assert_eq!(calls[0].actor.as_ref().map(|actor| actor.epoch), Some(3));
             drop(calls);
-            let reader = store.test_reader().expect("settled receipt");
+            let reader = store.read().expect("settled receipt");
             let raw: String = reader
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id='lead'",
@@ -1262,7 +1262,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         ) -> VoiceFuture<'a, VoiceRequestReceipt> {
             let deleted = self
                 .store
-                .test_reader()
+                .read()
                 .and_then(|db| {
                     db.query_row(
                         "SELECT COUNT(*) FROM voice_sessions WHERE id='delete-unknown-voice'",
@@ -1356,7 +1356,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
     }
 
     fn read_delete_receipt(store: &RuntimeStore) -> Value {
-        let reader = store.test_reader().expect("read deletion receipt");
+        let reader = store.read().expect("read deletion receipt");
         let raw: String = reader
             .query_row(
                 "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'agent-delete-voice:lead:%'",
@@ -1595,7 +1595,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         .expect("dispatch boundary lock");
     assert_eq!(dispatched_after_commit.len(), 16);
     assert!(dispatched_after_commit.iter().all(|dispatched| *dispatched));
-    let reader = store.test_reader().expect("read committed delete");
+    let reader = store.read().expect("read committed delete");
     let saved: String = reader
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'agent-delete-voice:lead:%'",
@@ -1758,7 +1758,7 @@ async fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
     let calls = broker.calls.lock().expect("broker calls");
     assert_eq!(calls.len(), 1);
     drop(calls);
-    let reader = store.test_reader().expect("reader");
+    let reader = store.read().expect("reader");
     let raw: String = reader
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='lead'",

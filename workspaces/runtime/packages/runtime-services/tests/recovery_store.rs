@@ -74,7 +74,7 @@ async fn open_store(path: &Path) -> Arc<RuntimeStore> {
 }
 fn snapshot(store: &RuntimeStore) -> RecoverySnapshot {
     let raw = AgentRepository::get_raw(
-        &store.test_reader().expect("valid recovery fixture"),
+        &store.read().expect("valid recovery fixture"),
         &AgentId::from("agent"),
     )
     .expect("valid recovery fixture")
@@ -171,7 +171,7 @@ async fn apply_lifecycle(
 }
 fn events(store: &RuntimeStore) -> Vec<(String, String)> {
     store
-        .test_reader()
+        .read()
         .expect("valid recovery fixture")
         .prepare("SELECT id,status FROM runtime_events WHERE agent='agent' ORDER BY id")
         .expect("valid recovery fixture")
@@ -181,7 +181,7 @@ fn events(store: &RuntimeStore) -> Vec<(String, String)> {
         .expect("valid recovery fixture")
 }
 fn projection(store: &RuntimeStore) -> Vec<String> {
-    let db = store.test_reader().expect("store read");
+    let db = store.read().expect("store read");
     ["SELECT json_group_array(json_array(collection,id,seq,hash,payload,deleted)) FROM (SELECT * FROM sync_entities ORDER BY collection,id)","SELECT json_group_array(json_array(key,value)) FROM (SELECT * FROM sync_entity_meta ORDER BY key)"]
         .iter().map(|sql|db.query_row(sql,[],|row|row.get(0)).expect("projection read")).collect()
 }
@@ -710,7 +710,7 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
             assert_eq!(events(&reopened), queue);
             assert_eq!(projection(&reopened), renderer);
             let count: i64 = reopened
-                .test_reader()
+                .read()
                 .expect("read")
                 .query_row("SELECT count(*) FROM runtime_completed_turns", [], |r| {
                     r.get(0)
@@ -835,7 +835,7 @@ fn task_rows(store: &RuntimeStore) -> Vec<serde_json::Value> {
         .iter()
         .map(|table| {
             let raw: String = store
-                .test_reader()
+                .read()
                 .expect("read")
                 .query_row(
                     &format!("SELECT record FROM {table} WHERE id='agent:item'"),
@@ -982,7 +982,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
         );
         let rows = task_rows(&store);
         let projected: String = store
-            .test_reader()
+            .read()
             .expect("read")
             .query_row(
                 "SELECT payload FROM sync_entities WHERE collection='task' AND id='agent:item'",
@@ -994,7 +994,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
         assert_eq!(projected["value"]["status"], rows[0]["status"]);
         // Error is an existing task-detail field, deliberately absent from TaskEntityDto.
         let detail = studio_runtime_store::WorkspaceViewsRepository::task(
-            &store.test_reader().expect("read"),
+            &store.read().expect("read"),
             "agent:item",
         )
         .expect("task API read")

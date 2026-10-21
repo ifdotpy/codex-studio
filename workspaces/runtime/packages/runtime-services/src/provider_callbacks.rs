@@ -23,9 +23,8 @@ pub use model::{
 };
 pub use projection::project_tool_result;
 pub use recovery::{
-    ContextToolReceiptRows, ContextToolReceiptSnapshot, prepare_unresolved_context_tool_receipts,
-    read_context_tool_receipt_rows, recover_connection, recover_tool_requests_on_startup,
-    revalidate_unresolved_context_tool_receipts,
+    ContextToolReceiptSnapshot, prepare_unresolved_context_tool_receipts, recover_connection,
+    recover_tool_requests_on_startup, revalidate_unresolved_context_tool_receipts,
 };
 use serde_json::{Value, json};
 #[cfg(test)]
@@ -140,7 +139,7 @@ pub async fn dispatch(
 /// Construct the real host bundle from the retained account callback path.
 /// Filesystem snapshots are prepared before the callback's writer transaction.
 #[cfg(test)]
-pub(crate) async fn managed_tool_ports(
+pub(crate) fn managed_tool_ports(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
@@ -153,11 +152,10 @@ pub(crate) async fn managed_tool_ports(
         wake,
         std::sync::Arc::new(tokio::sync::Notify::new()),
     )
-    .await
 }
 
 #[cfg(test)]
-pub(crate) async fn managed_tool_ports_with_monitor_wake(
+pub(crate) fn managed_tool_ports_with_monitor_wake(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
@@ -184,10 +182,9 @@ pub(crate) async fn managed_tool_ports_with_monitor_wake(
             preparation: None,
         },
     )
-    .await
 }
 
-pub(crate) async fn managed_tool_ports_with_runtime(
+pub(crate) fn managed_tool_ports_with_runtime(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
@@ -199,10 +196,10 @@ pub(crate) async fn managed_tool_ports_with_runtime(
     if request.method != "item/tool/call" {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     }
-    tools::production_ports(store, context, &request, config).await
+    tools::production_ports(store, context, &request, config)
 }
 
-pub(crate) async fn managed_tool_ports_with_bundle(
+pub(crate) fn managed_tool_ports_with_bundle(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
@@ -234,7 +231,6 @@ pub(crate) async fn managed_tool_ports_with_bundle(
             preparation: runtime.and_then(ManagedToolRuntime::preparation_resources),
         },
     )
-    .await
 }
 
 /// Account workers with a retained host runtime pass its explicit staged-effect

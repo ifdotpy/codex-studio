@@ -870,7 +870,7 @@ mod diagnostics_http_tests {
         .with_diagnostics_provider(provider.clone())
         .with_diagnostics_supervisor(supervisor.clone());
         let app = router(state).expect("registered HTTP router");
-        let proof_connection = proof_store.test_reader().expect("read-only write proof");
+        let proof_connection = proof_store.read().expect("read-only write proof");
         let version_before: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
             .expect("initial database version");
@@ -938,7 +938,7 @@ mod diagnostics_http_tests {
                 .expect("open isolated runtime store"),
         );
         let store_lifetime_guard = Arc::clone(&store);
-        let proof_connection = store.test_reader().expect("read-only write proof");
+        let proof_connection = store.read().expect("read-only write proof");
         let version_before: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
             .expect("initial database version");

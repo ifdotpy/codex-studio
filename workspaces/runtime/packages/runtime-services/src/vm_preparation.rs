@@ -698,34 +698,28 @@ impl Preparation<'_> {
     ) -> native_actions::Result<()> {
         let request = request.clone();
         let ticket = ticket.clone();
-        let agent_id = AgentId::from(request.agent.as_str());
-        let read = self
-            .store
-            .read_async("runtime-services/vm_preparation", move |connection| {
-                let agent = AgentRepository::get(connection, &agent_id)?
-                    .ok_or(NativeError::Changed)?
-                    .value();
-                if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
-                    return Ok::<_, NativeError>(None);
-                }
-                let parent = if agent.get("isLead").and_then(Value::as_bool) == Some(true) {
-                    None
-                } else {
-                    let parent_id = agent
-                        .get("parentId")
-                        .and_then(Value::as_str)
-                        .ok_or(NativeError::Invalid("vm-workspace/parent"))?;
-                    Some(
-                        AgentRepository::get(connection, &AgentId::from(parent_id))?
-                            .ok_or(NativeError::Changed)?
-                            .value(),
-                    )
-                };
-                Ok(Some((agent, parent)))
-            })
-            .await?;
-        let Some((agent, parent)) = read else {
-            return Ok(());
+        let (agent, parent) = {
+            let connection = self.store.read()?;
+            let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
+                .ok_or(NativeError::Changed)?
+                .value();
+            if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
+                return Ok(());
+            }
+            let parent = if agent.get("isLead").and_then(Value::as_bool) == Some(true) {
+                None
+            } else {
+                let parent_id = agent
+                    .get("parentId")
+                    .and_then(Value::as_str)
+                    .ok_or(NativeError::Invalid("vm-workspace/parent"))?;
+                Some(
+                    AgentRepository::get(&connection, &AgentId::from(parent_id))?
+                        .ok_or(NativeError::Changed)?
+                        .value(),
+                )
+            };
+            (agent, parent)
         };
         let guest = self
             .guest
@@ -806,14 +800,11 @@ impl Preparation<'_> {
         // or rebuilding its archive. Normal turn startup derives this request id
         // from the attempt when actionRequestId is absent.
         {
-            let agent_id = AgentId::from(request.agent.as_str());
-            let current = self
-                .store
-                .read_async("runtime-services/vm_preparation", move |connection| {
-                    AgentRepository::get(connection, &agent_id)?.ok_or(NativeError::Changed)
-                })
-                .await?
-                .value();
+            let connection = self.store.read()?;
+            let current =
+                AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
+                    .ok_or(NativeError::Changed)?
+                    .value();
             if current["startAttempt"]["id"] != ticket.operation
                 || current.get("epoch").and_then(Value::as_u64) != Some(ticket.epoch)
                 || current
@@ -1765,7 +1756,7 @@ mod tests {
             .await,
             Err(NativeError::Unavailable(_))
         ));
-        let connection = store.test_reader().unwrap();
+        let connection = store.read().unwrap();
         let saved = AgentRepository::get(&connection, &agent.id)
             .unwrap()
             .unwrap()
@@ -1801,7 +1792,7 @@ mod tests {
                 .count(),
             1
         );
-        let connection = store.test_reader().unwrap();
+        let connection = store.read().unwrap();
         let saved = AgentRepository::get(&connection, &agent.id)
             .unwrap()
             .unwrap()
@@ -1850,7 +1841,7 @@ mod tests {
             Err(NativeError::Unknown)
         ));
         {
-            let connection = store.test_reader().expect("open test store read");
+            let connection = store.read().expect("open test store read");
             let saved = AgentRepository::get(&connection, &agent.id)
                 .expect("read test agent")
                 .expect("test agent exists")

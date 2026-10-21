@@ -25,12 +25,8 @@ pub enum MultiServerError {
     NeedsSignedRequest,
 }
 
-pub async fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
-    Ok(store
-        .read_async("runtime-services/multi_server", |tx| {
-            MultiServerRepository::audit(tx)
-        })
-        .await?)
+pub fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
+    Ok(store.read_transaction(|tx| MultiServerRepository::audit(tx))?)
 }
 
 pub async fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiServerError> {
@@ -477,28 +473,34 @@ pub async fn create_invite(
             .map_err(|_| MultiServerError::Refused("Invalid pairing request".into()))?
             .as_bytes(),
     );
+    let store_for_read = Arc::clone(&store);
     let request_id_for_read = request_id.to_owned();
-    let prior = store
-        .read_async("runtime-services/multi_server", move |tx| {
-            let saved: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
-                    [&request_id_for_read],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            saved
-                .map(|(hash, raw)| {
-                    let record: Value = serde_json::from_str(&raw).map_err(|_| {
-                        StoreError::SchemaMismatch(format!(
-                            "invalid stored object runtime_access_invites/{request_id_for_read}"
-                        ))
-                    })?;
-                    Ok::<_, StoreError>((hash, record))
-                })
-                .transpose()
-        })
-        .await?;
+    let prior = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/multi_server",
+        move || {
+            store_for_read.read_transaction(|tx| {
+                let saved: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
+                        [&request_id_for_read],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                saved
+                    .map(|(hash, raw)| {
+                        let record: Value = serde_json::from_str(&raw).map_err(|_| {
+                            StoreError::SchemaMismatch(format!(
+                                "invalid stored object runtime_access_invites/{request_id_for_read}"
+                            ))
+                        })?;
+                        Ok((hash, record))
+                    })
+                    .transpose()
+            })
+        },
+    )
+    .await
+    .map_err(|_| MultiServerError::Refused("The invitation store is unavailable".into()))??;
     let invite = if let Some(invite) = prior {
         if invite.0 != fingerprint {
             return Err(MultiServerError::Conflict(
@@ -854,7 +856,7 @@ mod tests {
                 .is_empty()
         );
         let stored_token_hash = store
-            .read_async("runtime-services/multi_server/tests", |tx| {
+            .read_transaction(|tx| {
                 tx.query_row(
                     "SELECT record FROM runtime_access_invites WHERE request_id='invite-test'",
                     [],
@@ -862,7 +864,6 @@ mod tests {
                 )
                 .map_err(studio_runtime_store::StoreError::from)
             })
-            .await
             .expect("stored invitation reads");
         let stored_token_hash: serde_json::Value =
             serde_json::from_str(&stored_token_hash).expect("stored invitation JSON");
@@ -888,13 +889,12 @@ mod tests {
             .is_err()
         );
         let count = store
-            .read_async("runtime-services/multi_server/tests", |tx| {
+            .read_transaction(|tx| {
                 tx.query_row("SELECT count(*) FROM runtime_access_invites", [], |row| {
                     row.get::<_, i64>(0)
                 })
                 .map_err(studio_runtime_store::StoreError::from)
             })
-            .await
             .expect("invite count reads");
         assert_eq!(count, 1);
         let default_label = create_invite(
@@ -987,7 +987,7 @@ mod tests {
         assert!(manage(&store, &identity, &missing, "local").await.is_err());
 
         let audit_count = store
-            .read_async("runtime-services/multi_server/tests", |tx| {
+            .read_transaction(|tx| {
                 tx.query_row(
                     "SELECT count(*) FROM runtime_access_audit WHERE client='peer-a' AND action='alias'",
                     [],
@@ -995,7 +995,6 @@ mod tests {
                 )
                 .map_err(studio_runtime_store::StoreError::from)
             })
-            .await
             .expect("alias audit count reads");
         assert_eq!(audit_count, 1);
     }
@@ -1031,7 +1030,7 @@ mod tests {
             .expect("snapshot seeds peer alias");
         assert_eq!(first["settings"]["aliases"]["peer-b"], "BOB");
         let saved: String = store
-            .read_async("runtime-services/multi_server/tests", |tx| {
+            .read_transaction(|tx| {
                 tx.query_row(
                     "SELECT json_extract(record,'$.alias') FROM runtime_access_clients WHERE id='peer-b'",
                     [],
@@ -1039,7 +1038,6 @@ mod tests {
                 )
                 .map_err(studio_runtime_store::StoreError::from)
             })
-            .await
             .expect("default alias is durably saved");
         assert_eq!(saved, "BOB");
 
@@ -1095,7 +1093,7 @@ mod tests {
             .expect("comparison snapshot computes default alias");
         assert_eq!(snapshot["settings"]["aliases"]["peer-b"], "BOB");
         let saved: Option<String> = store
-            .read_async("runtime-services/multi_server/tests", |tx| {
+            .read_transaction(|tx| {
                 tx.query_row(
                     "SELECT json_extract(record,'$.alias') FROM runtime_access_clients WHERE id='peer-b'",
                     [],
@@ -1103,7 +1101,6 @@ mod tests {
                 )
                 .map_err(studio_runtime_store::StoreError::from)
             })
-            .await
             .expect("alias field remains absent");
         assert_eq!(saved, None);
     }

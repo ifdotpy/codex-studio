@@ -116,15 +116,6 @@ impl ProjectVaultSnapshot {
     /// Capture filesystem views for valid stored projects while ignoring
     /// malformed rows, matching Python's sync projection reader.
     pub fn capture_for_sync(state_dir: &Path, connection: &Connection) -> StoreResult<Self> {
-        Ok(Self::capture(
-            state_dir,
-            &Self::stored_projects(connection)?,
-        ))
-    }
-
-    /// Valid stored projects for [`Self::capture`], read in a short snapshot so
-    /// the filesystem capture can run after the read ends.
-    pub fn stored_projects(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
         let mut statement =
             connection.prepare_cached("SELECT id,record FROM runtime_projects ORDER BY rowid")?;
         let rows = statement.query_map([], |row| {
@@ -137,7 +128,7 @@ impl ProjectVaultSnapshot {
                 projects.push((id, serde_json::from_str(&raw)?));
             }
         }
-        Ok(projects)
+        Ok(Self::capture(state_dir, &projects))
     }
 
     /// Read each project's cached vault record. Lifecycle conflict recovery may
@@ -3072,7 +3063,7 @@ mod tests {
             2,
             "a rolled-back malformed stored preference does not wake"
         );
-        let payload = store.test_reader().expect("preference reader");
+        let payload = store.read().expect("preference reader");
         assert_eq!(
             SyncDocumentsRepository::preference_payload(&payload, "user")
                 .expect("stored payload query"),

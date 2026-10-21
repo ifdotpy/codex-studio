@@ -156,7 +156,7 @@ fn receipt(request: &TitleRequest, outcome: WriteOutcome, title: Option<&str>) -
 }
 
 fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
-    let connection = store.test_reader().expect("reader");
+    let connection = store.read().expect("reader");
     let agent = connection
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='title-agent'",
@@ -177,7 +177,7 @@ fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
 }
 
 fn persisted_snapshot(store: &RuntimeStore) -> Value {
-    let connection = store.test_reader().expect("snapshot reader");
+    let connection = store.read().expect("snapshot reader");
     let agent: String = connection
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='title-agent'",
@@ -251,7 +251,7 @@ async fn admitted_title_catalog_failure_settles_python_receipt_without_renaming(
     settle_catalog_failure(&store, "title-agent", "catalog-unavailable")
         .await
         .expect("settle unavailable catalog");
-    let connection = store.test_reader().expect("read settled title");
+    let connection = store.read().expect("read settled title");
     let result: String = connection
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id='catalog-unavailable'",
@@ -312,7 +312,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
     );
 
     let written_effect: Value = {
-        let connection = store.test_reader().expect("read durable provider effect");
+        let connection = store.read().expect("read durable provider effect");
         let raw: String = connection
             .query_row(
                 "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
@@ -330,9 +330,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
         .await
         .expect("settle catalog failure without losing written result");
     let (public_result, effect_after_settlement) = {
-        let connection = store
-            .test_reader()
-            .expect("read title receipts after settlement");
+        let connection = store.read().expect("read title receipts after settlement");
         let public_raw: String = connection
             .query_row(
                 "SELECT result FROM runtime_operation_receipts WHERE id='written-before-catalog-failure'",
@@ -986,7 +984,7 @@ async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_bac
             .is_err()
         );
         assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-        let connection = store.test_reader().expect("state read");
+        let connection = store.read().expect("state read");
         let intents: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts",

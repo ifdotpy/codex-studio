@@ -12,17 +12,13 @@ use studio_runtime_services::browser_host::{
 struct OneChat;
 
 impl ChatLookup for OneChat {
-    fn chat<'a>(
-        &'a self,
-        session: &'a str,
-    ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>> {
-        let chat = (session == "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b").then(|| ChatContext {
+    fn chat(&self, session: &str) -> Option<ChatContext> {
+        (session == "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b").then(|| ChatContext {
             uid: current_uid(),
             project_id: None,
             owner: "person".into(),
             agent_id: "chat-1".into(),
-        });
-        Box::pin(std::future::ready(chat))
+        })
     }
 }
 

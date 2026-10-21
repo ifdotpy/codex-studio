@@ -79,12 +79,17 @@ async fn read_page(
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = match transcript_runtime::page(&store, agent, request).await {
-        Err(TranscriptError::UnknownMessage) if native_fallback => Err(
-            TranscriptError::RequiresDependency(CANVAS_DEPENDENCIES[0].name()),
-        ),
-        result => result,
-    }
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || match transcript_runtime::page(&store, &agent, &request) {
+            Err(TranscriptError::UnknownMessage) if native_fallback => Err(
+                TranscriptError::RequiresDependency(CANVAS_DEPENDENCIES[0].name()),
+            ),
+            result => result,
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
     .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::TranscriptPageResponse,
@@ -106,9 +111,13 @@ async fn transcript_item(
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = transcript::item(&store, agent, identity)
-        .await
-        .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::item(&store, &agent, &identity),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::TranscriptItemResponse,
     >(value)?))
@@ -133,9 +142,13 @@ async fn transcript_search(
         .and_then(Value::as_i64)
         .unwrap_or(100);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = transcript::search(&store, agent, search, limit)
-        .await
-        .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::search(&store, &agent, &search, limit),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::TranscriptSearchResponse,
     >(value)?))
@@ -151,9 +164,13 @@ async fn search_item(
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = transcript::search_item(&store, identity)
-        .await
-        .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::search_item(&store, &identity),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SearchItemResponse,
     >(value)?))
@@ -173,9 +190,13 @@ async fn search(
         .and_then(Value::as_i64)
         .unwrap_or(50);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = transcript::search_work(&store, search, None, limit)
-        .await
-        .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::search_work(&store, &search, None, limit),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SearchResponse,
     >(value)?))

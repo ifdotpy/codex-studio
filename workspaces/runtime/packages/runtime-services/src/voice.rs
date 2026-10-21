@@ -69,6 +69,8 @@ pub enum VoiceError {
     Coordination(#[from] crate::coordination::CoordinationError),
     #[error("Not implemented: requires {0}")]
     RequiresDependency(&'static str),
+    #[error("voice preparation blocking task failed")]
+    PreparationWorker,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -89,13 +91,9 @@ pub struct VoiceRecordInput {
     pub internal: bool,
 }
 
-pub async fn status(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
-    let agent_id = agent_id.to_owned();
-    store
-        .read_async("runtime-services/voice", move |connection| {
-            checked_agent(connection, &agent_id)
-        })
-        .await?;
+pub fn status(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
+    let connection = store.read()?;
+    checked_agent(&connection, agent_id)?;
     Ok(json!({"configured": true, "transport": "native", "auth": "chatgpt"}))
 }
 
@@ -214,31 +212,27 @@ pub async fn speak(request: SpeakRequest) -> Result<Value, provider::VoiceProvid
         );
     }
     let agent_for_check = agent_id.clone();
-    let active = store
-        .read_async(
-            "runtime-services/voice",
-            move |connection| -> Result<Option<String>, VoiceError> {
-                let agent =
-                    AgentRepository::get(connection, &AgentId::from(agent_for_check.as_str()))?;
-                let Some(agent) = agent.filter(|agent| {
-                    agent.extra.get("isLead").and_then(Value::as_bool) == Some(true)
-                        && !event_write::truthy(agent.extra.get("deletedAt"))
-                }) else {
-                    return Err(VoiceError::InvalidRequest(
-                        "Voice is available in an orchestrator chat only",
-                    ));
-                };
-                if epoch.is_some_and(|epoch| {
-                    agent.epoch != epoch || agent.extra.get("autoWake") != Some(&Value::Bool(true))
-                }) {
-                    return Err(VoiceError::InvalidRequest(
-                        "The orchestrator turn is stopped or replaced",
-                    ));
-                }
-                ready_session(connection, &agent_for_check)
-            },
-        )
-        .await?;
+    let active = store.read_transaction_with_error(
+        move |connection| -> Result<Option<String>, VoiceError> {
+            let agent = AgentRepository::get(connection, &AgentId::from(agent_for_check.as_str()))?;
+            let Some(agent) = agent.filter(|agent| {
+                agent.extra.get("isLead").and_then(Value::as_bool) == Some(true)
+                    && !event_write::truthy(agent.extra.get("deletedAt"))
+            }) else {
+                return Err(VoiceError::InvalidRequest(
+                    "Voice is available in an orchestrator chat only",
+                ));
+            };
+            if epoch.is_some_and(|epoch| {
+                agent.epoch != epoch || agent.extra.get("autoWake") != Some(&Value::Bool(true))
+            }) {
+                return Err(VoiceError::InvalidRequest(
+                    "The orchestrator turn is stopped or replaced",
+                ));
+            }
+            ready_session(connection, &agent_for_check)
+        },
+    )?;
     // A ready session needs the provider adapter. Refuse before the record
     // exists rather than report a saved speech that could not play.
     if active.is_some() && provider.is_none() {
@@ -262,11 +256,9 @@ pub async fn speak(request: SpeakRequest) -> Result<Value, provider::VoiceProvid
     )
     .await?;
     let agent_for_session = agent_id.clone();
-    let active = store
-        .read_async("runtime-services/voice", move |connection| {
-            ready_session(connection, &agent_for_session)
-        })
-        .await?;
+    let active = store.read_transaction_with_error(move |connection| {
+        ready_session(connection, &agent_for_session)
+    })?;
     let Some(session) = active else {
         return Ok(json!({"record": row, "status": "saved", "playback": "not confirmed"}));
     };
@@ -300,23 +292,15 @@ fn ready_session(connection: &Connection, agent_id: &str) -> Result<Option<Strin
         .map_err(StoreError::from)?)
 }
 
-pub async fn records(
-    store: &RuntimeStore,
-    agent_id: &str,
-    after: i64,
-) -> Result<Value, VoiceError> {
-    let agent_for_read = agent_id.to_owned();
-    let (agent, rows, delivered_batches, session) = store
-        .read_async("runtime-services/voice", move |connection| {
-            let agent_id = agent_for_read.as_str();
-            Ok::<_, StoreError>((
-                AgentRepository::get(connection, &AgentId::from(agent_id))?,
-                VoiceRepository::records(connection, agent_id, after)?,
-                VoiceRepository::delivered(connection, agent_id)?,
-                VoiceRepository::latest_session(connection, agent_id)?,
-            ))
-        })
-        .await?;
+pub fn records(store: &RuntimeStore, agent_id: &str, after: i64) -> Result<Value, VoiceError> {
+    let (agent, rows, delivered_batches, session) = store.read_transaction(|connection| {
+        Ok((
+            AgentRepository::get(connection, &AgentId::from(agent_id))?,
+            VoiceRepository::records(connection, agent_id, after)?,
+            VoiceRepository::delivered(connection, agent_id)?,
+            VoiceRepository::latest_session(connection, agent_id)?,
+        ))
+    })?;
     validate_agent(agent, agent_id)?;
     let mut records = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -339,16 +323,13 @@ pub async fn records(
     Ok(json!({"records": records, "cursor": cursor, "delivered": delivered, "session": session}))
 }
 
-pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
-    let agent_for_read = AgentId::from(agent_id);
-    let (agent, rows) = store
-        .read_async("runtime-services/voice", move |connection| {
-            Ok::<_, StoreError>((
-                AgentRepository::get(connection, &agent_for_read)?,
-                QuestionsReadsRepository::questions(connection)?,
-            ))
-        })
-        .await?;
+pub fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
+    let (agent, rows) = store.read_transaction(|connection| {
+        Ok((
+            AgentRepository::get(connection, &AgentId::from(agent_id))?,
+            QuestionsReadsRepository::questions(connection)?,
+        ))
+    })?;
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
     for (row, raw) in rows {
@@ -395,12 +376,17 @@ pub async fn submit(
         ));
     }
 
+    let store_for_preparation = std::sync::Arc::clone(&store);
     let agent_for_preparation = agent_id.to_owned();
-    let admission = store
-        .read_async("runtime-services/voice", move |connection| {
-            crate::message_admission::PreparedAdmission::load(connection, &agent_for_preparation)
-        })
-        .await?;
+    let admission = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice",
+        move || {
+            let connection = store_for_preparation.read()?;
+            crate::message_admission::PreparedAdmission::load(&connection, &agent_for_preparation)
+        },
+    )
+    .await
+    .map_err(|_| VoiceError::PreparationWorker)??;
     #[cfg(test)]
     ingress_tests::support::after_preparation(agent_id);
     let agent_id = agent_id.to_owned();
@@ -520,12 +506,90 @@ pub async fn submit(
     .await
 }
 
+pub fn end(store: &RuntimeStore, agent_id: &str, session_id: &str) -> Result<Value, VoiceError> {
+    let (agent, session) = store.read_transaction(|connection| {
+        Ok((
+            AgentRepository::get(connection, &AgentId::from(agent_id))?,
+            VoiceRepository::session(connection, session_id, agent_id)?,
+        ))
+    })?;
+    validate_agent(agent, agent_id)?;
+    let Some(session) = session else {
+        return Err(VoiceError::InvalidRequest("Unknown voice session"));
+    };
+    validate_session(&session)?;
+    if session.get("ended").is_some_and(|ended| !ended.is_null())
+        || session.get("state").and_then(Value::as_str) == Some("ended")
+    {
+        return Ok(session);
+    }
+    Err(VoiceError::RequiresDependency(
+        "account-worker/voice-session",
+    ))
+}
+
+pub fn speech_receipt(
+    store: &RuntimeStore,
+    agent_id: &str,
+    session_id: &str,
+    record_id: &str,
+    request_id: Option<&str>,
+) -> Result<Value, VoiceError> {
+    let id = request_id
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{session_id}:{record_id}"));
+    if id.chars().count() > 480 {
+        return Err(VoiceError::InvalidRequest("Invalid voice speech identity"));
+    }
+    let (agent, session, receipt) = store.read_transaction(|connection| {
+        Ok((
+            AgentRepository::get(connection, &AgentId::from(agent_id))?,
+            VoiceRepository::session(connection, session_id, agent_id)?,
+            VoiceRepository::speech_receipt(connection, &id)?,
+        ))
+    })?;
+    validate_agent(agent, agent_id)?;
+    let Some(session) = session else {
+        return Err(VoiceError::InvalidRequest("Unknown voice session"));
+    };
+    validate_session(&session)?;
+    if let Some(receipt) = receipt {
+        if receipt.get("session").and_then(Value::as_str) != Some(session_id)
+            || receipt.get("record_id").and_then(Value::as_str) != Some(record_id)
+        {
+            return Err(VoiceError::Conflict(
+                "Voice speech identity conflicts with its original content",
+            ));
+        }
+        validate_speech_receipt(&receipt)?;
+        return Ok(receipt);
+    }
+    if session.get("ended").is_some_and(|ended| !ended.is_null())
+        || session.get("state").and_then(Value::as_str) != Some("ready")
+    {
+        return Err(VoiceError::InvalidRequest(
+            "Start voice before audio playback",
+        ));
+    }
+    Err(VoiceError::RequiresDependency(
+        "account-worker/voice-session",
+    ))
+}
+
 pub async fn approval_speech(
     store: std::sync::Arc<RuntimeStore>,
     agent_id: &str,
     request_id: &str,
 ) -> Result<Value, VoiceError> {
-    let approvals = approvals(&store, agent_id).await?;
+    let store_for_read = std::sync::Arc::clone(&store);
+    let agent_for_read = agent_id.to_owned();
+    let approvals = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice",
+        move || approvals(&store_for_read, &agent_for_read),
+    )
+    .await
+    .map_err(|_| VoiceError::PreparationWorker)??;
     let request = approvals
         .get("requests")
         .and_then(Value::as_array)
@@ -654,6 +718,31 @@ fn validate_session(session: &Value) -> Result<(), VoiceError> {
         || !is_nullable_number(session.get("ended"))
     {
         return Err(invalid("voice_sessions", id));
+    }
+    Ok(())
+}
+
+fn validate_speech_receipt(receipt: &Value) -> Result<(), VoiceError> {
+    let id = receipt
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if id.is_empty()
+        || !receipt
+            .get("session")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        || !receipt
+            .get("record_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        || !receipt
+            .get("state")
+            .and_then(Value::as_str)
+            .is_some_and(|state| matches!(state, "pending" | "submitted" | "failed" | "unknown"))
+        || !is_nullable_string(receipt.get("error"))
+    {
+        return Err(invalid("voice_speech_requests", id));
     }
     Ok(())
 }

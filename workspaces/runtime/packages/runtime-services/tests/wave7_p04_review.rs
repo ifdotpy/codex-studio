@@ -25,7 +25,7 @@ async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
         .expect("arm complaint event failure");
     let count = |table: &str| {
         store
-            .test_reader()
+            .read()
             .expect("read counts")
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
                 row.get::<_, i64>(0)
@@ -86,7 +86,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
         } else {
             assert_eq!(
                 store
-                    .test_reader()
+                    .read()
                     .unwrap()
                     .query_row("SELECT count(*) FROM runtime_requests", [], |r| r
                         .get::<_, i64>(0))
@@ -165,7 +165,7 @@ async fn python_admission_retires_written_payload_without_a_rust_cursor() {
     drop(store);
     store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
-    let raw:String=store.test_reader().unwrap().query_row("SELECT result FROM runtime_operation_receipts WHERE json_extract(result,'$.legacyAdmission')=1",[],|r|r.get(0)).unwrap();
+    let raw:String=store.read().unwrap().query_row("SELECT result FROM runtime_operation_receipts WHERE json_extract(result,'$.legacyAdmission')=1",[],|r|r.get(0)).unwrap();
     let row: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(row["delivery"], "retired");
     assert!(row.get("body").is_none() && row.get("unanswered").is_none());

@@ -42,7 +42,7 @@ fn add_event(tx: &rusqlite::Transaction<'_>, id: &str, agent: &str, status: &str
 
 fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
     let (monitor, requests) = {
-        let connection = store.test_reader().expect("read startup state");
+        let connection = store.read().expect("read startup state");
         let monitor = MonitorsRepository::get(&connection, id)
             .expect("read monitor")
             .expect("monitor exists")
@@ -101,7 +101,7 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
     assert_eq!(first.events, 2);
     assert_eq!(first.monitors, 1);
     let monitor_id = case["before"]["id"].as_str().expect("monitor id");
-    let connection = store.test_reader().expect("read recovered state");
+    let connection = store.read().expect("read recovered state");
     let monitor = MonitorsRepository::get(&connection, monitor_id)
         .expect("read lost monitor")
         .expect("monitor exists");
@@ -190,7 +190,7 @@ async fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_
         .expect("recover startup");
     assert_eq!(report.receipts, 1);
     assert_eq!(report.monitors, 0);
-    let connection = store.test_reader().expect("read recovered result");
+    let connection = store.read().expect("read recovered result");
     assert_eq!(
         MonitorsRepository::get(&connection, id)
             .expect("read monitor")
@@ -252,7 +252,7 @@ async fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
 
     assert_eq!(report.receipts, 1);
     assert_eq!(report.monitors, 1);
-    let connection = store.test_reader().expect("read receipt recovery results");
+    let connection = store.read().expect("read receipt recovery results");
     assert_eq!(
         MonitorsRepository::get(&connection, &completed_id)
             .expect("read valid result monitor")
@@ -308,7 +308,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
             "{table}"
         );
         assert_eq!(
-            MonitorsRepository::get(&store.test_reader().expect("read rollback"), &id)
+            MonitorsRepository::get(&store.read().expect("read rollback"), &id)
                 .expect("read monitor")
                 .expect("monitor")
                 .value()["status"],
@@ -357,7 +357,7 @@ async fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     assert_eq!(report.events, 0);
     assert_eq!(
         QueueEventRepository::get(
-            &store.test_reader().expect("read event"),
+            &store.read().expect("read event"),
             &QueueEventId::from("reserved-batch"),
         )
         .expect("event")
@@ -384,7 +384,7 @@ async fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
         .await
         .expect("recover rule monitor");
 
-    let connection = store.test_reader().expect("read recovered rule monitor");
+    let connection = store.read().expect("read recovered rule monitor");
     assert_eq!(
         MonitorsRepository::get(&connection, &id)
             .expect("read rule monitor")
@@ -416,7 +416,7 @@ async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
         .await
         .expect("recover remote monitor");
 
-    let connection = store.test_reader().expect("read recovered remote monitor");
+    let connection = store.read().expect("read recovered remote monitor");
     assert_eq!(
         MonitorsRepository::get(&connection, &id)
             .expect("read remote monitor")
@@ -465,7 +465,7 @@ async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
         .expect("skip one invalid row and continue startup");
 
     assert_eq!(report.monitors, 1);
-    let connection = store.test_reader().expect("read recovered monitors");
+    let connection = store.read().expect("read recovered monitors");
     assert_eq!(
         MonitorsRepository::get(&connection, &id)
             .expect("read valid monitor")
@@ -506,7 +506,7 @@ async fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attemp
         monitor_runtime::recover_on_startup(&store, 2000.0)
             .await
             .expect("recover startup events");
-        let connection = store.test_reader().expect("read uncertain event");
+        let connection = store.read().expect("read uncertain event");
         let event_id = if submitted {
             "submitted-event"
         } else {

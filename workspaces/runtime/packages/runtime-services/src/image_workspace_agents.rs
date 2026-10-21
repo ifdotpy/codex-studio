@@ -11,8 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, StoreError, Transaction,
-    truthy,
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, Transaction, truthy,
 };
 
 use crate::event_write::{self, EventWriteError};
@@ -388,17 +387,20 @@ async fn read_record(
     store: &Arc<RuntimeStore>,
     agent_id: &str,
 ) -> Result<Option<Value>, EventWriteError> {
-    let read_id = AgentId::from(agent_id);
-    store
-        .read_async(
-            "runtime-services/image_workspace_agents",
-            move |connection| {
-                Ok::<_, EventWriteError>(
-                    AgentRepository::get(connection, &read_id)?.map(|agent| agent.value()),
-                )
-            },
-        )
-        .await
+    let read_store = Arc::clone(store);
+    let read_id = agent_id.to_owned();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/image_workspace_agents",
+        move || -> Result<Option<Value>, StoreError> {
+            Ok(
+                AgentRepository::get(&*read_store.read()?, &AgentId::from(read_id.as_str()))?
+                    .map(|agent| agent.value()),
+            )
+        },
+    )
+    .await
+    .map_err(|_| invalid(agent_id))?
+    .map_err(EventWriteError::from)
 }
 
 async fn fail(
@@ -584,7 +586,8 @@ pub fn start_with(store: &Arc<RuntimeStore>, agent_id: &str, steps: Steps) {
 }
 
 /// The agents still in their read-only phase, in id order.
-pub fn read_only_agents(db: &Connection) -> Result<Vec<String>, StoreError> {
+pub fn read_only_agents(store: &RuntimeStore) -> Result<Vec<String>, StoreError> {
+    let db = store.read()?;
     let mut statement = db.prepare(
         "SELECT id,record FROM runtime_agents \
          WHERE json_extract(record,'$.imageWorkspacePhase')='read_only' ORDER BY id",
@@ -614,11 +617,13 @@ pub async fn resume_read_only_with(
     store: &Arc<RuntimeStore>,
     steps: Steps,
 ) -> Result<usize, StoreError> {
-    let agents = store
-        .read_async("runtime-services/image_workspace_agents/resume", |db| {
-            read_only_agents(db)
-        })
-        .await?;
+    let read_store = Arc::clone(store);
+    let agents = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/image_workspace_agents/resume",
+        move || read_only_agents(&read_store),
+    )
+    .await
+    .map_err(|_| StoreError::SchemaMismatch("image workspace resume task failed".to_owned()))??;
     for agent in &agents {
         start_with(store, agent, steps);
     }

@@ -534,18 +534,7 @@ async fn generate_inner(
     if request_id.is_empty() || request_id.len() > 200 {
         return Err(TitleError::Conflict);
     }
-    let (snapshot_agent, snapshot_catalog, snapshot_request) =
-        (agent_id.to_owned(), catalog.clone(), request_id.to_owned());
-    let snapshot = store
-        .read_async("runtime-services/title_generation", move |connection| {
-            make_snapshot(
-                connection,
-                &snapshot_agent,
-                &snapshot_catalog,
-                &snapshot_request,
-            )
-        })
-        .await?;
+    let snapshot = make_snapshot(store, agent_id, catalog, request_id)?;
     let fingerprint = signature(&snapshot);
     let agent_id_for_admission = agent_id.to_owned();
     let request_id_for_admission = request_id.to_owned();
@@ -903,11 +892,12 @@ async fn generate_inner(
 }
 
 fn make_snapshot(
-    connection: &Connection,
+    store: &RuntimeStore,
     agent_id: &str,
     catalog: &Value,
     request_id: &str,
 ) -> Result<Snapshot, TitleError> {
+    let connection = store.read()?;
     let raw_agent = connection
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
@@ -923,7 +913,7 @@ fn make_snapshot(
     let eligible = !agent.get("manualName").is_some_and(truthy)
         && agent.get("needsTitle").and_then(Value::as_bool) == Some(true)
         && !agent.get("deletedAt").is_some_and(truthy);
-    let prompt = build_prompt(connection, agent_id, &agent)?;
+    let prompt = build_prompt(&connection, agent_id, &agent)?;
     let (model, effort) = title_model(catalog, &agent)?;
     let account_key = match agent.get("accountKey") {
         None => "default".to_owned(),

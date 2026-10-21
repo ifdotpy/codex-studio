@@ -29,18 +29,27 @@ pub async fn execute(
             .and_then(|agent| agent.get("id"))
             .and_then(Value::as_str)
         {
-            let agent_id = studio_runtime_store::AgentId::from(agent_id);
-            let agent_archive = store
-                .read_async(
-                    "runtime-services/agent_management/archive_readback",
-                    move |tx| {
-                        Ok::<_, studio_runtime_store::StoreError>(
-                            studio_runtime_store::AgentRepository::get(tx, &agent_id)?
-                                .and_then(|agent| agent.value().get("agentArchive").cloned()),
-                        )
-                    },
+            let read_store = std::sync::Arc::clone(&store);
+            let agent_id = agent_id.to_owned();
+            let agent_archive = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/agent_management/archive_readback",
+                move || {
+                    let reader = read_store.read()?;
+                    Ok::<_, studio_runtime_store::StoreError>(
+                        studio_runtime_store::AgentRepository::get(
+                            &reader,
+                            &studio_runtime_store::AgentId::from(agent_id),
+                        )?
+                        .and_then(|agent| agent.value().get("agentArchive").cloned()),
+                    )
+                },
+            )
+            .await
+            .map_err(|_| {
+                studio_runtime_store::StoreError::RecordContract(
+                    "Agent archive readback worker failed",
                 )
-                .await?;
+            })??;
             if let Some(agent_archive) = agent_archive {
                 result["agent"]["agentArchive"] = agent_archive;
             }

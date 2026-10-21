@@ -57,9 +57,14 @@ impl ControlStorage for StoredControls {
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
-            let workspace = checkpoints::capture_context(&store, &request.id)
-                .await
-                .map_err(|_| ControlError::Unavailable)?;
+            let workspace_store = store.clone();
+            let workspace_id = request.id.clone();
+            let workspace = blocking(move || {
+                let workspace = checkpoints::capture_context(&workspace_store, &workspace_id)
+                    .map_err(|_| ControlError::Unavailable)?;
+                Ok(workspace)
+            })
+            .await?;
             let request_id = request.id.clone();
             let operation_id = request.operation_id();
             let saved = store

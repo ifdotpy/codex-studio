@@ -203,10 +203,7 @@ impl BrowserCallbackReceiver {
         Self { store }
     }
 
-    pub async fn receive(
-        &self,
-        payload: &Value,
-    ) -> Result<Value, crate::multi_server_auth::AccessError> {
+    pub fn receive(&self, payload: &Value) -> Result<Value, crate::multi_server_auth::AccessError> {
         use crate::multi_server_auth::refused;
         let bridge_id = payload
             .get("bridgeId")
@@ -241,19 +238,20 @@ impl BrowserCallbackReceiver {
             format!("studio-browser-open:{bridge_id}").as_bytes(),
         )
         .to_string();
-        let raw: Option<String> = self
-            .store
-            .read_async("runtime-services/browser", move |connection| {
-                connection
-                    .query_row(
-                        "SELECT record FROM runtime_requests WHERE id=?1",
-                        [request_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(studio_runtime_store::StoreError::from)
-            })
-            .await
+        let connection = self.store.read().map_err(|_| {
+            refused(
+                503,
+                "browser_request_unavailable",
+                "The sign-in request is unavailable",
+            )
+        })?;
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_requests WHERE id=?1",
+                [request_id],
+                |row| row.get(0),
+            )
+            .optional()
             .map_err(|_| {
                 refused(
                     503,
@@ -261,6 +259,7 @@ impl BrowserCallbackReceiver {
                     "The sign-in request is unavailable",
                 )
             })?;
+        drop(connection);
         let raw = raw.ok_or_else(|| {
             refused(
                 404,
@@ -344,27 +343,12 @@ impl BrowserCallbackReceiver {
                 "The sign-in redirect is not local",
             ));
         }
-        let (host, target) = (host.to_owned(), target.to_owned());
-        let headers = payload.get("headers").and_then(Value::as_object).cloned();
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/browser",
-            move || {
-                BrowserForwarder::deliver_local_callback(
-                    &host,
-                    port as u16,
-                    &target,
-                    headers.as_ref(),
-                )
-            },
+        BrowserForwarder::deliver_local_callback(
+            host,
+            port as u16,
+            target,
+            payload.get("headers").and_then(Value::as_object),
         )
-        .await
-        .map_err(|_| {
-            refused(
-                503,
-                "browser_callback_unknown",
-                "The browser callback outcome is unknown",
-            )
-        })?
     }
 }
 
@@ -374,7 +358,22 @@ impl crate::multi_server_orchestration::BrowserCallbackEffect for BrowserCallbac
         envelope: &'a Value,
     ) -> futures_util::future::BoxFuture<'a, Result<Value, crate::multi_server_auth::AccessError>>
     {
-        Box::pin(self.receive(&envelope["payload"]))
+        Box::pin(async move {
+            let store = Arc::clone(&self.store);
+            let payload = envelope["payload"].clone();
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/browser",
+                move || BrowserCallbackReceiver::new(store).receive(&payload),
+            )
+            .await
+            .map_err(|_| {
+                crate::multi_server_auth::refused(
+                    503,
+                    "browser_callback_unknown",
+                    "The browser callback outcome is unknown",
+                )
+            })?
+        })
     }
 }
 

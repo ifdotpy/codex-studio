@@ -78,8 +78,8 @@ async fn manage_command(
     {
         return Ok(result);
     }
+    let store_for_preparation = Arc::clone(&store);
     let body_for_preparation = body.clone();
-    let prepared = PreparedHost::load(&store).await?;
     let (path, team, prepared) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/radio_runtime",
         move || {
@@ -88,6 +88,7 @@ async fn manage_command(
                 Uuid::parse_str(body_for_preparation["team_id"].as_str().unwrap_or_default())
                     .map_err(|_| ProjectsError::Invalid("peer team ID is invalid"))?
                     .to_string();
+            let prepared = PreparedHost::load(&store_for_preparation)?;
             prepared.recheck_paths()?;
             Ok::<_, ProjectsError>((path, team, prepared))
         },

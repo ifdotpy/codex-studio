@@ -129,14 +129,16 @@ fn context(
 
 fn record(store: &studio_runtime_store::RuntimeStore, id: &str) -> Value {
     let raw = store
-        .test_read_transaction(|tx| studio_runtime_store::QuestionsWriteRepository::request(tx, id))
+        .read_transaction_with_error(|tx| {
+            studio_runtime_store::QuestionsWriteRepository::request(tx, id)
+        })
         .expect("request reads")
         .expect("request exists");
     serde_json::from_str(&raw).expect("request JSON")
 }
 
 fn events(store: &studio_runtime_store::RuntimeStore) -> Vec<(String, String, String)> {
-    let connection = store.test_reader().expect("read");
+    let connection = store.read().expect("read");
     let mut statement = connection
         .prepare("SELECT id,kind,text FROM runtime_events ORDER BY id")
         .expect("test step");

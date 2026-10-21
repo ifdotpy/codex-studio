@@ -32,17 +32,14 @@ pub(super) struct Completed {
 
 pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
     let store = Arc::clone(&command.bridge.store);
-    let agent_id = AgentId::from(command.agent_id.as_str());
-    let before = store
-        .read_async(
-            "runtime-services/account_connection_recovery_read",
-            move |db| {
-                let raw =
-                    AgentRepository::get_raw(db, &agent_id)?.ok_or(RecoveryError::CommitFailed)?;
-                serde_json::from_str::<Value>(&raw).map_err(|_| RecoveryError::CommitFailed)
-            },
-        )
-        .await?;
+    let read_store = Arc::clone(&store);
+    let agent_id = command.agent_id.clone();
+    let before = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_connection_recovery_read",
+        move || read_agent(&read_store, &agent_id),
+    )
+    .await
+    .map_err(|_| RecoveryError::CommitFailed)??;
     if before
         .get("accountKey")
         .and_then(Value::as_str)
@@ -204,6 +201,13 @@ pub(super) async fn lifecycle_completion(
             write_message,
         },
     ))))
+}
+
+fn read_agent(store: &RuntimeStore, id: &str) -> Result<Value, RecoveryError> {
+    let db = store.read()?;
+    let raw =
+        AgentRepository::get_raw(&db, &AgentId::from(id))?.ok_or(RecoveryError::CommitFailed)?;
+    serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)
 }
 
 pub(super) async fn begin_request(

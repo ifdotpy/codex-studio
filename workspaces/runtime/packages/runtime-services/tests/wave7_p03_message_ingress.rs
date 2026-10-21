@@ -201,7 +201,7 @@ async fn send(
     step: &Value,
 ) -> Result<coordination::PostMessageResult, coordination::CoordinationError> {
     let room = step.get("room").and_then(Value::as_str).unwrap_or("agent");
-    let prepared = PreparedAdmission::load(&store.test_reader().expect("read"), room)?;
+    let prepared = PreparedAdmission::load(&store.read().expect("read"), room)?;
     if let Some(operation) = step
         .get("startOperation")
         .and_then(Value::as_str)
@@ -359,7 +359,7 @@ fn assert_json(actual: &Value, expected: &Value, path: &str) {
 }
 
 fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
-    let connection = store.test_reader().expect("snapshot connection");
+    let connection = store.read().expect("snapshot connection");
     let mut tables = connection
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         .expect("tables");
@@ -474,8 +474,7 @@ async fn ingress_crash_child() {
         send(&store, &json!({})).await.expect("send before crash");
         panic!("statement boundary was not reached");
     }
-    let prepared =
-        PreparedAdmission::load(&store.test_reader().expect("read"), "agent").expect("prepare");
+    let prepared = PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
     let before_commit = point == "before_commit";
     let posted = store
         .transaction_with_error(move |tx| {
@@ -522,8 +521,8 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracl
             let store = RuntimeStore::open(Some(&root)).await.expect("count store");
             oracle.call(json!({"configure":root,"case":capacity}));
             let count = arm_statement(&store, table, operation, point, usize::MAX).await;
-            let prepared = PreparedAdmission::load(&store.test_reader().expect("read"), "agent")
-                .expect("prepare");
+            let prepared =
+                PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
             let before = snapshot(&store);
             let prepared = prepared.clone();
             let result = store
@@ -603,7 +602,7 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracl
         );
         assert_eq!(snapshot(&store), committed);
         let count: i64 = store
-            .test_reader()
+            .read()
             .expect("read")
             .query_row(
                 "SELECT count(*) FROM runtime_events WHERE id='message'",
@@ -635,8 +634,8 @@ async fn event_projection_failure_returns_error_and_rolls_back_message_admission
         .await
         .expect("arm projection failure");
     let before = snapshot(&store);
-    let prepared = PreparedAdmission::load(&store.test_reader().expect("read"), "agent")
-        .expect("prepare admission");
+    let prepared =
+        PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare admission");
     let prepared = prepared.clone();
     let result = store
         .transaction_with_error(move |tx| {
@@ -718,8 +717,7 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
         assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
         assert_eq!(snapshot(&store), before);
     }
-    let prepared =
-        PreparedAdmission::load(&store.test_reader().expect("read"), "agent").expect("prepare");
+    let prepared = PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/unprepared/path','$.workspaceOperation','capture') WHERE id='agent'",[])?;
         Ok(())
@@ -857,7 +855,7 @@ async fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut O
     for scenario in ["known_unrelated", "known_alias", "unknown_alias"] {
         let (root, _) = oracle.seed(scenario, &json!({"steps":[]}));
         let store = RuntimeStore::open(Some(&root)).await.expect("store");
-        let mut other = AgentRepository::get(&store.test_reader().expect("read"), &"agent".into())
+        let mut other = AgentRepository::get(&store.read().expect("read"), &"agent".into())
             .expect("get")
             .expect("agent");
         other.id = "other".into();
@@ -880,7 +878,7 @@ async fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut O
                 .expect("idle other");
         }
         let prepared =
-            PreparedAdmission::load(&store.test_reader().expect("read"), "agent").expect("prepare");
+            PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
         other
             .extra
             .insert("workspaceOperation".into(), json!("capture"));

@@ -622,13 +622,13 @@ mod tests {
                 })
                 .collect()
         };
-        let journal_before = journal(&store.test_reader().expect("reader"));
+        let journal_before = journal(&store.read().expect("reader"));
         drop(store);
 
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("store migrates");
-        let connection = store.test_reader().expect("reader");
+        let connection = store.read().expect("reader");
         assert_eq!(
             journal(&connection),
             journal_before,
@@ -663,7 +663,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("store reopens");
-        let connection = store.test_reader().expect("reader");
+        let connection = store.read().expect("reader");
         for (agent, before) in agents().iter().zip(&migrated) {
             assert_eq!(
                 &stored(&connection, agent["id"].as_str().expect("id")),

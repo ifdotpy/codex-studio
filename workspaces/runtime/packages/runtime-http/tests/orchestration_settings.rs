@@ -92,7 +92,7 @@ async fn settings_default_persist_and_refuse_out_of_range_values() {
         let (status, response) = call(&app, "POST", Some(body.clone())).await;
         assert!((400..500).contains(&status), "{body}: {status} {response}");
     }
-    let connection = store.test_reader().unwrap();
+    let connection = store.read().unwrap();
     assert_eq!(
         OrchestrationSettingsRepository::child_result_coalesce(&connection).unwrap(),
         CHILD_RESULT_COALESCE_MAX,

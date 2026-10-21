@@ -215,28 +215,12 @@ impl RecoveryCursor {
         self.agents_ended && self.tasks_ended
     }
 }
-pub async fn load_recovery_jobs(
+pub fn load_recovery_jobs(
     store: &RuntimeStore,
     account: &str,
     cursor: &mut RecoveryCursor,
 ) -> Result<Vec<RecoveryJob>, RecoveryError> {
-    let account = account.to_owned();
-    let mut page_cursor = std::mem::take(cursor);
-    let (jobs, updated_cursor) = store
-        .read_async("runtime-services/restart_recovery_scan", move |db| {
-            let jobs = load_recovery_jobs_in(db, &account, &mut page_cursor);
-            Ok::<_, RecoveryError>((jobs, page_cursor))
-        })
-        .await?;
-    *cursor = updated_cursor;
-    jobs
-}
-
-fn load_recovery_jobs_in(
-    db: &rusqlite::Connection,
-    account: &str,
-    cursor: &mut RecoveryCursor,
-) -> Result<Vec<RecoveryJob>, RecoveryError> {
+    let db = store.read()?;
     let mut jobs = Vec::new();
     let task_page = cursor.task_page;
     // A located row refusal must not pin either table's disposable scan state.
@@ -271,8 +255,9 @@ fn load_recovery_jobs_in(
                 serde_json::from_str(&task).map_err(|_| invalid_record("runtime_tasks", &id))?;
             let mut agent: Value = serde_json::from_str(&agent)
                 .map_err(|_| invalid_record("runtime_agents", &agent_id))?;
-            studio_runtime_store::agent_volatile::merge(db, &agent_id, &mut agent)?;
-            let (aliases, receipts) = crate::task_recovery_store::receipt_state(db, &agent, &task)?;
+            studio_runtime_store::agent_volatile::merge(&db, &agent_id, &mut agent)?;
+            let (aliases, receipts) =
+                crate::task_recovery_store::receipt_state(&db, &agent, &task)?;
             let snapshot = TaskRecoverySnapshot::from_stored_records(
                 &agent_id, &id, agent, task, aliases, receipts,
             )?;
@@ -298,7 +283,7 @@ fn load_recovery_jobs_in(
             cursor.agents = id.clone();
             let mut record: Value =
                 serde_json::from_str(&raw).map_err(|_| invalid_record("runtime_agents", &id))?;
-            studio_runtime_store::agent_volatile::merge(db, &id, &mut record)?;
+            studio_runtime_store::agent_volatile::merge(&db, &id, &mut record)?;
             let snapshot = RecoverySnapshot::from_record(record)
                 .map_err(|_| invalid_record("runtime_agents", &id))?;
             let e = snapshot.eligibility();

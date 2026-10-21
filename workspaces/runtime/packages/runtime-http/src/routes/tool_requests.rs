@@ -58,19 +58,25 @@ async fn run(
             .await
             .map_err(error)?
     } else {
+        let read_store = store.clone();
         let read_actor = actor.clone();
         let read_id = id.clone();
         let read_root = payload_root.clone();
-        let read_result = store
-            .read_async("runtime-http/routes/tool_requests", move |tx| {
-                let action = match (read_id.as_deref(), cancel) {
-                    (Some(id), true) => Action::Cancel(id),
-                    (Some(id), false) => Action::Get(id),
-                    _ => Action::List,
-                };
-                tool_requests::execute_http(tx, &read_actor, action, now, &read_root)
-            })
-            .await;
+        let read_result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/tool_requests",
+            move || {
+                read_store.read_transaction_with_error(|tx| {
+                    let action = match (read_id.as_deref(), cancel) {
+                        (Some(id), true) => Action::Cancel(id),
+                        (Some(id), false) => Action::Get(id),
+                        _ => Action::List,
+                    };
+                    tool_requests::execute_http(tx, &read_actor, action, now, &read_root)
+                })
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?;
         match read_result {
             Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
                 studio_runtime_store::SqliteError::SqliteFailure(sqlite_error, _),

@@ -250,8 +250,16 @@ async fn list_projects(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::ProjectReadResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = projects::list(&store).await.map_err(projects_error)?;
-    super::generated_json::<crate::generated::ProjectReadResponse>(value).map(Json)
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects",
+        move || {
+            let value = projects::list(&store).map_err(projects_error)?;
+            super::generated_json::<crate::generated::ProjectReadResponse>(value)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(value))
 }
 
 async fn write_project(
@@ -648,7 +656,10 @@ async fn remote_project_write(
     if server != local_server {
         let paired_store = store.clone();
         let server_id = server.to_owned();
-        let paired = paired_store.read_async("runtime-http/routes/projects/paired-server-read", move |connection| {
+        let paired = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/projects/paired-server-read",
+            move || {
+                let connection = paired_store.read().map_err(ApiError::stored)?;
                 connection
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
@@ -656,8 +667,10 @@ async fn remote_project_write(
                         |row| row.get::<_, bool>(0),
                     )
                     .map_err(|_| ApiError::internal())
-            })
-.await?;
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
         if !paired {
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
@@ -710,19 +723,20 @@ async fn remote_project_write(
         let operation = projects::cross_server_identity(&["project-location", "ui", request_id]);
         let project_store = store.clone();
         let project_id_for_read = project.to_owned();
-        let record = project_store
-            .read_async(
-                "runtime-http/routes/projects/project-read",
-                move |project_row| {
-                    studio_runtime_store::ProjectsRepository::get(project_row, &project_id_for_read)
-                        .map_err(ApiError::stored)?
-                        .map(|(_, record)| record)
-                        .ok_or_else(|| {
-                            ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
-                        })
-                },
-            )
-            .await?;
+        let record = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/projects/project-read",
+            move || {
+                let project_row = project_store.read().map_err(ApiError::stored)?;
+                studio_runtime_store::ProjectsRepository::get(&project_row, &project_id_for_read)
+                    .map_err(ApiError::stored)?
+                    .map(|(_, record)| record)
+                    .ok_or_else(|| {
+                        ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
+                    })
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
         let locations = record
             .get("locations")
             .and_then(Value::as_array)
@@ -812,15 +826,16 @@ async fn remote_project_write(
     }
     let receipt_store = store.clone();
     let receipt_operation_id = operation_id.clone();
-    let receipt = receipt_store
-        .read_async(
-            "runtime-http/routes/projects/receipt-read",
-            move |connection| {
-                studio_runtime_store::ProjectsRepository::receipt(connection, &receipt_operation_id)
-                    .map_err(ApiError::stored)
-            },
-        )
-        .await?;
+    let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects/receipt-read",
+        move || {
+            let connection = receipt_store.read().map_err(ApiError::stored)?;
+            studio_runtime_store::ProjectsRepository::receipt(&connection, &receipt_operation_id)
+                .map_err(ApiError::stored)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     if let Some((saved, mut previous)) = receipt {
         if saved != signature {
             return Err(ApiError::new(
@@ -933,7 +948,16 @@ async fn project_locations(
 ) -> Result<Json<crate::generated::ProjectLocationQueryResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let query = Value::Object((*query.into_typed()).clone());
-    let remote_request = remote_location_request(&store, &query).await?;
+    let remote_request = {
+        let store = store.clone();
+        let query = query.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/projects/prepare-remote-location",
+            move || remote_location_request(&store, &query),
+        )
+        .await
+        .map_err(|_| ApiError::internal())??
+    };
     if let Some((server, action, payload)) = remote_request {
         let driver = state.orchestration_driver.ok_or_else(ApiError::internal)?;
         let request_id = studio_runtime_services::remote_transport::new_nonce()
@@ -970,13 +994,16 @@ async fn project_locations(
         return super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value)
             .map(Json);
     }
-    let value = projects::location_query(&store, query)
-        .await
-        .map_err(projects_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects",
+        move || projects::location_query(&store, &query).map_err(projects_error),
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value).map(Json)
 }
 
-async fn remote_location_request(
+fn remote_location_request(
     store: &studio_runtime_store::RuntimeStore,
     query: &Value,
 ) -> Result<Option<(String, String, Value)>, ApiError> {
@@ -993,52 +1020,32 @@ async fn remote_location_request(
     if server.is_empty() || local.as_deref() == Some(server) {
         return Ok(None);
     }
+    let paired = store
+        .read()
+        .map_err(ApiError::stored)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
+            [server],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|_| ApiError::internal())?;
+    if !paired {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The server is not paired or is revoked",
+        ));
+    }
     let project_id = query
         .get("project")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .map(str::to_owned);
-    let read_server = server.to_owned();
-    let project = store
-        .read_async("runtime-http/routes/projects/prepare-remote-location", move |db| {
-            let paired = db
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
-                    [&read_server],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(|_| ApiError::internal())?;
-            if !paired {
-                return Err(ApiError::new(
-                    StatusCode::FORBIDDEN,
-                    "The server is not paired or is revoked",
-                ));
-            }
-            let project_id = project_id.ok_or_else(|| {
-                ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
-            })?;
-            studio_runtime_store::ProjectsRepository::get(db, &project_id)?
-                .map(|(_, value)| value)
-                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))
-        })
-        .await?;
-    let server = server.to_owned();
-    let query = query.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/projects/prepare-remote-location",
-        move || remote_location_action(&query, &project, server).map(Some),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-}
-
-/// The peer request for a remote project location; may inspect the local
-/// checkout's Git origin, so it runs on a blocking thread.
-fn remote_location_action(
-    query: &Value,
-    project: &Value,
-    server: String,
-) -> Result<(String, String, Value), ApiError> {
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))?;
+    let db = store.read().map_err(ApiError::stored)?;
+    let project = studio_runtime_store::ProjectsRepository::get(&db, project_id)
+        .map_err(ApiError::stored)?
+        .map(|(_, value)| value)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))?;
+    drop(db);
     let action = if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
             .get("locations")
@@ -1083,9 +1090,7 @@ fn remote_location_action(
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .find(|row| {
-                        row.get("serverId").and_then(Value::as_str) == Some(server.as_str())
-                    })
+                    .find(|row| row.get("serverId").and_then(Value::as_str) == Some(server))
                     .and_then(|row| row.get("path").and_then(Value::as_str))
             })
             .ok_or_else(|| {
@@ -1096,7 +1101,7 @@ fn remote_location_action(
             })?;
         ("location_info".to_owned(), json!({"cwd":path}))
     };
-    Ok((server, action.0, action.1))
+    Ok(Some((server.to_owned(), action.0, action.1)))
 }
 
 async fn peer_teams(
@@ -1348,7 +1353,7 @@ mod local_registration_tests {
             assert_eq!(first[field], replay[field], "saved receipt field {field}");
         }
         assert_eq!(first["outcome"], "applied");
-        let connection = store.test_reader().expect("store read");
+        let connection = store.read().expect("store read");
         let (_, logical) = ProjectsRepository::get(
             &connection,
             first["projectId"].as_str().expect("project ID"),
@@ -1437,7 +1442,7 @@ mod local_registration_tests {
         let (status, _) = post_project(&app, &changed).await;
         assert_eq!(status, axum::http::StatusCode::CONFLICT);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let connection = store.test_reader().expect("store read");
+        let connection = store.read().expect("store read");
         let project = first["projectId"].as_str().expect("project ID");
         let (_, record) = ProjectsRepository::get(&connection, project)
             .expect("project read")

@@ -67,11 +67,12 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
     let next_revision = revision
         .checked_add(1)
         .ok_or(ProjectsError::Invalid("peer team revision exhausted"))?;
-    let prepared = PreparedHost::load(&store).await?;
+    let store_for_prepare = Arc::clone(&store);
     let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/peer-conversion",
         move || {
             let path = project_key(path_input.as_ref(), false)?;
+            let prepared = PreparedHost::load(&store_for_prepare)?;
             prepared.recheck_paths()?;
             Ok::<_, ProjectsError>((path, prepared))
         },

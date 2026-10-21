@@ -4,29 +4,18 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
-pub(crate) async fn read(
+pub(crate) fn read(
     store: &RuntimeStore,
     owner: &str,
     epoch: i64,
     account: &str,
     id: &str,
 ) -> Result<(Value, u64, bool), MonitorError> {
-    let (owner, account, id) = (owner.to_owned(), account.to_owned(), id.to_owned());
+    let connection = store.read()?;
     // One read transaction keeps monitor, owner, and output events coherent.
-    store
-        .read_async("runtime-services/monitor_observation", move |tx| {
-            read_in(tx, &owner, epoch, &account, &id)
-        })
-        .await
-}
-
-fn read_in(
-    tx: &rusqlite::Connection,
-    owner: &str,
-    epoch: i64,
-    account: &str,
-    id: &str,
-) -> Result<(Value, u64, bool), MonitorError> {
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(StoreError::from)?;
     let raw: Option<String> = tx
         .query_row(
             "SELECT record FROM runtime_monitors WHERE id=?",

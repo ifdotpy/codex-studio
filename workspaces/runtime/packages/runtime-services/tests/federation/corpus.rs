@@ -57,9 +57,8 @@ impl Corpus {
                 "room":room,"now":NOW},"cases":[]}),
         };
         let signer = corpus.signing_store().await;
-        let identity = transport::load_federation_identity(&signer)
-            .await
-            .expect("remote signing identity");
+        let identity =
+            transport::load_federation_identity(&signer).expect("remote signing identity");
         let mut cases = vec![];
         let chat = |name: &str, fields: Value| {
             let mut payload = json!({"sender":"remote-lead","senderName":"Remote","text":"hello",
@@ -193,7 +192,7 @@ impl Corpus {
     }
 }
 fn rows(store: &RuntimeStore, table: &str) -> Vec<Value> {
-    let db = store.test_reader().expect("fixture operation");
+    let db = store.read().expect("fixture operation");
     let mut stmt = db
         .prepare(&format!("SELECT record FROM {table} ORDER BY rowid"))
         .expect("fixture operation");
@@ -203,7 +202,7 @@ fn rows(store: &RuntimeStore, table: &str) -> Vec<Value> {
         .collect()
 }
 fn counts(store: &RuntimeStore) -> Value {
-    let db = store.test_reader().expect("fixture operation");
+    let db = store.read().expect("fixture operation");
     let tables = [
         "runtime_federation_inbox",
         "runtime_federation_outbox",
@@ -219,7 +218,7 @@ fn counts(store: &RuntimeStore) -> Value {
     }))
 }
 fn effect_rows(store: &RuntimeStore) -> (Vec<Value>, Vec<Value>) {
-    let db = store.test_reader().expect("fixture operation");
+    let db = store.read().expect("fixture operation");
     let mut stmt = db
         .prepare("SELECT seq,id,room,sender,text,created,deliveries FROM runtime_chat_messages ORDER BY seq")
         .expect("fixture operation");
@@ -361,9 +360,7 @@ async fn callback_remote_message_uses_the_existing_federation_outbox(corpus: &Co
 
 async fn replay_and_nonce(corpus: &Corpus) {
     let signer = corpus.signing_store().await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture operation");
+    let identity = transport::load_federation_identity(&signer).expect("fixture operation");
     let (path, store) = corpus.store("replay", false).await;
     let mut envelope = corpus.data["cases"][0]["envelope"].clone();
     let first = effects::receive(&store, corpus.peer(), &envelope, corpus.now())
@@ -418,9 +415,7 @@ async fn replay_and_nonce(corpus: &Corpus) {
 async fn authenticated_consumer(corpus: &Corpus) {
     let (_, store) = corpus.store("auth", false).await;
     let (_, signer) = corpus.store("auth-signer", true).await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture operation");
+    let identity = transport::load_federation_identity(&signer).expect("fixture operation");
     let body =
         serde_json::to_vec(&json!({"protocol":1,"envelope":corpus.data["cases"][0]["envelope"]}))
             .expect("fixture operation");
@@ -493,9 +488,7 @@ async fn federation_inbound_authentication_refusals() {
     // signature, nonce replay, and whois ownership are checked before effects.
     let corpus = Corpus::new().await;
     let (_, signer) = corpus.store("auth-refusal-signer", true).await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture operation");
+    let identity = transport::load_federation_identity(&signer).expect("fixture operation");
     let body =
         serde_json::to_vec(&json!({"protocol":1,"envelope":corpus.data["cases"][0]["envelope"]}))
             .expect("fixture operation");
@@ -624,9 +617,7 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
     let corpus = Corpus::new().await;
     let (_, receiver) = corpus.store("pair-receiver", false).await;
     let (_, signer) = corpus.store("pair-signer", true).await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture identity");
+    let identity = transport::load_federation_identity(&signer).expect("fixture identity");
     let peer_id = corpus.peer();
     let invite_id = "44444444-4444-4444-8444-444444444444";
     let token = "fake-peer-invitation-token";
@@ -683,9 +674,7 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
         }};
     }
     let first = request!("pair-nonce-initial-12345").expect("pair request");
-    let local = transport::load_federation_identity(&receiver)
-        .await
-        .expect("local signing identity");
+    let local = transport::load_federation_identity(&receiver).expect("local signing identity");
     let receipt = transport::verify_federation_response(
         &serde_json::to_vec(&first).expect("signed response"),
         local.public_key_pem(),
@@ -1091,9 +1080,14 @@ impl delivery::FederationTransport for PeerTransport {
             .await
             .expect("fixture operation");
             let response = if let Some(kind) = self.bad_receipt {
-                let identity = transport::load_federation_identity(&self.receiver)
-                    .await
-                    .expect("fixture identity");
+                let receiver = std::sync::Arc::clone(&self.receiver);
+                let identity = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/tests/federation/corpus",
+                    move || transport::load_federation_identity(&receiver),
+                )
+                .await
+                .expect("fixture identity worker")
+                .expect("fixture identity");
                 let mut receipt = response["result"].clone();
                 match kind {
                     "schema" => receipt = json!({}),

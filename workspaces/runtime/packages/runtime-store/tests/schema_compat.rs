@@ -39,7 +39,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         "old event triggers upgrade to atomic portable window maintenance"
     );
     let before = catalog(&state.join("canvas.sqlite3"));
-    let reader = store.test_reader().expect("reader opens");
+    let reader = store.read().expect("reader opens");
     assert!(
         AgentRepository::get(&reader, &AgentId::from("fixture-agent"))
             .expect("agent reads")
@@ -97,7 +97,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         })
         .await
         .expect("all supported repositories write on the live schema");
-    let reader = store.test_reader().expect("reader opens after writes");
+    let reader = store.read().expect("reader opens after writes");
     assert_eq!(
         QueueEventRepository::get(&reader, &QueueEventId::from("fixture-event"))
             .expect("written event reads")
@@ -125,9 +125,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     let reopened = RuntimeStore::open(Some(&state))
         .await
         .expect("Python-shaped schema remains openable");
-    let reader = reopened
-        .test_reader()
-        .expect("reader opens after Rust writes");
+    let reader = reopened.read().expect("reader opens after Rust writes");
     assert_eq!(
         AgentRepository::get(&reader, &AgentId::from("fixture-agent"))
             .expect("agent reads")
@@ -228,7 +226,7 @@ async fn renamed_sync_table_with_equivalent_structure_opens() {
         .expect("structurally equivalent table opens");
     assert_eq!(
         store
-            .test_reader()
+            .read()
             .expect("reader opens")
             .query_row("SELECT id FROM sync_identity", [], |row| row
                 .get::<_, String>(0))
@@ -312,7 +310,7 @@ async fn sync_schema_has_no_unchecked_table_constraints() {
     let store = RuntimeStore::open(Some(&state))
         .await
         .expect("scratch-derived sync schema opens");
-    let db = store.test_reader().expect("reader opens");
+    let db = store.read().expect("reader opens");
     let mut statement = db
         .prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND (name GLOB 'sync_*' OR name='runtime_transcript_revisions')")
         .expect("owned table query prepares");
@@ -411,7 +409,7 @@ async fn noncanonical_tombstone_triggers_are_replaced() {
             .expect("repaired trigger handles collection-only update");
         assert_eq!(
             store
-                .test_reader()
+                .read()
                 .expect("reader opens")
                 .query_row(
                     "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",
@@ -648,7 +646,7 @@ async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
         })
         .await
         .expect("Rust event writes need only its existing portable projection functions");
-    let reader = store.test_reader().expect("committed reader opens");
+    let reader = store.read().expect("committed reader opens");
     let before: i64 = reader
         .query_row(
             "SELECT MAX(seq) FROM sync_entities WHERE collection='event'",
@@ -666,7 +664,7 @@ async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
         })
         .await;
     assert!(rollback.is_err());
-    let reader = store.test_reader().expect("reader opens after rollback");
+    let reader = store.read().expect("reader opens after rollback");
     let after: i64 = reader
         .query_row(
             "SELECT MAX(seq) FROM sync_entities WHERE collection='event'",
@@ -811,7 +809,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
         .await
         .expect("partially prepared fixture opens");
     let legacy_watch: i64 = store
-        .test_reader()
+        .read()
         .expect("reader opens")
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name GLOB 'sync_watch_*'",
@@ -821,7 +819,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
         .expect("legacy watch trigger count reads");
     assert_eq!(legacy_watch, 0);
     let protected_trigger: i64 = store
-        .test_reader()
+        .read()
         .expect("reader opens")
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='syncXwatchYprotect_rows'",
@@ -850,7 +848,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
             Ok(())
         }).await
         .expect("registered sync functions and transcript triggers run on writes");
-    let db = store.test_reader().expect("reader opens");
+    let db = store.read().expect("reader opens");
     assert_eq!(
         db.query_row(
             "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'",

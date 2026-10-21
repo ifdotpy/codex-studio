@@ -48,16 +48,20 @@ async fn read_settings(
     State(state): State<HttpState>,
 ) -> Result<Json<generated::OrchestrationSettingsResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let values = store
-        .read_async("runtime-http/routes/orchestration_settings", |connection| {
+    let values = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/orchestration_settings",
+        move || {
+            let connection = store.read()?;
             let mut values = [0; 2];
             for (value, setting) in values.iter_mut().zip(SETTINGS) {
-                *value = OrchestrationSettingsRepository::value(connection, setting)?;
+                *value = OrchestrationSettingsRepository::value(&connection, setting)?;
             }
             Ok::<_, studio_runtime_store::StoreError>(values)
-        })
-        .await
-        .map_err(|_| ApiError::internal())?;
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|_| ApiError::internal())?;
     response(values)
 }
 

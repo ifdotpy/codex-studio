@@ -192,7 +192,7 @@ fn value(sequence: u64, index: usize, effect: NotificationPostCommit) -> Value {
 
 fn pending_count(store: &RuntimeStore) -> i64 {
     store
-        .test_reader()
+        .read()
         .expect("read store")
         .query_row(
             "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'",
@@ -440,7 +440,7 @@ async fn complete_analytics_usage_persists_beyond_the_publication_bound() {
         store::MAX_PUBLICATION_RECEIPTS as i64 + 1
     );
     let (durable_usage, shed): (i64, i64) = store
-        .test_reader()
+        .read()
         .expect("read durable usage")
         .query_row(
             "SELECT \
@@ -599,7 +599,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
     let pending = state
         .bridge
         .run(move |store| async move {
-            let connection = store.test_reader()?;
+            let connection = store.read()?;
             Ok(connection.query_row(
                 "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
                 [],
@@ -627,7 +627,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
             let pending = state
                 .bridge
                 .run(move |store| async move {
-                    let connection = store.test_reader()?;
+                    let connection = store.read()?;
                     Ok(connection.query_row(
                         "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE ?1",
                         [prefix],
@@ -701,7 +701,7 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         store::MAX_PUBLICATION_RECEIPTS as i64
     );
     let coalesced_effects: String = store
-        .test_reader()
+        .read()
         .expect("read coalesced effects")
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_extract(result,'$.tokenRateCoalesced')=1 ORDER BY rowid DESC LIMIT 1",
@@ -730,7 +730,7 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         300
     );
     let invalidations: i64 = store
-        .test_reader()
+        .read()
         .expect("read publication marker")
         .query_row(
             "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_extract(result,'$.stateInvalidation')=1",
@@ -798,7 +798,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound_and_never_stop
         store::MAX_PUBLICATION_RECEIPTS as i64
     );
     let (coalesced, overflow): (i64, i64) = store
-        .test_reader()
+        .read()
         .expect("read saturated receipt")
         .query_row(
             "SELECT COALESCE(max(json_array_length(result,'$.coalescedEffects')),0), \
@@ -894,7 +894,7 @@ async fn persist_one(store: &RuntimeStore, sequence: u64, effect: NotificationPo
 
 fn projection_log_count(store: &RuntimeStore) -> i64 {
     store
-        .test_reader()
+        .read()
         .expect("read store")
         .query_row(
             "SELECT count(*) FROM runtime_analytics_projection",
@@ -973,7 +973,7 @@ async fn deleted_agent_observation_does_not_recreate_identity() {
         (0, 0)
     );
     let agents: i64 = store
-        .test_reader()
+        .read()
         .expect("read store")
         .query_row(
             "SELECT count(*) FROM runtime_agents WHERE id='agent'",

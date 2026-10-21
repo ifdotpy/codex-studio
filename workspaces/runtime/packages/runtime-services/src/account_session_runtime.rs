@@ -1888,7 +1888,7 @@ mod persistence_tests {
     use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
 
     fn stored_workspace(store: &RuntimeStore) -> Value {
-        let db = store.test_reader().unwrap();
+        let db = store.read().unwrap();
         let raw: String = db
             .query_row(
                 "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",

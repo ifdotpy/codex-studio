@@ -286,7 +286,7 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
     state
         .bridge
         .run(|store| async move {
-            let db = store.test_reader()?;
+            let db = store.read()?;
             let mut statement = db.prepare(
                 "SELECT json_extract(result,'$.effect.Recovered.identity'), json_extract(result,'$.effect.Recovered.observation.method') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' AND json_extract(result,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
             )?;
@@ -760,7 +760,7 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
         worker.shutdown().await.unwrap();
 
         let (retained_generations, checkpoints) = state.bridge.run(|store| async move {
-            let db = store.test_reader()?;
+            let db = store.read()?;
             let retained_generations = db.query_row(
                 "SELECT COUNT(DISTINCT json_extract(result,'$.call.scope.generation')) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:default:%:submitted'",
                 [],
@@ -929,7 +929,7 @@ fn retained_receipt_count(state: &State) -> i64 {
     state
         .bridge
         .store
-        .test_reader()
+        .read()
         .expect("reader")
         .query_row(
             "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:%'",
@@ -1064,7 +1064,7 @@ async fn restart_history_case(outcome: &str) {
                     .bridge
                     .run(move |store| async move {
                         Ok(studio_runtime_store::TranscriptRepository::item(
-                            &store.test_reader()?,
+                            &*store.read()?,
                             &agent,
                             &item_id,
                         )
@@ -1087,7 +1087,7 @@ async fn restart_history_case(outcome: &str) {
                         .bridge
                         .run(move |store| async move {
                             Ok(studio_runtime_store::TranscriptRepository::item(
-                                &store.test_reader()?,
+                                &*store.read()?,
                                 &agent,
                                 &item_id,
                             )
@@ -1494,7 +1494,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     state
         .bridge
         .run(move |store| async move {
-            let raw: String = store.test_reader()?.query_row(
+            let raw: String = store.read()?.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
                 [&agent],
                 |row| row.get(0),
@@ -1556,12 +1556,10 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let item = state
         .bridge
         .run(move |store| async move {
-            Ok(studio_runtime_store::TranscriptRepository::item(
-                &store.test_reader()?,
-                &agent,
-                &item_id,
+            Ok(
+                studio_runtime_store::TranscriptRepository::item(&*store.read()?, &agent, &item_id)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
             )
-            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?)
         })
         .await
         .unwrap()
@@ -2044,7 +2042,7 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     state
         .bridge
         .run(|s| async move {
-            let _: i64 = s.test_reader()?.query_row("SELECT 1", [], |r| r.get(0))?;
+            let _: i64 = s.read()?.query_row("SELECT 1", [], |r| r.get(0))?;
             Ok(())
         })
         .await
@@ -2317,9 +2315,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
     state
         .bridge
         .run(|store| async move {
-            let _: i64 = store
-                .test_reader()?
-                .query_row("SELECT 1", [], |row| row.get(0))?;
+            let _: i64 = store.read()?.query_row("SELECT 1", [], |row| row.get(0))?;
             Ok(())
         })
         .await

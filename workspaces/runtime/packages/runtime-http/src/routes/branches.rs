@@ -41,9 +41,13 @@ async fn branch(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let port = state.account_session.clone().ok_or_else(unavailable)?;
     let agent_id = body.agent.clone();
-    let account = store
-        .read_async("runtime-http/routes/branches", move |db| {
-            let agent = AgentRepository::get(db, &AgentId::from(agent_id.as_str()))?
+    let account_store = store.clone();
+    let account = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/branches",
+        move || {
+            let db = account_store.read().map_err(ApiError::stored)?;
+            let agent = AgentRepository::get(&db, &AgentId::from(agent_id.as_str()))
+                .map_err(ApiError::stored)?
                 .ok_or_else(|| bad_request("Unknown managed agent"))?;
             Ok::<_, ApiError>(
                 agent
@@ -53,8 +57,10 @@ async fn branch(
                     .unwrap_or("default")
                     .to_owned(),
             )
-        })
-        .await?;
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let operation_id = format!("branch:{}", body.id);
     let signature = sha256_hex(
         serde_json::to_string(&json!({
@@ -63,45 +69,56 @@ async fn branch(
         .map_err(|_| ApiError::internal())?
         .as_bytes(),
     );
-    let (snapshot, selected) = {
-        let agent_id = body.agent.clone();
-        let message_id = body.message_id.clone();
-        store
-            .read_async("runtime-http/routes/branches", move |db| {
-                let snapshot = CheckpointsRepository::workspace_snapshot(db, &agent_id)?
-                    .ok_or_else(|| bad_request("Unknown managed agent"))?;
-                let selected = TranscriptRepository::resolve_item(db, &agent_id, &message_id)
-                    .map_err(|_| ApiError::internal())?
-                    .ok_or_else(|| bad_request("Unknown message in this conversation"))?;
-                Ok::<_, ApiError>((snapshot, selected))
-            })
-            .await?
-    };
-    let source = snapshot.agent.record.clone();
-    if selected.record.get("afterRestore").is_some()
-        || selected
-            .record
-            .get("turnId")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-    {
-        return Err(bad_request(
-            "This message has no active native turn reference",
-        ));
-    }
-    if source
-        .get("threadId")
-        .and_then(Value::as_str)
-        .is_none_or(str::is_empty)
-        || source.get("inFlight").and_then(Value::as_bool) == Some(true)
-        || source.get("turnId").and_then(Value::as_str)
-            == selected.record.get("turnId").and_then(Value::as_str)
-    {
-        return Err(bad_request("Wait for this turn to finish before branching"));
-    }
-    // Match Python's read-only request validation before requiring a live native
-    // consumer. Invalid branch inputs must not depend on provider availability.
-    port.current_scope(&account).ok_or_else(unavailable)?;
+    let (snapshot, source, selected) =
+        studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
+            let store = store.clone();
+            let port = port.clone();
+            let scope_account = account.clone();
+            let agent_id = body.agent.clone();
+            let message_id = body.message_id.clone();
+            move || {
+                let snapshot = {
+                    let db = store.read().map_err(ApiError::stored)?;
+                    CheckpointsRepository::workspace_snapshot(&db, &agent_id)
+                        .map_err(ApiError::stored)?
+                        .ok_or_else(|| bad_request("Unknown managed agent"))?
+                };
+                let source = snapshot.agent.record.clone();
+                let selected = {
+                    let db = store.read().map_err(ApiError::stored)?;
+                    TranscriptRepository::resolve_item(&db, &agent_id, &message_id)
+                        .map_err(|_| ApiError::internal())?
+                        .ok_or_else(|| bad_request("Unknown message in this conversation"))?
+                };
+                if selected.record.get("afterRestore").is_some()
+                    || selected
+                        .record
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
+                    return Err(bad_request(
+                        "This message has no active native turn reference",
+                    ));
+                }
+                if source
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                    || source.get("inFlight").and_then(Value::as_bool) == Some(true)
+                    || source.get("turnId").and_then(Value::as_str)
+                        == selected.record.get("turnId").and_then(Value::as_str)
+                {
+                    return Err(bad_request("Wait for this turn to finish before branching"));
+                }
+                // Match Python's read-only request validation before requiring a live native
+                // consumer. Invalid branch inputs must not depend on provider availability.
+                let _scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
+                Ok::<_, ApiError>((snapshot, source, selected))
+            }
+        })
+        .await
+        .map_err(|_| ApiError::internal())??;
     let operation = {
         let snapshot = snapshot.clone();
         let source = source.clone();
@@ -780,10 +797,13 @@ async fn branch_needs_catalog(
     operation_id: &str,
     signature: &str,
 ) -> Result<bool, ApiError> {
+    let store = store.clone();
     let operation_id = operation_id.to_owned();
     let signature = signature.to_owned();
-    store
-        .read_async("runtime-http/routes/branches", move |db| {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/branches",
+        move || {
+            let db = store.read().map_err(ApiError::stored)?;
             let Some(raw) = db
                 .query_row(
                     "SELECT record FROM runtime_workspace_operations WHERE id=?1",
@@ -800,8 +820,10 @@ async fn branch_needs_catalog(
                 return Err(bad_request("branch request id has different content"));
             }
             Ok(operation.get("phase").and_then(Value::as_str) != Some("completed"))
-        })
-        .await
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 
 struct BranchCopy<'a> {

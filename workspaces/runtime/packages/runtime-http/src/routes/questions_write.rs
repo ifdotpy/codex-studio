@@ -53,49 +53,54 @@ async fn answer(
     let browser_host_guest = state.browser_answer_host_guest.clone();
     let browser_local_forwarder = state.browser_local_forwarder.clone();
     let browser_host_local_forwarder = state.browser_host_local_forwarder.clone();
-    let browser_context = async {
-        let host_source =
-            studio_runtime_services::browser_answer::is_host_source(&browser_store, browser_id)
-                .await?;
-        let (guest, forwarder): (
-            Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
-            Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
-        ) = if host_source {
-            (
-                browser_host_guest.unwrap_or_else(|| {
-                    Arc::new(
-                        studio_runtime_services::linux_vm_guest::UnixSocketGuestRpc::new(
-                            browser_store
-                                .root()
+    let browser_context = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || {
+            let host_source = studio_runtime_services::browser_answer::is_host_source(
+                &browser_store,
+                &browser_id,
+            )?;
+            let (guest, forwarder): (
+                Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
+                Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+            ) = if host_source {
+                (
+                    browser_host_guest.unwrap_or_else(|| {
+                        Arc::new(studio_runtime_services::linux_vm_guest::UnixSocketGuestRpc::new(
+                            browser_store.root()
                                 .join(crate::router::BROWSER_HOST_FOLDER_NAME)
                                 .join(crate::router::BROWSER_HOST_CONTROL_SOCKET_NAME),
-                        ),
-                    )
-                }),
-                browser_host_local_forwarder,
-            )
-        } else {
-            (
-                browser_guest.unwrap_or_else(|| {
-                    Arc::new(
-                        studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(
-                            &vm_state_dir,
-                        ),
-                    )
-                }),
-                browser_local_forwarder,
-            )
-        };
-        let now = callback_clock().map_err(|_| {
-            studio_runtime_services::browser_answer::BrowserAnswerError::Invalid(
-                "The system clock is unavailable",
-            )
-        })?;
-        Ok::<_, studio_runtime_services::browser_answer::BrowserAnswerError>((
-            guest, forwarder, now, validators,
-        ))
-    }
+                        ))
+                    }),
+                    browser_host_local_forwarder,
+                )
+            } else {
+                (
+                    browser_guest.unwrap_or_else(|| {
+                        Arc::new(
+                            studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+                                &vm_state_dir,
+                            ),
+                        )
+                    }),
+                    browser_local_forwarder,
+                )
+            };
+            let now = callback_clock().map_err(|_| {
+                studio_runtime_services::browser_answer::BrowserAnswerError::Invalid(
+                    "The system clock is unavailable",
+                )
+            })?;
+            Ok::<_, studio_runtime_services::browser_answer::BrowserAnswerError>((
+                guest,
+                forwarder,
+                now,
+                validators,
+            ))
+        },
+    )
     .await
+    .map_err(|_| ApiError::internal())?
     .map_err(browser_answer_error)?;
     let (guest, forwarder, now, validators) = browser_context;
     let browser_answer = studio_runtime_services::browser_answer::answer(

@@ -959,33 +959,39 @@ impl TransferExecutor for AccountTransferExecutor {
                         .current_scope(source_account)
                         .ok_or(TransferError::Requires("provider-session/account-worker"))?
                         .generation;
-                    let native = NativeHistory {
-                        account_key: source_account.to_owned(),
-                        thread_id: thread_id.to_owned(),
-                        epoch,
-                        settings: descriptor_settings.clone(),
-                        connection_generation: descriptor_generation,
-                        records: Box::new(records.into_iter().map(Ok)),
-                        checked_empty_proof: None,
-                    };
-                    let descriptor = portable_history::export_history(
-                        self.store.as_ref(),
-                        ExportInput {
-                            agent_id: agent_id.to_owned(),
-                            account_key: source_account.to_owned(),
-                            epoch,
-                            thread_id: Some(thread_id.to_owned()),
-                            source_settings: descriptor_settings,
-                            source_connection_generation: Some(descriptor_generation),
-                            transfer_id: transfer_id.to_owned(),
-                            native_history: Some(native),
-                        },
-                    )
-                    .await
-                    .map_err(|_| TransferError::Refused("Source portable history export failed"))?;
-                    let root = self.store.root().to_path_buf();
+                    let store = Arc::clone(&self.store);
+                    let descriptor_agent = agent_id.to_owned();
+                    let descriptor_account = source_account.to_owned();
+                    let descriptor_thread = thread_id.to_owned();
+                    let descriptor_transfer = transfer_id.to_owned();
+                    let history_records = records;
                     let (descriptor, validated_history) = run_transfer_blocking(move || {
-                        let history = portable_history::history_context(&root, &descriptor)
+                        let native = NativeHistory {
+                            account_key: descriptor_account.clone(),
+                            thread_id: descriptor_thread.clone(),
+                            epoch,
+                            settings: descriptor_settings.clone(),
+                            connection_generation: descriptor_generation,
+                            records: Box::new(history_records.into_iter().map(Ok)),
+                            checked_empty_proof: None,
+                        };
+                        let descriptor = portable_history::export_history(
+                            store.as_ref(),
+                            ExportInput {
+                                agent_id: descriptor_agent,
+                                account_key: descriptor_account,
+                                epoch,
+                                thread_id: Some(descriptor_thread),
+                                source_settings: descriptor_settings,
+                                source_connection_generation: Some(descriptor_generation),
+                                transfer_id: descriptor_transfer,
+                                native_history: Some(native),
+                            },
+                        )
+                        .map_err(|_| {
+                            TransferError::Refused("Source portable history export failed")
+                        })?;
+                        let history = portable_history::history_context(store.root(), &descriptor)
                             .map_err(|_| {
                                 TransferError::Refused("Source portable history validation failed")
                             })?;
@@ -1174,7 +1180,18 @@ pub async fn before_start(
     agent_id: &str,
     now: f64,
 ) -> Result<Value, TransferError> {
-    let agent = transfer_member(&store, agent_id).await?;
+    let read_store = Arc::clone(&store);
+    let agent_id_for_read = agent_id.to_owned();
+    let agent = run_transfer_blocking(move || {
+        let connection = read_store.read()?;
+        studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from(agent_id_for_read),
+        )?
+        .ok_or(TransferError::Refused("Unknown transfer member"))
+        .map(|agent| agent.value())
+    })
+    .await?;
     let lazy = agent
         .get("lazyAccountTransfer")
         .filter(|value| !value.is_null());
@@ -1204,18 +1221,18 @@ pub async fn before_start(
         };
         crate::account_transfer::before_start(&agent)?;
     }
-    transfer_member(&store, agent_id).await
-}
-
-async fn transfer_member(store: &RuntimeStore, agent_id: &str) -> Result<Value, TransferError> {
-    let agent_id = studio_runtime_store::AgentId::from(agent_id);
-    store
-        .read_async("runtime-services/account_transfer_executor", move |tx| {
-            studio_runtime_store::AgentRepository::get(tx, &agent_id)?
-                .ok_or(TransferError::Refused("Unknown transfer member"))
-                .map(|agent| agent.value())
-        })
-        .await
+    let read_store = Arc::clone(&store);
+    let agent_id = agent_id.to_owned();
+    run_transfer_blocking(move || {
+        let connection = read_store.read()?;
+        studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from(agent_id),
+        )?
+        .ok_or(TransferError::Refused("Unknown transfer member"))
+        .map(|agent| agent.value())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1540,7 +1557,7 @@ mod retained_executor_tests {
                 );
                 let raw: String = self
                     .store
-                    .test_reader()
+                    .read()
                     .expect("test fixture operation succeeds")
                     .query_row(
                         "SELECT record FROM runtime_account_transfers WHERE id=?1",
@@ -1612,9 +1629,7 @@ mod retained_executor_tests {
 
     fn stored_lead(store: &RuntimeStore) -> Value {
         AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
+            &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("lead"),
         )
         .expect("test fixture operation succeeds")
@@ -1761,7 +1776,7 @@ mod retained_executor_tests {
             ["model/list", "thread/read", "thread/queue/list"]
         );
         let operation: String = store
-            .test_reader()
+            .read()
             .expect("test fixture operation succeeds")
             .query_row(
                 "SELECT record FROM runtime_account_transfers WHERE id=?1",
@@ -1777,9 +1792,7 @@ mod retained_executor_tests {
         assert_eq!(intent.len(), 3);
         assert!(
             AgentRepository::get(
-                &store
-                    .test_reader()
-                    .expect("test fixture operation succeeds"),
+                &store.read().expect("test fixture operation succeeds"),
                 &AgentId::from("lead")
             )
             .expect("test fixture operation succeeds")
@@ -2016,7 +2029,7 @@ mod retained_executor_tests {
             1
         );
         let saved: String = store
-            .test_reader()
+            .read()
             .expect("test fixture operation succeeds")
             .query_row(
                 "SELECT record FROM runtime_account_transfers WHERE id=?1",

@@ -43,11 +43,15 @@ pub use repositories::remote_transport::{
 };
 pub use repositories::system_reads;
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::BufReader;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -709,6 +713,8 @@ pub enum StoreError {
     WriterActorControl(tokio_rusqlite::Error),
     #[error("Canvas SQLite writer response was lost; transaction outcome is unknown: {0}")]
     CommitActorOutcomeUnknown(tokio_rusqlite::Error),
+    #[error("nested read checkout from the same runtime store is not supported")]
+    NestedRead,
     #[error("asynchronous store read task did not complete")]
     ReadTaskFailed,
 }
@@ -717,7 +723,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Number of terminal SQLite busy/locked errors observed at typed store boundaries.
 /// Zero means none were observed at this boundary, not that all-process count is zero:
-/// service-specific conversions and raw errors handled inside `read_async` closures
+/// service-specific conversions and raw errors handled directly through `ReadConnection`
 /// are not included.
 pub fn sqlite_lock_error_count() -> u64 {
     SQLITE_LOCK_ERROR_COUNT.load(Ordering::Acquire)
@@ -848,12 +854,12 @@ pub struct RuntimeStore {
 
 struct ReadConnectionPool {
     path: PathBuf,
-    /// One permit per pooled reader. [`RuntimeStore::read_async`] holds one
-    /// for its whole checkout, so readers queue in one FIFO as futures and a
-    /// holder always finds a connection.
+    /// One permit per pooled reader. [`RuntimeStore::read`] and
+    /// [`RuntimeStore::read_async`] both hold one for their whole checkout,
+    /// so they queue in one FIFO and a holder always finds a connection.
     admission: Arc<tokio::sync::Semaphore>,
     state: Mutex<ReadConnectionPoolState>,
-    /// Reads waiting for a permit.
+    /// Threads blocked in [`RuntimeStore::read`] for a permit.
     waiters: AtomicUsize,
     waiter_peak: AtomicUsize,
 }
@@ -863,52 +869,49 @@ struct ReadConnectionPoolState {
     opened: usize,
 }
 
+thread_local! {
+    static ACTIVE_READ_POOLS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
 /// A checked-out read-only canvas connection returned to its bounded pool on drop.
-struct ReadConnection {
+pub struct ReadConnection {
     connection: Option<Connection>,
     pool: Arc<ReadConnectionPool>,
     /// Released after the connection is back in the idle list.
     _admission: tokio::sync::OwnedSemaphorePermit,
+    pool_id: usize,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl Deref for ReadConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("checked-out read connection")
+    }
+}
+
+impl DerefMut for ReadConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("checked-out read connection")
+    }
 }
 
 impl Drop for ReadConnection {
     fn drop(&mut self) {
+        ACTIVE_READ_POOLS.with(|active| {
+            active.borrow_mut().remove(&self.pool_id);
+        });
         let Some(connection) = self.connection.take() else {
             return;
         };
         if let Ok(mut state) = self.pool.state.lock() {
             state.idle.push(connection);
         }
-    }
-}
-
-/// Counts one read waiting for a permit for as long as it lives.
-struct ReadWaiterRegistration<'a>(&'a ReadConnectionPool);
-
-impl<'a> ReadWaiterRegistration<'a> {
-    fn begin(pool: &'a ReadConnectionPool) -> Self {
-        let active = pool.waiters.fetch_add(1, Ordering::Relaxed) + 1;
-        let peak_waiters = pool
-            .waiter_peak
-            .fetch_max(active, Ordering::Relaxed)
-            .max(active);
-        emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
-            waiting_threads: active,
-            peak_waiters,
-            opened_connections: pool.opened(),
-        });
-        Self(pool)
-    }
-}
-
-impl Drop for ReadWaiterRegistration<'_> {
-    fn drop(&mut self) {
-        let waiting_threads = self.0.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
-        emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
-            waiting_threads,
-            peak_waiters: self.0.waiter_peak.load(Ordering::Relaxed),
-            opened_connections: self.0.opened(),
-        });
     }
 }
 
@@ -926,19 +929,44 @@ impl ReadConnectionPool {
         }
     }
 
-    /// Wait as a future for one of the [`READ_CONNECTION_POOL_CAPACITY`] permits.
-    async fn admit(&self) -> StoreResult<(tokio::sync::OwnedSemaphorePermit, bool)> {
-        match Arc::clone(&self.admission).try_acquire_owned() {
-            Ok(permit) => Ok((permit, false)),
-            Err(_) => {
-                let _waiting = ReadWaiterRegistration::begin(self);
-                let permit = Arc::clone(&self.admission)
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| StoreError::ReadTaskFailed)?;
-                Ok((permit, true))
-            }
+    fn pool_id(self: &Arc<Self>) -> StoreResult<usize> {
+        let pool_id = Arc::as_ptr(self) as usize;
+        if ACTIVE_READ_POOLS.with(|active| active.borrow().contains(&pool_id)) {
+            return Err(StoreError::NestedRead);
         }
+        Ok(pool_id)
+    }
+
+    /// Check out a reader on this thread, blocking it while every permit is held.
+    fn checkout(self: &Arc<Self>) -> StoreResult<ReadConnection> {
+        self.pool_id()?;
+        let started = Instant::now();
+        let (permit, waited) = match Arc::clone(&self.admission).try_acquire_owned() {
+            Ok(permit) => (permit, false),
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                let active = self.waiters.fetch_add(1, Ordering::Relaxed) + 1;
+                let peak_waiters = self
+                    .waiter_peak
+                    .fetch_max(active, Ordering::Relaxed)
+                    .max(active);
+                emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                    waiting_threads: active,
+                    peak_waiters,
+                    opened_connections: self.opened(),
+                });
+                let permit =
+                    futures_executor::block_on(Arc::clone(&self.admission).acquire_owned());
+                let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                    waiting_threads,
+                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                    opened_connections: self.opened(),
+                });
+                (permit.map_err(|_| StoreError::ReadTaskFailed)?, true)
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(StoreError::ReadTaskFailed),
+        };
+        self.checkout_admitted(permit, started, waited)
     }
 
     /// Check out a reader for a held permit; with the permit one is idle or may be opened.
@@ -948,6 +976,7 @@ impl ReadConnectionPool {
         started: Instant,
         waited: bool,
     ) -> StoreResult<ReadConnection> {
+        let pool_id = self.pool_id()?;
         let idle = self
             .state
             .lock()
@@ -982,10 +1011,15 @@ impl ReadConnectionPool {
             peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
             opened_connections: self.opened(),
         });
+        ACTIVE_READ_POOLS.with(|active| {
+            active.borrow_mut().insert(pool_id);
+        });
         Ok(ReadConnection {
             connection: Some(connection),
             pool: Arc::clone(self),
             _admission: permit,
+            pool_id,
+            _thread_bound: PhantomData,
         })
     }
 
@@ -1002,6 +1036,16 @@ impl ReadConnectionPool {
     }
 }
 
+fn read_snapshot<T, E>(
+    pool: &Arc<ReadConnectionPool>,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<StoreError>,
+{
+    snapshot_on(pool.checkout()?, operation)
+}
+
 fn snapshot_on<T, E>(
     mut connection: ReadConnection,
     operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
@@ -1009,10 +1053,6 @@ fn snapshot_on<T, E>(
 where
     E: From<StoreError>,
 {
-    let connection = connection
-        .connection
-        .as_mut()
-        .expect("checked-out read connection");
     let transaction = connection.transaction().map_err(StoreError::from)?;
     let value = operation(&transaction)?;
     transaction
@@ -1874,37 +1914,41 @@ impl RuntimeStore {
         self.transaction_with(operation)
     }
 
-    /// Open an independent read-only, query-only canvas connection outside
-    /// the reader pool, for test assertions only.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn test_reader(&self) -> StoreResult<Connection> {
-        let connection = open_database(&self.read_pool.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        connection.pragma_update(None, "query_only", "ON")?;
-        Ok(connection)
+    /// Open an independent read-only, query-only connection to the main DB.
+    /// It takes a [`Self::read_async`] permit and blocks this thread while
+    /// none is free, so call it only on a blocking thread.
+    pub fn read(&self) -> StoreResult<ReadConnection> {
+        self.read_pool.checkout()
     }
 
-    /// Run related test assertions in one snapshot of a [`Self::test_reader`].
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn test_read_transaction<T>(
+    /// Run related reads in one SQLite snapshot.
+    pub fn read_transaction<T>(
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
     ) -> StoreResult<T> {
-        let mut connection = self.test_reader()?;
-        let transaction = connection.transaction()?;
-        let value = operation(&transaction)?;
-        transaction.commit()?;
-        Ok(value)
+        self.read_transaction_with_error(operation)
+    }
+
+    /// Run a read-only snapshot with a domain error type that preserves
+    /// operation refusals while still reporting store and commit failures.
+    pub fn read_transaction_with_error<T, E>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<StoreError>,
+    {
+        read_snapshot(&self.read_pool, operation)
     }
 
     /// Run `operation` in one read-only SQLite snapshot on the blocking pool.
     ///
-    /// This is the only way to read the canvas through the reader pool.
     /// Callers wait for a reader as futures: a blocking-pool thread is taken
     /// only after one of the [`READ_CONNECTION_POOL_CAPACITY`] permits is held,
-    /// so a read burst never parks more threads than there are readers and a
-    /// permit holder never waits for a thread held by a permit waiter. Keep
-    /// `operation` to SQL; do file, process and network work after it returns.
-    /// `label` names the call site in the blocking-pool diagnostics.
+    /// so a read burst never parks more threads than there are readers.
+    /// Synchronous [`Self::read`] takes the same permits, so the held permit
+    /// always finds a connection. `label` names the call site in the
+    /// blocking-pool diagnostics.
     pub async fn read_async<T, E>(
         &self,
         label: &'static str,
@@ -1916,7 +1960,16 @@ impl RuntimeStore {
     {
         let started = Instant::now();
         let pool = Arc::clone(&self.read_pool);
-        let (permit, waited) = pool.admit().await?;
+        let (permit, waited) = match Arc::clone(&pool.admission).try_acquire_owned() {
+            Ok(permit) => (permit, false),
+            Err(_) => (
+                Arc::clone(&pool.admission)
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| StoreError::ReadTaskFailed)?,
+                true,
+            ),
+        };
         blocking_pool::spawn_blocking(label, move || {
             snapshot_on(pool.checkout_admitted(permit, started, waited)?, operation)
         })
@@ -2108,14 +2161,13 @@ mod read_pool_tests {
             .expect("open runtime store");
 
         for _ in 0..16 {
-            let value = store
-                .read_async("runtime-store/tests/sequential_reads", |tx| {
-                    tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                        .map_err(StoreError::from)
-                })
-                .await
-                .expect("read");
-            assert_eq!(value, 1);
+            let reader = store.read().expect("read checkout");
+            assert_eq!(
+                reader
+                    .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .expect("checked out reader remains queryable"),
+                1
+            );
         }
 
         assert_eq!(store.read_pool.opened_count(), 1);
@@ -2380,89 +2432,50 @@ mod read_pool_tests {
         );
     }
 
-    /// Wait until `count` reads queue for a permit, failing at the watchdog.
-    async fn wait_for_read_waiters(store: &RuntimeStore, count: usize) {
-        tokio::time::timeout(READ_POOL_TEST_WATCHDOG, async {
-            while store.read_pool.waiters.load(Ordering::SeqCst) < count {
-                tokio::task::yield_now().await;
+    /// A synchronous read holds an async-read permit, so an async read never
+    /// takes a blocking thread only to wait there for a connection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synchronous_reads_hold_the_shared_read_admission() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        std::thread::scope(|scope| {
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                let (held_tx, store) = (held_tx.clone(), &store);
+                let release_rx = &release_rx;
+                scope.spawn(move || {
+                    let reader = store.read().expect("synchronous read");
+                    held_tx.send(()).expect("report held reader");
+                    let _released = release_rx.lock().map(|rx| rx.recv());
+                    drop(reader);
+                });
             }
-        })
-        .await
-        .expect("reads queue for a permit within the watchdog");
-    }
-
-    /// Regression for the read admission wait cycle. With a synchronous read
-    /// path, blocking-pool work took a thread and then waited for a permit,
-    /// while `read_async` held a permit and waited for a thread: once every
-    /// blocking thread waited for a permit queued behind async reads, nothing
-    /// progressed. Blocking work now takes its read through `read_async`
-    /// before it takes a thread, so the same arrangement completes.
-    #[test]
-    fn blocking_work_and_async_reads_do_not_form_a_wait_cycle() {
-        const BLOCKING_THREADS: usize = 2;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .max_blocking_threads(BLOCKING_THREADS)
-            .enable_all()
-            .build()
-            .expect("runtime with a bounded blocking pool builds");
-        runtime.block_on(async {
-            let directory = tempfile::tempdir().expect("temporary state directory");
-            let store = Arc::new(
-                RuntimeStore::open(Some(directory.path()))
-                    .await
-                    .expect("open runtime store"),
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                held_rx.recv().expect("reader held");
+            }
+            assert_eq!(store.read_pool.admission.available_permits(), 0);
+            let mut read = Box::pin(store.read_async(
+                "runtime-store/tests/read_async_behind_synchronous_reads",
+                |_| Ok::<_, StoreError>(()),
+            ));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                std::future::Future::poll(read.as_mut(), &mut context).is_pending(),
+                "the async read waits for a permit as a future"
             );
-            let held = Arc::clone(&store.read_pool.admission)
-                .acquire_many_owned(READ_CONNECTION_POOL_CAPACITY as u32)
-                .await
-                .expect("hold every read permit");
-            let select_one = |tx: &Transaction<'_>| {
-                tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                    .map_err(StoreError::from)
-            };
-            // Async reads queue first, so they take the permits on release.
-            let mut tasks = (0..READ_CONNECTION_POOL_CAPACITY)
-                .map(|_| {
-                    let store = Arc::clone(&store);
-                    tokio::spawn(async move {
-                        store
-                            .read_async("runtime-store/tests/wait_cycle_async", select_one)
-                            .await
-                    })
-                })
-                .collect::<Vec<_>>();
-            wait_for_read_waiters(&store, READ_CONNECTION_POOL_CAPACITY).await;
-            // One read-then-compute job per blocking thread queues behind them.
-            tasks.extend((0..BLOCKING_THREADS).map(|_| {
-                let store = Arc::clone(&store);
-                tokio::spawn(async move {
-                    let value = store
-                        .read_async("runtime-store/tests/wait_cycle_job", select_one)
-                        .await?;
-                    crate::blocking_pool::spawn_blocking(
-                        "runtime-store/tests/wait_cycle_job_work",
-                        move || value,
-                    )
-                    .await
-                    .map_err(|_| StoreError::ReadTaskFailed)
-                })
-            }));
-            wait_for_read_waiters(&store, READ_CONNECTION_POOL_CAPACITY + BLOCKING_THREADS).await;
-            drop(held);
-            let completed = tokio::time::timeout(READ_POOL_TEST_WATCHDOG, async {
-                for task in &mut tasks {
-                    assert_eq!(task.await.expect("read task joins").expect("read"), 1);
-                }
-            })
-            .await;
-            if completed.is_err() {
-                for task in &tasks {
-                    task.abort();
-                }
+            drop(read);
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                release_tx.send(()).expect("release reader");
             }
-            assert!(completed.is_ok(), "reads completed within the watchdog");
         });
+        assert_eq!(
+            store.read_pool.admission.available_permits(),
+            READ_CONNECTION_POOL_CAPACITY
+        );
     }
 
     #[test]
@@ -2578,6 +2591,80 @@ mod read_pool_tests {
             assert!(matches!(progress_completed, Ok(Ok(()))));
         });
     }
+
+    #[tokio::test]
+    async fn nested_read_fails_fast_when_all_pooled_connections_are_checked_out() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (start_nested_tx, start_nested_rx) = mpsc::channel();
+        let mut start_nested_rx = Some(start_nested_rx);
+        let (nested_result_tx, nested_result_rx) = mpsc::sync_channel(1);
+        let mut release_senders = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY);
+
+        std::thread::scope(|scope| {
+            for index in 0..READ_CONNECTION_POOL_CAPACITY {
+                let store = Arc::clone(&store);
+                let ready_tx = ready_tx.clone();
+                let start_nested_rx = if index == 0 {
+                    start_nested_rx.take()
+                } else {
+                    None
+                };
+                let nested_result_tx = nested_result_tx.clone();
+                let (release_tx, release_rx) = mpsc::channel();
+                release_senders.push(release_tx);
+                scope.spawn(move || {
+                    let _reader = store.read().expect("acquire pool connection");
+                    ready_tx.send(()).expect("report read connection ready");
+                    if let Some(start_nested_rx) = start_nested_rx {
+                        start_nested_rx.recv().expect("start nested checkout");
+                        let nested_is_refused = matches!(store.read(), Err(StoreError::NestedRead));
+                        nested_result_tx
+                            .send(nested_is_refused)
+                            .expect("report nested checkout result");
+                    }
+                    release_rx.recv().expect("release read connection");
+                });
+            }
+
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                ready_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("all pool connections are checked out");
+            }
+            assert_eq!(
+                store.read_pool.opened_count(),
+                READ_CONNECTION_POOL_CAPACITY
+            );
+            start_nested_tx.send(()).expect("request nested checkout");
+            let immediate_result = nested_result_rx.recv_timeout(Duration::from_secs(2));
+
+            // If nested checkout regresses to waiting, release the other leases
+            // so the test can report the wrong result instead of hanging.
+            for release in release_senders.iter().skip(1) {
+                release.send(()).expect("release other read connection");
+            }
+            let nested_result = match immediate_result {
+                Ok(result) => Some(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    nested_result_rx.recv_timeout(Duration::from_secs(5)).ok()
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => None,
+            };
+            release_senders[0]
+                .send(())
+                .expect("release nested-read worker");
+            assert!(
+                immediate_result.is_ok() && nested_result == Some(true),
+                "nested read must be refused before waiting for another pool connection"
+            );
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2640,38 +2727,62 @@ mod diagnostics_hook_tests {
         assert!(EVENTS.lock().expect("diagnostic events lock").len() >= 3);
 
         EVENTS.lock().expect("diagnostic events lock").clear();
-        let held = Arc::clone(&store.read_pool.admission)
-            .acquire_many_owned(READ_CONNECTION_POOL_CAPACITY as u32)
-            .await
-            .expect("hold every read permit");
-        let waiter_store = Arc::clone(&store);
-        let waiter = tokio::spawn(async move {
-            waiter_store
-                .read_async("runtime-store/tests/read_waiter", |_| {
-                    Ok::<_, StoreError>(())
-                })
-                .await
+        let read_wait_observed = std::thread::scope(|scope| {
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let mut release = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY);
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                let (release_tx, release_rx) = mpsc::channel();
+                release.push(release_tx);
+                let ready_tx = ready_tx.clone();
+                let store_ref = &store;
+                scope.spawn(move || {
+                    let reader = store_ref.read().expect("checkout held reader");
+                    ready_tx.send(()).expect("report held reader");
+                    release_rx.recv().expect("release held reader");
+                    drop(reader);
+                });
+            }
+            drop(ready_tx);
+            let mut all_readers_held = true;
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                if ready_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                    all_readers_held = false;
+                    break;
+                }
+            }
+            if !all_readers_held {
+                for release in &release {
+                    let _result = release.send(());
+                }
+                return false;
+            }
+            let (done_tx, done_rx) = mpsc::channel();
+            let store_ref = &store;
+            let waiter = scope.spawn(move || {
+                let reader = store_ref
+                    .read()
+                    .expect("read waiter acquires released slot");
+                done_tx.send(()).expect("report acquired reader");
+                drop(reader);
+            });
+            let observed = wait_for_event(|event| {
+                matches!(
+                    event,
+                    StoreDiagnosticsEvent::ReadWaiters {
+                        waiting_threads: 1,
+                        peak_waiters: 1,
+                        ..
+                    }
+                )
+            });
+            release[0].send(()).expect("release first read slot");
+            let acquired = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            for release in release.iter().skip(1) {
+                release.send(()).expect("release read slot");
+            }
+            waiter.join().expect("read waiter thread");
+            observed && acquired
         });
-        let observed =
-            crate::blocking_pool::spawn_blocking("runtime-store/tests/read_waiter_event", || {
-                wait_for_event(|event| {
-                    matches!(
-                        event,
-                        StoreDiagnosticsEvent::ReadWaiters {
-                            waiting_threads: 1,
-                            peak_waiters: 1,
-                            ..
-                        }
-                    )
-                })
-            })
-            .await
-            .expect("diagnostic wait joins");
-        drop(held);
-        let acquired = tokio::time::timeout(Duration::from_secs(2), waiter)
-            .await
-            .is_ok_and(|joined| matches!(joined, Ok(Ok(()))));
-        let read_wait_observed = observed && acquired;
         assert!(
             read_wait_observed,
             "read pool queue occupancy was not published"
@@ -3669,7 +3780,7 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Acquire), 1);
         assert_eq!(resource_notifications.load(Ordering::Acquire), 1);
         assert_eq!(post_commit_calls.load(Ordering::Acquire), 0);
-        let reader = store.test_reader().expect("read committed access client");
+        let reader = store.read().expect("read committed access client");
         let count = reader
             .query_row(
                 "SELECT COUNT(*) FROM runtime_access_clients WHERE id = 'unknown-client'",
@@ -3915,7 +4026,7 @@ mod commit_notification_tests {
     }
 
     fn access_client_row_ids(store: &RuntimeStore) -> Vec<i64> {
-        let db = store.test_reader().expect("read connection");
+        let db = store.read().expect("read connection");
         let mut statement = db
             .prepare("SELECT rowid FROM runtime_access_clients ORDER BY rowid")
             .expect("prepare rowid query");
@@ -4255,7 +4366,7 @@ mod commit_notification_tests {
         assert_eq!(resource_notifications.load(Ordering::Acquire), 2);
         assert_eq!(observer_seen_cache_marker.load(Ordering::Acquire), 2);
 
-        let reader = store.test_reader().expect("read committed row");
+        let reader = store.read().expect("read committed row");
         let count = reader
             .query_row("SELECT COUNT(*) FROM canceled_write", [], |row| {
                 row.get::<_, i64>(0)
@@ -4350,7 +4461,7 @@ mod sync_pull_admission_tests {
         });
 
         analytics_entered.wait();
-        let connection = store.test_reader().expect("read-only pull connection");
+        let connection = store.read().expect("read-only pull connection");
         let page = SyncDocumentsRepository::pull_drafts(&connection, 0, 100)
             .expect("read-only pull page completes while analytics is held");
         assert!(page.is_empty());

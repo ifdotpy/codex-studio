@@ -13,7 +13,7 @@ use std::sync::Arc;
 #[cfg(unix)]
 use studio_runtime_services::terminal_driver::TerminalCreate;
 use studio_runtime_services::terminal_driver::{self, TerminalError};
-use studio_runtime_store::{AgentId, AgentRepository};
+use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -83,9 +83,13 @@ async fn listing(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::TerminalList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = terminal_driver::listing(&store)
-        .await
-        .map_err(terminal_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/terminals",
+        move || terminal_driver::listing(&store),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(terminal_error)?;
     Ok(Json(
         super::generated_json::<crate::generated::TerminalList>(result)?,
     ))
@@ -115,9 +119,13 @@ async fn output(
             .await
             .map_err(terminal_error)?
     } else {
-        terminal_driver::output(&store, &id, offset)
-            .await
-            .map_err(terminal_error)?
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/terminals",
+            move || terminal_driver::output(&store, &id, offset),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(terminal_error)?
     };
     Ok(Json(super::generated_json::<
         crate::generated::TerminalOutput,
@@ -137,16 +145,10 @@ async fn create(
             .and_then(Value::as_str)
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".into())]))?
             .to_owned();
-        let stored = store
-            .read_async("runtime-http/routes/terminals", move |connection| {
-                AgentRepository::get(connection, &AgentId::from(agent_id.as_str()))
-                    .map_err(TerminalError::from)
-            })
-            .await
-            .map_err(terminal_body_error)?;
+        let agent_store = store.clone();
         let (agent, agent_cwd, cwd) = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/terminals",
-            move || checked_agent_cwd(stored),
+            move || checked_agent_cwd(&agent_store, &agent_id),
         )
         .await
         .map_err(|_| ApiError::internal())?
@@ -249,11 +251,13 @@ enum TerminalActionResponse {
     Record(crate::generated::TerminalRecord),
 }
 
-/// Check a stored agent and canonicalize its working directory (filesystem work).
 fn checked_agent_cwd(
-    agent: Option<studio_runtime_store::AgentRecord>,
+    store: &RuntimeStore,
+    id: &str,
 ) -> Result<(String, String, PathBuf), TerminalError> {
-    let agent = agent.ok_or(TerminalError::InvalidRequest)?;
+    let connection = store.read()?;
+    let agent = AgentRepository::get(&connection, &AgentId::from(id))?
+        .ok_or(TerminalError::InvalidRequest)?;
     if agent
         .extra
         .get("deletedAt")
@@ -356,7 +360,7 @@ mod tests {
                 .await
                 .expect("runtime store"),
         );
-        let before = TerminalsRepository::list(&store.test_reader().expect("read before request"))
+        let before = TerminalsRepository::list(&store.read().expect("read before request"))
             .expect("read terminal rows before request");
         let state = crate::router::HttpState::new(
             "token".into(),
@@ -400,7 +404,7 @@ mod tests {
             body,
             json!({"error":"Terminal restart cleanup is still pending"})
         );
-        let after = TerminalsRepository::list(&store.test_reader().expect("read after request"))
+        let after = TerminalsRepository::list(&store.read().expect("read after request"))
             .expect("read terminal rows after request");
         assert_eq!(after.len(), before.len());
         assert_eq!(after, before);

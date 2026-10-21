@@ -278,7 +278,7 @@ impl Fixture {
 
     fn event_status(&self, id: &str) -> String {
         self.store
-            .test_reader()
+            .read()
             .unwrap()
             .query_row(
                 "SELECT status FROM runtime_events WHERE id=?1",
@@ -336,7 +336,7 @@ async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expect
         loop {
             let status: String = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT json_extract(record,'$.status') FROM runtime_agents WHERE id=?1",
@@ -1002,7 +1002,7 @@ async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_c
 
     registry.reconcile(None).await.unwrap();
     let room = || {
-        let db = fixture.store.test_reader().unwrap();
+        let db = fixture.store.read().unwrap();
         let raw: String = db
             .query_row("SELECT record FROM runtime_rooms LIMIT 1", [], |row| {
                 row.get(0)
@@ -1038,7 +1038,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     registry.reconcile(None).await.unwrap();
     let received = tokio::time::timeout(TEST_HANG_GUARD, writes.recv()).await;
     if received.is_err() {
-        let db = fixture.store.test_reader().unwrap();
+        let db = fixture.store.read().unwrap();
         let event: (String, Option<String>) = db
             .query_row(
                 "SELECT status,error FROM runtime_events WHERE kind='radio_turn'",
@@ -1063,7 +1063,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     ));
     let turn_write = tokio::time::timeout(TEST_HANG_GUARD, writes.recv()).await;
     if turn_write.is_err() {
-        let db = fixture.store.test_reader().unwrap();
+        let db = fixture.store.read().unwrap();
         let mut statement = db
             .prepare("SELECT id,result FROM runtime_operation_receipts ORDER BY rowid DESC LIMIT 8")
             .unwrap();
@@ -1079,7 +1079,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     let (account, write) = turn_write.unwrap().expect("retained worker turn write");
     assert_eq!(account, "account:default");
     assert_eq!(write["method"], "turn/start");
-    let db = fixture.store.test_reader().unwrap();
+    let db = fixture.store.read().unwrap();
     let (event_id, kind, status): (String, String, String) = db
         .query_row(
             "SELECT id,kind,status FROM runtime_events WHERE kind='radio_turn'",
@@ -1100,7 +1100,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     registry.shutdown().await.unwrap();
     let status_before_restart: String = fixture
         .store
-        .test_reader()
+        .read()
         .unwrap()
         .query_row(
             "SELECT status FROM runtime_events WHERE id=?1",
@@ -1123,7 +1123,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     );
     let status_after_recovery: String = fixture
         .store
-        .test_reader()
+        .read()
         .unwrap()
         .query_row(
             "SELECT status FROM runtime_events WHERE id=?1",
@@ -1155,7 +1155,7 @@ async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_rese
 
     registry.reconcile(None).await.unwrap();
     let room = || {
-        let db = fixture.store.test_reader().unwrap();
+        let db = fixture.store.read().unwrap();
         let raw: String = db
             .query_row("SELECT record FROM runtime_rooms LIMIT 1", [], |row| {
                 row.get(0)
@@ -1244,7 +1244,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
 
     assert!(launcher.opened.lock().unwrap().is_empty());
     let record = || {
-        let db = fixture.store.test_reader().unwrap();
+        let db = fixture.store.read().unwrap();
         db.query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
             [agent_id.as_str()],
@@ -1252,7 +1252,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
         )
         .unwrap()
     };
-    let db = fixture.store.test_reader().unwrap();
+    let db = fixture.store.read().unwrap();
     let event_status: String = db
         .query_row(
             "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
@@ -1280,7 +1280,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(serde_json::from_str::<Value>(&record()).unwrap(), held);
     assert!(launcher.opened.lock().unwrap().is_empty());
     assert!(writes.try_recv().is_err());
-    let db = fixture.store.test_reader().unwrap();
+    let db = fixture.store.read().unwrap();
     let event_status: String = db
         .query_row(
             "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
@@ -1331,7 +1331,7 @@ async fn image_workspace_pending_event_starts_the_account_provider_on_macos() {
         "the account provider starts for the image agent"
     );
     let record: Value = {
-        let db = fixture.store.test_reader().expect("reader");
+        let db = fixture.store.read().unwrap();
         serde_json::from_str(
             &db.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
@@ -1626,17 +1626,12 @@ mod runtime_shutdown;
 #[tokio::test]
 async fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_records() {
     let fixture = Fixture::build("recovery").await;
-    let selected = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        "",
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let selected = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
     assert_eq!(
         json!(selected.keys().collect::<Vec<_>>()),
         fixture.agents["selected"]
     );
-    let db = fixture.store.test_reader().unwrap();
+    let db = fixture.store.read().unwrap();
     let mut query = db.prepare("SELECT id,record FROM runtime_agents").unwrap();
     let stored = query
         .query_map([], |row| {
@@ -1778,12 +1773,7 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     let mut after = BTreeMap::new();
     let mut actual = Vec::new();
     while actual.len() < expected.len() {
-        let page = account_registry::target_page(
-            &fixture.store.test_reader().expect("reader"),
-            "",
-            &after,
-        )
-        .unwrap();
+        let page = account_registry::target_page(&fixture.store, "", &after).unwrap();
         let rows = &page["default"];
         assert!(rows.len() <= 32);
         actual.extend(rows.iter().map(|(id, _, _)| id.clone()));
@@ -1791,7 +1781,7 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     }
     assert_eq!(actual, expected);
     let wrapped_agents = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
+        &fixture.store,
         "",
         &BTreeMap::from([("default".into(), actual.last().unwrap().clone())]),
     )
@@ -1805,15 +1795,10 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     );
     let fixture = Fixture::new().await;
     seed_backlog(&fixture, 130, true).await;
-    let first = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        "",
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let first = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
     assert_eq!(first.len(), 128);
     let second = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
+        &fixture.store,
         first.last_key_value().unwrap().0,
         &BTreeMap::new(),
     )
@@ -1821,7 +1806,7 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     assert_eq!(second.len(), 2);
     assert!(second.keys().all(|account| !first.contains_key(account)));
     let wrapped_accounts = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
+        &fixture.store,
         second.last_key_value().unwrap().0,
         &BTreeMap::new(),
     )
@@ -1842,7 +1827,7 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
         Ok(())
     }).await.unwrap();
     assert!(matches!(
-        account_registry::target_page(&fixture.store.test_reader().expect("reader"), "", &BTreeMap::new()),
+        account_registry::target_page(&fixture.store, "", &BTreeMap::new()),
         Err(WorkerError::Store(StoreError::InvalidStoredObject { table: "runtime_agents", id })) if id == "bad-account-key"
     ));
 }
@@ -1876,7 +1861,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
         .await
         .unwrap_or_else(|_| {
-            let db = fixture.store.test_reader().unwrap();
+            let db = fixture.store.read().unwrap();
             let state: String = db.query_row("SELECT json_object('status',json_extract(record,'$.status'),'error',json_extract(record,'$.error'),'hold',json_extract(record,'$.startOutcomeHold'),'start',json_extract(record,'$.startAttempt')) FROM runtime_agents WHERE id=?1",[fixture.agents[0]["id"].as_str().unwrap()],|r|r.get(0)).unwrap();
             panic!("fair wake hang guard: {state}")
         })
@@ -1897,7 +1882,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
         .unwrap()
         .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
-    let db = fixture.store.test_reader().unwrap();
+    let db = fixture.store.read().unwrap();
     let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='annotation' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
     assert_eq!(blocked, 48);
 }
@@ -2637,7 +2622,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         loop {
             let row = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
@@ -2661,7 +2646,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     assert!(state.sync_changes_handle().snapshot().revision > initial_revision);
     let publication_rows: Vec<String> = fixture
         .store
-        .test_reader()
+        .read()
         .unwrap()
         .prepare(
             "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' ORDER BY id",
@@ -2968,7 +2953,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         loop {
             let raw = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
@@ -3160,7 +3145,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         loop {
             let raw = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
@@ -3190,7 +3175,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     });
     let second_event_status: String = fixture
         .store
-        .test_reader()
+        .read()
         .unwrap()
         .query_row(
             "SELECT status FROM runtime_events WHERE id='a19e61c8-6156-4874-b8d8-9111b0a49fc4'",
@@ -3341,7 +3326,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         loop {
             let row = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
@@ -3664,7 +3649,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
         loop {
             let raw = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
@@ -3694,7 +3679,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
     assert_eq!(
         fixture
             .store
-            .test_reader()
+            .read()
             .unwrap()
             .query_row(
                 "SELECT count(*) FROM runtime_events WHERE id=?1 AND status='uncertain'",
@@ -3819,7 +3804,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
         loop {
             let raw = fixture
                 .store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
@@ -3883,7 +3868,7 @@ fn direct_message_post(
 #[cfg(target_os = "linux")]
 fn direct_generation(store: &RuntimeStore) -> u64 {
     let raw = store
-        .test_reader()
+        .read()
         .unwrap()
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:direct-generation:default:next'",
@@ -3922,7 +3907,7 @@ async fn make_direct_agent_runnable(store: &RuntimeStore, agent_id: &str, accoun
 
 #[cfg(target_os = "linux")]
 fn direct_agent_debug(store: &RuntimeStore, agent_id: &str) -> String {
-    let db = store.test_reader().unwrap();
+    let db = store.read().unwrap();
     let raw = db
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
@@ -3956,7 +3941,7 @@ fn direct_agent_debug(store: &RuntimeStore, agent_id: &str) -> String {
 
 #[cfg(target_os = "linux")]
 fn direct_journal_rows(store: &RuntimeStore, generation: u64) -> Vec<(String, String)> {
-    let db = store.test_reader().unwrap();
+    let db = store.read().unwrap();
     let prefix = format!("account-worker:journal:default:{generation}:");
     let upper = format!("{prefix}~");
     let mut query = db
@@ -3998,7 +3983,7 @@ async fn wait_for_direct_completion<T: Clone + Send + Sync + 'static>(
     tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = store
-                .test_reader()
+                .read()
                 .unwrap()
                 .query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",

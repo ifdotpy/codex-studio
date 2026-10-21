@@ -62,7 +62,7 @@ fn python_table_rows(connection: &rusqlite::Connection, table: &str) -> Vec<Vec<
 }
 
 fn assert_python_rows(store: &RuntimeStore, expected: &Value) {
-    let connection = store.test_reader().expect("read Rust state");
+    let connection = store.read().expect("read Rust state");
     for table in [
         "user_terminals",
         "user_terminal_receipts",
@@ -100,10 +100,7 @@ async fn run_corpus(full: bool) {
             .expect("Rust opens Python-written state"),
     );
 
-    assert_eq!(
-        listing(&store).await.expect("Rust listing"),
-        oracle["listing"]
-    );
+    assert_eq!(listing(&store).expect("Rust listing"), oracle["listing"]);
     for case in oracle["output"].as_array().expect("Python output cases") {
         assert_eq!(
             output(
@@ -111,7 +108,6 @@ async fn run_corpus(full: bool) {
                 "terminal-corpus",
                 case["offset"].as_i64().expect("output offset")
             )
-            .await
             .expect("Rust output"),
             case["value"],
             "complete output return differs for offset {}",
@@ -132,7 +128,7 @@ async fn run_corpus(full: bool) {
             "complete history return differs for case {case}"
         );
     }
-    let row = TerminalsRepository::get(&store.test_reader().expect("read"), "terminal-corpus")
+    let row = TerminalsRepository::get(&store.read().expect("read"), "terminal-corpus")
         .expect("Rust row")
         .expect("Python-written terminal row");
     assert_eq!(
