@@ -38,6 +38,9 @@ const CANCEL_RETRY_MAX_SECONDS: f64 = 64.0;
 
 pub trait MonitorNative {
     /// Repeated calls with the same effect identity must reconcile the same native write.
+    /// The first poll must hand the write to the ordered provider transport (or
+    /// join its fair queue); later polls only wait for the reply. `start` keeps
+    /// later cancel and input behind command/exec through that first poll.
     fn submit<'a>(
         &'a self,
         operation: &'a Operation,
@@ -67,10 +70,22 @@ pub async fn start(
     prepared: &PreparedStart,
     now: f64,
 ) -> Result<Submission, MonitorError> {
-    let _sequence = native_sequence(store, id)?;
+    let sequence = native_sequence(store, id)?;
     let effect = monitor_runtime::reserve_start(store, id, prepared, now).await?;
     // A transport failure does not authorize another command/exec.
-    let submission = port.submit(&prepared.operation, &effect).await;
+    let mut submission = port.submit(&prepared.operation, &effect);
+    // command/exec answers only when the process exits. Hold the sequence only
+    // for the first poll, which hands the request to the ordered transport, so
+    // cancel and input for this running command are admitted after it. The
+    // first poll ignores the cooperative budget so it cannot yield before that.
+    let first_poll = tokio::task::unconstrained(&mut submission);
+    let submission = match futures_util::FutureExt::now_or_never(first_poll) {
+        Some(submission) => submission,
+        None => {
+            drop(sequence);
+            submission.await
+        }
+    };
     if let Submission::NotSent { error, .. } = &submission {
         crate::monitor_receipts::finish(
             store,

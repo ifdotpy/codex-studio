@@ -162,7 +162,7 @@ pub(crate) async fn perform(
         "reject" => WorkWrite::Mutate(WorkMutation::Reject {
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
-            reason: required_text(&body, "result")?,
+            reason: review_result(&body)?,
         }),
         "claim" => WorkWrite::Claim(ClaimWork {
             task_id: required_text(&body, "task_id")?,
@@ -187,7 +187,7 @@ pub(crate) async fn perform(
         "accept" => WorkWrite::Accept(AcceptWork {
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
-            reason: required_text(&body, "result")?,
+            reason: review_result(&body)?,
             merged_result_id: None,
         }),
         _ => return Err(invalid_request()),
@@ -875,11 +875,29 @@ fn write_error(error: WorkWriteError) -> ApiError {
     }
 }
 
+/// Python `codex_work.py` refuses a review decision without its text by this name.
+const REVIEW_RESULT_REQUIRED: &str =
+    "Supply result with 1 to 32000 characters for accept or reject";
+
 fn required_text(body: &Value, field: &str) -> Result<String, ApiError> {
     body.get(field)
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(invalid_request)
+        .ok_or_else(|| {
+            // Name the field so the caller can correct the request.
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("Supply {field} as text for this task action"),
+            )
+        })
+}
+
+/// The review decision text of accept and reject.
+fn review_result(body: &Value) -> Result<String, ApiError> {
+    body.get("result")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, REVIEW_RESULT_REQUIRED))
 }
 
 fn optional_text(body: &Value, field: &str) -> Result<Option<String>, ApiError> {
@@ -1029,6 +1047,50 @@ mod managed_work_port_tests {
         assert!(
             matches!(refused, WorkActionOutcome::Refused(_)),
             "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_action_without_a_required_field_names_that_field() {
+        let (state, _store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"Named refusal","owner":"worker"}),
+                "tool-create-named",
+            )
+            .await,
+        );
+        let task = created["id"].as_str().expect("task id").to_owned();
+        let accept = port
+            .act(
+                "lead",
+                &json!({"action":"accept","task_id":task}),
+                "tool-accept-without-result",
+            )
+            .await;
+        assert!(
+            matches!(
+                &accept,
+                WorkActionOutcome::Refused(message) if message == super::REVIEW_RESULT_REQUIRED
+            ),
+            "{accept:?}"
+        );
+        let submit = port
+            .act(
+                "worker",
+                &json!({"action":"submit","task_id":task,"result":"done","revision":"abc"}),
+                "tool-submit-without-checks",
+            )
+            .await;
+        assert!(
+            matches!(
+                &submit,
+                WorkActionOutcome::Refused(message)
+                    if message == "Supply checks as text for this task action"
+            ),
+            "{submit:?}"
         );
     }
 }

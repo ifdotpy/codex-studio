@@ -484,7 +484,10 @@ pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorErr
         output_effect(snapshot, &mut decision, now, false);
     }
     let quiet = (now - f.activity_at.or(f.created).unwrap_or(now)).max(0.0) as u64;
+    // A cancelled command waits only for its exit receipt; a stall notice would
+    // wake an owner that already asked it to stop.
     if f.status != MonitorStatus::Running
+        || f.cancel_requested
         || !snapshot.active_owner()
         || f.stall_timeout_seconds == 0
         || quiet < f.stall_timeout_seconds
