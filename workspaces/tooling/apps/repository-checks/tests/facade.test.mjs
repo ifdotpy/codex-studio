@@ -69,6 +69,14 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /callback_head_of_line/);
   assert.match(
     fast.command,
+    /submission_manifest_boundaries_use_shared_limits/,
+  );
+  assert.match(
+    fast.command,
+    /nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work/,
+  );
+  assert.match(
+    fast.command,
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);

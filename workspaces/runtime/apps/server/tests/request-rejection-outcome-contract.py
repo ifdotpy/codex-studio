@@ -27,6 +27,7 @@ REJECTIONS = (
     ('orchestration_agent_manage', 'You can manage only your own descendant workers'),
     ('orchestration_message', 'Recipient conversation was deleted'),
     ('orchestration_task', 'Supply up to 50 file paths'),
+    ('orchestration_task', 'Submission files exceed shared count or path-length limits'),
 )
 
 

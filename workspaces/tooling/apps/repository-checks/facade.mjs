@@ -880,7 +880,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "provider callback acceptance witnesses",
+      label: "provider callback and task submission acceptance witnesses",
       commands: [
         [
           "cargo",
@@ -896,7 +896,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::)",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits) | test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
           ],
         ],
         [
@@ -920,9 +920,9 @@ function fastTierCommands(root) {
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery and the session callback lane",
+          "account_worker callback handoff and lanes, stale batch stamp recovery and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent.",
+          "Check durable callback acceptance and progress, undelivered steer batch stamp replacement, and task submission limits, workspace ownership and replay at the shared manifest bound.",
       },
     },
     {

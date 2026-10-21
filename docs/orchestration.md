@@ -371,6 +371,17 @@ Recovery reads and coordination use separate execution pools from model startup,
 slow tools, and monitor waits. Native response reads continue while ordered
 notification callbacks run. A command completion waits for its preceding output
 callbacks before the runtime records its final result.
+
+Task submission evidence follows one flow:
+
+1. Submit `files`, `revision`, `result`, and `checks` with the task ID.
+2. The server checks the file count and each path's Unicode code-point length
+   against `TASK_SUBMISSION_MAX_FILES` and `TASK_SUBMISSION_PATH_MAX_CODEPOINTS`
+   in the [shared value owner](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
+3. The server resolves paths for the task owner and checks the same owner,
+   workspace, and complete file list before saving evidence. An exact replay
+   returns the saved result without resolving the files again.
+
 Work-board actions and result submissions use the coordination pool, including
 the workspace fallback for older threads.
 
