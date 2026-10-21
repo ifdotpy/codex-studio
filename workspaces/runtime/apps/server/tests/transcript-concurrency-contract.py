@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -36,7 +37,9 @@ class TranscriptConcurrency(unittest.TestCase):
             with self.runtime.lock:
                 future = pool.submit(self.runtime.transcript, actor['id'])
                 try:
-                    result = future.result(timeout=2)
+                    # The test holds the lock for the whole wait, so a read that
+                    # needs it still fails at this hang guard.
+                    result = future.result(timeout=HANG_GUARD_SECONDS)
                 except TimeoutError:
                     self.fail('Chat read waits for the runtime execution lock')
         item = next(item for item in result['items'] if item.get('clientMessageId') == 'pending-input')

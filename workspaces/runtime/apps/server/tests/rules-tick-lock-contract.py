@@ -77,7 +77,8 @@ class RulesTickLockContract(unittest.TestCase):
         thread.start()
         return done, errors
 
-    def finished(self, worker, timeout=2):
+    # The default wait only guards against a hang.
+    def finished(self, worker, timeout=HANG_GUARD_SECONDS):
         done, errors = worker
         self.assertTrue(done.wait(timeout), 'The fixture operation did not complete')
         self.assertEqual(errors, [])
@@ -114,7 +115,9 @@ class RulesTickLockContract(unittest.TestCase):
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             sent = self.worker(lambda: self.runtime.send(other['id'], 'Continue', 'gated-stat-send'), 'send')
             try:
-                self.finished(sent, .5)
+                # The stat stays gated until this wait ends, so a send blocked by it
+                # still fails; the wait itself only guards against a slow machine.
+                self.finished(sent, HANG_GUARD_SECONDS / 2)
                 self.assertEqual(owned, [False])
                 self.assertEqual(self.runtime.delivery_receipt('gated-stat-send')['status'], 'pending')
             finally:
@@ -128,7 +131,9 @@ class RulesTickLockContract(unittest.TestCase):
         self.file_rule(owner, 'first.txt')
         _, path = self.file_rule(owner, 'second.txt')
         def writer():
-            db = sqlite3.connect(self.runtime.db_path, timeout=.2)
+            # The gated stat never releases a held writer, so a wide busy timeout
+            # still fails on that bug and tolerates a short write on a busy machine.
+            db = sqlite3.connect(self.runtime.db_path, timeout=HANG_GUARD_SECONDS / 4)
             try:
                 db.execute('BEGIN IMMEDIATE')
                 db.rollback()
@@ -138,7 +143,7 @@ class RulesTickLockContract(unittest.TestCase):
             tick = self.worker(self.runtime.rules_tick)
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
-                self.finished(self.worker(writer, 'writer'), .5)
+                self.finished(self.worker(writer, 'writer'), HANG_GUARD_SECONDS / 2)
             finally:
                 release.set()
             self.finished(tick)

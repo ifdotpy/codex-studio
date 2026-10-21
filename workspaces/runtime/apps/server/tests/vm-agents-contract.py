@@ -22,6 +22,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from runtime_test_environment import make_runtime
 spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_name('vm-native-fixture.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -65,7 +66,8 @@ class Guest(fixture.NativeGuest):
         old = self.supervisor
         for child in old.children.values():
             child.process.kill()
-            child.process.wait(timeout=5)
+            # The wait only guards against a hang after the kill.
+            child.process.wait(timeout=HANG_GUARD_SECONDS)
             self.close_streams(child)
         old.journal.close()
         self.supervisor = Supervisor(old.root)
@@ -478,7 +480,8 @@ class VmAgents(unittest.TestCase):
         record = {'id': 'restart-1', 'at': time.time(), 'reason': 'Kernel panic - not syncing: test'}
         record['chats'] = drop_providers(self.runtime, record)
         self.assertEqual(record['chats'], [lead['id']])
-        deadline = time.monotonic() + 10
+        # The deadline only guards against a hang; the assertions below decide.
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while self.runtime.agent(lead['id'])['status'] != 'interrupted' and time.monotonic() < deadline:
             time.sleep(0.05)
         agent = self.runtime.agent(lead['id'])

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -110,7 +111,8 @@ class CapabilityHistoryContract(unittest.TestCase):
         entered = threading.Barrier(2)
         def call(method, params, timeout):
             self.assertEqual(timeout, 5)
-            entered.wait(timeout=2)
+            # Sequential reads never meet here; the wait only guards against a hang.
+            entered.wait(timeout=HANG_GUARD_SECONDS)
             if method == 'skills/list':
                 raise TimeoutError('fixture deadline')
             return {'servers': [{'name': 'available'}], 'nextCursor': 'next'}

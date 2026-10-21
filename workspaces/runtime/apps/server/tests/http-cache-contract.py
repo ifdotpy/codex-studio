@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 isolate_supervisor_environment()
 from runtime_test_environment import make_runtime
@@ -65,7 +66,8 @@ class HttpCacheContract(unittest.TestCase):
         self.temp.cleanup()
 
     def get(self, path, headers=None):
-        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        # Every request must answer; the timeout only guards against a hang.
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=HANG_GUARD_SECONDS)
         try:
             connection.request('GET', path, headers=headers or {})
             response = connection.getresponse()
@@ -115,7 +117,8 @@ class HttpCacheContract(unittest.TestCase):
     def test_parallel_module_requests_preserve_all_responses(self):
         barrier = threading.Barrier(32)
         def read_module(_):
-            barrier.wait(timeout=5)
+            # All 32 workers start; the timeout only guards against a hang.
+            barrier.wait(timeout=HANG_GUARD_SECONDS)
             return self.get('/assets/main-Abcd1234.js')
         with ThreadPoolExecutor(max_workers=32) as pool:
             replies = list(pool.map(read_module, range(32)))

@@ -68,9 +68,11 @@ class DeferredServer(fixture.FakeServer):
     def wait(self, future, timeout=60):
         entry = next((e for e in self.deferred if e["future"] is future), None)
         if entry:
-            assert entry["prepared"].wait(3)
+            # The fixture publishes and the test opens the gate; these waits only
+            # guard against a hang.
+            assert entry["prepared"].wait(HANG_GUARD_SECONDS)
             if self.wait_gate is not None:
-                assert self.wait_gate.wait(3)
+                assert self.wait_gate.wait(HANG_GUARD_SECONDS)
             raise ResponseTimeout("turn/start response timed out; outcome unknown")
         return super().wait(future, timeout)
 

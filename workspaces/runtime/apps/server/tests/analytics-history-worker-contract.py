@@ -122,7 +122,8 @@ class WorkerTests(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         def step():
             entered.set()
-            release.wait(2)
+            # Hold the first worker until all health checks ran; finally releases it.
+            release.wait(HANG_GUARD_SECONDS)
             return False
         with patch.object(self.f, 'analytics_history_step', side_effect=step):
             try:

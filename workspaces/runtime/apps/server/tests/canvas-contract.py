@@ -527,7 +527,7 @@ class CanvasContract(unittest.TestCase):
             ):
                 urllib.request.urlopen(
                     base + "/api/worktree-disk?workers=worker-one%2Cworker-two",
-                    timeout=5,
+                    timeout=HANG_GUARD_SECONDS,
                 )
             self.assertEqual(raised.exception.code, 404)
             raised.exception.close()
@@ -541,11 +541,12 @@ class CanvasContract(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
+        # Local request timeouts only guard against a hang.
         def request(path, body=None, headers=None):
             data = None if body is None else json.dumps(body).encode()
             req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json", **(headers or {})})
             try:
-                with urllib.request.urlopen(req, timeout=5) as response:
+                with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as response:
                     return response.status, response.read()
             except urllib.error.HTTPError as error:
                 return error.code, error.read()
@@ -590,7 +591,7 @@ class CanvasContract(unittest.TestCase):
                 base + "/api/monitor/log?id=fixture-monitor",
                 headers={"Origin": base, "Range": "bytes=100-109"},
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as response:
                 self.assertEqual(response.status, 206)
                 self.assertEqual(response.read(), payload[100:110])
         finally:

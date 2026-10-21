@@ -59,7 +59,8 @@ class OwnerHistoryContract(unittest.TestCase):
 
         def hold_writer(db):
             ready.set()
-            assert release.wait(6)
+            # The test releases the writer; this wait only guards against a hang.
+            assert release.wait(HANG_GUARD_SECONDS)
 
         def owner():
             db = codex_sqlite.connect(self.path, site="contract.notification")
@@ -150,7 +151,7 @@ print(json.dumps(traces.history()["recent"][-1]))
 """
         result = subprocess.run([sys.executable, "-B", "-c", code, str(self.root), str(seconds)],
                                 check=True, env={**os.environ, "PYTHONPATH": str(SERVER_SOURCE_ROOT)},
-                                timeout=5, capture_output=True)
+                                timeout=HANG_GUARD_SECONDS, capture_output=True)
         return json.loads(result.stdout)
 
     def archived_snapshots(self):
@@ -276,7 +277,8 @@ print(json.dumps(traces.history()["recent"][-1]))
     def restart_watchdog(self):
         code = "from pathlib import Path; import sys; from codex_sqlite_traces import transaction_watchdog; transaction_watchdog(Path(sys.argv[1]))"
         subprocess.run([sys.executable, "-B", "-c", code, str(self.root)], check=True,
-                       env={**os.environ, "PYTHONPATH": str(SERVER_SOURCE_ROOT)}, timeout=5, capture_output=True)
+                       env={**os.environ, "PYTHONPATH": str(SERVER_SOURCE_ROOT)},
+                       timeout=HANG_GUARD_SECONDS, capture_output=True)
 
     def test_bounded_history_rollbacks_and_no_retained_connection(self):
         now = [1000.0]

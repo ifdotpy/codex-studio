@@ -253,7 +253,9 @@ class Contract(PidFileContract):
                           home=self.home, isolated=True, executable=self.old['path'],
                           supervisor_handle=self.handle, supervisor_root=self.root)
         self.case.servers.append(first)
-        first.wait(first.submit('model/list', {}, operation_id='retained-catalog-once'), timeout=3)
+        # The wait only guards against a hang of the fixture app-server.
+        first.wait(first.submit('model/list', {}, operation_id='retained-catalog-once'),
+                   timeout=HANG_GUARD_SECONDS)
         first.close()
         with sqlite3.connect(self.root / 'supervisor.sqlite3') as db:
             receipt = db.execute('SELECT * FROM operations WHERE handle=? AND operation_id=?',
@@ -495,7 +497,7 @@ class ProcessArgumentsContract(unittest.TestCase):
             self.assertEqual(actual, command)
         finally:
             child.terminate()
-            child.wait(timeout=3)
+            child.wait(timeout=HANG_GUARD_SECONDS)
 
 
 if __name__ == '__main__':

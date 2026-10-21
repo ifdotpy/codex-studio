@@ -122,7 +122,8 @@ class DispatchFixture:
             self.server.enqueue(callback, event)
         self.worker.start()
 
-    def wait(self, condition, timeout=3):
+    # The default timeout only guards against a hang.
+    def wait(self, condition, timeout=HANG_GUARD_SECONDS):
         deadline = time.monotonic() + timeout
         while not condition():
             remaining = deadline - time.monotonic()
@@ -133,7 +134,8 @@ class DispatchFixture:
     def close(self):
         self.server.reader_done.set()
         if self.worker.ident is not None:
-            self.worker.join(3)
+            # The dispatcher stops once its reader is done; this join only guards against a hang.
+            self.worker.join(HANG_GUARD_SECONDS)
             if self.worker.is_alive():
                 raise AssertionError('The fixture dispatcher did not stop')
 
@@ -309,8 +311,10 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assertEqual(delivered, [1, 2])
                 self.assertEqual(fixture.server.proc.acks, [])
                 self.assertEqual(durable(), 0)
-                # The commit error releases Runtime.lock before the retry delay.
-                acquired = runtime.lock.acquire(timeout=.2)
+                # The commit error releases Runtime.lock before the retry delay. The
+                # writer stays held, so a lock kept through the retries is never free;
+                # 2 s only lets this thread win a retry gap on a busy machine.
+                acquired = runtime.lock.acquire(timeout=2)
                 self.assertTrue(acquired)
                 if acquired:
                     runtime.lock.release()
@@ -378,7 +382,8 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 captured_connection = id(db)
                 capture_calls.append(method)
                 analytics_started.set()
-                if not release_analytics.wait(5):
+                # The test always releases the capture; this only guards against a hang.
+                if not release_analytics.wait(HANG_GUARD_SECONDS):
                     raise AssertionError('The test did not release the analytics capture')
                 try:
                     return original_capture(db, agent, method, params, **options)
@@ -482,7 +487,9 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assertTrue(contention.wait(HANG_GUARD_SECONDS), 'The lifecycle must meet the held SQLite writer')
                 self.assertEqual(fixture.server.proc.acks, [])
                 self.assertEqual(fixture.server.proc.durable(), 0)
-                acquired = runtime.lock.acquire(timeout=.2)
+                # The writer stays held, so a lock kept through the attempts is never
+                # free; 2 s only lets this thread win a gap on a busy machine.
+                acquired = runtime.lock.acquire(timeout=2)
                 self.assertTrue(acquired, 'Lifecycle writer contention must release Runtime.lock between attempts')
                 if acquired:
                     runtime.lock.release()
@@ -539,7 +546,9 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assertEqual(effects, [])
                 self.assertEqual(len(errors), 1)
                 self.assertEqual(errors[0].sqlite_errorcode & 255, sqlite3.SQLITE_BUSY)
-                acquired = runtime.lock.acquire(timeout=.2)
+                # A lock leaked by the failed attempt is never released; the wait only
+                # absorbs load.
+                acquired = runtime.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                 self.assertTrue(acquired)
                 if acquired:
                     runtime.lock.release()

@@ -42,12 +42,14 @@ class TaskCompletionRecovery(unittest.TestCase):
     def test_direct_accept_completes_while_all_slow_tools_are_blocked(self):
         release = threading.Event()
         entered = threading.Barrier(self.runtime.tool_pool._max_workers + 1)
+        # Every pool worker reaches the barrier and holds until the test releases
+        # it; these waits only guard against a hang.
         def hold():
-            entered.wait(4)
-            release.wait(10)
+            entered.wait(HANG_GUARD_SECONDS)
+            release.wait(HANG_GUARD_SECONDS)
         jobs = [self.runtime.tool_pool.submit(hold) for _ in range(self.runtime.tool_pool._max_workers)]
         try:
-            entered.wait(4)
+            entered.wait(HANG_GUARD_SECONDS)
             task = self.review_task()
             call = 'accept-direct'
             self.runtime.request(self.message(call, 'orchestration_task', self.accept(task)))
@@ -66,7 +68,7 @@ class TaskCompletionRecovery(unittest.TestCase):
         finally:
             release.set()
             for job in jobs:
-                job.result(3)
+                job.result(HANG_GUARD_SECONDS)
 
     def test_removed_workspace_bridge_does_not_apply_task_decision(self):
         task = self.review_task()
@@ -88,7 +90,8 @@ class TaskCompletionRecovery(unittest.TestCase):
         def delayed(*args, **kwargs):
             result = original(*args, **kwargs)
             committed.set()
-            if not release.wait(8):
+            # The test always releases the gate; this wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('Fixture result gate timeout')
             return result
         with patch.object(self.runtime, 'work_action', side_effect=delayed):

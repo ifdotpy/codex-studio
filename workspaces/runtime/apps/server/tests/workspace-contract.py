@@ -481,7 +481,9 @@ class WorkspaceContract(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=1) as pool:
             with self.runtime.lock:
                 result = pool.submit(self.runtime.workspace_snapshot, lead["id"], view="inbox")
-                snapshot = result.result(timeout=1)
+                # A read that waits for Runtime.lock stays blocked while this thread holds
+                # it, so half the hang guard only absorbs load and still fails on it.
+                snapshot = result.result(timeout=HANG_GUARD_SECONDS / 2)
         self.assertIn("inbox", snapshot)
 
     def test_slow_checkpoint_read_does_not_block_limits(self):
@@ -499,10 +501,12 @@ class WorkspaceContract(unittest.TestCase):
             try:
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 limits = pool.submit(self.runtime.limits)
-                self.assertIsNone(limits.result(timeout=1)["error"])
+                # Limits that wait for the held checkpoint reader stay blocked until the
+                # release below, so half the hang guard only absorbs load.
+                self.assertIsNone(limits.result(timeout=HANG_GUARD_SECONDS / 2)["error"])
             finally:
                 release.set()
-            self.assertIn("checkpoints", snapshot.result(timeout=1))
+            self.assertIn("checkpoints", snapshot.result(timeout=HANG_GUARD_SECONDS))
 
     def test_workspace_read_uses_one_committed_snapshot(self):
         lead = self.lead()
@@ -602,7 +606,8 @@ class WorkspaceContract(unittest.TestCase):
         gate = threading.Barrier(len(workers))
 
         def claim(worker):
-            gate.wait(5)
+            # The barrier timeout only guards against a hang while the workers start.
+            gate.wait(HANG_GUARD_SECONDS)
             try:
                 return self.action(worker, task, "claim")["owner"]
             except ValueError as error:
@@ -1404,7 +1409,7 @@ class WorkspaceContract(unittest.TestCase):
         with patch.object(type(self.runtime), "snapshot_tree", side_effect=NameError("git add timed out")):
             with self.assertRaises(PreparationPending) as pending:
                 self.runtime.prepare(self.runtime.agent(worker["id"]))
-            pending.exception.future.result(timeout=5)
+            pending.exception.future.result(timeout=HANG_GUARD_SECONDS)
             prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
         self.assertTrue(prepared.get("threadId"))
         with self.runtime.db() as db:
@@ -1419,7 +1424,7 @@ class WorkspaceContract(unittest.TestCase):
         with patch.object(type(self.runtime), "capture_checkpoint", side_effect=NameError("capture timed out")):
             with self.assertRaises(PreparationPending) as pending:
                 self.runtime.prepare(self.runtime.agent(worker["id"]))
-            pending.exception.future.result(timeout=5)
+            pending.exception.future.result(timeout=HANG_GUARD_SECONDS)
             prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
         self.assertTrue(prepared.get("threadId"))
         self.assertIn("capture timed out", self.runtime.agent(worker["id"])["checkpointError"])
