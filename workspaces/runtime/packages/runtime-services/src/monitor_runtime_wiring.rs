@@ -139,6 +139,14 @@ pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     fn await_exit(&self, _snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
         Err(MonitorError::Unavailable("provider-session/monitor-result"))
     }
+    /// Whether this process still owns a waiter that will deliver the exit of
+    /// this running command: its start, its command/exec reply, or its retained
+    /// exit receipt. `None` means the port cannot tell; such a command is never
+    /// staged by the orphan check. `Some(false)` stages an exact-identity
+    /// reattach, so a command whose process is gone is settled once.
+    fn exit_owned(&self, _id: &str) -> Option<bool> {
+        None
+    }
     /// Reserve through the account owner, using liveness:{id}:{generation}.
     /// Return promptly; completion is delivered as MonitorEvent::Probe.
     fn probe<'a>(
@@ -159,6 +167,7 @@ pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
 struct Scan {
     monitor: String,
     stall_monitor: Option<String>,
+    orphan_monitor: Option<String>,
     rule: i64,
     recovering_rules: bool,
     recovering_receipts: bool,
@@ -599,6 +608,7 @@ impl MonitorRuntime {
         // Output-age stall decisions require a drained result queue and recovered
         // result receipts. Cancellation and rule work above does not.
         let mut stall_more = false;
+        let mut orphan_more = false;
         if drained && !result_batch_full && failure.is_none() {
             match monitor_runtime::tick_page(&self.store, now, scan.stall_monitor.as_deref()).await
             {
@@ -620,6 +630,10 @@ impl MonitorRuntime {
                     record_tick_failure(&mut failure, error);
                 }
             }
+            match self.settle_orphans(&mut scan, now).await {
+                Ok(more) => orphan_more = more,
+                Err(error) => record_tick_failure(&mut failure, error),
+            }
         }
         match failure {
             Some(error) => Err(error),
@@ -627,10 +641,44 @@ impl MonitorRuntime {
                 || attach_more
                 || !drained
                 || stall_more
+                || orphan_more
                 || start_more
                 || cancel_more
                 || rules_more),
         }
+    }
+
+    /// Stage a reattach for each running command whose exit has no owner in
+    /// this process. Runs only on a drained result queue, so a queued exit is
+    /// always delivered first. Returns whether another pass is due now: a
+    /// staged command needs the reattach pass, a full page needs the next page.
+    async fn settle_orphans(&self, scan: &mut Scan, now: f64) -> Result<bool, MonitorError> {
+        let ids =
+            monitor_runtime::unqueued_running_ids(&self.store, scan.orphan_monitor.as_deref())
+                .await?;
+        let full = ids.len() == monitor_runtime::MONITOR_TICK_BATCH;
+        scan.orphan_monitor = if full { ids.last().cloned() } else { None };
+        let mut staged = false;
+        for id in ids {
+            if self.port.exit_owned(&id) != Some(false) {
+                continue;
+            }
+            match monitor_runtime::reconcile_orphan(&self.store, &id, now).await {
+                Ok(true) => {
+                    crate::diagnostics::log_stderr(format_args!(
+                        "monitor {id} has no exit owner; reattaching its exact operation"
+                    ));
+                    staged = true;
+                }
+                Ok(false) => {}
+                // A store failure retries this pass from durable state.
+                Err(error) if error.store_failure_for_task() => return Err(error),
+                // A refused owner (for example a deleted or remote agent) keeps
+                // its row; it must not block the other commands of this pass.
+                Err(_) => {}
+            }
+        }
+        Ok(staged || full)
     }
 
     async fn quarantine_delivery(
@@ -1277,9 +1325,11 @@ pub fn start(
                         runtime.request_receipt_recovery().await;
                         immediate = true;
                     }
-                    Err(error) if error.store_failure_for_task() => return Err(error),
+                    Err(error) if error.stops_runtime_task() => return Err(error),
                     Err(error) => {
-                        eprintln!("monitor filesystem watcher unavailable: {error}");
+                        crate::diagnostics::log_stderr(format_args!(
+                            "monitor filesystem watcher unavailable: {error}"
+                        ));
                         runtime.record_watcher_error(&error);
                         watcher_retry_at = Some(now + watcher_retry_delay);
                         watcher_retry_delay = (watcher_retry_delay * 2).min(ERROR_RETRY_MAX);
@@ -1328,10 +1378,12 @@ pub fn start(
                             runtime.loop_activity.watch_updated.notify_one();
                         }
                         if let Err(error) = update_result {
-                            if error.store_failure_for_task() {
+                            if error.stops_runtime_task() {
                                 return Err(error);
                             }
-                            eprintln!("monitor rule filesystem watcher update failed: {error}");
+                            crate::diagnostics::log_stderr(format_args!(
+                                "monitor rule filesystem watcher update failed: {error}"
+                            ));
                             runtime.record_watcher_error(&error);
                             watcher = None;
                             watched_rule_directories.clear();
@@ -1340,7 +1392,7 @@ pub fn start(
                             watcher_retry_delay = (watcher_retry_delay * 2).min(ERROR_RETRY_MAX);
                         }
                     }
-                    Err(error) if error.store_failure_for_task() => return Err(error),
+                    Err(error) if error.stops_runtime_task() => return Err(error),
                     Err(error) => {
                         runtime.record_runtime_error(&error);
                         retry_at = Some(tokio::time::Instant::now() + retry_delay);
@@ -1369,7 +1421,7 @@ pub fn start(
                     }
                 },
                 Ok(None) => None,
-                Err(error) if error.store_failure_for_task() => return Err(error),
+                Err(error) if error.stops_runtime_task() => return Err(error),
                 Err(error) => {
                     runtime.record_runtime_error(&error);
                     let deadline = tokio::time::Instant::now() + retry_delay;
@@ -1532,7 +1584,9 @@ async fn install_file_watcher(
                         .fetch_add(1, Ordering::SeqCst);
                     callback_activity.watch_event.notify_one();
                 }
-                eprintln!("monitor filesystem watcher requested a rescan: {error}");
+                crate::diagnostics::log_stderr(format_args!(
+                    "monitor filesystem watcher requested a rescan: {error}"
+                ));
                 receipt_events.send_replace(true);
                 rule_events.send_replace(true);
                 watch_reset.send_replace(());

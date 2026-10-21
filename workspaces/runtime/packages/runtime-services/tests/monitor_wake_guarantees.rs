@@ -461,3 +461,243 @@ async fn unknown_submission_enters_the_same_reconciliation_and_wakes_once() {
         .expect("repeat");
     assert_wake(&store, "lost");
 }
+
+/// Fail every monitor row write that stages a reattach, as a full disk fails a
+/// SQLite write. The trigger is the exact terminal write of an Unknown start.
+const FAIL_RECONCILE_WRITE: &str = "CREATE TRIGGER fail_reconcile_insert BEFORE INSERT ON runtime_monitors WHEN json_extract(NEW.record,'$.reattachRecovery.status')='running' BEGIN SELECT RAISE(ABORT,'database or disk is full'); END; CREATE TRIGGER fail_reconcile_update BEFORE UPDATE ON runtime_monitors WHEN json_extract(NEW.record,'$.reattachRecovery.status')='running' BEGIN SELECT RAISE(ABORT,'database or disk is full'); END;";
+const FREE_RECONCILE_WRITE: &str =
+    "DROP TRIGGER fail_reconcile_insert; DROP TRIGGER fail_reconcile_update;";
+
+#[tokio::test]
+async fn unknown_submission_reconciliation_is_retried_after_a_failed_write_and_wakes_once() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use studio_runtime_services::{
+        monitor_driver::{self, MonitorNative, Submission},
+        monitor_policy::{Effect, MonitorError},
+    };
+    /// The account worker ended while the command ran, so the reply is
+    /// Unknown. The first pause frees the disk, as the user did.
+    struct FullDiskPort<'a> {
+        store: &'a RuntimeStore,
+        pauses: AtomicU32,
+    }
+    impl MonitorNative for FullDiskPort<'_> {
+        fn submit<'a>(
+            &'a self,
+            _: &'a Operation,
+            _: &'a Effect,
+        ) -> futures_util::future::BoxFuture<'a, Submission> {
+            Box::pin(async { Submission::Unknown })
+        }
+        fn terminal_write_pause<'a>(
+            &'a self,
+            attempt: u32,
+            error: &'a MonitorError,
+        ) -> futures_util::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                assert!(error.retryable_store_failure(), "{error}");
+                assert_eq!(self.pauses.fetch_add(1, Ordering::SeqCst) + 1, attempt);
+                self.store
+                    .transaction(|tx| Ok(tx.execute_batch(FREE_RECONCILE_WRITE)?))
+                    .await
+                    .expect("free the disk");
+            })
+        }
+    }
+    let (_root, store, id, operation) = fixture().await;
+    let selected = id.clone();
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status','starting'),'$.operation') WHERE id=?1", [selected])?;
+        Ok(())
+    }).await.expect("unsubmitted");
+    let (snapshot, actor) = store
+        .read_async("test/prepare", move |tx| monitor_runtime::snapshot(tx, &id))
+        .await
+        .expect("snapshot");
+    let prepared = monitor_runtime::PreparedStart {
+        monitor: snapshot.record().clone(),
+        actor: actor.value(),
+        operation,
+        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record()["cwd"], "timeoutMs":snapshot.record()["timeout_ms"], "sandboxPolicy":{"type":"readOnly"}}),
+    };
+    store
+        .transaction(|tx| Ok(tx.execute_batch(FAIL_RECONCILE_WRITE)?))
+        .await
+        .expect("fill the disk");
+    let port = FullDiskPort {
+        store: &store,
+        pauses: AtomicU32::new(0),
+    };
+    assert!(matches!(
+        monitor_driver::start(&store, &port, snapshot.id(), &prepared, 2001.0)
+            .await
+            .expect("an Unknown start is reconciled once the store accepts the write"),
+        Submission::Unknown
+    ));
+    assert_eq!(port.pauses.load(Ordering::SeqCst), 1, "one failed write");
+    let monitor = MonitorsRepository::get(&store.test_reader().expect("reader"), snapshot.id())
+        .expect("read")
+        .expect("monitor");
+    assert_eq!(monitor.value()["status"], "running");
+    assert_eq!(monitor.value()["reattachRecovery"]["status"], "running");
+    assert_eq!(fixtures::events(&store), json!([]));
+    monitor_runtime::settle_reattach(&store, snapshot.id(), "provider_rejected", 2002.0)
+        .await
+        .expect("decided lost");
+    assert_wake(&store, "lost");
+}
+
+mod orphan {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use studio_runtime_services::{
+        monitor_driver::{MonitorNative, Submission},
+        monitor_policy::{Effect, MonitorError, MonitorSnapshot, ReattachOutcome},
+        monitor_runtime_wiring::{Delivery, InputReply, MonitorPort, MonitorRuntime},
+        rules_engine::RuleCheck,
+        rules_tick::{CheckReconciliation, CheckSubmission, RuleMonitor, RulesTickError},
+    };
+
+    /// A port whose command/exec reply future is gone: the account worker
+    /// ended, so no waiter in this process will ever deliver the exit.
+    struct OrphanPort {
+        owned: bool,
+        reattaches: AtomicUsize,
+    }
+    impl MonitorNative for OrphanPort {
+        fn submit<'a>(
+            &'a self,
+            _: &'a Operation,
+            _: &'a Effect,
+        ) -> futures_util::future::BoxFuture<'a, Submission> {
+            Box::pin(async { Submission::Unknown })
+        }
+    }
+    impl RuleMonitor for OrphanPort {
+        fn available(&self) -> bool {
+            false
+        }
+        fn launch<'a>(
+            &'a self,
+            _: &'a RuleCheck,
+        ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+            Box::pin(async { CheckSubmission::Unknown })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: &'a RuleCheck,
+        ) -> futures_util::future::BoxFuture<'a, CheckReconciliation> {
+            Box::pin(async { CheckReconciliation::Unknown })
+        }
+        fn cancel<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    impl MonitorPort for OrphanPort {
+        fn next(
+            &self,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<Delivery>, MonitorError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn acknowledge<'a>(
+            &'a self,
+            _: &'a Delivery,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn exit_owned(&self, _: &str) -> Option<bool> {
+            Some(self.owned)
+        }
+        fn reattach<'a>(
+            &'a self,
+            _: &'a MonitorSnapshot,
+        ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
+            Box::pin(async move {
+                self.reattaches.fetch_add(1, Ordering::SeqCst);
+                // The provider does not know the exact `monitor:<id>` operation.
+                Ok(ReattachOutcome::Gone("operation_not_accepted".into()))
+            })
+        }
+        fn probe<'a>(
+            &'a self,
+            _: &'a str,
+            _: i64,
+            _: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn input_reply<'a>(
+            &'a self,
+            _: &'a Operation,
+            _: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, InputReply> {
+            Box::pin(async { InputReply::Unknown("unused".into()) })
+        }
+    }
+
+    async fn runtime(
+        owned: bool,
+    ) -> (
+        tempfile::TempDir,
+        Arc<RuntimeStore>,
+        Arc<OrphanPort>,
+        MonitorRuntime,
+        String,
+    ) {
+        let (root, store, id, _) = fixture().await;
+        let store = Arc::new(store);
+        let port = Arc::new(OrphanPort {
+            owned,
+            reattaches: AtomicUsize::new(0),
+        });
+        let runtime = MonitorRuntime::new(
+            Arc::clone(&store),
+            port.clone(),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        (root, store, port, runtime, id)
+    }
+
+    fn monitor(store: &RuntimeStore, id: &str) -> Value {
+        MonitorsRepository::get(&store.test_reader().expect("reader"), id)
+            .expect("read")
+            .expect("monitor")
+            .value()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn running_command_without_an_exit_owner_is_reattached_and_settled_once() {
+        let (_root, store, port, runtime, id) = runtime(false).await;
+        runtime.tick(2001.0).await.expect("orphan check");
+        assert_eq!(
+            monitor(&store, &id)["reattachRecovery"]["status"],
+            "running"
+        );
+        assert_eq!(fixtures::events(&store), json!([]));
+        runtime.tick(2002.0).await.expect("exact reattach");
+        assert_eq!(port.reattaches.load(Ordering::SeqCst), 1);
+        assert_eq!(monitor(&store, &id)["status"], "lost");
+        assert_wake(&store, "lost");
+        runtime.tick(2003.0).await.expect("idle tick");
+        runtime.tick(2004.0).await.expect("idle tick");
+        assert_eq!(port.reattaches.load(Ordering::SeqCst), 1);
+        assert_wake(&store, "lost");
+    }
+
+    #[tokio::test]
+    async fn running_command_with_a_live_exit_owner_is_left_to_its_owner() {
+        let (_root, store, port, runtime, id) = runtime(true).await;
+        runtime.tick(2001.0).await.expect("orphan check");
+        runtime.tick(2002.0).await.expect("second tick");
+        assert_eq!(port.reattaches.load(Ordering::SeqCst), 0);
+        let record = monitor(&store, &id);
+        assert_eq!(record["status"], "running");
+        assert!(record.get("reattachRecovery").is_none());
+        assert_eq!(fixtures::events(&store), json!([]));
+    }
+}
