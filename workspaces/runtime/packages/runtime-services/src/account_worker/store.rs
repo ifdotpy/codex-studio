@@ -1706,7 +1706,29 @@ fn journal_one(
                 params,
             )?;
         }
-        if let Some((method, params)) = notice
+        if let Some(("account/rateLimits/updated", params)) = notice {
+            if let Some(source) = publication.native_source.as_ref()
+                && source.account == account
+                && source.generation == Some(entry.generation.0)
+            {
+                let update = crate::account_session_runtime::LimitsUpdate {
+                    scope: crate::account_session_runtime::ConnectionScope {
+                        account: account.to_owned(),
+                        connection: source.connection.clone(),
+                        generation: entry.generation.0,
+                    },
+                    cursor: entry.cursor.0,
+                    observed_at: now(),
+                    data: params.clone(),
+                };
+                crate::account_session_runtime::LimitsSnapshot::read(
+                    account,
+                    json!({"accountKey":account,"at":update.observed_at,"data":update.data}),
+                )
+                .map_err(|_| invalid(&operation))?;
+                effect = Some(Effect::LimitsUpdated(update));
+            }
+        } else if let Some((method, params)) = notice
             && let Some((agent, epoch)) = steer::acknowledge(tx, account, method, params)?
         {
             // Delivered busy-turn input frees the agent for its next queued input.

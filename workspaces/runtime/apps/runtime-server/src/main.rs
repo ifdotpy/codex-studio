@@ -38,6 +38,7 @@ use studio_runtime_services::account_driver::{
     AccountDriver, create_default_registry, resolve_codex_home,
 };
 use studio_runtime_services::account_policy::AccountPolicyState;
+use studio_runtime_services::account_session_runtime::AccountSessionPort;
 use studio_runtime_services::diagnostics::log_stderr;
 use studio_runtime_store::{ObservedTable, RuntimeStore, account_state};
 use tokio::net::TcpListener;
@@ -52,6 +53,8 @@ const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 // Retry failed durable scheduler work after this bounded delay; commits can wake sooner.
 const SCHEDULER_FAILURE_RETRY: Duration = Duration::from_secs(30);
 const CONTINUATION_FAILURE_RETRY_SECONDS: f64 = 60.0;
+/// Maximum simultaneous account limits reads in one continuation tick. Unit: accounts.
+const CONTINUATION_LIMIT_READ_CONCURRENCY: usize = 4;
 const AUTH_RESUME_PROOF_PENDING_PREDICATE: &str = "json_type(record,'$.authResumeProofPending')='object' AND json(json_extract(record,'$.authResumeProofPending')) <> '{}'";
 const CURRENT_USAGE_RESUME_DUE_ROWS: &str = "SELECT resume.agent AS agent,CAST(json_extract(resume.record,'$.dueAt') AS REAL) AS due FROM runtime_usage_resumes AS resume JOIN runtime_agents AS owner ON owner.id=resume.agent AND json_extract(owner.record,'$.usageResume.id')=resume.id WHERE json_extract(resume.record,'$.status')='scheduled' AND json_type(resume.record,'$.dueAt') IN ('integer','real')";
 const CURRENT_CAPACITY_RETRY_DUE_ROWS: &str = "SELECT retry.agent AS agent,CAST(json_extract(retry.record,'$.dueAt') AS REAL) AS due FROM runtime_capacity_retries AS retry JOIN runtime_agents AS owner ON owner.id=retry.agent AND json_extract(owner.record,'$.capacityRetry.id')=retry.id WHERE json_extract(retry.record,'$.status')='scheduled' AND json_type(retry.record,'$.dueAt') IN ('integer','real')";
@@ -1002,6 +1005,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
+        Arc::clone(&account_session),
         Arc::clone(&registry_wake),
         monitor_shutdown.subscribe(),
     ));
@@ -1319,6 +1323,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
 async fn continuation_scheduler(
     store: Arc<RuntimeStore>,
     wake: Arc<Notify>,
+    account_session: Arc<dyn AccountSessionPort>,
     event_wake: Arc<Notify>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -1368,7 +1373,9 @@ async fn continuation_scheduler(
             ContinuationWait::Due => {
                 let store_for_tick = Arc::clone(&store);
                 let tick_now = epoch_seconds();
-                let result = run_continuation_tick(store_for_tick, tick_now).await;
+                let result =
+                    run_continuation_tick(store_for_tick, tick_now, Some(account_session.as_ref()))
+                        .await;
                 match result {
                     Ok(changed) => {
                         retry_not_before = None;
@@ -1422,59 +1429,67 @@ async fn wait_for_continuation(
 async fn run_continuation_tick(
     store: Arc<RuntimeStore>,
     now: f64,
+    account_session: Option<&dyn AccountSessionPort>,
 ) -> studio_runtime_store::StoreResult<bool> {
-    let (agents, limits) = store
-        .read_async("runtime-server/continuation-inputs", move |db| {
-            let agents = continuation_tick_agents(db, now)?;
-            let limits = account_state::limits_snapshots(db)?
-                .snapshots
-                .into_iter()
-                .filter_map(|(account_key, value)| {
-                    let mut value = value;
-                    if value.get("accountKey").is_none() {
-                        value["accountKey"] = serde_json::json!(account_key);
-                    }
-                    studio_runtime_services::usage_resume::LimitsObservation::from_record(
-                        value, None,
-                    )
-                    .ok()
-                    .map(|limits| (account_key, limits))
-                })
-                .collect::<BTreeMap<_, _>>();
-            Ok::<_, studio_runtime_store::StoreError>((agents, limits))
-        })
-        .await?;
-    let mut changed = false;
-    for agent_id in agents {
-        let observations = limits.clone();
-        let agent = agent_id.clone();
-        let staged = store.transaction_with(move |tx| {
-            let agent_id = agent;
-            let account: Option<String> = tx
-                .query_row(
-                    "SELECT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents WHERE id=?1",
-                    [&agent_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(account) = account else { return Ok(false) };
-            let observation = observations.get(&account);
-            let stage = studio_runtime_services::continuation_runtime::stage_tick(
-                tx,
-                &agent_id,
-                now,
-                observation,
-            )
-            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
-            Ok::<_, studio_runtime_store::StoreError>(stage.changed())
-        }).await;
-        // One agent's bad data must not hold back the other due agents.
-        match staged {
-            Ok(staged) => changed |= staged,
-            Err(error) => eprintln!("continuation tick skipped agent {agent_id}: {error}"),
+    use futures_util::StreamExt;
+    let started = std::time::Instant::now();
+    let groups = store.read_async("runtime-server/continuation-inputs", move |db| {
+        let mut groups = BTreeMap::<String,(Vec<String>,Option<f64>)>::new();
+        for agent in continuation_tick_agents(db,now)? {
+            let account:String=db.query_row("SELECT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents WHERE id=?1",[&agent],|row|row.get(0))?;
+            let usage_after:Option<f64>=db.query_row("SELECT MAX(COALESCE(CAST(json_extract(resume.record,'$.failedAt') AS REAL),0),COALESCE(CAST(json_extract(resume.record,'$.lastCheckedAt') AS REAL),0)) FROM runtime_usage_resumes AS resume JOIN runtime_agents AS owner ON owner.id=resume.agent AND json_extract(owner.record,'$.usageResume.id')=resume.id WHERE resume.agent=?1 AND json_extract(resume.record,'$.status')='scheduled' AND json_extract(resume.record,'$.dueAt')<=?2",rusqlite::params![agent,now],|row|row.get(0)).optional()?;
+            let group=groups.entry(account).or_default();
+            group.0.push(agent);
+            if let Some(after)=usage_after {group.1=Some(group.1.map_or(after,|previous|previous.max(after)));}
         }
-    }
-    Ok(changed)
+        Ok::<_,studio_runtime_store::StoreError>(groups)
+    }).await?;
+    // Read once per due account, then stage its agents immediately. A failed read
+    // supplies no observation. Capacity retries and completed auth proofs need no read.
+    let results=futures_util::stream::iter(groups).map(|(account,(agents,usage_after))| {
+        let store=store.clone();
+        async move {
+            let fresh = if let Some(after)=usage_after {
+                match account_session {
+                    Some(session) => session.read_limits_for_resume(&account,after).await.ok(),
+                    None => None,
+                }
+            } else {None};
+            let mut changed=false;
+            for agent in agents {
+                let account=account.clone();
+                let fresh=fresh.clone();
+                // A read can move the due time. Use the time after it commits.
+                let tick_now=now+started.elapsed().as_secs_f64();
+                let agent_id=agent.clone();
+                let staged=store.transaction_with(move |tx| {
+                    let current_account:Option<String>=tx.query_row("SELECT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents WHERE id=?1",[&agent],|row|row.get(0)).optional()?;
+                    if current_account.as_deref()!=Some(account.as_str()) {return Ok(false);}
+                    let observation=if let Some(mut value)=fresh {
+                        // A notification can commit between the read and this transaction.
+                        // Prefer that newer snapshot, including a new rejection.
+                        let raw:Option<String>=tx.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",[],|row|row.get(0)).optional()?;
+                        if let Some(raw)=raw
+                            && let Ok(entity)=serde_json::from_str::<serde_json::Value>(&raw)
+                            && let Some(current)=entity.pointer("/value/rateLimitsByAccount").and_then(|by_account|by_account.get(&account))
+                            && current["at"].as_f64().unwrap_or(0.0)>=value["at"].as_f64().unwrap_or(0.0)
+                        {value=current.clone();}
+                        studio_runtime_services::usage_resume::LimitsObservation::from_record(value,None).ok()
+                            .filter(|observation|observation.account_key()==account)
+                    } else {None};
+                    let stage=studio_runtime_services::continuation_runtime::stage_tick(tx,&agent,tick_now,observation.as_ref())
+                        .map_err(|error|studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
+                    Ok::<_,studio_runtime_store::StoreError>(stage.changed())
+                }).await;
+                match staged {
+                    Ok(staged)=>changed|=staged,
+                    Err(error)=>eprintln!("continuation tick skipped agent {agent_id}: {error}"),
+                }
+            }
+            changed
+        }
+    }).buffer_unordered(CONTINUATION_LIMIT_READ_CONCURRENCY).collect::<Vec<_>>().await;
+    Ok(results.into_iter().any(|changed| changed))
 }
 
 fn auth_resume_proof_exists(
@@ -1959,6 +1974,95 @@ mod exit_logging_tests {
         assert!(error.to_string().contains("active account worker"));
     }
 
+    struct TickLimits {
+        calls: std::sync::atomic::AtomicUsize,
+        allowed: bool,
+        newer_rejection: Option<Arc<studio_runtime_store::RuntimeStore>>,
+    }
+    impl studio_runtime_services::account_session_runtime::AccountSessionPort for TickLimits {
+        fn read_limits<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            serde_json::Value,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if !self.allowed {
+                    return Err(studio_runtime_services::account_session_runtime::AccountSessionError::Unknown);
+                }
+                if let Some(store) = &self.newer_rejection {
+                    store.transaction_with(|tx| {
+                        studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":1001.0,"data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":2000.0}}}}}}),false)
+                    }).await.unwrap();
+                }
+                Ok(
+                    serde_json::json!({"accountKey":account,"at":1000.0,"data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}}}),
+                )
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn continuation_tick_reads_fresh_limits_once_per_account_and_fails_closed() {
+        for (allowed, newer_rejection) in [(true, false), (false, false), (true, true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                    .await
+                    .unwrap(),
+            );
+            store.transaction_with(move |tx| {
+                for id in ["a", "b"] {
+                    let resume = serde_json::json!({"id":id,"accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":900.0,"dueAt":990.0,"taskClaims":[],"updatedAt":980.0});
+                    let agent = serde_json::json!({"id":id,"rootId":id,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume});
+                    tx.execute("INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",[id,&agent.to_string()])?;
+                    tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES (?1,?1,?2)",[id,&resume.to_string()])?;
+                }
+                // A recent cache entry cannot replace the provider read at the due time.
+                studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":999.0,"data":{"rateLimits":{"primary":{"usedPercent":0.0}}}}}}),false)?;
+                Ok::<_,studio_runtime_store::StoreError>(())
+            }).await.unwrap();
+            let port = TickLimits {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                allowed,
+                newer_rejection: newer_rejection.then(|| store.clone()),
+            };
+            run_continuation_tick(store.clone(), 1000.0, Some(&port))
+                .await
+                .unwrap();
+            assert_eq!(port.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            let db = store.test_reader().unwrap();
+            let record: String = db
+                .query_row(
+                    "SELECT record FROM runtime_usage_resumes WHERE id='a'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+            assert_eq!(
+                record["status"],
+                if allowed && !newer_rejection {
+                    "started"
+                } else {
+                    "scheduled"
+                }
+            );
+            if !allowed || newer_rejection {
+                assert!(record["dueAt"].as_f64().unwrap() > 1000.0);
+            }
+            drop(db);
+            run_continuation_tick(store.clone(), 1000.0, Some(&port))
+                .await
+                .unwrap();
+            assert_eq!(port.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            let count:i64=store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_events WHERE id IN ('usage-resume:a','usage-resume:b')",[],|row|row.get(0)).unwrap();
+            assert_eq!(count, if allowed && !newer_rejection { 2 } else { 0 });
+        }
+    }
+
     #[tokio::test]
     async fn continuation_tick_reads_its_inputs_in_one_checkout() {
         let directory = tempfile::tempdir().expect("state directory");
@@ -1967,7 +2071,7 @@ mod exit_logging_tests {
                 .await
                 .expect("runtime store"),
         );
-        let changed = run_continuation_tick(store, 0.0)
+        let changed = run_continuation_tick(store, 0.0, None)
             .await
             .expect("a tick with nothing due succeeds");
         assert!(!changed);
@@ -2001,7 +2105,7 @@ mod exit_logging_tests {
             })
             .await
             .expect("seed agents");
-        let changed = run_continuation_tick(Arc::clone(&store), 2.0)
+        let changed = run_continuation_tick(Arc::clone(&store), 2.0, None)
             .await
             .expect("one failing agent does not fail the tick");
         assert!(changed, "the valid agent is staged");
