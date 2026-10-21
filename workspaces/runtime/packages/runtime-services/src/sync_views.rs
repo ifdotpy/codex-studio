@@ -255,6 +255,8 @@ pub struct AgentViewContext {
     pub launcher_alive: bool,
     pub empty_lead: bool,
     pub latest_work_result_file: Option<String>,
+    pub command_progress: Vec<studio_runtime_schema::agent_progress::AgentCommandProgress>,
+    pub stall: Option<studio_runtime_schema::agent_progress::AgentStall>,
 }
 
 /// Minimal displayable record for an agent whose stored schema failed. Keep
@@ -280,6 +282,14 @@ pub(crate) fn invalid_agent_view(id: &str, record: &Value, diagnostic: &str) -> 
 pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<Value> {
     let id = record.get("id").and_then(Value::as_str)?;
     let mut view = record.as_object()?.clone();
+    view.insert(
+        "commandProgress".to_owned(),
+        serde_json::to_value(&context.command_progress).ok()?,
+    );
+    view.insert(
+        "stall".to_owned(),
+        serde_json::to_value(&context.stall).ok()?,
+    );
     let remote_server = record
         .pointer("/remoteWorker/server")
         .and_then(Value::as_str)

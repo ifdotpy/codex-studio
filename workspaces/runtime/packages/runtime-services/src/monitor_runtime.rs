@@ -230,6 +230,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
                     serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
                 )?;
                 repository::put(tx, decision.record)?;
+                crate::agent_progress::publish_owner(tx, &actor.id.0)?;
                 crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
                     deleted
                         || studio_runtime_schema::validate("MonitorEntityDto", view)
@@ -506,6 +507,7 @@ pub async fn answer_approval(
                 }
             }
             repository::put(tx, monitor)?;
+            crate::agent_progress::publish_owner(tx, &actor.id.0)?;
             crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
                 deleted
                     || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
@@ -806,6 +808,7 @@ pub fn apply_with_rule(
     }
     if before.record() != &decision.record {
         repository::put(tx, decision.record.clone())?;
+        crate::agent_progress::publish_owner(tx, &actor.id.0)?;
         crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
             deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
         })?;
@@ -1223,6 +1226,7 @@ pub fn create_in_transaction(
         return Err(MonitorError::Refused("Maximum 64 active command watches"));
     }
     repository::put(tx, record.clone())?;
+    crate::agent_progress::publish_owner(tx, &actor.id.0)?;
     if record["status"] == "approval" {
         let approval = studio_runtime_store::RequestRecord::from_value(json!({
             "id":format!("monitor-approval:{id}"), "method":"monitor/approve", "agent":actor_id,

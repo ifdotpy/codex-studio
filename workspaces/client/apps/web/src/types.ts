@@ -152,6 +152,7 @@ export const statusLabel = (
     starting: "Starting",
     queued: "Queued",
     waiting: "Turn ended",
+    waiting_on_monitor: "Waiting on command",
     completed: "Complete",
     failed: "Failed",
     paused: "Stopped",

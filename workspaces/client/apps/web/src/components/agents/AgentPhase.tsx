@@ -19,6 +19,7 @@ import { nativeThreadError } from "../../nativeErrors";
 import { startWaitLabel } from "../../startWait";
 import { displayError, errorDetails } from "../../errorPresentation";
 import ErrorDescription from "../ErrorDescription";
+import { commandWaitLabel } from "./AgentProgress";
 import {
   endedWaitLabel,
   type ChatWaitState,
@@ -90,6 +91,7 @@ export default function AgentPhase({
     error: "Codex reported an error",
     queued: startWaitLabel(agent) || "Queued",
     waiting: wait?.label || endedWaitLabel,
+    waiting_on_monitor: commandWaitLabel(agent),
     parked: wait?.label || endedWaitLabel,
     approval: "Waiting for your answer",
     failed: "Failed",
@@ -109,6 +111,7 @@ export default function AgentPhase({
     running: LoaderCircle,
     queued: Clock3,
     waiting: Circle,
+    waiting_on_monitor: Clock3,
     acknowledgement: Clock3,
     retrying: LoaderCircle,
     "capacity-retry": Clock3,

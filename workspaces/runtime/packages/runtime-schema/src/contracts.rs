@@ -184,6 +184,44 @@ fn multi_server_protocol_ts() -> String {
     )
 }
 
+/// Project the Rust-owned primitive progress schemas into strict Python DTOs.
+fn agent_progress_py() -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct ModelFields {
+        properties: std::collections::BTreeMap<String, ModelField>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ModelField {
+        #[serde(rename = "type")]
+        kind: FieldKind,
+        #[serde(rename = "title")]
+        _title: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum FieldKind {
+        String,
+        Number,
+    }
+    let mut text = format!("# {HEADER}\nfrom studio_api.models import ContractModel\n");
+    for (name, schema) in crate::agent_progress::schemas() {
+        let fields: ModelFields =
+            serde_json::from_value(schema).map_err(|error| error.to_string())?;
+        // Formatting into this owned String is infallible.
+        writeln!(text, "\n\nclass {name}(ContractModel):").expect("writing to a String");
+        for (name, field) in fields.properties {
+            let kind = match field.kind {
+                FieldKind::String => "str",
+                FieldKind::Number => "float",
+            };
+            // Formatting into this owned String is infallible.
+            writeln!(text, "    {name}: {kind}").expect("writing to a String");
+        }
+    }
+    Ok(text)
+}
+
 fn delivery_moment_ts() -> String {
     let mut text = format!("// {HEADER}\nexport const DeliveryMoment = {{\n");
     for moment in DeliveryMoment::ALL {
@@ -340,6 +378,7 @@ fn expect_number(document: &Value, pointer: &str, expected: i64) -> Result<(), S
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     check_delivery_parity(openapi)?;
+    crate::agent_progress::check_schema_parity(openapi)?;
     expect_number(
         openapi,
         "/components/schemas/ManagedMessageBody/properties/assets/maxItems",
@@ -525,6 +564,11 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/runtime/apps/server/src/studio_api/sync/agent_progress_generated.py"
+                .into(),
+            text: agent_progress_py()?,
+        },
         Rendered {
             path: web("deliveryMoment.ts"),
             text: delivery_moment_ts(),

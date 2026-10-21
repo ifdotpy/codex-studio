@@ -2,6 +2,7 @@
 //! runtime contracts (`contracts` renders their copies in other languages).
 
 pub mod agent_limits;
+pub mod agent_progress;
 pub mod api_schema;
 pub mod contracts;
 pub mod delivery;
