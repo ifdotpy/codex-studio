@@ -685,7 +685,7 @@ mod archive_finished_tests {
             let output =
                 crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
                     program: std::ffi::OsStr::new("git"),
-                    cwd: repository.as_os_str(),
+                    git_directory: Some(repository.as_os_str()),
                     args,
                     environment: &[("GIT_TERMINAL_PROMPT", "0")],
                     input: None,
