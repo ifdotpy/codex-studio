@@ -829,7 +829,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
-      label: "Rust state migration witnesses",
+      label: "Rust state migration and SQL callback witnesses",
       commands: [
         [
           "cargo",
@@ -844,15 +844,18 @@ function fastTierCommands(root) {
             "-p",
             "studio-runtime-store",
             "--lib",
-            "agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
-            "agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once",
+            "--test",
+            "sql_callback_guard",
+            "-E",
+            "test(agent_columns::tests::migration_) | binary(sql_callback_guard) | test(sql_guard_tests::)",
           ],
         ],
       ],
       options: {
-        selector: "runtime-store agent_columns::tests::migration_",
+        selector:
+          "runtime-store agent_columns::tests::migration_ and SQL callback guard",
         reason:
-          "Check that older states migrate to current agent columns and wake indexes once.",
+          "Check that older states migrate to current agent columns and wake indexes once, and that SQL callbacks reject filesystem and process work.",
       },
     },
     {
@@ -910,6 +913,35 @@ function fastTierCommands(root) {
         selector: "monitor start preparation ownership and progress conflicts",
         reason:
           "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "Rust SQL filesystem boundary witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "nonempty work submission and unrelated reservation boundary witnesses",
+        reason:
+          "Keep filesystem work outside SQLite without rejecting unrelated reservation changes.",
       },
     },
     {

@@ -398,9 +398,10 @@ pub async fn submit(
     let agent_for_preparation = agent_id.to_owned();
     let admission = store
         .read_async("runtime-services/voice", move |connection| {
-            crate::message_admission::PreparedAdmission::load(connection, &agent_for_preparation)
+            crate::message_admission::PreparedAdmission::read(connection, &agent_for_preparation)
         })
         .await?;
+    let admission = admission.prepare().await?;
     #[cfg(test)]
     ingress_tests::support::after_preparation(agent_id);
     let agent_id = agent_id.to_owned();

@@ -112,7 +112,7 @@ pub async fn answer_async_question_in_store(
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?;
             let text = async_answer_text(&record, &data_for_preparation)?;
-            let admission = crate::message_admission::MessageIngressAdmission::load(
+            let admission = crate::message_admission::MessageIngressAdmission::read(
                 store_for_preparation,
                 transaction,
                 agent_id,
@@ -123,6 +123,7 @@ pub async fn answer_async_question_in_store(
     let Some((text, admission)) = read else {
         return Ok(None);
     };
+    let admission = admission.prepare().await?;
     let prepared = PreparedHost::load(&store).await?;
     let validate_for_transaction = std::sync::Arc::clone(&validate);
     let result = store

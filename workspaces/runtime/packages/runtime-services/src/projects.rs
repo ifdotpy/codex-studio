@@ -1108,6 +1108,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let mut ancestor = path.to_path_buf();
     let mut suffix = Vec::new();
     loop {

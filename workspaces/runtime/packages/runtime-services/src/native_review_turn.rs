@@ -178,7 +178,7 @@ async fn run_once(
         .read_async(
             "runtime-services/native_review_turn_admission",
             move |connection| {
-                crate::message_admission::MessageIngressAdmission::load(
+                crate::message_admission::MessageIngressAdmission::read(
                     admission_store,
                     connection,
                     &admission_agent,
@@ -187,6 +187,10 @@ async fn run_once(
             },
         )
         .await?;
+    let admission = admission
+        .prepare()
+        .await
+        .map_err(|_| NativeError::Unavailable("budget-policy/native-action"))?;
     let gate: Arc<dyn Admission> = Arc::new(MessageNativeAdmission::new(Arc::new(admission)));
     let preparation = ReviewPreparation {
         store: Arc::clone(&store),
@@ -534,7 +538,11 @@ impl ReviewPreparation {
         .await
         .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?
         .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?;
-        let resources = self.resources.clone();
+        let resources = self
+            .resources
+            .for_receipt(&self.store, &request.agent, Some(prepared.cwd()))
+            .await
+            .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?;
         let root = self.store.root().to_path_buf();
         let agent_id = request.agent.clone();
         let accepted = self

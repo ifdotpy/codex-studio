@@ -180,6 +180,7 @@ pub(crate) async fn perform(
             checks: required_text(&body, "checks")?,
             revision: required_text(&body, "revision")?,
             files: string_list(&body, "files")?,
+            prepared_files: None,
             state_dir: state.state_dir.clone().into(),
             vm_evidence: None,
             vm_evidence_request_id: None,

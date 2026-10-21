@@ -894,6 +894,7 @@ fn add_candidate_identity(row: &mut Value, identity: Option<Value>, companions: 
 }
 
 fn canonical_store_root(path: &Path) -> Result<PathBuf, NativeRuntimeError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let absolute = lexical_absolute(path)?;
     let mut current = PathBuf::new();
     for component in absolute.components() {

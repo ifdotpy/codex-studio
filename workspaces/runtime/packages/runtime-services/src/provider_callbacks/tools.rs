@@ -431,10 +431,11 @@ pub(super) async fn production_ports(
     let search = input.params["tool"] == "orchestration_search";
     let admission = store
         .read_async("runtime-services/provider_callbacks/tools", move |reader| {
-            crate::message_admission::PreparedAdmission::load(reader, &agent)
+            crate::message_admission::PreparedAdmission::read(reader, &agent)
                 .map_err(CallbackError::from)
         })
         .await?;
+    let admission = admission.prepare().await.map_err(CallbackError::from)?;
     let room_directory = if search {
         Some(crate::sync_entity_context::RoomDirectory::read_and_prepare(store).await?)
     } else {

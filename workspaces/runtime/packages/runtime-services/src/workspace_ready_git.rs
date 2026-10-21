@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use studio_runtime_store::workspace_ready::WorkspacePaths;
 use studio_runtime_store::workspace_ready::{
     ProvisionIdentity, ReadyToken, WorkspaceReadyRepository, reservations, workspace_generation,
 };
@@ -88,8 +89,45 @@ pub async fn prepare_with_timeout(
             )
             .await
         }
+        Ok(WorkspaceDecision::Ready { token }) => {
+            let paths = prepared_paths(&store, &agent_id, Vec::new()).await?;
+            Ok(WorkspaceDecision::Ready {
+                token: token.with_paths(paths),
+            })
+        }
         outcome => outcome,
     }
+}
+
+pub(crate) async fn prepared_paths(
+    store: &RuntimeStore,
+    agent: &str,
+    extra: Vec<PathBuf>,
+) -> Result<WorkspacePaths, WorkspaceError> {
+    let agent = agent.to_owned();
+    let (snapshot, paths) = store
+        .read_async("runtime-services/workspace-paths/sql", move |tx| {
+            Ok::<_, StoreError>((
+                CheckpointsRepository::reservation_snapshot(tx, &agent)?,
+                studio_runtime_store::AgentIndexedReads::admission_cwds(tx)?,
+            ))
+        })
+        .await?;
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace-paths/filesystem",
+        move || {
+            snapshot
+                .map(|snapshot| {
+                    WorkspacePaths::capture(
+                        &snapshot,
+                        paths.into_iter().flatten().map(PathBuf::from).chain(extra),
+                    )
+                })
+                .unwrap_or_default()
+        },
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)
 }
 
 async fn recovery_required(
@@ -303,11 +341,26 @@ async fn provision(
     plan: crate::workspace_ready::WorktreePlan,
     deadline: Instant,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
+    let expected_paths = context
+        .snapshot
+        .agents
+        .iter()
+        .chain(&context.snapshot.operations)
+        .filter_map(|row| row.record["cwd"].as_str().map(PathBuf::from))
+        .chain([plan.identity.destination.clone()])
+        .collect();
+    let paths = prepared_paths(&store, &plan.identity.agent, expected_paths).await?;
     let reserve_snapshot = context.snapshot.clone();
     let reserve_identity = plan.identity.clone();
     if !store
         .transaction(move |tx| {
-            WorkspaceReadyRepository::reserve(tx, &reserve_snapshot, &reserve_identity, now())
+            WorkspaceReadyRepository::reserve(
+                tx,
+                &reserve_snapshot,
+                &reserve_identity,
+                &paths,
+                now(),
+            )
         })
         .await?
     {
@@ -383,36 +436,57 @@ async fn publish_verified(
     checkpoint: Result<Value, String>,
     deadline: Instant,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
+    let read_agent = identity.agent.clone();
+    let stored_cwd = store
+        .read_async("runtime-services/workspace-publication/cwd", move |tx| {
+            Ok::<_, StoreError>(
+                CheckpointsRepository::reservation_snapshot(tx, &read_agent)?
+                    .and_then(|snapshot| actor(&snapshot).ok().map(|actor| actor.cwd)),
+            )
+        })
+        .await?;
     let read_identity = identity.clone();
-    let (observed, confined) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let (observed, confined, observed_cwd) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
             let git = Git { deadline };
-            (git.worktree(&read_identity).ok(), confined(&read_identity))
+            let cwd = stored_cwd.map(|cwd| {
+                let resolved = path_identity::resolve(&cwd).unwrap_or_else(|| cwd.clone());
+                (cwd, resolved)
+            });
+            (
+                git.worktree(&read_identity).ok(),
+                confined(&read_identity),
+                cwd,
+            )
         },
     )
     .await
     .map_err(|_| WorkspaceError::Worker)?;
+    let paths = prepared_paths(&store, &identity.agent, vec![identity.destination.clone()]).await?;
     let transaction_identity = identity.clone();
     let token = store.transaction(move |tx| {
         let current = CheckpointsRepository::reservation_snapshot(tx, &transaction_identity.agent)?;
         let valid = current.as_ref().is_some_and(|current| {
             let Ok(actor) = actor(current) else { return false };
             let Some(observed) = &observed else { return false };
-            // `decide_workspace` compares resolved paths, as `observe` gives them.
-            let cwd = path_identity::resolve(&actor.cwd).unwrap_or_else(|| actor.cwd.clone());
+            let Some((stored_cwd, cwd)) = &observed_cwd else { return false };
+            if actor.cwd != *stored_cwd { return false; }
+            // Filesystem identity was observed before writer admission; a changed
+            // stored cwd cannot borrow that observation.
+
             let decision = decide_workspace(&actor, &current.agent.record,
-                Some(&cwd), &reservations(current), Some(&transaction_identity), true, observed);
-            confined && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
+                Some(cwd), &paths.reservations(current).unwrap_or_default(), Some(&transaction_identity), true, observed);
+            confined && paths.reservations(current).is_some() && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
         });
         if !valid {
             WorkspaceReadyRepository::uncertain(tx, &transaction_identity, "Workspace evidence changed before publication", now())?;
             return Ok(None);
         }
         let checkpoint = checkpoint.as_ref().map_err(String::as_str);
-        if !WorkspaceReadyRepository::publish(tx, &transaction_identity, checkpoint, now())? { return Ok(None); }
+        if !WorkspaceReadyRepository::publish(tx, &transaction_identity, &paths, checkpoint, now())? { return Ok(None); }
         let record = CheckpointsRepository::agent(tx, &transaction_identity.agent)?.expect("published actor");
-        Ok(Some(ReadyToken::new(&record.record, transaction_identity.cwd.clone())))
+        Ok(Some(ReadyToken::new(&record.record, transaction_identity.cwd.clone()).with_paths(paths)))
     }).await?;
     match token {
         Some(token) => Ok(WorkspaceDecision::Ready { token }),
@@ -836,6 +910,7 @@ fn provision_cwd(destination: &Path, relative: &Path) -> Result<PathBuf, Workspa
     path_identity::lexical(&destination.join(relative)).ok_or(WorkspaceError::InvalidRecord)
 }
 fn canonical(path: &str) -> Result<PathBuf, WorkspaceError> {
+    studio_runtime_store::debug_assert_outside_sql();
     PathBuf::from(path)
         .canonicalize()
         .map_err(|error| WorkspaceError::Git(format!("{path}: {error}")))

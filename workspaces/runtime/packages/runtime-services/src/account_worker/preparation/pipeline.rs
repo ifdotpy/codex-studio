@@ -947,10 +947,14 @@ async fn workspace_with_vm_action(
                 .filter(|value| value.starts_with('/'))
                 .ok_or_else(|| refusal("workspace-state/vm-cwd".into()))?
         };
-        return Ok(crate::workspace_ready::ReadyToken::new(
-            &ready.value(),
-            PathBuf::from(cwd),
-        ));
+        let paths =
+            crate::workspace_ready_git::prepared_paths(&store, &intent.agent_id, Vec::new())
+                .await
+                .map_err(|error| refusal(error.to_string()))?;
+        return Ok(
+            crate::workspace_ready::ReadyToken::new(&ready.value(), PathBuf::from(cwd))
+                .with_paths(paths),
+        );
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
     match crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone())
@@ -1255,7 +1259,7 @@ pub(crate) fn accept_review_thread(
         &filesystem.0.thread_inputs,
         None,
     )?;
-    align_receipt_cwd(&mut current, &attempt.snapshot);
+    align_receipt_cwd(&mut current, &attempt.snapshot, resources);
     let receipt = thread::ProviderReceipt {
         identity: attempt.receipt_identity(),
         thread_id: reply["thread"]["id"].as_str().map(str::to_owned),
@@ -1315,7 +1319,7 @@ pub(crate) async fn prepare_monitor_command(
         None
     };
     let agent_id = agent_id.to_owned();
-    let resources_for_snapshot = resources.clone();
+    let resources_for_snapshot = resources.for_sql().await?;
     let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
@@ -1633,7 +1637,7 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let resources_for_snapshot = resources.clone();
+    let resources_for_snapshot = resources.for_sql().await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {
@@ -1709,7 +1713,7 @@ pub(crate) async fn prepare_safety_retry(
         .unwrap_or("safety-retry-preparation")
         .to_owned();
     let snapshot_request = request.clone();
-    let resources_for_snapshot = resources.clone();
+    let resources_for_snapshot = resources.for_sql().await?;
     let state_root = store.root().to_path_buf();
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
@@ -1850,6 +1854,7 @@ pub(crate) async fn prepare_ready(
     let token_for_snapshot = token.clone();
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
+    let resources = resources.for_sql().await?;
     let resources_for_snapshot = resources.clone();
     let (
         mut snapshot,

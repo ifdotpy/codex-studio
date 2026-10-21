@@ -286,7 +286,7 @@ async fn native_command(
                     let prepared = admission_for_read
                         .is_none()
                         .then(|| {
-                            studio_runtime_services::message_admission::PreparedAdmission::load(
+                            studio_runtime_services::message_admission::PreparedAdmission::read(
                                 connection, &agent_id,
                             )
                         })
@@ -299,7 +299,13 @@ async fn native_command(
                 dyn studio_runtime_services::message_admission::MessageAdmission,
             > = match admission_override {
                 Some(admission) => admission,
-                None => std::sync::Arc::new(prepared.ok_or_else(ApiError::internal)?),
+                None => std::sync::Arc::new(
+                    prepared
+                        .ok_or_else(ApiError::internal)?
+                        .prepare()
+                        .await
+                        .map_err(|_| ApiError::internal())?,
+                ),
             };
             let posted = store
                 .transaction_with_error(move |tx| {

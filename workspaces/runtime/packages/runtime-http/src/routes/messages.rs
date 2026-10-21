@@ -140,18 +140,18 @@ pub(super) async fn post_message(
                     .optional()
                     .map_err(|_| ApiError::internal())?
                     .unwrap_or(false);
-                let prepared: Box<dyn studio_runtime_services::message_admission::MessageAdmission> =
+                let prepared: studio_runtime_services::message_admission::AdmissionSnapshot =
                     if admission_override.is_some() {
-                        Box::new(
-                            studio_runtime_services::message_admission::PreparedAdmission::load(
+                        studio_runtime_services::message_admission::AdmissionSnapshot::Workspace(
+                            studio_runtime_services::message_admission::PreparedAdmission::read(
                                 connection,
                                 &admission_room,
                             )
                             .map_err(coordination_error)?,
                         )
                     } else {
-                        Box::new(
-                            studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                        studio_runtime_services::message_admission::AdmissionSnapshot::Ingress(
+                            studio_runtime_services::message_admission::MessageIngressAdmission::read(
                                 admission_store,
                                 connection,
                                 &admission_room,
@@ -162,6 +162,10 @@ pub(super) async fn post_message(
                 Ok((false, remote_worker, Some(prepared)))
         })
         .await?;
+    let prepared = match prepared {
+        Some(snapshot) => Some(snapshot.prepare().await.map_err(coordination_error)?),
+        None => None,
+    };
     #[cfg(test)]
     {
         let room = body.room.clone();

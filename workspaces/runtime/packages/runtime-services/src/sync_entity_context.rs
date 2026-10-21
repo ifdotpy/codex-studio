@@ -335,13 +335,12 @@ impl RoomDirectory {
             records::all(tx, "runtime_projects")?,
         )
     }
-    /// Resolve paths from rows read by [`RoomSources`]. Resolution touches the
-    /// filesystem, so run it after that read has ended; check the result with
-    /// [`Self::matches`] in the transaction that uses it.
+    /// Prepare room membership from stored, already resolved path identities.
+    /// This is pure; callers retaining the whole directory check [`Self::matches`].
     pub fn prepare(sources: RoomSources) -> StoreResult<Self> {
         Self::resolve(sources.agents, sources.projects)
     }
-    /// Read [`RoomSources`] from `store`, then resolve them on the blocking pool.
+    /// Read [`RoomSources`] from `store`, then prepare the room directory.
     pub async fn read_and_prepare(store: &studio_runtime_store::RuntimeStore) -> StoreResult<Self> {
         let sources = store
             .read_async("runtime-services/sync_entity_context", |tx| {
@@ -361,12 +360,15 @@ impl RoomDirectory {
             let Some(path) = project["path"].as_str().filter(|s| !s.is_empty()) else {
                 continue;
             };
-            let path = crate::system_reads::resolve_path(path).map_err(|_| {
-                records::invalid(
-                    "runtime_projects",
-                    project["id"].as_str().unwrap_or_default(),
-                )
-            })?;
+            // Project/agent writers persist resolved host paths. Room membership
+            // compares those stored identities; it must not inspect today's filesystem.
+            let Some(path) =
+                studio_runtime_store::path_identity::lexical(std::path::Path::new(path))
+            else {
+                // A project handle (for example project:<id>) is not a host
+                // directory and cannot bind local peer membership.
+                continue;
+            };
             for team in project["peerTeams"].as_array().into_iter().flatten() {
                 let mut members = Vec::new();
                 for id in team["members"].as_array().into_iter().flatten() {
@@ -378,7 +380,11 @@ impl RoomDirectory {
                             && !truthy(a.get("parentId"))
                             && a["cwd"]
                                 .as_str()
-                                .and_then(|p| crate::system_reads::resolve_path(p).ok())
+                                .and_then(|path| {
+                                    studio_runtime_store::path_identity::lexical(
+                                        std::path::Path::new(path),
+                                    )
+                                })
                                 .as_ref()
                                 == Some(&path)
                     }) && !members.contains(id)
@@ -496,6 +502,32 @@ impl RoomDirectory {
 #[cfg(test)]
 mod room_preparation_tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn room_membership_uses_symlink_paths_resolved_by_the_creation_owner() {
+        let state = tempfile::tempdir().expect("state");
+        let project = tempfile::tempdir().expect("project");
+        let link = state.path().join("project-link");
+        std::os::unix::fs::symlink(project.path(), &link).expect("project link");
+        let first =
+            crate::agents_create::canonical_project_directory(&link).expect("resolved linked cwd");
+        let second = crate::agents_create::canonical_project_directory(project.path())
+            .expect("resolved real cwd");
+        let runtime = tempfile::tempdir().expect("runtime state directory");
+        let store = studio_runtime_store::RuntimeStore::open(Some(runtime.path()))
+            .await
+            .expect("store");
+        let members = store.read_async("tests/room-stored-paths", move |tx| {
+            tx.query_row("SELECT 1", [], |_| Ok(()))?;
+            let directory = RoomDirectory::resolve(vec![
+                json!({"id":"first","rootId":"first","isLead":true,"cwd":first}),
+                json!({"id":"second","rootId":"second","isLead":true,"cwd":second}),
+            ], vec![json!({"id":"project","path":first,"peerTeams":[{"id":"peers","members":["first","second"]}]})])?;
+            Ok::<_, studio_runtime_store::StoreError>(directory.peers.as_ref().clone())
+        }).await.expect("pure room membership inside SQL callback");
+        assert_eq!(members[0]["members"], json!(["first", "second"]));
+    }
+
     #[test]
     fn paths_are_prepared_after_the_read_and_snapshot_is_rechecked() {
         let root = tempfile::tempdir().expect("isolated state");

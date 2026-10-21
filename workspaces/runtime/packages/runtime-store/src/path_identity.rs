@@ -24,6 +24,7 @@ use std::path::{Component, Path, PathBuf};
 /// relative or a part of it cannot be resolved safely.
 #[must_use]
 pub fn resolve(path: &Path) -> Option<PathBuf> {
+    crate::debug_assert_outside_sql();
     if !path.is_absolute() {
         return None;
     }

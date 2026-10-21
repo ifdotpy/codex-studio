@@ -95,6 +95,8 @@ pub struct PreparationResources {
     pub role_guidance: BTreeMap<PathBuf, String>,
     pub model_catalog: ModelCatalogService,
     pub account_home: String,
+    /// Filesystem observations captured before SQL callbacks; retained by commit guards.
+    pub filesystem_inputs: Option<Arc<PreparationFilesystem>>,
     /// The shared (base) Codex home whose `node_repl` and Chrome plugin the
     /// browser setup copies; empty leaves host Codex threads without a browser.
     pub shared_home: String,
@@ -109,6 +111,14 @@ pub struct PreparationResources {
     /// Host-owned per-actor VM provider launch and credential-copy boundary.
     pub vm_provider_launch: Option<Arc<dyn VmProviderLaunchResolver>>,
 }
+/// Account guidance and receipt path evidence captured outside SQLite callbacks.
+#[derive(Clone, Default)]
+pub struct PreparationFilesystem {
+    browser: Option<crate::browser::AccountBrowser>,
+    mcp_servers: Vec<String>,
+    receipt_cwd: Option<(String, String, bool)>,
+}
+
 impl PreparationResources {
     pub fn bundled(
         account_home: String,
@@ -186,6 +196,7 @@ impl PreparationResources {
             skills_root,
             model_catalog,
             account_home,
+            filesystem_inputs: None,
             shared_home: String::new(),
             server_source_root,
             claude_account_pin: Value::Null,
@@ -194,6 +205,77 @@ impl PreparationResources {
             guest_rpc: None,
             vm_provider_launch: None,
         })
+    }
+
+    fn capture_filesystem(mut self, receipt_cwd: Option<(String, String)>) -> Self {
+        studio_runtime_store::debug_assert_outside_sql();
+        let browser = (!self.account_home.is_empty() && !self.shared_home.is_empty()).then(|| {
+            crate::browser::account_browser(
+                Path::new(&self.account_home),
+                Path::new(&self.shared_home),
+            )
+        });
+        let mcp_servers = if self.account_home.is_empty() {
+            Vec::new()
+        } else {
+            codex_user_mcp_servers(&self.account_home)
+        };
+        let receipt_cwd = receipt_cwd.map(|(stored, prepared)| {
+            let same = studio_runtime_store::path_identity::same_text(&stored, &prepared);
+            (stored, prepared, same)
+        });
+        self.filesystem_inputs = Some(Arc::new(PreparationFilesystem {
+            browser,
+            mcp_servers,
+            receipt_cwd,
+        }));
+        self
+    }
+
+    pub(crate) async fn for_sql(&self) -> Result<Self, WorkerError> {
+        let resources = self.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/thread-guidance/filesystem",
+            move || resources.capture_filesystem(None),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)
+    }
+
+    pub(crate) async fn for_receipt(
+        &self,
+        store: &RuntimeStore,
+        agent_id: &str,
+        prepared_cwd: Option<&str>,
+    ) -> Result<Self, WorkerError> {
+        let receipt_cwd = if let Some(prepared_cwd) = prepared_cwd {
+            let agent_id = agent_id.to_owned();
+            let stored = store
+                .read_async("runtime-services/thread-receipt/cwd", move |tx| {
+                    Ok::<_, WorkerError>(
+                        AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.and_then(
+                            |agent| {
+                                agent
+                                    .extra
+                                    .get("cwd")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                            },
+                        ),
+                    )
+                })
+                .await?;
+            stored.map(|stored| (stored, prepared_cwd.to_owned()))
+        } else {
+            None
+        };
+        let resources = self.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/thread-receipt/filesystem",
+            move || resources.capture_filesystem(receipt_cwd),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)
     }
 
     pub fn with_account_session(
@@ -555,13 +637,20 @@ pub(super) fn guidance(
     // (Claude workers get the same rule from the adapter's `userMcp` param.)
     if record["parentId"].is_string() && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
     {
-        let servers: Map<String, Value> = codex_user_mcp_servers(&resources.account_home)
+        let servers: Map<String, Value> = resources
+            .filesystem_inputs
+            .as_ref()
+            .map(|inputs| inputs.mcp_servers.clone())
+            .unwrap_or_default()
             .into_iter()
             .map(|name| (name, serde_json::json!({"enabled": false})))
             .collect();
         if !servers.is_empty() {
             thread_config.insert("mcp_servers".into(), Value::Object(servers));
         }
+    }
+    if !resources.account_home.is_empty() && resources.filesystem_inputs.is_none() {
+        return Err(invalid("thread guidance filesystem inputs"));
     }
     let browser = browser_guidance(resources, record, &mut thread_config);
     // Python `codex_browser_host.thread_environment`, at the same call site as
@@ -598,10 +687,7 @@ fn browser_guidance(
     {
         return None;
     }
-    let browser = crate::browser::account_browser(
-        Path::new(&resources.account_home),
-        Path::new(&resources.shared_home),
-    );
+    let browser = resources.filesystem_inputs.as_ref()?.browser.clone()?;
     crate::browser::report_browser_status(
         record["accountKey"].as_str().unwrap_or("default"),
         browser.unavailable_reason.as_deref(),
@@ -1049,9 +1135,18 @@ pub(super) fn thread_snapshot(
 /// (macOS `/var` and `/tmp`). The pure receipt reducer compares text, so
 /// without this step a valid receipt is stale. A cwd that names another
 /// folder stays as stored, and the reducer refuses it.
-pub(super) fn align_receipt_cwd(current: &mut thread::Snapshot, attempt: &thread::Snapshot) {
-    if current.actor.cwd != attempt.actor.cwd
-        && studio_runtime_store::path_identity::same_text(&current.actor.cwd, &attempt.actor.cwd)
+pub(super) fn align_receipt_cwd(
+    current: &mut thread::Snapshot,
+    attempt: &thread::Snapshot,
+    resources: &PreparationResources,
+) {
+    if let Some((stored, prepared, same)) = resources
+        .filesystem_inputs
+        .as_ref()
+        .and_then(|inputs| inputs.receipt_cwd.as_ref())
+        && *same
+        && current.actor.cwd == *stored
+        && attempt.actor.cwd == *prepared
     {
         current.actor.cwd.clone_from(&attempt.actor.cwd);
     }
@@ -1326,6 +1421,18 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    fn guidance(
+        resources: &super::PreparationResources,
+        record: &serde_json::Value,
+        state_root: &std::path::Path,
+    ) -> Result<crate::thread_prepare::GuidanceBundle, super::WorkerError> {
+        super::guidance(
+            &resources.clone().capture_filesystem(None),
+            record,
+            state_root,
+        )
+    }
+
     use super::*;
 
     #[test]

@@ -13,8 +13,9 @@ pub(crate) use pipeline::{CATALOG_PENDING_REASON, WORKSPACE_PENDING_REASON};
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
 pub use snapshot::{
-    PreparationResources, VmProviderAuthFuture, VmProviderLaunch, VmProviderLaunchFuture,
-    VmProviderLaunchRequest, VmProviderLaunchResolver, VmProviderRefreshFuture,
+    PreparationFilesystem, PreparationResources, VmProviderAuthFuture, VmProviderLaunch,
+    VmProviderLaunchFuture, VmProviderLaunchRequest, VmProviderLaunchResolver,
+    VmProviderRefreshFuture,
 };
 pub(crate) use snapshot::{actor_tool_definitions, progress_context};
 
@@ -49,6 +50,9 @@ pub(crate) struct PreparedReviewThread {
     attempt: Box<crate::thread_prepare::PreparedAttempt>,
 }
 impl PreparedReviewThread {
+    pub(crate) fn cwd(&self) -> &str {
+        &self.attempt.snapshot.actor.cwd
+    }
     pub(crate) fn params(&self) -> serde_json::Value {
         serde_json::Value::Object(self.attempt.params.clone())
     }

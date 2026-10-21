@@ -246,6 +246,7 @@ impl Drop for StreamChild {
 }
 
 fn spawn_process(spec: ChildSpec) -> io::Result<Box<dyn ChildWrapper>> {
+    studio_runtime_store::debug_assert_outside_sql();
     let mut command = tokio::process::Command::new(spec.program);
     command
         .args(spec.args)

@@ -69,6 +69,7 @@ impl OwnedChild {
         notify: Arc<tokio::sync::Notify>,
         signature: String,
     ) -> Result<SpawnOutcome> {
+        studio_runtime_store::debug_assert_outside_sql();
         let SupervisorCommand::Open {
             handle,
             command,

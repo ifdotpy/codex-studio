@@ -2,6 +2,7 @@
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -73,6 +74,7 @@ pub struct ReadyToken {
     epoch: u64,
     source: Value,
     cwd: PathBuf,
+    paths: WorkspacePaths,
 }
 impl std::fmt::Debug for ReadyToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,8 +90,16 @@ impl ReadyToken {
             agent: record["id"].as_str().unwrap_or_default().into(),
             epoch: record["epoch"].as_u64().unwrap_or_default(),
             source: workspace_generation(record),
+            paths: WorkspacePaths(BTreeMap::from([(
+                PathBuf::from(record["cwd"].as_str().unwrap_or("/")),
+                cwd.clone(),
+            )])),
             cwd,
         }
+    }
+    pub fn with_paths(mut self, paths: WorkspacePaths) -> Self {
+        self.paths = paths;
+        self
     }
     pub fn validate(&self, tx: &Transaction<'_>) -> StoreResult<Result<PathBuf, ReadyRefusal>> {
         let Some(current) = CheckpointsRepository::reservation_snapshot(tx, &self.agent)? else {
@@ -103,9 +113,14 @@ impl ReadyToken {
                 .record
                 .get("deletedAt")
                 .is_none_or(Value::is_null)
-            && !reservations(&current)
-                .iter()
-                .any(|r| r.blocks(&self.agent, &self.cwd, None));
+            && self
+                .paths
+                .reservations(&current)
+                .is_some_and(|reservations| {
+                    !reservations
+                        .iter()
+                        .any(|r| r.blocks(&self.agent, &self.cwd, None))
+                });
         Ok(if valid {
             Ok(self.cwd.clone())
         } else {
@@ -145,13 +160,54 @@ pub fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
+/// Raw path bindings observed before writer admission. Include idle agent paths:
+/// they may acquire a reservation before the transaction starts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorkspacePaths(BTreeMap<PathBuf, PathBuf>);
+impl WorkspacePaths {
+    pub fn capture(snapshot: &WorkspaceSnapshot, extra: impl IntoIterator<Item = PathBuf>) -> Self {
+        crate::debug_assert_outside_sql();
+        let paths = std::iter::once(&snapshot.agent)
+            .chain(&snapshot.agents)
+            .chain(&snapshot.operations)
+            .filter_map(|row| row.record["cwd"].as_str().map(PathBuf::from))
+            .chain(extra);
+        Self(
+            paths
+                .map(|path| {
+                    let resolved =
+                        crate::path_identity::resolve(&path).unwrap_or_else(|| path.clone());
+                    (path, resolved)
+                })
+                .collect(),
+        )
+    }
+    pub fn reservations(&self, snapshot: &WorkspaceSnapshot) -> Option<Vec<Reservation>> {
+        let mut missing = false;
+        let result = reservations_with(snapshot, |value| {
+            let path = PathBuf::from(value.as_str().unwrap_or("/"));
+            self.0.get(&path).cloned().unwrap_or_else(|| {
+                missing = true;
+                path
+            })
+        });
+        (!missing).then_some(result)
+    }
+}
+
 /// Resolve paths with the path identity owner; unresolved paths remain
 /// evidence rather than disappearing.
 pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
-    let path = |v: &Value| {
-        let p = PathBuf::from(v.as_str().unwrap_or("/"));
-        crate::path_identity::resolve(&p).unwrap_or(p)
-    };
+    reservations_with(snapshot, |v| {
+        let path = PathBuf::from(v.as_str().unwrap_or("/"));
+        crate::path_identity::resolve(&path).unwrap_or(path)
+    })
+}
+
+fn reservations_with(
+    snapshot: &WorkspaceSnapshot,
+    mut path: impl FnMut(&Value) -> PathBuf,
+) -> Vec<Reservation> {
     let mut result = Vec::new();
     for other in &snapshot.agents {
         if let Some(kind) = other.record["workspaceOperation"].as_str() {
@@ -197,18 +253,25 @@ pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
     result
 }
 
-fn conflicts(snapshot: &WorkspaceSnapshot, plan: &ProvisionIdentity) -> Vec<Reservation> {
-    let source = PathBuf::from(plan.source["cwd"].as_str().unwrap_or("/"));
-    let source = source.canonicalize().unwrap_or(source);
-    reservations(snapshot)
-        .into_iter()
-        .filter(|r| {
-            !(r.agent == plan.agent
-                && r.operation == "provision"
-                && r.id.as_deref() == Some(&plan.id))
-                && r.blocks(&plan.agent, &source, Some(&plan.destination))
-        })
-        .collect()
+fn conflicts(
+    snapshot: &WorkspaceSnapshot,
+    plan: &ProvisionIdentity,
+    paths: &WorkspacePaths,
+) -> Option<Vec<Reservation>> {
+    let raw = PathBuf::from(plan.source["cwd"].as_str().unwrap_or("/"));
+    let source = paths.0.get(&raw)?;
+    Some(
+        paths
+            .reservations(snapshot)?
+            .into_iter()
+            .filter(|r| {
+                !(r.agent == plan.agent
+                    && r.operation == "provision"
+                    && r.id.as_deref() == Some(&plan.id))
+                    && r.blocks(&plan.agent, source, Some(&plan.destination))
+            })
+            .collect(),
+    )
 }
 
 pub struct WorkspaceReadyRepository;
@@ -229,14 +292,15 @@ impl WorkspaceReadyRepository {
         tx: &Transaction<'_>,
         expected: &WorkspaceSnapshot,
         plan: &ProvisionIdentity,
+        paths: &WorkspacePaths,
         now: f64,
     ) -> StoreResult<bool> {
         let Some(current) = CheckpointsRepository::reservation_snapshot(tx, &plan.agent)? else {
             return Ok(false);
         };
         if workspace_generation(&current.agent.record) != plan.source
-            || conflicts(&current, plan) != conflicts(expected, plan)
-            || !conflicts(&current, plan).is_empty()
+            || conflicts(&current, plan, paths) != conflicts(expected, plan, paths)
+            || conflicts(&current, plan, paths).is_none_or(|conflicts| !conflicts.is_empty())
         {
             return Ok(false);
         }
@@ -298,6 +362,7 @@ impl WorkspaceReadyRepository {
     pub fn publish(
         tx: &Transaction<'_>,
         plan: &ProvisionIdentity,
+        paths: &WorkspacePaths,
         checkpoint: Result<&Value, &str>,
         now: f64,
     ) -> StoreResult<bool> {
@@ -306,17 +371,15 @@ impl WorkspaceReadyRepository {
         };
         let current = CheckpointsRepository::agent(tx, &plan.agent)?;
         let relevant = CheckpointsRepository::reservation_snapshot(tx, &plan.agent)?;
-        let valid = relevant
-            .as_ref()
-            .is_some_and(|s| conflicts(s, plan).is_empty())
-            && current.as_ref().is_some_and(|a| {
-                workspace_generation(&a.record) == plan.source
-                    && a.record["autoWake"] == true
-                    && a.record.get("deletedAt").is_none_or(Value::is_null)
-                    && a.record["workspaceReservationId"] == plan.id
-                    && a.record["workspaceOperation"] == "provision"
-            })
-            && operation.get("plan") == Some(&serde_json::to_value(plan)?)
+        let valid = relevant.as_ref().is_some_and(|s| {
+            conflicts(s, plan, paths).is_some_and(|conflicts| conflicts.is_empty())
+        }) && current.as_ref().is_some_and(|a| {
+            workspace_generation(&a.record) == plan.source
+                && a.record["autoWake"] == true
+                && a.record.get("deletedAt").is_none_or(Value::is_null)
+                && a.record["workspaceReservationId"] == plan.id
+                && a.record["workspaceOperation"] == "provision"
+        }) && operation.get("plan") == Some(&serde_json::to_value(plan)?)
             && matches!(
                 operation["phase"].as_str(),
                 Some("local_mutation" | "recovery_required")

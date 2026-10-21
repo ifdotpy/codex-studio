@@ -42,6 +42,7 @@ impl ChildPriority {
     /// Install before spawn. Unix callers must use a fresh ProcessGroup::leader().
     /// The wrapper applies Unix scheduling immediately in its parent-side post-spawn hook.
     pub fn apply_before_spawn(self, command: &mut impl PriorityCommand) {
+        studio_runtime_store::debug_assert_outside_sql();
         if self == Self::Normal {
             return;
         }

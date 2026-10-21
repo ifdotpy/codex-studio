@@ -1114,6 +1114,7 @@ async fn worker_base_for_directory(
 }
 
 fn canonical_or_expanded(path: &str) -> PathBuf {
+    studio_runtime_store::debug_assert_outside_sql();
     let expanded = if path == "~" {
         std::env::var_os("HOME")
             .map(PathBuf::from)

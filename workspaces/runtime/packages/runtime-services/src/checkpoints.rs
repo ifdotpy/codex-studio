@@ -809,6 +809,7 @@ fn validate_internal_record(
 }
 
 fn canonical_cwd(record: &serde_json::Map<String, Value>) -> Result<PathBuf, CheckpointsError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let path = record
         .get("cwd")
         .and_then(Value::as_str)

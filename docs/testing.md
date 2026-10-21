@@ -27,7 +27,9 @@ selection guard lives beside that runner. The witnesses cover request retry
 identity, uncertain outcomes, permission-aware recovery, reset-request replay
 against a fake provider, move-target resume parameters built before the agent
 record is saved, and the one-time migrations of older states to the current agent
-columns and account-wake index. The reset
+columns and account-wake index. The Rust witnesses also exercise the
+[debug SQL callback guard](../workspaces/runtime/packages/runtime-store/tests/sql_callback_guard.rs),
+which rejects filesystem and process owners called from SQLite callbacks. The reset
 fixture uses a Python HTTP backend and a fake provider. Rust HTTP route behavior
 and real credit redemption require separate evidence. The web package owns selected
 API and verifier unit witnesses and type-check scripts, while the tooling package owns

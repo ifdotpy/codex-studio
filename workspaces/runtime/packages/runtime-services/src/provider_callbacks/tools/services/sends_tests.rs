@@ -128,8 +128,11 @@ async fn try_send_args_with(
         turn: actor["turnId"].as_str().unwrap().into(),
     };
     let reader = store.test_reader().unwrap();
-    let admission =
-        crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
+    let admission = crate::message_admission::PreparedAdmission::read(&reader, &context.agent)
+        .expect("SQL admission inputs")
+        .prepare()
+        .await
+        .unwrap();
     drop(reader);
     let ports = ProductionPorts::new(ProductionPortsConfig {
         context: context.clone(),
@@ -187,8 +190,11 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         turn: actor["turnId"].as_str().unwrap().into(),
     };
     let reader = store.test_reader().unwrap();
-    let admission =
-        crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
+    let admission = crate::message_admission::PreparedAdmission::read(&reader, &context.agent)
+        .expect("SQL admission inputs")
+        .prepare()
+        .await
+        .unwrap();
     drop(reader);
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let ports = ProductionPorts::new(ProductionPortsConfig {
@@ -258,8 +264,11 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         turn: actor["turnId"].as_str().unwrap().into(),
     };
     let reader = store.test_reader().unwrap();
-    let admission =
-        crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
+    let admission = crate::message_admission::PreparedAdmission::read(&reader, &context.agent)
+        .expect("SQL admission inputs")
+        .prepare()
+        .await
+        .unwrap();
     drop(reader);
     let event_wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let monitor_wake = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -518,8 +527,11 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
             turn: caller["turnId"].as_str().unwrap().into(),
         };
         let reader = store.test_reader().unwrap();
-        let admission =
-            crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
+        let admission = crate::message_admission::PreparedAdmission::read(&reader, &context.agent)
+            .expect("SQL admission inputs")
+            .prepare()
+            .await
+            .unwrap();
         drop(reader);
         let actor =
             crate::managed_host_tools::Actor::from_record(caller, &context.agent, context.epoch)

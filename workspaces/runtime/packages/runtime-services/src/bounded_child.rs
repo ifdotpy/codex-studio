@@ -73,6 +73,7 @@ pub(crate) fn run_without_git_environment(request: Request<'_>) -> Result<Output
     reason = "bounded child polling executes on the calling labeled blocking worker"
 )]
 fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output, ChildError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let Request {
         program,
         cwd,

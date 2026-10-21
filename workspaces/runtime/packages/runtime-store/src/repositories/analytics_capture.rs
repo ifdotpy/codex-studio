@@ -254,7 +254,7 @@ impl RuntimeStore {
                 let tx = db
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
-                let value = operation(&tx)?;
+                let value = crate::sql_callback(|| operation(&tx))?;
                 tx.commit().map_err(StoreError::commit_outcome_unknown)?;
                 Ok(value)
             })();
@@ -324,7 +324,7 @@ impl RuntimeStore {
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(StoreError::from)?;
-            match operation(&tx, canvas) {
+            match crate::sql_callback(|| operation(&tx, canvas)) {
                 Ok(result) => {
                     let commit_started = diagnostics_enabled.then(std::time::Instant::now);
                     tx.commit().map_err(StoreError::commit_outcome_unknown)?;

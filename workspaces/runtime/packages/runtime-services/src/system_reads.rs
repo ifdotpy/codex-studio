@@ -125,6 +125,7 @@ fn named_home(_user: &str) -> Result<Option<PathBuf>, SystemReadError> {
 }
 
 pub(crate) fn resolve_path(path: &str) -> Result<PathBuf, SystemReadError> {
+    studio_runtime_store::debug_assert_outside_sql();
     resolve_links(&expand_home(path)?, &mut 0)
 }
 

@@ -1201,7 +1201,7 @@ async fn refresh_vm_codex_token(
 /// Mirror Python `claude_access` (codex_linux_vm_auth.py:168-185): refresh
 /// inside the CLI's existing helper, then verify account identity and expiry
 /// before the access-only document reaches the durable guest-copy operation.
-#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
+#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
 fn read_vm_claude_credentials(
     accounts: &AccountDriver,
     request: ClaudeCredentialRequest<'_>,
@@ -1413,7 +1413,7 @@ fn read_vm_claude_oauth(
 #[cfg(target_os = "macos")]
 /// Read the same per-config Keychain service as
 /// `codex_linux_vm_credentials.py:13-19` and `codex_linux_vm_auth.py:96-120`.
-#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
+#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
 fn read_vm_claude_keychain(
     path: &Path,
     explicit_config_dir: bool,
@@ -1635,7 +1635,7 @@ fn find_vm_node() -> Option<PathBuf> {
 /// `codex_linux_vm_auth.py:122-156`. It emits one bounded readiness line; the
 /// caller releases its held query only after the on-disk access token is
 /// outside the native refresh window. Child output never includes secrets.
-#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
+#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
 fn run_vm_claude_refresh_helper(
     node: &Path,
     helper: &Path,
@@ -1813,7 +1813,7 @@ fn run_vm_claude_refresh_helper(
     }
 }
 
-#[allow(clippy::disallowed_methods, reason = "TODO(#373 B17)")]
+#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
 fn stop_vm_claude_refresh_child(child: &mut dyn ChildWrapper) -> Result<(), WorkerError> {
     if child
         .inner_mut()
@@ -2507,6 +2507,7 @@ mod voice_composition_tests {
             model_catalog: ModelCatalogService::new(),
             account_home: String::new(),
             shared_home: String::new(),
+            filesystem_inputs: None,
             server_source_root: directory.to_path_buf(),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
