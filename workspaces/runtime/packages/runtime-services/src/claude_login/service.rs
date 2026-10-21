@@ -804,12 +804,16 @@ impl LoginService {
         };
         child.close().await?;
         self.record_child(id, None).await?;
-        Ok(
-            crate::account_driver::claude::auth_status_probe_from_output(
-                &output,
-                exited_successfully,
-            ),
-        )
+        let (metadata, conclusive) = crate::account_driver::claude::auth_status_probe_from_output(
+            &output,
+            exited_successfully,
+        );
+        let path = launch.config.join(".claude.json");
+        let metadata = blocking(move || {
+            Ok(crate::account_driver::claude_identity::with_native_identity(metadata, &path))
+        })
+        .await?;
+        Ok((metadata, conclusive))
     }
     async fn record_child(
         &self,

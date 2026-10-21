@@ -78,7 +78,7 @@ pub enum CredentialFormat {
 
 /// Upper bound on a credential file read for its identity, in bytes.
 /// `~/.claude.json` grows with project history, so the bound is generous.
-const CREDENTIAL_READ_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const CREDENTIAL_READ_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 fn present(value: &Option<serde_json::Value>) -> bool {
     use serde_json::Value;
